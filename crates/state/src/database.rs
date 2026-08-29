@@ -115,7 +115,7 @@ impl JobDiagnosticSubject {
             ["project", id] if !id.is_empty() => Self::Project {
                 id: (*id).to_owned(),
             },
-            ["resource", name, _track] if matches!(*name, "php" | "frankenphp") => {
+            ["resource", name, _track] if matches!(*name, "caddy" | "php" | "frankenphp") => {
                 Self::GatewayRuntime
             }
             ["resource", name, track] if !name.is_empty() && !track.is_empty() => Self::Resource {
@@ -2076,10 +2076,35 @@ impl Database {
             &mut assigned_ports,
             &mut is_available,
         )?;
-
         transaction.commit()?;
 
         Ok(GatewayPortAssignments { http, https })
+    }
+
+    pub fn assign_php_worker_port(
+        &mut self,
+        php_runtime_key: impl Into<String>,
+        mut is_available: impl FnMut(u16) -> bool,
+    ) -> Result<PortAssignment, StateError> {
+        let php_runtime_key = php_runtime_key.into();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut assigned_ports = assigned_port_numbers_in_transaction(&transaction)?;
+        let assignment = assign_port_in_transaction(
+            &transaction,
+            PortRequest::php_worker(
+                php_runtime_key.clone(),
+                RUNTIME_PORT_FALLBACK_START,
+                RUNTIME_PORT_FALLBACK_START,
+                RUNTIME_PORT_FALLBACK_END,
+            ),
+            &mut assigned_ports,
+            &mut is_available,
+        )?;
+        transaction.commit()?;
+
+        Ok(assignment)
     }
 
     pub fn release_port(&mut self, owner: PortOwner) -> Result<bool, StateError> {

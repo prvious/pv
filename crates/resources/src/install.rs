@@ -150,6 +150,19 @@ impl ArtifactInstaller {
     }
 
     pub fn rollback(&self, install: &ArtifactInstall) -> Result<()> {
+        self.switch_to_previous_release(install)?;
+
+        if !install.release_existed_before {
+            fs::remove_dir_all_if_exists(&install.release_path)?;
+            if let Some(releases_dir) = install.release_path.parent() {
+                fs::sync_directory(releases_dir)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn switch_to_previous_release(&self, install: &ArtifactInstall) -> Result<()> {
         require_symbolic_links()?;
         let track_dir =
             install
@@ -168,14 +181,51 @@ impl ArtifactInstaller {
             fs::sync_directory(track_dir)?;
         }
 
-        if !install.release_existed_before {
-            fs::remove_dir_all_if_exists(&install.release_path)?;
-            if let Some(releases_dir) = install.release_path.parent() {
-                fs::sync_directory(releases_dir)?;
-            }
+        Ok(())
+    }
+
+    pub(crate) fn switch_to_installed_release(&self, install: &ArtifactInstall) -> Result<()> {
+        require_symbolic_links()?;
+        let track_dir =
+            install
+                .current_path
+                .parent()
+                .ok_or_else(|| ResourcesError::InvalidArtifactLayout {
+                    resource: install.resource_name.as_str().to_string(),
+                    reason: format!("current pointer `{}` has no parent", install.current_path),
+                })?;
+
+        update_current_pointer(track_dir, &install.artifact_version)
+    }
+
+    pub(crate) fn validate_installed_release(
+        &self,
+        resource_name: &ResourceName,
+        track: &TrackName,
+        installed_version: &ArtifactVersion,
+        current_artifact_path: &Utf8Path,
+    ) -> Result<()> {
+        let track_dir = self
+            .resources_dir
+            .join(resource_name.as_str())
+            .join(track.as_str());
+        let expected_artifact_path = track_dir.join("releases").join(installed_version.as_str());
+        let current_path = track_dir.join("current");
+        let current_release = current_release_name(resource_name, &current_path)?;
+
+        if fs::path_exists(&expected_artifact_path)
+            && current_artifact_path == expected_artifact_path
+            && current_release.as_deref() == Some(installed_version.as_str())
+        {
+            return Ok(());
         }
 
-        Ok(())
+        Err(ResourcesError::InvalidArtifactLayout {
+            resource: resource_name.as_str().to_string(),
+            reason: format!(
+                "installed track `{track}` does not point to recorded artifact `{installed_version}`"
+            ),
+        })
     }
 }
 
@@ -239,6 +289,10 @@ impl ArtifactInstall {
 
     pub fn current_path(&self) -> &Utf8Path {
         &self.current_path
+    }
+
+    pub(crate) fn previous_release(&self) -> Option<&str> {
+        self.previous_release.as_deref()
     }
 }
 

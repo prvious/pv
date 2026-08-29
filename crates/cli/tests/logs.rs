@@ -122,6 +122,69 @@ fn logs_gateway_uses_combined_fallback() -> anyhow::Result<()> {
 }
 
 #[test]
+fn logs_gateway_exposes_supervisor_source_after_split_logs() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    write_log(&paths.gateway_log(), "legacy gateway\n")?;
+    write_log(&paths.gateway_supervisor_log(), "supervisor diagnostic\n")?;
+
+    let supervisor_only = run_pv(&["logs", "--gateway", "-n", "1"], &environment)?;
+
+    assert_eq!(supervisor_only.exit_code, ExitCode::SUCCESS);
+    assert!(supervisor_only.stderr.is_empty());
+
+    write_log(&paths.gateway_access_log(), "access request\n")?;
+    write_log(&paths.gateway_error_log(), "caddy error\n")?;
+
+    let split = run_pv(&["logs", "--gateway", "-n", "1"], &environment)?;
+
+    assert_eq!(split.exit_code, ExitCode::SUCCESS);
+    assert!(split.stderr.is_empty());
+    assert_debug_snapshot!((supervisor_only, split));
+
+    Ok(())
+}
+
+#[test]
+fn logs_gateway_tails_plain_rotated_access_and_error_logs() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    let gateway_logs = paths.logs().join("gateway");
+    write_log(
+        &gateway_logs.join("access-20260827-120000-size.log"),
+        "access plain old\naccess plain recent\n",
+    )?;
+    write_log(
+        &gateway_logs.join("access.log.1"),
+        "access generic rotated\n",
+    )?;
+    write_log(
+        &paths.gateway_access_log(),
+        "access active old\naccess active latest\n",
+    )?;
+    write_log(
+        &gateway_logs.join("error-20260827-120000-size.log"),
+        "error plain oldest\nerror plain middle\nerror plain recent\n",
+    )?;
+    write_log(
+        &paths.gateway_error_log(),
+        "error active old\nerror active latest\n",
+    )?;
+
+    let output = run_pv(&["logs", "--gateway", "-n", "4"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stderr.is_empty());
+    assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[test]
 fn logs_worker_latest_uses_global_default_track() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

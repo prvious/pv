@@ -91,12 +91,28 @@ fn pv_paths_include_gateway_and_worker_runtime_artifacts() {
         "/Users/alice/.pv/logs/gateway/gateway.log"
     );
     assert_eq!(
+        paths.gateway_supervisor_log().as_str(),
+        "/Users/alice/.pv/logs/gateway/supervisor.log"
+    );
+    assert_eq!(
         paths.worker_log("8.4").as_str(),
         "/Users/alice/.pv/logs/workers/php-8.4.log"
     );
     assert_eq!(
         paths.gateway_pid().as_str(),
         "/Users/alice/.pv/run/gateway.pid"
+    );
+    assert_eq!(
+        paths.gateway_admin_socket().as_str(),
+        "/Users/alice/.pv/run/gateway-admin.sock"
+    );
+    assert_eq!(
+        paths.worker_admin_socket("8.4+redis+xdebug").as_str(),
+        "/Users/alice/.pv/run/worker-admin-cbeeaf58d4fd.sock"
+    );
+    assert_ne!(
+        paths.worker_admin_socket("8.4+redis+xdebug"),
+        paths.worker_admin_socket("8.4+redis")
     );
     assert_eq!(
         paths.gateway_runtime_metadata().as_str(),
@@ -294,6 +310,125 @@ fn database_runs_migrations_and_exposes_core_schema() -> Result<()> {
     let database = Database::open(&paths)?;
 
     assert_debug_snapshot!(database.inspect()?);
+
+    Ok(())
+}
+
+#[test]
+fn admin_port_migration_removes_current_and_legacy_rows() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let old_migrations = [
+        Migration::new(
+            1,
+            "core_state_schema",
+            include_str!("../src/sql/001_core_state_schema.sql"),
+        ),
+        Migration::new(
+            2,
+            "managed_resource_removal_intent",
+            include_str!("../src/sql/002_managed_resource_removal_intent.sql"),
+        ),
+        Migration::new(
+            3,
+            "project_primary_hostname_updates",
+            include_str!("../src/sql/003_project_primary_hostname_updates.sql"),
+        ),
+        Migration::new(
+            4,
+            "project_original_path",
+            include_str!("../src/sql/004_project_original_path.sql"),
+        ),
+        Migration::new(
+            5,
+            "project_resource_requirements",
+            include_str!("../src/sql/005_project_resource_requirements.sql"),
+        ),
+        Migration::new(
+            6,
+            "global_php_default",
+            include_str!("../src/sql/006_global_php_default.sql"),
+        ),
+        Migration::new(
+            7,
+            "resource_port_roles",
+            include_str!("../src/sql/007_resource_port_roles.sql"),
+        ),
+        Migration::new(
+            8,
+            "project_php_runtime_extensions",
+            include_str!("../src/sql/008_project_php_runtime_extensions.sql"),
+        ),
+        Migration::new(
+            9,
+            "project_mode_and_slug",
+            include_str!("../src/sql/009_project_mode_and_slug.sql"),
+        ),
+        Migration::new(
+            10,
+            "job_diagnostic_outcomes",
+            include_str!("../src/sql/010_job_diagnostic_outcomes.sql"),
+        ),
+    ];
+    let mut database = state::testing::open_with_migrations(&paths, &old_migrations)?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch(
+            "INSERT INTO resource_ports
+                (resource_name, track, port_name, port, updated_at)
+             VALUES
+                ('caddy', '2', 'admin', 2019, '2026-08-27T00:00:00Z'),
+                ('php', '8.4', 'admin', 45000, '2026-08-27T00:00:00Z'),
+                ('php', '8.4', 'admin.redis', 45001, '2026-08-27T00:00:00Z'),
+                ('redis', '7.2', 'service', 45002, '2026-08-27T00:00:00Z');
+
+             INSERT INTO ports
+                (owner_kind, owner_id, owner_track, port, updated_at)
+             VALUES
+                ('gateway', 'admin', '', 45003, '2026-08-27T00:00:00Z'),
+                ('php_worker_admin', 'php', '8.3', 45004, '2026-08-27T00:00:00Z'),
+                ('gateway', 'http', '', 48080, '2026-08-27T00:00:00Z');",
+        )?;
+
+        Ok(())
+    })?;
+    drop(database);
+
+    let database = Database::open(&paths)?;
+
+    assert_eq!(
+        state::testing::query_i64(
+            &database,
+            "SELECT COUNT(*) FROM pv_migrations
+             WHERE version = 11 AND name = 'remove_admin_ports'",
+        )?,
+        1
+    );
+    assert_eq!(
+        state::testing::query_i64(
+            &database,
+            "SELECT COUNT(*) FROM resource_ports
+             WHERE (resource_name = 'caddy' AND track = '2' AND port_name = 'admin')
+             OR (resource_name = 'php' AND (port_name = 'admin' OR port_name LIKE 'admin.%'))",
+        )?,
+        0
+    );
+    assert_eq!(
+        state::testing::query_i64(
+            &database,
+            "SELECT COUNT(*) FROM ports
+             WHERE (owner_kind = 'gateway' AND owner_id = 'admin')
+             OR owner_kind = 'php_worker_admin'",
+        )?,
+        0
+    );
+    assert_eq!(
+        state::testing::query_i64(&database, "SELECT COUNT(*) FROM resource_ports")?,
+        1
+    );
+    assert_eq!(
+        state::testing::query_i64(&database, "SELECT COUNT(*) FROM ports")?,
+        1
+    );
 
     Ok(())
 }
@@ -3064,7 +3199,7 @@ fn dns_port_allocator_persists_and_reuses_preferred_assignment() -> Result<()> {
 }
 
 #[test]
-fn gateway_port_allocator_persists_distinct_http_and_https_assignments() -> Result<()> {
+fn gateway_port_allocator_persists_only_http_and_https_assignments() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
@@ -3082,7 +3217,10 @@ fn gateway_port_allocator_persists_distinct_http_and_https_assignments() -> Resu
     assert_eq!(reused.https.port, assigned.https.port);
 
     with_normalized_timestamps(|| {
-        assert_debug_snapshot!((assigned, reused, database.assigned_ports()?));
+        assert_debug_snapshot!(
+            "gateway_port_allocator_persists_distinct_http_and_https_assignments",
+            (assigned, reused, database.assigned_ports()?)
+        );
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -3184,6 +3322,29 @@ fn php_worker_port_allocator_uses_runtime_identity() -> Result<()> {
             php_runtime_key: "8.4+redis".to_string()
         }
     );
+
+    Ok(())
+}
+
+#[test]
+fn php_worker_port_allocator_persists_only_service_assignment() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+
+    let assigned = database.assign_php_worker_port("8.4", |_port| true)?;
+    drop(database);
+    let mut reopened = Database::open(&paths)?;
+    let reused = reopened.assign_php_worker_port("8.4", |_port| false)?;
+
+    assert_eq!(assigned.port, RUNTIME_PORT_FALLBACK_START);
+    assert_eq!(
+        assigned.owner,
+        PortOwner::PhpWorker {
+            php_runtime_key: "8.4".to_owned(),
+        }
+    );
+    assert_eq!(reused, assigned);
 
     Ok(())
 }
@@ -3355,6 +3516,22 @@ fn update_assessment_coverage_does_not_hide_gateway_failure() -> Result<()> {
 
     assert_eq!(unresolved.len(), 1);
     assert_eq!(unresolved[0].job.id, failure.id);
+    assert_eq!(unresolved[0].subject, JobDiagnosticSubject::GatewayRuntime);
+
+    Ok(())
+}
+
+#[test]
+fn caddy_resource_failure_resolves_as_gateway_diagnostic() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let failure = database.start_job("reconcile", "resource:caddy:2")?;
+    database.fail_job(&failure.id, "Caddy failed")?;
+
+    let unresolved = database.unresolved_job_failures()?;
+
+    assert_eq!(unresolved.len(), 1);
     assert_eq!(unresolved[0].subject, JobDiagnosticSubject::GatewayRuntime);
 
     Ok(())

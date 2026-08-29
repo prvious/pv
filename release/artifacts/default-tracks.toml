@@ -7,6 +7,10 @@ name = "frankenphp"
 default_track = "8.5"
 
 [[resource]]
+name = "caddy"
+default_track = "2"
+
+[[resource]]
 name = "composer"
 default_track = "2"
 

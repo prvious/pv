@@ -106,6 +106,10 @@ fn committed_recipe_metadata_parses() -> Result<()> {
         &workspace_root.join("release/artifacts/recipes/mailpit/recipe.toml"),
         BackingRecipeKind::Mailpit,
     )?;
+    let caddy = BackingRecipe::load(
+        &workspace_root.join("release/artifacts/recipes/caddy/recipe.toml"),
+        BackingRecipeKind::Caddy,
+    )?;
     let rustfs = BackingRecipe::load(
         &workspace_root.join("release/artifacts/recipes/rustfs/recipe.toml"),
         BackingRecipeKind::Rustfs,
@@ -165,6 +169,17 @@ fn committed_recipe_metadata_parses() -> Result<()> {
     );
     assert_eq!(mailpit.default_track().as_str(), "1");
     assert_eq!(mailpit.payload_paths(), ["bin/mailpit"]);
+    assert_eq!(caddy.default_track().as_str(), "2");
+    assert_eq!(caddy.tracks().len(), 1);
+    assert_eq!(caddy.payload_paths(), ["bin/caddy"]);
+    assert_eq!(
+        caddy
+            .tracks()
+            .iter()
+            .map(|track| (track.name().as_str(), track.upstream_version()))
+            .collect::<Vec<_>>(),
+        vec![("2", "2.11.4")]
+    );
     assert_eq!(rustfs.default_track().as_str(), "1");
     assert_eq!(rustfs.payload_paths(), ["bin/rustfs"]);
     assert_default_track(&defaults, "php", "8.5")?;
@@ -174,6 +189,7 @@ fn committed_recipe_metadata_parses() -> Result<()> {
     assert_default_track(&defaults, "mysql", "8.4")?;
     assert_default_track(&defaults, "postgres", "18")?;
     assert_default_track(&defaults, "mailpit", "1")?;
+    assert_default_track(&defaults, "caddy", "2")?;
     assert_default_track(&defaults, "rustfs", "1")?;
 
     Ok(())
@@ -244,6 +260,10 @@ fn committed_recipe_build_script_defaults_match_metadata() -> Result<()> {
         &workspace_root.join("release/artifacts/recipes/mailpit/recipe.toml"),
         BackingRecipeKind::Mailpit,
     )?;
+    let caddy = BackingRecipe::load(
+        &workspace_root.join("release/artifacts/recipes/caddy/recipe.toml"),
+        BackingRecipeKind::Caddy,
+    )?;
     let rustfs = BackingRecipe::load(
         &workspace_root.join("release/artifacts/recipes/rustfs/recipe.toml"),
         BackingRecipeKind::Rustfs,
@@ -256,6 +276,7 @@ fn committed_recipe_build_script_defaults_match_metadata() -> Result<()> {
         ("mysql", mysql.default_track().as_str()),
         ("postgres", postgres.default_track().as_str()),
         ("mailpit", mailpit.default_track().as_str()),
+        ("caddy", caddy.default_track().as_str()),
         ("rustfs", rustfs.default_track().as_str()),
     ];
 
@@ -731,6 +752,23 @@ fn print_backing_recipe_env_rustfs() -> Result<()> {
         "rustfs",
         "1",
         "darwin-amd64",
+    )?;
+
+    assert_snapshot!(env);
+    Ok(())
+}
+
+#[test]
+fn print_backing_recipe_env_caddy() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let caddy = workspace_root.join("release/artifacts/recipes/caddy/recipe.toml");
+
+    let env = backing_recipe_env(
+        &caddy,
+        BackingRecipeKind::Caddy,
+        "caddy",
+        "2",
+        "darwin-arm64",
     )?;
 
     assert_snapshot!(env);

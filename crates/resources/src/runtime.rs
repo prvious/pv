@@ -60,60 +60,51 @@ impl ResourceAdapter for RuntimeArtifactAdapter {
 }
 
 pub fn php_adapter() -> Result<RuntimeArtifactAdapter> {
-    Ok(RuntimeArtifactAdapter::new(
-        ResourceName::new("php")?,
-        "bin/php",
-    ))
+    runtime_adapter("php", "bin/php")
 }
 
 pub fn frankenphp_adapter() -> Result<RuntimeArtifactAdapter> {
-    Ok(RuntimeArtifactAdapter::new(
-        ResourceName::new("frankenphp")?,
-        "bin/frankenphp",
-    ))
+    runtime_adapter("frankenphp", "bin/frankenphp")
+}
+
+pub fn caddy_adapter() -> Result<RuntimeArtifactAdapter> {
+    runtime_adapter("caddy", "bin/caddy")
 }
 
 pub fn composer_adapter() -> Result<RuntimeArtifactAdapter> {
-    Ok(RuntimeArtifactAdapter::new(
-        ResourceName::new("composer")?,
-        "composer.phar",
-    ))
+    runtime_adapter("composer", "composer.phar")
 }
 
 pub fn mailpit_adapter() -> Result<RuntimeArtifactAdapter> {
-    Ok(RuntimeArtifactAdapter::new(
-        ResourceName::new("mailpit")?,
-        "bin/mailpit",
-    ))
+    runtime_adapter("mailpit", "bin/mailpit")
 }
 
 pub fn redis_adapter() -> Result<RuntimeArtifactAdapter> {
-    Ok(RuntimeArtifactAdapter::new(
-        ResourceName::new("redis")?,
-        "bin/redis-server",
-    ))
+    runtime_adapter("redis", "bin/redis-server")
 }
 
 pub fn rustfs_adapter() -> Result<RuntimeArtifactAdapter> {
-    Ok(RuntimeArtifactAdapter::new(
-        ResourceName::new("rustfs")?,
-        "bin/rustfs",
-    ))
+    runtime_adapter("rustfs", "bin/rustfs")
 }
 
 pub fn mysql_adapter() -> Result<RuntimeArtifactAdapter> {
-    Ok(RuntimeArtifactAdapter::new(
-        ResourceName::new("mysql")?,
-        "bin/mysqld",
-    ))
+    runtime_adapter("mysql", "bin/mysqld")
 }
 
 pub fn postgres_adapter() -> Result<RuntimeArtifactAdapter> {
-    Ok(
-        RuntimeArtifactAdapter::new(ResourceName::new("postgres")?, "bin/postgres")
-            .required_file("bin/initdb")
-            .required_file("share/postgres.bki"),
-    )
+    Ok(runtime_adapter("postgres", "bin/postgres")?
+        .required_file("bin/initdb")
+        .required_file("share/postgres.bki"))
+}
+
+fn runtime_adapter(
+    resource_name: &str,
+    executable_relative_path: &str,
+) -> Result<RuntimeArtifactAdapter> {
+    Ok(RuntimeArtifactAdapter::new(
+        ResourceName::new(resource_name)?,
+        executable_relative_path,
+    ))
 }
 
 #[cfg(test)]
@@ -145,6 +136,20 @@ mod tests {
 
         let missing = adapter.validate_installation(tempdir.path());
         state::fs::write_sensitive_file(&tempdir.path().join("bin/rustfs"), "")?;
+        let present = adapter.validate_installation(tempdir.path());
+
+        assert_debug_snapshot!((missing, present));
+
+        Ok(())
+    }
+
+    #[test]
+    fn caddy_adapter_requires_caddy_binary() -> Result<()> {
+        let tempdir = tempdir()?;
+        let adapter = super::caddy_adapter()?;
+
+        let missing = adapter.validate_installation(tempdir.path());
+        state::fs::write_sensitive_file(&tempdir.path().join("bin/caddy"), "")?;
         let present = adapter.validate_installation(tempdir.path());
 
         assert_debug_snapshot!((missing, present));

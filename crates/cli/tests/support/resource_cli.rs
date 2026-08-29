@@ -11,7 +11,7 @@ use cli::{Environment, run_with_environment};
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use state::{
     Database, ManagedResourceTrackRecord, PortRequest, PvPaths, RuntimeObservedStatus,
-    RuntimeSubject,
+    RuntimeSubject, fs,
 };
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
@@ -224,6 +224,15 @@ pub(crate) fn record_installed_resource(
 ) -> anyhow::Result<()> {
     prepare_existing_release(home, track, artifact, spec)?;
     let release = release_path(home, track, artifact, spec);
+    let current = pv_paths(home)
+        .resources()
+        .join(spec.resource_name)
+        .join(track)
+        .join("current");
+    fs::symlink_file(
+        &Utf8PathBuf::from(format!("releases/{}", artifact.version)),
+        &current,
+    )?;
     let mut database = Database::open(&pv_paths(home))?;
     database.record_managed_resource_track_installed(
         spec.resource_name,

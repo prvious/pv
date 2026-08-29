@@ -1,3 +1,4 @@
+pub mod caddy_admin;
 mod client;
 mod dns;
 mod error;
@@ -25,6 +26,10 @@ use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
+pub use caddy_admin::{
+    CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, CaddyAdminTimeouts,
+    CaddyAdminVerifier, MAX_RESPONSE_DETAIL_BYTES, load_caddyfile, wait_until_ready,
+};
 pub use client::{
     CompletedJob, JobDownloadProgress, JobEventHandler, SubmittedJob, health_blocking,
     managed_resource_update_check_blocking, run_job_blocking, run_job_with_events_blocking,
@@ -312,6 +317,7 @@ async fn termination_signal() -> io::Result<()> {
 mod tests {
     use std::{future, io, time::Duration};
 
+    use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
     use platform::{PlatformCapability, PlatformError, PlatformTarget};
     use state::PvPaths;
@@ -322,6 +328,7 @@ mod tests {
         DaemonError, RunningDaemon, build_runtime, run_blocking_for_target,
         startup_error_after_endpoint_cleanup, wait_for_shutdown,
     };
+    use crate::gateway_config::ConfigBackupCleanupError;
 
     #[tokio::test]
     async fn unsupported_daemon_start_leaves_home_untouched() -> anyhow::Result<()> {
@@ -510,6 +517,40 @@ mod tests {
                 .any(|event| event["event"] == "daemon_stopped")
         );
         assert!(events.iter().all(|event| event["target"] == "daemon"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_config_cleanup_warning_writes_one_structured_daemon_log_event() -> anyhow::Result<()>
+    {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let error = ConfigBackupCleanupError::Multiple {
+            first_path: Utf8PathBuf::from("/tmp/root.previous"),
+            first_error: Box::new(DaemonError::Io(io::Error::other("root cleanup failed"))),
+            second_path: Utf8PathBuf::from("/tmp/fragments.previous"),
+            second_error: Box::new(DaemonError::Io(io::Error::other("fragment cleanup failed"))),
+        };
+        let expected_error = error.to_string();
+
+        super::structured_log::runtime_config_cleanup_failed(&paths, "gateway", &expected_error);
+
+        let content = state::fs::read_to_string(&paths.daemon_log())?;
+        let events = content
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["level"], "warn");
+        assert_eq!(events[0]["target"], "runtime");
+        assert_eq!(events[0]["event"], "runtime_config_cleanup_failed");
+        assert_eq!(
+            events[0]["message"],
+            "runtime config committed but backup cleanup failed"
+        );
+        assert_eq!(events[0]["runtime"], "gateway");
+        assert_eq!(events[0]["error"], expected_error);
 
         Ok(())
     }

@@ -106,6 +106,8 @@ enum Command {
         #[arg(long)]
         mailpit: Option<Utf8PathBuf>,
         #[arg(long)]
+        caddy: Option<Utf8PathBuf>,
+        #[arg(long)]
         rustfs: Option<Utf8PathBuf>,
         #[arg(long)]
         archives: Utf8PathBuf,
@@ -204,6 +206,8 @@ enum Command {
         #[arg(long)]
         mailpit: Option<Utf8PathBuf>,
         #[arg(long)]
+        caddy: Option<Utf8PathBuf>,
+        #[arg(long)]
         rustfs: Option<Utf8PathBuf>,
         #[arg(long)]
         resource: String,
@@ -292,6 +296,7 @@ pub fn run() -> anyhow::Result<()> {
             mysql,
             postgres,
             mailpit,
+            caddy,
             rustfs,
             archives,
             records,
@@ -300,7 +305,7 @@ pub fn run() -> anyhow::Result<()> {
         } => crate::fixture::generate_recipe_fixtures_with_backing(
             &php,
             &composer,
-            &backing_recipe_paths(redis, mysql, postgres, mailpit, rustfs),
+            &backing_recipe_paths(redis, mysql, postgres, mailpit, caddy, rustfs),
             &archives,
             &records,
             &pv_commit,
@@ -401,6 +406,7 @@ pub fn run() -> anyhow::Result<()> {
             mysql,
             postgres,
             mailpit,
+            caddy,
             rustfs,
             resource,
             track,
@@ -414,6 +420,7 @@ pub fn run() -> anyhow::Result<()> {
                     mysql: mysql.as_deref(),
                     postgres: postgres.as_deref(),
                     mailpit: mailpit.as_deref(),
+                    caddy: caddy.as_deref(),
                     rustfs: rustfs.as_deref(),
                 },
                 &resource,
@@ -436,21 +443,44 @@ struct RecipeEnvPaths<'a> {
     mysql: Option<&'a Utf8Path>,
     postgres: Option<&'a Utf8Path>,
     mailpit: Option<&'a Utf8Path>,
+    caddy: Option<&'a Utf8Path>,
     rustfs: Option<&'a Utf8Path>,
 }
 
+#[derive(Clone, Copy)]
+enum RecipeEnvKind {
+    Php,
+    Composer,
+    Backing(BackingRecipeKind),
+}
+
+impl RecipeEnvKind {
+    fn display_name(self) -> &'static str {
+        match self {
+            Self::Php => "PHP",
+            Self::Composer => "Composer",
+            Self::Backing(BackingRecipeKind::Redis) => "Redis",
+            Self::Backing(BackingRecipeKind::Mysql) => "MySQL",
+            Self::Backing(BackingRecipeKind::Postgres) => "Postgres",
+            Self::Backing(BackingRecipeKind::Mailpit) => "Mailpit",
+            Self::Backing(BackingRecipeKind::Caddy) => "Caddy",
+            Self::Backing(BackingRecipeKind::Rustfs) => "RustFS",
+        }
+    }
+}
+
 fn parse_source_inputs(values: &[String]) -> anyhow::Result<Vec<SourceInputRequest>> {
-    let mut chunks = values.chunks_exact(3);
+    let (chunks, remainder) = values.as_chunks::<3>();
     let source_inputs = chunks
-        .by_ref()
-        .map(|chunk| SourceInputRequest {
-            name: chunk[0].clone(),
-            source_url: chunk[1].clone(),
-            source_sha256: chunk[2].clone(),
+        .iter()
+        .map(|[name, source_url, source_sha256]| SourceInputRequest {
+            name: name.clone(),
+            source_url: source_url.clone(),
+            source_sha256: source_sha256.clone(),
         })
         .collect::<Vec<_>>();
 
-    if !chunks.remainder().is_empty() {
+    if !remainder.is_empty() {
         anyhow::bail!("each --source-input requires NAME URL SHA256");
     }
 
@@ -458,17 +488,17 @@ fn parse_source_inputs(values: &[String]) -> anyhow::Result<Vec<SourceInputReque
 }
 
 fn parse_php_extensions(values: &[String]) -> anyhow::Result<Vec<PhpExtensionRecordRequest>> {
-    let mut chunks = values.chunks_exact(3);
+    let (chunks, remainder) = values.as_chunks::<3>();
     let php_extensions = chunks
-        .by_ref()
-        .map(|chunk| PhpExtensionRecordRequest {
-            name: chunk[0].clone(),
-            load_kind: chunk[1].clone(),
-            path: chunk[2].clone(),
+        .iter()
+        .map(|[name, load_kind, path]| PhpExtensionRecordRequest {
+            name: name.clone(),
+            load_kind: load_kind.clone(),
+            path: path.clone(),
         })
         .collect::<Vec<_>>();
 
-    if !chunks.remainder().is_empty() {
+    if !remainder.is_empty() {
         anyhow::bail!("each --php-extension requires NAME LOAD_KIND PATH");
     }
 
@@ -504,25 +534,20 @@ fn backing_recipe_paths(
     mysql: Option<Utf8PathBuf>,
     postgres: Option<Utf8PathBuf>,
     mailpit: Option<Utf8PathBuf>,
+    caddy: Option<Utf8PathBuf>,
     rustfs: Option<Utf8PathBuf>,
 ) -> Vec<(BackingRecipeKind, Utf8PathBuf)> {
-    let mut paths = Vec::new();
-    if let Some(path) = redis {
-        paths.push((BackingRecipeKind::Redis, path));
-    }
-    if let Some(path) = mysql {
-        paths.push((BackingRecipeKind::Mysql, path));
-    }
-    if let Some(path) = postgres {
-        paths.push((BackingRecipeKind::Postgres, path));
-    }
-    if let Some(path) = mailpit {
-        paths.push((BackingRecipeKind::Mailpit, path));
-    }
-    if let Some(path) = rustfs {
-        paths.push((BackingRecipeKind::Rustfs, path));
-    }
-    paths
+    [
+        redis.map(|path| (BackingRecipeKind::Redis, path)),
+        mysql.map(|path| (BackingRecipeKind::Mysql, path)),
+        postgres.map(|path| (BackingRecipeKind::Postgres, path)),
+        mailpit.map(|path| (BackingRecipeKind::Mailpit, path)),
+        caddy.map(|path| (BackingRecipeKind::Caddy, path)),
+        rustfs.map(|path| (BackingRecipeKind::Rustfs, path)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 fn print_recipe_env(
@@ -531,98 +556,51 @@ fn print_recipe_env(
     track: &str,
     platform: &str,
 ) -> anyhow::Result<String> {
-    let mut metadata_paths = Vec::new();
-    if let Some(path) = paths.php {
-        metadata_paths.push(("php", path));
-    }
-    if let Some(path) = paths.composer {
-        metadata_paths.push(("composer", path));
-    }
-    if let Some(path) = paths.redis {
-        metadata_paths.push(("redis", path));
-    }
-    if let Some(path) = paths.mysql {
-        metadata_paths.push(("mysql", path));
-    }
-    if let Some(path) = paths.postgres {
-        metadata_paths.push(("postgres", path));
-    }
-    if let Some(path) = paths.mailpit {
-        metadata_paths.push(("mailpit", path));
-    }
-    if let Some(path) = paths.rustfs {
-        metadata_paths.push(("rustfs", path));
-    }
+    let metadata_paths = [
+        paths.php.map(|path| (RecipeEnvKind::Php, path)),
+        paths.composer.map(|path| (RecipeEnvKind::Composer, path)),
+        paths
+            .redis
+            .map(|path| (RecipeEnvKind::Backing(BackingRecipeKind::Redis), path)),
+        paths
+            .mysql
+            .map(|path| (RecipeEnvKind::Backing(BackingRecipeKind::Mysql), path)),
+        paths
+            .postgres
+            .map(|path| (RecipeEnvKind::Backing(BackingRecipeKind::Postgres), path)),
+        paths
+            .mailpit
+            .map(|path| (RecipeEnvKind::Backing(BackingRecipeKind::Mailpit), path)),
+        paths
+            .caddy
+            .map(|path| (RecipeEnvKind::Backing(BackingRecipeKind::Caddy), path)),
+        paths
+            .rustfs
+            .map(|path| (RecipeEnvKind::Backing(BackingRecipeKind::Rustfs), path)),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
 
     let [(kind, path)] = metadata_paths.as_slice() else {
         anyhow::bail!("print-recipe-env requires exactly one recipe metadata path");
     };
+    let context = format!(
+        "failed to print {} recipe environment for `{path}`",
+        kind.display_name()
+    );
 
-    match *kind {
-        "php" => {
-            let context = format!("failed to print PHP recipe environment for `{path}`");
+    match kind {
+        RecipeEnvKind::Php => {
             crate::recipe::php_recipe_env(path, resource, track, platform).context(context)
         }
-        "composer" => {
-            let context = format!("failed to print Composer recipe environment for `{path}`");
+        RecipeEnvKind::Composer => {
             crate::recipe::composer_recipe_env(path, resource, track, platform).context(context)
         }
-        "redis" => {
-            let context = format!("failed to print Redis recipe environment for `{path}`");
-            crate::recipe::backing_recipe_env(
-                path,
-                BackingRecipeKind::Redis,
-                resource,
-                track,
-                platform,
-            )
-            .context(context)
+        RecipeEnvKind::Backing(kind) => {
+            crate::recipe::backing_recipe_env(path, *kind, resource, track, platform)
+                .context(context)
         }
-        "mysql" => {
-            let context = format!("failed to print MySQL recipe environment for `{path}`");
-            crate::recipe::backing_recipe_env(
-                path,
-                BackingRecipeKind::Mysql,
-                resource,
-                track,
-                platform,
-            )
-            .context(context)
-        }
-        "postgres" => {
-            let context = format!("failed to print Postgres recipe environment for `{path}`");
-            crate::recipe::backing_recipe_env(
-                path,
-                BackingRecipeKind::Postgres,
-                resource,
-                track,
-                platform,
-            )
-            .context(context)
-        }
-        "mailpit" => {
-            let context = format!("failed to print Mailpit recipe environment for `{path}`");
-            crate::recipe::backing_recipe_env(
-                path,
-                BackingRecipeKind::Mailpit,
-                resource,
-                track,
-                platform,
-            )
-            .context(context)
-        }
-        "rustfs" => {
-            let context = format!("failed to print RustFS recipe environment for `{path}`");
-            crate::recipe::backing_recipe_env(
-                path,
-                BackingRecipeKind::Rustfs,
-                resource,
-                track,
-                platform,
-            )
-            .context(context)
-        }
-        _ => anyhow::bail!("unsupported recipe metadata path kind `{kind}`"),
     }
 }
 
@@ -659,6 +637,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 archives,
                 records,
@@ -677,6 +656,7 @@ mod tests {
                 assert_eq!(mysql, None);
                 assert_eq!(postgres, None);
                 assert_eq!(mailpit, None);
+                assert_eq!(caddy, None);
                 assert_eq!(rustfs, None);
                 assert_eq!(archives, Utf8PathBuf::from("archives"));
                 assert_eq!(records, Utf8PathBuf::from("records"));
@@ -705,6 +685,8 @@ mod tests {
             "release/artifacts/recipes/postgres/recipe.toml",
             "--mailpit",
             "release/artifacts/recipes/mailpit/recipe.toml",
+            "--caddy",
+            "release/artifacts/recipes/caddy/recipe.toml",
             "--rustfs",
             "release/artifacts/recipes/rustfs/recipe.toml",
             "--archives",
@@ -725,6 +707,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 archives,
                 records,
@@ -761,6 +744,12 @@ mod tests {
                     mailpit,
                     Some(Utf8PathBuf::from(
                         "release/artifacts/recipes/mailpit/recipe.toml"
+                    ))
+                );
+                assert_eq!(
+                    caddy,
+                    Some(Utf8PathBuf::from(
+                        "release/artifacts/recipes/caddy/recipe.toml"
                     ))
                 );
                 assert_eq!(
@@ -1159,6 +1148,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 resource,
                 track,
@@ -1175,6 +1165,7 @@ mod tests {
                 assert_eq!(mysql, None);
                 assert_eq!(postgres, None);
                 assert_eq!(mailpit, None);
+                assert_eq!(caddy, None);
                 assert_eq!(rustfs, None);
                 assert_eq!(resource, "composer");
                 assert_eq!(track, "2");
@@ -1208,6 +1199,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 resource,
                 track,
@@ -1224,6 +1216,7 @@ mod tests {
                 assert_eq!(mysql, None);
                 assert_eq!(postgres, None);
                 assert_eq!(mailpit, None);
+                assert_eq!(caddy, None);
                 assert_eq!(rustfs, None);
                 assert_eq!(resource, "php");
                 assert_eq!(track, "8.4");
@@ -1257,6 +1250,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 resource,
                 track,
@@ -1273,6 +1267,7 @@ mod tests {
                 assert_eq!(mysql, None);
                 assert_eq!(postgres, None);
                 assert_eq!(mailpit, None);
+                assert_eq!(caddy, None);
                 assert_eq!(rustfs, None);
                 assert_eq!(resource, "redis");
                 assert_eq!(track, "8.2");
@@ -1306,6 +1301,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 resource,
                 track,
@@ -1322,6 +1318,7 @@ mod tests {
                 );
                 assert_eq!(postgres, None);
                 assert_eq!(mailpit, None);
+                assert_eq!(caddy, None);
                 assert_eq!(rustfs, None);
                 assert_eq!(resource, "mysql");
                 assert_eq!(track, "8.4");
@@ -1355,6 +1352,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 resource,
                 track,
@@ -1371,6 +1369,7 @@ mod tests {
                     ))
                 );
                 assert_eq!(mailpit, None);
+                assert_eq!(caddy, None);
                 assert_eq!(rustfs, None);
                 assert_eq!(resource, "postgres");
                 assert_eq!(track, "18");
@@ -1404,6 +1403,7 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
                 rustfs,
                 resource,
                 track,
@@ -1420,6 +1420,7 @@ mod tests {
                         "release/artifacts/recipes/mailpit/recipe.toml"
                     ))
                 );
+                assert_eq!(caddy, None);
                 assert_eq!(rustfs, None);
                 assert_eq!(resource, "mailpit");
                 assert_eq!(track, "1");
@@ -1453,6 +1454,58 @@ mod tests {
                 mysql,
                 postgres,
                 mailpit,
+                caddy,
+                rustfs,
+                resource,
+                track,
+                platform,
+            } => {
+                assert_eq!(php, None);
+                assert_eq!(composer, None);
+                assert_eq!(redis, None);
+                assert_eq!(mysql, None);
+                assert_eq!(postgres, None);
+                assert_eq!(mailpit, None);
+                assert_eq!(caddy, None);
+                assert_eq!(
+                    rustfs,
+                    Some(Utf8PathBuf::from(
+                        "release/artifacts/recipes/rustfs/recipe.toml"
+                    ))
+                );
+                assert_eq!(resource, "rustfs");
+                assert_eq!(track, "1");
+                assert_eq!(platform, "darwin-arm64");
+                Ok(())
+            }
+            command => bail!("parsed unexpected command: {command:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_print_recipe_env_caddy_arguments() -> anyhow::Result<()> {
+        let args = Args::try_parse_from([
+            "pv-release",
+            "print-recipe-env",
+            "--caddy",
+            "release/artifacts/recipes/caddy/recipe.toml",
+            "--resource",
+            "caddy",
+            "--track",
+            "2",
+            "--platform",
+            "darwin-arm64",
+        ])?;
+
+        match args.command {
+            Command::PrintRecipeEnv {
+                php,
+                composer,
+                redis,
+                mysql,
+                postgres,
+                mailpit,
+                caddy,
                 rustfs,
                 resource,
                 track,
@@ -1465,13 +1518,14 @@ mod tests {
                 assert_eq!(postgres, None);
                 assert_eq!(mailpit, None);
                 assert_eq!(
-                    rustfs,
+                    caddy,
                     Some(Utf8PathBuf::from(
-                        "release/artifacts/recipes/rustfs/recipe.toml"
+                        "release/artifacts/recipes/caddy/recipe.toml"
                     ))
                 );
-                assert_eq!(resource, "rustfs");
-                assert_eq!(track, "1");
+                assert_eq!(rustfs, None);
+                assert_eq!(resource, "caddy");
+                assert_eq!(track, "2");
                 assert_eq!(platform, "darwin-arm64");
                 Ok(())
             }

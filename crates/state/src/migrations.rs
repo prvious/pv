@@ -18,6 +18,7 @@ const PROJECT_PHP_RUNTIME_EXTENSIONS_SQL: &str =
     include_str!("sql/008_project_php_runtime_extensions.sql");
 const PROJECT_MODE_AND_SLUG_SQL: &str = include_str!("sql/009_project_mode_and_slug.sql");
 const JOB_DIAGNOSTIC_OUTCOMES_SQL: &str = include_str!("sql/010_job_diagnostic_outcomes.sql");
+const REMOVE_ADMIN_PORTS_SQL: &str = include_str!("sql/011_remove_admin_ports.sql");
 
 pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
     Migration::new(1, "core_state_schema", CORE_SCHEMA_SQL),
@@ -46,6 +47,7 @@ pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
     ),
     Migration::new(9, "project_mode_and_slug", PROJECT_MODE_AND_SLUG_SQL),
     Migration::new(10, "job_diagnostic_outcomes", JOB_DIAGNOSTIC_OUTCOMES_SQL),
+    Migration::new(11, "remove_admin_ports", REMOVE_ADMIN_PORTS_SQL),
 ];
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

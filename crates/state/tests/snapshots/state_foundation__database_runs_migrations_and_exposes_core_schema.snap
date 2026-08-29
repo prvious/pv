@@ -17,6 +17,7 @@ DatabaseInspection {
         "008:project_php_runtime_extensions",
         "009:project_mode_and_slug",
         "010:job_diagnostic_outcomes",
+        "011:remove_admin_ports",
     ],
     tables: [
         "global_php_default_track",

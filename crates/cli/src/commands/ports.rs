@@ -278,7 +278,6 @@ fn release_new_gateway_ports(
     if !had_https_assignment {
         database.release_port(PortOwner::Gateway(GatewayPort::Https))?;
     }
-
     Ok(())
 }
 

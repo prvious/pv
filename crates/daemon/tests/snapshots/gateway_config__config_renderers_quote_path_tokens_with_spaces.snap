@@ -3,9 +3,18 @@ source: crates/daemon/tests/gateway_config.rs
 expression: "format!(\"Gateway:\\n{gateway}\\nWorker:\\n{worker}\")"
 ---
 Gateway:
-# PV_FAKE_PORT 48080
 {
-    admin off
+    admin "unix//Users/Alice Smith/.pv/run/gateway-admin.sock|0600"
+    persist_config off
+    log {
+        output file "/Users/Alice Smith/.pv/logs/gateway/error.log" {
+            roll_size 10MiB
+            roll_uncompressed
+            roll_keep 5
+            roll_keep_for 720h
+        }
+        format json
+    }
     storage file_system {
         root "/Users/Alice Smith/.pv/certificates/caddy"
     }
@@ -24,11 +33,29 @@ Gateway:
 
 http://pv-gateway.localhost {
     bind 127.0.0.1 ::1
+    log {
+        output file "/Users/Alice Smith/.pv/logs/gateway/access.log" {
+            roll_size 10MiB
+            roll_uncompressed
+            roll_keep 5
+            roll_keep_for 720h
+        }
+        format json
+    }
     respond /__pv/health "pv-gateway-health-v1:48080:48443" 200
 }
 
 https://pv-gateway.localhost {
     bind 127.0.0.1 ::1
+    log {
+        output file "/Users/Alice Smith/.pv/logs/gateway/access.log" {
+            roll_size 10MiB
+            roll_uncompressed
+            roll_keep 5
+            roll_keep_for 720h
+        }
+        format json
+    }
     tls {
         issuer internal {
             ca local
@@ -40,5 +67,9 @@ https://pv-gateway.localhost {
 import "/Users/Alice Smith/.pv/config/gateway/projects/*.Caddyfile"
 
 Worker:
-# PV_FAKE_PORT 45001
+{
+    admin "unix//Users/Alice Smith/.pv/run/worker-admin-163c820d9576.sock|0600"
+    persist_config off
+}
+
 import "/Users/Alice Smith/.pv/config/workers/php-8.4/projects/*.Caddyfile"

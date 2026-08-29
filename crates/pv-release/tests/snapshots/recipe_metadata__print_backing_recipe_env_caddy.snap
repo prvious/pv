@@ -1,0 +1,13 @@
+---
+source: crates/pv-release/tests/recipe_metadata.rs
+expression: env
+---
+PV_RESOURCE='caddy'
+PV_TRACK='2'
+PV_PLATFORM='darwin-arm64'
+PV_UPSTREAM_VERSION='2.11.4'
+PV_ARTIFACT_VERSION='2.11.4-pv1'
+PV_SOURCE_URL='https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_mac_arm64.tar.gz'
+PV_SOURCE_SHA256='9efb0af2d6cf09cfb5053c0e51721b9b3d4956d346234f39368d943d25a3c9a7'
+PV_MINIMUM_PV_VERSION='0.2.3'
+PV_PV_BUILD_REVISION='pv1'

@@ -64,6 +64,57 @@ done
 }
 
 #[test]
+fn caddy_smoke_executes_runtime_health_proxy_tls_and_reload_checks() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let command_bin = tempdir.path().join("commands");
+    let caddy_log = tempdir.path().join("caddy.log");
+    let curl_log = tempdir.path().join("curl.log");
+    let state_path = tempdir.path().join("caddy.state");
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&command_bin)?;
+    write_file(&caddy_log, "")?;
+    write_file(&curl_log, "")?;
+    write_fake_caddy(&artifact_bin.join("caddy"))?;
+    write_fake_caddy_curl(&command_bin.join("curl"))?;
+
+    let output = StdCommand::new(caddy_smoke_hook())
+        .arg(&artifact_root)
+        .env(
+            "PATH",
+            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
+        )
+        .env("PV_TEST_CADDY_LOG", &caddy_log)
+        .env("PV_TEST_CADDY_CURL_LOG", &curl_log)
+        .env("PV_TEST_CADDY_STATE", &state_path)
+        .env("PV_UPSTREAM_VERSION", "2.11.4")
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "Caddy smoke should execute its runtime checks: {}",
+        command_output_debug(&output)
+    );
+    let caddy_log = read_file(&caddy_log)?;
+    assert_eq!(caddy_log.matches("version\n").count(), 1);
+    assert_eq!(caddy_log.matches("validate ").count(), 2);
+    assert_eq!(caddy_log.matches("run ").count(), 1);
+
+    let curl_log = read_file(&curl_log)?;
+    assert!(curl_log.contains("GET http /config/"));
+    assert!(curl_log.contains("GET http /proxy/check"));
+    assert!(curl_log.contains("GET https /health"));
+    assert_eq!(curl_log.matches("POST http /load").count(), 2);
+    assert!(curl_log.contains("Caddyfile.changed"));
+    assert!(curl_log.contains("Caddyfile.invalid"));
+    assert!(read_file(&state_path)?.contains("health=health-v2\n"));
+
+    Ok(())
+}
+
+#[test]
 fn php_smoke_validates_frankenphp_when_cli_binary_is_also_present() -> Result<()> {
     let tempdir = tempdir()?;
     let artifact_root = tempdir.path().join("artifact");
@@ -1271,7 +1322,6 @@ fn mailpit_smoke_fails_when_server_does_not_stop() -> Result<()> {
     write_fake_mailpit(&artifact_bin.join("mailpit"))?;
     write_fake_success_curl(&command_bin.join("curl"))?;
 
-    let started = Instant::now();
     let output = StdCommand::new(mailpit_smoke_hook())
         .arg(&artifact_root)
         .env(
@@ -1289,9 +1339,11 @@ fn mailpit_smoke_fails_when_server_does_not_stop() -> Result<()> {
         "Mailpit smoke should fail when the server ignores shutdown: {}",
         command_output_debug(&output)
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "Mailpit smoke should use a bounded shutdown wait"
+        stderr.contains("Mailpit smoke failed: server did not stop cleanly"),
+        "Mailpit smoke should report the bounded shutdown failure: {}",
+        command_output_debug(&output)
     );
 
     Ok(())
@@ -2360,7 +2412,7 @@ AC_DEFUN([PHP_CHECK_AVX512_VBMI_SUPPORTS], [
 "#;
 
 impl BackingBuildRecipe {
-    fn all() -> [Self; 3] {
+    fn all() -> [Self; 4] {
         [
             Self {
                 resource: "redis",
@@ -2379,6 +2431,15 @@ impl BackingBuildRecipe {
                 platform: "darwin-arm64",
                 source_kind: BackingSourceKind::TarGzBinary,
                 signed_files: &["mailpit"],
+            },
+            Self {
+                resource: "caddy",
+                track: "2",
+                upstream_version: "2.11.4",
+                artifact_version: "2.11.4-pv1",
+                platform: "darwin-arm64",
+                source_kind: BackingSourceKind::TarGzBinary,
+                signed_files: &["caddy"],
             },
             Self {
                 resource: "rustfs",
@@ -2402,6 +2463,10 @@ impl BackingBuildRecipe {
 
 fn php_smoke_hook() -> camino::Utf8PathBuf {
     Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/php/smoke.sh")
+}
+
+fn caddy_smoke_hook() -> camino::Utf8PathBuf {
+    Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/caddy/smoke.sh")
 }
 
 fn php_staticphp_avx512_patch() -> camino::Utf8PathBuf {
@@ -3833,6 +3898,166 @@ fn write_fake_success_curl(path: &Utf8Path) -> Result<()> {
         r#"#!/bin/sh
 set -eu
 exit 0
+"#,
+    )
+}
+
+fn write_fake_caddy(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+log=${PV_TEST_CADDY_LOG:?}
+state=${PV_TEST_CADDY_STATE:?}
+
+read_config_path() {
+  config=
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --config)
+        shift
+        config=${1:-}
+        ;;
+    esac
+    shift
+  done
+  [ -n "$config" ] || exit 78
+  printf '%s' "$config"
+}
+
+case "${1:-}" in
+  version)
+    printf '%s\n' 'version' >>"$log"
+    printf '%s\n' 'Caddy v2.11.4'
+    ;;
+  validate)
+    shift
+    config=$(read_config_path "$@")
+    printf 'validate %s\n' "$config" >>"$log"
+    if grep -F 'definitely_not_a_caddyfile_directive' "$config" >/dev/null; then
+      exit 1
+    fi
+    ;;
+  run)
+    shift
+    config=$(read_config_path "$@")
+    health=$(awk -F '"' '/respond @health/ { print $2; exit }' "$config")
+    printf 'run %s health=%s\n' "$config" "$health" >>"$log"
+    printf 'pid=%s\nhealth=%s\n' "$$" "$health" >"$state"
+    trap 'exit 0' TERM INT
+    while :; do
+      sleep 1
+    done
+    ;;
+  *)
+    exit 78
+    ;;
+esac
+"#,
+    )
+}
+
+fn write_fake_caddy_curl(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+request_log=${PV_TEST_CADDY_CURL_LOG:?}
+state=${PV_TEST_CADDY_STATE:?}
+method=GET
+data_file=
+output_file=
+write_format=
+fail=0
+url=
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --fail)
+      fail=1
+      ;;
+    --silent | --show-error | --insecure)
+      ;;
+    -X)
+      shift
+      method=${1:-}
+      ;;
+    -H)
+      shift
+      ;;
+    --data-binary)
+      shift
+      data_file=${1#@}
+      ;;
+    -o)
+      shift
+      output_file=${1:-}
+      ;;
+    -w)
+      shift
+      write_format=${1:-}
+      ;;
+    *)
+      url=$1
+      ;;
+  esac
+  shift
+done
+
+[ -n "$url" ] || exit 2
+[ -f "$state" ] || exit 28
+pid=$(sed -n 's/^pid=//p' "$state")
+[ -n "$pid" ] && kill -0 "$pid" 2>/dev/null || exit 28
+
+scheme=${url%%://*}
+url_path=${url#*://}
+path=/${url_path#*/}
+printf '%s %s %s %s\n' "$method" "$scheme" "$path" "$data_file" >>"$request_log"
+
+status=200
+body=
+case "$method $path" in
+  'GET /config/')
+    body='{"apps":{}}'
+    ;;
+  'GET /health')
+    body=$(sed -n 's/^health=//p' "$state")
+    ;;
+  'GET /proxy/check')
+    body=backend-v1
+    ;;
+  'POST /load')
+    [ -n "$data_file" ] || exit 2
+    if grep -F 'definitely_not_a_caddyfile_directive' "$data_file" >/dev/null; then
+      status=400
+      body=invalid
+    else
+      health=$(awk -F '"' '/respond @health/ { print $2; exit }' "$data_file")
+      current_pid=$(sed -n 's/^pid=//p' "$state")
+      temporary_state="$state.$$"
+      printf 'pid=%s\nhealth=%s\n' "$current_pid" "$health" >"$temporary_state"
+      mv "$temporary_state" "$state"
+    fi
+    ;;
+  *)
+    status=404
+    body=not-found
+    ;;
+esac
+
+if [ -n "$output_file" ]; then
+  printf '%s' "$body" >"$output_file"
+elif [ -z "$write_format" ]; then
+  printf '%s' "$body"
+fi
+if [ -n "$write_format" ]; then
+  printf '%s' "$status"
+fi
+if [ "$fail" -eq 1 ] && [ "$status" -ge 400 ]; then
+  exit 22
+fi
 "#,
     )
 }

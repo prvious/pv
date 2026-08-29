@@ -55,6 +55,7 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
     let mysql = workspace_root.join("release/artifacts/recipes/mysql/recipe.toml");
     let postgres = workspace_root.join("release/artifacts/recipes/postgres/recipe.toml");
     let mailpit = workspace_root.join("release/artifacts/recipes/mailpit/recipe.toml");
+    let caddy = workspace_root.join("release/artifacts/recipes/caddy/recipe.toml");
     let rustfs = workspace_root.join("release/artifacts/recipes/rustfs/recipe.toml");
     let defaults = workspace_root.join("release/artifacts/default-tracks.toml");
 
@@ -77,6 +78,8 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
         postgres.as_str(),
         "--mailpit",
         mailpit.as_str(),
+        "--caddy",
+        caddy.as_str(),
         "--rustfs",
         rustfs.as_str(),
         "--archives",
@@ -93,6 +96,18 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
     assert_eq!(
         archive_roots,
         vec![
+            ArchiveRoot::new(
+                "caddy",
+                "2",
+                "darwin-amd64",
+                "caddy-2.11.4-pv1-darwin-amd64",
+            ),
+            ArchiveRoot::new(
+                "caddy",
+                "2",
+                "darwin-arm64",
+                "caddy-2.11.4-pv1-darwin-arm64",
+            ),
             ArchiveRoot::new("composer", "2", "any", "composer-2.10.1-pv1-any"),
             ArchiveRoot::new(
                 "frankenphp",
@@ -268,6 +283,7 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest_with_backin
     let php = workspace_root.join("release/artifacts/recipes/php/tracks.toml");
     let composer = workspace_root.join("release/artifacts/recipes/composer/composer.toml");
     let mailpit = workspace_root.join("release/artifacts/recipes/mailpit/recipe.toml");
+    let caddy = workspace_root.join("release/artifacts/recipes/caddy/recipe.toml");
     let rustfs = workspace_root.join("release/artifacts/recipes/rustfs/recipe.toml");
     let defaults = workspace_root.join("release/artifacts/default-tracks.toml");
     let mysql = workspace_root.join("release/artifacts/recipes/mysql/recipe.toml");
@@ -286,6 +302,7 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest_with_backin
             (BackingRecipeKind::Mysql, mysql),
             (BackingRecipeKind::Postgres, postgres),
             (BackingRecipeKind::Mailpit, mailpit),
+            (BackingRecipeKind::Caddy, caddy),
             (BackingRecipeKind::Rustfs, rustfs),
         ],
         &archives,

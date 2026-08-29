@@ -6,7 +6,8 @@ PV has laravel style commands where commmands under the same category/famility a
 
 `pv` gets you a complete local PHP environment in one shot:
 
-- FrankenPHP — the server (Caddy + embedded PHP, no Apache/Nginx)
+- Caddy — the standalone Gateway for `.test` routing and TLS
+- FrankenPHP — the Project-serving PHP worker runtime, managed per PHP track
 - PHP — managed per-version, no homebrew/apt needed
 - Mysql, Postgresql, Redis, Composer, Mailpit, Rustfs all Ready to go
 
@@ -17,8 +18,8 @@ Per-project versions are supported too — add a pv.yml file with php: "8.4" in 
 - Control-plane foundation.
 - Machine-owned store(Sqlite), filesystem layout, and migration guardrails.
 - Daemon and resource-agnostic supervisor.
-- Managed resources: Mailpit, Postgres, MySQL, Redis, RustFS, and more to come...
-- Gateway .test HTTPS routing and `pv open`.
+- Managed resources: Caddy, Mailpit, Postgres, MySQL, Redis, RustFS, and more to come...
+- Standalone Caddy Gateway .test HTTPS routing and `pv open`.
 - Status UX across desired and observed state.
 
 ## Platform Scope
@@ -192,13 +193,13 @@ A friendly browser page for unknown Project hostnames is useful, but is post-v1 
 - Start the PV daemon immediately after registration.
 - Record desired state for the default Managed Resource versions, then request daemon reconciliation.
 
-The default setup install set includes the manifest default tracks for FrankenPHP/PHP, MySQL, PostgreSQL, Redis, Mailpit, and RustFS, plus Composer track `2`. Downloads should run in parallel where possible. `pv setup` does not install every track listed in the manifest.
+The default setup install set includes Caddy track `2` independently, the manifest default PHP/FrankenPHP pair, MySQL, PostgreSQL, Redis, Mailpit, and RustFS, plus Composer track `2`. Downloads should run in parallel where possible. `pv setup` does not install every track listed in the manifest.
 
-For PHP tracks, setup/install installs both standalone PHP artifacts for CLI/PATH shims and FrankenPHP artifacts for Gateway/workers.
+For PHP tracks, setup/install installs both standalone PHP artifacts for CLI/PATH shims and FrankenPHP artifacts for Project-serving workers. Caddy is a separate core resource and is not part of a PHP track pair.
 
 `pv php:install <track>` installs both standalone PHP and FrankenPHP artifacts for that PHP track.
 
-Default Managed Resources installed by `pv setup` are not started until a linked Project needs them. The Gateway and DNS resolver are core PV infrastructure and run even when no Project needs a backing Managed Resource.
+Default Managed Resources installed by `pv setup` are not started until a linked Project needs them. The standalone Caddy Gateway and DNS resolver are core PV infrastructure and run even when no Project needs a backing Managed Resource.
 
 Default tool/resource installation is owned by the daemon. `pv setup` records desired install state, starts the daemon, requests reconciliation, and waits for that reconciliation job to finish.
 
@@ -274,9 +275,9 @@ On startup, the daemon detects privileged system drift such as stale DNS resolve
 
 If a linked Project config becomes invalid, the daemon keeps the last valid served or resource-only desired state, records the config error in observed status, stops updating the configured env file from the invalid config, and surfaces the error in `pv list` and `pv status`. PV does not tear down working routes or resources because of a transient invalid edit.
 
-Project config changes restart or reload only affected runtime processes. PHP version or routing changes may restart/reassign FrankenPHP serving for the affected Project. Env-only changes update the configured env file without restarting the Gateway.
+Project config changes update only affected runtime processes. Config-only changes load the affected Caddy gateway or FrankenPHP worker through its admin API; PHP version or routing changes may replace or reassign FrankenPHP serving for the affected Project. Env-only changes update the configured env file without restarting the Gateway.
 
-When a Project's PHP track or optional extension set changes, PV reconfigures only affected Project-serving workers. It may stop an old PHP worker if no Projects remain on that runtime identity and start or reload the new runtime's worker. Unrelated PHP workers are not touched.
+When a Project's PHP track or optional extension set changes, PV reconfigures only affected Project-serving workers. It may stop an old PHP worker if no Projects remain on that runtime identity and start a new worker for the changed identity. Unrelated PHP workers are not touched.
 
 `pv setup` is the friendly first-time bootstrap path and includes daemon registration. `pv daemon:*` commands remain available as lower-level lifecycle and troubleshooting commands.
 
@@ -342,8 +343,8 @@ export COMPOSER_CACHE_DIR="/Users/<user>/.pv/composer/cache";
 
 ## Multi-version PHP
 
-The Gateway is a Managed Resource role implemented by a PV-managed FrankenPHP/Caddy process, not an HTTP server implemented inside the PV daemon. The PV daemon provisions a Gateway that listens on high loopback ports; macOS `pf` redirects external loopback ports `80` and `443` to the Gateway.
-Projects using a different PHP runtime are proxied to secondary FrankenPHP processes running on high ports.
+The Gateway is a core Managed Resource role implemented by a PV-managed standalone Caddy track `2`, not an HTTP server implemented inside the PV daemon. The PV daemon provisions a Caddy Gateway that listens on high loopback ports; macOS `pf` redirects external loopback ports `80` and `443` to the Gateway.
+Projects using a different PHP runtime are proxied to secondary FrankenPHP worker processes running on high ports.
 
 The Gateway is always-on core PV infrastructure after setup. It only routes/proxies and does not serve Projects directly. Runtime-specific Project-serving FrankenPHP processes run only when at least one linked Project needs that PHP runtime identity.
 
@@ -363,17 +364,42 @@ PV generates a Gateway root config that imports per-Project generated config fil
 
 For each PHP runtime identity, PV generates a worker root config that imports per-Project generated config files for Projects on that runtime.
 
-When PHP runtime worker config changes, PV reloads the worker where supported and restarts it only if reload fails or is unavailable.
+### Gateway and worker reload contract
 
-Project-serving worker logs are captured per PHP runtime identity, with Project hostname included in access logs where feasible. PV v1 does not create per-Project log files. Caddy/FrankenPHP log rotation directives should be used where practical.
+PV gives the standalone Caddy Gateway and every FrankenPHP worker a deterministic Unix-domain admin socket under `~/.pv/run/`. The Gateway uses `gateway-admin.sock`; workers use `worker-admin-<runtime-hash>.sock`, where the hash is derived from the full PHP runtime identity so socket paths remain short. Admin endpoints are not allocated TCP ports and are not persisted in `pv.db`. The state migration removes obsolete Gateway and worker admin-port rows.
+
+Every generated Gateway and worker root Caddyfile includes the following global options, using its own absolute socket path:
+
+```caddyfile
+admin "unix/<absolute-socket-path>|0600"
+persist_config off
+```
+
+The `~/.pv/run/` directory is owner-only (`0700`), and Caddy creates each admin socket as owner-only (`0600`). After connecting, the daemon verifies the peer process group against the managed runtime's root PID on that same socket before sending any HTTP bytes. There is no TCP admin fallback. A recorded runtime whose active config does not use its desired Unix socket, including a pre-migration TCP or `admin off` runtime, is stopped and replaced before any admin request.
+
+PV-generated config files and `pv.db` remain authoritative. Caddy must not create a competing autosave config. The daemon reloads a runtime only by sending the promoted active root Caddyfile, byte-for-byte including its trailing newlines, as a whole-config `POST /load` request with `Content-Type: text/caddyfile` to that process's admin socket. Unix reload signals and `caddy reload` commands are not part of PV.
+
+When no matching PV-owned process exists, PV validates the candidate with the correct managed binary, promotes the active config, starts the process, and requires both admin readiness through `GET /config/` and the existing Gateway or worker readiness checks before committing the config. A process replacement is allowed when the process is absent or its recorded runtime identity/spec is obsolete; it is not a reload fallback.
+
+After a config is accepted and runtime readiness succeeds, deleting the previous root and fragment backups is post-commit housekeeping. PV attempts both deletions independently. A cleanup failure leaves the promoted config and successful runtime in place, emits one structured warning containing every failed backup path, and does not trigger rollback, a compensating load, or a process stop.
+
+When a matching PV-owned process exists, PV verifies ownership immediately before the admin request. Before sending `POST /load`, PV atomically marks that exact runtime metadata as replacement-required; a definitive response clears the marker. A rejected or unavailable `POST /load` relies on Caddy's atomic load contract to keep the previous in-memory config active. PV restores the previous generated root and fragments on disk, keeps the owned process and PID running, records the typed failure, and never signals or restarts that process as a fallback.
+
+When the client cannot determine whether a `POST /load` is still executing or was accepted, PV does not issue a competing compensating load because the final request ordering cannot be established. PV keeps the promoted desired root and fragments on disk, preserves the owned process, leaves its replacement-required marker set, and records the typed unknown-outcome failure without claiming which config is active. A later reconciliation never sends another load to that process: it stops the verified marked process, waits for its process group and pending handlers to exit, then starts a replacement from the latest desired config. The replacement establishes a new process epoch before reconciliation can report success, so an older unresolved load cannot overtake newer desired state.
+
+After a successful load, PV runs the existing runtime readiness checks. If a real post-load readiness failure requires rollback, PV restores the previous files, re-verifies ownership of the same process, loads the restored previous root through the same admin endpoint, and verifies the previous readiness. PV returns the original failure after a successful rollback. If restored-config load or readiness fails, PV returns a compound failure containing both errors and does not claim that the prior runtime was restored. If ownership changes or the process exits, PV restores disk state but does not contact an unverified process. A PF `drifted` or `unknown` result handled by the existing `PreserveRuntime` policy is recorded as degraded routing state and does not by itself roll back a Caddy-accepted config.
+
+When PHP runtime worker config changes, PV uses this admin API contract for the matching worker; it does not fall back to a signal or restart. A worker for a new PHP runtime identity is started as a new process, and an obsolete worker is replaced through normal lifecycle reconciliation.
+
+Project-serving worker logs are captured per PHP runtime identity, with Project hostname included in access logs where feasible. PV v1 does not create per-Project log files. FrankenPHP worker Caddyfile logging directives should be used where practical.
 
 Project-serving worker logs are split by PHP runtime identity, such as `~/.pv/logs/workers/php-8.4.log` or `~/.pv/logs/workers/php-8.4+redis.log`, because one worker serves all Projects assigned to that runtime.
 
-Gateway access logs are enabled by default, stored locally under `~/.pv/logs/`, and rotated. Gateway logs are split into access and error logs, such as `~/.pv/logs/gateway/access.log` and `~/.pv/logs/gateway/error.log`, when FrankenPHP/Caddy supports that cleanly. Structured/JSON logs should be used when Caddy/FrankenPHP supports them cleanly.
+Gateway access logs are enabled by default, stored locally under `~/.pv/logs/`, and rotated. Gateway logs are split into access and error logs, such as `~/.pv/logs/gateway/access.log` and `~/.pv/logs/gateway/error.log`, using standalone Caddy logging. Caddy's inherited stdout and stderr are appended to `~/.pv/logs/gateway/supervisor.log` so supervisor diagnostics do not mix with Caddy's error stream. Structured/JSON logs should be used when the respective Caddy or FrankenPHP runtime supports them cleanly.
 
-When routing or Gateway config changes, PV reloads the Gateway config using Caddy/FrankenPHP reload capabilities where possible. PV restarts the Gateway only if reload fails or is unavailable.
+When routing or Gateway config changes, PV loads the Gateway config through the Caddy admin API contract above. A matching owned Gateway is kept running on load rejection or API unavailability; only an absent or obsolete process may be replaced.
 
-PV owns one local CA and passes that CA to the Gateway's FrankenPHP/Caddy configuration. FrankenPHP/Caddy generates and manages Project certificates from that CA as needed for hostnames in PV's desired routing table: primary Project hostnames plus additional `hostnames:` from valid Project config. The Gateway selects certificates by SNI.
+PV owns one local CA and passes that CA to the standalone Caddy Gateway configuration. Caddy generates and manages Project certificates from that CA as needed for hostnames in PV's desired routing table: primary Project hostnames plus additional `hostnames:` from valid Project config. The Gateway selects certificates by SNI.
 
 While a Project is resource-only, PV retains any existing stable Project TLS files but does not refresh them or include the Project in Gateway TLS demand. Re-enabling serving resumes normal TLS reconciliation after hostname and document-root validation succeeds.
 
@@ -711,6 +737,7 @@ PV stores machine state and installed assets under `~/.pv`:
   certificates/
   composer/
   resources/
+    caddy/
     php/
     frankenphp/
     composer/
@@ -733,13 +760,13 @@ Generated config files live under `~/.pv/config/`, with subdirectories for Gatew
 
 Generated config files are disposable outputs regenerated from `pv.db`, Project config, and the artifact manifest. They are not source of truth and may be overwritten during reconciliation.
 
-During reconciliation and `pv restart`, the daemon regenerates and validates Gateway/worker configs before reloading or restarting runtime processes. If config generation or validation fails, PV keeps currently working processes running and reports the failure.
+During reconciliation and `pv restart`, the daemon regenerates and validates Gateway/worker configs before loading them through the Caddy admin API or starting a lifecycle-replacement process. If config generation or validation fails, PV keeps currently working processes running and reports the failure.
 
-Gateway/worker config validation uses the managed FrankenPHP/Caddy binary's config validation command against the generated config before reload or restart. If validation fails, PV keeps the previous active config/processes and surfaces the validation error in observed state and logs.
+Gateway config validation uses the installed Caddy track `2` binary, while worker config validation uses the matching installed FrankenPHP binary. Each validates its generated Caddyfile before an admin load or lifecycle replacement. If validation fails, PV keeps the previous active config and process and surfaces the validation error in observed state and logs.
 
 Generated Gateway/worker config writes are atomic. PV writes new config to temporary files, validates them, then atomically renames them into place so runtime processes never read partial config files.
 
-PV keeps the previous active generated Gateway/worker config until the new config validates and reloads successfully. If reload fails after validation, PV restores or keeps the previous config and reports the failure.
+PV keeps the previous active generated Gateway/worker config until the new config validates, loads successfully through `POST /load`, and passes runtime readiness. An API rejection restores the previous generated files while Caddy keeps the previous in-memory config active. A later readiness failure reloads the restored previous root through the same admin endpoint; if that rollback fails, PV reports both failures and does not claim that the previous runtime was restored.
 
 PV v1 does not support user-editable Caddy snippets or custom Gateway/worker config. Generated Gateway and worker config is fully PV-owned.
 
@@ -875,7 +902,7 @@ The artifact manifest defines resource-specific update tracks. Project config ve
 
 Examples: MySQL `8.0` tracks update within `8.0.x`, MySQL `8.4` tracks update within `8.4.x`, PostgreSQL `17` tracks update within `17.x`, and PostgreSQL `18` tracks update within `18.x`.
 
-The initial v1 Managed Resource artifact track set is PHP/FrankenPHP `8.3`, `8.4`, and `8.5`; MySQL `8.0`, `8.4`, and `9.7`; Postgres `17` and `18`; Redis `8.8`; Composer `2`; Mailpit `1`; and RustFS `1`. Manifest defaults are PHP/FrankenPHP `8.5`, MySQL `8.4`, Postgres `18`, Redis `8.8`, Composer `2`, Mailpit `1`, and RustFS `1`. MySQL `8.0` is compatibility-only, not a default.
+The initial v1 Managed Resource artifact track set is Caddy `2`; PHP/FrankenPHP `8.3`, `8.4`, and `8.5`; MySQL `8.0`, `8.4`, and `9.7`; Postgres `17` and `18`; Redis `8.8`; Composer `2`; Mailpit `1`; and RustFS `1`. Manifest defaults are Caddy `2`, PHP/FrankenPHP `8.5`, MySQL `8.4`, Postgres `18`, Redis `8.8`, Composer `2`, Mailpit `1`, and RustFS `1`. MySQL `8.0` is compatibility-only, not a default.
 
 Install commands and Project config versions resolve to the latest artifact in the requested track. "Latest" means the non-revoked artifact with the newest `published_at` timestamp after platform selection. If two candidate artifacts for the same resource, track, and platform have the same `published_at`, the manifest is ambiguous and invalid. For example, `pv mysql:install 8.0` installs the latest available MySQL artifact in the `8.0` track.
 
@@ -1129,9 +1156,9 @@ Placeholder names must use lowercase snake_case, such as `${project_url}`, `${ac
 
 While `serve: false`, `${project_url}`, `${tls_key}`, `${tls_cert}`, and `${tls_ca}` remain recognized placeholders, but PV omits any complete env entry containing one of them instead of rendering a partial or fake serving value. Other entries at the same mapping scope continue to render.
 
-TLS placeholders are scoped to the primary Project hostname only. They do not render files for additional `hostnames:`, do not imply wildcard certificate support, and do not imply wildcard Project routing. Additional hostnames remain explicit Gateway routes with Gateway-managed TLS certificates.
+TLS placeholders are scoped to the primary Project hostname only. They do not render files for additional `hostnames:`, do not imply wildcard certificate support, and do not imply wildcard Project routing. Additional hostnames remain explicit Gateway routes with standalone Caddy-managed TLS certificates.
 
-PV owns stable Project TLS files under Project-specific storage in `~/.pv/certificates/` and refreshes them during reconciliation when the Project's primary hostname or local CA changes. Placeholder values must not point at Caddy/FrankenPHP's internal certificate storage; that layout is an implementation detail of the managed Gateway.
+PV owns stable Project TLS files under Project-specific storage in `~/.pv/certificates/` and refreshes them during reconciliation when the Project's primary hostname or local CA changes. Placeholder values must not point at Caddy's internal certificate storage; that layout is an implementation detail of the managed Gateway.
 
 Unknown placeholders fail Project config validation. PV keeps serving the last valid desired state and surfaces the validation error in `pv list` and `pv status`.
 
@@ -1415,7 +1442,7 @@ When `pv logs --follow` streams multiple files, PV prefixes each line with the s
 
 `pv logs --all --follow` includes every PV-owned log stream, including daemon, LaunchAgent, Gateway, Project-serving workers, and Managed Resource logs, with source prefixes.
 
-`pv logs --gateway` shows both Gateway access and error logs by default when split Gateway logs exist. When following both streams, PV prefixes lines with sources such as `gateway:access` and `gateway:error`. A combined v1 Gateway log remains supported and is labeled `gateway` instead of requiring a runtime log-layout redesign.
+`pv logs --gateway` shows Gateway access, error, and supervisor logs by default when split Gateway logs exist, in that order. When following multiple streams, PV prefixes lines with sources such as `gateway:access`, `gateway:error`, and `gateway:supervisor`. A combined v1 Gateway log remains supported and is labeled `gateway` instead of requiring a runtime log-layout redesign.
 
 `pv logs --worker <php-runtime>` accepts explicit PHP runtime identities, such as `8.4` or `8.4+redis`, and `latest`. `latest` resolves to the manifest default PHP track without Project-level optional extensions. If the resolved runtime has no log file, PV prints a clear message that no logs exist for that PHP runtime.
 

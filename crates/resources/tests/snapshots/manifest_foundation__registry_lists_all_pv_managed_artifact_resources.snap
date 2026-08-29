@@ -31,6 +31,19 @@ expression: descriptors
         ],
     },
     DescriptorSnapshot {
+        name: "caddy",
+        aliases: [],
+        kind: "Runtime",
+        capabilities: [
+            "Install",
+            "Start",
+            "Stop",
+            "Readiness",
+            "Logs",
+            "Commands",
+        ],
+    },
+    DescriptorSnapshot {
         name: "composer",
         aliases: [],
         kind: "Tool",

@@ -1,0 +1,24 @@
+---
+source: crates/cli/tests/logs.rs
+expression: "(supervisor_only, split)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "supervisor diagnostic\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "gateway:access | access request\ngateway:error | caddy error\ngateway:supervisor | supervisor diagnostic\n",
+        stderr: "",
+    },
+)

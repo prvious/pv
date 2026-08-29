@@ -140,8 +140,12 @@ fn default_sources(paths: &PvPaths) -> Vec<LogSource> {
 fn gateway_sources(paths: &PvPaths) -> Vec<LogSource> {
     let access = paths.gateway_access_log();
     let error = paths.gateway_error_log();
+    let supervisor = paths.gateway_supervisor_log();
 
-    if state::fs::path_exists(&access) || state::fs::path_exists(&error) {
+    if state::fs::path_exists(&access)
+        || state::fs::path_exists(&error)
+        || state::fs::path_exists(&supervisor)
+    {
         return vec![
             LogSource {
                 label: "gateway:access".to_string(),
@@ -150,6 +154,10 @@ fn gateway_sources(paths: &PvPaths) -> Vec<LogSource> {
             LogSource {
                 label: "gateway:error".to_string(),
                 active_path: error,
+            },
+            LogSource {
+                label: "gateway:supervisor".to_string(),
+                active_path: supervisor,
             },
         ];
     }
@@ -350,11 +358,19 @@ fn rotated_log_paths(active_path: &Utf8Path) -> Result<Vec<Utf8PathBuf>, Execute
         return Ok(Vec::new());
     };
     let rotated_prefix = format!("{file_name}.");
+    let plain_rotated_prefix = file_name
+        .strip_suffix(".log")
+        .map(|stem| format!("{stem}-"));
     let mut paths = state::fs::read_dir_paths(parent)?
         .into_iter()
         .filter(|path| {
             path.file_name()
-                .map(|candidate| candidate.starts_with(&rotated_prefix))
+                .map(|candidate| {
+                    candidate.starts_with(&rotated_prefix)
+                        || plain_rotated_prefix.as_deref().is_some_and(|prefix| {
+                            candidate.starts_with(prefix) && candidate.ends_with(".log")
+                        })
+                })
                 .unwrap_or(false)
         })
         .collect::<Vec<_>>();
@@ -485,7 +501,6 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write as _;
     use std::time::Duration;
 
     use camino_tempfile::tempdir;

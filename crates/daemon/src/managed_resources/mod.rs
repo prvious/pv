@@ -154,10 +154,29 @@ pub(crate) struct ManagedResourceRuntimeCatalog {
     http_client: Option<Arc<dyn resources::ResourceHttpClient + Send + Sync>>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub(crate) struct ManagedResourceUpdateReport {
     pub installed_count: usize,
     pub updated_count: usize,
+    update: resources::ManagedResourceUpdate,
+    failure: Option<DaemonError>,
+}
+
+impl ManagedResourceUpdateReport {
+    pub(crate) fn rollback_caddy(&self, paths: &PvPaths) -> Result<bool, DaemonError> {
+        self.update.rollback_caddy(paths).map_err(DaemonError::from)
+    }
+
+    pub(crate) fn into_result(self) -> Result<Self, DaemonError> {
+        let Some(source) = self.failure else {
+            return Ok(self);
+        };
+
+        Err(DaemonError::ManagedResourcePartialUpdateFailed {
+            update: self.update,
+            source: Box::new(source),
+        })
+    }
 }
 
 impl ManagedResourceRuntimeCatalog {
@@ -370,23 +389,41 @@ fn update_installed_with_catalog(
         catalog.install_options.target_platform,
     );
     let installed_count = commands.list(None)?.len();
-    let artifact_adapters = catalog.artifact_adapters()?;
-    let backing_adapters = artifact_adapters
+    let artifact_adapters = update_artifact_adapters(catalog)?;
+    let resource_adapters = artifact_adapters
         .iter()
         .map(|adapter| adapter as &dyn resources::ResourceAdapter)
         .collect::<Vec<_>>();
-    let update = if let Some(client) = catalog.http_client.as_deref() {
-        commands.update_all_installed_with_progress(&backing_adapters, client, progress)?
+    let update_result = if let Some(client) = catalog.http_client.as_deref() {
+        commands.update_all_installed_with_progress(&resource_adapters, client, progress)
     } else {
         let client = resources::UreqResourceHttpClient::default();
 
-        commands.update_all_installed_with_progress(&backing_adapters, &client, progress)?
+        commands.update_all_installed_with_progress(&resource_adapters, &client, progress)
+    };
+    let (update, failure) = match update_result {
+        Ok(update) => (update, None),
+        Err(resources::ManagedResourceCommandError::PartialUpdate { source, update }) => {
+            (update, Some((*source).into()))
+        }
+        Err(error) => return Err(error.into()),
     };
 
     Ok(ManagedResourceUpdateReport {
         installed_count,
         updated_count: update.installs().len(),
+        update,
+        failure,
     })
+}
+
+fn update_artifact_adapters(
+    catalog: &ManagedResourceRuntimeCatalog,
+) -> Result<Vec<resources::RuntimeArtifactAdapter>, DaemonError> {
+    let mut artifact_adapters = catalog.artifact_adapters()?;
+    artifact_adapters.push(resources::caddy_adapter()?);
+
+    Ok(artifact_adapters)
 }
 
 fn protocol_update_check_track(
@@ -416,6 +453,11 @@ pub(crate) async fn reconcile_system_resources_with_catalog_and_progress(
     catalog: &ManagedResourceRuntimeCatalog,
     progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
+    database.record_managed_resource_track_desired(
+        "caddy",
+        "2",
+        ManagedResourceDesiredState::Installed,
+    )?;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let demanded_tracks = BTreeSet::new();
 
@@ -522,6 +564,7 @@ fn missing_desired_resource_installs(
     catalog: &ManagedResourceRuntimeCatalog,
 ) -> Result<DesiredResourceInstallPlan, DaemonError> {
     let mut php_pair_tracks = BTreeSet::new();
+    let mut caddy_tracks = BTreeSet::new();
     let mut composer_missing = false;
     let mut runtime_installs = Vec::new();
     let mut failures = Vec::new();
@@ -534,6 +577,9 @@ fn missing_desired_resource_installs(
         }
 
         match record.resource_name.as_str() {
+            "caddy" => {
+                caddy_tracks.insert(record.track);
+            }
             "php" | "frankenphp" => {
                 php_pair_tracks.insert(record.track);
             }
@@ -583,10 +629,25 @@ fn missing_desired_resource_installs(
         }
     }
 
-    let mut installs = php_pair_tracks
-        .into_iter()
-        .map(|track| DesiredResourceInstall::PhpPair { track })
-        .collect::<Vec<_>>();
+    let mut installs = Vec::new();
+    if !caddy_tracks.is_empty() {
+        let caddy_adapter = resources::caddy_adapter()?;
+        installs.extend(
+            caddy_tracks
+                .into_iter()
+                .map(|track| DesiredResourceInstall::Runtime {
+                    adapter: caddy_adapter.clone(),
+                    resource_name: "caddy".to_owned(),
+                    track,
+                }),
+        );
+    }
+    installs.extend(
+        php_pair_tracks
+            .into_iter()
+            .map(|track| DesiredResourceInstall::PhpPair { track })
+            .collect::<Vec<_>>(),
+    );
     if composer_missing {
         installs.push(DesiredResourceInstall::Composer);
     }

@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "pr-review-toolkit": {
+      "source": "prvious/skills",
+      "sourceType": "github",
+      "skillPath": "skills/pr-review-toolkit/SKILL.md",
+      "computedHash": "22a7b6e0c360f8635a85a1448a84e9840acb987359e8eacba7426cfffa89424d"
+    }
+  }
+}
