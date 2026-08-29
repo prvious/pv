@@ -1016,6 +1016,26 @@ PV tries up to 10 candidate ports for a runtime during one reconciliation. If no
 
 When a backing Managed Resource port changes, PV regenerates PV-managed `.env` blocks for all linked Projects that opt into env rendering and depend on that resource track.
 
+## PostgreSQL Extensions
+
+PV's PostgreSQL 17 and 18 Managed Resource artifacts supply every extension from PostgreSQL's source tree that builds without the deliberately excluded Perl, Python, UUID, XML, or SELinux dependencies. `uuid-ossp` and `xml2` are therefore outside this contract. Exact per-track catalogs belong in checked-in release and test fixtures rather than hard-coded design counts.
+
+PostgreSQL is built with OpenSSL so supplied extensions such as `pgcrypto` and `sslinfo` are available. The artifacts bundle their required OpenSSL runtime libraries and must not retain Homebrew, staging-prefix, or build-runner runtime dependencies.
+
+The curated third-party SQL extension set is `vector`, `pgmq`, `pg_partman`, `postgis`, `pg_cron`, `timescaledb`, and `pg_duckdb`. PV ships only core PostGIS, excluding raster, topology, SFCGAL, address-standardizer, and tiger-geocoder components. PV ships TimescaleDB Community edition and disables TimescaleDB telemetry by default.
+
+Extensions are packaged as available for an explicit `CREATE EXTENSION`; PV does not automatically create them in user databases. `plpgsql`, which `initdb` installs, is the only extension initially installed in a new database cluster.
+
+Stable PostgreSQL artifact publication requires both `darwin-arm64` and `darwin-amd64` artifacts built and validated on their native platforms. Each packaged artifact is tested after relocation from its build and staging paths.
+
+Installing an extension's files does not automatically preload it. PostgreSQL preload selection is PV-owned desired state scoped to a PostgreSQL track because one running track is shared by every Project that uses it. The selection accepts only PV-allowlisted modules and defaults to an empty list; it is not Project-local.
+
+PV generates PostgreSQL configuration deterministically and idempotently from that track-level desired state. The same desired state produces the same ordered `shared_preload_libraries` value and applicable extension settings without duplicate entries. Unsupported module names fail with a typed, actionable diagnostic. This contract does not define or imply a new CLI or Project configuration syntax.
+
+`pg_duckdb` is opt-in and is never part of a universal preload list. If the selected TimescaleDB and `pg_duckdb` versions cannot be safely preloaded together, PV rejects that desired combination with a typed, actionable diagnostic or defers `pg_duckdb` publication; PV does not start a known-crashing configuration.
+
+Managed Resource updates do not execute `ALTER EXTENSION` in user databases. Before PV changes a bundled third-party extension version, a separate design decision must define the explicit upgrade experience, compatibility checks, and failure diagnostics.
+
 ## Project Configuration and Environment
 
 Projects may opt in to Project-specific Managed Resource requirements and environment variable rendering through Project config (`pv.yml`). PV also accepts `pv.yaml`, but documentation should prefer `pv.yml`. Project config is read only from the Project root. PV does not search parent directories. If both files exist, Project config validation fails with a clear conflict. Symlinked Project config files are allowed only when the resolved file remains inside the canonical Project root. PV v1 does not support JSON Project config.
