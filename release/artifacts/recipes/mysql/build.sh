@@ -215,7 +215,7 @@ if [ -z "$OPENSSL_PREFIX" ]; then
     "$OPENSSL_PREFIX/ssl"
   record_openssl_source_input=true
 else
-  pv_recipe_validate_openssl_prefix "$OPENSSL_PREFIX"
+  pv_recipe_validate_openssl_prefix "$OPENSSL_PREFIX" "$PLATFORM" "$DEPLOYMENT_TARGET"
 fi
 download_source "$source_archive" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256"
 source_dir=$(extract_source MySQL "$source_archive" "$source_extract_dir")
