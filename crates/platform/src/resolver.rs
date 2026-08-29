@@ -4,6 +4,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::PlatformError;
+#[cfg(target_os = "macos")]
 use crate::command::run_system_command;
 
 pub const SYSTEM_RESOLVER_TEST_PATH: &str = "/etc/resolver/test";

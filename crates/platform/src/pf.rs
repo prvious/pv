@@ -3,11 +3,14 @@ use std::io;
 use std::net::IpAddr;
 
 use camino::{Utf8Path, Utf8PathBuf};
+#[cfg(any(target_os = "macos", test))]
 use data_encoding::HEXLOWER;
 use serde::{Deserialize, Serialize};
 
 use crate::PlatformError;
-use crate::command::{run_system_command, run_system_command_output};
+#[cfg(target_os = "macos")]
+use crate::command::run_system_command;
+use crate::command::run_system_command_output;
 
 pub const SYSTEM_PF_ANCHOR_PATH: &str = "/etc/pf.anchors/com.prvious.pv";
 pub const SYSTEM_PF_CONF_PATH: &str = "/etc/pf.conf";
@@ -16,6 +19,7 @@ const PF_ANCHOR_SOURCE_MARKER: &str =
     "# Source: PV prepared pf anchor for /etc/pf.anchors/com.prvious.pv";
 const PF_CONF_SOURCE_MARKER: &str = "# Source: PV prepared pf.conf reference for /etc/pf.conf";
 const PF_RDR_ANCHOR_DIRECTIVE: &str = "rdr-anchor \"com.prvious.pv\"";
+#[cfg(any(target_os = "macos", test))]
 const LEGACY_PF_ANCHOR_DIRECTIVE: &str = "anchor \"com.prvious.pv\"";
 const PF_LOAD_ANCHOR_DIRECTIVE: &str =
     "load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"";
@@ -420,6 +424,7 @@ fn install_pf_redirects_with_runner(
     )
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Clone, Copy)]
 struct PfInstallPaths<'path> {
     prepared_anchor: &'path Utf8Path,
@@ -428,6 +433,7 @@ struct PfInstallPaths<'path> {
     system_pf_conf: &'path Utf8Path,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn install_pf_redirects_and_verify_with_runner(
     paths: PfInstallPaths<'_>,
     run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
@@ -550,6 +556,7 @@ fn install_pf_redirects_and_verify_with_runner(
     Ok(())
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn rollback_pf_anchor_with_runner(
     system_anchor_path: &Utf8Path,
     anchor_backup: Option<&str>,
@@ -577,6 +584,7 @@ fn rollback_pf_anchor_with_runner(
     run_system("/bin/rm", &["-f", system_anchor_path.as_str()])
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn rollback_pf_conf_with_runner(
     system_pf_conf_path: &Utf8Path,
     pf_conf_backup: Option<&str>,
@@ -713,6 +721,7 @@ pub(crate) fn remove_pf_redirects_privileged() -> Result<(), PlatformError> {
     )
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn remove_pf_redirects_with_runner(
     system_anchor_path: &Utf8Path,
     system_pf_conf_path: &Utf8Path,
@@ -905,6 +914,7 @@ fn parse_embedded_pf_conf_reference(content: &str) -> Option<PfConfReference> {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn install_pf_anchor_with_runner(
     prepared_anchor_path: &Utf8Path,
     system_anchor_path: &Utf8Path,
@@ -929,6 +939,7 @@ fn install_pf_anchor_with_runner(
     )
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn reload_pf_with_runner(
     system_pf_conf_path: &Utf8Path,
     run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
@@ -936,6 +947,7 @@ fn reload_pf_with_runner(
     run_system("/sbin/pfctl", &["-f", system_pf_conf_path.as_str()])
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn append_pf_reference(content: &str, reference: &str) -> String {
     if content.trim().is_empty() {
         return reference.to_string();
@@ -966,6 +978,7 @@ fn pf_conf_reference_directives() -> (&'static str, &'static str) {
     (PF_RDR_ANCHOR_DIRECTIVE, PF_LOAD_ANCHOR_DIRECTIVE)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn first_pf_filter_rule_index(content: &str) -> Option<usize> {
     let mut offset = 0;
     for line in content.split_inclusive('\n') {
@@ -980,6 +993,7 @@ fn first_pf_filter_rule_index(content: &str) -> Option<usize> {
     None
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn is_pf_filter_rule(line: &str) -> bool {
     line == "block"
         || line.starts_with("block ")
@@ -991,6 +1005,7 @@ fn is_pf_filter_rule(line: &str) -> bool {
         || line.starts_with("antispoof ")
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn remove_pf_reference_lines(content: &str) -> String {
     let mut candidate = String::new();
 
@@ -1019,6 +1034,7 @@ fn read_platform_file(path: &Utf8Path) -> Result<String, PlatformError> {
         .map_err(|error| PlatformError::SystemIntegration(error.to_string()))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn read_optional_platform_file(path: &Utf8Path) -> Result<Option<String>, PlatformError> {
     match state::fs::read_to_string(path) {
         Ok(content) => Ok(Some(content)),
@@ -1031,6 +1047,7 @@ fn read_optional_platform_file(path: &Utf8Path) -> Result<Option<String>, Platfo
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn temporary_pf_conf_candidate_path(
     candidate_dir: &Utf8Path,
 ) -> Result<Utf8PathBuf, PlatformError> {
@@ -1041,6 +1058,7 @@ fn temporary_pf_conf_candidate_path(
     Ok(candidate_dir.join(format!("pv-pf-conf-{}-uninstall", HEXLOWER.encode(&suffix))))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn write_temporary_file(path: &Utf8Path, content: &str) -> Result<(), PlatformError> {
     state::fs::write_sensitive_file(path, content)
         .map_err(|error| PlatformError::SystemIntegration(error.to_string()))

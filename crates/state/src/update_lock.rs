@@ -1,3 +1,4 @@
+#[cfg(unix)]
 use std::io;
 
 use camino::Utf8Path;

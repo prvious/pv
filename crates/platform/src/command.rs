@@ -1,8 +1,11 @@
 use std::io;
-use std::process::{ExitStatus, Output};
+#[cfg(target_os = "macos")]
+use std::process::ExitStatus;
+use std::process::Output;
 
 use crate::PlatformError;
 
+#[cfg(target_os = "macos")]
 pub(crate) fn run_system_command(program: &str, args: &[&str]) -> Result<(), PlatformError> {
     let command = format!("{program} {}", args.join(" "));
     let status = command_status(program, args).map_err(|source| {
@@ -50,6 +53,7 @@ pub(crate) fn run_system_command_output(
 )]
 type StdCommand = std::process::Command;
 
+#[cfg(target_os = "macos")]
 fn command_status(program: &str, args: &[&str]) -> io::Result<ExitStatus> {
     StdCommand::new(program).args(args).status()
 }
