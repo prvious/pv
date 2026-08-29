@@ -3,7 +3,7 @@ source: crates/pv-release/tests/app_release_records.rs
 expression: json
 ---
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "channel": "stable",
   "version": "0.2.0",
   "minimum_pv_version": "0.1.0",
@@ -12,6 +12,13 @@ expression: json
   "object_key": "pv/0.2.0/pv-darwin-arm64",
   "sha256": "c8e2518d36faa62255498db2f13c75e56df99659ad4c58b16d4ad0ab9ce23cdf",
   "size": 12,
+  "helper": {
+    "version": "1.0.0",
+    "protocol_version": 1,
+    "object_key": "pv/0.2.0/pv-helper-1.0.0-darwin-arm64",
+    "sha256": "d7a9bd87d4b562b2ec762ebabbb8c80cabeb64249d80c64f8ac19a550c68dc3a",
+    "size": 15
+  },
   "provenance": {
     "source_url": "https://github.com/prvious/pv/archive/refs/tags/v0.2.0.tar.gz",
     "source_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",

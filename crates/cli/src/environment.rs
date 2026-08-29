@@ -70,6 +70,22 @@ pub trait Environment {
         PathBuf::from(platform::SYSTEM_RESOLVER_TEST_PATH)
     }
 
+    fn inspect_resolver_file(
+        &self,
+        path: &Utf8Path,
+        expected: Option<&platform::ResolverConfig>,
+    ) -> platform::ResolverFileState {
+        let state = platform::inspect_resolver_file(path, expected);
+        if matches!(state, platform::ResolverFileState::Unreadable { .. })
+            && path == Utf8Path::new(platform::SYSTEM_RESOLVER_TEST_PATH)
+            && let Ok(helper_state) = platform::PrivilegedHelperClient.inspect_dns(expected)
+        {
+            return helper_state;
+        }
+
+        state
+    }
+
     fn install_resolver_config(
         &self,
         prepared_path: &Utf8Path,
@@ -117,20 +133,14 @@ pub trait Environment {
     fn active_pf_redirect_config(
         &self,
     ) -> Result<Option<platform::PfRedirectConfig>, platform::PlatformError> {
-        self.active_pf_redirect_config_with_privilege_mode(platform::PrivilegeMode::NonInteractive)
-    }
-
-    fn active_pf_redirect_config_with_privilege_mode(
-        &self,
-        privilege_mode: platform::PrivilegeMode,
-    ) -> Result<Option<platform::PfRedirectConfig>, platform::PlatformError> {
-        platform::active_pf_redirect_config_with_privilege_mode(privilege_mode)
+        platform::active_pf_redirect_config()
     }
 
     fn inspect_active_pf_redirects_unprivileged(
         &self,
     ) -> Result<platform::ActivePfRedirectInspection, platform::PlatformError> {
         platform::inspect_active_pf_redirects_unprivileged()
+            .or_else(|_error| platform::PrivilegedHelperClient.inspect_pf())
     }
 
     fn probe_gateway_redirects(
@@ -158,22 +168,46 @@ pub trait Environment {
         &self,
     ) -> Result<Vec<platform::KeychainCertificate>, platform::PlatformError> {
         platform::SystemTrustInspector::trusted_certificates(&platform::NativeSystemTrustInspector)
+            .or_else(|_error| platform::PrivilegedHelperClient.inspect_ca())
     }
 
-    fn trust_system_ca(
+    fn privileged_helper_status(
         &self,
-        certificate_path: &Utf8Path,
-        privilege_mode: platform::PrivilegeMode,
-    ) -> Result<(), platform::PlatformError> {
-        platform::trust_system_ca(certificate_path, privilege_mode)
+    ) -> Result<platform::PrivilegedHelperStatus, platform::PlatformError> {
+        platform::PrivilegedHelperClient.status()
     }
 
-    fn untrust_system_ca(
+    fn install_privileged_helper(
         &self,
-        fingerprint: &str,
-        privilege_mode: platform::PrivilegeMode,
-    ) -> Result<(), platform::PlatformError> {
-        platform::untrust_system_ca(fingerprint, privilege_mode)
+        candidate_path: &Utf8Path,
+        prepared_directory: &Utf8Path,
+        expected_sha256: &str,
+        helper_version: &str,
+        protocol_version: u32,
+    ) -> Result<platform::PrivilegedHelperInstallOutcome, platform::PlatformError> {
+        platform::install_privileged_helper(
+            candidate_path,
+            prepared_directory,
+            expected_sha256,
+            helper_version,
+            protocol_version,
+        )
+    }
+
+    fn bundled_privileged_helper_sha256(&self) -> Result<&str, platform::PlatformError> {
+        platform::bundled_privileged_helper_sha256()
+    }
+
+    fn remove_privileged_helper(&self) -> Result<(), platform::PlatformError> {
+        platform::remove_privileged_helper()
+    }
+
+    fn trust_system_ca(&self, certificate_path: &Utf8Path) -> Result<(), platform::PlatformError> {
+        platform::trust_system_ca(certificate_path)
+    }
+
+    fn untrust_system_ca(&self, fingerprint: &str) -> Result<(), platform::PlatformError> {
+        platform::untrust_system_ca(fingerprint)
     }
 
     fn artifact_manifest_url(&self) -> Option<String> {

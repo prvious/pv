@@ -66,6 +66,17 @@ pub enum CliError {
     #[error("PV application update requires an installed active release: {message}")]
     AppUpdateInvalidActiveRelease { message: String },
 
+    #[error("invalid privileged-helper release metadata at {path}: {reason}")]
+    InvalidPrivilegedHelperReleaseMetadata { path: String, reason: String },
+
+    #[error("privileged-helper rollback preflight failed: {reason}")]
+    PrivilegedHelperRollbackPreflight { reason: String },
+
+    #[error(
+        "privileged-helper update could not be promoted into the active release ({message}); restored the previous helper"
+    )]
+    PrivilegedHelperPromotionFailed { message: String },
+
     #[error(
         "PV application update requires active release {current_version}, found {active_version}"
     )]

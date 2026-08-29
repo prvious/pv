@@ -42,7 +42,7 @@ jobs:
 
       - name: Install app publication dependencies
         run: |
-          set -eu
+          set -euo pipefail
           if ! command -v aws >/dev/null 2>&1; then
             brew install awscli
           fi
@@ -57,7 +57,7 @@ jobs:
         env:
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         run: |
-          set -eu
+          set -euo pipefail
           for name in CLOUDFLARE_ACCOUNT_ID R2_BUCKET R2_PUBLIC_BASE_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SOURCE_RUN_ID STABLE_APP_MANIFEST_KEY STABLE_INSTALLER_KEY; do
             eval "value=\${$name:-}"
             if [ -z "$value" ]; then
@@ -80,7 +80,7 @@ jobs:
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
           PUBLICATION_HEAD_SHA: ${{ github.sha }}
         run: |
-          set -eu
+          set -euo pipefail
           source_run_json="$RUNNER_TEMP/pv-app-source-run.json"
           gh run view "$SOURCE_RUN_ID" \
             --json conclusion,headSha,name,status,url,workflowName \
@@ -112,7 +112,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         run: |
-          set -eu
+          set -euo pipefail
           download_dir="$RUNNER_TEMP/pv-app-publication-download"
           rm -rf "$download_dir"
           mkdir -p "$download_dir"
@@ -142,8 +142,10 @@ jobs:
             exit 1
           fi
 
-          for binary_name in pv-darwin-arm64; do
+          for platform in darwin-arm64; do
+            binary_name="pv-$platform"
             binary_source=$(find "$handoff_dir" -type f -path "*/pv/*/$binary_name" -print -quit)
+            helper_source=$(find "$handoff_dir" -type f -path "*/pv/*/pv-helper-*-$platform" -print -quit)
             record_source=$(find "$handoff_dir" -type f -path "*/pv/records/*/$binary_name.json" -print -quit)
             if [ -z "$binary_source" ]; then
               printf '%s\n' "missing required app binary for $binary_name" >&2
@@ -151,6 +153,10 @@ jobs:
             fi
             if [ -z "$record_source" ]; then
               printf '%s\n' "missing required app release record for $binary_name" >&2
+              exit 1
+            fi
+            if [ -z "$helper_source" ]; then
+              printf '%s\n' "missing required privileged helper for $platform" >&2
               exit 1
             fi
           done
@@ -284,25 +290,6 @@ jobs:
             upload_immutable_object "$local_path" "$object_key"
           done < "$upload_rows"
 
-      - name: Publish stable installer
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP/pv-app-publication-stage"
-          local_path=$(jq -e -r '.stable_installer.local_path' publication-plan.json)
-          object_key=$(jq -e -r '.stable_installer.object_key' publication-plan.json)
-          if [ "$object_key" != "$STABLE_INSTALLER_KEY" ]; then
-            printf '%s\n' "stable installer object key must be $STABLE_INSTALLER_KEY" >&2
-            exit 1
-          fi
-          aws s3api put-object \
-            --bucket "$R2_BUCKET" \
-            --key "$object_key" \
-            --body "$local_path" \
-            --endpoint-url "$R2_ENDPOINT" \
-            --content-type text/x-shellscript \
-            > /dev/null
-
       - name: Publish stable app manifest
         shell: bash
         run: |
@@ -320,4 +307,23 @@ jobs:
             --body "$local_path" \
             --endpoint-url "$R2_ENDPOINT" \
             --content-type application/json \
+            > /dev/null
+
+      - name: Publish stable installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pv-app-publication-stage"
+          local_path=$(jq -e -r '.stable_installer.local_path' publication-plan.json)
+          object_key=$(jq -e -r '.stable_installer.object_key' publication-plan.json)
+          if [ "$object_key" != "$STABLE_INSTALLER_KEY" ]; then
+            printf '%s\n' "stable installer object key must be $STABLE_INSTALLER_KEY" >&2
+            exit 1
+          fi
+          aws s3api put-object \
+            --bucket "$R2_BUCKET" \
+            --key "$object_key" \
+            --body "$local_path" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type text/x-shellscript \
             > /dev/null

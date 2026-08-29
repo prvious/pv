@@ -188,7 +188,7 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
     let release = read_optional_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
     let release_workflow = release.as_deref().unwrap_or("");
     let summary = format!(
-        "release_workflow_exists={}\nrelease_name={}\njobs={:?}\napp_platforms_default={}\nplatform_matrices={:?}\nuses_native_macos_runners={}\nbuild_app_platform_gate={}\ngenerate_uses_selected_platforms={}\napp_update_manifest_url_env={}\nartifact_manifest_url_env={}\nuses_r2_public_base_url_var={}\nhardcodes_staging_bucket={}\nhardcodes_staging_public_base_url={}\nwrite_app_release_record_command={}\napp_manifest_command={}\napp_installer_command={}\napp_binary_object_key_refs={}\napp_record_object_key_refs={}\nupload_steps={}\nuploads_binaries={}\nuploads_records={}\nuploads_manifest={}\nuploads_installer={}",
+        "release_workflow_exists={}\nrelease_name={}\njobs={:?}\napp_platforms_default={}\nplatform_matrices={:?}\nuses_native_macos_runners={}\nbuild_app_platform_gate={}\ngenerate_uses_selected_platforms={}\napp_update_manifest_url_env={}\nartifact_manifest_url_env={}\nuses_r2_public_base_url_var={}\nhardcodes_staging_bucket={}\nhardcodes_staging_public_base_url={}\nbuilds_privileged_helper={}\nadhoc_signs_privileged_helper={}\napp_only_reuses_verified_helper={}\nhelper_only_reuses_verified_app={}\nhelper_only_preserves_minimum_pv_version={}\nderives_helper_identity={}\nwrite_app_release_record_command={}\nrecords_helper_metadata={}\napp_manifest_command={}\napp_installer_command={}\napp_binary_object_key_refs={}\napp_record_object_key_refs={}\nupload_steps={}\nuploads_binaries={}\nuploads_helpers={}\nuploads_records={}\nuploads_manifest={}\nuploads_installer={}",
         release.is_some(),
         workflow_name(release_workflow).unwrap_or(""),
         workflow_job_ids(release_workflow),
@@ -205,13 +205,33 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
         release_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}"),
         release_workflow.contains("pv-staging"),
         release_workflow.contains("artifacts-staging.pv.prvious.dev"),
+        release_workflow.contains("--package pv-privileged-helper --bin pv-helper"),
+        release_workflow.contains("codesign --force --sign -"),
+        release_workflow.contains("current stable helper asset failed app-only reuse verification")
+            && release_workflow.contains("helper_version_relation"),
+        release_workflow.contains("helper_only:")
+            && release_workflow.contains("current-pv-app-manifest.json")
+            && release_workflow.contains("current stable app asset failed helper-only reuse verification")
+            && release_workflow.contains("a helper protocol change requires a matching app release"),
+        release_workflow.contains("current_minimum_pv_version=$(jq -er '.minimum_pv_version'")
+            && release_workflow.contains("PV_HELPER_ONLY_MINIMUM_PV_VERSION"),
+        release_workflow.contains("crates/privileged-helper/Cargo.toml")
+            && release_workflow.contains("crates/platform/src/helper.rs")
+            && release_workflow.contains("reported_helper_version")
+            && release_workflow.contains("helper_version\" != \"$reported_helper_version")
+            && release_workflow.contains("helper_version: ${{ steps.metadata.outputs.helper_version }}")
+            && release_workflow.contains("helper_protocol_version: ${{ steps.metadata.outputs.helper_protocol_version }}"),
         release_workflow.contains("write-app-release-record"),
+        release_workflow.contains("--helper-binary")
+            && release_workflow.contains("--helper-version")
+            && release_workflow.contains("--helper-protocol-version"),
         release_workflow.contains("generate-app-manifest"),
         release_workflow.contains("generate-app-installer"),
         app_binary_object_key_reference_present(release_workflow),
         app_record_object_key_reference_present(release_workflow),
         uses_action_references(release_workflow, "actions/upload-artifact").len(),
         release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-*"),
+        release_workflow.contains("pv-helper-${{ needs.prepare-release.outputs.helper_version }}-${{ matrix.platform }}"),
         release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv/records/${{ needs.prepare-release.outputs.version }}/*.json"),
         release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/pv-app-manifest.json"),
         release_workflow.contains("${{ runner.temp }}/pv-app-release-stage/install.sh"),
@@ -231,13 +251,21 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
     uses_r2_public_base_url_var=true
     hardcodes_staging_bucket=false
     hardcodes_staging_public_base_url=false
+    builds_privileged_helper=true
+    adhoc_signs_privileged_helper=true
+    app_only_reuses_verified_helper=true
+    helper_only_reuses_verified_app=true
+    helper_only_preserves_minimum_pv_version=true
+    derives_helper_identity=true
     write_app_release_record_command=true
+    records_helper_metadata=true
     app_manifest_command=true
     app_installer_command=true
     app_binary_object_key_refs=true
     app_record_object_key_refs=true
     upload_steps=2
     uploads_binaries=true
+    uploads_helpers=true
     uploads_records=true
     uploads_manifest=true
     uploads_installer=true
@@ -252,13 +280,15 @@ fn app_publication_writes_app_stable_entrypoints() -> Result<()> {
     let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
     let publication_workflow = publication.as_deref().unwrap_or("");
     let summary = format!(
-        "publication_workflow_exists={}\nstable_app_manifest_key_present={}\nstable_installer_key_present={}\nrequires_arm64_handoff={}\nallows_amd64_to_be_absent={}\nmanaged_resource_key_references={:?}",
+        "publication_workflow_exists={}\nstable_app_manifest_key_present={}\nstable_installer_key_present={}\npublishes_manifest_before_installer={}\nrequires_arm64_handoff={}\nallows_amd64_to_be_absent={}\nmanaged_resource_key_references={:?}",
         publication.is_some(),
         stable_key_reference_present(publication_workflow, "pv-app-manifest.json"),
         stable_key_reference_present(publication_workflow, "install.sh"),
-        publication_workflow.contains("for binary_name in pv-darwin-arm64; do")
+        publication_workflow.find("- name: Publish stable app manifest")
+            < publication_workflow.find("- name: Publish stable installer"),
+        publication_workflow.contains("for platform in darwin-arm64; do")
             && publication_workflow.contains("missing required app binary for $binary_name"),
-        !publication_workflow.contains("for binary_name in pv-darwin-arm64 pv-darwin-amd64; do")
+        !publication_workflow.contains("for platform in darwin-arm64 darwin-amd64; do")
             && publication_workflow.contains(
                 "find \"$handoff_dir\" -type f -path \"*/pv/records/*/pv-darwin-*.json\""
             ),
@@ -269,6 +299,7 @@ fn app_publication_writes_app_stable_entrypoints() -> Result<()> {
     publication_workflow_exists=true
     stable_app_manifest_key_present=true
     stable_installer_key_present=true
+    publishes_manifest_before_installer=true
     requires_arm64_handoff=true
     allows_amd64_to_be_absent=true
     managed_resource_key_references=[]
@@ -298,17 +329,17 @@ fn app_publication_uses_immutable_upload_checks_for_app_objects() -> Result<()> 
         versioned_generated_artifact_reference_present(publication_workflow, "install.sh"),
     );
 
-    assert_snapshot!(summary, @r#"
+    assert_snapshot!(summary, @"
     publication_workflow_exists=true
     uses_stage_app_publication_command=true
     defines_immutable_upload_helper=true
     uses_if_none_match=true
     handles_precondition_failed=true
-    app_binary_object_key_refs=true
+    app_binary_object_key_refs=false
     app_record_object_key_refs=true
     versioned_manifest_object_key_refs=true
     versioned_installer_object_key_refs=true
-    "#);
+    ");
 
     Ok(())
 }
@@ -420,26 +451,26 @@ fn app_publication_retries_matching_immutable_uploads() -> Result<()> {
 }
 
 #[test]
-fn app_publication_publishes_stable_installer_before_manifest() -> Result<()> {
+fn app_publication_publishes_stable_manifest_before_installer() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
     let publication_workflow = publication.as_deref().unwrap_or("");
     let installer_index = publication_workflow.find("- name: Publish stable installer");
     let manifest_index = publication_workflow.find("- name: Publish stable app manifest");
     let summary = format!(
-        "installer_step_present={}\nmanifest_step_present={}\ninstaller_before_manifest={}",
+        "installer_step_present={}\nmanifest_step_present={}\nmanifest_before_installer={}",
         installer_index.is_some(),
         manifest_index.is_some(),
         installer_index
             .zip(manifest_index)
-            .map(|(installer_index, manifest_index)| installer_index < manifest_index)
+            .map(|(installer_index, manifest_index)| manifest_index < installer_index)
             .unwrap_or(false),
     );
 
     assert_snapshot!(summary, @r#"
     installer_step_present=true
     manifest_step_present=true
-    installer_before_manifest=true
+    manifest_before_installer=true
     "#);
 
     Ok(())
@@ -564,6 +595,8 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     pf_rules_cleanup_required=true
     ca_trust_cleanup_required=true
     launch_agent_cleanup_required=true
+    helper_evidence=true
+    helper_cleanup_required=true
     sudo_preflight_exits_when_blocked=true
     "#);
 
@@ -661,7 +694,7 @@ fn privileged_macos_rc_evidence_summary(workflow: &str) -> String {
 
 fn privileged_macos_rc_system_summary(_workflow: &str) -> String {
     format!(
-        "installs_from_candidate_installer={}\ninstaller_download_restricts_redirect_protocols={}\nsetup_command={}\nrestart_command={}\nrestart_after_initial_serving={}\nrestart_wait_command={}\nupdate_check_waits_for_restart_reconciliation={}\nlink_command={}\nlink_wait_command={}\nserve_http_curl={}\nserve_http_follows_https_redirect={}\nserve_https_uses_system_trust={}\npost_restart_https_uses_system_trust={}\npost_restart_http_follows_https_redirect={}\nproject_tls_placeholders={}\nproject_tls_leaf_system_policy={}\nproject_tls_leaf_evidence={}\nproject_tls_lifetime_check={}\nserve_body_checked={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nresolver_cleanup_required={}\npf_anchor_cleanup_required={}\npf_rules_cleanup_required={}\nca_trust_cleanup_required={}\nlaunch_agent_cleanup_required={}\nsudo_preflight_exits_when_blocked={}",
+        "installs_from_candidate_installer={}\ninstaller_download_restricts_redirect_protocols={}\nsetup_command={}\nrestart_command={}\nrestart_after_initial_serving={}\nrestart_wait_command={}\nupdate_check_waits_for_restart_reconciliation={}\nlink_command={}\nlink_wait_command={}\nserve_http_curl={}\nserve_http_follows_https_redirect={}\nserve_https_uses_system_trust={}\npost_restart_https_uses_system_trust={}\npost_restart_http_follows_https_redirect={}\nproject_tls_placeholders={}\nproject_tls_leaf_system_policy={}\nproject_tls_leaf_evidence={}\nproject_tls_lifetime_check={}\nserve_body_checked={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nresolver_cleanup_required={}\npf_anchor_cleanup_required={}\npf_rules_cleanup_required={}\nca_trust_cleanup_required={}\nlaunch_agent_cleanup_required={}\nhelper_evidence={}\nhelper_cleanup_required={}\nsudo_preflight_exits_when_blocked={}",
         workflow_contains_privileged_script(
             "curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 2 \"$RESOLVED_INSTALLER_URL\""
         ) && workflow_contains_privileged_script(
@@ -762,6 +795,30 @@ fn privileged_macos_rc_system_summary(_workflow: &str) -> String {
             ),
         workflow_contains_privileged_script(
             "record_status launch-agent-removed required test ! -e \"$HOME/Library/LaunchAgents/com.prvious.pv.daemon.plist\""
+        ),
+        workflow_contains_privileged_script(
+            "record_status helper-executable required sudo test -x /Library/PrivilegedHelperTools/com.prvious.pv.helper"
+        ) && workflow_contains_privileged_script(
+            "collect_file helper-launch-daemon /Library/LaunchDaemons/com.prvious.pv.helper.plist"
+        ) && workflow_contains_privileged_script(
+            "collect_file helper-metadata \"/Library/Application Support/PV/helper.json\""
+        ) && workflow_contains_privileged_script(
+            "record_status helper-socket required sudo test -S /var/run/com.prvious.pv/helper.sock"
+        ) && workflow_contains_privileged_script(
+            "record_status helper-launchd required sudo launchctl print system/com.prvious.pv.helper"
+        ) && workflow_contains_privileged_script(
+            "record_status helper-installation-contract required assert_helper_installation_contract"
+        ) && workflow_contains_privileged_script(
+            "assert set(metadata) == {\"owner_uid\", \"helper_version\", \"protocol_version\"}"
+        ) && workflow_contains_privileged_script("\"SockPathMode\": 0o600"),
+        workflow_contains_privileged_script(
+            "record_status helper-executable-removed required sudo test ! -e /Library/PrivilegedHelperTools/com.prvious.pv.helper"
+        ) && workflow_contains_privileged_script(
+            "record_status helper-launch-daemon-removed required sudo test ! -e /Library/LaunchDaemons/com.prvious.pv.helper.plist"
+        ) && workflow_contains_privileged_script(
+            "record_status helper-metadata-removed required sudo test ! -e \"/Library/Application Support/PV/helper.json\""
+        ) && workflow_contains_privileged_script(
+            "record_status helper-socket-removed required sudo test ! -e /var/run/com.prvious.pv/helper.sock"
         ),
         workflow_contains_privileged_script(
             "record_status sudo-preflight required sudo -n true || {"

@@ -3,7 +3,7 @@ use data_encoding::HEXLOWER;
 use self_update::{AppUpdateManifest, AppUpdateVersion};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
 use crate::app::AppReleaseRecord;
@@ -28,9 +28,12 @@ pub struct AppPublicationRequest {
 struct AppPublicationCandidate {
     record: AppReleaseRecord,
     source_binary: Utf8PathBuf,
+    source_helper: Utf8PathBuf,
     source_record: Utf8PathBuf,
     binary_local_path: Utf8PathBuf,
     binary_object_key: String,
+    helper_local_path: Utf8PathBuf,
+    helper_object_key: String,
     record_local_path: Utf8PathBuf,
     record_object_key: String,
 }
@@ -56,6 +59,7 @@ pub fn stage_app_publication(request: &AppPublicationRequest) -> crate::Result<(
         &records,
         request.current_app_manifest.as_deref(),
         request.current_app_installer.as_deref(),
+        &request.base_url,
     )?;
     let manifest = crate::app::generate_app_manifest_json(&records, &request.base_url)?;
     let installer = crate::app::generate_app_installer_script(&records, &request.base_url)?;
@@ -78,8 +82,11 @@ pub fn stage_app_publication(request: &AppPublicationRequest) -> crate::Result<(
 
     for candidate in &candidates {
         verify_binary(&candidate.record, &candidate.source_binary)?;
+        verify_helper(&candidate.record, &candidate.source_helper)?;
         let binary_stage_path = request.stage.join(&candidate.binary_local_path);
         ensure_immutable_target_absent(&candidate.binary_object_key, &binary_stage_path)?;
+        let helper_stage_path = request.stage.join(&candidate.helper_local_path);
+        ensure_immutable_target_absent(&candidate.helper_object_key, &helper_stage_path)?;
         let record_stage_path = request.stage.join(&candidate.record_local_path);
         ensure_immutable_target_absent(&candidate.record_object_key, &record_stage_path)?;
     }
@@ -92,6 +99,9 @@ pub fn stage_app_publication(request: &AppPublicationRequest) -> crate::Result<(
     for candidate in &candidates {
         let binary_stage_path = request.stage.join(&candidate.binary_local_path);
         copy_file(&candidate.source_binary, &binary_stage_path)?;
+
+        let helper_stage_path = request.stage.join(&candidate.helper_local_path);
+        copy_file(&candidate.source_helper, &helper_stage_path)?;
 
         let record_stage_path = request.stage.join(&candidate.record_local_path);
         copy_file(&candidate.source_record, &record_stage_path)?;
@@ -127,10 +137,13 @@ fn app_publication_candidates(
         .iter()
         .map(|record| {
             validate_app_binary_object_key(record.object_key())?;
+            validate_app_binary_object_key(record.helper().object_key())?;
             let source_binary = request.source_binaries.join(record.object_key());
+            let source_helper = request.source_binaries.join(record.helper().object_key());
             let record_object_key = format!(
-                "pv/records/{}/pv-{}.json",
+                "pv/records/{}/{}/pv-{}.json",
                 record.version(),
+                record.helper().version(),
                 record.platform().as_str()
             );
             validate_app_record_object_key(&record_object_key)?;
@@ -138,9 +151,12 @@ fn app_publication_candidates(
             Ok(AppPublicationCandidate {
                 record: record.clone(),
                 source_binary,
+                source_helper,
                 source_record: record.path().to_path_buf(),
                 binary_local_path: Utf8PathBuf::from(record.object_key()),
                 binary_object_key: record.object_key().to_string(),
+                helper_local_path: Utf8PathBuf::from(record.helper().object_key()),
+                helper_object_key: record.helper().object_key().to_string(),
                 record_local_path: Utf8PathBuf::from(&record_object_key),
                 record_object_key,
             })
@@ -171,6 +187,7 @@ fn validate_candidate_is_not_older_than_current(
     records: &[AppReleaseRecord],
     current_app_manifest: Option<&Utf8Path>,
     current_app_installer: Option<&Utf8Path>,
+    base_url: &str,
 ) -> crate::Result<()> {
     if current_app_manifest.is_none() && current_app_installer.is_none() {
         return Ok(());
@@ -209,6 +226,163 @@ fn validate_candidate_is_not_older_than_current(
                 current_version.source, current_version.version
             ),
         });
+    }
+    if let Some(current_app_manifest) = current_app_manifest
+        && current_app_manifest_is_legacy(current_app_manifest)?
+    {
+        if candidate_version == current_version.version {
+            return Err(crate::ReleaseError::InvalidPublicationInput {
+                path: current_app_manifest.to_string(),
+                reason: "migration from a schema-1 app manifest requires a newer app version"
+                    .to_string(),
+            });
+        }
+
+        return Ok(());
+    }
+    if let Some(current_app_manifest) = current_app_manifest {
+        validate_helper_release_continuity(records, current_app_manifest)?;
+        if candidate_version == current_version.version {
+            validate_equal_version_helper_update(records, current_app_manifest, base_url)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_helper_release_continuity(
+    records: &[AppReleaseRecord],
+    current_app_manifest: &Utf8Path,
+) -> crate::Result<()> {
+    let current_json = read_to_string(current_app_manifest)?;
+    let current_manifest = AppUpdateManifest::parse(&current_json).map_err(|error| {
+        crate::ReleaseError::InvalidPublicationInput {
+            path: current_app_manifest.to_string(),
+            reason: format!("failed to parse current stable app manifest: {error}"),
+        }
+    })?;
+    for record in records {
+        let Some(current_asset) = current_manifest
+            .assets()
+            .iter()
+            .find(|asset| asset.platform() == record.platform())
+        else {
+            continue;
+        };
+        let current_helper = current_asset.helper();
+        let candidate_helper_version =
+            AppUpdateVersion::parse(record.helper().version().to_string()).map_err(|error| {
+                crate::ReleaseError::InvalidPublicationInput {
+                    path: record.path().to_string(),
+                    reason: format!("failed to parse candidate helper version: {error}"),
+                }
+            })?;
+        if candidate_helper_version < *current_helper.version() {
+            return Err(crate::ReleaseError::InvalidPublicationInput {
+                path: record.path().to_string(),
+                reason: format!(
+                    "candidate helper version `{candidate_helper_version}` must not be older than current stable `{}`",
+                    current_helper.version()
+                ),
+            });
+        }
+        if candidate_helper_version == *current_helper.version()
+            && (record.helper().protocol_version() != current_helper.protocol_version()
+                || record.helper().sha256() != current_helper.sha256().as_str()
+                || record.helper().size() != current_helper.size())
+        {
+            return Err(crate::ReleaseError::InvalidPublicationInput {
+                path: record.path().to_string(),
+                reason: "an existing helper version must keep its published protocol, checksum, and size"
+                    .to_string(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_equal_version_helper_update(
+    records: &[AppReleaseRecord],
+    current_app_manifest: &Utf8Path,
+    base_url: &str,
+) -> crate::Result<()> {
+    let current_json = read_to_string(current_app_manifest)?;
+    let current_manifest = AppUpdateManifest::parse(&current_json).map_err(|error| {
+        crate::ReleaseError::InvalidPublicationInput {
+            path: current_app_manifest.to_string(),
+            reason: format!("failed to parse current stable app manifest: {error}"),
+        }
+    })?;
+    let current_platforms = current_manifest
+        .assets()
+        .iter()
+        .map(|asset| asset.platform())
+        .collect::<BTreeSet<_>>();
+    let candidate_platforms = records
+        .iter()
+        .map(AppReleaseRecord::platform)
+        .collect::<BTreeSet<_>>();
+    if records.first().is_some_and(|record| {
+        record.minimum_pv_version() != current_manifest.minimum_pv_version().as_str()
+    }) {
+        return Err(crate::ReleaseError::InvalidPublicationInput {
+            path: current_app_manifest.to_string(),
+            reason: "equal-version app publication must preserve minimum_pv_version".to_string(),
+        });
+    }
+    if candidate_platforms != current_platforms {
+        return Err(crate::ReleaseError::InvalidPublicationInput {
+            path: current_app_manifest.to_string(),
+            reason: "equal-version app publication must preserve the current platform set"
+                .to_string(),
+        });
+    }
+    for record in records {
+        let current_asset = current_manifest
+            .select_platform(record.platform())
+            .map_err(|error| crate::ReleaseError::InvalidPublicationInput {
+                path: current_app_manifest.to_string(),
+                reason: format!(
+                    "current stable app manifest has no matching {} asset: {error}",
+                    record.platform().as_str()
+                ),
+            })?;
+        if record.sha256() != current_asset.sha256().as_str()
+            || record.size() != current_asset.size()
+            || current_asset.url() != crate::app::artifact_url(base_url, record.object_key())
+        {
+            return Err(crate::ReleaseError::InvalidPublicationInput {
+                path: record.path().to_string(),
+                reason: format!(
+                    "equal-version app publication must preserve the current {} app asset",
+                    record.platform().as_str()
+                ),
+            });
+        }
+        let current_helper = current_asset.helper();
+        let candidate_helper_version =
+            AppUpdateVersion::parse(record.helper().version().to_string()).map_err(|error| {
+                crate::ReleaseError::InvalidPublicationInput {
+                    path: record.path().to_string(),
+                    reason: format!("failed to parse candidate helper version: {error}"),
+                }
+            })?;
+        if record.helper().protocol_version() != current_helper.protocol_version() {
+            return Err(crate::ReleaseError::InvalidPublicationInput {
+                path: record.path().to_string(),
+                reason: "a helper protocol change requires a newer app version".to_string(),
+            });
+        }
+        if candidate_helper_version == *current_helper.version()
+            && current_helper.url()
+                != crate::app::artifact_url(base_url, record.helper().object_key())
+        {
+            return Err(crate::ReleaseError::InvalidPublicationInput {
+                path: record.path().to_string(),
+                reason: "an existing helper version must keep its published object key".to_string(),
+            });
+        }
     }
 
     Ok(())
@@ -255,14 +429,55 @@ fn current_stable_app_manifest_version(
     current_app_manifest: &Utf8Path,
 ) -> crate::Result<AppUpdateVersion> {
     let current_json = read_to_string(current_app_manifest)?;
-    let current_manifest = AppUpdateManifest::parse(&current_json).map_err(|error| {
+    let current_manifest = match AppUpdateManifest::parse(&current_json) {
+        Ok(current_manifest) => return Ok(current_manifest.version().clone()),
+        Err(error) => error,
+    };
+    let legacy = serde_json::from_str::<serde_json::Value>(&current_json).map_err(|_error| {
         crate::ReleaseError::InvalidPublicationInput {
             path: current_app_manifest.to_string(),
-            reason: format!("failed to parse current stable app manifest: {error}"),
+            reason: format!("failed to parse current stable app manifest: {current_manifest}"),
+        }
+    })?;
+    if legacy
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        != Some(1)
+    {
+        return Err(crate::ReleaseError::InvalidPublicationInput {
+            path: current_app_manifest.to_string(),
+            reason: format!("failed to parse current stable app manifest: {current_manifest}"),
+        });
+    }
+    let version = legacy
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| crate::ReleaseError::InvalidPublicationInput {
+            path: current_app_manifest.to_string(),
+            reason: "schema-1 current stable app manifest has no string version".to_string(),
+        })?;
+
+    AppUpdateVersion::parse(version.to_string()).map_err(|error| {
+        crate::ReleaseError::InvalidPublicationInput {
+            path: current_app_manifest.to_string(),
+            reason: format!("failed to parse schema-1 current stable app version: {error}"),
+        }
+    })
+}
+
+fn current_app_manifest_is_legacy(current_app_manifest: &Utf8Path) -> crate::Result<bool> {
+    let current_json = read_to_string(current_app_manifest)?;
+    let current = serde_json::from_str::<serde_json::Value>(&current_json).map_err(|error| {
+        crate::ReleaseError::InvalidPublicationInput {
+            path: current_app_manifest.to_string(),
+            reason: format!("failed to inspect current stable app manifest schema: {error}"),
         }
     })?;
 
-    Ok(current_manifest.version().clone())
+    Ok(current
+        .get("schema_version")
+        .and_then(serde_json::Value::as_u64)
+        == Some(1))
 }
 
 fn current_stable_app_installer_version(
@@ -343,6 +558,11 @@ fn validate_app_publication_object_keys(
         )?;
         record_app_publication_object_key(
             &mut seen,
+            &candidate.helper_object_key,
+            "privileged helper records",
+        )?;
+        record_app_publication_object_key(
+            &mut seen,
             &candidate.record_object_key,
             "app release records",
         )?;
@@ -393,6 +613,11 @@ fn validate_app_publication_local_paths(
         )?;
         record_app_publication_local_path(
             &mut seen,
+            candidate.helper_local_path.as_str(),
+            "privileged helper",
+        )?;
+        record_app_publication_local_path(
+            &mut seen,
             candidate.record_local_path.as_str(),
             "app release record",
         )?;
@@ -440,6 +665,10 @@ fn app_publication_plan(
                 AppPublicationPlanObject {
                     local_path: candidate.binary_local_path.to_string(),
                     object_key: candidate.binary_object_key.clone(),
+                },
+                AppPublicationPlanObject {
+                    local_path: candidate.helper_local_path.to_string(),
+                    object_key: candidate.helper_object_key.clone(),
                 },
                 AppPublicationPlanObject {
                     local_path: candidate.record_local_path.to_string(),
@@ -505,6 +734,26 @@ fn verify_binary(record: &AppReleaseRecord, source_binary: &Utf8Path) -> crate::
         return Err(crate::ReleaseError::ChecksumMismatch {
             path: source_binary.to_string(),
             expected: record.sha256().to_string(),
+            actual: sha256,
+        });
+    }
+
+    Ok(())
+}
+
+fn verify_helper(record: &AppReleaseRecord, source_helper: &Utf8Path) -> crate::Result<()> {
+    let (sha256, size) = digest_and_size(source_helper)?;
+    if size != record.helper().size() {
+        return Err(crate::ReleaseError::SizeMismatch {
+            path: source_helper.to_string(),
+            expected: record.helper().size(),
+            actual: size,
+        });
+    }
+    if sha256 != record.helper().sha256() {
+        return Err(crate::ReleaseError::ChecksumMismatch {
+            path: source_helper.to_string(),
+            expected: record.helper().sha256().to_string(),
             actual: sha256,
         });
     }

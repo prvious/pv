@@ -83,6 +83,10 @@ impl PvPaths {
         self.app_releases_dir().join(version).join("pv")
     }
 
+    pub fn app_release_helper(&self, version: &str) -> Utf8PathBuf {
+        self.app_releases_dir().join(version).join("pv-helper")
+    }
+
     pub fn active_pv_binary(&self) -> Utf8PathBuf {
         self.bin().join("pv")
     }
@@ -93,6 +97,10 @@ impl PvPaths {
 
     pub fn update_lock(&self) -> Utf8PathBuf {
         self.run().join("update.lock")
+    }
+
+    pub fn helper_lifecycle_lock(&self) -> Utf8PathBuf {
+        self.root.with_file_name(".pv-helper-lifecycle.lock")
     }
 
     pub fn daemon_socket(&self) -> Utf8PathBuf {

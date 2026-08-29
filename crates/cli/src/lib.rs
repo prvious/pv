@@ -2,6 +2,7 @@ mod args;
 mod commands;
 mod environment;
 mod error;
+mod helper_release;
 mod output;
 mod progress;
 mod shell;

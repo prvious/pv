@@ -49,8 +49,10 @@ fn app_release_records_generate_self_update_manifest() -> Result<()> {
 fn app_release_record_writer_serializes_binary_metadata() -> Result<()> {
     let tempdir = tempdir()?;
     let binary = tempdir.path().join("pv");
+    let helper_binary = tempdir.path().join("pv-helper");
     let record = tempdir.path().join("records/pv/0.2.0/pv-darwin-arm64.json");
     write_binary_file(&binary, b"pv app bytes")?;
+    write_binary_file(&helper_binary, b"pv helper bytes")?;
 
     let output = StdCommand::new(env!("CARGO_BIN_EXE_pv-release"))
         .arg("write-app-release-record")
@@ -58,6 +60,8 @@ fn app_release_record_writer_serializes_binary_metadata() -> Result<()> {
         .arg(record.as_str())
         .arg("--binary")
         .arg(binary.as_str())
+        .arg("--helper-binary")
+        .arg(helper_binary.as_str())
         .arg("--version")
         .arg("0.2.0")
         .arg("--minimum-pv-version")
@@ -68,6 +72,12 @@ fn app_release_record_writer_serializes_binary_metadata() -> Result<()> {
         .arg("darwin-arm64")
         .arg("--object-key")
         .arg("pv/0.2.0/pv-darwin-arm64")
+        .arg("--helper-version")
+        .arg("1.0.0")
+        .arg("--helper-protocol-version")
+        .arg("1")
+        .arg("--helper-object-key")
+        .arg("pv/0.2.0/pv-helper-1.0.0-darwin-arm64")
         .arg("--source-url")
         .arg("https://github.com/prvious/pv/archive/refs/tags/v0.2.0.tar.gz")
         .arg("--source-sha256")
@@ -180,7 +190,11 @@ fn app_release_records_reject_invalid_record_metadata() -> Result<()> {
                             "\"platform\": \"darwin-amd64\"",
                             "\"platform\": \"darwin-arm64\"",
                         )
-                        .replace("pv/0.2.0/pv-darwin-amd64", "pv/0.2.0/pv-darwin-arm64"),
+                        .replace("pv/0.2.0/pv-darwin-amd64", "pv/0.2.0/pv-darwin-arm64")
+                        .replace(
+                            "pv-helper-1.0.0-darwin-amd64",
+                            "pv-helper-1.0.0-darwin-arm64",
+                        ),
                 ),
             ],
         },
@@ -313,7 +327,7 @@ fn read_file(path: &Utf8Path) -> Result<String> {
 }
 
 const PV_APP_ARM64: &str = r#"{
-  "schema_version": 1,
+  "schema_version": 2,
   "channel": "stable",
   "version": "0.2.0",
   "minimum_pv_version": "0.1.0",
@@ -322,6 +336,13 @@ const PV_APP_ARM64: &str = r#"{
   "object_key": "pv/0.2.0/pv-darwin-arm64",
   "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "size": 12345678,
+  "helper": {
+    "version": "1.0.0",
+    "protocol_version": 1,
+    "object_key": "pv/0.2.0/pv-helper-1.0.0-darwin-arm64",
+    "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "size": 2345678
+  },
   "provenance": {
     "source_url": "https://github.com/prvious/pv/archive/refs/tags/v0.2.0.tar.gz",
     "source_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
@@ -332,7 +353,7 @@ const PV_APP_ARM64: &str = r#"{
 }"#;
 
 const PV_APP_AMD64: &str = r#"{
-  "schema_version": 1,
+  "schema_version": 2,
   "channel": "stable",
   "version": "0.2.0",
   "minimum_pv_version": "0.1.0",
@@ -341,6 +362,13 @@ const PV_APP_AMD64: &str = r#"{
   "object_key": "pv/0.2.0/pv-darwin-amd64",
   "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "size": 12345679,
+  "helper": {
+    "version": "1.0.0",
+    "protocol_version": 1,
+    "object_key": "pv/0.2.0/pv-helper-1.0.0-darwin-amd64",
+    "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "size": 2345679
+  },
   "provenance": {
     "source_url": "https://github.com/prvious/pv/archive/refs/tags/v0.2.0.tar.gz",
     "source_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",

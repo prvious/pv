@@ -3,7 +3,7 @@ source: crates/self-update/tests/app_update_manifest.rs
 expression: manifest
 ---
 AppUpdateManifest {
-    schema_version: 1,
+    schema_version: 2,
     channel: "stable",
     version: AppUpdateVersion {
         major: 0,
@@ -28,6 +28,20 @@ AppUpdateManifest {
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             ),
             size: 12345678,
+            helper: PrivilegedHelperUpdateAsset {
+                version: AppUpdateVersion {
+                    major: 1,
+                    minor: 0,
+                    patch: 0,
+                    raw: "1.0.0",
+                },
+                protocol_version: 1,
+                url: "https://downloads.example.test/pv/0.2.0/pv-helper-1.0.0-darwin-arm64",
+                sha256: Sha256Digest(
+                    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                ),
+                size: 2345678,
+            },
         },
         AppUpdateAsset {
             platform: DarwinAmd64,
@@ -36,6 +50,20 @@ AppUpdateManifest {
                 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             ),
             size: 12345678,
+            helper: PrivilegedHelperUpdateAsset {
+                version: AppUpdateVersion {
+                    major: 1,
+                    minor: 0,
+                    patch: 0,
+                    raw: "1.0.0",
+                },
+                protocol_version: 1,
+                url: "https://downloads.example.test/pv/0.2.0/pv-helper-1.0.0-darwin-amd64",
+                sha256: Sha256Digest(
+                    "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                ),
+                size: 2345678,
+            },
         },
     ],
 }

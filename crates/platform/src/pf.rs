@@ -4,10 +4,10 @@ use std::net::IpAddr;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use data_encoding::HEXLOWER;
+use serde::{Deserialize, Serialize};
 
 use crate::PlatformError;
 use crate::command::{run_system_command, run_system_command_output};
-use crate::trust::PrivilegeMode;
 
 pub const SYSTEM_PF_ANCHOR_PATH: &str = "/etc/pf.anchors/com.prvious.pv";
 pub const SYSTEM_PF_CONF_PATH: &str = "/etc/pf.conf";
@@ -20,13 +20,13 @@ const LEGACY_PF_ANCHOR_DIRECTIVE: &str = "anchor \"com.prvious.pv\"";
 const PF_LOAD_ANCHOR_DIRECTIVE: &str =
     "load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"";
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PfRedirectConfig {
     pub http_port: u16,
     pub https_port: u16,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ActivePfRedirectInspection {
     pub pf_enabled: bool,
     pub pv_config: Option<PfRedirectConfig>,
@@ -35,10 +35,10 @@ pub struct ActivePfRedirectInspection {
     pub has_unresolved_redirect_targets: bool,
 }
 
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PfConfReference;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum PfFileState<T> {
     Missing {
         path: Utf8PathBuf,
@@ -234,7 +234,12 @@ pub fn inspect_pf_conf_reference(
 }
 
 pub fn active_pf_redirect_config() -> Result<Option<PfRedirectConfig>, PlatformError> {
-    active_pf_redirect_config_with_privilege_mode(PrivilegeMode::NonInteractive)
+    match active_pf_redirect_config_unprivileged_with_runner(&mut run_system_command_output) {
+        Ok(config) => Ok(config),
+        Err(_unprivileged_error) => crate::PrivilegedHelperClient
+            .inspect_pf()
+            .map(|inspection| inspection.pv_config),
+    }
 }
 
 pub fn inspect_active_pf_redirects_unprivileged()
@@ -242,28 +247,17 @@ pub fn inspect_active_pf_redirects_unprivileged()
     inspect_active_pf_redirects_unprivileged_with_runner(&mut run_system_command_output)
 }
 
-pub fn active_pf_redirect_config_with_privilege_mode(
-    privilege_mode: PrivilegeMode,
-) -> Result<Option<PfRedirectConfig>, PlatformError> {
-    active_pf_redirect_config_with_runner(privilege_mode, &mut run_system_command_output)
-}
-
-fn active_pf_redirect_config_with_runner(
-    privilege_mode: PrivilegeMode,
+fn active_pf_redirect_config_unprivileged_with_runner(
     run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
 ) -> Result<Option<PfRedirectConfig>, PlatformError> {
-    let main_nat_rules =
-        active_pf_rules_with_runner(&["-s", "nat"], privilege_mode, run_system_output)?;
+    let main_nat_rules = run_system_output("/sbin/pfctl", &["-s", "nat"])?;
 
     if !main_nat_rules_load_pv_rdr_anchor(&main_nat_rules) {
         return Ok(None);
     }
 
-    let anchor_nat_rules = active_pf_rules_with_runner(
-        &["-a", "com.prvious.pv", "-s", "nat"],
-        privilege_mode,
-        run_system_output,
-    )?;
+    let anchor_nat_rules =
+        run_system_output("/sbin/pfctl", &["-a", "com.prvious.pv", "-s", "nat"])?;
 
     Ok(PfRedirectConfig::parse_active_rules(&anchor_nat_rules))
 }
@@ -377,47 +371,30 @@ fn redirect_target(rule: &str) -> RedirectTarget {
     RedirectTarget::ResolvedPort(port)
 }
 
-fn active_pf_rules_with_runner(
-    pfctl_args: &[&'static str],
-    privilege_mode: PrivilegeMode,
-    run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
-) -> Result<String, PlatformError> {
-    match run_system_output("/sbin/pfctl", pfctl_args) {
-        Ok(rules) => Ok(rules),
-        Err(non_sudo_error) => {
-            let mut sudo_args = sudo_pfctl_args(privilege_mode);
-            sudo_args.extend(pfctl_args);
-
-            match run_system_output("/usr/bin/sudo", &sudo_args) {
-                Ok(rules) => Ok(rules),
-                Err(_) => Err(non_sudo_error),
-            }
-        }
-    }
-}
-
-fn sudo_pfctl_args(privilege_mode: PrivilegeMode) -> Vec<&'static str> {
-    match privilege_mode {
-        PrivilegeMode::Interactive => vec!["/sbin/pfctl"],
-        PrivilegeMode::NonInteractive => vec!["-n", "/sbin/pfctl"],
-    }
-}
-
 pub fn install_pf_redirects(
     prepared_anchor_path: &Utf8Path,
     prepared_reference_path: &Utf8Path,
     system_anchor_path: &Utf8Path,
     system_pf_conf_path: &Utf8Path,
 ) -> Result<(), PlatformError> {
-    install_pf_redirects_with_runner(
-        prepared_anchor_path,
-        prepared_reference_path,
-        system_anchor_path,
-        system_pf_conf_path,
-        &mut run_system_command,
-    )
+    require_fixed_pf_paths(system_anchor_path, system_pf_conf_path)?;
+    let prepared_anchor = read_platform_file(prepared_anchor_path)?;
+    let prepared_reference = read_platform_file(prepared_reference_path)?;
+    let config = PfRedirectConfig::parse_anchor(&prepared_anchor).ok_or_else(|| {
+        PlatformError::SystemIntegration(format!(
+            "prepared pf anchor is not a valid PV anchor: {prepared_anchor_path}"
+        ))
+    })?;
+    if PfConfReference::parse_block(&prepared_reference).is_none() {
+        return Err(PlatformError::SystemIntegration(format!(
+            "prepared pf.conf reference is not valid: {prepared_reference_path}"
+        )));
+    }
+
+    crate::PrivilegedHelperClient.apply_pf(&config)
 }
 
+#[cfg(test)]
 fn install_pf_redirects_with_runner(
     prepared_anchor_path: &Utf8Path,
     prepared_reference_path: &Utf8Path,
@@ -425,6 +402,45 @@ fn install_pf_redirects_with_runner(
     system_pf_conf_path: &Utf8Path,
     run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
 ) -> Result<(), PlatformError> {
+    let runner = std::cell::RefCell::new(run_system);
+    install_pf_redirects_and_verify_with_runner(
+        PfInstallPaths {
+            prepared_anchor: prepared_anchor_path,
+            prepared_reference: prepared_reference_path,
+            system_anchor: system_anchor_path,
+            system_pf_conf: system_pf_conf_path,
+        },
+        &mut |program, args| runner.borrow_mut()(program, args),
+        &mut || {
+            runner.borrow_mut()("/sbin/pfctl", &["-E"])?;
+            Ok("Token : 1\n".to_string())
+        },
+        true,
+        &mut || Ok(()),
+    )
+}
+
+#[derive(Clone, Copy)]
+struct PfInstallPaths<'path> {
+    prepared_anchor: &'path Utf8Path,
+    prepared_reference: &'path Utf8Path,
+    system_anchor: &'path Utf8Path,
+    system_pf_conf: &'path Utf8Path,
+}
+
+fn install_pf_redirects_and_verify_with_runner(
+    paths: PfInstallPaths<'_>,
+    run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
+    enable_pf: &mut impl FnMut() -> Result<String, PlatformError>,
+    pf_was_enabled: bool,
+    verify_active: &mut impl FnMut() -> Result<(), PlatformError>,
+) -> Result<(), PlatformError> {
+    let PfInstallPaths {
+        prepared_anchor: prepared_anchor_path,
+        prepared_reference: prepared_reference_path,
+        system_anchor: system_anchor_path,
+        system_pf_conf: system_pf_conf_path,
+    } = paths;
     let prepared_anchor = read_platform_file(prepared_anchor_path)?;
     let prepared_reference = read_platform_file(prepared_reference_path)?;
     if PfRedirectConfig::parse_anchor(&prepared_anchor).is_none() {
@@ -469,24 +485,26 @@ fn install_pf_redirects_with_runner(
 
     state::fs::write_sensitive_file(&candidate_path, &candidate)
         .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
-    install_pf_anchor_with_runner(prepared_anchor_path, system_anchor_path, run_system)?;
+    let mut reload_attempted = false;
     let post_anchor_result = (|| {
+        install_pf_anchor_with_runner(prepared_anchor_path, system_anchor_path, run_system)?;
+        run_system("/sbin/pfctl", &["-nf", candidate_path.as_str()])?;
         run_system(
-            "/usr/bin/sudo",
-            &["/sbin/pfctl", "-nf", candidate_path.as_str()],
-        )?;
-        run_system(
-            "/usr/bin/sudo",
+            "/usr/bin/install",
             &[
-                "/usr/bin/install",
                 "-m",
                 "0644",
                 candidate_path.as_str(),
                 system_pf_conf_path.as_str(),
             ],
         )?;
+        reload_attempted = true;
         reload_pf_with_runner(system_pf_conf_path, run_system)?;
-        run_system("/usr/bin/sudo", &["/sbin/pfctl", "-E"])
+        verify_active()?;
+        if !pf_was_enabled {
+            enable_pf()?;
+        }
+        Ok(())
     })();
 
     if let Err(error) = post_anchor_result {
@@ -507,6 +525,16 @@ fn install_pf_redirects_with_runner(
             run_system,
         ) {
             rollback_errors.push(format!("pf anchor: {rollback_error}"));
+        }
+        if reload_attempted {
+            let active_rollback = if pf_conf_backup.is_some() {
+                reload_pf_with_runner(system_pf_conf_path, run_system)
+            } else {
+                run_system("/sbin/pfctl", &["-a", "com.prvious.pv", "-F", "all"])
+            };
+            if let Err(rollback_error) = active_rollback {
+                rollback_errors.push(format!("active PF state: {rollback_error}"));
+            }
         }
 
         if !rollback_errors.is_empty() {
@@ -532,24 +560,21 @@ fn rollback_pf_anchor_with_runner(
         state::fs::write_sensitive_file(anchor_backup_path, anchor_backup)
             .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
         run_system(
-            "/usr/bin/sudo",
+            "/usr/bin/install",
             &[
-                "/usr/bin/install",
                 "-m",
                 "0644",
                 anchor_backup_path.as_str(),
                 system_anchor_path.as_str(),
             ],
         )?;
-        let _ = state::fs::delete_file(anchor_backup_path);
+        state::fs::delete_file(anchor_backup_path)
+            .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
 
         return Ok(());
     }
 
-    run_system(
-        "/usr/bin/sudo",
-        &["/bin/rm", "-f", system_anchor_path.as_str()],
-    )
+    run_system("/bin/rm", &["-f", system_anchor_path.as_str()])
 }
 
 fn rollback_pf_conf_with_runner(
@@ -562,24 +587,21 @@ fn rollback_pf_conf_with_runner(
         state::fs::write_sensitive_file(pf_conf_backup_path, pf_conf_backup)
             .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
         run_system(
-            "/usr/bin/sudo",
+            "/usr/bin/install",
             &[
-                "/usr/bin/install",
                 "-m",
                 "0644",
                 pf_conf_backup_path.as_str(),
                 system_pf_conf_path.as_str(),
             ],
         )?;
-        let _ = state::fs::delete_file(pf_conf_backup_path);
+        state::fs::delete_file(pf_conf_backup_path)
+            .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
 
         return Ok(());
     }
 
-    run_system(
-        "/usr/bin/sudo",
-        &["/bin/rm", "-f", system_pf_conf_path.as_str()],
-    )
+    run_system("/bin/rm", &["-f", system_pf_conf_path.as_str()])
 }
 
 pub fn remove_pf_redirects(
@@ -587,10 +609,106 @@ pub fn remove_pf_redirects(
     system_pf_conf_path: &Utf8Path,
     candidate_dir: &Utf8Path,
 ) -> Result<(), PlatformError> {
+    let _candidate_dir = candidate_dir;
+    require_fixed_pf_paths(system_anchor_path, system_pf_conf_path)?;
+    crate::PrivilegedHelperClient.remove_pf()
+}
+
+fn require_fixed_pf_paths(
+    system_anchor_path: &Utf8Path,
+    system_pf_conf_path: &Utf8Path,
+) -> Result<(), PlatformError> {
+    if system_anchor_path == Utf8Path::new(SYSTEM_PF_ANCHOR_PATH)
+        && system_pf_conf_path == Utf8Path::new(SYSTEM_PF_CONF_PATH)
+    {
+        return Ok(());
+    }
+
+    Err(PlatformError::SystemIntegration(format!(
+        "PF mutation requires fixed system paths {SYSTEM_PF_ANCHOR_PATH} and {SYSTEM_PF_CONF_PATH}"
+    )))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn inspect_active_pf_redirects_privileged()
+-> Result<ActivePfRedirectInspection, PlatformError> {
+    inspect_active_pf_redirects_unprivileged_with_runner(&mut run_system_command_output)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn apply_pf_redirects_privileged(
+    config: &PfRedirectConfig,
+) -> Result<(), PlatformError> {
+    let system_anchor_path = Utf8Path::new(SYSTEM_PF_ANCHOR_PATH);
+    let system_pf_conf_path = Utf8Path::new(SYSTEM_PF_CONF_PATH);
+    crate::helper::validate_root_owned_file_if_present(system_anchor_path)?;
+    crate::helper::validate_root_owned_file_if_present(system_pf_conf_path)?;
+    let pf_was_enabled = inspect_active_pf_redirects_privileged()?.pf_enabled;
+
+    let work_dir = Utf8Path::new("/Library/Application Support/PV/pf");
+    let prepared_anchor_path = work_dir.join("com.prvious.pv");
+    let prepared_reference_path = work_dir.join("pf.conf.reference");
+    write_temporary_file(&prepared_anchor_path, &config.render_anchor())?;
+    write_temporary_file(&prepared_reference_path, &PfConfReference.render())?;
+    install_pf_redirects_and_verify_with_runner(
+        PfInstallPaths {
+            prepared_anchor: &prepared_anchor_path,
+            prepared_reference: &prepared_reference_path,
+            system_anchor: system_anchor_path,
+            system_pf_conf: system_pf_conf_path,
+        },
+        &mut run_system_command,
+        &mut || run_system_command_output("/sbin/pfctl", &["-E"]),
+        pf_was_enabled,
+        &mut || {
+            let active =
+                active_pf_redirect_config_unprivileged_with_runner(&mut run_system_command_output)?;
+            if active.as_ref() == Some(config) {
+                Ok(())
+            } else {
+                Err(PlatformError::SystemIntegration(
+                    "PF redirects did not match after helper apply".to_string(),
+                ))
+            }
+        },
+    )
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn reload_pf_redirects_privileged() -> Result<(), PlatformError> {
+    let system_anchor_path = Utf8Path::new(SYSTEM_PF_ANCHOR_PATH);
+    let system_pf_conf_path = Utf8Path::new(SYSTEM_PF_CONF_PATH);
+    match inspect_pf_anchor_file(system_anchor_path, None) {
+        PfFileState::Current { .. } => {}
+        state => {
+            return Err(PlatformError::SystemIntegration(format!(
+                "PV PF anchor is not reloadable: {state:?}"
+            )));
+        }
+    }
+    match inspect_pf_conf_reference(system_pf_conf_path, None) {
+        PfFileState::Current { .. } => {}
+        state => {
+            return Err(PlatformError::SystemIntegration(format!(
+                "PV pf.conf reference is not reloadable: {state:?}"
+            )));
+        }
+    }
+    crate::helper::validate_root_owned_file_if_present(system_anchor_path)?;
+    crate::helper::validate_root_owned_file_if_present(system_pf_conf_path)?;
+    reload_pf_with_runner(system_pf_conf_path, &mut run_system_command)
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn remove_pf_redirects_privileged() -> Result<(), PlatformError> {
+    let system_anchor_path = Utf8Path::new(SYSTEM_PF_ANCHOR_PATH);
+    let system_pf_conf_path = Utf8Path::new(SYSTEM_PF_CONF_PATH);
+    crate::helper::validate_root_owned_file_if_present(system_anchor_path)?;
+    crate::helper::validate_root_owned_file_if_present(system_pf_conf_path)?;
     remove_pf_redirects_with_runner(
         system_anchor_path,
         system_pf_conf_path,
-        candidate_dir,
+        Utf8Path::new("/Library/Application Support/PV/pf"),
         &mut run_system_command,
     )
 }
@@ -611,20 +729,29 @@ fn remove_pf_redirects_with_runner(
             let candidate_path = temporary_pf_conf_candidate_path(candidate_dir)?;
 
             write_temporary_file(&candidate_path, &candidate)?;
-            run_system(
-                "/usr/bin/sudo",
-                &["/sbin/pfctl", "-nf", candidate_path.as_str()],
-            )?;
-            run_system(
-                "/usr/bin/sudo",
-                &[
+            let update_result = (|| {
+                run_system("/sbin/pfctl", &["-nf", candidate_path.as_str()])?;
+                run_system(
                     "/usr/bin/install",
-                    "-m",
-                    "0644",
-                    candidate_path.as_str(),
-                    system_pf_conf_path.as_str(),
-                ],
-            )?;
+                    &[
+                        "-m",
+                        "0644",
+                        candidate_path.as_str(),
+                        system_pf_conf_path.as_str(),
+                    ],
+                )
+            })();
+            let cleanup_result = state::fs::delete_file(&candidate_path)
+                .map_err(|error| PlatformError::SystemIntegration(error.to_string()));
+            match (update_result, cleanup_result) {
+                (Ok(()), Ok(())) => {}
+                (Ok(()), Err(error)) | (Err(error), Ok(())) => return Err(error),
+                (Err(error), Err(cleanup_error)) => {
+                    return Err(PlatformError::SystemIntegration(format!(
+                        "{error}; additionally failed to remove PF candidate: {cleanup_error}"
+                    )));
+                }
+            }
         }
         PfFileState::Conflict { path } => {
             return Err(PlatformError::SystemIntegration(format!(
@@ -638,10 +765,7 @@ fn remove_pf_redirects_with_runner(
         }
     }
 
-    run_system(
-        "/usr/bin/sudo",
-        &["/bin/rm", "-f", system_anchor_path.as_str()],
-    )?;
+    run_system("/bin/rm", &["-f", system_anchor_path.as_str()])?;
     reload_pf_with_runner(system_pf_conf_path, run_system)
 }
 
@@ -792,15 +916,11 @@ fn install_pf_anchor_with_runner(
         ))
     })?;
 
+    run_system("/sbin/pfctl", &["-nf", prepared_anchor_path.as_str()])?;
+    run_system("/bin/mkdir", &["-p", parent.as_str()])?;
     run_system(
-        "/usr/bin/sudo",
-        &["/sbin/pfctl", "-nf", prepared_anchor_path.as_str()],
-    )?;
-    run_system("/usr/bin/sudo", &["/bin/mkdir", "-p", parent.as_str()])?;
-    run_system(
-        "/usr/bin/sudo",
+        "/usr/bin/install",
         &[
-            "/usr/bin/install",
             "-m",
             "0644",
             prepared_anchor_path.as_str(),
@@ -813,10 +933,7 @@ fn reload_pf_with_runner(
     system_pf_conf_path: &Utf8Path,
     run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
 ) -> Result<(), PlatformError> {
-    run_system(
-        "/usr/bin/sudo",
-        &["/sbin/pfctl", "-f", system_pf_conf_path.as_str()],
-    )
+    run_system("/sbin/pfctl", &["-f", system_pf_conf_path.as_str()])
 }
 
 fn append_pf_reference(content: &str, reference: &str) -> String {
@@ -931,15 +1048,16 @@ fn write_temporary_file(path: &Utf8Path, content: &str) -> Result<(), PlatformEr
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::collections::BTreeSet;
 
     use camino::Utf8Path;
     use camino_tempfile::tempdir;
 
     use super::{
-        ActivePfRedirectInspection, PfConfReference, PfRedirectConfig,
-        active_pf_redirect_config_with_runner,
-        inspect_active_pf_redirects_unprivileged_with_runner, install_pf_redirects_with_runner,
+        ActivePfRedirectInspection, PfConfReference, PfInstallPaths, PfRedirectConfig,
+        inspect_active_pf_redirects_unprivileged_with_runner,
+        install_pf_redirects_and_verify_with_runner, install_pf_redirects_with_runner,
         read_platform_file, remove_pf_redirects_with_runner, temporary_pf_conf_candidate_path,
     };
 
@@ -1067,151 +1185,6 @@ mod tests {
                 resolved_target_ports: BTreeSet::from([45080]),
                 has_unresolved_redirect_targets: false,
             }
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn active_pf_redirect_config_reads_loaded_rdr_anchor_reference() -> anyhow::Result<()> {
-        let mut commands = Vec::new();
-
-        let config = active_pf_redirect_config_with_runner(
-            crate::PrivilegeMode::NonInteractive,
-            &mut |program, args| {
-                let command = format!("{program} {}", args.join(" "));
-                commands.push(command.clone());
-
-                if command == "/sbin/pfctl -a com.prvious.pv -s nat" {
-                    return Ok(
-                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443\n"
-                            .to_string(),
-                    );
-                }
-
-                Ok("nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\nrdr-anchor \"com.prvious.pv\" all\n".to_string())
-            },
-        )?;
-
-        assert_eq!(config, Some(PfRedirectConfig::new(48080, 48443)));
-        assert_eq!(
-            commands,
-            ["/sbin/pfctl -s nat", "/sbin/pfctl -a com.prvious.pv -s nat"]
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn active_pf_redirect_config_reads_live_anchor_rules() -> anyhow::Result<()> {
-        let mut commands = Vec::new();
-
-        let config = active_pf_redirect_config_with_runner(
-            crate::PrivilegeMode::NonInteractive,
-            &mut |program, args| {
-                let command = format!("{program} {}", args.join(" "));
-                commands.push(command.clone());
-
-                if command == "/sbin/pfctl -a com.prvious.pv -s nat" {
-                    return Ok(
-                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48081\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48444\n"
-                            .to_string(),
-                    );
-                }
-
-                Ok("nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\nrdr-anchor \"com.prvious.pv\" all\n".to_string())
-            },
-        )?;
-
-        assert_eq!(config, Some(PfRedirectConfig::new(48081, 48444)));
-        assert_eq!(
-            commands,
-            ["/sbin/pfctl -s nat", "/sbin/pfctl -a com.prvious.pv -s nat"]
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn active_pf_redirect_config_uses_noninteractive_sudo_when_nat_rules_require_privilege()
-    -> anyhow::Result<()> {
-        let mut commands = Vec::new();
-
-        let config = active_pf_redirect_config_with_runner(
-            crate::PrivilegeMode::NonInteractive,
-            &mut |program, args| {
-                let command = format!("{program} {}", args.join(" "));
-                commands.push(command.clone());
-
-                if command.starts_with("/sbin/pfctl ") {
-                    return Err(crate::PlatformError::SystemIntegrationCommandStatus {
-                        command,
-                        status: "exit status: 1".to_string(),
-                    });
-                }
-
-                if command == "/usr/bin/sudo -n /sbin/pfctl -a com.prvious.pv -s nat" {
-                    return Ok(
-                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443\n"
-                            .to_string(),
-                    );
-                }
-
-                Ok("nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\nrdr-anchor \"com.prvious.pv\" all\n".to_string())
-            },
-        )?;
-
-        assert_eq!(config, Some(PfRedirectConfig::new(48080, 48443)));
-        assert_eq!(
-            commands,
-            [
-                "/sbin/pfctl -s nat",
-                "/usr/bin/sudo -n /sbin/pfctl -s nat",
-                "/sbin/pfctl -a com.prvious.pv -s nat",
-                "/usr/bin/sudo -n /sbin/pfctl -a com.prvious.pv -s nat"
-            ]
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn active_pf_redirect_config_uses_interactive_sudo_when_requested() -> anyhow::Result<()> {
-        let mut commands = Vec::new();
-
-        let config = active_pf_redirect_config_with_runner(
-            crate::PrivilegeMode::Interactive,
-            &mut |program, args| {
-                let command = format!("{program} {}", args.join(" "));
-                commands.push(command.clone());
-
-                if command.starts_with("/sbin/pfctl ") {
-                    return Err(crate::PlatformError::SystemIntegrationCommandStatus {
-                        command,
-                        status: "exit status: 1".to_string(),
-                    });
-                }
-
-                if command == "/usr/bin/sudo /sbin/pfctl -a com.prvious.pv -s nat" {
-                    return Ok(
-                        "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080\nrdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443\n"
-                            .to_string(),
-                    );
-                }
-
-                Ok("nat-anchor \"com.apple/*\" all\nrdr-anchor \"com.apple/*\" all\nrdr-anchor \"com.prvious.pv\" all\n".to_string())
-            },
-        )?;
-
-        assert_eq!(config, Some(PfRedirectConfig::new(48080, 48443)));
-        assert_eq!(
-            commands,
-            [
-                "/sbin/pfctl -s nat",
-                "/usr/bin/sudo /sbin/pfctl -s nat",
-                "/sbin/pfctl -a com.prvious.pv -s nat",
-                "/usr/bin/sudo /sbin/pfctl -a com.prvious.pv -s nat"
-            ]
         );
 
         Ok(())
@@ -1362,9 +1335,62 @@ mod tests {
                 && command.contains(prepared_anchor_path.as_str())
                 && command.contains(system_anchor_path.as_str())
         }));
-        assert!(commands.iter().any(|command| {
-            command == &format!("/usr/bin/sudo /bin/rm -f {system_anchor_path}")
-        }));
+        assert!(
+            commands
+                .iter()
+                .any(|command| command == &format!("/bin/rm -f {system_anchor_path}"))
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn install_pf_redirects_rolls_back_an_attempted_anchor_install() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let prepared_anchor_path = tempdir.path().join("prepared-anchor");
+        let prepared_reference_path = tempdir.path().join("prepared-pf.conf");
+        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+        let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+        let mut commands = Vec::new();
+
+        state::fs::write_sensitive_file(
+            &prepared_anchor_path,
+            &PfRedirectConfig::new(48080, 48443).render_anchor(),
+        )?;
+        state::fs::write_sensitive_file(&prepared_reference_path, &PfConfReference.render())?;
+
+        let result = install_pf_redirects_with_runner(
+            &prepared_anchor_path,
+            &prepared_reference_path,
+            &system_anchor_path,
+            &system_pf_conf_path,
+            &mut |program, args| {
+                let command = format!("{program} {}", args.join(" "));
+                commands.push(command.clone());
+
+                if command.contains("/usr/bin/install")
+                    && command.contains(prepared_anchor_path.as_str())
+                    && command.contains(system_anchor_path.as_str())
+                {
+                    return Err(crate::PlatformError::SystemIntegration(
+                        "install anchor failed after mutation".to_string(),
+                    ));
+                }
+
+                Ok(())
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::PlatformError::SystemIntegration(message))
+                if message == "install anchor failed after mutation"
+        ));
+        assert!(
+            commands
+                .iter()
+                .any(|command| command == &format!("/bin/rm -f {system_anchor_path}"))
+        );
 
         Ok(())
     }
@@ -1416,9 +1442,11 @@ mod tests {
                 && command.contains(prepared_anchor_path.as_str())
                 && command.contains(system_anchor_path.as_str())
         }));
-        assert!(commands.iter().any(|command| {
-            command == &format!("/usr/bin/sudo /bin/rm -f {system_anchor_path}")
-        }));
+        assert!(
+            commands
+                .iter()
+                .any(|command| command == &format!("/bin/rm -f {system_anchor_path}"))
+        );
 
         Ok(())
     }
@@ -1448,7 +1476,13 @@ mod tests {
                 let command = format!("{program} {}", args.join(" "));
                 commands.push(command.clone());
 
-                if command == format!("/usr/bin/sudo /sbin/pfctl -f {system_pf_conf_path}") {
+                if command == format!("/sbin/pfctl -f {system_pf_conf_path}")
+                    && commands
+                        .iter()
+                        .filter(|recorded| *recorded == &command)
+                        .count()
+                        == 1
+                {
                     return Err(crate::PlatformError::SystemIntegration(
                         "reload pf failed".to_string(),
                     ));
@@ -1468,9 +1502,70 @@ mod tests {
                 && command.contains("pf.conf.rollback")
                 && command.contains(system_pf_conf_path.as_str())
         }));
-        assert!(commands.iter().any(|command| {
-            command == &format!("/usr/bin/sudo /bin/rm -f {system_anchor_path}")
-        }));
+        assert!(
+            commands
+                .iter()
+                .any(|command| command == &format!("/bin/rm -f {system_anchor_path}"))
+        );
+        assert_eq!(
+            commands
+                .iter()
+                .filter(|command| command == &&format!("/sbin/pfctl -f {system_pf_conf_path}"))
+                .count(),
+            2
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn failed_pf_apply_does_not_enable_pf_and_flushes_new_anchor() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let prepared_anchor_path = tempdir.path().join("prepared-anchor");
+        let prepared_reference_path = tempdir.path().join("prepared-pf.conf");
+        let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
+        let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
+        let commands = RefCell::new(Vec::new());
+
+        state::fs::write_sensitive_file(
+            &prepared_anchor_path,
+            &PfRedirectConfig::new(48080, 48443).render_anchor(),
+        )?;
+        state::fs::write_sensitive_file(&prepared_reference_path, &PfConfReference.render())?;
+
+        let result = install_pf_redirects_and_verify_with_runner(
+            PfInstallPaths {
+                prepared_anchor: &prepared_anchor_path,
+                prepared_reference: &prepared_reference_path,
+                system_anchor: &system_anchor_path,
+                system_pf_conf: &system_pf_conf_path,
+            },
+            &mut |program, args| {
+                commands
+                    .borrow_mut()
+                    .push(format!("{program} {}", args.join(" ")));
+                Ok(())
+            },
+            &mut || {
+                commands.borrow_mut().push("/sbin/pfctl -E".to_string());
+                Ok("pf enabled\nToken : 4242\n".to_string())
+            },
+            false,
+            &mut || {
+                Err(crate::PlatformError::SystemIntegration(
+                    "active verification failed".to_string(),
+                ))
+            },
+        );
+        let commands = commands.into_inner();
+
+        assert!(result.is_err());
+        assert!(
+            commands
+                .iter()
+                .any(|command| command == "/sbin/pfctl -a com.prvious.pv -F all")
+        );
+        assert!(!commands.iter().any(|command| command == "/sbin/pfctl -E"));
 
         Ok(())
     }
@@ -1506,6 +1601,7 @@ mod tests {
         let system_anchor_path = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
         let system_pf_conf_path = tempdir.path().join("etc/pf.conf");
         let mut commands = Vec::new();
+        let mut validated_candidate = None;
 
         state::fs::write_sensitive_file(
             &system_anchor_path,
@@ -1522,6 +1618,12 @@ mod tests {
             &candidate_dir,
             &mut |program, args| {
                 commands.push(format!("{program} {}", args.join(" ")));
+                if program == "/sbin/pfctl"
+                    && args.first() == Some(&"-nf")
+                    && let Some(path) = args.get(1)
+                {
+                    validated_candidate = Some(read_platform_file(Utf8Path::new(path))?);
+                }
 
                 Ok(())
             },
@@ -1536,10 +1638,10 @@ mod tests {
             .last()
             .ok_or_else(|| anyhow::anyhow!("candidate validation command had no path"))?;
         let candidate_path = Utf8Path::new(candidate_path);
-        let candidate = read_platform_file(candidate_path)?;
 
         assert!(candidate_path.starts_with(&candidate_dir));
-        assert_eq!(candidate, "set skip on lo0\n");
+        assert_eq!(validated_candidate.as_deref(), Some("set skip on lo0\n"));
+        assert!(!state::fs::path_entry_exists(candidate_path)?);
 
         Ok(())
     }

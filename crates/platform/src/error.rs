@@ -81,6 +81,32 @@ pub enum PlatformError {
     #[error("system integration command `{command}` exited with {status}")]
     SystemIntegrationCommandStatus { command: String, status: String },
 
+    #[error("PV privileged helper is unavailable; run `pv setup`")]
+    PrivilegedHelperUnavailable,
+
+    #[error(
+        "PV privileged helper protocol {actual} is incompatible with required protocol {expected}; run `pv setup`"
+    )]
+    PrivilegedHelperProtocolMismatch { expected: u32, actual: u32 },
+
+    #[error("PV privileged helper rejected the request: {message}")]
+    PrivilegedHelperRejected { message: String },
+
+    #[error("PV privileged helper returned {code}: {message}")]
+    PrivilegedHelperRemote { code: String, message: String },
+
+    #[error("PV privileged helper I/O failed: {0}")]
+    PrivilegedHelperIo(#[source] io::Error),
+
+    #[error("PV privileged helper protocol failed: {0}")]
+    PrivilegedHelperProtocol(#[from] serde_json::Error),
+
+    #[error("PV privileged helper installation failed: {0}")]
+    PrivilegedHelperInstallation(String),
+
+    #[error("PV privileged helper authentication failed: {0}")]
+    PrivilegedHelperAuthentication(String),
+
     #[cfg(target_os = "macos")]
     #[error("could not inspect TCP listeners: {source}")]
     ListenerInspection {

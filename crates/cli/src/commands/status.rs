@@ -252,7 +252,7 @@ impl IntegrationStatuses {
         let expected_resolver = resolver_config_from_state(&prepared_resolver);
         let system_resolver_path = resolver_test_path(environment)?;
         let system_resolver =
-            platform::inspect_resolver_file(&system_resolver_path, expected_resolver.as_ref());
+            environment.inspect_resolver_file(&system_resolver_path, expected_resolver.as_ref());
         let (dns, dns_failure) = resolver_status(&prepared_resolver, &system_resolver);
 
         let ports = PfRoutingDiagnostic::read(environment, paths, database)?;

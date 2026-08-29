@@ -20,6 +20,8 @@ const APP_VERSION: &str = "0.9.0";
 const STAGING_BASE_URL: &str = "https://artifacts-staging.pv.prvious.dev";
 const ARM64_OBJECT_KEY: &str = "pv/0.9.0/pv-darwin-arm64";
 const AMD64_OBJECT_KEY: &str = "pv/0.9.0/pv-darwin-amd64";
+const ARM64_HELPER_OBJECT_KEY: &str = "pv/0.9.0/pv-helper-1.0.0-darwin-arm64";
+const AMD64_HELPER_OBJECT_KEY: &str = "pv/0.9.0/pv-helper-1.0.0-darwin-amd64";
 
 #[test]
 fn generated_app_installer_embeds_staging_assets_and_contract() -> Result<()> {
@@ -38,6 +40,7 @@ fn generated_app_installer_embeds_staging_assets_and_contract() -> Result<()> {
     app_manifest_not_embedded=true
     release_install_path_present=true
     active_symlink_path_present=true
+    helper_release_metadata_present=true
     setup_invocation_present=true
     no_setup_flag_present=true
     no_path_flag_present=true
@@ -78,7 +81,7 @@ fn generated_app_installer_allows_arm64_only_preview_assets() -> Result<()> {
 
 #[cfg(unix)]
 #[test]
-fn installer_no_setup_installs_binary_and_symlink_only() -> Result<()> {
+fn installer_no_setup_installs_release_binaries_metadata_and_symlink() -> Result<()> {
     let fixture = InstallerExecutionFixture::new()?;
     let output = fixture.run_installer(&["--no-setup"], ChecksumMode::Match)?;
 
@@ -88,6 +91,15 @@ fn installer_no_setup_installs_binary_and_symlink_only() -> Result<()> {
         command_output_summary(&output)
     );
     assert_eq!(read_file(&fixture.release_binary())?, fake_pv_binary());
+    assert_eq!(read_file(&fixture.release_helper())?, fake_helper_binary());
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&read_file(&fixture.release_helper_metadata())?)?,
+        json!({
+            "version": "1.0.0",
+            "protocol_version": 1,
+            "sha256": helper_sha256(),
+        })
+    );
     assert!(active_pv_symlink_points_to_release(
         &fixture.active_binary(),
         &fixture.release_binary()
@@ -103,17 +115,20 @@ fn installer_no_setup_installs_binary_and_symlink_only() -> Result<()> {
         &fixture.home().join(".config/fish/config.fish")
     ));
 
-    assert_snapshot!(fixture.command_logs()?, @r#"
+    assert_snapshot!(fixture.command_logs()?, @"
     curl:
     url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-darwin-arm64
+    output=<download>
+    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-helper-1.0.0-darwin-arm64
     output=<download>
 
     checksum:
     tool=<checksum-tool> target=<download> sha=<arm64-sha256>
+    tool=<checksum-tool> target=<download> sha=<helper-sha256>
 
     pv:
     <missing>
-    "#);
+    ");
 
     Ok(())
 }
@@ -139,9 +154,12 @@ fn installer_default_mode_invokes_pv_setup() -> Result<()> {
     curl:
     url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-darwin-arm64
     output=<download>
+    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-helper-1.0.0-darwin-arm64
+    output=<download>
 
     checksum:
     tool=<checksum-tool> target=<download> sha=<arm64-sha256>
+    tool=<checksum-tool> target=<download> sha=<helper-sha256>
 
     pv:
     setup
@@ -196,7 +214,7 @@ fn installer_leaves_incomplete_profile_block_unchanged() -> Result<()> {
         &fixture.release_binary()
     )?);
 
-    assert_snapshot!(incomplete_profile_block_summary(&output, &fixture, &profile, original_profile)?, @r#"
+    assert_snapshot!(incomplete_profile_block_summary(&output, &fixture, &profile, original_profile)?, @"
     status_success=true
     stderr_mentions_incomplete_profile=true
     profile_unchanged=true
@@ -204,13 +222,16 @@ fn installer_leaves_incomplete_profile_block_unchanged() -> Result<()> {
     curl:
     url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-darwin-arm64
     output=<download>
+    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-helper-1.0.0-darwin-arm64
+    output=<download>
 
     checksum:
     tool=<checksum-tool> target=<download> sha=<arm64-sha256>
+    tool=<checksum-tool> target=<download> sha=<helper-sha256>
 
     pv:
     setup --yes
-    "#);
+    ");
 
     Ok(())
 }
@@ -237,20 +258,23 @@ fn installer_non_interactive_fails_when_shell_profile_confirmation_is_required()
     assert!(!path_exists(&fixture.pv_log()));
     assert!(!path_exists(&fixture.home().join(".zprofile")));
 
-    assert_snapshot!(non_interactive_shell_profile_confirmation_summary(&output, &fixture)?, @r#"
+    assert_snapshot!(non_interactive_shell_profile_confirmation_summary(&output, &fixture)?, @"
     status_success=false
     stderr_mentions_shell_profile_confirmation=true
     logs:
     curl:
     url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-darwin-arm64
     output=<download>
+    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-helper-1.0.0-darwin-arm64
+    output=<download>
 
     checksum:
     tool=<checksum-tool> target=<download> sha=<arm64-sha256>
+    tool=<checksum-tool> target=<download> sha=<helper-sha256>
 
     pv:
     <missing>
-    "#);
+    ");
 
     Ok(())
 }
@@ -259,7 +283,7 @@ fn installer_non_interactive_fails_when_shell_profile_confirmation_is_required()
 #[test]
 fn installer_checksum_mismatch_deletes_bad_download_and_does_not_install() -> Result<()> {
     let fixture = InstallerExecutionFixture::new()?;
-    let output = fixture.run_installer(&["--no-setup"], ChecksumMode::Mismatch)?;
+    let output = fixture.run_installer(&["--no-setup"], ChecksumMode::AppMismatch)?;
 
     assert!(
         !output.status.success(),
@@ -279,6 +303,40 @@ fn installer_checksum_mismatch_deletes_bad_download_and_does_not_install() -> Re
     output=<download>
 
     checksum:
+    tool=<checksum-tool> target=<download> sha=0000000000000000000000000000000000000000000000000000000000000000
+
+    pv:
+    <missing>
+    "#);
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn installer_helper_checksum_mismatch_installs_neither_binary() -> Result<()> {
+    let fixture = InstallerExecutionFixture::new()?;
+    let output = fixture.run_installer(&["--no-setup"], ChecksumMode::HelperMismatch)?;
+
+    assert!(!output.status.success());
+    assert!(!path_exists(&fixture.release_binary()));
+    assert!(!path_exists(&fixture.release_helper()));
+    assert!(!path_exists(&fixture.active_binary()));
+    assert!(!path_exists(&fixture.pv_log()));
+    assert_download_outputs_were_removed(fixture.curl_log())?;
+
+    assert_snapshot!(checksum_mismatch_summary(&output, &fixture)?, @r#"
+    status_success=false
+    stderr_mentions_checksum=true
+    logs:
+    curl:
+    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-darwin-arm64
+    output=<download>
+    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-helper-1.0.0-darwin-arm64
+    output=<download>
+
+    checksum:
+    tool=<checksum-tool> target=<download> sha=<arm64-sha256>
     tool=<checksum-tool> target=<download> sha=0000000000000000000000000000000000000000000000000000000000000000
 
     pv:
@@ -310,9 +368,12 @@ fn installer_downloads_amd64_asset_on_native_x86_64() -> Result<()> {
     curl:
     url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-darwin-amd64
     output=<download>
+    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-helper-1.0.0-darwin-amd64
+    output=<download>
 
     checksum:
     tool=<checksum-tool> target=<download> sha=<amd64-sha256>
+    tool=<checksum-tool> target=<download> sha=<helper-sha256>
 
     pv:
     <missing>
@@ -339,17 +400,20 @@ fn installer_downloads_arm64_asset_under_rosetta() -> Result<()> {
         command_output_summary(&output)
     );
 
-    assert_snapshot!(fixture.command_logs()?, @r#"
+    assert_snapshot!(fixture.command_logs()?, @"
     curl:
     url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-darwin-arm64
+    output=<download>
+    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-helper-1.0.0-darwin-arm64
     output=<download>
 
     checksum:
     tool=<checksum-tool> target=<download> sha=<arm64-sha256>
+    tool=<checksum-tool> target=<download> sha=<helper-sha256>
 
     pv:
     <missing>
-    "#);
+    ");
 
     Ok(())
 }
@@ -433,6 +497,7 @@ struct InstallerExecutionFixture {
     fake_bin: Utf8PathBuf,
     download_source: Utf8PathBuf,
     amd64_download_source: Utf8PathBuf,
+    helper_download_source: Utf8PathBuf,
     curl_log: Utf8PathBuf,
     checksum_log: Utf8PathBuf,
     pv_log: Utf8PathBuf,
@@ -446,6 +511,7 @@ impl InstallerExecutionFixture {
         let fake_bin = app.tempdir.path().join("fake-bin");
         let download_source = app.tempdir.path().join("fake-download/pv");
         let amd64_download_source = app.tempdir.path().join("fake-download/pv-amd64");
+        let helper_download_source = app.tempdir.path().join("fake-download/pv-helper");
         let curl_log = app.tempdir.path().join("curl.log");
         let checksum_log = app.tempdir.path().join("checksum.log");
         let pv_log = app.tempdir.path().join("pv.log");
@@ -458,6 +524,7 @@ impl InstallerExecutionFixture {
             &amd64_download_source,
             "#!/bin/sh\nprintf '%s\\n' pv-amd64-fixture\n",
         )?;
+        write_executable(&helper_download_source, fake_helper_binary())?;
         write_fake_curl(&fake_bin.join("curl"))?;
         write_fake_checksum_tool(&fake_bin.join("shasum"))?;
         write_fake_checksum_tool(&fake_bin.join("sha256sum"))?;
@@ -470,6 +537,7 @@ impl InstallerExecutionFixture {
             fake_bin,
             download_source,
             amd64_download_source,
+            helper_download_source,
             curl_log,
             checksum_log,
             pv_log,
@@ -513,8 +581,13 @@ impl InstallerExecutionFixture {
             .env("PV_TEST_PV_LOG", &self.pv_log)
             .env("PV_TEST_DOWNLOAD_SOURCE", &self.download_source)
             .env("PV_TEST_AMD64_DOWNLOAD_SOURCE", &self.amd64_download_source)
+            .env(
+                "PV_TEST_HELPER_DOWNLOAD_SOURCE",
+                &self.helper_download_source,
+            )
             .env("PV_TEST_ARM64_SHA256", &self.app.arm64_sha256)
             .env("PV_TEST_AMD64_SHA256", &self.app.amd64_sha256)
+            .env("PV_TEST_HELPER_SHA256", helper_sha256())
             .env("PV_TEST_CHECKSUM_MODE", checksum_mode.as_env_value())
             .env("PV_TEST_UNAME_MACHINE", machine)
             .env(
@@ -541,6 +614,16 @@ impl InstallerExecutionFixture {
         self.home.join(format!(".pv/bin/releases/{APP_VERSION}/pv"))
     }
 
+    fn release_helper(&self) -> Utf8PathBuf {
+        self.home
+            .join(format!(".pv/bin/releases/{APP_VERSION}/pv-helper"))
+    }
+
+    fn release_helper_metadata(&self) -> Utf8PathBuf {
+        self.home
+            .join(format!(".pv/bin/releases/{APP_VERSION}/pv-helper.json"))
+    }
+
     fn active_binary(&self) -> Utf8PathBuf {
         self.home.join(".pv/bin/pv")
     }
@@ -559,14 +642,16 @@ impl InstallerExecutionFixture {
 #[derive(Clone, Copy)]
 enum ChecksumMode {
     Match,
-    Mismatch,
+    AppMismatch,
+    HelperMismatch,
 }
 
 impl ChecksumMode {
     fn as_env_value(self) -> &'static str {
         match self {
             Self::Match => "match",
-            Self::Mismatch => "mismatch",
+            Self::AppMismatch => "app_mismatch",
+            Self::HelperMismatch => "helper_mismatch",
         }
     }
 }
@@ -586,6 +671,7 @@ amd64_size_present={}
 app_manifest_not_embedded={}
 release_install_path_present={}
 active_symlink_path_present={}
+helper_release_metadata_present={}
 setup_invocation_present={}
 no_setup_flag_present={}
 no_path_flag_present={}
@@ -607,6 +693,7 @@ curl_retry_present={}",
         !installer.contains("pv-app-manifest.json"),
         installer.contains(".pv/bin/releases"),
         installer.contains(".pv/bin/pv"),
+        installer.contains("pv-helper.json") && installer.contains("HELPER_PROTOCOL_VERSION"),
         installer.contains(" setup"),
         installer.contains("--no-setup"),
         installer.contains("--no-path"),
@@ -653,8 +740,14 @@ fn write_app_record(
     sha256: &str,
     size: u64,
 ) -> Result<()> {
+    let helper_object_key = if platform == "darwin-arm64" {
+        ARM64_HELPER_OBJECT_KEY
+    } else {
+        AMD64_HELPER_OBJECT_KEY
+    };
+    let (helper_sha256, helper_size) = digest_and_size(fake_helper_binary().as_bytes());
     let record = json!({
-        "schema_version": 1,
+        "schema_version": 2,
         "channel": "stable",
         "version": APP_VERSION,
         "minimum_pv_version": "0.1.0",
@@ -663,6 +756,13 @@ fn write_app_record(
         "object_key": object_key,
         "sha256": sha256,
         "size": size,
+        "helper": {
+            "version": "1.0.0",
+            "protocol_version": 1,
+            "object_key": helper_object_key,
+            "sha256": helper_sha256,
+            "size": helper_size,
+        },
         "provenance": {
             "source_url": "https://github.com/prvious/pv/archive/refs/tags/v0.9.0.tar.gz",
             "source_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
@@ -711,6 +811,14 @@ esac
 "#
 }
 
+fn fake_helper_binary() -> &'static str {
+    "#!/bin/sh\nprintf '%s\\n' pv-helper-fixture\n"
+}
+
+fn helper_sha256() -> String {
+    digest_and_size(fake_helper_binary().as_bytes()).0
+}
+
 #[cfg(unix)]
 fn write_fake_curl(path: &Utf8Path) -> Result<()> {
     write_executable(
@@ -746,6 +854,9 @@ done
 if [ -n "$output" ]; then
   mkdir -p "$(dirname "$output")"
   case "$url" in
+    *pv-helper-*)
+      cp "$PV_TEST_HELPER_DOWNLOAD_SOURCE" "$output"
+      ;;
     *darwin-amd64)
       cp "$PV_TEST_AMD64_DOWNLOAD_SOURCE" "$output"
       ;;
@@ -777,11 +888,17 @@ for arg in "$@"; do
   esac
 done
 case "${PV_TEST_CHECKSUM_MODE:-match}" in
-  mismatch)
+  app_mismatch)
     sha=0000000000000000000000000000000000000000000000000000000000000000
     ;;
   *)
-    if grep -q pv-amd64-fixture "$target"; then
+    if grep -q pv-helper-fixture "$target"; then
+      if [ "${PV_TEST_CHECKSUM_MODE:-match}" = helper_mismatch ]; then
+        sha=0000000000000000000000000000000000000000000000000000000000000000
+      else
+        sha=$PV_TEST_HELPER_SHA256
+      fi
+    elif grep -q pv-amd64-fixture "$target"; then
       sha=$PV_TEST_AMD64_SHA256
     else
       sha=$PV_TEST_ARM64_SHA256
@@ -856,6 +973,7 @@ fn normalize_output(output: &str, fixture: &InstallerExecutionFixture) -> String
     output
         .replace(&fixture.app.arm64_sha256, "<arm64-sha256>")
         .replace(&fixture.app.amd64_sha256, "<amd64-sha256>")
+        .replace(&helper_sha256(), "<helper-sha256>")
         .replace(fixture.app.tempdir.path().as_str(), "<tmp>")
 }
 

@@ -145,9 +145,7 @@ pub(crate) fn install(
     let system_files_current = matches!(system_anchor_state, PfFileState::Current { .. })
         && matches!(system_reference_state, PfFileState::Current { .. });
     if system_files_current {
-        let active_config = match environment
-            .active_pf_redirect_config_with_privilege_mode(platform::PrivilegeMode::Interactive)
-        {
+        let active_config = match environment.active_pf_redirect_config() {
             Ok(active_config) => active_config,
             Err(error) => {
                 release_new_gateway_ports(
@@ -247,9 +245,7 @@ fn ensure_active_gateway_ports(
     had_http_assignment: bool,
     had_https_assignment: bool,
 ) -> Result<(), ExecuteError> {
-    let active_config = match environment
-        .active_pf_redirect_config_with_privilege_mode(platform::PrivilegeMode::Interactive)
-    {
+    let active_config = match environment.active_pf_redirect_config() {
         Ok(active_config) => active_config,
         Err(error) => {
             release_new_gateway_ports(database, had_http_assignment, had_https_assignment)?;

@@ -165,6 +165,59 @@ require_binary_contains_url() {
   return 1
 }
 
+assert_helper_installation_contract() {
+  local owner_uid
+  local owner_gid
+  owner_uid=$(id -u) || return 1
+  owner_gid=$(id -g) || return 1
+
+  [ "$(sudo stat -f '%u:%g:%Lp' /Library/PrivilegedHelperTools/com.prvious.pv.helper)" = "0:0:755" ] || return 1
+  [ "$(sudo stat -f '%u:%g:%Lp' /Library/LaunchDaemons/com.prvious.pv.helper.plist)" = "0:0:644" ] || return 1
+  [ "$(sudo stat -f '%u:%g:%Lp' "/Library/Application Support/PV/helper.json")" = "0:0:644" ] || return 1
+  [ "$(sudo stat -f '%u:%g:%Lp' "/Library/Application Support/PV")" = "0:0:755" ] || return 1
+  [ "$(sudo stat -f '%u:%g:%Lp' /var/run/com.prvious.pv/helper.sock)" = "$owner_uid:$owner_gid:600" ] || return 1
+
+  sudo python3 - "$owner_uid" <<'PY'
+import json
+import sys
+
+with open("/Library/Application Support/PV/helper.json", encoding="utf-8") as file:
+    metadata = json.load(file)
+
+assert set(metadata) == {"owner_uid", "helper_version", "protocol_version"}
+assert metadata["owner_uid"] == int(sys.argv[1])
+assert isinstance(metadata["helper_version"], str) and metadata["helper_version"]
+assert isinstance(metadata["protocol_version"], int) and metadata["protocol_version"] > 0
+PY
+
+  sudo python3 - "$owner_uid" "$owner_gid" <<'PY'
+import plistlib
+import sys
+
+with open("/Library/LaunchDaemons/com.prvious.pv.helper.plist", "rb") as file:
+    plist = plistlib.load(file)
+
+assert set(plist) == {
+    "Label", "ProgramArguments", "Sockets", "KeepAlive", "RunAtLoad", "ProcessType"
+}
+assert plist["Label"] == "com.prvious.pv.helper"
+assert plist["ProgramArguments"] == [
+    "/Library/PrivilegedHelperTools/com.prvious.pv.helper"
+]
+assert plist["KeepAlive"] is False
+assert plist["RunAtLoad"] is False
+assert plist["ProcessType"] == "Interactive"
+assert set(plist["Sockets"]) == {"Control"}
+socket = plist["Sockets"]["Control"]
+assert socket == {
+    "SockPathName": "/var/run/com.prvious.pv/helper.sock",
+    "SockPathOwner": int(sys.argv[1]),
+    "SockPathGroup": int(sys.argv[2]),
+    "SockPathMode": 0o600,
+}
+PY
+}
+
 record_status environment evidence sw_vers
 record_status download-installer required curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 2 "$RESOLVED_INSTALLER_URL" -o "$PV_RC_INSTALLER"
 record_status install-pv required bash "$PV_RC_INSTALLER" --no-setup --no-path --non-interactive
@@ -191,6 +244,7 @@ Privileged macOS RC evidence checklist:
 - /etc/resolver/test installed and removed
 - pf redirect rules installed and removed
 - System keychain CA trust installed and removed
+- root helper executable, launchd registration, metadata, and socket installed and removed
 - LaunchAgent installed, printed, restarted, and uninstalled
 - Project linked and served through .test
 - PV placeholder TLS leaf recorded and verified with macOS system policy without an explicit anchor
@@ -199,6 +253,12 @@ Privileged macOS RC evidence checklist:
 CHECKLIST
 
 record_status setup required pv setup --yes --no-path
+record_status helper-executable required sudo test -x /Library/PrivilegedHelperTools/com.prvious.pv.helper
+collect_file helper-launch-daemon /Library/LaunchDaemons/com.prvious.pv.helper.plist
+collect_file helper-metadata "/Library/Application Support/PV/helper.json"
+record_status helper-socket required sudo test -S /var/run/com.prvious.pv/helper.sock
+record_status helper-launchd required sudo launchctl print system/com.prvious.pv.helper
+record_status helper-installation-contract required assert_helper_installation_contract
 collect_file gateway-caddyfile "$HOME/.pv/config/gateway/Caddyfile"
 collect_file gateway-runtime-pid "$HOME/.pv/run/gateway.pid"
 collect_file gateway-runtime-metadata "$HOME/.pv/run/gateway.json"
@@ -248,6 +308,10 @@ record_status pf-rules-removed required pv_pf_rules_absent
 record_status ca-status-after-uninstall evidence "$PV_RC_BIN" ca:status
 record_status ca-trust-removed required pv_ca_trust_removed
 record_status launch-agent-removed required test ! -e "$HOME/Library/LaunchAgents/com.prvious.pv.daemon.plist"
+record_status helper-executable-removed required sudo test ! -e /Library/PrivilegedHelperTools/com.prvious.pv.helper
+record_status helper-launch-daemon-removed required sudo test ! -e /Library/LaunchDaemons/com.prvious.pv.helper.plist
+record_status helper-metadata-removed required sudo test ! -e "/Library/Application Support/PV/helper.json"
+record_status helper-socket-removed required sudo test ! -e /var/run/com.prvious.pv/helper.sock
 
 {
   printf 'artifact_manifest_url=%s\n' "$RESOLVED_ARTIFACT_MANIFEST_URL"

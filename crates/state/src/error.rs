@@ -59,6 +59,9 @@ pub enum StateError {
     #[error("PV self-update/daemon mutation coordination is active; the OS lock is held on {path}")]
     CoordinationLockHeld { path: Utf8PathBuf },
 
+    #[error("PV privileged-helper lifecycle is active; the OS lock is held on {path}")]
+    HelperLifecycleLockHeld { path: Utf8PathBuf },
+
     #[error("unsafe permissions for {path}: expected {expected:o}, found {actual:o}")]
     UnsafePermissions {
         path: Utf8PathBuf,

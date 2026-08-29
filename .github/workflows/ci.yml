@@ -71,6 +71,19 @@ jobs:
       - name: Check unused dependencies
         run: cargo shear
 
+      - name: Enforce privileged-helper sudo boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo_references=$(rg -n '"/usr/bin/sudo"' crates --glob '*.rs')
+          printf '%s\n' "$sudo_references"
+          reference_count=$(printf '%s\n' "$sudo_references" | wc -l | tr -d '[:space:]')
+          test "$reference_count" = 1
+          case "$sudo_references" in
+            crates/platform/src/helper.rs:*) ;;
+            *) exit 1 ;;
+          esac
+
       - name: Check artifact recipe scripts
         run: shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh release/artifacts/recipes/redis/*.sh release/artifacts/recipes/mysql/*.sh release/artifacts/recipes/postgres/*.sh release/artifacts/recipes/mailpit/*.sh release/artifacts/recipes/rustfs/*.sh
 
@@ -107,7 +120,7 @@ jobs:
         run: >-
           cargo check --locked
           -p pv -p cli -p config -p daemon -p platform
-          -p protocol -p resources -p self-update -p state
+          -p protocol -p pv-privileged-helper -p resources -p self-update -p state
 
       - name: Build PV
         run: cargo build --locked -p pv

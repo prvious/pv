@@ -6,6 +6,7 @@ use rcgen::{
     BasicConstraints, CertificateParams, DistinguishedName, DnType, ExtendedKeyUsagePurpose, IsCa,
     Issuer, KeyPair, KeyUsagePurpose, PKCS_ECDSA_P256_SHA256, PublicKeyData, date_time_ymd,
 };
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use time::{Duration, OffsetDateTime};
 use x509_parser::extensions::GeneralName;
@@ -32,7 +33,7 @@ pub struct GeneratedProjectCertificate {
     pub private_key_pem: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LocalCaMetadata {
     pub common_name: String,
     pub organization: Option<String>,
@@ -422,7 +423,15 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::LaunchAgentCommandStatus { .. }
         | PlatformError::SystemIntegration(_)
         | PlatformError::SystemIntegrationCommand { .. }
-        | PlatformError::SystemIntegrationCommandStatus { .. } => CaRepairReason::InvalidCaShape,
+        | PlatformError::SystemIntegrationCommandStatus { .. }
+        | PlatformError::PrivilegedHelperUnavailable
+        | PlatformError::PrivilegedHelperProtocolMismatch { .. }
+        | PlatformError::PrivilegedHelperRejected { .. }
+        | PlatformError::PrivilegedHelperRemote { .. }
+        | PlatformError::PrivilegedHelperIo(_)
+        | PlatformError::PrivilegedHelperProtocol(_)
+        | PlatformError::PrivilegedHelperInstallation(_)
+        | PlatformError::PrivilegedHelperAuthentication(_) => CaRepairReason::InvalidCaShape,
         #[cfg(target_os = "macos")]
         PlatformError::ListenerInspection { .. }
         | PlatformError::ProcessIdentityInspection { .. } => CaRepairReason::InvalidCaShape,

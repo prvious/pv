@@ -46,8 +46,10 @@ fn stage_app_publication_writes_app_layout_and_upload_plan() -> Result<()> {
     for expected_path in [
         "pv/0.2.0/pv-darwin-arm64",
         "pv/0.2.0/pv-darwin-amd64",
-        "pv/records/0.2.0/pv-darwin-arm64.json",
-        "pv/records/0.2.0/pv-darwin-amd64.json",
+        "pv/0.2.0/pv-helper-1.0.0-darwin-arm64",
+        "pv/0.2.0/pv-helper-1.0.0-darwin-amd64",
+        "pv/records/0.2.0/1.0.0/pv-darwin-arm64.json",
+        "pv/records/0.2.0/1.0.0/pv-darwin-amd64.json",
         "pv/manifests/runs/987654321/pv-app-manifest.json",
         "pv/manifests/runs/987654321/install.sh",
         "pv-app-manifest.json",
@@ -226,6 +228,29 @@ fn stage_app_publication_rejects_corrupt_source_binary_before_write() -> Result<
 }
 
 #[test]
+fn stage_app_publication_rejects_corrupt_helper_before_write() -> Result<()> {
+    let fixture = AppPublicationFixture::new()?;
+    fixture.write_valid_inputs()?;
+    write_bytes(
+        &fixture
+            .source_binaries
+            .join("pv/0.2.0/pv-helper-1.0.0-darwin-amd64"),
+        b"corrupt helper",
+    )?;
+
+    let output = run_stage_app_publication(&fixture)?;
+    assert_stage_app_publication_available(&output)?;
+    if output.status.success() {
+        bail!("stage-app-publication accepted a helper that no longer matches its record");
+    }
+
+    assert_debug_snapshot!(command_failure(&output, fixture.root()));
+    assert!(!path_exists(fixture.stage()));
+
+    Ok(())
+}
+
+#[test]
 fn stage_app_publication_rejects_non_newer_stable_manifest_candidate() -> Result<()> {
     let fixture = AppPublicationFixture::new()?;
     fixture.write_valid_inputs()?;
@@ -240,6 +265,28 @@ fn stage_app_publication_rejects_non_newer_stable_manifest_candidate() -> Result
 
     assert_debug_snapshot!(command_failure(&output, fixture.root()));
     assert!(!path_exists(fixture.stage()));
+
+    Ok(())
+}
+
+#[test]
+fn stage_app_publication_migrates_newer_candidate_from_schema_one_manifest() -> Result<()> {
+    let fixture = AppPublicationFixture::new()?;
+    fixture.write_valid_inputs()?;
+    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
+    write_file(
+        &current_manifest,
+        "{\n  \"schema_version\": 1,\n  \"version\": \"0.1.0\"\n}\n",
+    )?;
+
+    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
+    assert_stage_app_publication_available(&output)?;
+    if !output.status.success() {
+        assert_debug_snapshot!(command_failure(&output, fixture.root()));
+        bail!("stage-app-publication rejected the one-time schema-1 migration");
+    }
+
+    assert!(path_exists(&fixture.stage.join("publication-plan.json")));
 
     Ok(())
 }
@@ -267,6 +314,54 @@ fn stage_app_publication_rejects_candidate_older_than_current_stable_installer()
 }
 
 #[test]
+fn stage_app_publication_rejects_existing_helper_version_with_changed_bytes() -> Result<()> {
+    let fixture = AppPublicationFixture::new()?;
+    fixture.write_valid_inputs()?;
+    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
+    write_file(
+        &current_manifest,
+        &app_manifest_json_with_version("0.1.0")?.replace(
+            &sha256(b"pv helper"),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ),
+    )?;
+
+    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
+    assert_stage_app_publication_available(&output)?;
+    if output.status.success() {
+        bail!("stage-app-publication changed bytes for an existing helper version");
+    }
+
+    assert_debug_snapshot!(command_failure(&output, fixture.root()));
+    assert!(!path_exists(fixture.stage()));
+
+    Ok(())
+}
+
+#[test]
+fn stage_app_publication_rejects_helper_version_regression() -> Result<()> {
+    let fixture = AppPublicationFixture::new()?;
+    fixture.write_valid_inputs()?;
+    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
+    write_file(
+        &current_manifest,
+        &app_manifest_json_with_version("0.1.0")?
+            .replace("\"version\": \"1.0.0\"", "\"version\": \"1.1.0\""),
+    )?;
+
+    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
+    assert_stage_app_publication_available(&output)?;
+    if output.status.success() {
+        bail!("stage-app-publication regressed the helper version");
+    }
+
+    assert_debug_snapshot!(command_failure(&output, fixture.root()));
+    assert!(!path_exists(fixture.stage()));
+
+    Ok(())
+}
+
+#[test]
 fn stage_app_publication_allows_same_version_current_stable_for_retry() -> Result<()> {
     let fixture = AppPublicationFixture::new()?;
     fixture.write_valid_inputs()?;
@@ -281,6 +376,166 @@ fn stage_app_publication_allows_same_version_current_stable_for_retry() -> Resul
     }
 
     assert!(path_exists(&fixture.stage.join("publication-plan.json")));
+
+    Ok(())
+}
+
+#[test]
+fn stage_app_publication_publishes_new_helper_for_current_app() -> Result<()> {
+    let fixture = AppPublicationFixture::new()?;
+    fixture.write_app_record_with_helper(
+        "darwin-arm64",
+        "pv/0.2.0/pv-darwin-arm64",
+        b"pv arm64",
+        "987654321",
+        "1.1.0",
+        1,
+        b"pv helper 1.1.0",
+    )?;
+    fixture.write_app_record_with_helper(
+        "darwin-amd64",
+        "pv/0.2.0/pv-darwin-amd64",
+        b"pv amd64",
+        "987654321",
+        "1.1.0",
+        1,
+        b"pv helper 1.1.0",
+    )?;
+    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
+    write_file(&current_manifest, &app_manifest_json()?)?;
+
+    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
+    assert_stage_app_publication_available(&output)?;
+    if !output.status.success() {
+        assert_debug_snapshot!(command_failure(&output, fixture.root()));
+        bail!("stage-app-publication rejected a valid helper-only release");
+    }
+
+    let manifest = read_file(&fixture.stage.join("pv-app-manifest.json"))?;
+    let plan = read_file(&fixture.stage.join("publication-plan.json"))?;
+    let installer = read_file(&fixture.stage.join("install.sh"))?;
+    assert_snapshot!(format!(
+        "manifest:\n{manifest}plan:\n{plan}installer:\n{}",
+        helper_only_installer_summary(&installer)
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn stage_app_publication_rejects_equal_version_platform_removal() -> Result<()> {
+    let fixture = AppPublicationFixture::new()?;
+    fixture.write_app_record(
+        "darwin-arm64",
+        "pv/0.2.0/pv-darwin-arm64",
+        b"pv arm64",
+        "987654321",
+    )?;
+    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
+    write_file(&current_manifest, &app_manifest_json()?)?;
+
+    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
+    assert_stage_app_publication_available(&output)?;
+    if output.status.success() {
+        bail!("stage-app-publication removed a platform from an equal-version manifest");
+    }
+
+    assert_debug_snapshot!(command_failure(&output, fixture.root()));
+    assert!(!path_exists(fixture.stage()));
+
+    Ok(())
+}
+
+#[test]
+fn stage_app_publication_rejects_equal_version_minimum_pv_change() -> Result<()> {
+    let fixture = AppPublicationFixture::new()?;
+    fixture.write_valid_inputs()?;
+    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
+    write_file(
+        &current_manifest,
+        &app_manifest_json()?.replace(
+            "\"minimum_pv_version\": \"0.1.0\"",
+            "\"minimum_pv_version\": \"0.1.1\"",
+        ),
+    )?;
+
+    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
+    assert_stage_app_publication_available(&output)?;
+    if output.status.success() {
+        bail!("stage-app-publication changed equal-version minimum PV eligibility");
+    }
+
+    assert_debug_snapshot!(command_failure(&output, fixture.root()));
+    assert!(!path_exists(fixture.stage()));
+
+    Ok(())
+}
+
+#[test]
+fn stage_app_publication_rejects_equal_version_base_url_change() -> Result<()> {
+    let fixture = AppPublicationFixture::new()?;
+    fixture.write_valid_inputs()?;
+    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
+    write_file(
+        &current_manifest,
+        &app_manifest_json()?.replace(APP_PUBLICATION_BASE_URL, "https://old.prvious.test"),
+    )?;
+
+    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
+    assert_stage_app_publication_available(&output)?;
+    if output.status.success() {
+        bail!("stage-app-publication changed equal-version stable asset URLs");
+    }
+
+    assert_debug_snapshot!(command_failure(&output, fixture.root()));
+    assert!(!path_exists(fixture.stage()));
+
+    Ok(())
+}
+
+#[test]
+fn stage_app_publication_rejects_equal_version_app_asset_change() -> Result<()> {
+    let fixture = AppPublicationFixture::new()?;
+    fixture.write_valid_inputs()?;
+    fixture.write_app_record(
+        "darwin-arm64",
+        "pv/0.2.0/pv-darwin-arm64",
+        b"changed pv arm64",
+        "987654321",
+    )?;
+    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
+    write_file(&current_manifest, &app_manifest_json()?)?;
+
+    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
+    assert_stage_app_publication_available(&output)?;
+    if output.status.success() {
+        bail!("stage-app-publication changed an equal-version app asset");
+    }
+
+    assert_debug_snapshot!(command_failure(&output, fixture.root()));
+    assert!(!path_exists(fixture.stage()));
+
+    Ok(())
+}
+
+#[test]
+fn stage_app_publication_rejects_equal_version_helper_protocol_change() -> Result<()> {
+    let fixture = AppPublicationFixture::new()?;
+    fixture.write_valid_inputs()?;
+    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
+    write_file(
+        &current_manifest,
+        &app_manifest_json()?.replace("\"protocol_version\": 1", "\"protocol_version\": 2"),
+    )?;
+
+    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
+    assert_stage_app_publication_available(&output)?;
+    if output.status.success() {
+        bail!("stage-app-publication changed the helper protocol without a new app version");
+    }
+
+    assert_debug_snapshot!(command_failure(&output, fixture.root()));
+    assert!(!path_exists(fixture.stage()));
 
     Ok(())
 }
@@ -367,27 +622,64 @@ impl AppPublicationFixture {
         binary: &[u8],
         build_run_id: &str,
     ) -> Result<()> {
+        self.write_app_record_with_helper(
+            platform,
+            object_key,
+            binary,
+            build_run_id,
+            "1.0.0",
+            1,
+            b"pv helper",
+        )
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "publication fixtures keep app and helper release identities explicit"
+    )]
+    fn write_app_record_with_helper(
+        &self,
+        platform: &str,
+        object_key: &str,
+        binary: &[u8],
+        build_run_id: &str,
+        helper_version: &str,
+        helper_protocol_version: u32,
+        helper_binary: &[u8],
+    ) -> Result<()> {
         let binary_path = self.source_binaries.join(object_key);
         write_bytes(&binary_path, binary)?;
-        let sha256 = sha256(binary);
+        let binary_sha256 = sha256(binary);
         let size = binary.len();
+        let helper_object_key = format!("pv/0.2.0/pv-helper-{helper_version}-{platform}");
+        write_bytes(
+            &self.source_binaries.join(&helper_object_key),
+            helper_binary,
+        )?;
         let record_name = object_key
             .rsplit('/')
             .next()
             .ok_or_else(|| anyhow::anyhow!("object key must include a file name"))?;
         let record = json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "channel": "stable",
             "version": "0.2.0",
             "minimum_pv_version": "0.1.0",
             "published_at": "2026-06-13T15:00:00Z",
             "platform": platform,
             "object_key": object_key,
-            "sha256": sha256,
+            "sha256": binary_sha256,
             "size": size,
+            "helper": {
+                "version": helper_version,
+                "protocol_version": helper_protocol_version,
+                "object_key": helper_object_key,
+                "sha256": sha256(helper_binary),
+                "size": helper_binary.len(),
+            },
             "provenance": {
                 "source_url": "https://github.com/prvious/pv/actions/runs/987654321",
-                "source_sha256": sha256,
+                "source_sha256": binary_sha256,
                 "recipe": ".github/workflows/app-release.yml",
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": build_run_id
@@ -501,16 +793,24 @@ fn expected_publication_plan() -> Result<String> {
                 "object_key": "pv/0.2.0/pv-darwin-amd64"
             },
             {
-                "local_path": "pv/records/0.2.0/pv-darwin-amd64.json",
-                "object_key": "pv/records/0.2.0/pv-darwin-amd64.json"
+                "local_path": "pv/0.2.0/pv-helper-1.0.0-darwin-amd64",
+                "object_key": "pv/0.2.0/pv-helper-1.0.0-darwin-amd64"
+            },
+            {
+                "local_path": "pv/records/0.2.0/1.0.0/pv-darwin-amd64.json",
+                "object_key": "pv/records/0.2.0/1.0.0/pv-darwin-amd64.json"
             },
             {
                 "local_path": "pv/0.2.0/pv-darwin-arm64",
                 "object_key": "pv/0.2.0/pv-darwin-arm64"
             },
             {
-                "local_path": "pv/records/0.2.0/pv-darwin-arm64.json",
-                "object_key": "pv/records/0.2.0/pv-darwin-arm64.json"
+                "local_path": "pv/0.2.0/pv-helper-1.0.0-darwin-arm64",
+                "object_key": "pv/0.2.0/pv-helper-1.0.0-darwin-arm64"
+            },
+            {
+                "local_path": "pv/records/0.2.0/1.0.0/pv-darwin-arm64.json",
+                "object_key": "pv/records/0.2.0/1.0.0/pv-darwin-arm64.json"
             },
             {
                 "local_path": "pv/manifests/runs/987654321/pv-app-manifest.json",
@@ -540,7 +840,7 @@ fn app_manifest_json() -> Result<String> {
 fn app_manifest_json_with_version(version: &str) -> Result<String> {
     Ok(format!(
         r#"{{
-  "schema_version": 1,
+  "schema_version": 2,
   "channel": "stable",
   "version": "{version}",
   "minimum_pv_version": "0.1.0",
@@ -550,18 +850,34 @@ fn app_manifest_json_with_version(version: &str) -> Result<String> {
       "platform": "darwin-amd64",
       "url": "{APP_PUBLICATION_BASE_URL}/pv/{version}/pv-darwin-amd64",
       "sha256": "{}",
-      "size": 8
+      "size": 8,
+      "helper": {{
+        "version": "1.0.0",
+        "protocol_version": 1,
+        "url": "{APP_PUBLICATION_BASE_URL}/pv/{version}/pv-helper-1.0.0-darwin-amd64",
+        "sha256": "{}",
+        "size": 9
+      }}
     }},
     {{
       "platform": "darwin-arm64",
       "url": "{APP_PUBLICATION_BASE_URL}/pv/{version}/pv-darwin-arm64",
       "sha256": "{}",
-      "size": 8
+      "size": 8,
+      "helper": {{
+        "version": "1.0.0",
+        "protocol_version": 1,
+        "url": "{APP_PUBLICATION_BASE_URL}/pv/{version}/pv-helper-1.0.0-darwin-arm64",
+        "sha256": "{}",
+        "size": 9
+      }}
     }}
   ]
 }}"#,
         sha256(b"pv amd64"),
+        sha256(b"pv helper"),
         sha256(b"pv arm64"),
+        sha256(b"pv helper"),
     ))
 }
 
@@ -586,6 +902,22 @@ example_invalid_absent={}",
             "{APP_PUBLICATION_BASE_URL}/pv/0.2.0/pv-darwin-amd64"
         )),
         !installer.contains("example.invalid"),
+    )
+}
+
+fn helper_only_installer_summary(installer: &str) -> String {
+    format!(
+        "version_present={}\nminimum_version_present={}\nhelper_version_present={}\narm64_helper_url_present={}\namd64_helper_url_present={}\nold_helper_url_absent={}",
+        installer.contains("PV_VERSION='0.2.0'"),
+        installer.contains("PV_MINIMUM_PV_VERSION='0.1.0'"),
+        installer.contains("PV_HELPER_VERSION='1.1.0'"),
+        installer.contains(&format!(
+            "{APP_PUBLICATION_BASE_URL}/pv/0.2.0/pv-helper-1.1.0-darwin-arm64"
+        )),
+        installer.contains(&format!(
+            "{APP_PUBLICATION_BASE_URL}/pv/0.2.0/pv-helper-1.1.0-darwin-amd64"
+        )),
+        !installer.contains("pv-helper-1.0.0"),
     )
 }
 

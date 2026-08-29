@@ -1,0 +1,91 @@
+---
+source: crates/pv-release/tests/app_publication.rs
+expression: "format!(\"manifest:\\n{manifest}plan:\\n{plan}installer:\\n{}\",\nhelper_only_installer_summary(&installer))"
+---
+manifest:
+{
+  "schema_version": 2,
+  "channel": "stable",
+  "version": "0.2.0",
+  "minimum_pv_version": "0.1.0",
+  "published_at": "2026-06-13T15:00:00Z",
+  "assets": [
+    {
+      "platform": "darwin-amd64",
+      "url": "https://downloads.prvious.test/pv/0.2.0/pv-darwin-amd64",
+      "sha256": "74d2dd713a41a55013390be7118c03f6db008ed6778344a3b5a7f351fc2758df",
+      "size": 8,
+      "helper": {
+        "version": "1.1.0",
+        "protocol_version": 1,
+        "url": "https://downloads.prvious.test/pv/0.2.0/pv-helper-1.1.0-darwin-amd64",
+        "sha256": "6748708d60dea6e7c45c93e83541384deb3692969b2942c5c828bcf352eb68b7",
+        "size": 15
+      }
+    },
+    {
+      "platform": "darwin-arm64",
+      "url": "https://downloads.prvious.test/pv/0.2.0/pv-darwin-arm64",
+      "sha256": "86be0807a02eee20d5b7a39b650742bfd15703d9067387247d8c2573920ee466",
+      "size": 8,
+      "helper": {
+        "version": "1.1.0",
+        "protocol_version": 1,
+        "url": "https://downloads.prvious.test/pv/0.2.0/pv-helper-1.1.0-darwin-arm64",
+        "sha256": "6748708d60dea6e7c45c93e83541384deb3692969b2942c5c828bcf352eb68b7",
+        "size": 15
+      }
+    }
+  ]
+}plan:
+{
+  "immutable_uploads": [
+    {
+      "local_path": "pv/0.2.0/pv-darwin-amd64",
+      "object_key": "pv/0.2.0/pv-darwin-amd64"
+    },
+    {
+      "local_path": "pv/0.2.0/pv-helper-1.1.0-darwin-amd64",
+      "object_key": "pv/0.2.0/pv-helper-1.1.0-darwin-amd64"
+    },
+    {
+      "local_path": "pv/records/0.2.0/1.1.0/pv-darwin-amd64.json",
+      "object_key": "pv/records/0.2.0/1.1.0/pv-darwin-amd64.json"
+    },
+    {
+      "local_path": "pv/0.2.0/pv-darwin-arm64",
+      "object_key": "pv/0.2.0/pv-darwin-arm64"
+    },
+    {
+      "local_path": "pv/0.2.0/pv-helper-1.1.0-darwin-arm64",
+      "object_key": "pv/0.2.0/pv-helper-1.1.0-darwin-arm64"
+    },
+    {
+      "local_path": "pv/records/0.2.0/1.1.0/pv-darwin-arm64.json",
+      "object_key": "pv/records/0.2.0/1.1.0/pv-darwin-arm64.json"
+    },
+    {
+      "local_path": "pv/manifests/runs/987654321/pv-app-manifest.json",
+      "object_key": "pv/manifests/runs/987654321/pv-app-manifest.json"
+    },
+    {
+      "local_path": "pv/manifests/runs/987654321/install.sh",
+      "object_key": "pv/manifests/runs/987654321/install.sh"
+    }
+  ],
+  "stable_app_manifest": {
+    "local_path": "pv-app-manifest.json",
+    "object_key": "pv-app-manifest.json"
+  },
+  "stable_installer": {
+    "local_path": "install.sh",
+    "object_key": "install.sh"
+  }
+}
+installer:
+version_present=true
+minimum_version_present=false
+helper_version_present=false
+arm64_helper_url_present=true
+amd64_helper_url_present=true
+old_helper_url_absent=true

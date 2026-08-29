@@ -9,7 +9,10 @@ use protocol::{
     ManagedResourceUpdateCheckTrack, ManagedResourceUpdateStatus as ResourceUpdateStatus,
 };
 use resources::{ResourceHttpClient, UreqResourceHttpClient};
-use self_update::{AppUpdateAsset, AppUpdateManifest, AppUpdatePlatform, AppUpdateVersion};
+use self_update::{
+    AppUpdateAsset, AppUpdateManifest, AppUpdatePlatform, AppUpdateVersion,
+    PrivilegedHelperUpdateAsset,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use state::{PvPaths, StateError};
@@ -17,6 +20,7 @@ use state::{PvPaths, StateError};
 use crate::args::UpdateArgs;
 use crate::environment::{Environment, app_update_manifest_url};
 use crate::error::{CliError, ExecuteError};
+use crate::helper_release::{HelperReleaseMetadata, metadata_path as helper_metadata_path};
 use crate::output::{Output, OutputMode};
 use crate::progress::DownloadProgressRenderer;
 
@@ -222,39 +226,86 @@ fn download_app_asset(
     progress: &DownloadProgressRenderer,
     stderr: &mut impl Write,
 ) -> Result<Utf8PathBuf, ExecuteError> {
+    download_verified_asset(
+        environment,
+        paths,
+        &format!("app-{version}"),
+        version,
+        asset.url(),
+        asset.sha256().as_str(),
+        asset.size(),
+        progress,
+        stderr,
+    )
+}
+
+fn download_helper_asset(
+    environment: &impl Environment,
+    paths: &PvPaths,
+    asset: &PrivilegedHelperUpdateAsset,
+    progress: &DownloadProgressRenderer,
+    stderr: &mut impl Write,
+) -> Result<Utf8PathBuf, ExecuteError> {
+    download_verified_asset(
+        environment,
+        paths,
+        &format!("helper-{}", asset.version()),
+        &format!("helper {}", asset.version()),
+        asset.url(),
+        asset.sha256().as_str(),
+        asset.size(),
+        progress,
+        stderr,
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "download verification keeps the selected immutable asset fields explicit"
+)]
+fn download_verified_asset(
+    environment: &impl Environment,
+    paths: &PvPaths,
+    temporary_name: &str,
+    progress_label: &str,
+    url: &str,
+    expected_sha256: &str,
+    expected_size: u64,
+    progress: &DownloadProgressRenderer,
+    stderr: &mut impl Write,
+) -> Result<Utf8PathBuf, ExecuteError> {
     state::fs::ensure_user_dir(paths.downloads())?;
-    let path = temporary_app_download_path(paths);
+    let path = temporary_app_download_path(paths, temporary_name);
     let file = create_download_file(&path)?;
     let mut writer = AppDownloadProgressWriter::new(
         CountingSha256Writer::new(file),
         progress,
-        version,
-        asset.size(),
+        progress_label,
+        expected_size,
     );
-    let download_result = with_resource_http_client(environment, |client| {
-        client.download(asset.url(), &mut writer)
-    });
+    let download_result =
+        with_resource_http_client(environment, |client| client.download(url, &mut writer));
     if let Err(error) = download_result {
         write_download_cleanup_warning(stderr, remove_download(&path).err())?;
         return Err(error);
     }
 
     let stats = writer.finish();
-    progress.update_app_progress(version, stats.size, asset.size());
-    if stats.size != asset.size() {
+    progress.update_app_progress(progress_label, stats.size, expected_size);
+    if stats.size != expected_size {
         write_download_cleanup_warning(stderr, remove_download(&path).err())?;
         return Err(CliError::AppUpdateSizeMismatch {
-            url: asset.url().to_string(),
-            expected: asset.size(),
+            url: url.to_string(),
+            expected: expected_size,
             actual: stats.size,
         }
         .into());
     }
-    if stats.sha256 != asset.sha256().as_str() {
+    if stats.sha256 != expected_sha256 {
         write_download_cleanup_warning(stderr, remove_download(&path).err())?;
         return Err(CliError::AppUpdateChecksumMismatch {
-            url: asset.url().to_string(),
-            expected: asset.sha256().as_str().to_string(),
+            url: url.to_string(),
+            expected: expected_sha256.to_string(),
             actual: stats.sha256,
         }
         .into());
@@ -263,13 +314,13 @@ fn download_app_asset(
     Ok(path)
 }
 
-fn temporary_app_download_path(paths: &PvPaths) -> Utf8PathBuf {
+fn temporary_app_download_path(paths: &PvPaths, name: &str) -> Utf8PathBuf {
     let process_id = std::process::id();
     let counter = APP_DOWNLOAD_COUNTER.fetch_add(1, Ordering::Relaxed);
 
     paths
         .downloads()
-        .join(format!("pv-app-{process_id}-{counter}.tmp"))
+        .join(format!("pv-{name}-{process_id}-{counter}.tmp"))
 }
 
 fn remove_download(path: &Utf8Path) -> Result<(), ExecuteError> {
@@ -480,51 +531,337 @@ fn run_app_update_phase(
     let launch_agent_path = normalize_launch_agent(environment, &paths)?;
 
     let manifest = fetch_app_update_manifest(environment)?;
-    if manifest.version() <= &current_version {
-        output.line(&format!("PV application: current {current_version}"))?;
-
-        return Ok(AppUpdateOutcome::Current { paths });
-    }
-
     let platform = environment
         .app_update_platform()
         .map(Ok)
         .unwrap_or_else(AppUpdatePlatform::current)?;
     let asset = manifest.select_platform(platform)?;
-    let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
-    let downloaded = download_app_asset(
-        environment,
-        &paths,
-        manifest.version().as_str(),
-        asset,
-        &progress,
-        stderr,
+    let _helper_lifecycle_lock = state::HelperLifecycleLock::acquire(&paths)?;
+    let installed_helper = installed_helper_state(environment.privileged_helper_status())?;
+    let plan = app_update_plan(
+        &current_version,
+        manifest.version(),
+        &installed_helper,
+        asset.helper(),
     )?;
-    drop(progress);
-    let install_result = layout.install_release_binary(manifest.version().as_str(), &downloaded);
-    let cleanup_result = remove_download(&downloaded);
-    match (install_result, cleanup_result) {
-        (Ok(_install), Ok(())) => {}
-        (Ok(_install), Err(cleanup_error)) => return Err(cleanup_error),
-        (Err(install_error), cleanup_result) => {
-            write_download_cleanup_warning(stderr, cleanup_result.err())?;
-            return Err(install_error.into());
+    let app_update_required = plan.app;
+    let helper_update_required = matches!(plan.helper, HelperUpdatePlan::Update);
+
+    if !app_update_required && !helper_update_required {
+        output.line(&format!("PV application: current {current_version}"))?;
+        match &installed_helper {
+            InstalledHelperState::Ready(status) if manifest.version() < &current_version => {
+                output.line(&format!(
+                    "Privileged helper: retained {} (protocol {}); app manifest {} is older than current PV {}",
+                    status.version,
+                    status.protocol_version,
+                    manifest.version(),
+                    current_version
+                ))?
+            }
+            InstalledHelperState::Ready(status) => output.line(&format!(
+                "Privileged helper: current {} (protocol {})",
+                status.version, status.protocol_version
+            ))?,
+            InstalledHelperState::Missing => output.line(
+                "Privileged helper: unavailable; the older app manifest has no applicable repair",
+            )?,
+            InstalledHelperState::ProtocolMismatch => output.line(
+                "Privileged helper: protocol mismatch; the older app manifest has no applicable repair",
+            )?,
+        }
+
+        return Ok(AppUpdateOutcome::Current { paths });
+    }
+
+    let helper_rollback = if helper_update_required {
+        Some(prepare_helper_rollback(
+            &paths,
+            &current_version,
+            &installed_helper,
+        )?)
+    } else {
+        None
+    };
+    let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
+    if app_update_required {
+        let downloaded = download_app_asset(
+            environment,
+            &paths,
+            manifest.version().as_str(),
+            asset,
+            &progress,
+            stderr,
+        )?;
+        let install_result =
+            layout.install_release_binary(manifest.version().as_str(), &downloaded);
+        let cleanup_result = remove_download(&downloaded);
+        match (install_result, cleanup_result) {
+            (Ok(_install), Ok(())) => {}
+            (Ok(_install), Err(cleanup_error)) => return Err(cleanup_error),
+            (Err(install_error), cleanup_result) => {
+                write_download_cleanup_warning(stderr, cleanup_result.err())?;
+                return Err(install_error.into());
+            }
         }
     }
+
+    let target_release_version = if app_update_required {
+        manifest.version().as_str()
+    } else {
+        current_version.as_str()
+    };
+    let helper_metadata = if helper_update_required {
+        Some(HelperReleaseMetadata::new(
+            asset.helper().version().as_str(),
+            asset.helper().protocol_version(),
+            asset.helper().sha256().as_str(),
+        )?)
+    } else {
+        None
+    };
+    let (helper_candidate, helper_only_download) = if helper_update_required {
+        let downloaded_helper =
+            download_helper_asset(environment, &paths, asset.helper(), &progress, stderr)?;
+        if app_update_required {
+            let install_result = layout
+                .install_release_helper(target_release_version, &downloaded_helper)
+                .map_err(ExecuteError::from)
+                .and_then(|helper_candidate| {
+                    if let Some(metadata) = &helper_metadata {
+                        metadata.write(&helper_candidate)?;
+                    }
+
+                    Ok(helper_candidate)
+                });
+            let cleanup_result = remove_download(&downloaded_helper);
+            match (install_result, cleanup_result) {
+                (Ok(helper_candidate), Ok(())) => (helper_candidate, None),
+                (Ok(_helper_candidate), Err(cleanup_error)) => return Err(cleanup_error),
+                (Err(install_error), cleanup_result) => {
+                    write_download_cleanup_warning(stderr, cleanup_result.err())?;
+                    write_cleanup_warning(
+                        stderr,
+                        layout.remove_release(target_release_version).err(),
+                    )?;
+                    return Err(install_error);
+                }
+            }
+        } else {
+            (downloaded_helper.clone(), Some(downloaded_helper))
+        }
+    } else {
+        let current_helper = paths.app_release_helper(current_version.as_str());
+        let install_result = HelperReleaseMetadata::read(&current_helper).and_then(|metadata| {
+            let helper_candidate = layout
+                .install_release_helper(target_release_version, &current_helper)
+                .map_err(ExecuteError::from)?;
+            metadata.write(&helper_candidate)?;
+
+            Ok(helper_candidate)
+        });
+        match install_result {
+            Ok(helper_candidate) => (helper_candidate, None),
+            Err(error) => {
+                write_cleanup_warning(stderr, layout.remove_release(target_release_version).err())?;
+                return Err(error);
+            }
+        }
+    };
+    drop(progress);
+
+    let mut helper_install_cleanup_warning = None;
+    if helper_update_required {
+        let prepared_directory = paths.config().join("helper");
+        let install_result = environment.install_privileged_helper(
+            &helper_candidate,
+            &prepared_directory,
+            asset.helper().sha256().as_str(),
+            asset.helper().version().as_str(),
+            asset.helper().protocol_version(),
+        );
+        let install_outcome = match install_result {
+            Ok(install_outcome) => install_outcome,
+            Err(error) => {
+                let original = error.to_string();
+                let download_cleanup_error = helper_only_download
+                    .as_ref()
+                    .and_then(|download| remove_download(download).err());
+                let failed_release_cleanup_error = if app_update_required {
+                    layout.remove_release(target_release_version).err()
+                } else {
+                    None
+                };
+                let (helper_restore_error, helper_restore_cleanup_warning) = match helper_rollback
+                    .as_ref()
+                    .map(|helper_rollback| restore_helper(environment, helper_rollback))
+                {
+                    Some(Ok(cleanup_warning)) => (None, cleanup_warning),
+                    Some(Err(error)) => (Some(error), None),
+                    None => (None, None),
+                };
+                let helper_cleanup_error = if helper_restore_error.is_none() {
+                    cleanup_helper_rollback(helper_rollback.as_ref()).err()
+                } else {
+                    None
+                };
+                let warning_result = (|| {
+                    write_download_cleanup_warning(stderr, download_cleanup_error)?;
+                    write_helper_rollback_cleanup_warning(stderr, helper_cleanup_error)?;
+                    write_privileged_helper_cleanup_warning(
+                        stderr,
+                        helper_restore_cleanup_warning.as_deref(),
+                    )?;
+                    write_cleanup_warning(stderr, failed_release_cleanup_error)?;
+
+                    Ok::<(), ExecuteError>(())
+                })();
+                if let Some(rollback_error) = helper_restore_error
+                    && let Some(helper_rollback) = &helper_rollback
+                {
+                    let diagnostic = warning_result
+                        .err()
+                        .map(|error| {
+                            format!("; additionally failed to report cleanup warnings: {error}")
+                        })
+                        .unwrap_or_default();
+                    return Err(CliError::AppUpdateRollbackFailed {
+                        original,
+                        rollback: format!(
+                            "{rollback_error}; retained helper rollback candidate at {}{diagnostic}",
+                            helper_rollback.release_candidate,
+                        ),
+                    }
+                    .into());
+                }
+                warning_result?;
+
+                return Err(error.into());
+            }
+        };
+        helper_install_cleanup_warning = install_outcome.cleanup_warning().map(str::to_string);
+        if let Some(download) = &helper_only_download {
+            let promotion_result = layout
+                .install_release_helper(target_release_version, download)
+                .map_err(ExecuteError::from)
+                .and_then(|installed| {
+                    if let Some(metadata) = &helper_metadata {
+                        metadata.write(&installed)?;
+                    }
+
+                    Ok(())
+                });
+            let download_cleanup_error = remove_download(download).err();
+            if let Err(error) = promotion_result {
+                let original = error.to_string();
+                let mut rollback_errors = Vec::new();
+                let mut helper_cleanup_error = None;
+                let mut helper_restore_cleanup_warning = None;
+                if let Some(helper_rollback) = &helper_rollback {
+                    match restore_helper(environment, helper_rollback) {
+                        Ok(cleanup_warning) => {
+                            helper_restore_cleanup_warning = cleanup_warning;
+                        }
+                        Err(rollback_error) => {
+                            rollback_errors.push(format!("registered helper: {rollback_error}"));
+                        }
+                    }
+                    if let Err(rollback_error) = restore_helper_release(helper_rollback) {
+                        rollback_errors.push(format!("release helper: {rollback_error}"));
+                    }
+                    if rollback_errors.is_empty() {
+                        helper_cleanup_error = cleanup_helper_rollback(Some(helper_rollback)).err();
+                    } else {
+                        rollback_errors.push(format!(
+                            "retained helper rollback candidate at {}",
+                            helper_rollback.release_candidate
+                        ));
+                    }
+                }
+                let warning_result = (|| {
+                    write_download_cleanup_warning(stderr, download_cleanup_error)?;
+                    write_helper_rollback_cleanup_warning(stderr, helper_cleanup_error)?;
+                    write_privileged_helper_cleanup_warning(
+                        stderr,
+                        helper_restore_cleanup_warning.as_deref(),
+                    )?;
+
+                    Ok::<(), ExecuteError>(())
+                })();
+                if !rollback_errors.is_empty() {
+                    if let Err(diagnostic_error) = warning_result {
+                        rollback_errors.push(format!(
+                            "failed to report cleanup warnings: {diagnostic_error}"
+                        ));
+                    }
+                    return Err(CliError::AppUpdateRollbackFailed {
+                        original,
+                        rollback: rollback_errors.join("; "),
+                    }
+                    .into());
+                }
+                let mut failure_message = original;
+                if let Err(diagnostic_error) = warning_result {
+                    failure_message.push_str(&format!(
+                        "; additionally failed to report cleanup warnings: {diagnostic_error}"
+                    ));
+                }
+
+                return Err(CliError::PrivilegedHelperPromotionFailed {
+                    message: failure_message,
+                }
+                .into());
+            }
+            write_download_cleanup_warning(stderr, download_cleanup_error)?;
+        }
+    }
+
+    let helper_install_cleanup_warning = helper_install_cleanup_warning
+        .as_deref()
+        .map(|warning| format!("; warning: {warning}"))
+        .unwrap_or_default();
+    if !app_update_required {
+        write_helper_rollback_cleanup_warning(
+            stderr,
+            cleanup_helper_rollback(helper_rollback.as_ref()).err(),
+        )?;
+        output.line(&format!(
+            "Privileged helper: updated to {} (protocol {}){helper_install_cleanup_warning}",
+            asset.helper().version(),
+            asset.helper().protocol_version()
+        ))?;
+        if manifest.version() < &current_version {
+            output.line(&format!(
+                "PV application: current {current_version}; app manifest {} is older",
+                manifest.version()
+            ))?;
+        } else {
+            output.line(&format!("PV application: current {current_version}"))?;
+        }
+
+        return Ok(AppUpdateOutcome::Current { paths });
+    }
+
     let updated_version = manifest.version().as_str().to_string();
-    layout.activate_release(&updated_version)?;
-    if let Err(error) = restart_daemon_without_reconciliation(
-        environment,
-        &paths,
-        &launch_agent_path,
-        DaemonHealthCheck::AcceptProtocolMismatch,
-    ) {
+    let transition_result = layout
+        .activate_release(&updated_version)
+        .map_err(ExecuteError::from)
+        .and_then(|()| {
+            restart_daemon_without_reconciliation(
+                environment,
+                &paths,
+                &launch_agent_path,
+                DaemonHealthCheck::AcceptProtocolMismatch,
+            )
+        });
+    if let Err(error) = transition_result {
         return rollback_app_update(
             environment,
             RollbackContext {
                 paths: &paths,
                 layout: &layout,
                 launch_agent_path: &launch_agent_path,
+                helper_rollback: helper_rollback.as_ref(),
             },
             RollbackVersions {
                 previous: &previous_version,
@@ -536,11 +873,27 @@ fn run_app_update_phase(
         );
     }
 
+    if helper_update_required {
+        output.line(&format!(
+            "Privileged helper: updated to {} (protocol {}){helper_install_cleanup_warning}",
+            asset.helper().version(),
+            asset.helper().protocol_version()
+        ))?;
+    } else if let InstalledHelperState::Ready(status) = &installed_helper {
+        output.line(&format!(
+            "Privileged helper: current {} (protocol {})",
+            status.version, status.protocol_version
+        ))?;
+    }
     output.line(&format!(
         "PV application: updated {previous_version} -> {}",
         manifest.version()
     ))?;
     output.line("Daemon restarted and healthy")?;
+    write_helper_rollback_cleanup_warning(
+        stderr,
+        cleanup_helper_rollback(helper_rollback.as_ref()).err(),
+    )?;
     if let Err(error) = layout.prune_releases(&previous_version) {
         let mut stderr_output = Output::new(stderr, OutputMode::plain());
         stderr_output.line(&format!(
@@ -560,6 +913,218 @@ struct RollbackContext<'a> {
     paths: &'a PvPaths,
     layout: &'a state::AppReleaseLayout,
     launch_agent_path: &'a Utf8Path,
+    helper_rollback: Option<&'a HelperRollbackPlan>,
+}
+
+enum InstalledHelperState {
+    Ready(platform::PrivilegedHelperStatus),
+    Missing,
+    ProtocolMismatch,
+}
+
+struct AppUpdatePlan {
+    app: bool,
+    helper: HelperUpdatePlan,
+}
+
+#[derive(Clone, Copy)]
+enum HelperUpdatePlan {
+    Current,
+    Update,
+    RetainedOlderManifest,
+    UnavailableOlderManifest,
+}
+
+fn app_update_plan(
+    current_app: &AppUpdateVersion,
+    target_app: &AppUpdateVersion,
+    installed_helper: &InstalledHelperState,
+    target_helper: &PrivilegedHelperUpdateAsset,
+) -> Result<AppUpdatePlan, platform::PlatformError> {
+    if target_app < current_app {
+        let helper = match installed_helper {
+            InstalledHelperState::Ready(status)
+                if status.protocol_version == target_helper.protocol_version() =>
+            {
+                if privileged_helper_version_is_older(status, target_helper) {
+                    HelperUpdatePlan::Update
+                } else {
+                    HelperUpdatePlan::RetainedOlderManifest
+                }
+            }
+            InstalledHelperState::Ready(_) => HelperUpdatePlan::RetainedOlderManifest,
+            InstalledHelperState::Missing | InstalledHelperState::ProtocolMismatch => {
+                HelperUpdatePlan::UnavailableOlderManifest
+            }
+        };
+        return Ok(AppUpdatePlan { app: false, helper });
+    }
+    let app = target_app > current_app;
+    let helper_update_required = privileged_helper_update_required(installed_helper, target_helper);
+    if !app
+        && helper_update_required
+        && target_helper.protocol_version() != platform::HELPER_PROTOCOL_VERSION
+    {
+        return Err(platform::PlatformError::PrivilegedHelperInstallation(
+            "a privileged-helper protocol change requires a matching PV application update"
+                .to_string(),
+        ));
+    }
+    let helper = if helper_update_required {
+        HelperUpdatePlan::Update
+    } else {
+        HelperUpdatePlan::Current
+    };
+
+    Ok(AppUpdatePlan { app, helper })
+}
+
+enum RegisteredHelperRollback {
+    Restore {
+        version: String,
+        protocol_version: u32,
+    },
+    Remove,
+}
+
+struct HelperRollbackPlan {
+    registered: RegisteredHelperRollback,
+    release_path: Utf8PathBuf,
+    release_candidate: Utf8PathBuf,
+    release_metadata: Option<HelperReleaseMetadata>,
+    sha256: String,
+}
+
+fn installed_helper_state(
+    result: Result<platform::PrivilegedHelperStatus, platform::PlatformError>,
+) -> Result<InstalledHelperState, platform::PlatformError> {
+    match result {
+        Ok(status) => Ok(InstalledHelperState::Ready(status)),
+        Err(platform::PlatformError::PrivilegedHelperUnavailable) => {
+            Ok(InstalledHelperState::Missing)
+        }
+        Err(platform::PlatformError::PrivilegedHelperProtocolMismatch { .. }) => {
+            Ok(InstalledHelperState::ProtocolMismatch)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn prepare_helper_rollback(
+    paths: &PvPaths,
+    current_version: &AppUpdateVersion,
+    installed: &InstalledHelperState,
+) -> Result<HelperRollbackPlan, ExecuteError> {
+    let source = paths.app_release_helper(current_version.as_str());
+    let release_metadata = HelperReleaseMetadata::read(&source)?;
+    let registered = match installed {
+        InstalledHelperState::Ready(status) => {
+            if status.version != release_metadata.version()
+                || status.protocol_version != release_metadata.protocol_version()
+            {
+                return Err(CliError::PrivilegedHelperRollbackPreflight {
+                    reason: format!(
+                        "registered helper {} (protocol {}) does not match active release helper {} (protocol {}); run `pv setup` before updating",
+                        status.version,
+                        status.protocol_version,
+                        release_metadata.version(),
+                        release_metadata.protocol_version()
+                    ),
+                }
+                .into());
+            }
+            RegisteredHelperRollback::Restore {
+                version: release_metadata.version().to_string(),
+                protocol_version: release_metadata.protocol_version(),
+            }
+        }
+        InstalledHelperState::ProtocolMismatch => {
+            return Err(CliError::PrivilegedHelperRollbackPreflight {
+                reason: "the registered helper protocol cannot be restored exactly; run `pv setup` before updating"
+                    .to_string(),
+            }
+            .into());
+        }
+        InstalledHelperState::Missing => RegisteredHelperRollback::Remove,
+    };
+    state::fs::ensure_user_dir(paths.downloads())?;
+    let candidate = temporary_app_download_path(paths, "helper-rollback");
+    state::fs::copy_file_atomically(&source, &candidate)?;
+    let sha256 = sha256_file(&candidate)?;
+    if sha256 != release_metadata.sha256() {
+        return Err(CliError::InvalidPrivilegedHelperReleaseMetadata {
+            path: helper_metadata_path(&source).to_string(),
+            reason: format!(
+                "helper checksum mismatch: expected {}, got {sha256}",
+                release_metadata.sha256()
+            ),
+        }
+        .into());
+    }
+
+    Ok(HelperRollbackPlan {
+        registered,
+        release_path: source,
+        release_candidate: candidate,
+        release_metadata: Some(release_metadata),
+        sha256,
+    })
+}
+
+fn restore_helper(
+    environment: &impl Environment,
+    rollback: &HelperRollbackPlan,
+) -> Result<Option<String>, platform::PlatformError> {
+    match &rollback.registered {
+        RegisteredHelperRollback::Restore {
+            version,
+            protocol_version,
+        } => environment
+            .install_privileged_helper(
+                &rollback.release_candidate,
+                rollback
+                    .release_candidate
+                    .parent()
+                    .unwrap_or(Utf8Path::new(".")),
+                &rollback.sha256,
+                version,
+                *protocol_version,
+            )
+            .map(|outcome| outcome.cleanup_warning().map(str::to_string)),
+        RegisteredHelperRollback::Remove => {
+            environment.remove_privileged_helper()?;
+            Ok(None)
+        }
+    }
+}
+
+fn cleanup_helper_rollback(rollback: Option<&HelperRollbackPlan>) -> Result<(), StateError> {
+    if let Some(rollback) = rollback {
+        state::fs::remove_file_if_exists(&rollback.release_candidate)?;
+    }
+
+    Ok(())
+}
+
+fn restore_helper_release(rollback: &HelperRollbackPlan) -> Result<(), ExecuteError> {
+    state::fs::copy_file_atomically(&rollback.release_candidate, &rollback.release_path)?;
+    if let Some(metadata) = &rollback.release_metadata {
+        metadata.write(&rollback.release_path)?;
+    } else {
+        state::fs::remove_file_if_exists(&helper_metadata_path(&rollback.release_path))?;
+    }
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "app updater hashes its private helper rollback candidate before installation"
+)]
+fn sha256_file(path: &Utf8Path) -> Result<String, ExecuteError> {
+    let bytes = std::fs::read(path)?;
+
+    Ok(sha256_digest_hex(Sha256::digest(bytes)))
 }
 
 fn rollback_app_update(
@@ -571,16 +1136,45 @@ fn rollback_app_update(
     stderr: &mut impl Write,
 ) -> Result<AppUpdateOutcome, ExecuteError> {
     let original_message = app_update_failure_message(context.paths, &original_error);
+    let mut rollback_errors = Vec::new();
+    let mut helper_restore_cleanup_warning = None;
     if let Err(restore_error) = context.layout.activate_release(versions.previous) {
-        output.line("PV application: update failed; rollback failed")?;
+        rollback_errors.push(format!("application: {restore_error}"));
+    }
+    if let Some(helper_rollback) = context.helper_rollback {
+        match restore_helper(environment, helper_rollback) {
+            Ok(cleanup_warning) => helper_restore_cleanup_warning = cleanup_warning,
+            Err(restore_error) => {
+                rollback_errors.push(format!("privileged helper: {restore_error}"));
+            }
+        }
+    }
+    if !rollback_errors.is_empty() {
+        if let Some(helper_rollback) = context.helper_rollback {
+            rollback_errors.push(format!(
+                "retained helper rollback candidate at {}",
+                helper_rollback.release_candidate
+            ));
+        }
+        if let Err(error) = output.line("PV application: update failed; rollback failed") {
+            rollback_errors.push(format!("failed to report rollback status: {error}"));
+        }
+        if let Err(error) = write_privileged_helper_cleanup_warning(
+            stderr,
+            helper_restore_cleanup_warning.as_deref(),
+        ) {
+            rollback_errors.push(format!(
+                "failed to report privileged-helper cleanup warning: {error}"
+            ));
+        }
 
         return Err(CliError::AppUpdateRollbackFailed {
             original: original_message,
-            rollback: restore_error.to_string(),
+            rollback: rollback_errors.join("; "),
         }
         .into());
     }
-
+    let helper_cleanup_error = cleanup_helper_rollback(context.helper_rollback).err();
     let cleanup_error = context.layout.remove_release(versions.failed).err();
     if let Err(rollback_error) = restart_daemon_without_reconciliation(
         environment,
@@ -588,27 +1182,62 @@ fn rollback_app_update(
         context.launch_agent_path,
         DaemonHealthCheck::RequireCompatibleProtocol,
     ) {
-        output.line(&format!(
+        let mut rollback_message = rollback_error.to_string();
+        if let Err(error) = output.line(&format!(
             "PV application: update failed; restored {}",
             versions.previous
-        ))?;
-        write_cleanup_warning(stderr, cleanup_error)?;
+        )) {
+            rollback_message.push_str(&format!("; failed to report rollback status: {error}"));
+        }
+        if let Err(error) = write_helper_rollback_cleanup_warning(stderr, helper_cleanup_error) {
+            rollback_message.push_str(&format!(
+                "; failed to report privileged-helper cleanup warning: {error}"
+            ));
+        }
+        if let Err(error) = write_privileged_helper_cleanup_warning(
+            stderr,
+            helper_restore_cleanup_warning.as_deref(),
+        ) {
+            rollback_message.push_str(&format!(
+                "; failed to report privileged-helper cleanup warning: {error}"
+            ));
+        }
+        if let Err(error) = write_cleanup_warning(stderr, cleanup_error) {
+            rollback_message.push_str(&format!("; failed to report app cleanup warning: {error}"));
+        }
 
         return Err(CliError::AppUpdateRollbackDaemonFailed {
             original: original_message,
-            rollback: rollback_error.to_string(),
+            rollback: rollback_message,
         }
         .into());
     }
 
-    output.line(&format!(
+    let mut failure_message = original_message;
+    if let Err(error) = output.line(&format!(
         "PV application: update failed; rolled back to {}",
         versions.previous
-    ))?;
-    write_cleanup_warning(stderr, cleanup_error)?;
+    )) {
+        failure_message.push_str(&format!("; failed to report rollback status: {error}"));
+    }
+    if let Err(error) = write_helper_rollback_cleanup_warning(stderr, helper_cleanup_error) {
+        failure_message.push_str(&format!(
+            "; failed to report privileged-helper cleanup warning: {error}"
+        ));
+    }
+    if let Err(error) =
+        write_privileged_helper_cleanup_warning(stderr, helper_restore_cleanup_warning.as_deref())
+    {
+        failure_message.push_str(&format!(
+            "; failed to report privileged-helper cleanup warning: {error}"
+        ));
+    }
+    if let Err(error) = write_cleanup_warning(stderr, cleanup_error) {
+        failure_message.push_str(&format!("; failed to report app cleanup warning: {error}"));
+    }
 
     Err(CliError::AppUpdatePostActivationFailed {
-        message: original_message,
+        message: failure_message,
     }
     .into())
 }
@@ -622,6 +1251,32 @@ fn write_cleanup_warning(
         output.line(&format!(
             "warning: failed to remove failed PV app release: {error}"
         ))?;
+    }
+
+    Ok(())
+}
+
+fn write_helper_rollback_cleanup_warning(
+    stderr: &mut impl Write,
+    cleanup_error: Option<StateError>,
+) -> Result<(), ExecuteError> {
+    if let Some(error) = cleanup_error {
+        let mut output = Output::new(stderr, OutputMode::plain());
+        output.line(&format!(
+            "warning: failed to remove privileged-helper rollback candidate: {error}"
+        ))?;
+    }
+
+    Ok(())
+}
+
+fn write_privileged_helper_cleanup_warning(
+    stderr: &mut impl Write,
+    cleanup_warning: Option<&str>,
+) -> Result<(), ExecuteError> {
+    if let Some(warning) = cleanup_warning {
+        let mut output = Output::new(stderr, OutputMode::plain());
+        output.line(&format!("warning: {warning}"))?;
     }
 
     Ok(())
@@ -710,6 +1365,7 @@ struct AppUpdateStatus {
     latest_version: Option<String>,
     platform: String,
     asset: Option<AppUpdateAssetStatus>,
+    helper: Option<PrivilegedHelperUpdateStatus>,
     reason: Option<String>,
 }
 
@@ -732,6 +1388,10 @@ impl AppUpdateStatus {
             ))?,
         }
 
+        if let Some(helper) = &self.helper {
+            helper.write_plain(output)?;
+        }
+
         Ok(())
     }
 }
@@ -749,6 +1409,44 @@ struct AppUpdateAssetStatus {
     url: String,
     sha256: String,
     size: u64,
+}
+
+#[derive(Serialize)]
+struct PrivilegedHelperUpdateStatus {
+    status: AppUpdateStatusValue,
+    current_version: Option<String>,
+    latest_version: String,
+    current_protocol_version: Option<u32>,
+    latest_protocol_version: u32,
+    url: String,
+    sha256: String,
+    size: u64,
+    reason: Option<String>,
+}
+
+impl PrivilegedHelperUpdateStatus {
+    fn write_plain(&self, output: &mut Output<'_, impl Write>) -> Result<(), ExecuteError> {
+        match self.status {
+            AppUpdateStatusValue::Current => output.line(&format!(
+                "Privileged helper: current {} (protocol {})",
+                self.current_version.as_deref().unwrap_or("unknown"),
+                self.current_protocol_version
+                    .map_or_else(|| "unknown".to_string(), |version| version.to_string())
+            ))?,
+            AppUpdateStatusValue::UpdateAvailable => output.line(&format!(
+                "Privileged helper: update required {} -> {} (protocol {})",
+                self.current_version.as_deref().unwrap_or("not installed"),
+                self.latest_version,
+                self.latest_protocol_version
+            ))?,
+            AppUpdateStatusValue::Unavailable => output.line(&format!(
+                "Privileged helper: unavailable ({})",
+                self.reason.as_deref().unwrap_or("unknown reason")
+            ))?,
+        }
+
+        Ok(())
+    }
 }
 
 fn app_update_status(environment: &impl Environment) -> Result<AppUpdateStatus, ExecuteError> {
@@ -783,6 +1481,60 @@ fn app_update_status(environment: &impl Environment) -> Result<AppUpdateStatus, 
     } else {
         AppUpdateStatusValue::Current
     };
+    let installed_helper = environment.privileged_helper_status();
+    let installed_helper_state = match installed_helper.as_ref() {
+        Ok(status) => Ok(InstalledHelperState::Ready((*status).clone())),
+        Err(platform::PlatformError::PrivilegedHelperUnavailable) => {
+            Ok(InstalledHelperState::Missing)
+        }
+        Err(platform::PlatformError::PrivilegedHelperProtocolMismatch { .. }) => {
+            Ok(InstalledHelperState::ProtocolMismatch)
+        }
+        Err(error) => Err(error.to_string()),
+    };
+    let (helper_status, helper_reason) = match installed_helper_state {
+        Ok(installed_helper_state) => match app_update_plan(
+            &current_version,
+            manifest.version(),
+            &installed_helper_state,
+            asset.helper(),
+        ) {
+            Ok(AppUpdatePlan {
+                helper: HelperUpdatePlan::Update,
+                ..
+            }) => (AppUpdateStatusValue::UpdateAvailable, None),
+            Ok(AppUpdatePlan {
+                helper: HelperUpdatePlan::UnavailableOlderManifest,
+                ..
+            }) => (
+                AppUpdateStatusValue::Unavailable,
+                Some("the older app manifest has no applicable helper repair".to_string()),
+            ),
+            Ok(AppUpdatePlan {
+                helper: HelperUpdatePlan::Current | HelperUpdatePlan::RetainedOlderManifest,
+                ..
+            }) => (AppUpdateStatusValue::Current, None),
+            Err(error) => (AppUpdateStatusValue::Unavailable, Some(error.to_string())),
+        },
+        Err(reason) => (AppUpdateStatusValue::Unavailable, Some(reason)),
+    };
+    let helper = PrivilegedHelperUpdateStatus {
+        status: helper_status,
+        current_version: installed_helper
+            .as_ref()
+            .ok()
+            .map(|status| status.version.clone()),
+        latest_version: asset.helper().version().to_string(),
+        current_protocol_version: installed_helper
+            .as_ref()
+            .ok()
+            .map(|status| status.protocol_version),
+        latest_protocol_version: asset.helper().protocol_version(),
+        url: asset.helper().url().to_string(),
+        sha256: asset.helper().sha256().as_str().to_string(),
+        size: asset.helper().size(),
+        reason: helper_reason,
+    };
 
     Ok(AppUpdateStatus {
         status,
@@ -794,6 +1546,7 @@ fn app_update_status(environment: &impl Environment) -> Result<AppUpdateStatus, 
             sha256: asset.sha256().as_str().to_string(),
             size: asset.size(),
         }),
+        helper: Some(helper),
         reason: None,
     })
 }
@@ -809,8 +1562,32 @@ fn app_update_status_unavailable(
         latest_version: None,
         platform,
         asset: None,
+        helper: None,
         reason: Some(reason),
     }
+}
+
+fn privileged_helper_update_required(
+    status: &InstalledHelperState,
+    target: &PrivilegedHelperUpdateAsset,
+) -> bool {
+    let InstalledHelperState::Ready(status) = status else {
+        return true;
+    };
+    if status.protocol_version != target.protocol_version() {
+        return true;
+    }
+
+    privileged_helper_version_is_older(status, target)
+}
+
+fn privileged_helper_version_is_older(
+    status: &platform::PrivilegedHelperStatus,
+    target: &PrivilegedHelperUpdateAsset,
+) -> bool {
+    AppUpdateVersion::parse(status.version.clone())
+        .map(|version| version < *target.version())
+        .unwrap_or(true)
 }
 
 fn managed_resource_plain(resource: &ManagedResourceUpdateCheckTrack) -> String {

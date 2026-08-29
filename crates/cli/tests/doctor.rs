@@ -12,8 +12,9 @@ use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::{Settings, assert_debug_snapshot};
 use platform::{
-    ActivePfRedirectInspection, KeychainCertificate, KeychainTrustResult, LaunchAgentConfig,
-    PfConfReference, PfRedirectConfig, ResolverConfig,
+    ActivePfRedirectInspection, HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult,
+    LaunchAgentConfig, PRIVILEGED_HELPER_VERSION, PfConfReference, PfRedirectConfig,
+    PrivilegedHelperStatus, ResolverConfig,
 };
 use state::{
     Database, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, JobDiagnosticSubject,
@@ -30,6 +31,7 @@ struct TestEnvironment {
     pf_conf_path: PathBuf,
     active_pf_config: std::cell::RefCell<Option<PfRedirectConfig>>,
     trusted_certificates: std::cell::RefCell<Vec<KeychainCertificate>>,
+    helper_status: std::cell::RefCell<Option<PrivilegedHelperStatus>>,
 }
 
 impl TestEnvironment {
@@ -49,6 +51,11 @@ impl TestEnvironment {
             pf_conf_path: home.join("etc/pf.conf").as_std_path().to_path_buf(),
             active_pf_config: std::cell::RefCell::new(None),
             trusted_certificates: std::cell::RefCell::new(Vec::new()),
+            helper_status: std::cell::RefCell::new(Some(PrivilegedHelperStatus {
+                version: PRIVILEGED_HELPER_VERSION.to_string(),
+                protocol_version: HELPER_PROTOCOL_VERSION,
+                owner_uid: 501,
+            })),
         }
     }
 
@@ -67,6 +74,18 @@ impl TestEnvironment {
 
     fn pf_conf_path_utf8(&self) -> anyhow::Result<Utf8PathBuf> {
         utf8_path_buf(&self.pf_conf_path, "pf.conf path")
+    }
+
+    fn set_helper_missing(&self) {
+        self.helper_status.replace(None);
+    }
+
+    fn set_helper_status(&self, version: &str, protocol_version: u32) {
+        self.helper_status.replace(Some(PrivilegedHelperStatus {
+            version: version.to_string(),
+            protocol_version,
+            owner_uid: 501,
+        }));
     }
 }
 
@@ -141,6 +160,13 @@ impl Environment for TestEnvironment {
     fn trusted_ca_certificates(&self) -> Result<Vec<KeychainCertificate>, platform::PlatformError> {
         Ok(self.trusted_certificates.borrow().clone())
     }
+
+    fn privileged_helper_status(&self) -> Result<PrivilegedHelperStatus, platform::PlatformError> {
+        self.helper_status
+            .borrow()
+            .clone()
+            .ok_or(platform::PlatformError::PrivilegedHelperUnavailable)
+    }
 }
 
 #[test]
@@ -167,6 +193,59 @@ fn doctor_passes_when_required_checks_pass() -> anyhow::Result<()> {
         "doctor_passes_when_required_checks_pass",
         tempdir.path(),
         (output, json),
+    );
+
+    Ok(())
+}
+
+#[test]
+fn doctor_accepts_helper_only_version_from_active_release_metadata() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let environment = TestEnvironment::new(paths.home());
+    seed_required_checks(&paths, &environment, true)?;
+    environment.set_helper_status("1.1.0", 1);
+    write_file(
+        &paths
+            .app_release_helper(env!("CARGO_PKG_VERSION"))
+            .with_file_name("pv-helper.json"),
+        "{\n  \"version\": \"1.1.0\",\n  \"protocol_version\": 1,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
+    )?;
+    let health_server = spawn_health_server(&paths.daemon_socket())?;
+
+    let output = run_pv(&["doctor"], &environment)?;
+    join_health_server(health_server)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(
+        output
+            .stdout
+            .contains("available at version 1.1.0 with protocol 1")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_missing_helper_and_continues_other_checks() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    seed_required_checks(&paths, &environment, true)?;
+    environment.set_helper_missing();
+    let health_server = spawn_health_server(&paths.daemon_socket())?;
+
+    let output = run_pv(&["doctor"], &environment)?;
+    join_health_server(health_server)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.contains("[fail] Privileged helper"));
+    assert!(output.stdout.contains("[pass] Artifact manifest cache"));
+    assert_doctor_snapshot(
+        "doctor_reports_missing_helper_and_continues_other_checks",
+        tempdir.path(),
+        output,
     );
 
     Ok(())
@@ -371,10 +450,6 @@ fn doctor_is_read_only() -> anyhow::Result<()> {
 }
 
 #[derive(Debug)]
-#[expect(
-    dead_code,
-    reason = "snapshot-only structure is read through derived Debug"
-)]
 struct RunOutput {
     exit_code: ExitCode,
     stdout: String,
@@ -454,6 +529,12 @@ fn seed_required_checks(
             metadata: ca.metadata,
             trust: KeychainTrustResult::TrustRoot,
         });
+    let release_helper = paths.app_release_helper(env!("CARGO_PKG_VERSION"));
+    state::fs::write_sensitive_file(&release_helper, "pv helper\n")?;
+    state::fs::write_sensitive_file(
+        &release_helper.with_file_name("pv-helper.json"),
+        "{\n  \"version\": \"1.0.0\",\n  \"protocol_version\": 1,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
+    )?;
 
     if include_manifest_cache {
         state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), "{}")?;

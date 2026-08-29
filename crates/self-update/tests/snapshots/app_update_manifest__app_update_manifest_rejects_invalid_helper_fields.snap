@@ -1,0 +1,40 @@
+---
+source: crates/self-update/tests/app_update_manifest.rs
+expression: errors
+---
+[
+    InvalidManifestSnapshot {
+        name: "invalid_helper_version",
+        error: InvalidIdentity {
+            kind: "version",
+            value: "01.0.0",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "invalid_helper_protocol",
+        error: InvalidHelperProtocolVersion {
+            platform: "darwin-arm64",
+            protocol_version: 0,
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "invalid_helper_url",
+        error: InvalidAssetUrl {
+            url: "http://downloads.example.test/pv/0.2.0/pv-helper-1.0.0-darwin-arm64",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "invalid_helper_checksum",
+        error: InvalidIdentity {
+            kind: "sha256",
+            value: "not-a-helper-sha",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "zero_helper_size",
+        error: InvalidAssetSize {
+            platform: "darwin-arm64 privileged helper",
+            size: 0,
+        },
+    },
+]

@@ -25,7 +25,7 @@ pub use database::{
 };
 pub use error::{StateCapability, StateError};
 pub use paths::{PathSummaryEntry, PvPaths};
-pub use update_lock::UpdateLock;
+pub use update_lock::{HelperLifecycleLock, UpdateLock};
 
 #[doc(hidden)]
 pub mod testing {

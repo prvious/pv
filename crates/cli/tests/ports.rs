@@ -23,7 +23,7 @@ struct TestEnvironment {
     pf_conf_path: PathBuf,
     listening_ports: BTreeSet<u16>,
     active_pf_config: RefCell<Option<PfRedirectConfig>>,
-    active_pf_privilege_modes: RefCell<Vec<platform::PrivilegeMode>>,
+    active_pf_inspections: RefCell<u32>,
     active_pf_read_fails_when_unloaded: bool,
     unprivileged_pf_inspection_fails: bool,
     gateway_probe_succeeds: bool,
@@ -46,7 +46,7 @@ impl TestEnvironment {
             pf_conf_path: pf_conf_path.as_std_path().to_path_buf(),
             listening_ports: BTreeSet::new(),
             active_pf_config: RefCell::new(None),
-            active_pf_privilege_modes: RefCell::new(Vec::new()),
+            active_pf_inspections: RefCell::new(0),
             active_pf_read_fails_when_unloaded: false,
             unprivileged_pf_inspection_fails: false,
             gateway_probe_succeeds: false,
@@ -149,16 +149,7 @@ impl Environment for TestEnvironment {
     fn active_pf_redirect_config(
         &self,
     ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
-        self.active_pf_redirect_config_with_privilege_mode(platform::PrivilegeMode::NonInteractive)
-    }
-
-    fn active_pf_redirect_config_with_privilege_mode(
-        &self,
-        privilege_mode: platform::PrivilegeMode,
-    ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
-        self.active_pf_privilege_modes
-            .borrow_mut()
-            .push(privilege_mode);
+        *self.active_pf_inspections.borrow_mut() += 1;
         if self.active_pf_read_fails_when_unloaded && self.active_pf_config.borrow().is_none() {
             return Err(platform::PlatformError::SystemIntegrationCommandStatus {
                 command: "/sbin/pfctl -s nat".to_string(),
@@ -477,13 +468,7 @@ fn ports_install_reloads_current_files_when_active_redirects_are_missing() -> an
         *environment.active_pf_config.borrow(),
         Some(PfRedirectConfig::new(48080, 48443))
     );
-    assert_eq!(
-        environment.active_pf_privilege_modes.borrow().as_slice(),
-        [
-            platform::PrivilegeMode::Interactive,
-            platform::PrivilegeMode::Interactive
-        ]
-    );
+    assert_eq!(*environment.active_pf_inspections.borrow(), 2);
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((output, environment.operations.borrow().clone()));
@@ -522,10 +507,7 @@ fn ports_install_skips_active_rule_inspection_before_first_install() -> anyhow::
         *environment.active_pf_config.borrow(),
         Some(PfRedirectConfig::new(48080, 48443))
     );
-    assert_eq!(
-        environment.active_pf_privilege_modes.borrow().as_slice(),
-        [platform::PrivilegeMode::Interactive]
-    );
+    assert_eq!(*environment.active_pf_inspections.borrow(), 1);
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((output, environment.operations.borrow().clone()));
@@ -666,7 +648,7 @@ fn ports_status_reports_canonical_routing_states_without_mutating_state() -> any
     assert!(database_after_missing.is_none());
     assert!(prepared_anchor_after_missing.is_none());
     assert!(prepared_reference_after_missing.is_none());
-    assert!(environment.active_pf_privilege_modes.borrow().is_empty());
+    assert_eq!(*environment.active_pf_inspections.borrow(), 0);
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -721,18 +703,8 @@ fn ports_status_uses_gateway_identity_when_unprivileged_pfctl_is_denied() -> any
 
     assert_eq!(working.exit_code, ExitCode::SUCCESS);
     assert_eq!(broken.exit_code, ExitCode::FAILURE);
-    assert!(
-        working_environment
-            .active_pf_privilege_modes
-            .borrow()
-            .is_empty()
-    );
-    assert!(
-        broken_environment
-            .active_pf_privilege_modes
-            .borrow()
-            .is_empty()
-    );
+    assert_eq!(*working_environment.active_pf_inspections.borrow(), 0);
+    assert_eq!(*broken_environment.active_pf_inspections.borrow(), 0);
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((working, broken));

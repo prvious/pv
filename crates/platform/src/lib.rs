@@ -3,6 +3,7 @@ mod ca;
 mod capability;
 mod command;
 mod error;
+mod helper;
 mod launch_agent;
 mod listener;
 mod pf;
@@ -19,6 +20,12 @@ pub use ca::{
 };
 pub use capability::{PlatformCapability, require_capability};
 pub use error::PlatformError;
+pub use helper::{
+    HELPER_EXECUTABLE_PATH, HELPER_LAUNCH_DAEMON_PATH, HELPER_METADATA_PATH,
+    HELPER_PROTOCOL_VERSION, HELPER_SOCKET_PATH, PRIVILEGED_HELPER_VERSION, PrivilegedHelperClient,
+    PrivilegedHelperInstallOutcome, PrivilegedHelperStatus, bundled_privileged_helper_sha256,
+    install_privileged_helper, remove_privileged_helper, serve_privileged_helper,
+};
 pub use launch_agent::{
     LAUNCH_AGENT_FILE_NAME, LAUNCH_AGENT_LABEL, LaunchAgentConfig, LaunchAgentFileState,
     bootout_launch_agent, bootstrap_launch_agent, inspect_launch_agent_file,
@@ -28,8 +35,8 @@ pub use listener::{loopback_tcp_listener_ports, loopback_tcp_port_has_listener};
 pub use pf::{
     ActivePfRedirectInspection, PfConfReference, PfFileState, PfRedirectConfig,
     SYSTEM_PF_ANCHOR_PATH, SYSTEM_PF_CONF_PATH, active_pf_redirect_config,
-    active_pf_redirect_config_with_privilege_mode, inspect_active_pf_redirects_unprivileged,
-    inspect_pf_anchor_file, inspect_pf_conf_reference, install_pf_redirects, remove_pf_redirects,
+    inspect_active_pf_redirects_unprivileged, inspect_pf_anchor_file, inspect_pf_conf_reference,
+    install_pf_redirects, remove_pf_redirects,
 };
 pub use process::{
     ProcessIdentity, ProcessStartIdentity, exec_replace, exec_replace_with_env,
@@ -41,9 +48,9 @@ pub use resolver::{
 };
 pub use target::PlatformTarget;
 pub use trust::{
-    KeychainCertificate, KeychainTrustResult, NativeSystemTrustInspector, PrivilegeMode,
-    SystemTrustInspector, TrustDomainState, inspect_system_ca_trust, trust_system_ca,
-    trusted_pv_ca_fingerprints, untrust_system_ca,
+    KeychainCertificate, KeychainTrustResult, NativeSystemTrustInspector, SystemTrustInspector,
+    TrustDomainState, inspect_system_ca_trust, trust_system_ca, trusted_pv_ca_fingerprints,
+    untrust_system_ca,
 };
 
 #[cfg(test)]
