@@ -24,7 +24,7 @@ on:
         default: "all"
         type: string
       platform:
-        description: "Artifact platform: all uses the current preview matrix (native lanes are darwin-arm64; Caddy includes darwin-amd64); choose darwin-arm64 or darwin-amd64 explicitly for one platform"
+        description: "Artifact platform: all uses darwin-arm64 for native recipes, adds darwin-amd64 for Postgres and Caddy, and uses any for Composer; choose darwin-arm64 or darwin-amd64 explicitly for one platform"
         required: true
         default: "all"
         type: choice
@@ -513,7 +513,7 @@ jobs:
       fail-fast: false
       matrix:
         track: ${{ fromJSON(inputs.track == 'all' && '["17","18"]' || format('["{0}"]', inputs.track)) }}
-        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64"]' || format('["{0}"]', inputs.platform)) }}
+        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64","darwin-amd64"]' || format('["{0}"]', inputs.platform)) }}
 
     steps:
       - name: Checkout

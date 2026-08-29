@@ -94,7 +94,15 @@ pub fn mysql_adapter() -> Result<RuntimeArtifactAdapter> {
 pub fn postgres_adapter() -> Result<RuntimeArtifactAdapter> {
     Ok(runtime_adapter("postgres", "bin/postgres")?
         .required_file("bin/initdb")
-        .required_file("share/postgres.bki"))
+        .required_file("share/postgres.bki")
+        .required_file("lib/libcrypto.3.dylib")
+        .required_file("lib/libssl.3.dylib")
+        .required_file("lib/postgresql/pg_trgm.so")
+        .required_file("lib/postgresql/pgcrypto.so")
+        .required_file("lib/postgresql/sslinfo.so")
+        .required_file("share/extension/pg_trgm.control")
+        .required_file("share/extension/pgcrypto.control")
+        .required_file("share/extension/sslinfo.control"))
 }
 
 fn runtime_adapter(

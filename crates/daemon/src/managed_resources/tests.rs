@@ -122,6 +122,17 @@ const INVALID_DEFAULT_PORT_SPECS: &[super::ManagedResourcePortSpec] = &[
 const SETUP_DEFAULT_POSTGRES_SUPPORT_FILES: &[(&str, &str)] = &[
     ("bin/initdb", "#!/bin/sh\nexit 0\n"),
     ("share/postgres.bki", "postgres catalog"),
+    ("lib/libcrypto.3.dylib", "fixture libcrypto"),
+    ("lib/libssl.3.dylib", "fixture libssl"),
+    ("lib/postgresql/pg_trgm.so", "fixture pg_trgm"),
+    ("lib/postgresql/pgcrypto.so", "fixture pgcrypto"),
+    ("lib/postgresql/sslinfo.so", "fixture sslinfo"),
+    ("share/extension/pg_trgm.control", "fixture pg_trgm control"),
+    (
+        "share/extension/pgcrypto.control",
+        "fixture pgcrypto control",
+    ),
+    ("share/extension/sslinfo.control", "fixture sslinfo control"),
 ];
 const SETUP_DEFAULT_FIXTURES: &[SetupDefaultFixture] = &[
     SetupDefaultFixture {
@@ -4187,6 +4198,21 @@ fn write_postgres_fixture_binaries_without_support_files(release_path: &Utf8Path
 
 fn write_postgres_support_files(release_path: &Utf8Path) -> Result<()> {
     state::fs::write_sensitive_file(&release_path.join("share/postgres.bki"), "postgres catalog")?;
+    for relative_path in [
+        "lib/libcrypto.3.dylib",
+        "lib/libssl.3.dylib",
+        "lib/postgresql/pg_trgm.so",
+        "lib/postgresql/pgcrypto.so",
+        "lib/postgresql/sslinfo.so",
+        "share/extension/pg_trgm.control",
+        "share/extension/pgcrypto.control",
+        "share/extension/sslinfo.control",
+    ] {
+        state::fs::write_sensitive_file(
+            &release_path.join(relative_path),
+            "postgres pv2 support file",
+        )?;
+    }
 
     Ok(())
 }

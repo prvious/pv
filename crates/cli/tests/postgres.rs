@@ -15,6 +15,23 @@ mod support;
 const POSTGRES_SUPPORT_FILES: &[(&str, &str)] = &[
     ("bin/initdb", "fixture initdb\n"),
     ("share/postgres.bki", "fixture bki\n"),
+    ("lib/libcrypto.3.dylib", "fixture libcrypto\n"),
+    ("lib/libssl.3.dylib", "fixture libssl\n"),
+    ("lib/postgresql/pg_trgm.so", "fixture pg_trgm\n"),
+    ("lib/postgresql/pgcrypto.so", "fixture pgcrypto\n"),
+    ("lib/postgresql/sslinfo.so", "fixture sslinfo\n"),
+    (
+        "share/extension/pg_trgm.control",
+        "fixture pg_trgm control\n",
+    ),
+    (
+        "share/extension/pgcrypto.control",
+        "fixture pgcrypto control\n",
+    ),
+    (
+        "share/extension/sslinfo.control",
+        "fixture sslinfo control\n",
+    ),
 ];
 const RESOURCE: ResourceCliSpec = ResourceCliSpec {
     resource_name: "postgres",

@@ -573,13 +573,13 @@ expression: manifest_json
           "name": "17",
           "artifacts": [
             {
-              "artifact_version": "17.10-pv1",
+              "artifact_version": "17.10-pv2",
               "upstream_version": "17.10",
-              "pv_build_revision": "pv1",
+              "pv_build_revision": "pv2",
               "platform": "darwin-amd64",
-              "url": "https://artifacts.example.test/resources/postgres/17/17.10-pv1/darwin-amd64/postgres-17.10-pv1-darwin-amd64.tar.gz",
-              "sha256": "4af5b8f9aed62e3561629b214442ca609ee90079c4dfa448e081023d717ebe5a",
-              "size": 264,
+              "url": "https://artifacts.example.test/resources/postgres/17/17.10-pv2/darwin-amd64/postgres-17.10-pv2-darwin-amd64.tar.gz",
+              "sha256": "724a1f06fc5dc6cdb5eb7d113a5062771dc4dacf48465ce42400d8bab5b519b0",
+              "size": 511,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.gz",
@@ -590,13 +590,13 @@ expression: manifest_json
               }
             },
             {
-              "artifact_version": "17.10-pv1",
+              "artifact_version": "17.10-pv2",
               "upstream_version": "17.10",
-              "pv_build_revision": "pv1",
+              "pv_build_revision": "pv2",
               "platform": "darwin-arm64",
-              "url": "https://artifacts.example.test/resources/postgres/17/17.10-pv1/darwin-arm64/postgres-17.10-pv1-darwin-arm64.tar.gz",
-              "sha256": "00b5439f0dfd83f3b42c40743c10e88af08ae6c989738dbd6569f622d3549b3c",
-              "size": 264,
+              "url": "https://artifacts.example.test/resources/postgres/17/17.10-pv2/darwin-arm64/postgres-17.10-pv2-darwin-arm64.tar.gz",
+              "sha256": "8f7c0b01596b8479af871d26f5f4e55c9427278710ca66bacd77066e87838148",
+              "size": 508,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.gz",
@@ -612,13 +612,13 @@ expression: manifest_json
           "name": "18",
           "artifacts": [
             {
-              "artifact_version": "18.4-pv1",
+              "artifact_version": "18.4-pv2",
               "upstream_version": "18.4",
-              "pv_build_revision": "pv1",
+              "pv_build_revision": "pv2",
               "platform": "darwin-amd64",
-              "url": "https://artifacts.example.test/resources/postgres/18/18.4-pv1/darwin-amd64/postgres-18.4-pv1-darwin-amd64.tar.gz",
-              "sha256": "a937d1294303252915b1cfeac33efb9f3a0f9d24cb4720caa9eee336f311f293",
-              "size": 264,
+              "url": "https://artifacts.example.test/resources/postgres/18/18.4-pv2/darwin-amd64/postgres-18.4-pv2-darwin-amd64.tar.gz",
+              "sha256": "7d07cc87ad90de56890a96c88b2f7758bdc5968ea060f5f2dd2aa2b407b25644",
+              "size": 512,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://ftp.postgresql.org/pub/source/v18.4/postgresql-18.4.tar.gz",
@@ -629,13 +629,13 @@ expression: manifest_json
               }
             },
             {
-              "artifact_version": "18.4-pv1",
+              "artifact_version": "18.4-pv2",
               "upstream_version": "18.4",
-              "pv_build_revision": "pv1",
+              "pv_build_revision": "pv2",
               "platform": "darwin-arm64",
-              "url": "https://artifacts.example.test/resources/postgres/18/18.4-pv1/darwin-arm64/postgres-18.4-pv1-darwin-arm64.tar.gz",
-              "sha256": "9fd0d9fdad0f7b74466abc3f918919afccad875fe672653dfd9fa80488c647f9",
-              "size": 263,
+              "url": "https://artifacts.example.test/resources/postgres/18/18.4-pv2/darwin-arm64/postgres-18.4-pv2-darwin-arm64.tar.gz",
+              "sha256": "f31c342e10c43e703527c073f7c770882e5de773f03c11e489eb70fe020424a3",
+              "size": 513,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://ftp.postgresql.org/pub/source/v18.4/postgresql-18.4.tar.gz",

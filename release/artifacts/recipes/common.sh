@@ -21,6 +21,52 @@ require_sha256() {
   [ "$actual" = "$expected" ] || die "$file checksum mismatch: expected $expected, got $actual"
 }
 
+pv_recipe_openssl_configure_target_for_platform() {
+  case "$1" in
+    darwin-arm64) printf '%s\n' darwin64-arm64-cc ;;
+    darwin-amd64) printf '%s\n' darwin64-x86_64-cc ;;
+    *) die "unsupported OpenSSL artifact platform: $1" ;;
+  esac
+}
+
+pv_recipe_validate_openssl_prefix() {
+  openssl_prefix=$1
+
+  [ -f "$openssl_prefix/include/openssl/ssl.h" ] || die "OpenSSL headers not found under $openssl_prefix"
+  [ -f "$openssl_prefix/lib/libssl.3.dylib" ] || die "OpenSSL shared SSL library not found under $openssl_prefix"
+  [ -f "$openssl_prefix/lib/libcrypto.3.dylib" ] || die "OpenSSL shared crypto library not found under $openssl_prefix"
+}
+
+pv_recipe_build_openssl_dependency() (
+  openssl_prefix=$1
+  openssl_source_archive=$2
+  openssl_source_extract_dir=$3
+  openssl_source_url=$4
+  openssl_source_sha256=$5
+  platform=$6
+  deployment_target=$7
+  build_jobs=$8
+  openssl_dir=$9
+
+  rm -rf "$openssl_prefix"
+  download_source "$openssl_source_archive" "$openssl_source_url" "$openssl_source_sha256"
+  openssl_source_dir=$(extract_source OpenSSL "$openssl_source_archive" "$openssl_source_extract_dir")
+  openssl_configure_target=$(pv_recipe_openssl_configure_target_for_platform "$platform")
+
+  (
+    cd "$openssl_source_dir"
+    MACOSX_DEPLOYMENT_TARGET="$deployment_target" \
+      perl ./Configure "$openssl_configure_target" no-tests \
+      --prefix="$openssl_prefix" \
+      --openssldir="$openssl_dir"
+    MACOSX_DEPLOYMENT_TARGET="$deployment_target" make -j "$build_jobs"
+    MACOSX_DEPLOYMENT_TARGET="$deployment_target" make install_sw
+  )
+
+  cp "$openssl_source_dir/LICENSE.txt" "$openssl_prefix/LICENSE.txt"
+  pv_recipe_validate_openssl_prefix "$openssl_prefix"
+)
+
 pv_recipe_macho_loader_prefix() {
   root_dir=$1
   macho=$2
@@ -49,11 +95,20 @@ pv_recipe_macho_loader_prefix() {
   esac
 }
 
+pv_recipe_is_macho() (
+  file_description=$(file -b "$1") || die "failed to inspect file type for $1"
+  case "$file_description" in
+    *Mach-O*) return 0 ;;
+    *) return 1 ;;
+  esac
+)
+
 rewrite_macho_install_names() {
   root_dir=$1
   shift
 
   need install_name_tool
+  need file
   need find
   need otool
   [ "$#" -gt 0 ] || die "missing install root for Mach-O install-name rewrite"
@@ -94,7 +149,7 @@ $1"
   for macho_dir in "$root_dir/bin" "$root_dir/lib"; do
     [ -d "$macho_dir" ] || continue
     find "$macho_dir" -type f | while IFS= read -r macho; do
-      otool -L "$macho" >/dev/null 2>&1 || continue
+      pv_recipe_is_macho "$macho" || continue
       loader_prefix=$(pv_recipe_macho_loader_prefix "$root_dir" "$macho")
       otool -L "$macho" | while read -r linked _; do
         for install_root in "$@"; do
@@ -113,6 +168,7 @@ pv_recipe_ad_hoc_sign_macho_tree() {
   root_dir=$1
 
   need codesign
+  need file
   need find
   need otool
 
@@ -121,7 +177,11 @@ pv_recipe_ad_hoc_sign_macho_tree() {
     find "$macho_dir" -type f -exec sh -c '
       set -e
       for macho do
-        otool -L "$macho" >/dev/null 2>&1 || continue
+        file_description=$(file -b "$macho") || exit 1
+        case "$file_description" in
+          *Mach-O*) ;;
+          *) continue ;;
+        esac
         codesign --force --sign - "$macho" >/dev/null || exit 1
       done
     ' sh {} +
@@ -201,8 +261,9 @@ reject_unmanaged_macho_runtime_path() {
   esac
 }
 
-macho_rpaths() {
-  otool -l "$1" | awk '
+macho_rpaths() (
+  load_commands=$(otool -l "$1") || die "failed to inspect Mach-O load commands for $1"
+  printf '%s\n' "$load_commands" | awk '
     $1 == "cmd" && $2 == "LC_RPATH" {
       in_rpath = 1
       next
@@ -217,6 +278,37 @@ macho_rpaths() {
       next
     }
   '
+)
+
+pv_recipe_cleanup_macho_rpaths() {
+  binary=$1
+
+  macho_rpath_list=$(macho_rpaths "$binary") || die "failed to inspect Mach-O rpaths for $binary"
+  [ -n "$macho_rpath_list" ] || return
+  printf '%s\n' "$macho_rpath_list" | while IFS= read -r macho_rpath; do
+    case "$macho_rpath" in
+      /usr/lib/* | /System/Library/* | @rpath/* | @loader_path/* | @executable_path/* | @loader_path | @executable_path)
+        ;;
+      *) install_name_tool -delete_rpath "$macho_rpath" "$binary" || exit 1 ;;
+    esac
+  done
+}
+
+pv_recipe_cleanup_macho_rpaths_tree() {
+  root_dir=$1
+
+  need find
+  need file
+  need install_name_tool
+  need otool
+
+  for macho_dir in "$root_dir/bin" "$root_dir/lib"; do
+    [ -d "$macho_dir" ] || continue
+    find "$macho_dir" -type f | while IFS= read -r macho; do
+      pv_recipe_is_macho "$macho" || continue
+      pv_recipe_cleanup_macho_rpaths "$macho"
+    done
+  done
 }
 
 validate_macho_runtime_paths() {
@@ -226,7 +318,8 @@ validate_macho_runtime_paths() {
     reject_unmanaged_macho_runtime_path "$binary" "linked library" "$linked_library"
   done
 
-  macho_rpaths "$binary" | while IFS= read -r macho_rpath; do
+  macho_rpath_list=$(macho_rpaths "$binary") || die "failed to inspect Mach-O rpaths for $binary"
+  [ -z "$macho_rpath_list" ] || printf '%s\n' "$macho_rpath_list" | while IFS= read -r macho_rpath; do
     reject_unmanaged_macho_runtime_path "$binary" "rpath" "$macho_rpath"
   done
 }

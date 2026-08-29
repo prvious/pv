@@ -155,9 +155,25 @@ fn committed_recipe_metadata_parses() -> Result<()> {
         vec![("8.0", "8.0.46"), ("8.4", "8.4.9"), ("9.7", "9.7.0")]
     );
     assert_eq!(postgres.default_track().as_str(), "18");
+    assert_eq!(postgres.pv_build_revision(), "pv2");
+    assert_eq!(postgres.license_files(), ["LICENSE", "OPENSSL-LICENSE"]);
+    assert_eq!(postgres.notice_files(), ["NOTICE", "THIRD-PARTY-NOTICES"]);
     assert_eq!(
         postgres.payload_paths(),
-        ["bin/postgres", "bin/initdb", "bin/pg_ctl", "bin/psql"]
+        [
+            "bin/postgres",
+            "bin/initdb",
+            "bin/pg_ctl",
+            "bin/psql",
+            "lib/libcrypto.3.dylib",
+            "lib/libssl.3.dylib",
+            "lib/postgresql/pg_trgm.so",
+            "lib/postgresql/pgcrypto.so",
+            "lib/postgresql/sslinfo.so",
+            "share/extension/pg_trgm.control",
+            "share/extension/pgcrypto.control",
+            "share/extension/sslinfo.control",
+        ]
     );
     assert_eq!(
         postgres
@@ -1052,12 +1068,12 @@ resources = ["postgres"]
 default_track = "18"
 platforms = ["darwin-arm64", "darwin-amd64"]
 minimum_pv_version = "0.1.0"
-pv_build_revision = "pv1"
-license_files = ["LICENSE"]
-notice_files = ["NOTICE"]
+pv_build_revision = "pv2"
+license_files = ["LICENSE", "OPENSSL-LICENSE"]
+notice_files = ["NOTICE", "THIRD-PARTY-NOTICES"]
 
 [artifact]
-payload_paths = ["bin/postgres", "bin/initdb", "bin/pg_ctl", "bin/psql"]
+payload_paths = ["bin/postgres", "bin/initdb", "bin/pg_ctl", "bin/psql", "lib/libssl.3.dylib"]
 
 [[tracks]]
 name = "18"
