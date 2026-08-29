@@ -10,9 +10,12 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "missing required command: $1"
 }
 
-sha256_file() {
-  shasum -a 256 "$1" | awk '{print $1}'
-}
+sha256_file() (
+  checksum_output=$(shasum -a 256 "$1") || die "failed to calculate SHA-256 for $1"
+  checksum=${checksum_output%% *}
+  [ -n "$checksum" ] || die "SHA-256 output was empty for $1"
+  printf '%s\n' "$checksum"
+)
 
 require_sha256() {
   file=$1
@@ -29,13 +32,49 @@ pv_recipe_openssl_configure_target_for_platform() {
   esac
 }
 
-pv_recipe_validate_openssl_prefix() {
+pv_recipe_validate_openssl_prefix() (
   openssl_prefix=$1
+  platform=$2
+  deployment_target=$3
 
   [ -f "$openssl_prefix/include/openssl/ssl.h" ] || die "OpenSSL headers not found under $openssl_prefix"
   [ -f "$openssl_prefix/lib/libssl.3.dylib" ] || die "OpenSSL shared SSL library not found under $openssl_prefix"
   [ -f "$openssl_prefix/lib/libcrypto.3.dylib" ] || die "OpenSSL shared crypto library not found under $openssl_prefix"
-}
+  [ -f "$openssl_prefix/LICENSE.txt" ] || die "OpenSSL license not found under $openssl_prefix"
+
+  for library in "$openssl_prefix/lib/libssl.3.dylib" "$openssl_prefix/lib/libcrypto.3.dylib"; do
+    pv_recipe_validate_macho_architecture_and_target "$library" "$platform" "$deployment_target"
+    linked_libraries=$(otool -L "$library") || die "failed to inspect OpenSSL linked libraries for $library"
+    linked_library_paths=$(awk 'NR > 1 && NF > 0 { print $1 }' <<EOF
+$linked_libraries
+EOF
+    ) || die "failed to parse OpenSSL linked libraries for $library"
+    if [ -n "$linked_library_paths" ]; then
+      while IFS= read -r linked_library; do
+        case "$linked_library" in
+          /usr/lib/* | /System/Library/* | @rpath/* | @loader_path/* | @executable_path/* | "$openssl_prefix"/lib/*)
+            ;;
+          *) die "$library references dependency outside its reusable OpenSSL prefix: $linked_library" ;;
+        esac
+      done <<EOF
+$linked_library_paths
+EOF
+    fi
+
+    openssl_rpaths=$(macho_rpaths "$library") || die "failed to inspect OpenSSL rpaths for $library"
+    if [ -n "$openssl_rpaths" ]; then
+      while IFS= read -r openssl_rpath; do
+        case "$openssl_rpath" in
+          /usr/lib/* | /System/Library/* | @rpath/* | @loader_path/* | @executable_path/* | @loader_path | @executable_path | "$openssl_prefix"/lib | "$openssl_prefix"/lib/*)
+            ;;
+          *) die "$library Mach-O rpath references unmanaged runtime path $openssl_rpath" ;;
+        esac
+      done <<EOF
+$openssl_rpaths
+EOF
+    fi
+  done
+)
 
 pv_recipe_build_openssl_dependency() (
   openssl_prefix=$1
@@ -64,7 +103,7 @@ pv_recipe_build_openssl_dependency() (
   )
 
   cp "$openssl_source_dir/LICENSE.txt" "$openssl_prefix/LICENSE.txt"
-  pv_recipe_validate_openssl_prefix "$openssl_prefix"
+  pv_recipe_validate_openssl_prefix "$openssl_prefix" "$platform" "$deployment_target"
 )
 
 pv_recipe_macho_loader_prefix() {
@@ -328,6 +367,15 @@ validate_macho_binary() {
   binary=$1
   platform=$2
   deployment_target=$3
+
+  pv_recipe_validate_macho_architecture_and_target "$binary" "$platform" "$deployment_target"
+  validate_macho_runtime_paths "$binary"
+}
+
+pv_recipe_validate_macho_architecture_and_target() {
+  binary=$1
+  platform=$2
+  deployment_target=$3
   expected_arch=$(expected_arch_for_platform "$platform")
   binary_archs=$(lipo -archs "$binary")
   [ "$binary_archs" = "$expected_arch" ] || die "$binary Mach-O architecture $binary_archs does not match expected $expected_arch for $platform"
@@ -335,8 +383,6 @@ validate_macho_binary() {
   binary_minos=$(macho_minimum_os "$binary")
   [ -n "$binary_minos" ] || die "$binary Mach-O minimum macOS version not found"
   version_lte "$binary_minos" "$deployment_target" || die "$binary Mach-O minimum macOS $binary_minos is newer than deployment target $deployment_target"
-
-  validate_macho_runtime_paths "$binary"
 }
 
 sign_macho_binary() {

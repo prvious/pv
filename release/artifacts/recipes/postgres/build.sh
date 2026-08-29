@@ -11,12 +11,13 @@ OUT_DIR=${PV_ARTIFACT_OUT_DIR:-"$ROOT/release/artifacts/out"}
 RECORD_DIR=${PV_ARTIFACT_RECORD_DIR:-"$ROOT/release/artifacts/records"}
 PV_COMMIT=${PV_COMMIT:-}
 BUILD_RUN_ID=${PV_BUILD_RUN_ID:-local-postgres}
-BUILD_JOBS=${PV_BUILD_JOBS:-}
-OPENSSL_VERSION=3.5.8
-OPENSSL_SOURCE_URL="https://github.com/openssl/openssl/releases/download/openssl-$OPENSSL_VERSION/openssl-$OPENSSL_VERSION.tar.gz"
-OPENSSL_SOURCE_SHA256=a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2
-DEPLOYMENT_TARGET=13.0
+BUILD_JOBS=${PV_BUILD_JOBS:-2}
+SOURCE_CACHE_DIR=${PV_POSTGRES_SOURCE_CACHE_DIR:-"$OUT_DIR/sources"}
+OPENSSL_BUNDLE_ARCHIVE=${PV_POSTGRES_OPENSSL_BUNDLE_ARCHIVE:-}
 recipe_dir="$ROOT/release/artifacts/recipes/postgres"
+# shellcheck source=/dev/null
+. "$recipe_dir/openssl.env"
+DEPLOYMENT_TARGET=$PV_POSTGRES_DEPLOYMENT_TARGET
 
 need cargo
 need curl
@@ -40,21 +41,34 @@ if [ -z "$PV_COMMIT" ]; then
   PV_COMMIT=$(git -C "$ROOT" rev-parse HEAD)
 fi
 
-if [ -z "$BUILD_JOBS" ]; then
-  BUILD_JOBS=$(sysctl -n hw.ncpu 2>/dev/null || printf '%s\n' 2)
-fi
+case "$BUILD_JOBS" in
+  '' | *[!0-9]*) die "Postgres build jobs must be an integer from 1 through 4" ;;
+esac
+[ "$BUILD_JOBS" -ge 1 ] && [ "$BUILD_JOBS" -le 4 ] || die "Postgres build jobs must be an integer from 1 through 4"
 
 download_source() {
   source_archive=$1
   source_url=$2
   source_sha256=$3
 
+  if [ -f "$source_archive" ]; then
+    require_sha256 "$source_archive" "$source_sha256"
+    return
+  fi
+
   mkdir -p "$(dirname "$source_archive")"
-  curl -L --fail --show-error --silent \
-    --retry 3 --retry-delay 2 --retry-all-errors \
-    --connect-timeout 20 --max-time 1200 \
-    "$source_url" -o "$source_archive"
-  require_sha256 "$source_archive" "$source_sha256"
+  download_tmp="$source_archive.tmp.$$"
+  rm -f "$download_tmp"
+  (
+    trap 'rm -f "$download_tmp"' 0
+    curl -L --fail --show-error --silent \
+      --retry 3 --retry-delay 2 --retry-all-errors \
+      --connect-timeout 20 --max-time 1200 \
+      "$source_url" -o "$download_tmp"
+    require_sha256 "$download_tmp" "$source_sha256"
+    mv "$download_tmp" "$source_archive"
+    trap - 0
+  )
 }
 
 extract_source() {
@@ -169,12 +183,11 @@ cargo run -p pv-release -- print-recipe-env \
 export PV_UPSTREAM_VERSION
 
 artifact_basename=$(artifact_basename postgres "$PV_ARTIFACT_VERSION" "$PV_PLATFORM")
-work_dir="$OUT_DIR/work/$artifact_basename"
-source_archive="$OUT_DIR/sources/postgresql-$PV_UPSTREAM_VERSION.tar.gz"
-source_extract_dir="$OUT_DIR/sources/postgresql-$PV_UPSTREAM_VERSION-source"
-openssl_source_archive="$OUT_DIR/sources/openssl-$OPENSSL_VERSION.tar.gz"
-openssl_source_extract_dir="$OUT_DIR/sources/openssl-$OPENSSL_VERSION-source"
-openssl_prefix="$work_dir/openssl-$OPENSSL_VERSION"
+work_dir="$OUT_DIR/work/postgres-$PV_TRACK-$artifact_basename"
+source_archive="$SOURCE_CACHE_DIR/postgresql-$PV_UPSTREAM_VERSION.tar.gz"
+source_extract_dir="$work_dir/postgresql-source"
+openssl_prefix=${PV_POSTGRES_OPENSSL_PREFIX:-"$work_dir/openssl-$PV_POSTGRES_OPENSSL_VERSION"}
+local_openssl_bundle="$work_dir/postgres-openssl.tar.gz"
 install_dir="$work_dir/install"
 root_dir="$work_dir/$artifact_basename"
 extension_catalog="$recipe_dir/catalogs/$PV_TRACK.txt"
@@ -186,16 +199,17 @@ object_key=$(artifact_object_key postgres "$PV_TRACK" "$PV_ARTIFACT_VERSION" "$P
 rm -rf "$work_dir"
 mkdir -p "$work_dir" "$install_dir" "$OUT_DIR"
 [ -f "$extension_catalog" ] || die "missing Postgres extension catalog for track $PV_TRACK"
-pv_recipe_build_openssl_dependency \
-  "$openssl_prefix" \
-  "$openssl_source_archive" \
-  "$openssl_source_extract_dir" \
-  "$OPENSSL_SOURCE_URL" \
-  "$OPENSSL_SOURCE_SHA256" \
-  "$PLATFORM" \
-  "$DEPLOYMENT_TARGET" \
-  "$BUILD_JOBS" \
-  /etc/ssl
+dependency_command=build
+dependency_bundle=$local_openssl_bundle
+if [ -n "$OPENSSL_BUNDLE_ARCHIVE" ]; then
+  dependency_command=use
+  dependency_bundle=$OPENSSL_BUNDLE_ARCHIVE
+fi
+PV_RECIPE_PLATFORM="$PLATFORM" \
+  PV_BUILD_JOBS="$BUILD_JOBS" \
+  PV_POSTGRES_DEPENDENCY_WORK_DIR="$work_dir/dependency-work" \
+  PV_POSTGRES_SOURCE_CACHE_DIR="$SOURCE_CACHE_DIR" \
+  "$recipe_dir/dependencies.sh" "$dependency_command" "$dependency_bundle" "$openssl_prefix"
 download_source "$source_archive" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256"
 source_dir=$(extract_source Postgres "$source_archive" "$source_extract_dir")
 
@@ -239,7 +253,7 @@ write_record \
   --license-file OPENSSL-LICENSE \
   --notice-file NOTICE \
   --notice-file THIRD-PARTY-NOTICES \
-  --source-input openssl "$OPENSSL_SOURCE_URL" "$OPENSSL_SOURCE_SHA256"
+  --source-input openssl "$PV_POSTGRES_OPENSSL_SOURCE_URL" "$PV_POSTGRES_OPENSSL_SOURCE_SHA256"
 
 PV_POSTGRES_EXTENSION_CATALOG="$extension_catalog" \
   PV_POSTGRES_PLATFORM="$PV_PLATFORM" \

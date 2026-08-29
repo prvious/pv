@@ -504,9 +504,90 @@ jobs:
             ${{ runner.temp }}/pv-records/**/*.json
           if-no-files-found: error
 
+  build-postgres-dependencies:
+    name: "postgres dependencies ${{ matrix.platform }}"
+    needs: validate
+    if: ${{ inputs.resource == 'all' || inputs.resource == 'postgres' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platform == 'all' && '["darwin-arm64","darwin-amd64"]' || format('["{0}"]', inputs.platform)) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Resolve reusable dependency inputs
+        id: dependency-inputs
+        env:
+          PV_BUILD_JOBS: 2
+          PV_POSTGRES_DEPENDENCY_WORK_DIR: ${{ runner.temp }}/pv-postgres-dependencies
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -eu
+
+          release/artifacts/recipes/postgres/dependencies.sh describe >>"${GITHUB_OUTPUT:?}"
+
+      - name: Restore reusable OpenSSL bundle
+        id: dependency-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/pv-postgres-dependencies/openssl.tar.gz
+          key: ${{ steps.dependency-inputs.outputs.cache_key }}
+
+      - name: Restore checksum-keyed OpenSSL source
+        if: steps.dependency-cache.outputs.cache-hit != 'true'
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/pv-postgres-source-cache/${{ steps.dependency-inputs.outputs.source_archive_name }}
+          key: postgres-source-${{ steps.dependency-inputs.outputs.source_sha256 }}
+
+      - name: Build and validate reusable OpenSSL bundle
+        env:
+          PV_BUILD_JOBS: 2
+          PV_POSTGRES_DEPENDENCY_BUNDLE: ${{ runner.temp }}/pv-postgres-dependencies/openssl.tar.gz
+          PV_POSTGRES_DEPENDENCY_CACHE_HIT: ${{ steps.dependency-cache.outputs.cache-hit }}
+          PV_POSTGRES_DEPENDENCY_PREFIX: ${{ runner.temp }}/pv-postgres-dependency-prefix/openssl
+          PV_POSTGRES_DEPENDENCY_WORK_DIR: ${{ runner.temp }}/pv-postgres-dependency-work
+          PV_POSTGRES_SOURCE_CACHE_DIR: ${{ runner.temp }}/pv-postgres-source-cache
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -eu
+
+          started_at=$(date +%s)
+          cache_hit=${PV_POSTGRES_DEPENDENCY_CACHE_HIT:-false}
+          if [ "$cache_hit" != true ]; then
+            release/artifacts/recipes/postgres/dependencies.sh build \
+              "$PV_POSTGRES_DEPENDENCY_BUNDLE" \
+              "$PV_POSTGRES_DEPENDENCY_PREFIX"
+          fi
+          release/artifacts/recipes/postgres/dependencies.sh use \
+            "$PV_POSTGRES_DEPENDENCY_BUNDLE" \
+            "$PV_POSTGRES_DEPENDENCY_PREFIX"
+          finished_at=$(date +%s)
+          duration_seconds=$((finished_at - started_at))
+          archive_size_bytes=$(stat -f '%z' "$PV_POSTGRES_DEPENDENCY_BUNDLE")
+          {
+            printf '### PostgreSQL reusable dependency (%s)\n\n' "$PV_RECIPE_PLATFORM"
+            printf '%s\n' "- Cache hit: $cache_hit"
+            printf '%s\n' "- Archive size: $archive_size_bytes bytes"
+            printf '%s\n' "- Wall-clock duration: $duration_seconds seconds"
+          } >>"${GITHUB_STEP_SUMMARY:?}"
+
+      - name: Hand off validated OpenSSL bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-postgres-openssl-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pv-postgres-dependencies/openssl.tar.gz
+            ${{ runner.temp }}/pv-postgres-dependencies/openssl-contract.txt
+          if-no-files-found: error
+          overwrite: true
+
   build-postgres:
     name: "postgres ${{ matrix.track }} ${{ matrix.platform }}"
-    needs: validate
+    needs: [validate, build-postgres-dependencies]
     if: ${{ inputs.resource == 'all' || inputs.resource == 'postgres' }}
     runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
     strategy:
@@ -522,21 +603,79 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Download validated OpenSSL bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: pv-postgres-openssl-${{ matrix.platform }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/pv-postgres-dependencies
+
+      - name: Resolve PostgreSQL source input
+        id: postgres-source
+        env:
+          PV_RECIPE_PLATFORM: ${{ matrix.platform }}
+          PV_RECIPE_TRACK: ${{ matrix.track }}
+        run: |
+          set -eu
+
+          env_file="${RUNNER_TEMP:?}/postgres-source.env"
+          cargo run -p pv-release -- print-recipe-env \
+            --postgres release/artifacts/recipes/postgres/recipe.toml \
+            --resource postgres \
+            --track "$PV_RECIPE_TRACK" \
+            --platform "$PV_RECIPE_PLATFORM" >"$env_file"
+          # shellcheck source=/dev/null
+          . "$env_file"
+          {
+            printf '%s\n' "source_archive_name=postgresql-$PV_UPSTREAM_VERSION.tar.gz"
+            printf '%s\n' "source_sha256=$PV_SOURCE_SHA256"
+          } >>"${GITHUB_OUTPUT:?}"
+
+      - name: Restore checksum-keyed PostgreSQL source
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/pv-postgres-source-cache/${{ steps.postgres-source.outputs.source_archive_name }}
+          key: postgres-source-${{ steps.postgres-source.outputs.source_sha256 }}
+
       - name: Build Postgres artifact
         env:
+          PV_BUILD_JOBS: 2
           PV_RECIPE_TRACK: ${{ matrix.track }}
           PV_RECIPE_PLATFORM: ${{ matrix.platform }}
           PV_ARTIFACT_OUT_DIR: ${{ runner.temp }}/pv-artifacts
           PV_ARTIFACT_RECORD_DIR: ${{ runner.temp }}/pv-records
           PV_COMMIT: ${{ github.sha }}
           PV_BUILD_RUN_ID: ${{ github.run_id }}
+          PV_POSTGRES_OPENSSL_BUNDLE_ARCHIVE: ${{ runner.temp }}/pv-postgres-dependencies/openssl.tar.gz
+          PV_POSTGRES_OPENSSL_CONTRACT_FILE: ${{ runner.temp }}/pv-postgres-dependencies/openssl-contract.txt
+          PV_POSTGRES_SOURCE_CACHE_DIR: ${{ runner.temp }}/pv-postgres-source-cache
         run: |
           set -eu
 
+          started_at=$(date +%s)
           rm -rf "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
           mkdir -p "$PV_ARTIFACT_OUT_DIR" "$PV_ARTIFACT_RECORD_DIR"
 
           release/artifacts/recipes/postgres/build.sh
+
+          archive_count=0
+          archive=
+          for candidate in "$PV_ARTIFACT_OUT_DIR"/postgres-*.tar.gz; do
+            [ -f "$candidate" ] || continue
+            archive_count=$((archive_count + 1))
+            archive=$candidate
+          done
+          [ "$archive_count" -eq 1 ] || {
+            printf '%s\n' "expected exactly one PostgreSQL archive, found $archive_count" >&2
+            exit 1
+          }
+          finished_at=$(date +%s)
+          duration_seconds=$((finished_at - started_at))
+          archive_size_bytes=$(stat -f '%z' "$archive")
+          {
+            printf '### PostgreSQL %s %s\n\n' "$PV_RECIPE_TRACK" "$PV_RECIPE_PLATFORM"
+            printf '%s\n' "- Archive size: $archive_size_bytes bytes"
+            printf '%s\n' "- Wall-clock duration: $duration_seconds seconds"
+          } >>"${GITHUB_STEP_SUMMARY:?}"
 
           rm -rf "$PV_ARTIFACT_OUT_DIR/sources" "$PV_ARTIFACT_OUT_DIR/work"
 
