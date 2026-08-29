@@ -1,7 +1,9 @@
 #[cfg(target_os = "macos")]
 use std::collections::BTreeMap;
 #[cfg(any(target_os = "macos", test))]
-use std::io::{Read, Write};
+use std::io::Read;
+#[cfg(any(target_os = "macos", all(test, unix)))]
+use std::io::Write;
 #[cfg(target_os = "macos")]
 use std::time::Duration;
 
@@ -58,7 +60,7 @@ const HELPER_PLIST_ROLLBACK_PATH: &str =
     "/Library/LaunchDaemons/.com.prvious.pv.helper.rollback.plist";
 #[cfg(target_os = "macos")]
 const HELPER_PLIST_MARKER: &str = "<!-- Managed by PV -->";
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 const HELPER_LIFECYCLE_PROBE: &[u8] = b"PV-HELPER-LIFECYCLE-PROBE\n";
 #[cfg(any(target_os = "macos", test))]
 const HELPER_LIFECYCLE_READY_PREFIX: &str = "PV-HELPER-LIFECYCLE-READY";
@@ -167,7 +169,7 @@ enum HelperOperation {
     CaRemove { fingerprint: String },
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct HelperResponse {
@@ -175,7 +177,7 @@ struct HelperResponse {
     outcome: HelperOutcome,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum HelperOutcome {
@@ -188,7 +190,7 @@ enum HelperOutcome {
     },
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum HelperErrorCode {
@@ -1246,7 +1248,7 @@ fn call_helper(
     )?)
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", all(test, unix)))]
 fn write_message(writer: &mut impl Write, message: &impl Serialize) -> Result<(), PlatformError> {
     let message = serde_json::to_vec(message)?;
     if message.len() > MAX_MESSAGE_BYTES {
@@ -1716,7 +1718,7 @@ fn validate_high_port(label: &str, port: u16) -> Result<(), PlatformError> {
     })
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 fn successful_response(payload: HelperPayload) -> HelperResponse {
     HelperResponse {
         protocol_version: HELPER_PROTOCOL_VERSION,
@@ -1724,7 +1726,7 @@ fn successful_response(payload: HelperPayload) -> HelperResponse {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 fn error_response(error: PlatformError) -> HelperResponse {
     HelperResponse {
         protocol_version: HELPER_PROTOCOL_VERSION,
@@ -1735,7 +1737,7 @@ fn error_response(error: PlatformError) -> HelperResponse {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 fn helper_error_code(error: &PlatformError) -> HelperErrorCode {
     match error {
         PlatformError::PrivilegedHelperAuthentication(_) => HelperErrorCode::AuthenticationFailed,
@@ -1753,6 +1755,7 @@ fn helper_error_code(error: &PlatformError) -> HelperErrorCode {
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
+    #[cfg(unix)]
     use std::time::Duration;
 
     #[cfg(target_os = "macos")]
@@ -1760,10 +1763,12 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     use super::lock_machine_helper_lifecycle_file;
+    #[cfg(unix)]
+    use super::{HELPER_PROTOCOL_VERSION, HelperOperation, write_message};
     use super::{
-        HELPER_PROTOCOL_VERSION, HelperOperation, HelperRequest, PrivilegedHelperMetadata,
-        parse_helper_lifecycle_response, read_message, require_matching_helper_owner,
-        validate_fingerprint, validate_helper_identity, validate_high_port, write_message,
+        HelperRequest, PrivilegedHelperMetadata, parse_helper_lifecycle_response, read_message,
+        require_matching_helper_owner, validate_fingerprint, validate_helper_identity,
+        validate_high_port,
     };
     #[cfg(target_os = "macos")]
     use crate::PlatformError;
