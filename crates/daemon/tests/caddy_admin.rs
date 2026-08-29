@@ -9,7 +9,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow, bail};
 use camino_tempfile::tempdir;
 use daemon::{
-    CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminTimeouts,
+    CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, CaddyAdminTimeouts,
     MAX_RESPONSE_DETAIL_BYTES,
 };
 use tokio::task::JoinHandle;
@@ -124,6 +124,29 @@ async fn load_caddyfile_rejects_error_reported_after_adapter_warnings() -> Resul
 }
 
 #[tokio::test]
+async fn load_caddyfile_rejects_error_reported_without_adapter_warnings() -> Result<()> {
+    let body = br#"{"error":"loading config: listener unavailable"}
+"#;
+    let (endpoint, server) = spawn_response_server(vec![http_response(200, body)])?;
+
+    let result = test_client()
+        .load_caddyfile(&endpoint, b"candidate\n")
+        .await;
+    let requests = server.await??;
+
+    assert_eq!(requests.len(), 1);
+    assert!(matches!(
+        result,
+        Err(CaddyAdminError::LoadReportedFailure {
+            status: 200,
+            detail,
+            ..
+        }) if detail == "loading config: listener unavailable"
+    ));
+    Ok(())
+}
+
+#[tokio::test]
 async fn load_caddyfile_does_not_trust_an_error_before_the_complete_body() -> Result<()> {
     let body = br#"[{"message":"Caddyfile input is not formatted"}]{"error":"load failed"}garbage"#;
     let (endpoint, server) = spawn_response_server(vec![http_response(200, body)])?;
@@ -137,7 +160,7 @@ async fn load_caddyfile_does_not_trust_an_error_before_the_complete_body() -> Re
     assert!(matches!(
         result,
         Err(CaddyAdminError::RequestOutcomeUnknown {
-            operation: daemon::CaddyAdminOperation::Load,
+            operation: CaddyAdminOperation::Load,
             ..
         })
     ));
@@ -169,9 +192,27 @@ async fn load_caddyfile_does_not_accept_an_incomplete_success_body() -> Result<(
     assert!(matches!(
         result,
         Err(CaddyAdminError::RequestOutcomeUnknown {
-            operation: daemon::CaddyAdminOperation::Load,
+            operation: CaddyAdminOperation::Load,
             ..
         })
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_caddyfile_preserves_rejection_status_when_the_body_is_incomplete() -> Result<()> {
+    let response = b"HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: 128\r\nConnection: close\r\n\r\nrejected";
+    let (endpoint, server) = spawn_response_server(vec![response.to_vec()])?;
+
+    let result = test_client()
+        .load_caddyfile(&endpoint, b"candidate\n")
+        .await;
+    let requests = server.await??;
+
+    assert_eq!(requests.len(), 1);
+    assert!(matches!(
+        result,
+        Err(CaddyAdminError::LoadRejected { status: 422, .. })
     ));
     Ok(())
 }

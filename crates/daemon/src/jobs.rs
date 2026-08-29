@@ -1610,8 +1610,8 @@ mod tests {
         stream_started_reconciliation_job, stream_started_update_job,
         write_coalesced_update_response,
     };
-    use crate::ProcessSupervisor;
     use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
+    use crate::{DaemonError, ProcessSupervisor};
 
     const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
     const CADDY_TEST_TRACK: &str = "2";
@@ -2041,10 +2041,17 @@ mod tests {
         )?;
         let job_id = start_update_job(&paths)?;
 
-        complete_update_job(&paths, &job_id, Some(&catalog))
+        let update_error = complete_update_job(&paths, &job_id, Some(&catalog))
             .await
             .err()
             .ok_or_else(|| anyhow::anyhow!("Caddy update unexpectedly succeeded"))?;
+        assert!(
+            !matches!(
+                &update_error,
+                DaemonError::CaddyUpdateCompensationFailed { .. }
+            ),
+            "Caddy compensation unexpectedly failed: {update_error}"
+        );
 
         let old_release = paths
             .resources()
@@ -2081,7 +2088,10 @@ mod tests {
             Some(CADDY_TEST_ARTIFACT_VERSION)
         );
         assert_eq!(caddy_track.current_artifact_path, Some(old_release));
-        assert!(state::fs::path_entry_exists(&paths.gateway_pid())?);
+        assert!(
+            state::fs::path_entry_exists(&paths.gateway_pid())?,
+            "Gateway PID missing after expected update failure: {update_error}"
+        );
 
         let job = database
             .recent_jobs()?

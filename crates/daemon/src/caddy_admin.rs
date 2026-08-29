@@ -15,7 +15,7 @@ use hyper::{Method, Request};
 use hyper_util::rt::TokioIo;
 #[cfg(unix)]
 use rustix::process::{Pid, getpgid};
-use serde_json::Value;
+use serde_json::{Deserializer, Value};
 use thiserror::Error;
 #[cfg(unix)]
 use tokio::net::UnixStream;
@@ -431,25 +431,22 @@ impl CaddyAdminClient {
             verify_peer_process_group(&stream, endpoint, operation, expected_pid)?;
         }
 
-        let remaining = self.timeouts.overall.saturating_sub(started_at.elapsed());
+        let overall_remaining = self.timeouts.overall.saturating_sub(started_at.elapsed());
         let exchange_timeout =
-            remaining.min(self.timeouts.write.saturating_add(self.timeouts.read));
-        match tokio::time::timeout(
-            exchange_timeout,
-            exchange_request(request, stream, include_response_detail),
-        )
-        .await
-        {
-            Ok(Ok(response)) => Ok(response),
-            Ok(Err(error)) => Err(map_exchange_error(endpoint, operation, error)),
-            Err(_) if operation == CaddyAdminOperation::Load => {
+            overall_remaining.min(self.timeouts.write.saturating_add(self.timeouts.read));
+        match exchange_request(request, stream, include_response_detail, exchange_timeout).await {
+            Ok(response) => Ok(response),
+            Err(ExchangeError::Transport(error)) => {
+                Err(map_exchange_error(endpoint, operation, error))
+            }
+            Err(ExchangeError::TimedOut) if operation == CaddyAdminOperation::Load => {
                 Err(CaddyAdminError::RequestOutcomeUnknown {
                     endpoint: endpoint.clone(),
                     operation,
                     reason: format!("request timed out after {}ms", exchange_timeout.as_millis()),
                 })
             }
-            Err(_) => Err(CaddyAdminError::RequestTimedOut {
+            Err(ExchangeError::TimedOut) => Err(CaddyAdminError::RequestTimedOut {
                 endpoint: endpoint.clone(),
                 operation,
                 timeout_ms: exchange_timeout.as_millis(),
@@ -483,6 +480,7 @@ struct AdminResponse {
     status: u16,
     body: Vec<u8>,
     body_truncated: bool,
+    body_read_error: Option<String>,
 }
 
 #[cfg(unix)]
@@ -490,19 +488,51 @@ async fn exchange_request(
     request: Request<Full<Bytes>>,
     stream: UnixStream,
     include_response_detail: bool,
-) -> Result<AdminResponse, hyper::Error> {
-    let (mut sender, connection) = http1::handshake(TokioIo::new(stream)).await?;
+    exchange_timeout: Duration,
+) -> Result<AdminResponse, ExchangeError> {
+    let started_at = Instant::now();
+    let (mut sender, connection) =
+        tokio::time::timeout(exchange_timeout, http1::handshake(TokioIo::new(stream)))
+            .await
+            .map_err(|_error| ExchangeError::TimedOut)?
+            .map_err(ExchangeError::Transport)?;
     let connection_task = tokio::spawn(connection);
-    let response = match sender.send_request(request).await {
-        Ok(response) => response,
-        Err(error) => {
-            connection_task.abort();
-            return Err(error);
-        }
-    };
+    let remaining_exchange = exchange_timeout.saturating_sub(started_at.elapsed());
+    let response =
+        match tokio::time::timeout(remaining_exchange, sender.send_request(request)).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                connection_task.abort();
+                return Err(ExchangeError::Transport(error));
+            }
+            Err(_error) => {
+                connection_task.abort();
+                return Err(ExchangeError::TimedOut);
+            }
+        };
     let status = response.status().as_u16();
     let body = if include_response_detail {
-        bounded_response_body(response.into_body()).await?
+        let mut body = BoundedResponseBody {
+            bytes: Vec::with_capacity(MAX_RESPONSE_DETAIL_BYTES),
+            ..BoundedResponseBody::default()
+        };
+        let body_timeout = exchange_timeout.saturating_sub(started_at.elapsed());
+        match tokio::time::timeout(
+            body_timeout,
+            bounded_response_body(response.into_body(), &mut body),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => body.read_error = Some(error.to_string()),
+            Err(_error) => {
+                body.read_error = Some(format!(
+                    "response body timed out after {}ms",
+                    body_timeout.as_millis()
+                ));
+            }
+        }
+        body
     } else {
         BoundedResponseBody::default()
     };
@@ -512,24 +542,29 @@ async fn exchange_request(
         status,
         body: body.bytes,
         body_truncated: body.truncated,
+        body_read_error: body.read_error,
     })
 }
 
+#[cfg(unix)]
+enum ExchangeError {
+    Transport(hyper::Error),
+    TimedOut,
+}
+
+#[cfg(unix)]
 #[derive(Debug, Default)]
 struct BoundedResponseBody {
     bytes: Vec<u8>,
     truncated: bool,
+    read_error: Option<String>,
 }
 
 #[cfg(unix)]
 async fn bounded_response_body(
     mut body: hyper::body::Incoming,
-) -> Result<BoundedResponseBody, hyper::Error> {
-    let mut response = BoundedResponseBody {
-        bytes: Vec::with_capacity(MAX_RESPONSE_DETAIL_BYTES),
-        truncated: false,
-    };
-
+    response: &mut BoundedResponseBody,
+) -> Result<(), hyper::Error> {
     loop {
         let Some(frame) = body.frame().await else {
             break;
@@ -545,7 +580,7 @@ async fn bounded_response_body(
         response.truncated |= data.len() > remaining;
     }
 
-    Ok(response)
+    Ok(())
 }
 
 fn response_detail(response: &AdminResponse) -> String {
@@ -558,11 +593,23 @@ fn response_detail(response: &AdminResponse) -> String {
     if response.body_truncated || response.body.len() > MAX_RESPONSE_DETAIL_BYTES {
         detail.push_str("...");
     }
+    if let Some(error) = &response.body_read_error {
+        if !detail.is_empty() {
+            detail.push_str("; ");
+        }
+        detail.push_str("response body read failed: ");
+        detail.push_str(error);
+    }
 
     detail
 }
 
 fn successful_load_response_error(response: &AdminResponse) -> Result<Option<String>, String> {
+    if let Some(error) = &response.body_read_error {
+        return Err(format!(
+            "successful response body could not be read completely: {error}"
+        ));
+    }
     if response.body_truncated {
         return Err(format!(
             "successful response body exceeded {MAX_LOAD_RESPONSE_BYTES} bytes"
@@ -572,7 +619,7 @@ fn successful_load_response_error(response: &AdminResponse) -> Result<Option<Str
         return Ok(None);
     }
 
-    let values = serde_json::Deserializer::from_slice(&response.body)
+    let values = Deserializer::from_slice(&response.body)
         .into_iter::<Value>()
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("successful response body was not valid JSON: {error}"))?;

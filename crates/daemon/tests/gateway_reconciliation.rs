@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{Error, Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use daemon::gateway::{
@@ -502,35 +502,37 @@ async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() 
     drop(database);
 
     let previous_root = "previous gateway config\n";
+    let admin_response_gate = tempdir.path().join("admin-response-release");
     fs::write_sensitive_file(&paths.gateway_root_config(), previous_root)?;
     write_fake_admin_control(
         &paths.gateway_root_config(),
-        json!({"admin_delay_ms": [250]}),
+        json!({"admin_response_gate": admin_response_gate.as_str()}),
     )?;
 
     let corrupt_runtime_metadata = async {
-        for _attempt in 0..100 {
-            let gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
-            let admin_ready = fake_admin_requests(&paths.gateway_root_config())?
-                .iter()
-                .any(|request| request["method"] == "GET" && request["path"] == "/config/");
-            if let Some(gateway_pid) = gateway_pid
-                && admin_ready
-            {
-                fs::write_sensitive_file(&paths.gateway_runtime_metadata(), "{")?;
-                return Ok(gateway_pid);
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
+                let admin_ready = fake_admin_requests(&paths.gateway_root_config())?
+                    .iter()
+                    .any(|request| request["method"] == "GET" && request["path"] == "/config/");
+                if let Some(gateway_pid) = gateway_pid
+                    && admin_ready
+                {
+                    fs::write_sensitive_file(&paths.gateway_runtime_metadata(), "{")?;
+                    fs::write_sensitive_file(&admin_response_gate, "")?;
+                    return Ok::<u32, Error>(gateway_pid);
+                }
+                sleep(Duration::from_millis(10)).await;
             }
-            sleep(Duration::from_millis(10)).await;
-        }
-
-        Err(anyhow::anyhow!(
-            "fresh Gateway did not reach delayed admin readiness"
-        ))
+        })
+        .await
+        .map_err(|_error| anyhow::anyhow!("fresh Gateway did not reach gated admin readiness"))?
     };
     let (result, gateway_pid) = tokio::join!(
         reconcile_gateway_runtimes_with_pf_state_for_test(
             &paths,
-            Duration::from_millis(500),
+            Duration::from_secs(5),
             GatewayPfRoutingState::Unknown,
         ),
         corrupt_runtime_metadata,

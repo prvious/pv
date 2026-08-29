@@ -155,12 +155,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == "/config/":
             status = state.consume_status("admin_statuses")
             state.record_request("GET", self.path, status)
-            try:
-                delay_ms = int(state.consume_value("admin_delay_ms", 0))
-            except (TypeError, ValueError):
-                delay_ms = 0
-            if delay_ms > 0:
-                time.sleep(delay_ms / 1000)
+            response_gate = state.consume_value("admin_response_gate", None)
+            if isinstance(response_gate, str):
+                response_gate_path = pathlib.Path(response_gate)
+                while not response_gate_path.exists():
+                    time.sleep(0.01)
             self.send_body(status, b"{}\n")
             return
 
