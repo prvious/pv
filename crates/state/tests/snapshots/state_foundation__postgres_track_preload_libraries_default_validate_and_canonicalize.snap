@@ -1,0 +1,20 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(empty_17, empty_18, canonical,\ndatabase.postgres_track_preload_libraries(\"18\")?, unsupported.to_string(),\ncleared, database.postgres_track_preload_libraries(\"17\")?,)"
+---
+(
+    [],
+    [],
+    [
+        PgStatStatements,
+        PgCron,
+        TimescaleDb,
+        PgDuckDb,
+    ],
+    [
+        PgCron,
+    ],
+    "PostgreSQL track `18` cannot preload unsupported library `postgis`; choose one of: pg_stat_statements, pg_cron, timescaledb, pg_duckdb",
+    [],
+    [],
+)

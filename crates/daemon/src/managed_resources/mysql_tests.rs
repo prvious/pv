@@ -55,6 +55,7 @@ fn mysql_runtime_arguments_disable_x_protocol() -> Result<()> {
         data_dir: paths.resource_data_dir("mysql", MYSQL_TRACK),
         ports: BTreeMap::from([("mysql".to_string(), 3307)]),
         env: BTreeMap::new(),
+        postgres_preload_libraries: Vec::new(),
     };
 
     let spec =

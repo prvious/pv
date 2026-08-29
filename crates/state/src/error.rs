@@ -161,6 +161,11 @@ pub enum StateError {
     #[error("reserved concrete track `{track}` must be resolved before state storage")]
     ReservedConcreteTrack { track: String },
 
+    #[error(
+        "PostgreSQL track `{track}` cannot preload unsupported library `{library}`; choose one of: pg_stat_statements, pg_cron, timescaledb, pg_duckdb"
+    )]
+    UnsupportedPostgresPreloadLibrary { track: String, library: String },
+
     #[error("invalid resource allocation {kind} `{value}`")]
     InvalidResourceAllocationIdentity { kind: &'static str, value: String },
 
