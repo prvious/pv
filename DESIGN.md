@@ -1022,6 +1022,8 @@ PV's PostgreSQL 17 and 18 Managed Resource artifacts supply every extension from
 
 PostgreSQL is built with OpenSSL so supplied extensions such as `pgcrypto` and `sslinfo` are available. The artifacts bundle their required OpenSSL runtime libraries and must not retain Homebrew, staging-prefix, or build-runner runtime dependencies.
 
+PV's tested `pgcrypto` contract covers digest, `gen_salt`, and AES operations. Blowfish and DES require the OpenSSL legacy provider and are not part of PV's tested contract.
+
 The curated third-party SQL extension set is `vector`, `pgmq`, `pg_partman`, `postgis`, `pg_cron`, `timescaledb`, and `pg_duckdb`. PV ships only core PostGIS, excluding raster, topology, SFCGAL, address-standardizer, and tiger-geocoder components. PV ships TimescaleDB Community edition and disables TimescaleDB telemetry by default.
 
 Extensions are packaged as available for an explicit `CREATE EXTENSION`; PV does not automatically create them in user databases. `plpgsql`, which `initdb` installs, is the only extension initially installed in a new database cluster.

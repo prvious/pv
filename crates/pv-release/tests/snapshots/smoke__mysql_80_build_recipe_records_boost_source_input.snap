@@ -5,7 +5,7 @@ expression: mysql_record_source_inputs(&run)?
 Array [
     Object {
         "name": String("openssl"),
-        "source_sha256": String("8505c910292123009b4f1327adb5ae9935c04bb05780d1436998953efe501ed4"),
+        "source_sha256": String("ae8fb74173066e791044f26e58c3d089b261b2170e47efe43bb2fc56fc8cc85c"),
         "source_url": String("https://sources.example.test/openssl.tar.gz"),
     },
     Object {

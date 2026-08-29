@@ -109,47 +109,6 @@ apply_mysql_source_patches() {
   esac
 }
 
-openssl_configure_target_for_platform() {
-  case "$1" in
-    darwin-arm64) printf '%s\n' darwin64-arm64-cc ;;
-    darwin-amd64) printf '%s\n' darwin64-x86_64-cc ;;
-    *) die "unsupported MySQL artifact platform: $1" ;;
-  esac
-}
-
-build_openssl_dependency() {
-  openssl_prefix=$1
-  openssl_source_archive=$2
-  openssl_source_extract_dir=$3
-
-  rm -rf "$openssl_prefix"
-  download_source "$openssl_source_archive" "$OPENSSL_SOURCE_URL" "$OPENSSL_SOURCE_SHA256"
-  openssl_source_dir=$(extract_source OpenSSL "$openssl_source_archive" "$openssl_source_extract_dir")
-  openssl_configure_target=$(openssl_configure_target_for_platform "$PLATFORM")
-
-  (
-    cd "$openssl_source_dir"
-    # MySQL consumes OpenSSL through CMake imported targets; shared libs keep
-    # those locations concrete while this recipe controls the macOS target.
-    MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
-      perl ./Configure "$openssl_configure_target" no-tests \
-      --prefix="$openssl_prefix" \
-      --openssldir="$openssl_prefix/ssl"
-    MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" make -j "$BUILD_JOBS"
-    MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" make install_sw
-  )
-
-  validate_openssl_prefix "$openssl_prefix"
-}
-
-validate_openssl_prefix() {
-  openssl_prefix=$1
-
-  [ -f "$openssl_prefix/include/openssl/ssl.h" ] || die "OpenSSL headers not found under $openssl_prefix"
-  [ -f "$openssl_prefix/lib/libssl.3.dylib" ] || die "OpenSSL shared SSL library not found under $openssl_prefix"
-  [ -f "$openssl_prefix/lib/libcrypto.3.dylib" ] || die "OpenSSL shared crypto library not found under $openssl_prefix"
-}
-
 copy_install_tree() {
   install_dir=$1
   root_dir=$2
@@ -244,10 +203,19 @@ rm -rf "$work_dir"
 mkdir -p "$work_dir" "$OUT_DIR"
 if [ -z "$OPENSSL_PREFIX" ]; then
   OPENSSL_PREFIX="$work_dir/openssl-$OPENSSL_VERSION"
-  build_openssl_dependency "$OPENSSL_PREFIX" "$openssl_source_archive" "$openssl_source_extract_dir"
+  pv_recipe_build_openssl_dependency \
+    "$OPENSSL_PREFIX" \
+    "$openssl_source_archive" \
+    "$openssl_source_extract_dir" \
+    "$OPENSSL_SOURCE_URL" \
+    "$OPENSSL_SOURCE_SHA256" \
+    "$PLATFORM" \
+    "$DEPLOYMENT_TARGET" \
+    "$BUILD_JOBS" \
+    "$OPENSSL_PREFIX/ssl"
   record_openssl_source_input=true
 else
-  validate_openssl_prefix "$OPENSSL_PREFIX"
+  pv_recipe_validate_openssl_prefix "$OPENSSL_PREFIX"
 fi
 download_source "$source_archive" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256"
 source_dir=$(extract_source MySQL "$source_archive" "$source_extract_dir")

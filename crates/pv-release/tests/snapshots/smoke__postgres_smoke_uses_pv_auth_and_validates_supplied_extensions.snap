@@ -1,0 +1,5 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: bootstrap_summary
+---
+"initdb_username_pv_root=true\ninitdb_password_file=true\ninitdb_host_scram=true\ninitdb_local_trust=true\nlisten_tcp=true\nunix_sockets_disabled=true\nstarts=2\nstops=2"
