@@ -4776,20 +4776,26 @@ printf '\n' >>"$PV_TEST_SPC_LOG"
   exit 78
 }
 
-if [ -n "${PV_TEST_REQUIRE_STATICPHP_PHP83_FRANKENPHP_PATCH_CONTEXT:-}" ]; then
-  frankenphp_source_dir=
-  previous_arg=
-  for arg in "$@"; do
-    if [ "$previous_arg" = "--dl-custom-local" ]; then
-      case "$arg" in
-        frankenphp:*)
-          frankenphp_source_dir=${arg#frankenphp:}
-          ;;
-      esac
-    fi
-    previous_arg=$arg
-  done
+php_source_dir=
+frankenphp_source_dir=
+rar_source_dir=
+previous_arg=
+for arg in "$@"; do
+  if [ "$previous_arg" = "--dl-custom-local" ]; then
+    source_name=${arg%%:*}
+    source_dir=${arg#*:}
+    [ -L "source/$source_name" ] || exit 87
+    [ "$(readlink "source/$source_name")" = "$source_dir" ] || exit 88
+    case "$source_name" in
+      php-src) php_source_dir=$source_dir ;;
+      frankenphp) frankenphp_source_dir=$source_dir ;;
+      ext-rar) rar_source_dir=$source_dir ;;
+    esac
+  fi
+  previous_arg=$arg
+done
 
+if [ -n "${PV_TEST_REQUIRE_STATICPHP_PHP83_FRANKENPHP_PATCH_CONTEXT:-}" ]; then
   [ -n "$frankenphp_source_dir" ] || exit 79
   [ -f "$frankenphp_source_dir/build/php.m4" ] || exit 80
   patch --dry-run -R -d "$frankenphp_source_dir" -p1 \
@@ -4798,19 +4804,6 @@ fi
 
 case " $* " in
   *" --build-shared="*xdebug*)
-    php_source_dir=
-    previous_arg=
-    for arg in "$@"; do
-      if [ "$previous_arg" = "--dl-custom-local" ]; then
-        case "$arg" in
-          php-src:*)
-            php_source_dir=${arg#php-src:}
-            ;;
-        esac
-      fi
-      previous_arg=$arg
-    done
-
     [ -n "$php_source_dir" ] || exit 82
     [ -L "$php_source_dir/m4" ] || exit 83
     [ "$(readlink "$php_source_dir/m4")" = "ext/xdebug/m4" ] || exit 84
@@ -4819,19 +4812,6 @@ esac
 
 case " $* " in
   *" --build-shared="*rar*)
-    rar_source_dir=
-    previous_arg=
-    for arg in "$@"; do
-      if [ "$previous_arg" = "--dl-custom-local" ]; then
-        case "$arg" in
-          ext-rar:*)
-            rar_source_dir=${arg#ext-rar:}
-            ;;
-        esac
-      fi
-      previous_arg=$arg
-    done
-
     [ -n "$rar_source_dir" ] || exit 85
     grep -F -x 'extra_cxxflags="-std=c++11 -Wall $cxxflags_null"' "$rar_source_dir/config.m4" >/dev/null || exit 86
     ;;
