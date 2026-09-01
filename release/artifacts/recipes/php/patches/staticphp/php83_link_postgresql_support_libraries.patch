@@ -1,0 +1,20 @@
+--- a/ext/pdo_pgsql/config.m4
++++ b/ext/pdo_pgsql/config.m4
+@@ -62,6 +62,7 @@ if test "$PHP_PDO_PGSQL" != "no"; then
+   AC_DEFINE(HAVE_PDO_PGSQL,1,[Whether to build PostgreSQL for PDO support or not])
+ 
+   old_LIBS=$LIBS
++  LIBS="-lpgcommon -lpgport $LIBS"
+   old_LDFLAGS=$LDFLAGS
+   LDFLAGS="-L$PGSQL_LIBDIR $LDFLAGS"
+ 
+--- a/ext/pgsql/config.m4
++++ b/ext/pgsql/config.m4
+@@ -60,6 +60,7 @@ if test "$PHP_PGSQL" != "no"; then
+ 
+   AC_DEFINE(HAVE_PGSQL,1,[Whether to build PostgreSQL support or not])
+   old_LIBS=$LIBS
++  LIBS="-lpgcommon -lpgport $LIBS"
+   old_LDFLAGS=$LDFLAGS
+   LDFLAGS="-L$PGSQL_LIBDIR $LDFLAGS"
+   AC_CHECK_LIB(pq, PQlibVersion,, AC_MSG_ERROR([Unable to build the PostgreSQL extension: at least libpq 9.1 is required]))

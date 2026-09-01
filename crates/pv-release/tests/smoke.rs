@@ -1015,7 +1015,7 @@ fn php_pair_build_smoke_skips_frankenphp_sqlsrv_extension_metadata() -> Result<(
 }
 
 #[test]
-fn php_pair_build_smoke_prepatches_frankenphp_for_staticphp_php83_avx512_probe() -> Result<()> {
+fn php_pair_build_smoke_prepares_staticphp_php83_compatibility_context() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
         recipe_track: "8.3",
         php_version: "8.3.31",
@@ -2409,6 +2409,22 @@ AC_DEFUN([PHP_CHECK_AVX512_VBMI_SUPPORTS], [
   AC_DEFINE_UNQUOTED([PHP_HAVE_AVX512_VBMI_SUPPORTS],
    [$have_avx512_vbmi_supports], [Whether the compiler supports AVX512 VBMI])
 ])
+"#;
+
+const PHP_83_PDO_PGSQL_ORIGINAL_M4: &str = r#"  AC_DEFINE(HAVE_PDO_PGSQL,1,[Whether to build PostgreSQL for PDO support or not])
+
+  old_LIBS=$LIBS
+  old_LDFLAGS=$LDFLAGS
+  LDFLAGS="-L$PGSQL_LIBDIR $LDFLAGS"
+
+"#;
+
+const PHP_83_PGSQL_ORIGINAL_M4: &str = r#"
+  AC_DEFINE(HAVE_PGSQL,1,[Whether to build PostgreSQL support or not])
+  old_LIBS=$LIBS
+  old_LDFLAGS=$LDFLAGS
+  LDFLAGS="-L$PGSQL_LIBDIR $LDFLAGS"
+  AC_CHECK_LIB(pq, PQlibVersion,, AC_MSG_ERROR([Unable to build the PostgreSQL extension: at least libpq 9.1 is required]))
 "#;
 
 impl BackingBuildRecipe {
@@ -4796,10 +4812,15 @@ for arg in "$@"; do
 done
 
 if [ -n "${PV_TEST_REQUIRE_STATICPHP_PHP83_FRANKENPHP_PATCH_CONTEXT:-}" ]; then
+  [ -n "$php_source_dir" ] || exit 89
   [ -n "$frankenphp_source_dir" ] || exit 79
   [ -f "$frankenphp_source_dir/build/php.m4" ] || exit 80
   patch --dry-run -R -d "$frankenphp_source_dir" -p1 \
     <"$PV_TEST_STATICPHP_PHP83_AVX512_PATCH" >/dev/null || exit 81
+  for extension in pdo_pgsql pgsql; do
+    grep -F -x '  LIBS="-lpgcommon -lpgport $LIBS"' \
+      "$php_source_dir/ext/$extension/config.m4" >/dev/null || exit 90
+  done
 fi
 
 case " $* " in
@@ -4915,6 +4936,16 @@ fn write_php_source_archive(path: &Utf8Path) -> Result<()> {
         &mut builder,
         "php-source/build/php.m4",
         PHP_83_AVX512_ORIGINAL_M4.as_bytes(),
+    )?;
+    append_archive_file(
+        &mut builder,
+        "php-source/ext/pdo_pgsql/config.m4",
+        PHP_83_PDO_PGSQL_ORIGINAL_M4.as_bytes(),
+    )?;
+    append_archive_file(
+        &mut builder,
+        "php-source/ext/pgsql/config.m4",
+        PHP_83_PGSQL_ORIGINAL_M4.as_bytes(),
     )?;
 
     let encoder = builder.into_inner()?;
