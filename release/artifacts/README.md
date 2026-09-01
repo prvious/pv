@@ -77,7 +77,7 @@ cargo run -p pv-release -- generate-manifest \
 
 These local checks validate recipe shell syntax, recipe metadata, generated fixture records, and manifest generation. They do not build real managed-resource artifacts. Real native artifacts, including Caddy, are built only by the manual `Artifact Recipes` GitHub Actions workflow on native macOS runners.
 
-The manual `Artifact Recipes` workflow treats `resource=php` as a PHP-family build: each selected PHP track/platform produces both `php` and `frankenphp` artifacts. `resource=all` with `track=all` builds every configured track for each resource lane in parallel. A resource-specific single track builds only that resource track. `platform=all` currently resolves native resource lanes to `darwin-arm64` for the Apple Silicon/staging RC, except for Caddy, whose native downloaded-binary lane includes both `darwin-arm64` and `darwin-amd64` so one Caddy source run can satisfy the publication gate. `darwin-amd64` remains explicitly dispatchable for diagnostics and the conditional `darwin-amd64` gate on the other native lanes. Composer remains a single `platform=any` artifact so full-resource runs do not duplicate Composer identities.
+The manual `Artifact Recipes` workflow treats `resource=php` as a PHP-family build: each selected PHP track/platform produces both `php` and `frankenphp` artifacts. `resource=all` with `track=all` builds every configured track for each resource lane in parallel. A resource-specific single track builds only that resource track. `platform=all` builds PostgreSQL and Caddy for both `darwin-arm64` and `darwin-amd64`; other native resource lanes build `darwin-arm64`, and Composer remains a single `platform=any` artifact.
 
 ## Cloudflare R2 Publication
 

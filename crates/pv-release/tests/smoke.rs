@@ -1586,17 +1586,19 @@ pv_recipe_cleanup_macho_rpaths_tree "$PV_TEST_ARTIFACT_ROOT"
 "#,
     )?;
 
-    let output = StdCommand::new(&harness)
+    let mut command = StdCommand::new(&harness);
+    command
         .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
         .env("PV_TEST_ARTIFACT_ROOT", &artifact_root)
         .env("PV_TEST_COMMON_SH", &common)
         .env("PV_TEST_DELETED_RPATH_LOG", &deleted_rpath_log)
         .env("PV_TEST_INSTALL_NAME_LOG", &install_name_log)
+        .env("PV_TEST_REMOVED_RPATHS_LOG", &removed_rpaths_log);
+    let output = command
         .env(
             "PV_TEST_MACHO_RPATHS",
             format!("{build_prefix}\n@loader_path/../lib"),
         )
-        .env("PV_TEST_REMOVED_RPATHS_LOG", &removed_rpaths_log)
         .output()?;
 
     assert!(
@@ -1606,6 +1608,16 @@ pv_recipe_cleanup_macho_rpaths_tree "$PV_TEST_ARTIFACT_ROOT"
     );
     let normalized_log = read_file(&deleted_rpath_log)?.replace(tempdir.path().as_str(), "<tmp>");
     assert_debug_snapshot!(normalized_log);
+
+    write_file(&deleted_rpath_log, "")?;
+    let output = command.env("PV_TEST_MACHO_RPATHS", "").output()?;
+
+    assert!(
+        output.status.success(),
+        "Mach-O cleanup without rpaths failed: {}",
+        command_output_debug(&output)
+    );
+    assert_eq!(read_file(&deleted_rpath_log)?, "");
 
     Ok(())
 }
@@ -1985,8 +1997,9 @@ fn postgres_build_recipe_packages_pv2_supplied_extensions() -> Result<()> {
     );
     assert!(run.configure_log.contains("[--with-ssl=openssl]"));
     assert!(run.configure_log.contains("[--without-zlib]"));
-    assert!(run.make_log.contains("make=[-j][1][world-bin]"));
-    assert!(run.make_log.contains("make=[install-world-bin]"));
+    assert!(run.make_log.contains("make=[-j][1][world-bin][pkglibdir="));
+    assert!(run.make_log.contains("/install/lib/postgresql]"));
+    assert!(run.make_log.contains("make=[install-world-bin][pkglibdir="));
     assert!(run.openssl_build_log.contains("openssldir=/etc/ssl"));
     assert!(
         run.record_arguments_log
@@ -4992,12 +5005,16 @@ done
 printf '\n' >>"$PV_TEST_MAKE_LOG"
 
 [ -f .pv-postgres-prefix ] || exit 78
+install_prefix=$(cat .pv-postgres-prefix)
 case "${1:-}" in
   -j)
     [ "${3:-}" = world-bin ] || exit 78
+    [ "$#" -eq 4 ] || exit 78
+    [ "${4:-}" = "pkglibdir=$install_prefix/lib/postgresql" ] || exit 78
     ;;
   install-world-bin)
-    install_prefix=$(cat .pv-postgres-prefix)
+    [ "$#" -eq 2 ] || exit 78
+    [ "${2:-}" = "pkglibdir=$install_prefix/lib/postgresql" ] || exit 78
     mkdir -p \
       "$install_prefix/bin" \
       "$install_prefix/lib/postgresql/pgxs/src/test/regress" \
@@ -5200,6 +5217,9 @@ case "$port" in '' | *[!0-9]*) exit 78 ;; esac
 [ "${PGPASSWORD:-}" = pv_local_password ] || exit 78
 
 case "$sql" in
+  "DROP DATABASE \"$database\"")
+    exit 79
+    ;;
   'SELECT 1')
     printf '%s\n' 1
     ;;

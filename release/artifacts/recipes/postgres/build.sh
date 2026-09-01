@@ -214,8 +214,8 @@ export LDFLAGS="${LDFLAGS:-} -mmacosx-version-min=$DEPLOYMENT_TARGET"
     --without-readline \
     --without-zlib \
     --without-zstd
-  make -j "$BUILD_JOBS" world-bin
-  make install-world-bin
+  make -j "$BUILD_JOBS" world-bin pkglibdir="$install_dir/lib/postgresql"
+  make install-world-bin pkglibdir="$install_dir/lib/postgresql"
 )
 
 copy_install_tree "$install_dir" "$root_dir" "$openssl_prefix" "$extension_catalog" "$actual_extension_catalog"

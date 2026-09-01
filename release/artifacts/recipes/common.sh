@@ -284,7 +284,7 @@ pv_recipe_cleanup_macho_rpaths() {
   binary=$1
 
   macho_rpath_list=$(macho_rpaths "$binary") || die "failed to inspect Mach-O rpaths for $binary"
-  [ -n "$macho_rpath_list" ] || return
+  [ -n "$macho_rpath_list" ] || return 0
   printf '%s\n' "$macho_rpath_list" | while IFS= read -r macho_rpath; do
     case "$macho_rpath" in
       /usr/lib/* | /System/Library/* | @rpath/* | @loader_path/* | @executable_path/* | @loader_path | @executable_path)
