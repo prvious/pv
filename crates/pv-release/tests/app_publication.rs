@@ -521,12 +521,26 @@ fn stage_app_publication_rejects_equal_version_app_asset_change() -> Result<()> 
 #[test]
 fn stage_app_publication_rejects_equal_version_helper_protocol_change() -> Result<()> {
     let fixture = AppPublicationFixture::new()?;
-    fixture.write_valid_inputs()?;
-    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
-    write_file(
-        &current_manifest,
-        &app_manifest_json()?.replace("\"protocol_version\": 1", "\"protocol_version\": 2"),
+    fixture.write_app_record_with_helper(
+        "darwin-arm64",
+        "pv/0.2.0/pv-darwin-arm64",
+        b"pv arm64",
+        "987654321",
+        "1.1.0",
+        2,
+        b"pv helper 1.1.0 arm64",
     )?;
+    fixture.write_app_record_with_helper(
+        "darwin-amd64",
+        "pv/0.2.0/pv-darwin-amd64",
+        b"pv amd64",
+        "987654321",
+        "1.1.0",
+        2,
+        b"pv helper 1.1.0 amd64",
+    )?;
+    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
+    write_file(&current_manifest, &app_manifest_json()?)?;
 
     let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
     assert_stage_app_publication_available(&output)?;

@@ -7,5 +7,5 @@ CommandFailure {
         1,
     ),
     stdout: "",
-    stderr: "Error: failed to stage app publication\n\nCaused by:\n    invalid publication input `<tempdir>/candidate-records/pv-darwin-amd64.json`: an existing helper version must keep its published protocol, checksum, and size\n",
+    stderr: "Error: failed to stage app publication\n\nCaused by:\n    invalid publication input `<tempdir>/candidate-records/pv-darwin-amd64.json`: a helper protocol change requires a newer app version\n",
 }

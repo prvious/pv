@@ -275,6 +275,49 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
 }
 
 #[test]
+fn app_release_workflow_keeps_helper_and_app_reuse_branches_ordered() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let workflow = read_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
+    let build_step =
+        workflow_step(&workflow, "Build app and privileged helper binaries").unwrap_or("");
+    let relation_branch = build_step
+        .find("if [ \"$helper_version_relation\" = same ]; then")
+        .map(|start| &build_step[start..])
+        .unwrap_or("");
+    let contract = relation_branch
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            matches!(
+                *line,
+                "if [ \"$helper_version_relation\" = same ]; then"
+                    | "if [ \"$HELPER_ONLY\" = true ]; then"
+            ) || line.contains("current stable helper asset failed app-only reuse verification")
+                || line.contains("a helper protocol change requires a matching app release")
+                || line.contains("current stable app asset failed helper-only reuse verification")
+                || line.starts_with(
+                    "cargo build --locked --release --package pv-privileged-helper --bin pv-helper",
+                )
+                || line.starts_with("cargo build --locked --release --package pv --bin pv")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert_snapshot!(contract, @r#"
+    if [ "$helper_version_relation" = same ]; then
+    if [ "$HELPER_ONLY" = true ]; then
+    printf '%s\n' "current stable helper asset failed app-only reuse verification" >&2
+    cargo build --locked --release --package pv-privileged-helper --bin pv-helper --target "${{ matrix.rust_target }}"
+    if [ "$HELPER_ONLY" = true ]; then
+    printf '%s\n' "a helper protocol change requires a matching app release" >&2
+    printf '%s\n' "current stable app asset failed helper-only reuse verification" >&2
+    cargo build --locked --release --package pv --bin pv --target "${{ matrix.rust_target }}"
+    "#);
+
+    Ok(())
+}
+
+#[test]
 fn app_publication_writes_app_stable_entrypoints() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
@@ -596,6 +639,8 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     ca_trust_cleanup_required=true
     launch_agent_cleanup_required=true
     helper_evidence=true
+    helper_replacement_cycle=true
+    interrupted_helper_work_cleanup=true
     helper_cleanup_required=true
     sudo_preflight_exits_when_blocked=true
     "#);
@@ -694,7 +739,7 @@ fn privileged_macos_rc_evidence_summary(workflow: &str) -> String {
 
 fn privileged_macos_rc_system_summary(_workflow: &str) -> String {
     format!(
-        "installs_from_candidate_installer={}\ninstaller_download_restricts_redirect_protocols={}\nsetup_command={}\nrestart_command={}\nrestart_after_initial_serving={}\nrestart_wait_command={}\nupdate_check_waits_for_restart_reconciliation={}\nlink_command={}\nlink_wait_command={}\nserve_http_curl={}\nserve_http_follows_https_redirect={}\nserve_https_uses_system_trust={}\npost_restart_https_uses_system_trust={}\npost_restart_http_follows_https_redirect={}\nproject_tls_placeholders={}\nproject_tls_leaf_system_policy={}\nproject_tls_leaf_evidence={}\nproject_tls_lifetime_check={}\nserve_body_checked={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nresolver_cleanup_required={}\npf_anchor_cleanup_required={}\npf_rules_cleanup_required={}\nca_trust_cleanup_required={}\nlaunch_agent_cleanup_required={}\nhelper_evidence={}\nhelper_cleanup_required={}\nsudo_preflight_exits_when_blocked={}",
+        "installs_from_candidate_installer={}\ninstaller_download_restricts_redirect_protocols={}\nsetup_command={}\nrestart_command={}\nrestart_after_initial_serving={}\nrestart_wait_command={}\nupdate_check_waits_for_restart_reconciliation={}\nlink_command={}\nlink_wait_command={}\nserve_http_curl={}\nserve_http_follows_https_redirect={}\nserve_https_uses_system_trust={}\npost_restart_https_uses_system_trust={}\npost_restart_http_follows_https_redirect={}\nproject_tls_placeholders={}\nproject_tls_leaf_system_policy={}\nproject_tls_leaf_evidence={}\nproject_tls_lifetime_check={}\nserve_body_checked={}\nupdate_check_json={}\ndoctor_command={}\nuninstall_command={}\nresolver_cleanup_required={}\npf_anchor_cleanup_required={}\npf_rules_cleanup_required={}\nca_trust_cleanup_required={}\nlaunch_agent_cleanup_required={}\nhelper_evidence={}\nhelper_replacement_cycle={}\ninterrupted_helper_work_cleanup={}\nhelper_cleanup_required={}\nsudo_preflight_exits_when_blocked={}",
         workflow_contains_privileged_script(
             "curl --fail --show-error --silent --location --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 2 \"$RESOLVED_INSTALLER_URL\""
         ) && workflow_contains_privileged_script(
@@ -803,14 +848,29 @@ fn privileged_macos_rc_system_summary(_workflow: &str) -> String {
         ) && workflow_contains_privileged_script(
             "collect_file helper-metadata \"/Library/Application Support/PV/helper.json\""
         ) && workflow_contains_privileged_script(
-            "record_status helper-socket required sudo test -S /var/run/com.prvious.pv/helper.sock"
+            "record_status helper-socket required sudo test -S /var/run/com.prvious.pv.helper.sock"
         ) && workflow_contains_privileged_script(
             "record_status helper-launchd required sudo launchctl print system/com.prvious.pv.helper"
         ) && workflow_contains_privileged_script(
             "record_status helper-installation-contract required assert_helper_installation_contract"
         ) && workflow_contains_privileged_script(
             "assert set(metadata) == {\"owner_uid\", \"helper_version\", \"protocol_version\"}"
-        ) && workflow_contains_privileged_script("\"SockPathMode\": 0o600"),
+        ) && workflow_contains_privileged_script("\"SockPathMode\": 0o600")
+            && workflow_contains_privileged_script(
+                "assert plist[\"StandardErrorPath\"] == \"/var/log/com.prvious.pv.helper.err.log\"",
+            ),
+        privileged_script_contains_ordered(&[
+            "record_status helper-installation-contract required assert_helper_installation_contract",
+            "record_status helper-replacement-bootout required sudo launchctl bootout system/com.prvious.pv.helper",
+            "record_status helper-replacement-setup required pv setup --yes --no-path",
+            "record_status helper-replacement-contract required assert_helper_installation_contract",
+            "record_status helper-replacement-transaction-cleanup required helper_transaction_files_absent",
+        ]),
+        privileged_script_contains_ordered(&[
+            "record_status helper-interrupted-work-seed required sudo touch",
+            "record_status uninstall required pv uninstall",
+            "record_status helper-support-directory-removed required sudo test ! -e",
+        ]),
         workflow_contains_privileged_script(
             "record_status helper-executable-removed required sudo test ! -e /Library/PrivilegedHelperTools/com.prvious.pv.helper"
         ) && workflow_contains_privileged_script(
@@ -818,7 +878,9 @@ fn privileged_macos_rc_system_summary(_workflow: &str) -> String {
         ) && workflow_contains_privileged_script(
             "record_status helper-metadata-removed required sudo test ! -e \"/Library/Application Support/PV/helper.json\""
         ) && workflow_contains_privileged_script(
-            "record_status helper-socket-removed required sudo test ! -e /var/run/com.prvious.pv/helper.sock"
+            "record_status helper-socket-removed required sudo test ! -e /var/run/com.prvious.pv.helper.sock"
+        ) && workflow_contains_privileged_script(
+            "record_status helper-stderr-log-removed required sudo test ! -e /var/log/com.prvious.pv.helper.err.log"
         ),
         workflow_contains_privileged_script(
             "record_status sudo-preflight required sudo -n true || {"
@@ -862,6 +924,17 @@ fn ordered_substrings(haystack: &str, needles: &[&str]) -> bool {
     }
 
     true
+}
+
+fn workflow_step<'a>(workflow: &'a str, name: &str) -> Option<&'a str> {
+    let header = format!("      - name: {name}\n");
+    let start = workflow.find(&header)? + header.len();
+    let remaining = &workflow[start..];
+    let end = remaining
+        .find("\n      - name: ")
+        .unwrap_or(remaining.len());
+
+    Some(&remaining[..end])
 }
 
 fn input_default<'a>(workflow: &'a str, input: &str) -> Option<&'a str> {
