@@ -33,7 +33,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
 PY
 }
 
-run_psql() {
+run_psql() (
   database=$1
   sql=$2
   PGPASSWORD="$admin_password" "$psql" \
@@ -45,7 +45,7 @@ run_psql() {
     -v ON_ERROR_STOP=1 \
     -qAt \
     -c "$sql"
-}
+)
 
 wait_until_ready() {
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
