@@ -595,7 +595,18 @@ impl InstallerExecutionFixture {
             command
                 .arg("python3")
                 .arg("-c")
-                .arg("import os, sys; pid = os.fork(); sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])) if pid else None; os.setsid(); os.execv(sys.argv[1], sys.argv[1:])")
+                .arg(
+                    r#"import os
+import sys
+
+child_process_id = os.fork()
+if child_process_id:
+    _, status = os.waitpid(child_process_id, 0)
+    sys.exit(os.waitstatus_to_exitcode(status))
+
+os.setsid()
+os.execv(sys.argv[1], sys.argv[1:])"#,
+                )
                 .arg("/bin/bash");
             command
         } else {
