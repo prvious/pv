@@ -11,6 +11,7 @@ const REQUIRED_PHP_EXTENSIONS: &[&str] = &[
     "ctype",
     "curl",
     "dom",
+    "exif",
     "fileinfo",
     "filter",
     "ftp",
