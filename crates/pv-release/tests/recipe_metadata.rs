@@ -118,7 +118,7 @@ fn committed_recipe_metadata_parses() -> Result<()> {
         ManifestDefaults::load(&workspace_root.join("release/artifacts/default-tracks.toml"))?;
 
     assert_eq!(php.default_track().as_str(), "8.5");
-    assert_eq!(php.pv_build_revision(), "pv6");
+    assert_eq!(php.pv_build_revision(), "pv7");
     assert_eq!(php.tracks().len(), 3);
     assert_eq!(
         php.tracks()
@@ -201,7 +201,7 @@ fn php_recipe_splits_default_and_optional_extensions() -> Result<()> {
     let php = write_php_recipe(&tempdir)?;
     let env = php_recipe_env(&php, "php", "8.4", "darwin-arm64")?;
 
-    let default_extensions = "bcmath,curl,ftp,gd,intl,mbstring,openssl,pcntl,pdo_mysql,pdo_pgsql,pdo_sqlite,sockets,sodium,zip";
+    let default_extensions = "bcmath,curl,exif,ftp,gd,intl,mbstring,openssl,pcntl,pdo_mysql,pdo_pgsql,pdo_sqlite,sockets,sodium,zip";
     assert!(env.contains(&format!("PV_DEFAULT_EXTENSIONS='{default_extensions}'")));
     assert!(env.contains(
         "PV_OPTIONAL_EXTENSIONS='redis,sqlsrv,pdo_sqlsrv,xdebug,apcu,pcov,imagick,mongodb,yaml,rar'"
@@ -838,6 +838,7 @@ fn assert_php_staticphp_build_extensions(php: &PhpRecipe) {
         "ctype",
         "curl",
         "dom",
+        "exif",
         "fileinfo",
         "filter",
         "ftp",
@@ -938,9 +939,9 @@ deployment_target = "13.0"
 rar_source_revision = "9c8fcd9ebc9feaf36f945d6d7407fdcd57b7136f"
 rar_source_url = "https://github.com/static-php/php-rar/archive/9c8fcd9ebc9feaf36f945d6d7407fdcd57b7136f.tar.gz"
 rar_source_sha256 = "5198de458e029950fb3462d83262345f0a3862c4e39125b3abca5d5c9b0b166b"
-default_extensions = ["bcmath", "curl", "ftp", "gd", "intl", "mbstring", "openssl", "pcntl", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "sockets", "sodium", "zip"]
+default_extensions = ["bcmath", "curl", "exif", "ftp", "gd", "intl", "mbstring", "openssl", "pcntl", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "sockets", "sodium", "zip"]
 optional_extensions = ["redis", "sqlsrv", "pdo_sqlsrv", "xdebug", "apcu", "pcov", "imagick", "mongodb", "yaml", "rar"]
-expected_extensions = ["bcmath", "ctype", "curl", "dom", "fileinfo", "filter", "ftp", "gd", "hash", "iconv", "intl", "json", "libxml", "mbstring", "openssl", "pcntl", "pcre", "pdo", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "phar", "posix", "session", "simplexml", "sockets", "sodium", "sqlite3", "tokenizer", "xml", "xmlreader", "xmlwriter", "zip", "zlib"]
+expected_extensions = ["bcmath", "ctype", "curl", "dom", "exif", "fileinfo", "filter", "ftp", "gd", "hash", "iconv", "intl", "json", "libxml", "mbstring", "openssl", "pcntl", "pcre", "pdo", "pdo_mysql", "pdo_pgsql", "pdo_sqlite", "phar", "posix", "session", "simplexml", "sockets", "sodium", "sqlite3", "tokenizer", "xml", "xmlreader", "xmlwriter", "zip", "zlib"]
 
 [frankenphp]
 version = "1.12.3"
