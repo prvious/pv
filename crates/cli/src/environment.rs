@@ -194,10 +194,6 @@ pub trait Environment {
         )
     }
 
-    fn bundled_privileged_helper_sha256(&self) -> Result<&str, platform::PlatformError> {
-        platform::bundled_privileged_helper_sha256()
-    }
-
     fn remove_privileged_helper(&self) -> Result<(), platform::PlatformError> {
         platform::remove_privileged_helper()
     }

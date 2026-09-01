@@ -364,10 +364,6 @@ impl Environment for TestEnvironment {
         Ok(platform::PrivilegedHelperInstallOutcome::successful(status))
     }
 
-    fn bundled_privileged_helper_sha256(&self) -> Result<&str, platform::PlatformError> {
-        Ok("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-    }
-
     fn remove_privileged_helper(&self) -> Result<(), platform::PlatformError> {
         *lock(&self.helper_status) = None;
         lock(&self.operations).push("remove helper".to_string());
@@ -470,6 +466,7 @@ fn setup_records_default_resource_desired_tracks_before_reconciliation() -> anyh
 fn setup_fetches_manifest_before_recording_default_resources() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
+    seed_bundled_helper_metadata(&fixture)?;
     fixture
         .environment
         .script_manifest_text(setup_manifest_json()?);
@@ -506,7 +503,7 @@ fn setup_uses_cached_manifest_with_warning_when_refresh_fails() -> anyhow::Resul
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
 
-    seed_setup_manifest(&fixture.paths)?;
+    seed_setup_manifest(&fixture)?;
     fixture
         .environment
         .script_manifest_error(ResourcesError::HttpRequestFailed {
@@ -584,6 +581,7 @@ fn setup_manifest_missing_default_continues_core_setup_and_records_remaining_def
 -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
+    seed_bundled_helper_metadata(&fixture)?;
     fixture
         .environment
         .script_manifest_text(setup_manifest_json_without("mysql")?);
@@ -615,6 +613,7 @@ fn setup_manifest_platform_mismatch_continues_core_setup_and_records_valid_defau
 -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new_with_target_platform(tempdir.path(), TargetPlatform::DarwinAmd64);
+    seed_bundled_helper_metadata(&fixture)?;
     fixture
         .environment
         .script_manifest_text(setup_manifest_json_with_amd64_gap("frankenphp")?);
@@ -747,6 +746,31 @@ fn setup_installs_missing_helper_before_system_integrations() -> anyhow::Result<
             tempdir.path()
         )
     }));
+
+    Ok(())
+}
+
+#[test]
+fn setup_requires_bundled_helper_release_metadata() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    let metadata_path = Utf8Path::from_path(&fixture.environment.current_exe)
+        .ok_or_else(|| anyhow::anyhow!("test executable path is not UTF-8"))?
+        .with_file_name("pv-helper.json");
+    state::fs::delete_file(&metadata_path)?;
+    fixture.environment.set_helper_missing();
+
+    let output = run_pv(
+        &["setup", "--no-path", "--yes"],
+        fixture.environment.as_ref(),
+    )?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(fixture.environment.operations().is_empty());
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!(output);
+    });
 
     Ok(())
 }
@@ -1284,21 +1308,32 @@ fn seed_uninstall_files(paths: &PvPaths) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn seed_setup_manifest(paths: &PvPaths) -> anyhow::Result<()> {
-    state::fs::ensure_layout(paths)?;
+fn seed_setup_manifest(fixture: &Fixture) -> anyhow::Result<()> {
+    state::fs::ensure_layout(&fixture.paths)?;
     state::fs::write_sensitive_file(
-        &paths.downloads().join("manifest.json"),
+        &fixture.paths.downloads().join("manifest.json"),
         &setup_manifest_json()?,
     )?;
+    seed_bundled_helper_metadata(fixture)?;
 
     Ok(())
 }
 
 fn seed_online_setup_manifest(fixture: &Fixture) -> anyhow::Result<()> {
-    seed_setup_manifest(&fixture.paths)?;
+    seed_setup_manifest(fixture)?;
     script_setup_manifest(fixture)?;
 
     Ok(())
+}
+
+fn seed_bundled_helper_metadata(fixture: &Fixture) -> anyhow::Result<()> {
+    let path = Utf8Path::from_path(&fixture.environment.current_exe)
+        .ok_or_else(|| anyhow::anyhow!("test executable path is not UTF-8"))?
+        .with_file_name("pv-helper.json");
+    write_file(
+        &path,
+        "{\n  \"version\": \"1.0.0\",\n  \"protocol_version\": 1,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
+    )
 }
 
 fn script_setup_manifest(fixture: &Fixture) -> anyhow::Result<()> {

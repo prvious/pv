@@ -483,15 +483,16 @@ fn privileged_helper_candidate(
     } else {
         current_executable(environment)?.with_file_name("pv-helper")
     };
-    let metadata = if state::fs::path_entry_exists(&helper_metadata_path(&path))? {
-        HelperReleaseMetadata::read(&path)?
-    } else {
-        HelperReleaseMetadata::new(
-            platform::PRIVILEGED_HELPER_VERSION,
-            platform::HELPER_PROTOCOL_VERSION,
-            environment.bundled_privileged_helper_sha256()?,
-        )?
-    };
+    let metadata_path = helper_metadata_path(&path);
+    if !state::fs::path_entry_exists(&metadata_path)? {
+        return Err(CliError::InvalidPrivilegedHelperReleaseMetadata {
+            path: metadata_path.to_string(),
+            reason: "release metadata is missing; reinstall PV before running `pv setup`"
+                .to_string(),
+        }
+        .into());
+    }
+    let metadata = HelperReleaseMetadata::read(&path)?;
 
     Ok(PrivilegedHelperCandidate { path, metadata })
 }
