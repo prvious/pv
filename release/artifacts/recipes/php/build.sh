@@ -104,6 +104,16 @@ prepare_staticphp_rar_source() {
   grep -F -x "$patched_cxxflags" "$rar_config" >/dev/null || die "failed to select C++11 for php-rar"
 }
 
+prepare_staticphp_local_source() {
+  source_name=$1
+  source_dir=$2
+
+  # StaticPHP v3 local downloads run extraction hooks without linking the
+  # supplied directory into source/, so preseed the path those hooks consume.
+  mkdir -p "$spc_work_dir/source"
+  ln -s "$source_dir" "$spc_work_dir/source/$source_name"
+}
+
 csv_contains() {
   list=$1
   item=$2
@@ -376,6 +386,11 @@ if csv_contains "$PHP_OPTIONAL_EXTENSIONS" rar; then
 fi
 prepare_staticphp_xdebug_m4_context "$php_source_dir"
 prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_source_dir"
+prepare_staticphp_local_source php-src "$php_source_dir"
+prepare_staticphp_local_source frankenphp "$frankenphp_source_dir"
+if [ -n "$rar_source_dir" ]; then
+  prepare_staticphp_local_source ext-rar "$rar_source_dir"
+fi
 
 (
   cd "$spc_work_dir"
