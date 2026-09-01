@@ -921,10 +921,14 @@ example_invalid_absent={}",
 
 fn helper_only_installer_summary(installer: &str) -> String {
     format!(
-        "version_present={}\nminimum_version_present={}\nhelper_version_present={}\narm64_helper_url_present={}\namd64_helper_url_present={}\nold_helper_url_absent={}",
+        "version_present={}\nhelper_version_present={}\nhelper_protocol_version_present={}\narm64_helper_url_present={}\namd64_helper_url_present={}\nold_helper_url_absent={}",
         installer.contains("PV_VERSION='0.2.0'"),
-        installer.contains("PV_MINIMUM_PV_VERSION='0.1.0'"),
-        installer.contains("PV_HELPER_VERSION='1.1.0'"),
+        installer
+            .lines()
+            .any(|line| line == "HELPER_VERSION='1.1.0'"),
+        installer
+            .lines()
+            .any(|line| line == "HELPER_PROTOCOL_VERSION='1'"),
         installer.contains(&format!(
             "{APP_PUBLICATION_BASE_URL}/pv/0.2.0/pv-helper-1.1.0-darwin-arm64"
         )),

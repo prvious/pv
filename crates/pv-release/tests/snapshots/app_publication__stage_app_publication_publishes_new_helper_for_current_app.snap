@@ -84,8 +84,8 @@ manifest:
 }
 installer:
 version_present=true
-minimum_version_present=false
-helper_version_present=false
+helper_version_present=true
+helper_protocol_version_present=true
 arm64_helper_url_present=true
 amd64_helper_url_present=true
 old_helper_url_absent=true
