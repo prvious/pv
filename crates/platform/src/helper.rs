@@ -24,18 +24,16 @@ pub const PRIVILEGED_HELPER_VERSION: &str = "1.0.0";
 pub const HELPER_EXECUTABLE_PATH: &str = "/Library/PrivilegedHelperTools/com.prvious.pv.helper";
 pub const HELPER_LAUNCH_DAEMON_PATH: &str = "/Library/LaunchDaemons/com.prvious.pv.helper.plist";
 pub const HELPER_METADATA_PATH: &str = "/Library/Application Support/PV/helper.json";
-pub const HELPER_SOCKET_PATH: &str = "/var/run/com.prvious.pv/helper.sock";
+pub const HELPER_SOCKET_PATH: &str = "/var/run/com.prvious.pv.helper.sock";
 
 #[cfg(target_os = "macos")]
 const HELPER_SOCKET_NAME: &str = "Control";
 #[cfg(target_os = "macos")]
 const HELPER_LABEL: &str = "com.prvious.pv.helper";
 #[cfg(target_os = "macos")]
-const HELPER_SOCKET_DIRECTORY: &str = "/var/run/com.prvious.pv";
+const HELPER_STANDARD_ERROR_PATH: &str = "/var/log/com.prvious.pv.helper.err.log";
 #[cfg(target_os = "macos")]
 const HELPER_SUPPORT_DIRECTORY: &str = "/Library/Application Support/PV";
-#[cfg(target_os = "macos")]
-const HELPER_PF_WORK_DIRECTORY: &str = "/Library/Application Support/PV/pf";
 #[cfg(target_os = "macos")]
 const HELPER_CA_CANDIDATE_PATH: &str = "/Library/Application Support/PV/ca.pem";
 #[cfg(target_os = "macos")]
@@ -68,14 +66,6 @@ const HELPER_LIFECYCLE_READY_PREFIX: &str = "PV-HELPER-LIFECYCLE-READY";
 const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 #[cfg(target_os = "macos")]
 const HELPER_IO_TIMEOUT: Duration = Duration::from_secs(5);
-
-pub fn bundled_privileged_helper_sha256() -> Result<&'static str, PlatformError> {
-    option_env!("PV_BUNDLED_HELPER_SHA256").ok_or_else(|| {
-        PlatformError::PrivilegedHelperInstallation(
-            "this PV build does not contain a privileged helper checksum".to_string(),
-        )
-    })
-}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PrivilegedHelperStatus {
@@ -337,35 +327,26 @@ pub fn remove_privileged_helper() -> Result<(), PlatformError> {
                 "helper removal must be requested by the supported non-root account".to_string(),
             ));
         }
+        if !installed_helper_artifacts_present()? {
+            return Ok(());
+        }
         let _machine_lifecycle_lock = acquire_machine_helper_lifecycle_lock()?;
         validate_existing_helper_owner(owner_uid)?;
+        validate_helper_support_directory_for_removal()?;
         let _was_loaded = bootout_helper_if_loaded()?;
         run_sudo(&[
             "/bin/rm",
             "-f",
             HELPER_EXECUTABLE_PATH,
             HELPER_LAUNCH_DAEMON_PATH,
-            HELPER_METADATA_PATH,
             HELPER_SOCKET_PATH,
-            "/Library/Application Support/PV/resolver.test",
-            "/Library/Application Support/PV/resolver.pv-helper-tmp",
-            HELPER_CA_CANDIDATE_PATH,
-            "/Library/Application Support/PV/ca.pv-helper-tmp",
-            "/Library/Application Support/PV/pf/com.prvious.pv",
-            "/Library/Application Support/PV/pf/pf.conf.reference",
-            "/Library/Application Support/PV/pf/pf.conf.candidate",
-            "/Library/Application Support/PV/pf/pf.anchor.rollback",
-            "/Library/Application Support/PV/pf/pf.conf.rollback",
+            HELPER_STANDARD_ERROR_PATH,
             HELPER_EXECUTABLE_CANDIDATE_PATH,
-            HELPER_METADATA_CANDIDATE_PATH,
             HELPER_PLIST_CANDIDATE_PATH,
             HELPER_EXECUTABLE_ROLLBACK_PATH,
-            HELPER_METADATA_ROLLBACK_PATH,
             HELPER_PLIST_ROLLBACK_PATH,
         ])?;
-        remove_helper_directory_if_empty(HELPER_PF_WORK_DIRECTORY)?;
-        remove_helper_directory_if_empty(HELPER_SUPPORT_DIRECTORY)?;
-        remove_helper_directory_if_empty(HELPER_SOCKET_DIRECTORY)
+        run_sudo(&["/bin/rm", "-rf", HELPER_SUPPORT_DIRECTORY])
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -424,7 +405,6 @@ fn install_privileged_helper_macos(
         "/Library/PrivilegedHelperTools",
         "/Library/LaunchDaemons",
         HELPER_SUPPORT_DIRECTORY,
-        HELPER_SOCKET_DIRECTORY,
     ])?;
     run_sudo(&[
         "/usr/bin/install",
@@ -598,9 +578,9 @@ fn move_installed_helper_to_rollback(
 #[cfg(target_os = "macos")]
 fn move_helper_candidates_into_place() -> Result<(), PlatformError> {
     for (source, destination) in [
-        (HELPER_EXECUTABLE_CANDIDATE_PATH, HELPER_EXECUTABLE_PATH),
         (HELPER_METADATA_CANDIDATE_PATH, HELPER_METADATA_PATH),
         (HELPER_PLIST_CANDIDATE_PATH, HELPER_LAUNCH_DAEMON_PATH),
+        (HELPER_EXECUTABLE_CANDIDATE_PATH, HELPER_EXECUTABLE_PATH),
     ] {
         run_sudo(&["/bin/mv", source, destination])?;
     }
@@ -791,6 +771,30 @@ fn validate_existing_helper_owner(owner_uid: u32) -> Result<(), PlatformError> {
     match std::fs::symlink_metadata(metadata_path) {
         Ok(_metadata) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let candidate_path = Utf8Path::new(HELPER_METADATA_CANDIDATE_PATH);
+            match std::fs::symlink_metadata(candidate_path) {
+                Ok(_metadata) => {
+                    validate_root_owned_regular_file(candidate_path, 0o644)?;
+                    let content = state::fs::read_to_string(candidate_path).map_err(|error| {
+                        PlatformError::PrivilegedHelperInstallation(error.to_string())
+                    })?;
+                    let metadata = serde_json::from_str::<PrivilegedHelperMetadata>(&content)
+                        .map_err(|error| {
+                            PlatformError::PrivilegedHelperInstallation(format!(
+                                "existing helper ownership cannot be determined from its staged metadata: {error}; manual administrator recovery is required"
+                            ))
+                        })?;
+
+                    return require_matching_helper_owner(&metadata, owner_uid);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(PlatformError::PrivilegedHelperInstallation(format!(
+                        "could not inspect existing staged helper metadata: {error}"
+                    )));
+                }
+            }
+
             return validate_existing_helper_without_metadata(owner_uid);
         }
         Err(error) => {
@@ -837,7 +841,7 @@ fn validate_existing_helper_without_metadata(owner_uid: u32) -> Result<(), Platf
     }
     if !plist_exists {
         return Err(PlatformError::PrivilegedHelperInstallation(
-            "existing helper ownership cannot be determined; remove it before reinstalling"
+            "existing helper ownership cannot be determined; manual administrator recovery is required"
                 .to_string(),
         ));
     }
@@ -942,6 +946,8 @@ struct HelperLaunchDaemonPlist {
     run_at_load: bool,
     #[serde(rename = "ProcessType")]
     process_type: String,
+    #[serde(rename = "StandardErrorPath")]
+    standard_error_path: String,
 }
 
 #[cfg(target_os = "macos")]
@@ -974,6 +980,7 @@ fn render_launch_daemon_plist(owner_uid: u32, owner_gid: u32) -> Result<String, 
         keep_alive: false,
         run_at_load: false,
         process_type: "Interactive".to_string(),
+        standard_error_path: HELPER_STANDARD_ERROR_PATH.to_string(),
     };
     let mut content = Vec::new();
     plist::to_writer_xml(&mut content, &plist).map_err(|error| {
@@ -1021,7 +1028,7 @@ fn helper_is_loaded() -> Result<bool, PlatformError> {
     match crate::command::run_system_command_output("/bin/launchctl", &["print", &service_target]) {
         Ok(_output) => Ok(true),
         Err(PlatformError::SystemIntegrationCommandStatus { status, .. })
-            if status == "exit status: 113" =>
+            if status == "exit status: 113" || status.starts_with("exit status: 113:") =>
         {
             Ok(false)
         }
@@ -1030,18 +1037,68 @@ fn helper_is_loaded() -> Result<bool, PlatformError> {
 }
 
 #[cfg(target_os = "macos")]
+fn installed_helper_artifacts_present() -> Result<bool, PlatformError> {
+    helper_artifacts_present(&[
+        Utf8Path::new(HELPER_EXECUTABLE_PATH),
+        Utf8Path::new(HELPER_LAUNCH_DAEMON_PATH),
+        Utf8Path::new(HELPER_METADATA_PATH),
+        Utf8Path::new(HELPER_SOCKET_PATH),
+        Utf8Path::new(HELPER_STANDARD_ERROR_PATH),
+        Utf8Path::new(HELPER_SUPPORT_DIRECTORY),
+        Utf8Path::new(HELPER_EXECUTABLE_CANDIDATE_PATH),
+        Utf8Path::new(HELPER_PLIST_CANDIDATE_PATH),
+        Utf8Path::new(HELPER_EXECUTABLE_ROLLBACK_PATH),
+        Utf8Path::new(HELPER_PLIST_ROLLBACK_PATH),
+    ])
+}
+
+#[cfg(any(target_os = "macos", test))]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "helper removal checks fixed system artifact paths without following symlinks"
+)]
+fn helper_artifacts_present(paths: &[&Utf8Path]) -> Result<bool, PlatformError> {
+    for path in paths {
+        match std::fs::symlink_metadata(path) {
+            Ok(_metadata) => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(PlatformError::PrivilegedHelperInstallation(format!(
+                    "could not inspect helper artifact {path}: {error}"
+                )));
+            }
+        }
+    }
+
+    Ok(false)
+}
+
+#[cfg(target_os = "macos")]
 #[expect(
     clippy::disallowed_methods,
     reason = "helper removal checks fixed system directories without following symlinks"
 )]
-fn remove_helper_directory_if_empty(path: &str) -> Result<(), PlatformError> {
-    match std::fs::symlink_metadata(path) {
-        Ok(_metadata) => run_sudo(&["/bin/rmdir", path]),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(PlatformError::PrivilegedHelperInstallation(format!(
-            "could not inspect helper directory {path}: {error}"
-        ))),
+fn validate_helper_support_directory_for_removal() -> Result<(), PlatformError> {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    let path = Utf8Path::new(HELPER_SUPPORT_DIRECTORY);
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(PlatformError::PrivilegedHelperInstallation(format!(
+                "could not inspect helper support directory {path}: {error}"
+            )));
+        }
+    };
+    let mode = metadata.permissions().mode() & 0o777;
+    if !metadata.file_type().is_dir() || metadata.uid() != 0 || mode != 0o755 {
+        return Err(PlatformError::PrivilegedHelperInstallation(format!(
+            "{path} must be a root-owned directory with mode 755 before removal"
+        )));
     }
+
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -1279,7 +1336,10 @@ fn read_frame(reader: &mut impl Read) -> Result<Vec<u8>, PlatformError> {
             .read(&mut byte)
             .map_err(PlatformError::PrivilegedHelperIo)?;
         if count == 0 {
-            break;
+            return Err(PlatformError::PrivilegedHelperIo(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "helper protocol connection closed before a complete frame was received",
+            )));
         }
 
         bytes.push(byte[0]);
@@ -1288,9 +1348,9 @@ fn read_frame(reader: &mut impl Read) -> Result<Vec<u8>, PlatformError> {
         }
     }
 
-    if bytes.len() > MAX_MESSAGE_BYTES || !bytes.ends_with(b"\n") {
+    if bytes.len() > MAX_MESSAGE_BYTES {
         return Err(PlatformError::PrivilegedHelperRejected {
-            message: "invalid or oversized helper protocol message".to_string(),
+            message: "helper protocol message exceeds the size limit".to_string(),
         });
     }
 
@@ -1340,18 +1400,42 @@ pub fn serve_privileged_helper() -> Result<(), PlatformError> {
     // the named service, and the descriptor is transferred to [`UnixListener`] here.
     let listener = unsafe { UnixListener::from_raw_fd(*socket_fd) };
 
+    loop {
+        serve_next_helper_connection(&listener, &metadata)?;
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn serve_next_helper_connection(
+    listener: &std::os::unix::net::UnixListener,
+    metadata: &PrivilegedHelperMetadata,
+) -> Result<(), PlatformError> {
     let (mut stream, _address) = listener
         .accept()
         .map_err(PlatformError::PrivilegedHelperIo)?;
+    if let Err(error) = serve_helper_connection(&mut stream, metadata) {
+        let mut standard_error = std::io::stderr().lock();
+        writeln!(standard_error, "pv-helper: {error}")
+            .map_err(PlatformError::PrivilegedHelperIo)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn serve_helper_connection(
+    stream: &mut std::os::unix::net::UnixStream,
+    metadata: &PrivilegedHelperMetadata,
+) -> Result<(), PlatformError> {
     stream
         .set_read_timeout(Some(HELPER_IO_TIMEOUT))
         .map_err(PlatformError::PrivilegedHelperIo)?;
     stream
         .set_write_timeout(Some(HELPER_IO_TIMEOUT))
         .map_err(PlatformError::PrivilegedHelperIo)?;
-    let response = handle_connection(&mut stream, &metadata);
+    let response = handle_connection(stream, metadata);
     match response {
-        HelperConnectionResponse::Operational(response) => write_message(&mut stream, &response)?,
+        HelperConnectionResponse::Operational(response) => write_message(stream, &response)?,
         HelperConnectionResponse::Lifecycle(response) => stream
             .write_all(response.as_bytes())
             .map_err(PlatformError::PrivilegedHelperIo)?,
@@ -1754,23 +1838,29 @@ fn helper_error_code(error: &PlatformError) -> HelperErrorCode {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::io::{Cursor, ErrorKind};
+    #[cfg(target_os = "macos")]
+    use std::thread;
     #[cfg(unix)]
     use std::time::Duration;
 
     #[cfg(target_os = "macos")]
+    use anyhow::anyhow;
     use camino_tempfile::tempdir;
 
-    #[cfg(target_os = "macos")]
-    use super::lock_machine_helper_lifecycle_file;
     #[cfg(unix)]
     use super::{HELPER_PROTOCOL_VERSION, HelperOperation, write_message};
-    use super::{
-        HelperRequest, PrivilegedHelperMetadata, parse_helper_lifecycle_response, read_message,
-        require_matching_helper_owner, validate_fingerprint, validate_helper_identity,
-        validate_high_port,
-    };
     #[cfg(target_os = "macos")]
+    use super::{
+        HELPER_SOCKET_NAME, HELPER_STANDARD_ERROR_PATH, HelperLaunchDaemonPlist, HelperPayload,
+        PRIVILEGED_HELPER_VERSION, call_helper, lock_machine_helper_lifecycle_file,
+        probe_helper_lifecycle, render_launch_daemon_plist, serve_next_helper_connection,
+    };
+    use super::{
+        HelperRequest, MAX_MESSAGE_BYTES, PrivilegedHelperMetadata, helper_artifacts_present,
+        parse_helper_lifecycle_response, read_frame, read_message, require_matching_helper_owner,
+        validate_fingerprint, validate_helper_identity, validate_high_port,
+    };
     use crate::PlatformError;
 
     #[cfg(target_os = "macos")]
@@ -1834,6 +1924,95 @@ mod tests {
             parse_helper_lifecycle_response(b"PV-HELPER-LIFECYCLE-READY\t2.0.0\t9\t501\textra\n")
                 .is_err()
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn protocol_reader_reports_premature_eof_as_io_failure() {
+        for frame in [Vec::new(), b"partial frame".to_vec()] {
+            let error = read_frame(&mut Cursor::new(frame));
+
+            assert!(matches!(
+                error,
+                Err(PlatformError::PrivilegedHelperIo(source))
+                    if source.kind() == ErrorKind::UnexpectedEof
+            ));
+        }
+    }
+
+    #[test]
+    fn helper_artifact_presence_detects_existing_paths() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let absent = tempdir.path().join("absent");
+        let present = tempdir.path().join("present");
+
+        assert!(!helper_artifacts_present(&[&absent])?);
+        state::fs::write_sensitive_file(&present, "")?;
+        assert!(helper_artifacts_present(&[&absent, &present])?);
+
+        Ok(())
+    }
+
+    #[test]
+    fn protocol_reader_rejects_oversized_frames() {
+        let error = read_frame(&mut Cursor::new(vec![b'a'; MAX_MESSAGE_BYTES + 1]));
+
+        assert!(matches!(
+            error,
+            Err(PlatformError::PrivilegedHelperRejected { message })
+                if message == "helper protocol message exceeds the size limit"
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn launch_daemon_uses_reboot_safe_socket_and_stderr_log() -> anyhow::Result<()> {
+        let content = render_launch_daemon_plist(501, 20)?;
+        let plist = plist::from_bytes::<HelperLaunchDaemonPlist>(content.as_bytes())?;
+        let socket = plist
+            .sockets
+            .get(HELPER_SOCKET_NAME)
+            .ok_or_else(|| anyhow!("rendered LaunchDaemon is missing its control socket"))?;
+
+        assert_eq!(socket.path, "/var/run/com.prvious.pv.helper.sock");
+        assert_eq!(plist.standard_error_path, HELPER_STANDARD_ERROR_PATH);
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn helper_serves_sequential_connections_without_restarting() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let socket_path = tempdir.path().join("helper.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+        let owner_uid = rustix::process::getuid().as_raw();
+        let metadata = PrivilegedHelperMetadata {
+            owner_uid,
+            helper_version: PRIVILEGED_HELPER_VERSION.to_string(),
+            protocol_version: HELPER_PROTOCOL_VERSION,
+        };
+        let server = thread::spawn(move || {
+            serve_next_helper_connection(&listener, &metadata)?;
+            serve_next_helper_connection(&listener, &metadata)?;
+            serve_next_helper_connection(&listener, &metadata)
+        });
+
+        let disconnected_client = std::os::unix::net::UnixStream::connect(&socket_path)?;
+        drop(disconnected_client);
+        let lifecycle_status = probe_helper_lifecycle(&socket_path)?;
+        let status_payload = call_helper(&socket_path, HelperOperation::Status)?;
+        let server_result = server
+            .join()
+            .map_err(|_error| anyhow!("helper fixture thread panicked"))?;
+        server_result?;
+
+        assert_eq!(lifecycle_status.owner_uid, owner_uid);
+        assert!(matches!(
+            status_payload,
+            HelperPayload::Status(status) if status.owner_uid == owner_uid
+        ));
 
         Ok(())
     }

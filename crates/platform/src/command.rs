@@ -42,8 +42,19 @@ pub(crate) fn run_system_command_output(
     } else {
         Err(PlatformError::SystemIntegrationCommandStatus {
             command,
-            status: output.status.to_string(),
+            status: command_failure_status(&output),
         })
+    }
+}
+
+fn command_failure_status(output: &Output) -> String {
+    let status = output.status.to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    if stderr.is_empty() {
+        status
+    } else {
+        format!("{status}: {stderr}")
     }
 }
 
@@ -60,4 +71,38 @@ fn command_status(program: &str, args: &[&str]) -> io::Result<ExitStatus> {
 
 fn command_output(program: &str, args: &[&str]) -> io::Result<Output> {
     StdCommand::new(program).args(args).output()
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use crate::PlatformError;
+
+    use super::run_system_command_output;
+
+    #[test]
+    fn command_failure_includes_non_empty_stderr() -> anyhow::Result<()> {
+        let result = run_system_command_output(
+            "/bin/sh",
+            &["-c", "printf 'pf inspection failed\\n' >&2; exit 7"],
+        );
+
+        let Err(PlatformError::SystemIntegrationCommandStatus { status, .. }) = result else {
+            anyhow::bail!("expected a system integration command status error");
+        };
+        assert_eq!(status, "exit status: 7: pf inspection failed");
+
+        Ok(())
+    }
+
+    #[test]
+    fn command_failure_omits_empty_stderr() -> anyhow::Result<()> {
+        let result = run_system_command_output("/bin/sh", &["-c", "exit 9"]);
+
+        let Err(PlatformError::SystemIntegrationCommandStatus { status, .. }) = result else {
+            anyhow::bail!("expected a system integration command status error");
+        };
+        assert_eq!(status, "exit status: 9");
+
+        Ok(())
+    }
 }

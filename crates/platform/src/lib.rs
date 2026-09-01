@@ -23,8 +23,8 @@ pub use error::PlatformError;
 pub use helper::{
     HELPER_EXECUTABLE_PATH, HELPER_LAUNCH_DAEMON_PATH, HELPER_METADATA_PATH,
     HELPER_PROTOCOL_VERSION, HELPER_SOCKET_PATH, PRIVILEGED_HELPER_VERSION, PrivilegedHelperClient,
-    PrivilegedHelperInstallOutcome, PrivilegedHelperStatus, bundled_privileged_helper_sha256,
-    install_privileged_helper, remove_privileged_helper, serve_privileged_helper,
+    PrivilegedHelperInstallOutcome, PrivilegedHelperStatus, install_privileged_helper,
+    remove_privileged_helper, serve_privileged_helper,
 };
 pub use launch_agent::{
     LAUNCH_AGENT_FILE_NAME, LAUNCH_AGENT_LABEL, LaunchAgentConfig, LaunchAgentFileState,
