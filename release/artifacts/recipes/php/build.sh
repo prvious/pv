@@ -76,6 +76,20 @@ prepare_staticphp_php83_frankenphp_patch_context() {
   esac
 }
 
+prepare_staticphp_php83_postgresql_context() {
+  php_source_dir=$1
+
+  case "$PHP_PHP_VERSION" in
+    8.3.*)
+      # PHP 8.3's legacy probes link only libpq, while StaticPHP keeps required
+      # frontend symbols in separate libpgcommon and libpgport archives.
+      postgresql_patch="$recipe_dir/patches/staticphp/php83_link_postgresql_support_libraries.patch"
+      [ -f "$postgresql_patch" ] || die "PHP 8.3 PostgreSQL patch file missing $postgresql_patch"
+      patch -d "$php_source_dir" -p1 <"$postgresql_patch"
+      ;;
+  esac
+}
+
 prepare_staticphp_xdebug_m4_context() {
   php_source_dir=$1
 
@@ -386,6 +400,7 @@ if csv_contains "$PHP_OPTIONAL_EXTENSIONS" rar; then
 fi
 prepare_staticphp_xdebug_m4_context "$php_source_dir"
 prepare_staticphp_php83_frankenphp_patch_context "$php_source_dir" "$frankenphp_source_dir"
+prepare_staticphp_php83_postgresql_context "$php_source_dir"
 prepare_staticphp_local_source php-src "$php_source_dir"
 prepare_staticphp_local_source frankenphp "$frankenphp_source_dir"
 if [ -n "$rar_source_dir" ]; then
