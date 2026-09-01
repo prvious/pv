@@ -413,7 +413,9 @@ fi
   fi
   # StaticPHP's macOS dead-strip defaults remove PHP API symbols that shared
   # extensions resolve at load time. Export them only from the shipped SAPIs.
-  SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS="-Wl,-export_dynamic"
+  # Current StaticPHP v3 also omits its static libcurl's required macOS
+  # frameworks from the LDFLAGS used by PHP's configure link checks.
+  SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS="-Wl,-export_dynamic -framework CoreFoundation -framework CoreServices -framework SystemConfiguration"
   frankenphp_LDFLAGS="-Wl,-export_dynamic"
   export SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS frankenphp_LDFLAGS
   # StaticPHP v3 selects mbregex separately from mbstring; Laravel uses mb_split().

@@ -912,7 +912,7 @@ fn php_build_recipe_smoke() -> Result<()> {
         "pwd={}/work/php-pair-8.4-darwin-arm64/staticphp\n\
 spc-cflags=-I{imagick_include}\n\
 spc-cxxflags=-I{imagick_include}\n\
-spc-php-extra-ldflags=-Wl,-export_dynamic\n\
+spc-php-extra-ldflags=-Wl,-export_dynamic -framework CoreFoundation -framework CoreServices -framework SystemConfiguration\n\
 spc-frankenphp-ldflags=-Wl,-export_dynamic\n\
 spc-pkg-config=pkg-config\n\
 spc-pkg-config-libdir={pkg_config_libdir}\n\
