@@ -32,6 +32,7 @@ struct TestEnvironment {
     active_pf_config: std::cell::RefCell<Option<PfRedirectConfig>>,
     trusted_certificates: std::cell::RefCell<Vec<KeychainCertificate>>,
     helper_status: std::cell::RefCell<Option<PrivilegedHelperStatus>>,
+    helper_authentication_error: std::cell::Cell<bool>,
 }
 
 impl TestEnvironment {
@@ -56,6 +57,7 @@ impl TestEnvironment {
                 protocol_version: HELPER_PROTOCOL_VERSION,
                 owner_uid: 501,
             })),
+            helper_authentication_error: std::cell::Cell::new(false),
         }
     }
 
@@ -86,6 +88,10 @@ impl TestEnvironment {
             protocol_version,
             owner_uid: 501,
         }));
+    }
+
+    fn set_helper_authentication_error(&self) {
+        self.helper_authentication_error.set(true);
     }
 }
 
@@ -162,6 +168,12 @@ impl Environment for TestEnvironment {
     }
 
     fn privileged_helper_status(&self) -> Result<PrivilegedHelperStatus, platform::PlatformError> {
+        if self.helper_authentication_error.get() {
+            return Err(platform::PlatformError::PrivilegedHelperAuthentication(
+                "peer UID 502 does not match installing UID 501".to_string(),
+            ));
+        }
+
         self.helper_status
             .borrow()
             .clone()
@@ -244,6 +256,29 @@ fn doctor_reports_missing_helper_and_continues_other_checks() -> anyhow::Result<
     assert!(output.stdout.contains("[pass] Artifact manifest cache"));
     assert_doctor_snapshot(
         "doctor_reports_missing_helper_and_continues_other_checks",
+        tempdir.path(),
+        output,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn doctor_reports_cross_account_helper_recovery() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    seed_required_checks(&paths, &environment, true)?;
+    environment.set_helper_authentication_error();
+    let health_server = spawn_health_server(&paths.daemon_socket())?;
+
+    let output = run_pv(&["doctor"], &environment)?;
+    join_health_server(health_server)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_doctor_snapshot(
+        "doctor_reports_cross_account_helper_recovery",
         tempdir.path(),
         output,
     );

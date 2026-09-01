@@ -161,6 +161,14 @@ fn privileged_helper_check(environment: &impl Environment, paths: &PvPaths) -> D
             ),
             "pv setup",
         ),
+        Err(platform::PlatformError::PrivilegedHelperAuthentication(message)) => {
+            DoctorCheck::fail(
+                "Privileged helper",
+                "helper belongs to a different macOS account",
+                "use the original installing account to run pv uninstall; otherwise perform manual administrator recovery",
+            )
+            .with_detail(message)
+        }
         Err(error) => DoctorCheck::fail(
             "Privileged helper",
             "helper is unavailable or incompatible",
