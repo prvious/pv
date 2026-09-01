@@ -1146,10 +1146,21 @@ fn rollback_app_update(
     let original_message = app_update_failure_message(context.paths, &original_error);
     let mut rollback_errors = Vec::new();
     let mut helper_restore_cleanup_warning = None;
-    if let Err(restore_error) = context.layout.activate_release(versions.previous) {
-        rollback_errors.push(format!("application: {restore_error}"));
-    }
-    if let Some(helper_rollback) = context.helper_rollback {
+    let previous_release_is_active = match context.layout.activate_release(versions.previous) {
+        Ok(()) => true,
+        Err(restore_error) => {
+            rollback_errors.push(format!("application: {restore_error}"));
+            match context.layout.active_release() {
+                Ok(Some(active_version)) => active_version == versions.previous,
+                Ok(None) => false,
+                Err(active_release_error) => {
+                    rollback_errors.push(format!("application state: {active_release_error}"));
+                    false
+                }
+            }
+        }
+    };
+    if previous_release_is_active && let Some(helper_rollback) = context.helper_rollback {
         match restore_helper(environment, helper_rollback) {
             Ok(cleanup_warning) => helper_restore_cleanup_warning = cleanup_warning,
             Err(restore_error) => {

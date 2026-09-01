@@ -1989,6 +1989,67 @@ mod update_tests {
     }
 
     #[test]
+    fn update_keeps_updated_helper_when_previous_app_cannot_be_restored() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let layout = install_current_release(&paths)?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let daemon = FakeDaemon::start(
+            &paths,
+            vec![daemon_error_response("updated daemon boot failed")],
+        )?;
+        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
+            .replace("\"version\": \"1.0.0\"", "\"version\": \"1.1.0\"")
+            .replace("\"protocol_version\": 1", "\"protocol_version\": 2")
+            .replace("pv-helper-1.0.0", "pv-helper-1.1.0");
+        let environment = TestEnvironment::new(
+            &home,
+            ScriptedClient::new()
+                .with_text(&manifest)
+                .with_download(APP_BINARY),
+        )
+        .with_delete_on_first_kickstart(paths.app_release_binary(CURRENT_APP_VERSION));
+
+        let output = run_pv(&["update"], &environment)?;
+        let _daemon_requests = daemon.join()?;
+        let rollback_candidates = state::fs::read_dir_paths(paths.downloads())?
+            .into_iter()
+            .filter(|path| path.file_name().unwrap_or("").contains("helper-rollback"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(
+            environment.helper_status.borrow().as_ref(),
+            Some(&PrivilegedHelperStatus {
+                version: "1.1.0".to_string(),
+                protocol_version: 2,
+                owner_uid: 501,
+            })
+        );
+        let operations = environment.operations();
+        let helper_installations = operations
+            .iter()
+            .filter(|operation| operation.contains("install helper"))
+            .collect::<Vec<_>>();
+        assert_eq!(helper_installations.len(), 1);
+        assert!(!helper_installations[0].contains("helper-rollback"));
+        assert_eq!(rollback_candidates.len(), 1);
+        assert_eq!(
+            state::fs::read_to_string(&rollback_candidates[0])?.as_bytes(),
+            HELPER_BINARY
+        );
+        assert_update_snapshot(
+            "update_keeps_updated_helper_when_previous_app_cannot_be_restored",
+            output,
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn update_retains_helper_candidate_when_restoring_helper_during_app_rollback_fails()
     -> anyhow::Result<()> {
         let tempdir = tempdir()?;
