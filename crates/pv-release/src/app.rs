@@ -259,200 +259,29 @@ install_binaries() {
   mv -f "${link_tmp}" "${PV_ACTIVE_BIN}"
 }
 
-detect_shell_profile() {
-  local shell_path shell_name
+confirm_installation() {
+  local reply
 
-  shell_path="${SHELL:-}"
-  shell_name="${shell_path##*/}"
-  case "${shell_name}" in
-    zsh)
-      PROFILE_SHELL="zsh"
-      PROFILE_PATH="${HOME}/.zprofile"
-      ;;
-    bash)
-      PROFILE_SHELL="bash"
-      PROFILE_PATH="${HOME}/.bash_profile"
-      ;;
-    fish)
-      PROFILE_SHELL="fish"
-      PROFILE_PATH="${HOME}/.config/fish/config.fish"
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-profile_block() {
-  local shell_name
-
-  shell_name="$1"
-  case "${shell_name}" in
-    fish)
-      cat <<'FISH'
-# >>> PV ENV
-if test -x "$HOME/.pv/bin/pv"
-  eval ("$HOME/.pv/bin/pv" env --shell fish | string collect)
-end
-# <<< PV ENV
-FISH
-      ;;
-    *)
-      cat <<EOF
-# >>> PV ENV
-if [ -x "\$HOME/.pv/bin/pv" ]; then
-  eval "\$("\$HOME/.pv/bin/pv" env --shell ${shell_name})"
-fi
-# <<< PV ENV
-EOF
-      ;;
-  esac
-}
-
-manual_shell_instructions() {
-  local shell_name
-
-  shell_name="${1:-zsh}"
-  warn "add PV to your shell profile manually if you want pv on PATH in new terminals"
-  case "${shell_name}" in
-    fish)
-      printf '  "%s" env --shell fish | source\n' "${PV_ACTIVE_BIN}" >&2
-      ;;
-    bash|zsh)
-      printf '  eval "%s("%s" env --shell %s)"\n' '$' "${PV_ACTIVE_BIN}" "${shell_name}" >&2
-      ;;
-    *)
-      printf '  eval "%s("%s" env --shell zsh)"\n' '$' "${PV_ACTIVE_BIN}" >&2
-      ;;
-  esac
-}
-
-confirm_profile_edit() {
-  local action profile reply
-
-  action="$1"
-  profile="$2"
-  if [ "${YES}" -eq 1 ]; then
+  if [ "${NO_SETUP}" -eq 1 ] || [ "${YES}" -eq 1 ] || [ "${NON_INTERACTIVE}" -eq 1 ]; then
     return 0
   fi
 
-  if [ "${NON_INTERACTIVE}" -eq 1 ]; then
-    die "shell profile confirmation required to ${action} ${profile}"
+  if ! : 2>/dev/null </dev/tty >/dev/tty; then
+    die "setup confirmation requires a controlling terminal; rerun with --yes or --no-setup"
   fi
 
-  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
-    warn "cannot prompt to ${action} ${profile}; skipping shell profile integration"
-    return 1
+  printf 'pv installer: Install PV and run setup? This may update your shell profile and request macOS administrator authentication. [y/N] ' >/dev/tty
+  if ! IFS= read -r reply </dev/tty; then
+    die "could not read setup confirmation; rerun with --yes or --no-setup"
   fi
-
-  printf 'pv installer: %s %s? [y/N] ' "${action}" "${profile}" >/dev/tty
-  IFS= read -r reply </dev/tty || return 1
   case "${reply}" in
     y|Y|yes|YES)
       return 0
       ;;
     *)
-      return 1
+      die "installation cancelled"
       ;;
   esac
-}
-
-write_profile_block() {
-  local profile block profile_dir timestamp backup tmp line inserted skipping
-
-  profile="$1"
-  block="$2"
-  profile_dir="${profile%/*}"
-  if [ "${profile_dir}" != "${profile}" ]; then
-    mkdir -p "${profile_dir}" || return 1
-  fi
-
-  if [ ! -f "${profile}" ]; then
-    printf '%s\n' "${block}" >"${profile}" || return 1
-    info "created ${profile} with PV ENV"
-    return 0
-  fi
-
-  tmp="${profile}.pv.tmp.$$"
-  : >"${tmp}" || return 1
-  inserted=0
-  skipping=0
-  while IFS= read -r line || [ -n "${line}" ]; do
-    if [ "${line}" = "# >>> PV ENV" ]; then
-      if [ "${inserted}" -eq 0 ]; then
-        printf '%s\n' "${block}" >>"${tmp}" || return 1
-        inserted=1
-      fi
-      skipping=1
-      continue
-    fi
-
-    if [ "${skipping}" -eq 1 ]; then
-      if [ "${line}" = "# <<< PV ENV" ]; then
-        skipping=0
-      fi
-      continue
-    fi
-
-    printf '%s\n' "${line}" >>"${tmp}" || return 1
-  done <"${profile}"
-
-  if [ "${skipping}" -eq 1 ]; then
-    rm -f "${tmp}"
-    warn "incomplete PV ENV block in ${profile}; leaving shell profile unchanged"
-    return 1
-  fi
-
-  if [ "${inserted}" -eq 0 ]; then
-    if [ -s "${tmp}" ]; then
-      printf '\n' >>"${tmp}" || return 1
-    fi
-    printf '%s\n' "${block}" >>"${tmp}" || return 1
-  fi
-
-  timestamp="$(date +%Y%m%d-%H%M%S)"
-  backup="${profile}.${timestamp}.pv.bak"
-  if ! cp "${profile}" "${backup}"; then
-    rm -f "${tmp}"
-    return 1
-  fi
-
-  mv "${tmp}" "${profile}" || return 1
-  info "updated ${profile}; backup saved at ${backup}"
-}
-
-install_shell_profile_block() {
-  local action block
-
-  if [ "${NO_SETUP}" -eq 1 ] || [ "${NO_PATH}" -eq 1 ]; then
-    return 0
-  fi
-
-  if ! detect_shell_profile; then
-    warn "unsupported or unknown shell '${SHELL:-}'; skipping shell profile integration"
-    manual_shell_instructions unknown
-    return 0
-  fi
-
-  if [ -f "${PROFILE_PATH}" ]; then
-    action="update"
-  else
-    action="create"
-  fi
-
-  if ! confirm_profile_edit "${action}" "${PROFILE_PATH}"; then
-    manual_shell_instructions "${PROFILE_SHELL}"
-    return 0
-  fi
-
-  block="$(profile_block "${PROFILE_SHELL}")"
-  if ! write_profile_block "${PROFILE_PATH}" "${block}"; then
-    if [ "${NON_INTERACTIVE}" -eq 1 ]; then
-      die "failed to ${action} ${PROFILE_PATH}"
-    fi
-    warn "failed to ${action} ${PROFILE_PATH}; continuing without shell profile integration"
-    manual_shell_instructions "${PROFILE_SHELL}"
-  fi
 }
 
 run_setup() {
@@ -460,12 +289,7 @@ run_setup() {
     return 0
   fi
 
-  install_shell_profile_block
-
-  set -- setup
-  if [ "${YES}" -eq 1 ]; then
-    set -- "$@" --yes
-  fi
+  set -- setup --yes
   if [ "${NON_INTERACTIVE}" -eq 1 ]; then
     set -- "$@" --non-interactive
   fi
@@ -481,6 +305,7 @@ run_setup() {
 }
 
 select_asset
+confirm_installation
 download_assets
 run_setup
 info "PV ${PV_VERSION} installed at ${PV_ACTIVE_BIN}"
