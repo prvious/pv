@@ -1983,6 +1983,10 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "helper test fixture needs a blocking Unix socket server"
+    )]
     fn helper_serves_sequential_connections_without_restarting() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let socket_path = tempdir.path().join("helper.sock");
