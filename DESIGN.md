@@ -98,15 +98,15 @@ Setup reports shell-profile failures directly and provides manual integration gu
 
 If shell detection finds an unsupported shell, setup skips shell profile edits, prints manual shell integration instructions, and continues. Unsupported shell integration does not block DNS, ports, CA trust, daemon registration, or Managed Resource installation.
 
-The installer detects the user's shell from `$SHELL`. If `$SHELL` is missing or unsupported, the installer skips profile edits and prints manual shell integration instructions.
+Setup detects the user's shell from `$SHELL`. If `$SHELL` is missing or unsupported, setup skips profile edits and prints manual shell integration instructions.
 
-Shell profile backups created by PV append a timestamp and `.pv.bak`, such as `~/.zprofile.20260522-143012.pv.bak`.
+Shell profile backups created by setup append a timestamp and `.pv.bak`, such as `~/.zprofile.20260522-143012.pv.bak`.
 
-The installer edits only the detected shell's profile file for PATH setup: `~/.zprofile` for zsh, `~/.bash_profile` for bash, and `~/.config/fish/config.fish` for fish. It does not edit multiple shell profile files at once.
+Setup edits only the detected shell's profile file for PATH setup: `~/.zprofile` for zsh, `~/.bash_profile` for bash, and `~/.config/fish/config.fish` for fish. It does not edit multiple shell profile files at once.
 
-If the detected shell profile file does not exist, the installer may create it with only the `PV ENV` block after confirmation. No backup is needed when creating a new file, but the action is reported.
+If the detected shell profile file does not exist, setup may create it with only the `PV ENV` block after confirmation. No backup is needed when creating a new file, but the action is reported.
 
-The installer uses `PV ENV` delimiters for shell profile edits. The installer-managed block loads `pv env` so PV shims and Composer work in new shells. It should call the PV binary by absolute path and pass an explicit `--shell <shell>` for the detected profile so shell startup works even before `~/.pv/bin` has been added to PATH and does not rely on runtime shell detection. For POSIX-style shells, the block is:
+Setup uses `PV ENV` delimiters for shell profile edits. The PV-managed block loads `pv env` so PV shims and Composer work in new shells. It calls the PV binary by absolute path and passes an explicit `--shell <shell>` for the detected profile so shell startup works even before `~/.pv/bin` has been added to PATH and does not rely on runtime shell detection. For POSIX-style shells, the block is:
 
 ```sh
 # >>> PV ENV
@@ -118,9 +118,9 @@ fi
 
 Fish uses equivalent syntax with the same `PV ENV` delimiter labels.
 
-`pv setup` may repair a stale installer-managed `PV ENV` shell profile block, but only after confirmation because shell profiles are user-owned. `pv setup --yes` consents to this repair without prompting. `pv setup --non-interactive` fails instead of prompting for confirmation, shell profile repair, or privileged-helper lifecycle authentication. `pv setup --no-path` disables shell profile edits, including stale `PV ENV` block repair, but still prints manual shell integration instructions. When repairing the `PV ENV` block, PV replaces the block wholesale and does not preserve user edits inside it.
+`pv setup` may repair a stale PV-managed `PV ENV` shell profile block, but only after confirmation because shell profiles are user-owned. `pv setup --yes` consents to this repair without prompting. `pv setup --non-interactive` fails instead of prompting for confirmation, shell profile repair, or privileged-helper lifecycle authentication. `pv setup --no-path` disables shell profile edits, including stale `PV ENV` block repair, but still prints manual shell integration instructions. When repairing the `PV ENV` block, PV replaces the block wholesale and does not preserve user edits inside it.
 
-The installer does not try to source the updated shell profile into the current parent shell. After editing, it tells the user to open a new terminal or run the shown `pv env` command for the current session.
+Setup does not try to source the updated shell profile into the current parent shell. After editing, it tells the user to open a new terminal or run the shown `pv env` command for the current session.
 
 If binary installation succeeds but automatic setup fails, the install script keeps the binary installed, reports the setup failure clearly, and tells the user to rerun `pv setup` after fixing the issue.
 
@@ -217,7 +217,7 @@ Setup may require an admin prompt for system-owned configuration, but the PV dae
 
 `pv setup` creates the required base directory structure under `~/.pv`, including `bin/`, `run/`, `logs/`, `downloads/`, `config/`, `certificates/`, `composer/`, and `resources/`, with correct permissions before starting the daemon or installing Managed Resources.
 
-`pv setup` may edit the user's shell profile only for the PV-managed `PV ENV` shell integration block, using the same confirmation and `--yes` / `--non-interactive` / `--no-path` behavior as the installer. It does not silently modify shell profiles.
+`pv setup` may edit the user's shell profile only for the PV-managed `PV ENV` shell integration block. `--yes` accepts the PV-owned edit, `--non-interactive` fails if an edit would be required, and `--no-path` skips shell profile integration. Setup does not silently modify shell profiles.
 
 After successful setup, PV prints concise shell integration next steps for `pv env`, using the detected shell where possible, plus optional shell completion generation instructions such as `pv completions zsh`. PV does not auto-install shell completions.
 
@@ -309,7 +309,7 @@ PV uses a separate minimal `pv-helper` executable registered as the system launc
 
 The helper accepts only versioned typed requests for status, DNS inspection/apply/removal, PF inspection/apply/reload/removal, and CA trust inspection/apply/removal. Requests cannot provide commands, executable paths, destination paths, raw configuration, environment behavior, or network operations. DNS and PF content is generated internally for fixed system destinations. `CaApply` reads only the installing account's fixed PV CA path, validates PV CA metadata and the requested fingerprint, stages that exact certificate in the fixed root work path, revalidates it, and trusts it. The helper revalidates ownership, conflicts, arguments, and expected state before each mutation. `pv.db` remains the only desired-state source of truth; root-owned helper metadata contains only the installing UID, helper version, and protocol version.
 
-The socket is restricted to the installing account, and the helper verifies the Unix peer UID before decoding and dispatching a bounded request. Protocol version is validated independently from app and helper versions. Install and replacement readiness uses a small protocol-neutral lifecycle probe, separate from the versioned operational request schema, so an app may verify a newly installed helper before activating a matching protocol update. Missing or incompatible helpers produce repair guidance to run `pv setup`; cross-account authentication failures direct users to the original installing account or manual administrator recovery. Normal DNS, PF, and CA commands never fall back to `sudo`.
+The socket is restricted to the installing account, and the helper verifies the Unix peer UID before decoding and dispatching a bounded request. Protocol version is validated independently from app and helper versions. Install and replacement readiness uses a small protocol-neutral lifecycle probe, separate from the versioned operational request schema, so an app may verify a newly installed helper before activating a matching protocol update. Missing or incompatible helpers produce repair guidance to run `pv setup`; `pv doctor` reports cross-account authentication failures with guidance to use the original installing account or perform manual administrator recovery. Normal DNS, PF, and CA commands never fall back to `sudo`.
 
 `sudo` is used only by foreground helper lifecycle operations: initial install, replacement, repair, and removal. Initial setup therefore requires one administrator authentication, while later typed DNS, PF, and CA repairs continue without new prompts after sudo timestamp expiry or reboot. The helper installation path verifies the candidate checksum and ad-hoc code signature before replacing the root-owned executable and launchd registration.
 

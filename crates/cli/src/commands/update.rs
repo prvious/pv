@@ -1127,7 +1127,7 @@ fn restore_helper_release(rollback: &HelperRollbackPlan) -> Result<(), ExecuteEr
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "app updater hashes its private helper rollback candidate before installation"
+    reason = "app updater hashes the active release helper during rollback preflight"
 )]
 fn sha256_file(path: &Utf8Path) -> Result<String, ExecuteError> {
     let bytes = std::fs::read(path)?;
