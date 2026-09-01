@@ -3,7 +3,7 @@ mod update_tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::ffi::OsString;
-    use std::fs::{self, Permissions};
+    use std::fs::Permissions;
     use std::io::{self, BufRead, BufReader, Write};
     use std::os::unix::fs::PermissionsExt;
     use std::os::unix::net::UnixListener;
@@ -2025,7 +2025,10 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert_eq!(rollback_candidates.len(), 1);
-        assert_eq!(fs::read(&rollback_candidates[0])?, HELPER_BINARY);
+        assert_eq!(
+            state::fs::read_to_string(&rollback_candidates[0])?.as_bytes(),
+            HELPER_BINARY
+        );
         assert_update_snapshot(
             "update_retains_helper_candidate_when_restoring_helper_during_app_rollback_fails",
             output,
