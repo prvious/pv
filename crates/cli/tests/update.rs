@@ -45,7 +45,7 @@ mod update_tests {
         startup_marker_on_first_kickstart: RefCell<Option<(Utf8PathBuf, String)>>,
         helper_status: RefCell<Option<PrivilegedHelperStatus>>,
         helper_protocol_mismatch: bool,
-        helper_install_errors: RefCell<VecDeque<Option<String>>>,
+        helper_install_results: RefCell<VecDeque<Result<(), String>>>,
         helper_install_count: RefCell<usize>,
         helper_install_cleanup_warnings: RefCell<VecDeque<Option<String>>>,
         helper_promotion_failure_parent: RefCell<Option<Utf8PathBuf>>,
@@ -69,7 +69,7 @@ mod update_tests {
                     owner_uid: 501,
                 })),
                 helper_protocol_mismatch: false,
-                helper_install_errors: RefCell::new(VecDeque::new()),
+                helper_install_results: RefCell::new(VecDeque::new()),
                 helper_install_count: RefCell::new(0),
                 helper_install_cleanup_warnings: RefCell::new(VecDeque::new()),
                 helper_promotion_failure_parent: RefCell::new(None),
@@ -117,16 +117,16 @@ mod update_tests {
 
         fn with_helper_install_error(self, message: &str) -> Self {
             self.helper_status.replace(None);
-            self.helper_install_errors
+            self.helper_install_results
                 .borrow_mut()
-                .push_back(Some(message.to_string()));
+                .push_back(Err(message.to_string()));
             self
         }
 
         fn with_helper_replacement_error(self, message: &str) -> Self {
-            self.helper_install_errors
+            self.helper_install_results
                 .borrow_mut()
-                .push_back(Some(message.to_string()));
+                .push_back(Err(message.to_string()));
             self
         }
 
@@ -136,9 +136,9 @@ mod update_tests {
         }
 
         fn with_helper_restore_error(self, message: &str) -> Self {
-            self.helper_install_errors
+            self.helper_install_results
                 .borrow_mut()
-                .extend([None, Some(message.to_string())]);
+                .extend([Ok(()), Err(message.to_string())]);
             self
         }
 
@@ -293,7 +293,7 @@ mod update_tests {
         ) -> Result<platform::PrivilegedHelperInstallOutcome, platform::PlatformError> {
             let install_count = *self.helper_install_count.borrow() + 1;
             self.helper_install_count.replace(install_count);
-            if let Some(Some(message)) = self.helper_install_errors.borrow_mut().pop_front() {
+            if let Some(Err(message)) = self.helper_install_results.borrow_mut().pop_front() {
                 return Err(platform::PlatformError::PrivilegedHelperInstallation(
                     message,
                 ));
