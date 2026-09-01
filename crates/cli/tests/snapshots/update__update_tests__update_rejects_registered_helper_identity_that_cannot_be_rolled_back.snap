@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/update.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "PV update\n",
+    stderr: "error: privileged-helper rollback preflight failed: registered helper 0.9.0 (protocol 1) does not match active release helper 1.0.0 (protocol 1); run `pv setup` before updating\n",
+}

@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/update.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "PV update\n",
+    stderr: "error: invalid privileged-helper release metadata at <pv-home>/bin/releases/0.2.3/pv-helper.json: helper checksum mismatch: expected <sha256>, got <sha256>\n",
+}

@@ -670,6 +670,25 @@ fn run_app_update_phase(
     };
     drop(progress);
 
+    if let Some(helper_rollback) = &helper_rollback
+        && let Err(error) = materialize_helper_rollback(helper_rollback)
+    {
+        let download_cleanup_error = helper_only_download
+            .as_ref()
+            .and_then(|download| remove_download(download).err());
+        let helper_cleanup_error = cleanup_helper_rollback(Some(helper_rollback)).err();
+        let failed_release_cleanup_error = if app_update_required {
+            layout.remove_release(target_release_version).err()
+        } else {
+            None
+        };
+        write_download_cleanup_warning(stderr, download_cleanup_error)?;
+        write_helper_rollback_cleanup_warning(stderr, helper_cleanup_error)?;
+        write_cleanup_warning(stderr, failed_release_cleanup_error)?;
+
+        return Err(error.into());
+    }
+
     let mut helper_install_cleanup_warning = None;
     if helper_update_required {
         let prepared_directory = paths.config().join("helper");
@@ -980,10 +999,7 @@ fn app_update_plan(
 }
 
 enum RegisteredHelperRollback {
-    Restore {
-        version: String,
-        protocol_version: u32,
-    },
+    Restore,
     Remove,
 }
 
@@ -991,8 +1007,7 @@ struct HelperRollbackPlan {
     registered: RegisteredHelperRollback,
     release_path: Utf8PathBuf,
     release_candidate: Utf8PathBuf,
-    release_metadata: Option<HelperReleaseMetadata>,
-    sha256: String,
+    release_metadata: HelperReleaseMetadata,
 }
 
 fn installed_helper_state(
@@ -1033,10 +1048,7 @@ fn prepare_helper_rollback(
                 }
                 .into());
             }
-            RegisteredHelperRollback::Restore {
-                version: release_metadata.version().to_string(),
-                protocol_version: release_metadata.protocol_version(),
-            }
+            RegisteredHelperRollback::Restore
         }
         InstalledHelperState::ProtocolMismatch => {
             return Err(CliError::PrivilegedHelperRollbackPreflight {
@@ -1047,10 +1059,7 @@ fn prepare_helper_rollback(
         }
         InstalledHelperState::Missing => RegisteredHelperRollback::Remove,
     };
-    state::fs::ensure_user_dir(paths.downloads())?;
-    let candidate = temporary_app_download_path(paths, "helper-rollback");
-    state::fs::copy_file_atomically(&source, &candidate)?;
-    let sha256 = sha256_file(&candidate)?;
+    let sha256 = sha256_file(&source)?;
     if sha256 != release_metadata.sha256() {
         return Err(CliError::InvalidPrivilegedHelperReleaseMetadata {
             path: helper_metadata_path(&source).to_string(),
@@ -1065,10 +1074,16 @@ fn prepare_helper_rollback(
     Ok(HelperRollbackPlan {
         registered,
         release_path: source,
-        release_candidate: candidate,
-        release_metadata: Some(release_metadata),
-        sha256,
+        release_candidate: temporary_app_download_path(paths, "helper-rollback"),
+        release_metadata,
     })
+}
+
+fn materialize_helper_rollback(rollback: &HelperRollbackPlan) -> Result<(), StateError> {
+    if let Some(parent) = rollback.release_candidate.parent() {
+        state::fs::ensure_user_dir(parent)?;
+    }
+    state::fs::copy_file_atomically(&rollback.release_path, &rollback.release_candidate)
 }
 
 fn restore_helper(
@@ -1076,19 +1091,16 @@ fn restore_helper(
     rollback: &HelperRollbackPlan,
 ) -> Result<Option<String>, platform::PlatformError> {
     match &rollback.registered {
-        RegisteredHelperRollback::Restore {
-            version,
-            protocol_version,
-        } => environment
+        RegisteredHelperRollback::Restore => environment
             .install_privileged_helper(
                 &rollback.release_candidate,
                 rollback
                     .release_candidate
                     .parent()
                     .unwrap_or(Utf8Path::new(".")),
-                &rollback.sha256,
-                version,
-                *protocol_version,
+                rollback.release_metadata.sha256(),
+                rollback.release_metadata.version(),
+                rollback.release_metadata.protocol_version(),
             )
             .map(|outcome| outcome.cleanup_warning().map(str::to_string)),
         RegisteredHelperRollback::Remove => {
@@ -1108,11 +1120,7 @@ fn cleanup_helper_rollback(rollback: Option<&HelperRollbackPlan>) -> Result<(), 
 
 fn restore_helper_release(rollback: &HelperRollbackPlan) -> Result<(), ExecuteError> {
     state::fs::copy_file_atomically(&rollback.release_candidate, &rollback.release_path)?;
-    if let Some(metadata) = &rollback.release_metadata {
-        metadata.write(&rollback.release_path)?;
-    } else {
-        state::fs::remove_file_if_exists(&helper_metadata_path(&rollback.release_path))?;
-    }
+    rollback.release_metadata.write(&rollback.release_path)?;
 
     Ok(())
 }

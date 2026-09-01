@@ -44,7 +44,8 @@ mod update_tests {
         lock_probe: RefCell<Option<PvPaths>>,
         startup_marker_on_first_kickstart: RefCell<Option<(Utf8PathBuf, String)>>,
         helper_status: RefCell<Option<PrivilegedHelperStatus>>,
-        helper_install_error: RefCell<Option<String>>,
+        helper_protocol_mismatch: bool,
+        helper_install_errors: RefCell<VecDeque<Option<String>>>,
         helper_install_count: RefCell<usize>,
         helper_install_cleanup_warnings: RefCell<VecDeque<Option<String>>>,
         helper_promotion_failure_parent: RefCell<Option<Utf8PathBuf>>,
@@ -67,7 +68,8 @@ mod update_tests {
                     protocol_version: platform::HELPER_PROTOCOL_VERSION,
                     owner_uid: 501,
                 })),
-                helper_install_error: RefCell::new(None),
+                helper_protocol_mismatch: false,
+                helper_install_errors: RefCell::new(VecDeque::new()),
                 helper_install_count: RefCell::new(0),
                 helper_install_cleanup_warnings: RefCell::new(VecDeque::new()),
                 helper_promotion_failure_parent: RefCell::new(None),
@@ -115,12 +117,28 @@ mod update_tests {
 
         fn with_helper_install_error(self, message: &str) -> Self {
             self.helper_status.replace(None);
-            self.helper_install_error.replace(Some(message.to_string()));
+            self.helper_install_errors
+                .borrow_mut()
+                .push_back(Some(message.to_string()));
             self
         }
 
         fn with_helper_replacement_error(self, message: &str) -> Self {
-            self.helper_install_error.replace(Some(message.to_string()));
+            self.helper_install_errors
+                .borrow_mut()
+                .push_back(Some(message.to_string()));
+            self
+        }
+
+        fn with_helper_protocol_mismatch(mut self) -> Self {
+            self.helper_protocol_mismatch = true;
+            self
+        }
+
+        fn with_helper_restore_error(self, message: &str) -> Self {
+            self.helper_install_errors
+                .borrow_mut()
+                .extend([None, Some(message.to_string())]);
             self
         }
 
@@ -252,6 +270,13 @@ mod update_tests {
         fn privileged_helper_status(
             &self,
         ) -> Result<PrivilegedHelperStatus, platform::PlatformError> {
+            if self.helper_protocol_mismatch {
+                return Err(platform::PlatformError::PrivilegedHelperProtocolMismatch {
+                    expected: platform::HELPER_PROTOCOL_VERSION,
+                    actual: platform::HELPER_PROTOCOL_VERSION + 1,
+                });
+            }
+
             self.helper_status
                 .borrow()
                 .clone()
@@ -268,7 +293,7 @@ mod update_tests {
         ) -> Result<platform::PrivilegedHelperInstallOutcome, platform::PlatformError> {
             let install_count = *self.helper_install_count.borrow() + 1;
             self.helper_install_count.replace(install_count);
-            if let Some(message) = self.helper_install_error.borrow_mut().take() {
+            if let Some(Some(message)) = self.helper_install_errors.borrow_mut().pop_front() {
                 return Err(platform::PlatformError::PrivilegedHelperInstallation(
                     message,
                 ));
@@ -769,6 +794,87 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(environment.operations().is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_rejects_registered_helper_identity_that_cannot_be_rolled_back() -> anyhow::Result<()>
+    {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        install_current_release(&paths)?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let manifest = helper_only_update_manifest();
+        let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest))
+            .with_helper_status("0.9.0", platform::HELPER_PROTOCOL_VERSION);
+
+        let output = run_pv(&["update"], &environment)?;
+
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert!(environment.operations().is_empty());
+        assert!(update_temporary_files(&paths)?.is_empty());
+        assert_update_snapshot(
+            "update_rejects_registered_helper_identity_that_cannot_be_rolled_back",
+            output,
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_rejects_protocol_mismatched_helper_that_cannot_be_rolled_back() -> anyhow::Result<()>
+    {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        install_current_release(&paths)?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let manifest = helper_only_update_manifest();
+        let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest))
+            .with_helper_protocol_mismatch();
+
+        let output = run_pv(&["update"], &environment)?;
+
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert!(environment.operations().is_empty());
+        assert!(update_temporary_files(&paths)?.is_empty());
+        assert_update_snapshot(
+            "update_rejects_protocol_mismatched_helper_that_cannot_be_rolled_back",
+            output,
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_rejects_corrupt_release_helper_without_leaving_a_rollback_candidate()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        install_current_release(&paths)?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        write_bytes(
+            &paths.app_release_helper(CURRENT_APP_VERSION),
+            b"corrupt helper\n",
+        )?;
+        let manifest = helper_only_update_manifest();
+        let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest));
+
+        let output = run_pv(&["update"], &environment)?;
+
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert!(environment.operations().is_empty());
+        assert!(update_temporary_files(&paths)?.is_empty());
+        assert_update_snapshot(
+            "update_rejects_corrupt_release_helper_without_leaving_a_rollback_candidate",
+            output,
+        );
 
         Ok(())
     }
@@ -1477,19 +1583,20 @@ mod update_tests {
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
-                .with_text(&app_manifest(
-                    "0.3.0",
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    u64::try_from(APP_BINARY.len())?,
-                ))
+                .with_text(
+                    &app_manifest(
+                        "0.3.0",
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        u64::try_from(APP_BINARY.len())?,
+                    )
+                    .replace("\"version\": \"1.0.0\"", "\"version\": \"1.1.0\"")
+                    .replace("pv-helper-1.0.0", "pv-helper-1.1.0"),
+                )
                 .with_download(APP_BINARY),
         );
 
         let output = run_pv(&["update"], &environment)?;
-        let temporary_downloads = state::fs::read_dir_paths(paths.downloads())?
-            .into_iter()
-            .filter(|path| path.file_name().unwrap_or("").starts_with("pv-app-"))
-            .collect::<Vec<_>>();
+        let temporary_downloads = update_temporary_files(&paths)?;
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
         assert_eq!(output.stdout, "PV update\n");
@@ -1520,11 +1627,11 @@ mod update_tests {
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
-                .with_text(&app_manifest(
-                    "0.3.0",
-                    APP_BINARY_SHA256,
-                    u64::try_from(APP_BINARY.len())?,
-                ))
+                .with_text(
+                    &app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
+                        .replace("\"version\": \"1.0.0\"", "\"version\": \"1.1.0\"")
+                        .replace("pv-helper-1.0.0", "pv-helper-1.1.0"),
+                )
                 .with_download_error(ResourcesError::HttpRequestFailed {
                     url: APP_BINARY_URL.to_string(),
                     reason: "connection reset".to_string(),
@@ -1532,7 +1639,7 @@ mod update_tests {
         );
 
         let output = run_pv(&["update"], &environment)?;
-        let temporary_downloads = app_temporary_downloads(&paths)?;
+        let temporary_downloads = update_temporary_files(&paths)?;
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
         assert_eq!(output.stdout, "PV update\n");
@@ -1875,6 +1982,51 @@ mod update_tests {
         }));
         assert_update_snapshot(
             "update_restores_previous_helper_and_reports_cleanup_warning",
+            output,
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_retains_helper_candidate_when_restoring_helper_during_app_rollback_fails()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let layout = install_current_release(&paths)?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let daemon = FakeDaemon::start(
+            &paths,
+            vec![daemon_error_response("updated daemon boot failed")],
+        )?;
+        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
+            .replace("\"version\": \"1.0.0\"", "\"version\": \"1.1.0\"")
+            .replace("pv-helper-1.0.0", "pv-helper-1.1.0");
+        let environment = TestEnvironment::new(
+            &home,
+            ScriptedClient::new()
+                .with_text(&manifest)
+                .with_download(APP_BINARY),
+        )
+        .with_helper_restore_error("restoring the registered helper failed");
+
+        let output = run_pv(&["update"], &environment)?;
+        let _daemon_requests = daemon.join()?;
+        let rollback_candidates = state::fs::read_dir_paths(paths.downloads())?
+            .into_iter()
+            .filter(|path| path.file_name().unwrap_or("").contains("helper-rollback"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
+        assert_eq!(rollback_candidates.len(), 1);
+        assert_update_snapshot(
+            "update_retains_helper_candidate_when_restoring_helper_during_app_rollback_fails",
             output,
         );
 
@@ -2573,6 +2725,10 @@ mod update_tests {
         settings.add_filter(r"/[\w\-]+/home/\.pv", "<pv-home>");
         settings.add_filter(r"/private<tempdir>", "<tempdir>");
         settings.add_filter(r"[a-f0-9]{64}", "<sha256>");
+        settings.add_filter(
+            r"pv-helper-rollback-[0-9]+-[0-9]+\.tmp",
+            "pv-helper-rollback-<id>.tmp",
+        );
         settings.bind(|| {
             assert_debug_snapshot!(name, snapshot);
         });
@@ -2642,10 +2798,10 @@ mod update_tests {
             .join("Library/LaunchAgents/com.prvious.pv.daemon.plist")
     }
 
-    fn app_temporary_downloads(paths: &PvPaths) -> anyhow::Result<Vec<Utf8PathBuf>> {
+    fn update_temporary_files(paths: &PvPaths) -> anyhow::Result<Vec<Utf8PathBuf>> {
         Ok(state::fs::read_dir_paths(paths.downloads())?
             .into_iter()
-            .filter(|path| path.file_name().unwrap_or("").starts_with("pv-app-"))
+            .filter(|path| path.extension() == Some("tmp"))
             .collect())
     }
 
@@ -2714,6 +2870,16 @@ mod update_tests {
             HELPER_BINARY.len(),
             HELPER_BINARY.len(),
         )
+    }
+
+    fn helper_only_update_manifest() -> String {
+        app_manifest(
+            CURRENT_APP_VERSION,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            12_345_678,
+        )
+        .replace("\"version\": \"1.0.0\"", "\"version\": \"1.1.0\"")
+        .replace("pv-helper-1.0.0", "pv-helper-1.1.0")
     }
 
     const APP_MANIFEST: &str = r#"
