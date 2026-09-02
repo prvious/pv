@@ -81,8 +81,16 @@ pub fn stage_app_publication(request: &AppPublicationRequest) -> crate::Result<(
     )?;
 
     for candidate in &candidates {
-        verify_binary(&candidate.record, &candidate.source_binary)?;
-        verify_helper(&candidate.record, &candidate.source_helper)?;
+        verify_artifact(
+            &candidate.source_binary,
+            candidate.record.size(),
+            candidate.record.sha256(),
+        )?;
+        verify_artifact(
+            &candidate.source_helper,
+            candidate.record.helper().size(),
+            candidate.record.helper().sha256(),
+        )?;
         let binary_stage_path = request.stage.join(&candidate.binary_local_path);
         ensure_immutable_target_absent(&candidate.binary_object_key, &binary_stage_path)?;
         let helper_stage_path = request.stage.join(&candidate.helper_local_path);
@@ -721,39 +729,23 @@ fn validate_source_run_id(source_run_id: &str) -> crate::Result<()> {
     Ok(())
 }
 
-fn verify_binary(record: &AppReleaseRecord, source_binary: &Utf8Path) -> crate::Result<()> {
-    let (sha256, size) = digest_and_size(source_binary)?;
-    if size != record.size() {
+fn verify_artifact(
+    path: &Utf8Path,
+    expected_size: u64,
+    expected_sha256: &str,
+) -> crate::Result<()> {
+    let (sha256, size) = digest_and_size(path)?;
+    if size != expected_size {
         return Err(crate::ReleaseError::SizeMismatch {
-            path: source_binary.to_string(),
-            expected: record.size(),
+            path: path.to_string(),
+            expected: expected_size,
             actual: size,
         });
     }
-    if sha256 != record.sha256() {
+    if sha256 != expected_sha256 {
         return Err(crate::ReleaseError::ChecksumMismatch {
-            path: source_binary.to_string(),
-            expected: record.sha256().to_string(),
-            actual: sha256,
-        });
-    }
-
-    Ok(())
-}
-
-fn verify_helper(record: &AppReleaseRecord, source_helper: &Utf8Path) -> crate::Result<()> {
-    let (sha256, size) = digest_and_size(source_helper)?;
-    if size != record.helper().size() {
-        return Err(crate::ReleaseError::SizeMismatch {
-            path: source_helper.to_string(),
-            expected: record.helper().size(),
-            actual: size,
-        });
-    }
-    if sha256 != record.helper().sha256() {
-        return Err(crate::ReleaseError::ChecksumMismatch {
-            path: source_helper.to_string(),
-            expected: record.helper().sha256().to_string(),
+            path: path.to_string(),
+            expected: expected_sha256.to_string(),
             actual: sha256,
         });
     }
