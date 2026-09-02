@@ -682,7 +682,9 @@ fn restore_helper_file(
     let result = if rollback_exists {
         run_sudo(&["/bin/mv", "-f", rollback_path, destination])
     } else if existed {
-        Ok(())
+        Err(PlatformError::PrivilegedHelperInstallation(format!(
+            "could not restore {destination}: rollback artifact is missing at {rollback_path}"
+        )))
     } else {
         run_sudo(&["/bin/rm", "-f", destination])
     };
@@ -1840,6 +1842,8 @@ fn helper_error_code(error: &PlatformError) -> HelperErrorCode {
 mod tests {
     use std::io::{Cursor, ErrorKind};
     #[cfg(target_os = "macos")]
+    use std::os::unix::fs::symlink;
+    #[cfg(target_os = "macos")]
     use std::thread;
     #[cfg(unix)]
     use std::time::Duration;
@@ -1854,7 +1858,8 @@ mod tests {
     use super::{
         HELPER_SOCKET_NAME, HELPER_STANDARD_ERROR_PATH, HelperLaunchDaemonPlist, HelperPayload,
         PRIVILEGED_HELPER_VERSION, call_helper, lock_machine_helper_lifecycle_file,
-        probe_helper_lifecycle, render_launch_daemon_plist, serve_next_helper_connection,
+        probe_helper_lifecycle, render_launch_daemon_plist, restore_helper_file,
+        serve_next_helper_connection, validate_root_owned_regular_file,
     };
     use super::{
         HelperRequest, MAX_MESSAGE_BYTES, PrivilegedHelperMetadata, helper_artifacts_present,
@@ -1877,6 +1882,54 @@ mod tests {
             second,
             Err(PlatformError::PrivilegedHelperInstallation(message))
                 if message.contains("already in progress")
+        ));
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn helper_rollback_reports_a_missing_required_artifact() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let destination = tempdir.path().join("pv-helper");
+        let rollback = tempdir.path().join("pv-helper.rollback");
+        let mut errors = Vec::new();
+
+        restore_helper_file(
+            true,
+            destination.as_str(),
+            rollback.as_str(),
+            0o755,
+            &mut errors,
+        );
+
+        assert_eq!(
+            errors,
+            [format!(
+                "PV privileged helper installation failed: could not restore {destination}: rollback artifact is missing at {rollback}"
+            )]
+        );
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "helper validation test fixture requires a hostile symlink"
+    )]
+    fn root_owned_regular_file_validation_rejects_a_symlink() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let target = tempdir.path().join("target");
+        let link = tempdir.path().join("link");
+        state::fs::write_sensitive_file(&target, "content")?;
+        symlink(&target, &link)?;
+
+        assert!(matches!(
+            validate_root_owned_regular_file(&link, 0o600),
+            Err(PlatformError::PrivilegedHelperInstallation(message))
+                if message.contains("must be a root-owned regular file")
         ));
 
         Ok(())

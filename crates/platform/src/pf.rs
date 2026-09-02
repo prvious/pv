@@ -238,12 +238,42 @@ pub fn inspect_pf_conf_reference(
 }
 
 pub fn active_pf_redirect_config() -> Result<Option<PfRedirectConfig>, PlatformError> {
-    match active_pf_redirect_config_unprivileged_with_runner(&mut run_system_command_output) {
-        Ok(config) => Ok(config),
-        Err(_unprivileged_error) => crate::PrivilegedHelperClient
+    active_pf_redirect_config_with_runners(&mut run_system_command_output, &mut || {
+        crate::PrivilegedHelperClient
             .inspect_pf()
-            .map(|inspection| inspection.pv_config),
+            .map(|inspection| inspection.pv_config)
+    })
+}
+
+fn active_pf_redirect_config_with_runners(
+    run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
+    inspect_with_helper: &mut impl FnMut() -> Result<Option<PfRedirectConfig>, PlatformError>,
+) -> Result<Option<PfRedirectConfig>, PlatformError> {
+    match active_pf_redirect_config_unprivileged_with_runner(run_system_output) {
+        Ok(config) => Ok(config),
+        Err(unprivileged_error) if pfctl_permission_denied(&unprivileged_error) => {
+            inspect_with_helper().map_err(|helper_error| {
+                PlatformError::SystemIntegration(format!(
+                    "could not inspect active PF redirects directly ({unprivileged_error}) or through the privileged helper ({helper_error})"
+                ))
+            })
+        }
+        Err(error) => Err(error),
     }
+}
+
+fn pfctl_permission_denied(error: &PlatformError) -> bool {
+    let PlatformError::SystemIntegrationCommandStatus { command, status } = error else {
+        return false;
+    };
+
+    command.starts_with("/sbin/pfctl ")
+        && [
+            ": pfctl: /dev/pf: Permission denied",
+            ": pfctl: /dev/pf: Operation not permitted",
+        ]
+        .iter()
+        .any(|diagnostic| status.ends_with(diagnostic))
 }
 
 pub fn inspect_active_pf_redirects_unprivileged()
@@ -1074,10 +1104,55 @@ mod tests {
 
     use super::{
         ActivePfRedirectInspection, PfConfReference, PfInstallPaths, PfRedirectConfig,
+        active_pf_redirect_config_with_runners,
         inspect_active_pf_redirects_unprivileged_with_runner,
         install_pf_redirects_and_verify_with_runner, install_pf_redirects_with_runner,
         read_platform_file, remove_pf_redirects_with_runner, temporary_pf_conf_candidate_path,
     };
+
+    #[test]
+    fn active_pf_redirect_config_only_falls_back_for_permission_denial() {
+        let mut helper_invoked = false;
+        let result = active_pf_redirect_config_with_runners(
+            &mut |_program, _args| {
+                Err(crate::PlatformError::SystemIntegrationCommandStatus {
+                    command: "/sbin/pfctl -s nat".to_string(),
+                    status: "exit status: 1: configuration file: Permission denied".to_string(),
+                })
+            },
+            &mut || {
+                helper_invoked = true;
+                Ok(None)
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::PlatformError::SystemIntegrationCommandStatus { status, .. })
+                if status == "exit status: 1: configuration file: Permission denied"
+        ));
+        assert!(!helper_invoked);
+    }
+
+    #[test]
+    fn active_pf_redirect_config_preserves_both_fallback_failures() {
+        let result = active_pf_redirect_config_with_runners(
+            &mut |_program, _args| {
+                Err(crate::PlatformError::SystemIntegrationCommandStatus {
+                    command: "/sbin/pfctl -s nat".to_string(),
+                    status: "exit status: 1: pfctl: /dev/pf: Permission denied".to_string(),
+                })
+            },
+            &mut || Err(crate::PlatformError::PrivilegedHelperUnavailable),
+        );
+
+        assert!(matches!(
+            result,
+            Err(crate::PlatformError::SystemIntegration(message))
+                if message.contains("pfctl: /dev/pf: Permission denied")
+                    && message.contains("privileged helper is unavailable")
+        ));
+    }
 
     #[test]
     fn active_pf_redirect_inspection_never_invokes_sudo() {
