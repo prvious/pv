@@ -1948,6 +1948,7 @@ fn postgres_dependency_cache_contract_is_exact_and_track_independent() -> Result
             .arg("describe")
             .env("CC", &compiler)
             .env("CFLAGS", cflags)
+            .env_remove("LDFLAGS")
             .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
             .env("PV_BUILD_JOBS", "2")
             .env("PV_POSTGRES_DEPENDENCY_WORK_DIR", work_dir)
