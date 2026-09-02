@@ -2066,7 +2066,14 @@ mod update_tests {
                 owner_uid: 501,
             })
         );
-        assert_eq!(rollback_candidates.len(), 0);
+        assert!(state::fs::path_entry_exists(
+            &paths.app_release_binary("0.3.0")
+        )?);
+        assert_eq!(rollback_candidates.len(), 1);
+        assert_eq!(
+            state::fs::read_to_string(&rollback_candidates[0])?.as_bytes(),
+            HELPER_BINARY
+        );
         assert_eq!(
             daemon_requests,
             vec![

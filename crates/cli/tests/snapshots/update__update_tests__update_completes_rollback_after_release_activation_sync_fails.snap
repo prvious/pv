@@ -8,6 +8,6 @@ RunOutput {
             1,
         ),
     ),
-    stdout: "PV update\nPV application: update failed; rolled back to 0.2.3\n",
-    stderr: "error: daemon did not become healthy after update; rollback warning: the previous release was activated but not durably synced: filesystem error at <pv-home>/bin: Permission denied (os error 13)\n",
+    stdout: "PV update\nPV application: update failed; rollback failed\n",
+    stderr: "error: PV application update failed (daemon did not become healthy after update); rollback failed: application reactivation: filesystem error at <pv-home>/bin: Permission denied (os error 13); retained failed application release at <pv-home>/bin/releases/0.3.0; retained helper rollback candidate at <pv-home>/downloads/pv-helper-rollback-<id>.tmp\n",
 }

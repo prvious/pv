@@ -1143,16 +1143,15 @@ fn rollback_app_update(
     output: &mut Output<'_, impl Write>,
     stderr: &mut impl Write,
 ) -> Result<AppUpdateOutcome, ExecuteError> {
-    let mut original_message = app_update_failure_message(context.paths, &original_error);
+    let original_message = app_update_failure_message(context.paths, &original_error);
     let mut rollback_errors = Vec::new();
     let mut helper_restore_cleanup_warning = None;
+    let mut reactivation_error = None;
     let previous_release_is_active = match context.layout.activate_release(versions.previous) {
         Ok(()) => true,
         Err(restore_error) => match context.layout.active_release() {
             Ok(Some(active_version)) if active_version == versions.previous => {
-                original_message.push_str(&format!(
-                    "; rollback warning: the previous release was activated but not durably synced: {restore_error}"
-                ));
+                reactivation_error = Some(restore_error);
                 true
             }
             Ok(_) => {
@@ -1172,6 +1171,24 @@ fn rollback_app_update(
             Err(restore_error) => {
                 rollback_errors.push(format!("privileged helper: {restore_error}"));
             }
+        }
+    }
+    if let Some(reactivation_error) = reactivation_error {
+        let helper_restore_succeeded = rollback_errors.is_empty();
+        rollback_errors.push(format!("application reactivation: {reactivation_error}"));
+        rollback_errors.push(format!(
+            "retained failed application release at {}",
+            context.paths.app_releases_dir().join(versions.failed)
+        ));
+        if helper_restore_succeeded
+            && let Err(restart_error) = restart_daemon_without_reconciliation(
+                environment,
+                context.paths,
+                context.launch_agent_path,
+                DaemonHealthCheck::RequireCompatibleProtocol,
+            )
+        {
+            rollback_errors.push(format!("daemon restart: {restart_error}"));
         }
     }
     if !rollback_errors.is_empty() {
