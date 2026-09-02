@@ -1,0 +1,5 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: normalized_log
+---
+"<tmp>/build/openssl/lib\n"

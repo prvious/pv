@@ -3,7 +3,7 @@ resources = ["php", "frankenphp"]
 default_track = "8.5"
 platforms = ["darwin-arm64", "darwin-amd64"]
 minimum_pv_version = "0.1.0"
-pv_build_revision = "pv6"
+pv_build_revision = "pv7"
 license_files = ["LICENSE"]
 notice_files = ["NOTICE"]
 
@@ -17,6 +17,7 @@ default_extensions = [
   "ctype",
   "curl",
   "dom",
+  "exif",
   "fileinfo",
   "filter",
   "ftp",
@@ -62,6 +63,7 @@ expected_extensions = [
   "ctype",
   "curl",
   "dom",
+  "exif",
   "fileinfo",
   "filter",
   "ftp",

@@ -1,0 +1,16 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: snapshot
+---
+(
+    "17",
+    "pg_cron",
+    "<tempdir>/home/.pv/resources/postgres/17/releases/17.0-pv1/lib/postgresql/pg_cron.dylib",
+    "PostgreSQL track `17` cannot preload `pg_cron` because its module is missing at <tempdir>/home/.pv/resources/postgres/17/releases/17.0-pv1/lib/postgresql/pg_cron.dylib; install an artifact that supplies the library or remove it from the track preload desired state",
+    RuntimeFilePresence {
+        pid: false,
+        metadata: false,
+        config: false,
+    },
+    false,
+)

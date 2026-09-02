@@ -25,9 +25,9 @@ use resources::{
 use serde::Deserialize;
 use state::{
     Database, EnvContextValues, JobDiagnosticSubject, JobStatus, LinkProjectInput, PortOwner,
-    PortRequest, ProjectEnvObservedStatus, ProjectManagedResourceInput, ProjectRecord, PvPaths,
-    ResourceAllocationInput, ResourceAllocationRecord, ResourceAllocationStatus,
-    RuntimeObservedStatus, RuntimeSubject, StateError,
+    PortRequest, PostgresPreloadLibrary, ProjectEnvObservedStatus, ProjectManagedResourceInput,
+    ProjectRecord, PvPaths, ResourceAllocationInput, ResourceAllocationRecord,
+    ResourceAllocationStatus, RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 use time::{Duration as CertificateDuration, OffsetDateTime};
 
@@ -122,6 +122,17 @@ const INVALID_DEFAULT_PORT_SPECS: &[super::ManagedResourcePortSpec] = &[
 const SETUP_DEFAULT_POSTGRES_SUPPORT_FILES: &[(&str, &str)] = &[
     ("bin/initdb", "#!/bin/sh\nexit 0\n"),
     ("share/postgres.bki", "postgres catalog"),
+    ("lib/libcrypto.3.dylib", "fixture libcrypto"),
+    ("lib/libssl.3.dylib", "fixture libssl"),
+    ("lib/postgresql/pg_trgm.dylib", "fixture pg_trgm"),
+    ("lib/postgresql/pgcrypto.dylib", "fixture pgcrypto"),
+    ("lib/postgresql/sslinfo.dylib", "fixture sslinfo"),
+    ("share/extension/pg_trgm.control", "fixture pg_trgm control"),
+    (
+        "share/extension/pgcrypto.control",
+        "fixture pgcrypto control",
+    ),
+    ("share/extension/sslinfo.control", "fixture sslinfo control"),
 ];
 const SETUP_DEFAULT_FIXTURES: &[SetupDefaultFixture] = &[
     SetupDefaultFixture {
@@ -326,6 +337,21 @@ struct RustfsRuntimeMetadataSnapshot {
     log_path: String,
 }
 
+#[derive(Debug, PartialEq)]
+struct PostgresPreloadReconciliationSnapshot {
+    track: String,
+    default_config: String,
+    configured_libraries: Vec<PostgresPreloadLibrary>,
+    enabled_config: String,
+    restarted_after_change: bool,
+    stable_after_reconciliation: bool,
+    enabled_data_config_matches_runtime_config: bool,
+    cleared_config: String,
+    restarted_after_clear: bool,
+    stable_after_clear_reconciliation: bool,
+    cleared_data_config_matches_runtime_config: bool,
+}
+
 #[tokio::test]
 async fn postgres_reconciliation_creates_database_allocation_and_renders_env() -> Result<()> {
     let tempdir = tempdir()?;
@@ -462,6 +488,212 @@ async fn postgres_reconciliation_writes_tcp_only_runtime_config() -> Result<()> 
         runtime_config.contains("unix_socket_directories = ''"),
         "expected recorded Postgres runtime config to disable Unix socket listeners"
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_preload_configuration_reconciles_tracks_17_and_18() -> Result<()> {
+    let tempdir = tempdir()?;
+    let mut snapshots = Vec::new();
+
+    for (track, port, requested) in [
+        (
+            "17",
+            19_067,
+            vec!["timescaledb", "pg_cron", "pg_stat_statements", "pg_cron"],
+        ),
+        (
+            "18",
+            19_068,
+            vec!["pg_duckdb", "pg_stat_statements", "pg_duckdb"],
+        ),
+    ] {
+        let paths = PvPaths::for_home(tempdir.path().join(format!("home-{track}")));
+        let project = link_project_with_postgres_track(
+            &paths,
+            &tempdir.path().join(format!("project-{track}")),
+            track,
+        )?;
+        seed_postgres_fixture_artifact_for_track(&paths, track)?;
+        seed_postgres_preload_modules(
+            &paths,
+            track,
+            &[
+                PostgresPreloadLibrary::PgStatStatements,
+                PostgresPreloadLibrary::PgCron,
+                PostgresPreloadLibrary::TimescaleDb,
+                PostgresPreloadLibrary::PgDuckDb,
+            ],
+        )?;
+        reserve_postgres_track_port(&paths, track, port)?;
+
+        crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+        let default_config = postgres_runtime_config(&paths, track)?;
+        let default_pid = resource_runtime_metadata_pid(&paths, "postgres", track)?;
+        let requested = requested
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let configured_libraries = {
+            let mut database = Database::open(&paths)?;
+            database.replace_postgres_track_preload_libraries(track, &requested)?
+        };
+
+        crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+        let enabled_config = postgres_runtime_config(&paths, track)?;
+        let enabled_data_config = state::fs::read_to_string(
+            &paths
+                .resource_data_dir("postgres", track)
+                .join("postgresql.conf"),
+        )?;
+        let enabled_pid = resource_runtime_metadata_pid(&paths, "postgres", track)?;
+        let reversed = requested.into_iter().rev().collect::<Vec<_>>();
+        {
+            let mut database = Database::open(&paths)?;
+            database.replace_postgres_track_preload_libraries(track, &reversed)?;
+        }
+        crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+        let reconciled_config = postgres_runtime_config(&paths, track)?;
+        let reconciled_pid = resource_runtime_metadata_pid(&paths, "postgres", track)?;
+        {
+            let mut database = Database::open(&paths)?;
+            database.replace_postgres_track_preload_libraries(track, &[])?;
+        }
+        crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+        let cleared_config = postgres_runtime_config(&paths, track)?;
+        let cleared_pid = resource_runtime_metadata_pid(&paths, "postgres", track)?;
+        crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+        let stable_cleared_config = postgres_runtime_config(&paths, track)?;
+        let stable_cleared_pid = resource_runtime_metadata_pid(&paths, "postgres", track)?;
+        let data_config = state::fs::read_to_string(
+            &paths
+                .resource_data_dir("postgres", track)
+                .join("postgresql.conf"),
+        )?;
+
+        snapshots.push(PostgresPreloadReconciliationSnapshot {
+            track: track.to_string(),
+            default_config,
+            configured_libraries,
+            enabled_config: enabled_config.clone(),
+            restarted_after_change: default_pid != enabled_pid,
+            stable_after_reconciliation: enabled_pid == reconciled_pid
+                && enabled_config == reconciled_config,
+            enabled_data_config_matches_runtime_config: enabled_data_config == enabled_config,
+            cleared_config: cleared_config.clone(),
+            restarted_after_clear: reconciled_pid != cleared_pid,
+            stable_after_clear_reconciliation: cleared_pid == stable_cleared_pid
+                && cleared_config == stable_cleared_config,
+            cleared_data_config_matches_runtime_config: data_config == stable_cleared_config,
+        });
+        stop_postgres_runtime(&paths, &project).await?;
+    }
+
+    assert_with_normalized_postgres_runtime(
+        tempdir.path(),
+        "postgres_preload_configuration_reconciles_tracks_17_and_18",
+        snapshots,
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_preload_configuration_rejects_missing_library() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_postgres_track(&paths, &tempdir.path().join("project"), "17")?;
+    seed_postgres_fixture_artifact_for_track(&paths, "17")?;
+    reserve_postgres_track_port(&paths, "17", 19_069)?;
+    {
+        let mut database = Database::open(&paths)?;
+        database.replace_postgres_track_preload_libraries("17", &["pg_cron".to_string()])?;
+    }
+
+    let result = crate::project_env::reconcile_project_env(&paths, &project.id).await;
+    let diagnostic = match &result {
+        Ok(_summary) => bail!("expected missing PostgreSQL preload library diagnostic"),
+        Err(error) => error.to_string(),
+    };
+    let Err(DaemonError::PostgresPreloadLibraryMissing {
+        track,
+        library,
+        path,
+    }) = result
+    else {
+        bail!("expected missing PostgreSQL preload library diagnostic");
+    };
+
+    assert_eq!(track, "17");
+    assert_eq!(library, "pg_cron");
+    assert_with_normalized_postgres_runtime(
+        tempdir.path(),
+        "postgres_preload_configuration_rejects_missing_library",
+        (
+            track,
+            library,
+            path,
+            diagnostic,
+            runtime_files_exist_for_resource(&paths, "postgres", "17")?,
+            state::fs::path_exists(
+                &paths
+                    .resource_data_dir("postgres", "17")
+                    .join("postgresql.conf"),
+            ),
+        ),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn postgres_preload_configuration_rejects_unsafe_combination() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_postgres_track(&paths, &tempdir.path().join("project"), "18")?;
+    seed_postgres_fixture_artifact_for_track(&paths, "18")?;
+    seed_postgres_preload_modules(
+        &paths,
+        "18",
+        &[
+            PostgresPreloadLibrary::TimescaleDb,
+            PostgresPreloadLibrary::PgDuckDb,
+        ],
+    )?;
+    reserve_postgres_track_port(&paths, "18", 19_070)?;
+    {
+        let mut database = Database::open(&paths)?;
+        database.replace_postgres_track_preload_libraries(
+            "18",
+            &["pg_duckdb".to_string(), "timescaledb".to_string()],
+        )?;
+    }
+
+    let result = crate::project_env::reconcile_project_env(&paths, &project.id).await;
+    let diagnostic = match &result {
+        Ok(_summary) => bail!("expected unsafe PostgreSQL preload combination diagnostic"),
+        Err(error) => error.to_string(),
+    };
+    let Err(DaemonError::UnsafePostgresPreloadCombination { track }) = result else {
+        bail!("expected unsafe PostgreSQL preload combination diagnostic");
+    };
+
+    assert_eq!(track, "18");
+    assert_with_normalized_postgres_runtime(
+        tempdir.path(),
+        "postgres_preload_configuration_rejects_unsafe_combination",
+        (
+            track,
+            diagnostic,
+            runtime_files_exist_for_resource(&paths, "postgres", "18")?,
+            state::fs::path_exists(
+                &paths
+                    .resource_data_dir("postgres", "18")
+                    .join("postgresql.conf"),
+            ),
+        ),
+    )?;
 
     Ok(())
 }
@@ -814,6 +1046,7 @@ fn mailpit_process_spec_uses_persistent_database_and_disables_version_check() ->
         data_dir,
         ports: BTreeMap::from([("smtp".to_string(), 1025), ("dashboard".to_string(), 8025)]),
         env: BTreeMap::new(),
+        postgres_preload_libraries: Vec::new(),
     };
     let adapter = super::mailpit::MailpitRuntimeAdapter::new();
 
@@ -923,6 +1156,7 @@ fn unready_fake_runtime_uses_http_readiness_to_avoid_parallel_tcp_collisions() -
             ("dashboard".to_string(), 18026),
         ]),
         env: BTreeMap::new(),
+        postgres_preload_libraries: Vec::new(),
     };
 
     let readiness = adapter.readiness(&context)?;
@@ -2697,6 +2931,7 @@ async fn redis_reconciliation_reuses_ready_prefix_allocation() -> Result<()> {
         data_dir: paths.resource_data_dir("redis", REDIS_TRACK),
         ports: BTreeMap::from([("redis".to_string(), 6379)]),
         env: BTreeMap::new(),
+        postgres_preload_libraries: Vec::new(),
     };
     let resource_env = BTreeMap::new();
 
@@ -2774,6 +3009,7 @@ fn redis_process_spec_disables_rdb_enables_aof_and_preserves_process_title() -> 
         data_dir: paths.resource_data_dir("redis", REDIS_TRACK),
         ports: BTreeMap::from([("redis".to_string(), 6380)]),
         env: BTreeMap::new(),
+        postgres_preload_libraries: Vec::new(),
     };
 
     let spec =
@@ -3172,28 +3408,35 @@ fn link_project_with_postgres_database_env(
     paths: &PvPaths,
     project_path: &Utf8Path,
 ) -> Result<ProjectRecord> {
-    link_project(
-        paths,
-        project_path,
-        "acme.test",
+    link_project_with_postgres_track(paths, project_path, POSTGRES_TRACK)
+}
+
+fn link_project_with_postgres_track(
+    paths: &PvPaths,
+    project_path: &Utf8Path,
+    track: &str,
+) -> Result<ProjectRecord> {
+    let config = format!(
         r#"postgres:
-  version: "16"
+  version: "{track}"
   env:
-    PGHOST: "${host}"
-    PGPASSWORD: "${password}"
-    PGPORT: "${port}"
-    PGUSER: "${username}"
+    PGHOST: "${{host}}"
+    PGPASSWORD: "${{password}}"
+    PGPORT: "${{port}}"
+    PGUSER: "${{username}}"
   allocations:
     app-db:
       env:
-        DATABASE_URL: "${url}"
-        DB_DATABASE: "${database}"
-        DB_HOST: "${host}"
-        DB_PASSWORD: "${password}"
-        DB_PORT: "${port}"
-        DB_USERNAME: "${username}"
-"#,
-    )
+        DATABASE_URL: "${{url}}"
+        DB_DATABASE: "${{database}}"
+        DB_HOST: "${{host}}"
+        DB_PASSWORD: "${{password}}"
+        DB_PORT: "${{port}}"
+        DB_USERNAME: "${{username}}"
+"#
+    );
+
+    link_project(paths, project_path, "acme.test", &config)
 }
 
 fn write_project_config(project: &ProjectRecord, config_source: &str) -> Result<()> {
@@ -3317,9 +3560,13 @@ fn reserve_rustfs_port(database: &mut Database, port_name: &str, port: u16) -> R
 }
 
 fn reserve_postgres_port(paths: &PvPaths, port: u16) -> Result<()> {
+    reserve_postgres_track_port(paths, POSTGRES_TRACK, port)
+}
+
+fn reserve_postgres_track_port(paths: &PvPaths, track: &str, port: u16) -> Result<()> {
     let mut database = Database::open(paths)?;
     database.assign_port(
-        PortRequest::resource_port("postgres", POSTGRES_TRACK, "postgres", port, port, port),
+        PortRequest::resource_port("postgres", track, "postgres", port, port, port),
         local_loopback_port_available,
     )?;
 
@@ -3823,22 +4070,64 @@ fn seed_postgres_fixture_artifact_with_script(
     track: &str,
     postgres_script: &str,
 ) -> Result<()> {
+    let artifact_version = format!("{track}.0-pv1");
     let release_path = paths
         .resources()
         .join("postgres")
         .join(track)
-        .join(format!("releases/{POSTGRES_ARTIFACT_VERSION}"));
+        .join(format!("releases/{artifact_version}"));
 
     write_postgres_fixture_binaries_with_script(&release_path, postgres_script)?;
     let mut database = Database::open(paths)?;
     database.record_managed_resource_track_installed(
         "postgres",
         track,
-        POSTGRES_ARTIFACT_VERSION,
+        &artifact_version,
         &release_path,
     )?;
 
     Ok(())
+}
+
+fn seed_postgres_fixture_artifact_for_track(paths: &PvPaths, track: &str) -> Result<()> {
+    seed_postgres_fixture_artifact_with_script(paths, track, POSTGRES_SCRIPT)
+}
+
+fn seed_postgres_preload_modules(
+    paths: &PvPaths,
+    track: &str,
+    libraries: &[PostgresPreloadLibrary],
+) -> Result<()> {
+    let release_path = paths
+        .resources()
+        .join("postgres")
+        .join(track)
+        .join(format!("releases/{track}.0-pv1"));
+
+    for library in libraries {
+        state::fs::write_sensitive_file(
+            &release_path.join(format!("lib/postgresql/{}.dylib", library.as_str())),
+            "fixture shared library",
+        )?;
+    }
+
+    Ok(())
+}
+
+fn postgres_runtime_config(paths: &PvPaths, track: &str) -> Result<String> {
+    Ok(state::fs::read_to_string(
+        &paths.resource_runtime_config("postgres", track),
+    )?)
+}
+
+fn resource_runtime_metadata_pid(paths: &PvPaths, resource_name: &str, track: &str) -> Result<u64> {
+    let metadata =
+        state::fs::read_to_string(&paths.resource_runtime_metadata(resource_name, track))?;
+    let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+
+    metadata["pid"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("runtime metadata is missing numeric pid"))
 }
 
 fn seed_postgres_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {
@@ -4187,6 +4476,21 @@ fn write_postgres_fixture_binaries_without_support_files(release_path: &Utf8Path
 
 fn write_postgres_support_files(release_path: &Utf8Path) -> Result<()> {
     state::fs::write_sensitive_file(&release_path.join("share/postgres.bki"), "postgres catalog")?;
+    for relative_path in [
+        "lib/libcrypto.3.dylib",
+        "lib/libssl.3.dylib",
+        "lib/postgresql/pg_trgm.dylib",
+        "lib/postgresql/pgcrypto.dylib",
+        "lib/postgresql/sslinfo.dylib",
+        "share/extension/pg_trgm.control",
+        "share/extension/pgcrypto.control",
+        "share/extension/sslinfo.control",
+    ] {
+        state::fs::write_sensitive_file(
+            &release_path.join(relative_path),
+            "postgres pv2 support file",
+        )?;
+    }
 
     Ok(())
 }
@@ -4653,6 +4957,7 @@ impl super::ManagedResourceRuntimeAdapter for AsyncSqlHookRuntimeAdapter {
             arguments: Vec::new(),
             private_environment: BTreeMap::new(),
             config_path,
+            config_fingerprint: None,
             log_path: paths.resource_log(&context.resource_name, &context.track),
             pid_path: paths.resource_pid(&context.resource_name, &context.track),
             metadata_path: paths.resource_runtime_metadata(&context.resource_name, &context.track),

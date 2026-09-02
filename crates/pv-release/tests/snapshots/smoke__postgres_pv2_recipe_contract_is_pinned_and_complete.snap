@@ -1,0 +1,5 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: summary
+---
+"revision_is_pv2=true\npostgres_versions_are_17_10_and_18_4=true\nopenssl_version_3_5_8=true\nopenssl_checksum_pinned=true\nworld_bin_build=true\ninstall_world_bin=true\nssl_configure_flags=true\nzlib_remains_disabled=true\nopenssl_runtime_closure=true\nsource_input_and_legal_markers=true\nmacho_cleanup_rewrite_sign_validate=true\nreusable_dependency_contract_complete=true\nevery_reused_bundle_validated=true\nsource_cache_checksum_validated=true\nbuild_jobs_bounded=true\npostgres_staging_is_track_local=true\ntrack_17_extension_count=43\ntrack_18_extension_count=44\ntrack_18_additions=[\"pg_logicalinspect\"]\nonly_plpgsql_default=true\npv_realistic_auth=true\ncritical_function_smokes=true"

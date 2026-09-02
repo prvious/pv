@@ -1,4 +1,5 @@
 use anyhow::{Result, bail};
+use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use resources::{
     ResourceAdapter, ResourcesError, composer_adapter, frankenphp_adapter, mailpit_adapter,
@@ -112,7 +113,7 @@ fn mysql_adapter_validates_expected_executable_layout() -> Result<()> {
 }
 
 #[test]
-fn postgres_adapter_validates_expected_executable_and_initdb_layout() -> Result<()> {
+fn postgres_adapter_validates_pv2_runtime_layout() -> Result<()> {
     let tempdir = tempdir()?;
     let release = tempdir.path();
     let adapter = postgres_adapter()?;
@@ -120,10 +121,28 @@ fn postgres_adapter_validates_expected_executable_and_initdb_layout() -> Result<
     write_sensitive_file(&executable_path, "postgres executable")?;
     write_sensitive_file(&release.join("bin/initdb"), "postgres initdb")?;
     write_sensitive_file(&release.join("share/postgres.bki"), "postgres catalog")?;
+    write_postgres_pv2_support_files(release)?;
 
     adapter.validate_installation(release)?;
 
     assert_eq!(adapter.executable_path(release), executable_path);
+
+    Ok(())
+}
+
+fn write_postgres_pv2_support_files(release: &Utf8Path) -> Result<()> {
+    for relative_path in [
+        "lib/libcrypto.3.dylib",
+        "lib/libssl.3.dylib",
+        "lib/postgresql/pg_trgm.dylib",
+        "lib/postgresql/pgcrypto.dylib",
+        "lib/postgresql/sslinfo.dylib",
+        "share/extension/pg_trgm.control",
+        "share/extension/pgcrypto.control",
+        "share/extension/sslinfo.control",
+    ] {
+        write_sensitive_file(&release.join(relative_path), "postgres pv2 support file")?;
+    }
 
     Ok(())
 }

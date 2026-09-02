@@ -29,8 +29,8 @@ fn artifact_recipes_defaults_defer_staticphp_unstable_lanes() -> Result<()> {
     assert_snapshot!(summary, @r#"
     track_default=all
     platform_default=all
-    platform_description=Artifact platform: all uses the current preview matrix (native lanes are darwin-arm64; Caddy includes darwin-amd64); choose darwin-arm64 or darwin-amd64 explicitly for one platform
-    platform_matrices=["platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\",\"darwin-amd64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: [any]", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}"]
+    platform_description=Artifact platform: all uses darwin-arm64 for native recipes, adds darwin-amd64 for Postgres and Caddy, and uses any for Composer; choose darwin-arm64 or darwin-amd64 explicitly for one platform
+    platform_matrices=["platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\",\"darwin-amd64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: [any]", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\",\"darwin-amd64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\",\"darwin-amd64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}"]
     staticphp_comment_present=true
     staticphp_work_cleanup_restores_write_permission=true
     "#);
@@ -81,12 +81,12 @@ fn artifact_recipes_builds_resource_lanes_in_parallel() -> Result<()> {
     );
 
     assert_snapshot!(summary, @r###"
-    jobs=["validate", "build-php", "build-caddy", "build-composer", "build-redis", "build-mysql", "build-postgres", "build-mailpit", "build-rustfs"]
-    upload_steps=9
+    jobs=["validate", "build-php", "build-caddy", "build-composer", "build-redis", "build-mysql", "build-postgres-dependencies", "build-postgres", "build-mailpit", "build-rustfs"]
+    upload_steps=10
     archive_upload_paths=8
     manifest_upload_paths=8
     record_upload_paths=8
-    recipe_track_envs=9
+    recipe_track_envs=10
     track_upload_names=9
     staticphp_failure_logs=true
     "###);
@@ -108,6 +108,94 @@ fn artifact_recipes_track_all_expands_requested_track_sets() -> Result<()> {
     track_matrices=["track: ${{ fromJSON(inputs.track == 'all' && '[\"8.3\",\"8.4\",\"8.5\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"2\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"2\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"8.8\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"8.0\",\"8.4\",\"9.7\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"17\",\"18\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"1\"]' || format('[\"{0}\"]', inputs.track)) }}", "track: ${{ fromJSON(inputs.track == 'all' && '[\"1\"]' || format('[\"{0}\"]', inputs.track)) }}"]
     validated_resource_tracks=["all:all", "php:all | php:8.3 | php:8.4 | php:8.5", "composer:all | composer:2", "redis:all | redis:8.8", "mysql:all | mysql:8.0 | mysql:8.4 | mysql:9.7", "postgres:all | postgres:17 | postgres:18", "mailpit:all | mailpit:1", "rustfs:all | rustfs:1", "caddy:all | caddy:2"]
     "###);
+
+    Ok(())
+}
+
+#[test]
+fn artifact_recipes_reuses_validated_postgres_dependencies() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let workflow = read_file(&workspace_root.join(".github/workflows/artifact-recipes.yml"))?;
+    let postgres_build =
+        read_file(&workspace_root.join("release/artifacts/recipes/postgres/build.sh"))?;
+    let dual_native_platform_matrix = "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\",\"darwin-amd64\"]' || format('[\"{0}\"]', inputs.platform)) }}";
+    let postgres_track_matrix = "track: ${{ fromJSON(inputs.track == 'all' && '[\"17\",\"18\"]' || format('[\"{0}\"]', inputs.track)) }}";
+    let dependency_job = workflow_job_block(&workflow, "build-postgres-dependencies")
+        .ok_or_else(|| anyhow::anyhow!("Postgres dependency job is missing"))?;
+    let postgres_job = workflow_job_block(&workflow, "build-postgres")
+        .ok_or_else(|| anyhow::anyhow!("Postgres build job is missing"))?;
+    let summary = format!(
+        "dependency_platform_matrix={}\ndependency_has_track_matrix={}\npostgres_waits_for_dependency_job={}\npostgres_platform_matrix={}\npostgres_track_matrix={}\ndependency_cache_steps={}\ndependency_source_cache={}\ndependency_exact_cache_key={}\nconsumer_cache_steps={}\nconsumer_source_cache={}\ndependency_handoff_upload={}\nconsumer_handoff_download={}\nconsumer_reresolves_dependency_inputs={}\nconsumer_uses_producer_contract={}\ndependency_job_validates_bundle={}\nconsumer_validates_bundle={}\ndependency_bounded_build_job_envs={}\nconsumer_bounded_build_job_envs={}\ndependency_archive_size_summary={}\ndependency_duration_summary={}\nconsumer_archive_size_summary={}\nconsumer_duration_summary={}\ntrack_local_postgres_work={}",
+        dependency_job.contains(dual_native_platform_matrix),
+        dependency_job.contains("track: ${{ fromJSON("),
+        postgres_job.contains("needs: [validate, build-postgres-dependencies]"),
+        postgres_job.contains(dual_native_platform_matrix),
+        postgres_job.contains(postgres_track_matrix),
+        dependency_job.matches("uses: actions/cache@v4").count(),
+        dependency_job
+            .contains("key: postgres-source-${{ steps.dependency-inputs.outputs.source_sha256 }}"),
+        dependency_job.contains("key: ${{ steps.dependency-inputs.outputs.cache_key }}"),
+        postgres_job.matches("uses: actions/cache@v4").count(),
+        postgres_job
+            .contains("key: postgres-source-${{ steps.postgres-source.outputs.source_sha256 }}"),
+        dependency_job.contains(
+            "PV_POSTGRES_DEPENDENCY_WORK_DIR: ${{ runner.temp }}/pv-postgres-dependencies",
+        ) && dependency_job.contains("uses: actions/upload-artifact@v7")
+            && dependency_job.contains("pv-postgres-openssl-${{ matrix.platform }}")
+            && dependency_job
+                .contains("${{ runner.temp }}/pv-postgres-dependencies/openssl.tar.gz")
+            && dependency_job
+                .contains("${{ runner.temp }}/pv-postgres-dependencies/openssl-contract.txt")
+            && dependency_job.contains("overwrite: true"),
+        postgres_job.contains("uses: actions/download-artifact@v8")
+            && postgres_job.contains("pv-postgres-openssl-${{ matrix.platform }}")
+            && postgres_job
+                .contains("path: ${{ runner.temp }}/pv-postgres-dependencies"),
+        postgres_job.contains("dependencies.sh describe"),
+        postgres_job.contains(
+            "PV_POSTGRES_OPENSSL_BUNDLE_ARCHIVE: ${{ runner.temp }}/pv-postgres-dependencies/openssl.tar.gz",
+        ) && postgres_job.contains(
+            "PV_POSTGRES_OPENSSL_CONTRACT_FILE: ${{ runner.temp }}/pv-postgres-dependencies/openssl-contract.txt",
+        ),
+        dependency_job.contains("dependencies.sh use \\"),
+        postgres_build.contains("dependency_command=use")
+            && postgres_build.contains(
+                "\"$recipe_dir/dependencies.sh\" \"$dependency_command\" \"$dependency_bundle\" \"$openssl_prefix\"",
+            ),
+        dependency_job.matches("PV_BUILD_JOBS: 2").count(),
+        postgres_job.matches("PV_BUILD_JOBS: 2").count(),
+        dependency_job.contains("- Archive size:"),
+        dependency_job.contains("- Wall-clock duration:"),
+        postgres_job.contains("- Archive size:"),
+        postgres_job.contains("- Wall-clock duration:"),
+        postgres_build.contains("work_dir=\"$OUT_DIR/work/postgres-$PV_TRACK-$artifact_basename\""),
+    );
+
+    assert_snapshot!(summary, @r#"
+    dependency_platform_matrix=true
+    dependency_has_track_matrix=false
+    postgres_waits_for_dependency_job=true
+    postgres_platform_matrix=true
+    postgres_track_matrix=true
+    dependency_cache_steps=2
+    dependency_source_cache=true
+    dependency_exact_cache_key=true
+    consumer_cache_steps=1
+    consumer_source_cache=true
+    dependency_handoff_upload=true
+    consumer_handoff_download=true
+    consumer_reresolves_dependency_inputs=false
+    consumer_uses_producer_contract=true
+    dependency_job_validates_bundle=true
+    consumer_validates_bundle=true
+    dependency_bounded_build_job_envs=2
+    consumer_bounded_build_job_envs=1
+    dependency_archive_size_summary=true
+    dependency_duration_summary=true
+    consumer_archive_size_summary=true
+    consumer_duration_summary=true
+    track_local_postgres_work=true
+    "#);
 
     Ok(())
 }
@@ -1102,6 +1190,25 @@ fn workflow_job_ids(workflow: &str) -> Vec<&str> {
     }
 
     job_ids
+}
+
+fn workflow_job_block<'a>(workflow: &'a str, job_id: &str) -> Option<&'a str> {
+    let start_marker = format!("  {job_id}:\n");
+    let start = workflow.find(&start_marker)?;
+    let job_body = &workflow[start + start_marker.len()..];
+    let end = job_body
+        .lines()
+        .scan(0, |offset, line| {
+            let line_start = *offset;
+            *offset += line.len() + 1;
+            Some((line_start, line))
+        })
+        .find_map(|(offset, line)| {
+            let candidate = line.strip_prefix("  ")?;
+            (!candidate.starts_with(' ') && candidate.ends_with(':')).then_some(offset)
+        })
+        .unwrap_or(job_body.len());
+    Some(&workflow[start..start + start_marker.len() + end])
 }
 
 fn stable_key_reference_present(workflow: &str, object_key: &str) -> bool {

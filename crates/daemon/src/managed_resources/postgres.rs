@@ -3,7 +3,8 @@ use std::io;
 #[cfg(test)]
 use std::time::Duration;
 
-use state::{EnvContextValues, PvPaths, ResourceAllocationRecord};
+use sha2::{Digest, Sha256};
+use state::{EnvContextValues, PostgresPreloadLibrary, PvPaths, ResourceAllocationRecord};
 
 use crate::managed_resources::sql::{
     self, SqlAdminContext, SqlAllocationRequest, SqlEngine, sql_resource_env,
@@ -58,9 +59,11 @@ impl ManagedResourceRuntimeAdapter for PostgresRuntimeAdapter {
         paths: &PvPaths,
         context: &ManagedResourceRuntimeContext,
     ) -> Result<ProcessSpec, DaemonError> {
+        let port = required_port(context)?;
+        let config = postgres_config(context, port)?;
         let admin = admin_context(context)?;
         initialize_data_dir_if_missing(paths, context, &admin)?;
-        write_postgres_config(paths, context, admin.port)?;
+        write_postgres_config(paths, context, &config)?;
 
         Ok(ProcessSpec {
             name: format!("{}-{}", context.resource_name, context.track),
@@ -73,10 +76,11 @@ impl ManagedResourceRuntimeAdapter for PostgresRuntimeAdapter {
                 "-h".to_string(),
                 RESOURCE_HOST.to_string(),
                 "-p".to_string(),
-                admin.port.to_string(),
+                port.to_string(),
             ],
             private_environment: BTreeMap::new(),
             config_path: paths.resource_runtime_config(&context.resource_name, &context.track),
+            config_fingerprint: Some(config_fingerprint(&config)),
             log_path: paths.resource_log(&context.resource_name, &context.track),
             pid_path: paths.resource_pid(&context.resource_name, &context.track),
             metadata_path: paths.resource_runtime_metadata(&context.resource_name, &context.track),
@@ -229,19 +233,82 @@ fn run_initdb(
 fn write_postgres_config(
     paths: &PvPaths,
     context: &ManagedResourceRuntimeContext,
-    port: u16,
+    config: &str,
 ) -> Result<(), DaemonError> {
-    let config = format!(
-        "listen_addresses = '{RESOURCE_HOST}'\nport = {port}\nunix_socket_directories = ''\n"
-    );
-
-    state::fs::write_sensitive_file(&context.data_dir.join("postgresql.conf"), &config)?;
+    state::fs::write_sensitive_file(&context.data_dir.join("postgresql.conf"), config)?;
     state::fs::write_sensitive_file(
         &paths.resource_runtime_config(&context.resource_name, &context.track),
-        &config,
+        config,
     )?;
 
     Ok(())
+}
+
+fn postgres_config(
+    context: &ManagedResourceRuntimeContext,
+    port: u16,
+) -> Result<String, DaemonError> {
+    validate_preload_libraries(context)?;
+    let preload_libraries = context
+        .postgres_preload_libraries
+        .iter()
+        .map(|library| library.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut config = format!(
+        "listen_addresses = '{RESOURCE_HOST}'\nport = {port}\nunix_socket_directories = ''\nshared_preload_libraries = '{preload_libraries}'\n"
+    );
+
+    if context
+        .postgres_preload_libraries
+        .contains(&PostgresPreloadLibrary::PgCron)
+    {
+        config.push_str("cron.database_name = 'postgres'\ncron.use_background_workers = on\n");
+    }
+    if context
+        .postgres_preload_libraries
+        .contains(&PostgresPreloadLibrary::TimescaleDb)
+    {
+        config.push_str("timescaledb.telemetry_level = 'off'\n");
+    }
+
+    Ok(config)
+}
+
+fn validate_preload_libraries(context: &ManagedResourceRuntimeContext) -> Result<(), DaemonError> {
+    if context
+        .postgres_preload_libraries
+        .contains(&PostgresPreloadLibrary::TimescaleDb)
+        && context
+            .postgres_preload_libraries
+            .contains(&PostgresPreloadLibrary::PgDuckDb)
+    {
+        return Err(DaemonError::UnsafePostgresPreloadCombination {
+            track: context.track.clone(),
+        });
+    }
+
+    for library in &context.postgres_preload_libraries {
+        let module_path = context
+            .artifact_path
+            .join(format!("lib/postgresql/{}.dylib", library.as_str()));
+        if !state::fs::path_is_file(&module_path)? {
+            return Err(DaemonError::PostgresPreloadLibraryMissing {
+                track: context.track.clone(),
+                library: library.as_str().to_string(),
+                path: module_path,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn config_fingerprint(config: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(config.as_bytes());
+
+    format!("sha256:v1:{:x}", hasher.finalize())
 }
 
 fn admin_context(context: &ManagedResourceRuntimeContext) -> Result<SqlAdminContext, DaemonError> {

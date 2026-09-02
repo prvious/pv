@@ -4,7 +4,7 @@ use camino_tempfile::tempdir;
 use data_encoding::HEXLOWER;
 use flate2::Compression;
 use flate2::write::GzEncoder;
-use insta::assert_debug_snapshot;
+use insta::{assert_debug_snapshot, assert_snapshot};
 use pv_release::ReleaseError;
 use pv_release::smoke::{run_smoke_hook, run_smoke_hook_with_timeout};
 use serde_json::Value;
@@ -912,7 +912,7 @@ fn php_build_recipe_smoke() -> Result<()> {
         "pwd={}/work/php-pair-8.4-darwin-arm64/staticphp\n\
 spc-cflags=-I{imagick_include}\n\
 spc-cxxflags=-I{imagick_include}\n\
-spc-php-extra-ldflags=-Wl,-export_dynamic\n\
+spc-php-extra-ldflags=-Wl,-export_dynamic -framework CoreFoundation -framework CoreServices -framework SystemConfiguration\n\
 spc-frankenphp-ldflags=-Wl,-export_dynamic\n\
 spc-pkg-config=pkg-config\n\
 spc-pkg-config-libdir={pkg_config_libdir}\n\
@@ -1015,7 +1015,7 @@ fn php_pair_build_smoke_skips_frankenphp_sqlsrv_extension_metadata() -> Result<(
 }
 
 #[test]
-fn php_pair_build_smoke_prepatches_frankenphp_for_staticphp_php83_avx512_probe() -> Result<()> {
+fn php_pair_build_smoke_prepares_staticphp_php83_compatibility_context() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
         recipe_track: "8.3",
         php_version: "8.3.31",
@@ -1522,6 +1522,7 @@ fn common_recipe_helper_ad_hoc_signs_macho_files() -> Result<()> {
     )?;
     write_file(&sign_log, "")?;
     write_fake_signing_otool(&fake_bin.join("otool"))?;
+    write_fake_macho_file(&fake_bin.join("file"))?;
     write_fake_codesign(&fake_bin.join("codesign"))?;
     write_executable(
         &harness,
@@ -1547,6 +1548,76 @@ pv_recipe_ad_hoc_sign_macho_tree "$PV_TEST_ARTIFACT_ROOT"
         command_output_debug(&output)
     );
     assert_debug_snapshot!(read_file(&sign_log)?.replace(tempdir.path().as_str(), "<tmp>"));
+
+    Ok(())
+}
+
+#[test]
+fn common_recipe_helper_removes_only_unmanaged_macho_rpaths() -> Result<()> {
+    let tempdir = tempdir()?;
+    let fake_bin = tempdir.path().join("bin");
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let deleted_rpath_log = tempdir.path().join("deleted-rpaths.log");
+    let removed_rpaths_log = tempdir.path().join("removed-rpaths.log");
+    let install_name_log = tempdir.path().join("install-name.log");
+    let harness = tempdir.path().join("rpath-harness.sh");
+    let build_prefix = tempdir.path().join("build/openssl/lib");
+    let common =
+        Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/common.sh");
+
+    create_dir_all(&fake_bin)?;
+    create_dir_all(&artifact_bin)?;
+    write_file(&artifact_bin.join("postgres"), "mach-o fixture\n")?;
+    write_file(&deleted_rpath_log, "")?;
+    write_file(&removed_rpaths_log, "")?;
+    write_file(&install_name_log, "")?;
+    write_fake_otool(&fake_bin.join("otool"))?;
+    write_fake_macho_file(&fake_bin.join("file"))?;
+    write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
+    write_executable(
+        &harness,
+        r#"#!/bin/sh
+set -eu
+
+# shellcheck source=/dev/null
+. "$PV_TEST_COMMON_SH"
+pv_recipe_cleanup_macho_rpaths_tree "$PV_TEST_ARTIFACT_ROOT"
+"#,
+    )?;
+
+    let mut command = StdCommand::new(&harness);
+    command
+        .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+        .env("PV_TEST_ARTIFACT_ROOT", &artifact_root)
+        .env("PV_TEST_COMMON_SH", &common)
+        .env("PV_TEST_DELETED_RPATH_LOG", &deleted_rpath_log)
+        .env("PV_TEST_INSTALL_NAME_LOG", &install_name_log)
+        .env("PV_TEST_REMOVED_RPATHS_LOG", &removed_rpaths_log);
+    let output = command
+        .env(
+            "PV_TEST_MACHO_RPATHS",
+            format!("{build_prefix}\n@loader_path/../lib"),
+        )
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "Mach-O rpath cleanup failed: {}",
+        command_output_debug(&output)
+    );
+    let normalized_log = read_file(&deleted_rpath_log)?.replace(tempdir.path().as_str(), "<tmp>");
+    assert_debug_snapshot!(normalized_log);
+
+    write_file(&deleted_rpath_log, "")?;
+    let output = command.env("PV_TEST_MACHO_RPATHS", "").output()?;
+
+    assert!(
+        output.status.success(),
+        "Mach-O cleanup without rpaths failed: {}",
+        command_output_debug(&output)
+    );
+    assert_eq!(read_file(&deleted_rpath_log)?, "");
 
     Ok(())
 }
@@ -1584,6 +1655,7 @@ fn common_recipe_helper_rewrites_nested_macho_install_names() -> Result<()> {
     )?;
     write_file(&install_name_log, "")?;
     write_fake_install_name_otool(&fake_bin.join("otool"))?;
+    write_fake_macho_file(&fake_bin.join("file"))?;
     write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
     write_executable(
         &harness,
@@ -1641,6 +1713,7 @@ fn common_recipe_helper_fails_when_signing_one_macho_file_fails() -> Result<()> 
     write_file(&artifact_bin.join("mysql"), "mach-o fixture\n")?;
     write_file(&artifact_bin.join("mysqladmin"), "mach-o fixture\n")?;
     write_fake_signing_otool(&fake_bin.join("otool"))?;
+    write_fake_macho_file(&fake_bin.join("file"))?;
     write_fake_first_call_failing_codesign(&fake_bin.join("codesign"))?;
     write_file(&sign_count, "0\n")?;
     write_executable(
@@ -1686,6 +1759,7 @@ fn common_recipe_helper_fails_when_install_name_rewrite_fails() -> Result<()> {
     write_file(&artifact_lib.join("liba.dylib"), "mach-o fixture\n")?;
     write_file(&artifact_lib.join("libz.dylib"), "mach-o fixture\n")?;
     write_fake_rewrite_failure_otool(&fake_bin.join("otool"))?;
+    write_fake_macho_file(&fake_bin.join("file"))?;
     write_fake_first_call_failing_install_name_tool(&fake_bin.join("install_name_tool"))?;
     write_file(&install_name_count, "0\n")?;
     write_executable(
@@ -1748,6 +1822,682 @@ fn mysql_smoke_uses_tcp_readiness_and_select() -> Result<()> {
 }
 
 #[test]
+fn postgres_pv2_recipe_contract_is_pinned_and_complete() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let recipe = read_file(&workspace_root.join("release/artifacts/recipes/postgres/recipe.toml"))?;
+    let build = read_file(&workspace_root.join("release/artifacts/recipes/postgres/build.sh"))?;
+    let dependencies =
+        read_file(&workspace_root.join("release/artifacts/recipes/postgres/dependencies.sh"))?;
+    let openssl =
+        read_file(&workspace_root.join("release/artifacts/recipes/postgres/openssl.env"))?;
+    let smoke = read_file(&workspace_root.join("release/artifacts/recipes/postgres/smoke.sh"))?;
+    let common = read_file(&workspace_root.join("release/artifacts/recipes/common.sh"))?;
+    let extensions_17 =
+        read_file(&workspace_root.join("release/artifacts/recipes/postgres/catalogs/17.txt"))?;
+    let extensions_18 =
+        read_file(&workspace_root.join("release/artifacts/recipes/postgres/catalogs/18.txt"))?;
+    let extensions_17 = extensions_17.lines().collect::<Vec<_>>();
+    let extensions_18 = extensions_18.lines().collect::<Vec<_>>();
+    let track_18_additions = extensions_18
+        .iter()
+        .filter(|extension| !extensions_17.contains(extension))
+        .copied()
+        .collect::<Vec<_>>();
+
+    let summary = format!(
+        "revision_is_pv2={}\npostgres_versions_are_17_10_and_18_4={}\nopenssl_version_3_5_8={}\nopenssl_checksum_pinned={}\nworld_bin_build={}\ninstall_world_bin={}\nssl_configure_flags={}\nzlib_remains_disabled={}\nopenssl_runtime_closure={}\nsource_input_and_legal_markers={}\nmacho_cleanup_rewrite_sign_validate={}\nreusable_dependency_contract_complete={}\nevery_reused_bundle_validated={}\nsource_cache_checksum_validated={}\nbuild_jobs_bounded={}\npostgres_staging_is_track_local={}\ntrack_17_extension_count={}\ntrack_18_extension_count={}\ntrack_18_additions={track_18_additions:?}\nonly_plpgsql_default={}\npv_realistic_auth={}\ncritical_function_smokes={}",
+        recipe.contains("pv_build_revision = \"pv2\""),
+        recipe.contains("upstream_version = \"17.10\"")
+            && recipe.contains("upstream_version = \"18.4\""),
+        openssl.contains("PV_POSTGRES_OPENSSL_VERSION=3.5.8"),
+        openssl.contains("a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2"),
+        build.contains("make -j \"$BUILD_JOBS\" world-bin"),
+        build.contains("make install-world-bin"),
+        build.contains("--with-ssl=openssl")
+            && build.contains("--with-includes=\"$openssl_prefix/include\"")
+            && build.contains("--with-libraries=\"$openssl_prefix/lib\""),
+        build.contains("--without-zlib"),
+        recipe.contains("lib/libssl.3.dylib")
+            && recipe.contains("lib/libcrypto.3.dylib")
+            && build.contains("cp \"$openssl_prefix/lib/libssl.3.dylib\"")
+            && build.contains("cp \"$openssl_prefix/lib/libcrypto.3.dylib\""),
+        build.contains("--source-input openssl")
+            && build.contains("--license-file OPENSSL-LICENSE")
+            && build.contains("--notice-file THIRD-PARTY-NOTICES"),
+        common.contains("pv_recipe_cleanup_macho_rpaths_tree")
+            && build.contains("rewrite_macho_install_names")
+            && build.contains("pv_recipe_ad_hoc_sign_macho_tree")
+            && build.contains("pv_recipe_validate_macho_binary"),
+        [
+            "source_version=",
+            "source_url=",
+            "source_sha256=",
+            "platform=",
+            "architecture=",
+            "sdk_version=",
+            "sdk_path=",
+            "sdk_root=",
+            "deployment_target=",
+            "compiler_path=",
+            "compiler_version=",
+            "xcode_version=",
+            "xcode_build_version=",
+            "configure_target=",
+            "configure_flags=no-tests",
+            "openssl_dir=",
+            "common_script_sha256=",
+            "dependencies_script_sha256=",
+            "cflags=",
+            "cppflags=",
+            "ldflags=",
+            "build_jobs=",
+        ]
+        .iter()
+        .all(|contract_input| dependencies.contains(contract_input)),
+        dependencies.contains("use_bundle")
+            && dependencies.contains("validate_contract \"$extracted_prefix\"")
+            && dependencies.contains("validate_prefix \"$openssl_prefix\""),
+        build.contains("if [ -f \"$source_archive\" ]")
+            && build.contains("require_sha256 \"$source_archive\" \"$source_sha256\""),
+        build.contains("Postgres build jobs must be an integer from 1 through 4")
+            && dependencies
+                .contains("Postgres dependency build jobs must be an integer from 1 through 4"),
+        build.contains("work_dir=\"$OUT_DIR/work/postgres-$PV_TRACK-$artifact_basename\"")
+            && build.contains("source_extract_dir=\"$work_dir/postgresql-source\""),
+        extensions_17.len(),
+        extensions_18.len(),
+        smoke.contains("printf '%s\\n' plpgsql")
+            && smoke.contains("SELECT extname FROM pg_extension ORDER BY extname"),
+        smoke.contains("--username \"$admin_user\"")
+            && smoke.contains("--auth-host scram-sha-256")
+            && smoke.contains("--auth-local trust")
+            && smoke.contains("unix_socket_directories = ''"),
+        smoke.contains("gin_trgm_ops")
+            && smoke.contains("digest('pv', 'sha256')")
+            && smoke.contains("gen_salt('md5')")
+            && smoke.contains("cipher-algo=aes256")
+            && smoke.contains("NOT ssl_is_used()"),
+    );
+
+    assert_debug_snapshot!(summary);
+    Ok(())
+}
+
+#[test]
+fn postgres_dependency_cache_contract_is_exact_and_track_independent() -> Result<()> {
+    let tempdir = tempdir()?;
+    let fake_bin = tempdir.path().join("bin");
+    let compiler = fake_bin.join("clang");
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dependency_script =
+        workspace_root.join("release/artifacts/recipes/postgres/dependencies.sh");
+
+    create_dir_all(&fake_bin)?;
+    write_fake_compiler(&compiler)?;
+    write_fake_uname(&fake_bin.join("uname"))?;
+    write_fake_xcrun(&fake_bin.join("xcrun"))?;
+    write_fake_xcodebuild(&fake_bin.join("xcodebuild"))?;
+
+    let run_describe = |track: &str,
+                        platform: &str,
+                        architecture: &str,
+                        cflags: &str,
+                        work_dir: &Utf8Path|
+     -> Result<Output> {
+        Ok(StdCommand::new(&dependency_script)
+            .arg("describe")
+            .env("CC", &compiler)
+            .env("CFLAGS", cflags)
+            .env_remove("LDFLAGS")
+            .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+            .env("PV_BUILD_JOBS", "2")
+            .env("PV_POSTGRES_DEPENDENCY_WORK_DIR", work_dir)
+            .env("PV_RECIPE_PLATFORM", platform)
+            .env("PV_RECIPE_TRACK", track)
+            .env("PV_TEST_COMPILER_PATH", &compiler)
+            .env("PV_TEST_UNAME_ARCH", architecture)
+            .output()?)
+    };
+    let cache_key = |output: &Output| -> Result<String> {
+        assert!(
+            output.status.success(),
+            "dependency description failed: {}",
+            command_output_debug(output)
+        );
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .find_map(|line| line.strip_prefix("cache_key="))
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow::anyhow!("dependency description omitted cache_key"))
+    };
+
+    let arm_17_work = tempdir.path().join("arm-17");
+    let arm_17 = run_describe("17", "darwin-arm64", "arm64", "", &arm_17_work)?;
+    let arm_18 = run_describe(
+        "18",
+        "darwin-arm64",
+        "arm64",
+        "",
+        &tempdir.path().join("arm-18"),
+    )?;
+    let arm_optimized = run_describe(
+        "17",
+        "darwin-arm64",
+        "arm64",
+        "-O2",
+        &tempdir.path().join("arm-optimized"),
+    )?;
+    let intel = run_describe(
+        "17",
+        "darwin-amd64",
+        "x86_64",
+        "",
+        &tempdir.path().join("intel"),
+    )?;
+    let multiline_flags = run_describe(
+        "17",
+        "darwin-arm64",
+        "arm64",
+        "-O2\ncppflags=-Iinvalid",
+        &tempdir.path().join("multiline-flags"),
+    )?;
+
+    let arm_17_key = cache_key(&arm_17)?;
+    assert_eq!(arm_17_key, cache_key(&arm_18)?);
+    assert_ne!(arm_17_key, cache_key(&arm_optimized)?);
+    assert_ne!(arm_17_key, cache_key(&intel)?);
+    assert!(arm_17_key.starts_with("postgres-openssl-v1-darwin-arm64-"));
+    assert!(!multiline_flags.status.success());
+    assert!(
+        String::from_utf8_lossy(&multiline_flags.stderr)
+            .contains("Postgres dependency build contract values must be single-line")
+    );
+
+    let contract_path = arm_17_work.join("openssl-contract.txt");
+    assert_eq!(
+        arm_17_key,
+        format!(
+            "postgres-openssl-v1-darwin-arm64-{}",
+            file_sha256(&contract_path)?
+        )
+    );
+    let common_script_sha256 =
+        file_sha256(&workspace_root.join("release/artifacts/recipes/common.sh"))?;
+    let dependencies_script_sha256 = file_sha256(&dependency_script)?;
+    let contract = read_file(&contract_path)?
+        .replace(compiler.as_str(), "<compiler>")
+        .replace(&common_script_sha256, "<common-script>")
+        .replace(&dependencies_script_sha256, "<dependencies-script>");
+    assert_snapshot!(contract, @r#"
+    format=1
+    source_version=3.5.8
+    source_url=https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz
+    source_sha256=a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2
+    platform=darwin-arm64
+    architecture=arm64
+    sdk_version=15.5
+    sdk_path=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk
+    sdk_root=/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk
+    deployment_target=13.0
+    compiler_path=<compiler>
+    compiler_version=Apple clang version 17.0.0 (clang-1700.0.13.5)
+    xcode_version=Xcode 16.4
+    xcode_build_version=Build version 16F6
+    configure_target=darwin64-arm64-cc
+    configure_flags=no-tests
+    openssl_dir=/etc/ssl
+    common_script_sha256=<common-script>
+    dependencies_script_sha256=<dependencies-script>
+    cflags=
+    cppflags=
+    ldflags=-Wl,-headerpad_max_install_names
+    build_jobs=2
+    "#);
+
+    Ok(())
+}
+
+#[test]
+fn postgres_smoke_uses_pv_auth_and_validates_supplied_extensions() -> Result<()> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let artifact_postgresql = artifact_root.join("lib/postgresql");
+    let command_bin = tempdir.path().join("commands");
+    let codesign_log = tempdir.path().join("codesign.log");
+    let initdb_log = tempdir.path().join("initdb.log");
+    let pg_ctl_log = tempdir.path().join("pg-ctl.log");
+    let psql_log = tempdir.path().join("psql.log");
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let extension_catalog =
+        workspace_root.join("release/artifacts/recipes/postgres/catalogs/17.txt");
+    let expected_extension_creates = read_file(&extension_catalog)?
+        .lines()
+        .filter(|extension| !extension.is_empty() && *extension != "plpgsql")
+        .count();
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&artifact_postgresql)?;
+    create_dir_all(&command_bin)?;
+    write_executable(&artifact_bin.join("postgres"), "#!/bin/sh\nexit 0\n")?;
+    write_fake_postgres_initdb(&artifact_bin.join("initdb"))?;
+    write_fake_postgres_pg_ctl(&artifact_bin.join("pg_ctl"))?;
+    write_fake_postgres_psql(&artifact_bin.join("psql"))?;
+    for relative_path in [
+        "lib/libcrypto.3.dylib",
+        "lib/libssl.3.dylib",
+        "lib/postgresql/pg_trgm.dylib",
+        "lib/postgresql/pgcrypto.dylib",
+        "lib/postgresql/sslinfo.dylib",
+    ] {
+        write_file(&artifact_root.join(relative_path), "mach-o fixture\n")?;
+    }
+    write_fake_codesign(&command_bin.join("codesign"))?;
+    write_fake_lipo(&command_bin.join("lipo"))?;
+    write_fake_otool(&command_bin.join("otool"))?;
+    write_executable(&command_bin.join("sleep"), "#!/bin/sh\nexit 0\n")?;
+    write_file(&codesign_log, "")?;
+    write_file(&initdb_log, "")?;
+    write_file(&pg_ctl_log, "")?;
+    write_file(&psql_log, "")?;
+
+    let output = StdCommand::new(postgres_smoke_hook())
+        .arg(&artifact_root)
+        .env(
+            "PATH",
+            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
+        )
+        .env("PV_POSTGRES_EXTENSION_CATALOG", &extension_catalog)
+        .env("PV_POSTGRES_PLATFORM", "darwin-arm64")
+        .env("PV_POSTGRES_DEPLOYMENT_TARGET", "13.0")
+        .env("PV_TEST_CODESIGN_LOG", &codesign_log)
+        .env("PV_TEST_LIPO_ARCHS", "arm64")
+        .env("PV_TEST_MACHO_LIBRARIES", "")
+        .env("PV_TEST_MACHO_MINOS", "13.0")
+        .env("PV_TEST_MACHO_RPATHS", "@loader_path/../lib")
+        .env("PV_TEST_POSTGRES_INITDB_LOG", &initdb_log)
+        .env("PV_TEST_POSTGRES_PG_CTL_LOG", &pg_ctl_log)
+        .env("PV_TEST_POSTGRES_PSQL_LOG", &psql_log)
+        .output()?;
+
+    assert!(
+        output.status.success(),
+        "Postgres supplied-extension smoke failed: {}",
+        command_output_debug(&output)
+    );
+    let initdb_log = read_file(&initdb_log)?;
+    let pg_ctl_log = read_file(&pg_ctl_log)?;
+    let psql_log = read_file(&psql_log)?;
+    let extension_creates = psql_log
+        .lines()
+        .filter(|line| line.starts_with("CREATE EXTENSION"))
+        .count();
+
+    assert_eq!(extension_creates, expected_extension_creates);
+    assert!(psql_log.contains("CREATE EXTENSION earthdistance CASCADE"));
+    assert!(psql_log.contains("gin_trgm_ops"));
+    assert!(psql_log.contains("gen_salt('md5')"));
+    assert!(psql_log.contains("cipher-algo=aes256"));
+    assert!(psql_log.contains("NOT ssl_is_used()"));
+    let bootstrap_summary = format!(
+        "initdb_username_pv_root={}\ninitdb_password_file={}\ninitdb_host_scram={}\ninitdb_local_trust={}\nlisten_tcp={}\nunix_sockets_disabled={}\nstarts={}\nstops={}",
+        initdb_log.contains("[--username][pv_root]"),
+        initdb_log.contains("[--pwfile]"),
+        initdb_log.contains("[--auth-host][scram-sha-256]"),
+        initdb_log.contains("[--auth-local][trust]"),
+        pg_ctl_log.contains("[listen_addresses = '127.0.0.1']"),
+        pg_ctl_log.contains("[unix_socket_directories = '']"),
+        pg_ctl_log.matches("action=start").count(),
+        pg_ctl_log.matches("action=stop").count(),
+    );
+    assert_debug_snapshot!(bootstrap_summary);
+
+    Ok(())
+}
+
+#[test]
+fn postgres_build_recipe_packages_pv2_supplied_extensions() -> Result<()> {
+    let run = run_postgres_build_recipe_smoke(false)?;
+
+    assert!(
+        run.output.status.success(),
+        "Postgres build recipe failed: {}",
+        command_output_debug(&run.output)
+    );
+    assert!(run.archive_exists);
+    assert_eq!(
+        run.validate_log,
+        "archive=postgres-17.10-pv2-darwin-arm64.tar.gz record=postgres-17.10-pv2-darwin-arm64.json smoke=smoke.sh\n"
+    );
+    assert!(run.configure_log.contains("[--with-ssl=openssl]"));
+    assert!(run.configure_log.contains("[--without-zlib]"));
+    assert!(run.make_log.contains("make=[-j][1][world-bin][pkglibdir="));
+    assert!(run.make_log.contains("/install/lib/postgresql]"));
+    assert!(run.make_log.contains("make=[install-world-bin][pkglibdir="));
+    assert!(run.openssl_build_log.contains("openssldir=/etc/ssl"));
+    assert!(
+        run.openssl_build_log
+            .contains("ldflags=-Wl,-headerpad_max_install_names")
+    );
+    assert!(
+        run.record_arguments_log
+            .contains("[--license-file][OPENSSL-LICENSE]")
+    );
+    assert!(
+        run.record_arguments_log
+            .contains("[--notice-file][THIRD-PARTY-NOTICES]")
+    );
+    assert!(run.deleted_rpaths_log.contains("openssl-3.5.8/lib"));
+    assert!(run.codesign_log.contains("lib/postgresql/pgcrypto.dylib"));
+    assert!(!run.codesign_log.contains("libpgcommon.a"));
+
+    let archive_entries = run.archive_entries.join("\n");
+    for relative_path in [
+        "lib/libcrypto.3.dylib",
+        "lib/libssl.3.dylib",
+        "lib/postgresql/pg_trgm.dylib",
+        "lib/postgresql/pgcrypto.dylib",
+        "lib/postgresql/sslinfo.dylib",
+        "share/extension/pg_trgm.control",
+        "share/extension/pgcrypto.control",
+        "share/extension/sslinfo.control",
+        "OPENSSL-LICENSE",
+        "THIRD-PARTY-NOTICES",
+    ] {
+        assert!(
+            archive_entries.contains(relative_path),
+            "Postgres archive is missing {relative_path}: {archive_entries}"
+        );
+    }
+
+    let record: Value = serde_json::from_str(
+        run.record_json
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("Postgres release record was not written"))?,
+    )?;
+    assert_debug_snapshot!(record["provenance"]["source_inputs"]);
+
+    Ok(())
+}
+
+#[test]
+fn postgres_build_recipe_rejects_catalog_drift_before_archiving() -> Result<()> {
+    let run = run_postgres_build_recipe_smoke(true)?;
+
+    assert!(
+        !run.output.status.success(),
+        "Postgres build unexpectedly accepted a mismatched extension catalog"
+    );
+    assert!(!run.archive_exists);
+    assert!(run.record_json.is_none());
+    assert_eq!(run.validate_log, "");
+    assert!(
+        String::from_utf8_lossy(&run.output.stderr)
+            .contains("Postgres supplied extension catalog does not match track 17")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn postgres_build_recipe_reuses_validated_dependency_and_source_downloads() -> Result<()> {
+    let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
+        reuse_openssl_bundle: true,
+        second_run: SecondPostgresRun::SameTrack,
+        ..PostgresBuildRecipeOptions::default()
+    })?;
+
+    let dependency_output = run
+        .dependency_output
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("reusable dependency build did not run"))?;
+    assert!(
+        dependency_output.status.success(),
+        "OpenSSL dependency build failed: {}",
+        command_output_debug(dependency_output)
+    );
+    assert!(
+        run.output.status.success(),
+        "first Postgres build failed: {}",
+        command_output_debug(&run.output)
+    );
+    let second_output = run
+        .second_output
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("second Postgres build did not run"))?;
+    assert!(
+        second_output.status.success(),
+        "second Postgres build failed: {}",
+        command_output_debug(second_output)
+    );
+    assert_eq!(run.curl_log.matches("argv=").count(), 2);
+    assert_eq!(
+        run.curl_log
+            .matches("https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz")
+            .count(),
+        1
+    );
+    assert_eq!(
+        run.curl_log
+            .matches("https://sources.example.test/postgres")
+            .count(),
+        1
+    );
+    assert_eq!(
+        run.openssl_build_log.matches("configure-target=").count(),
+        1
+    );
+    for library in ["libssl.3.dylib", "libcrypto.3.dylib"] {
+        assert!(run.codesign_log.lines().any(|line| {
+            line.contains("argv=[--force][--sign][-]")
+                && line.contains(&format!("openssl-3.5.8/lib/{library}"))
+        }));
+        assert!(run.codesign_log.lines().any(|line| {
+            line.contains("argv=[--verify]")
+                && line.contains(&format!("openssl-3.5.8/lib/{library}"))
+        }));
+    }
+
+    Ok(())
+}
+
+#[test]
+fn postgres_build_recipe_reuses_dependency_across_tracks() -> Result<()> {
+    let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
+        reuse_openssl_bundle: true,
+        second_run: SecondPostgresRun::NextTrack,
+        ..PostgresBuildRecipeOptions::default()
+    })?;
+
+    assert!(
+        run.output.status.success(),
+        "Postgres 17 build failed: {}",
+        command_output_debug(&run.output)
+    );
+    let second_output = run
+        .second_output
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Postgres 18 build did not run"))?;
+    assert!(
+        second_output.status.success(),
+        "Postgres 18 build failed: {}",
+        command_output_debug(second_output)
+    );
+    assert!(run.archive_exists);
+    assert!(run.second_archive_exists);
+    assert_eq!(
+        run.openssl_build_log.matches("configure-target=").count(),
+        1
+    );
+    assert!(
+        run.validate_log
+            .contains("archive=postgres-17.10-pv2-darwin-arm64.tar.gz")
+    );
+    assert!(
+        run.validate_log
+            .contains("archive=postgres-18.4-pv2-darwin-arm64.tar.gz")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn postgres_build_recipe_rejects_reused_dependency_contract_mismatch() -> Result<()> {
+    let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
+        mismatch_openssl_contract: true,
+        reuse_openssl_bundle: true,
+        ..PostgresBuildRecipeOptions::default()
+    })?;
+
+    assert!(
+        !run.output.status.success(),
+        "Postgres build unexpectedly accepted a mismatched OpenSSL contract"
+    );
+    assert!(
+        String::from_utf8_lossy(&run.output.stderr)
+            .contains("reusable OpenSSL bundle does not match the expected build contract"),
+        "unexpected Postgres failure: {}",
+        command_output_debug(&run.output)
+    );
+    assert_eq!(run.configure_log, "");
+    assert!(!run.archive_exists);
+
+    Ok(())
+}
+
+#[test]
+fn postgres_build_recipe_accepts_handed_off_dependency_contract() -> Result<()> {
+    let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
+        mismatch_openssl_contract: true,
+        reuse_openssl_bundle: true,
+        use_producer_contract: true,
+        ..PostgresBuildRecipeOptions::default()
+    })?;
+
+    assert!(
+        run.output.status.success(),
+        "Postgres build rejected the producer contract: {}",
+        command_output_debug(&run.output)
+    );
+    assert!(run.archive_exists);
+
+    Ok(())
+}
+
+#[test]
+fn postgres_build_recipe_rejects_mismatched_handed_off_contract() -> Result<()> {
+    let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
+        corrupt_producer_contract: true,
+        reuse_openssl_bundle: true,
+        use_producer_contract: true,
+        ..PostgresBuildRecipeOptions::default()
+    })?;
+
+    assert!(!run.output.status.success());
+    assert!(
+        String::from_utf8_lossy(&run.output.stderr)
+            .contains("reusable OpenSSL bundle does not match the expected build contract")
+    );
+    assert_eq!(run.configure_log, "");
+
+    Ok(())
+}
+
+#[test]
+fn postgres_build_recipe_rejects_unbounded_parallelism() -> Result<()> {
+    let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
+        build_jobs: "5",
+        reuse_openssl_bundle: true,
+        ..PostgresBuildRecipeOptions::default()
+    })?;
+
+    let dependency_output = run
+        .dependency_output
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("reusable dependency build did not run"))?;
+    assert!(!dependency_output.status.success());
+    assert!(
+        String::from_utf8_lossy(&dependency_output.stderr)
+            .contains("Postgres dependency build jobs must be an integer from 1 through 4")
+    );
+    assert!(!run.output.status.success());
+    assert!(
+        String::from_utf8_lossy(&run.output.stderr)
+            .contains("Postgres build jobs must be an integer from 1 through 4")
+    );
+    assert_eq!(run.curl_log, "");
+
+    Ok(())
+}
+
+#[test]
+fn postgres_build_recipe_rejects_contract_hash_failure() -> Result<()> {
+    let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
+        fail_contract_hash: true,
+        reuse_openssl_bundle: true,
+        ..PostgresBuildRecipeOptions::default()
+    })?;
+
+    let dependency_output = run
+        .dependency_output
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("reusable dependency build did not run"))?;
+    assert!(!dependency_output.status.success());
+    assert!(
+        String::from_utf8_lossy(&dependency_output.stderr).contains("failed to calculate SHA-256")
+    );
+    assert!(!run.output.status.success());
+    assert!(String::from_utf8_lossy(&run.output.stderr).contains("failed to calculate SHA-256"));
+    assert_eq!(run.curl_log, "");
+
+    Ok(())
+}
+
+#[test]
+fn postgres_build_recipe_rejects_corrupted_source_cache() -> Result<()> {
+    let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
+        corrupt_postgres_source_cache: true,
+        reuse_openssl_bundle: true,
+        ..PostgresBuildRecipeOptions::default()
+    })?;
+
+    assert!(!run.output.status.success());
+    assert!(String::from_utf8_lossy(&run.output.stderr).contains("checksum mismatch"));
+    assert_eq!(run.configure_log, "");
+    assert!(!run.archive_exists);
+
+    Ok(())
+}
+
+#[test]
+fn postgres_build_recipe_rejects_invalid_reused_dependency_bundle() -> Result<()> {
+    let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
+        corrupt_openssl_bundle: true,
+        reuse_openssl_bundle: true,
+        ..PostgresBuildRecipeOptions::default()
+    })?;
+
+    let dependency_output = run
+        .dependency_output
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("reusable dependency build did not run"))?;
+    assert!(
+        dependency_output.status.success(),
+        "OpenSSL dependency fixture build failed: {}",
+        command_output_debug(dependency_output)
+    );
+    assert!(
+        !run.output.status.success(),
+        "Postgres build unexpectedly accepted an invalid OpenSSL bundle"
+    );
+    assert!(String::from_utf8_lossy(&run.output.stderr).contains("OpenSSL headers not found"));
+    assert_eq!(run.configure_log, "");
+    assert!(!run.archive_exists);
+
+    Ok(())
+}
+
+#[test]
 fn mysql_build_recipe_builds_openssl_prefix_for_cmake() -> Result<()> {
     let run = run_mysql_build_recipe_smoke()?;
 
@@ -1783,6 +2533,10 @@ fn mysql_build_recipe_builds_openssl_prefix_for_cmake() -> Result<()> {
         "MySQL recipe should install the recipe-built OpenSSL prefix before configuring MySQL: {openssl_build_log}"
     );
     assert!(
+        openssl_build_log.contains("openssldir=<openssl>/ssl"),
+        "MySQL recipe should preserve its private OpenSSL directory: {openssl_build_log}"
+    );
+    assert!(
         cmake_log.contains("[-DWITH_SSL=<openssl>]"),
         "MySQL CMake invocation should use the recipe-built OpenSSL prefix: {cmake_log}"
     );
@@ -1802,7 +2556,7 @@ fn mysql_build_recipe_builds_openssl_prefix_for_cmake() -> Result<()> {
     Array [
         Object {
             "name": String("openssl"),
-            "source_sha256": String("8505c910292123009b4f1327adb5ae9935c04bb05780d1436998953efe501ed4"),
+            "source_sha256": String("ae8fb74173066e791044f26e58c3d089b261b2170e47efe43bb2fc56fc8cc85c"),
             "source_url": String("https://sources.example.test/openssl.tar.gz"),
         },
     ]
@@ -1880,6 +2634,8 @@ fn sql_build_recipes_pin_macos_deployment_target() -> Result<()> {
     let mysql_build = read_file(&workspace_root.join("release/artifacts/recipes/mysql/build.sh"))?;
     let postgres_build =
         read_file(&workspace_root.join("release/artifacts/recipes/postgres/build.sh"))?;
+    let postgres_openssl =
+        read_file(&workspace_root.join("release/artifacts/recipes/postgres/openssl.env"))?;
 
     assert!(
         mysql_build.contains("\nDEPLOYMENT_TARGET=13.0\n"),
@@ -1890,7 +2646,8 @@ fn sql_build_recipes_pin_macos_deployment_target() -> Result<()> {
         "MySQL build recipe should not allow caller-controlled deployment targets"
     );
     assert!(
-        postgres_build.contains("\nDEPLOYMENT_TARGET=13.0\n"),
+        postgres_openssl.contains("\nPV_POSTGRES_DEPLOYMENT_TARGET=13.0\n")
+            && postgres_build.contains("DEPLOYMENT_TARGET=$PV_POSTGRES_DEPLOYMENT_TARGET"),
         "Postgres build recipe should pin the deployment target to macOS 13.0"
     );
     assert!(
@@ -2283,6 +3040,60 @@ struct MysqlBuildRecipeRun {
     archive_exists: bool,
 }
 
+struct PostgresBuildRecipeRun {
+    output: Output,
+    dependency_output: Option<Output>,
+    second_output: Option<Output>,
+    record_json: Option<String>,
+    curl_log: String,
+    configure_log: String,
+    make_log: String,
+    openssl_build_log: String,
+    record_arguments_log: String,
+    validate_log: String,
+    deleted_rpaths_log: String,
+    codesign_log: String,
+    archive_entries: Vec<String>,
+    archive_exists: bool,
+    second_archive_exists: bool,
+}
+
+struct PostgresBuildRecipeOptions {
+    build_jobs: &'static str,
+    corrupt_openssl_bundle: bool,
+    corrupt_postgres_source_cache: bool,
+    corrupt_producer_contract: bool,
+    fail_contract_hash: bool,
+    install_mismatched_catalog: bool,
+    mismatch_openssl_contract: bool,
+    reuse_openssl_bundle: bool,
+    second_run: SecondPostgresRun,
+    use_producer_contract: bool,
+}
+
+enum SecondPostgresRun {
+    None,
+    SameTrack,
+    NextTrack,
+}
+
+impl Default for PostgresBuildRecipeOptions {
+    fn default() -> Self {
+        Self {
+            build_jobs: "1",
+            corrupt_openssl_bundle: false,
+            corrupt_postgres_source_cache: false,
+            corrupt_producer_contract: false,
+            fail_contract_hash: false,
+            install_mismatched_catalog: false,
+            mismatch_openssl_contract: false,
+            reuse_openssl_bundle: false,
+            second_run: SecondPostgresRun::None,
+            use_producer_contract: false,
+        }
+    }
+}
+
 struct MysqlBuildRecipeOptions {
     track: &'static str,
     upstream_version: &'static str,
@@ -2411,6 +3222,22 @@ AC_DEFUN([PHP_CHECK_AVX512_VBMI_SUPPORTS], [
 ])
 "#;
 
+const PHP_83_PDO_PGSQL_ORIGINAL_M4: &str = r#"  AC_DEFINE(HAVE_PDO_PGSQL,1,[Whether to build PostgreSQL for PDO support or not])
+
+  old_LIBS=$LIBS
+  old_LDFLAGS=$LDFLAGS
+  LDFLAGS="-L$PGSQL_LIBDIR $LDFLAGS"
+
+"#;
+
+const PHP_83_PGSQL_ORIGINAL_M4: &str = r#"
+  AC_DEFINE(HAVE_PGSQL,1,[Whether to build PostgreSQL support or not])
+  old_LIBS=$LIBS
+  old_LDFLAGS=$LDFLAGS
+  LDFLAGS="-L$PGSQL_LIBDIR $LDFLAGS"
+  AC_CHECK_LIB(pq, PQlibVersion,, AC_MSG_ERROR([Unable to build the PostgreSQL extension: at least libpq 9.1 is required]))
+"#;
+
 impl BackingBuildRecipe {
     fn all() -> [Self; 4] {
         [
@@ -2487,6 +3314,11 @@ fn mysql_smoke_hook() -> camino::Utf8PathBuf {
     Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/mysql/smoke.sh")
 }
 
+fn postgres_smoke_hook() -> camino::Utf8PathBuf {
+    Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../release/artifacts/recipes/postgres/smoke.sh")
+}
+
 fn mailpit_smoke_hook() -> camino::Utf8PathBuf {
     Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../release/artifacts/recipes/mailpit/smoke.sh")
@@ -2527,6 +3359,7 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
     write_fake_curl(&fake_bin.join("curl"))?;
     write_fake_lipo(&fake_bin.join("lipo"))?;
     write_fake_otool(&fake_bin.join("otool"))?;
+    write_fake_macho_file(&fake_bin.join("file"))?;
     write_fake_make(&fake_bin.join("make"))?;
     write_fake_codesign(&fake_bin.join("codesign"))?;
     write_fake_sysctl(&fake_bin.join("sysctl"))?;
@@ -2594,6 +3427,297 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
     run_mysql_build_recipe_smoke_with_options(MysqlBuildRecipeOptions::default())
 }
 
+fn run_postgres_build_recipe_smoke(
+    install_mismatched_catalog: bool,
+) -> Result<PostgresBuildRecipeRun> {
+    run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
+        install_mismatched_catalog,
+        ..PostgresBuildRecipeOptions::default()
+    })
+}
+
+fn run_postgres_build_recipe_smoke_with_options(
+    options: PostgresBuildRecipeOptions,
+) -> Result<PostgresBuildRecipeRun> {
+    let tempdir = tempdir()?;
+    let fake_bin = tempdir.path().join("bin");
+    let out_dir = tempdir.path().join("out");
+    let record_dir = tempdir.path().join("records");
+    let source_archive = tempdir.path().join("postgres-source.tar.gz");
+    let openssl_source_archive = tempdir.path().join("openssl-source.tar.gz");
+    let artifact_basename = "postgres-17.10-pv2-darwin-arm64";
+    let dependency_bundle = tempdir.path().join("postgres-openssl-bundle.tar.gz");
+    let dependency_prefix = tempdir.path().join("openssl-dependency");
+    let dependency_work_dir = tempdir.path().join("dependency-work");
+    let source_cache_dir = out_dir.join("sources");
+    let compiler = fake_bin.join("clang");
+    let curl_log = tempdir.path().join("curl.log");
+    let configure_log = tempdir.path().join("configure.log");
+    let make_log = tempdir.path().join("make.log");
+    let openssl_build_log = tempdir.path().join("openssl-build.log");
+    let validate_log = tempdir.path().join("validate.log");
+    let codesign_log = tempdir.path().join("codesign.log");
+    let install_name_log = tempdir.path().join("install-name.log");
+    let deleted_rpaths_log = tempdir.path().join("deleted-rpaths.log");
+    let removed_rpaths_log = tempdir.path().join("removed-rpaths.log");
+    let record_arguments_log = tempdir.path().join("record-arguments.log");
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let extension_catalog_17 =
+        workspace_root.join("release/artifacts/recipes/postgres/catalogs/17.txt");
+    let extension_catalog_18 =
+        workspace_root.join("release/artifacts/recipes/postgres/catalogs/18.txt");
+
+    create_dir_all(&fake_bin)?;
+    write_postgres_source_archive(&source_archive)?;
+    write_openssl_source_archive(&openssl_source_archive)?;
+    write_fake_backing_cargo(&fake_bin.join("cargo"))?;
+    write_fake_curl(&fake_bin.join("curl"))?;
+    write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
+    write_fake_lipo(&fake_bin.join("lipo"))?;
+    write_fake_otool(&fake_bin.join("otool"))?;
+    write_fake_macho_file(&fake_bin.join("file"))?;
+    write_fake_codesign(&fake_bin.join("codesign"))?;
+    write_fake_postgres_make(&fake_bin.join("make"))?;
+    write_fake_openssl_perl(&fake_bin.join("perl"))?;
+    write_fake_postgres_shasum(&fake_bin.join("shasum"))?;
+    write_fake_compiler(&compiler)?;
+    write_fake_uname(&fake_bin.join("uname"))?;
+    write_fake_xcrun(&fake_bin.join("xcrun"))?;
+    write_fake_xcodebuild(&fake_bin.join("xcodebuild"))?;
+    for log in [
+        &curl_log,
+        &configure_log,
+        &make_log,
+        &openssl_build_log,
+        &validate_log,
+        &codesign_log,
+        &install_name_log,
+        &deleted_rpaths_log,
+        &removed_rpaths_log,
+        &record_arguments_log,
+    ] {
+        write_file(log, "")?;
+    }
+
+    let dependency_script =
+        workspace_root.join("release/artifacts/recipes/postgres/dependencies.sh");
+    let dependency_output = if options.reuse_openssl_bundle {
+        Some(
+            StdCommand::new(&dependency_script)
+                .arg("build")
+                .arg(&dependency_bundle)
+                .arg(&dependency_prefix)
+                .env("CC", &compiler)
+                .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+                .env("PV_BUILD_JOBS", options.build_jobs)
+                .env("PV_POSTGRES_DEPENDENCY_WORK_DIR", &dependency_work_dir)
+                .env("PV_POSTGRES_SOURCE_CACHE_DIR", &source_cache_dir)
+                .env("PV_RECIPE_PLATFORM", "darwin-arm64")
+                .env("PV_TEST_COMPILER_PATH", &compiler)
+                .env("PV_TEST_CURL_LOG", &curl_log)
+                .env(
+                    "PV_TEST_FAIL_CONTRACT_HASH",
+                    if options.fail_contract_hash { "1" } else { "" },
+                )
+                .env("PV_TEST_LIPO_ARCHS", "arm64")
+                .env("PV_TEST_MACHO_LIBRARIES", "")
+                .env("PV_TEST_MACHO_MINOS", "13.0")
+                .env("PV_TEST_MACHO_RPATHS", "")
+                .env("PV_TEST_OPENSSL_BUILD_LOG", &openssl_build_log)
+                .env("PV_TEST_OPENSSL_BUILD_PREFIX", &dependency_prefix)
+                .env("PV_TEST_OPENSSL_SOURCE_ARCHIVE", &openssl_source_archive)
+                .output()?,
+        )
+    } else {
+        None
+    };
+    if options.corrupt_openssl_bundle
+        && let Some(output) = dependency_output.as_ref()
+        && output.status.success()
+    {
+        remove_openssl_header_from_bundle(&dependency_bundle, &dependency_prefix, tempdir.path())?;
+    }
+    if options.corrupt_producer_contract {
+        write_file(
+            &dependency_work_dir.join("openssl-contract.txt"),
+            "wrong contract\n",
+        )?;
+    }
+    if options.corrupt_postgres_source_cache {
+        create_dir_all(&source_cache_dir)?;
+        write_file(
+            &source_cache_dir.join("postgresql-17.10.tar.gz"),
+            "corrupted source cache fixture",
+        )?;
+    }
+
+    let build_script = workspace_root.join("release/artifacts/recipes/postgres/build.sh");
+    let run_build = |track: &str,
+                     upstream_version: &str,
+                     extension_catalog: &Utf8Path,
+                     install_mismatched_catalog: bool|
+     -> Result<Output> {
+        let build_artifact_basename = format!("postgres-{upstream_version}-pv2-darwin-arm64");
+        let openssl_prefix = out_dir
+            .join("work")
+            .join(format!("postgres-{track}-{build_artifact_basename}"))
+            .join("openssl-3.5.8");
+        let mut command = StdCommand::new(&build_script);
+        command
+            .env("CC", &compiler)
+            .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+            .env("PV_ARTIFACT_OUT_DIR", &out_dir)
+            .env("PV_ARTIFACT_RECORD_DIR", &record_dir)
+            .env("PV_BUILD_JOBS", options.build_jobs)
+            .env("PV_BUILD_RUN_ID", "local-test")
+            .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
+            .env("PV_POSTGRES_SOURCE_CACHE_DIR", &source_cache_dir)
+            .env("PV_RECIPE_PLATFORM", "darwin-arm64")
+            .env("PV_RECIPE_TRACK", track)
+            .env("PV_TEST_CODESIGN_LOG", &codesign_log)
+            .env("PV_TEST_CODESIGN_REQUIRES_INSTALL_NAME", "1")
+            .env("PV_TEST_CONFIGURE_LOG", &configure_log)
+            .env("PV_TEST_CURL_LOG", &curl_log)
+            .env("PV_TEST_DELETED_RPATH_LOG", &deleted_rpaths_log)
+            .env(
+                "PV_TEST_FAIL_CONTRACT_HASH",
+                if options.fail_contract_hash { "1" } else { "" },
+            )
+            .env("PV_TEST_INSTALL_NAME_LOG", &install_name_log)
+            .env("PV_TEST_LIPO_ARCHS", "arm64")
+            .env("PV_TEST_MACHO_LIBRARIES", "")
+            .env("PV_TEST_MACHO_MINOS", "13.0")
+            .env(
+                "PV_TEST_MACHO_RPATHS",
+                format!("{}/lib\n@loader_path/../lib", openssl_prefix),
+            )
+            .env("PV_TEST_MAKE_LOG", &make_log)
+            .env("PV_TEST_OPENSSL_BUILD_LOG", &openssl_build_log)
+            .env("PV_TEST_OPENSSL_BUILD_PREFIX", &openssl_prefix)
+            .env("PV_TEST_COMPILER_PATH", &compiler)
+            .env("PV_TEST_OPENSSL_SOURCE_ARCHIVE", &openssl_source_archive)
+            .env("PV_TEST_POSTGRES_EXTENSION_CATALOG", extension_catalog)
+            .env(
+                "PV_TEST_POSTGRES_INSTALL_MISMATCHED_CATALOG",
+                if install_mismatched_catalog { "1" } else { "" },
+            )
+            .env("PV_TEST_PV_BUILD_REVISION", "pv2")
+            .env("PV_TEST_RECORD_ARGUMENTS_LOG", &record_arguments_log)
+            .env("PV_TEST_REMOVED_RPATHS_LOG", &removed_rpaths_log)
+            .env("PV_TEST_RESOURCE", "postgres")
+            .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
+            .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
+            .env(
+                "PV_TEST_USE_REAL_POSTGRES_SOURCE_HASH",
+                if options.corrupt_postgres_source_cache {
+                    "1"
+                } else {
+                    ""
+                },
+            )
+            .env("PV_TEST_UPSTREAM_VERSION", upstream_version)
+            .env("PV_TEST_VALIDATE_LOG", &validate_log);
+        if options.reuse_openssl_bundle {
+            command.env("PV_POSTGRES_OPENSSL_BUNDLE_ARCHIVE", &dependency_bundle);
+        }
+        if options.use_producer_contract {
+            command.env(
+                "PV_POSTGRES_OPENSSL_CONTRACT_FILE",
+                dependency_work_dir.join("openssl-contract.txt"),
+            );
+        }
+        if options.mismatch_openssl_contract {
+            command.env("CFLAGS", "-O2");
+        }
+        Ok(command.output()?)
+    };
+    let output = run_build(
+        "17",
+        "17.10",
+        &extension_catalog_17,
+        options.install_mismatched_catalog,
+    )?;
+    let second_output = match options.second_run {
+        SecondPostgresRun::None => None,
+        SecondPostgresRun::SameTrack => {
+            Some(run_build("17", "17.10", &extension_catalog_17, false)?)
+        }
+        SecondPostgresRun::NextTrack => {
+            Some(run_build("18", "18.4", &extension_catalog_18, false)?)
+        }
+    };
+
+    let archive = out_dir.join(format!("{artifact_basename}.tar.gz"));
+    let record = record_dir
+        .join("postgres")
+        .join("17")
+        .join("17.10-pv2")
+        .join("darwin-arm64")
+        .join(format!("{artifact_basename}.json"));
+    let archive_exists = path_exists(&archive);
+    let second_archive_exists = path_exists(&out_dir.join("postgres-18.4-pv2-darwin-arm64.tar.gz"));
+    let archive_entries = if archive_exists {
+        archive_entries(&archive)?
+    } else {
+        Vec::new()
+    };
+
+    Ok(PostgresBuildRecipeRun {
+        output,
+        dependency_output,
+        second_output,
+        record_json: read_optional_file(&record)?,
+        curl_log: read_file(&curl_log)?,
+        configure_log: read_file(&configure_log)?,
+        make_log: read_file(&make_log)?,
+        openssl_build_log: read_file(&openssl_build_log)?,
+        record_arguments_log: read_file(&record_arguments_log)?,
+        validate_log: read_file(&validate_log)?,
+        deleted_rpaths_log: read_file(&deleted_rpaths_log)?,
+        codesign_log: read_file(&codesign_log)?,
+        archive_entries,
+        archive_exists,
+        second_archive_exists,
+    })
+}
+
+fn remove_openssl_header_from_bundle(
+    bundle: &Utf8Path,
+    build_prefix: &Utf8Path,
+    temp_dir: &Utf8Path,
+) -> Result<()> {
+    let bundle_root_name = build_prefix
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("OpenSSL dependency prefix has no basename"))?;
+    let extract_dir = temp_dir.join("corrupt-openssl-bundle");
+    create_dir_all(&extract_dir)?;
+    let extract_status = StdCommand::new("tar")
+        .arg("-xzf")
+        .arg(bundle)
+        .arg("-C")
+        .arg(&extract_dir)
+        .status()?;
+    if !extract_status.success() {
+        anyhow::bail!("failed to extract reusable OpenSSL test bundle");
+    }
+    remove_file(
+        &extract_dir
+            .join(bundle_root_name)
+            .join("include/openssl/ssl.h"),
+    )?;
+    let archive_status = StdCommand::new("tar")
+        .arg("-czf")
+        .arg(bundle)
+        .arg("-C")
+        .arg(&extract_dir)
+        .arg(bundle_root_name)
+        .status()?;
+    if !archive_status.success() {
+        anyhow::bail!("failed to rewrite reusable OpenSSL test bundle");
+    }
+    Ok(())
+}
+
 fn run_mysql_build_recipe_smoke_with_options(
     options: MysqlBuildRecipeOptions,
 ) -> Result<MysqlBuildRecipeRun> {
@@ -2628,6 +3752,7 @@ fn run_mysql_build_recipe_smoke_with_options(
     write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
     write_fake_lipo(&fake_bin.join("lipo"))?;
     write_fake_otool(&fake_bin.join("otool"))?;
+    write_fake_macho_file(&fake_bin.join("file"))?;
     write_fake_codesign(&fake_bin.join("codesign"))?;
     write_fake_mysql_make(&fake_bin.join("make"))?;
     write_fake_openssl_perl(&fake_bin.join("perl"))?;
@@ -2770,6 +3895,7 @@ fn run_backing_build_recipe_smoke(
     write_fake_curl(&fake_bin.join("curl"))?;
     write_fake_lipo(&fake_bin.join("lipo"))?;
     write_fake_otool(&fake_bin.join("otool"))?;
+    write_fake_macho_file(&fake_bin.join("file"))?;
     write_fake_codesign(&fake_bin.join("codesign"))?;
     write_fake_unzip(&fake_bin.join("unzip"))?;
     write_file(&curl_log, "")?;
@@ -2895,6 +4021,7 @@ fn run_backing_build_recipe_signing_smoke(
     write_fake_lipo(&fake_bin.join("lipo"))?;
     write_fake_make(&fake_bin.join("make"))?;
     write_fake_otool(&fake_bin.join("otool"))?;
+    write_fake_macho_file(&fake_bin.join("file"))?;
     write_fake_sysctl(&fake_bin.join("sysctl"))?;
     write_fake_uname(&fake_bin.join("uname"))?;
     write_fake_unzip(&fake_bin.join("unzip"))?;
@@ -2996,6 +4123,7 @@ fn run_php_build_recipe_smoke_with_options(
     write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
     write_fake_lipo(&fake_bin.join("lipo"))?;
     write_fake_otool(&fake_bin.join("otool"))?;
+    write_fake_macho_file(&fake_bin.join("file"))?;
     write_fake_pkg_config(&fake_bin.join("pkg-config"))?;
     write_fake_spc(&fake_bin.join("spc"))?;
     write_file(&curl_log, "")?;
@@ -3564,6 +4692,8 @@ fn write_fake_backing_cargo(path: &Utf8Path) -> Result<()> {
         r#"#!/bin/sh
 set -eu
 
+pv_build_revision=${PV_TEST_PV_BUILD_REVISION:-pv1}
+
 if [ "$#" -ge 5 ] && [ "$1" = "run" ] && [ "$2" = "-p" ] && [ "$3" = "pv-release" ] && [ "$4" = "--" ]; then
   case "$5" in
     print-recipe-env)
@@ -3572,14 +4702,21 @@ PV_RESOURCE=$PV_TEST_RESOURCE
 PV_TRACK=$PV_RECIPE_TRACK
 PV_PLATFORM=$PV_RECIPE_PLATFORM
 PV_UPSTREAM_VERSION=$PV_TEST_UPSTREAM_VERSION
-PV_ARTIFACT_VERSION=$PV_TEST_UPSTREAM_VERSION-pv1
+PV_ARTIFACT_VERSION=$PV_TEST_UPSTREAM_VERSION-$pv_build_revision
 PV_SOURCE_URL=https://sources.example.test/$PV_TEST_RESOURCE
 PV_SOURCE_SHA256=$PV_TEST_SOURCE_SHA256
-PV_PV_BUILD_REVISION=pv1
+PV_PV_BUILD_REVISION=$pv_build_revision
 PV_MINIMUM_PV_VERSION=0.1.0
 EOF
       ;;
     write-release-record)
+      if [ -n "${PV_TEST_RECORD_ARGUMENTS_LOG:-}" ]; then
+        printf 'argv=' >"$PV_TEST_RECORD_ARGUMENTS_LOG"
+        for argument in "$@"; do
+          printf '[%s]' "$argument" >>"$PV_TEST_RECORD_ARGUMENTS_LOG"
+        done
+        printf '\n' >>"$PV_TEST_RECORD_ARGUMENTS_LOG"
+      fi
       record=
       object_key=
       source_url=
@@ -3835,6 +4972,9 @@ case "$url" in
     cp "$PV_TEST_RAR_SOURCE_ARCHIVE" "$output"
     ;;
   https://sources.example.test/openssl.tar.gz)
+    cp "$PV_TEST_OPENSSL_SOURCE_ARCHIVE" "$output"
+    ;;
+  https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz)
     cp "$PV_TEST_OPENSSL_SOURCE_ARCHIVE" "$output"
     ;;
   https://sources.example.test/boost.tar.gz)
@@ -4352,6 +5492,16 @@ case "$binary" in
 esac
 
 case "${1:-}" in
+  -D)
+    printf '%s:\n' "$binary"
+    case "$binary" in
+      */lib/libssl.3.dylib | */lib/libcrypto.3.dylib)
+        if [ -n "${PV_TEST_OPENSSL_BUILD_PREFIX:-}" ]; then
+          printf '%s/lib/%s\n' "$PV_TEST_OPENSSL_BUILD_PREFIX" "${binary##*/}"
+        fi
+        ;;
+    esac
+    ;;
   -L)
     printf '%s:\n' "$binary"
     if [ -n "$macho_libraries" ]; then
@@ -4390,6 +5540,22 @@ EOF
   *)
     exit 78
     ;;
+esac
+"#,
+    )
+}
+
+fn write_fake_macho_file(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+file_path=${2:-}
+case "$file_path" in
+  *.a) printf '%s\n' 'current ar archive' ;;
+  */README | *.h | *.pc | *.txt) printf '%s\n' 'ASCII text' ;;
+  *) printf '%s\n' 'Mach-O 64-bit dynamically linked shared library' ;;
 esac
 "#,
     )
@@ -4457,6 +5623,110 @@ esac
     )
 }
 
+fn write_fake_postgres_make(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+if [ -f .pv-openssl-prefix ]; then
+  printf 'make=' >>"$PV_TEST_OPENSSL_BUILD_LOG"
+  for argument in "$@"; do
+    printf '[%s]' "$argument" >>"$PV_TEST_OPENSSL_BUILD_LOG"
+  done
+  printf '\n' >>"$PV_TEST_OPENSSL_BUILD_LOG"
+  case "${1:-}" in
+    install_sw)
+      openssl_prefix=$(cat .pv-openssl-prefix)
+      mkdir -p "$openssl_prefix/include/openssl" "$openssl_prefix/lib"
+      printf '%s\n' 'openssl fixture' >"$openssl_prefix/include/openssl/ssl.h"
+      printf '%s\n' 'libssl fixture' >"$openssl_prefix/lib/libssl.3.dylib"
+      printf '%s\n' 'libcrypto fixture' >"$openssl_prefix/lib/libcrypto.3.dylib"
+      ;;
+    -j)
+      [ -n "${2:-}" ] || exit 78
+      ;;
+    *)
+      exit 78
+      ;;
+  esac
+  exit 0
+fi
+
+printf 'make=' >>"$PV_TEST_MAKE_LOG"
+for argument in "$@"; do
+  printf '[%s]' "$argument" >>"$PV_TEST_MAKE_LOG"
+done
+printf '\n' >>"$PV_TEST_MAKE_LOG"
+
+[ -f .pv-postgres-prefix ] || exit 78
+install_prefix=$(cat .pv-postgres-prefix)
+case "${1:-}" in
+  -j)
+    [ "${3:-}" = world-bin ] || exit 78
+    [ "$#" -eq 4 ] || exit 78
+    [ "${4:-}" = "pkglibdir=$install_prefix/lib/postgresql" ] || exit 78
+    ;;
+  install-world-bin)
+    [ "$#" -eq 2 ] || exit 78
+    [ "${2:-}" = "pkglibdir=$install_prefix/lib/postgresql" ] || exit 78
+    mkdir -p \
+      "$install_prefix/bin" \
+      "$install_prefix/lib/postgresql/pgxs/src/test/regress" \
+      "$install_prefix/share/extension"
+    for binary in postgres initdb pg_ctl psql pg_config; do
+      printf '%s fixture\n' "$binary" >"$install_prefix/bin/$binary"
+      chmod 755 "$install_prefix/bin/$binary"
+    done
+    printf '%s\n' 'postgres catalog fixture' >"$install_prefix/share/postgres.bki"
+    printf '%s\n' 'static archive fixture' >"$install_prefix/lib/libpgcommon.a"
+    printf '%s\n' 'pg_regress fixture' >"$install_prefix/lib/postgresql/pgxs/src/test/regress/pg_regress"
+    chmod 755 "$install_prefix/lib/postgresql/pgxs/src/test/regress/pg_regress"
+    for extension in pg_trgm pgcrypto sslinfo; do
+      printf '%s fixture\n' "$extension" >"$install_prefix/lib/postgresql/$extension.dylib"
+    done
+    while IFS= read -r extension; do
+      if [ -n "${PV_TEST_POSTGRES_INSTALL_MISMATCHED_CATALOG:-}" ] && [ "$extension" = unaccent ]; then
+        continue
+      fi
+      printf '%s control fixture\n' "$extension" >"$install_prefix/share/extension/$extension.control"
+    done <"$PV_TEST_POSTGRES_EXTENSION_CATALOG"
+    ;;
+  *)
+    exit 78
+    ;;
+esac
+"#,
+    )
+}
+
+fn write_fake_postgres_shasum(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+file_path=${3:-}
+[ -z "${PV_TEST_FAIL_CONTRACT_HASH:-}" ] || [ "${file_path##*/}" != openssl-contract.txt ] || exit 42
+case "${file_path##*/}" in
+  openssl-3.5.8.tar.gz | openssl-3.5.8.tar.gz.tmp.*)
+    checksum=a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2
+    ;;
+  postgresql-17.10.tar.gz | postgresql-17.10.tar.gz.tmp.* | postgresql-18.4.tar.gz | postgresql-18.4.tar.gz.tmp.*)
+    if [ -n "${PV_TEST_USE_REAL_POSTGRES_SOURCE_HASH:-}" ]; then
+      exec /usr/bin/shasum "$@"
+    fi
+    checksum=$PV_TEST_SOURCE_SHA256
+    ;;
+  *)
+    exec /usr/bin/shasum "$@"
+    ;;
+esac
+printf '%s  %s\n' "$checksum" "$file_path"
+"#,
+    )
+}
+
 fn write_fake_openssl_perl(path: &Utf8Path) -> Result<()> {
     write_executable(
         path,
@@ -4470,23 +5740,164 @@ shift || true
 configure_target=${1:-}
 shift || true
 prefix=
+openssl_dir=
 for arg in "$@"; do
   case "$arg" in
     --prefix=*)
       prefix=${arg#--prefix=}
+      ;;
+    --openssldir=*)
+      openssl_dir=${arg#--openssldir=}
       ;;
   esac
 done
 
 [ -n "$configure_target" ] || exit 78
 [ -n "$prefix" ] || exit 78
+[ -n "$openssl_dir" ] || exit 78
 [ "$MACOSX_DEPLOYMENT_TARGET" = "13.0" ] || exit 79
 
-printf 'configure-target=%s deployment=%s prefix=%s\n' \
+printf 'configure-target=%s deployment=%s prefix=%s openssldir=%s ldflags=%s\n' \
   "$configure_target" \
   "$MACOSX_DEPLOYMENT_TARGET" \
-  "$prefix" >>"$PV_TEST_OPENSSL_BUILD_LOG"
+  "$prefix" \
+  "$openssl_dir" \
+  "${LDFLAGS:-}" >>"$PV_TEST_OPENSSL_BUILD_LOG"
 printf '%s\n' "$prefix" >.pv-openssl-prefix
+"#,
+    )
+}
+
+fn write_fake_postgres_initdb(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+printf 'argv=' >"$PV_TEST_POSTGRES_INITDB_LOG"
+data_dir=
+while [ "$#" -gt 0 ]; do
+  printf '[%s]' "$1" >>"$PV_TEST_POSTGRES_INITDB_LOG"
+  case "$1" in
+    -D)
+      shift
+      data_dir=${1:-}
+      printf '[%s]' "$data_dir" >>"$PV_TEST_POSTGRES_INITDB_LOG"
+      ;;
+  esac
+  shift
+done
+printf '\n' >>"$PV_TEST_POSTGRES_INITDB_LOG"
+
+[ -n "$data_dir" ] || exit 78
+mkdir -p "$data_dir"
+"#,
+    )
+}
+
+fn write_fake_postgres_pg_ctl(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+data_dir=
+action=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -D)
+      shift
+      data_dir=${1:-}
+      ;;
+    start | stop)
+      action=$1
+      ;;
+  esac
+  shift
+done
+
+[ -n "$data_dir" ] || exit 78
+[ -n "$action" ] || exit 78
+printf 'action=%s' "$action" >>"$PV_TEST_POSTGRES_PG_CTL_LOG"
+if [ "$action" = start ]; then
+  printf ' config=' >>"$PV_TEST_POSTGRES_PG_CTL_LOG"
+  while IFS= read -r line; do
+    printf '[%s]' "$line" >>"$PV_TEST_POSTGRES_PG_CTL_LOG"
+  done <"$data_dir/postgresql.conf"
+fi
+printf '\n' >>"$PV_TEST_POSTGRES_PG_CTL_LOG"
+"#,
+    )
+}
+
+fn write_fake_postgres_psql(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+host=
+port=
+user=
+database=
+sql=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h)
+      shift
+      host=${1:-}
+      ;;
+    -p)
+      shift
+      port=${1:-}
+      ;;
+    -U)
+      shift
+      user=${1:-}
+      ;;
+    -d)
+      shift
+      database=${1:-}
+      ;;
+    -v)
+      shift
+      ;;
+    -c)
+      shift
+      sql=${1:-}
+      ;;
+  esac
+  shift
+done
+
+[ "$host" = 127.0.0.1 ] || exit 78
+case "$port" in '' | *[!0-9]*) exit 78 ;; esac
+[ "$user" = pv_root ] || exit 78
+[ -n "$database" ] || exit 78
+[ "${PGPASSWORD:-}" = pv_local_password ] || exit 78
+
+case "$sql" in
+  "DROP DATABASE \"$database\"")
+    exit 79
+    ;;
+  'SELECT 1')
+    printf '%s\n' 1
+    ;;
+  'COPY (SELECT name FROM pg_available_extensions ORDER BY name) TO STDOUT')
+    cat "$PV_POSTGRES_EXTENSION_CATALOG"
+    ;;
+  'COPY (SELECT extname FROM pg_extension ORDER BY extname) TO STDOUT')
+    printf '%s\n' plpgsql
+    ;;
+  CREATE\ EXTENSION* | *gin_trgm_ops* | *'FROM trgm_smoke'* | *"digest('pv', 'sha256')"* | *'NOT ssl_is_used()'*)
+    printf '%s\n' "$sql" >>"$PV_TEST_POSTGRES_PSQL_LOG"
+    case "$sql" in
+      SELECT*) printf '%s\n' t ;;
+    esac
+    ;;
+  *)
+    ;;
+esac
 "#,
     )
 }
@@ -4575,6 +5986,18 @@ printf '%s\n' 1
     )
 }
 
+fn write_fake_compiler(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+[ "${1:-}" = "--version" ] || exit 78
+printf '%s\n' 'Apple clang version 17.0.0 (clang-1700.0.13.5)'
+"#,
+    )
+}
+
 fn write_fake_uname(path: &Utf8Path) -> Result<()> {
     write_executable(
         path,
@@ -4583,9 +6006,38 @@ set -eu
 
 case "${1:-}" in
   -s) printf '%s\n' Darwin ;;
-  -m) printf '%s\n' arm64 ;;
+  -m) printf '%s\n' "${PV_TEST_UNAME_ARCH:-arm64}" ;;
   *) exit 78 ;;
 esac
+"#,
+    )
+}
+
+fn write_fake_xcrun(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+case "$*" in
+  '--sdk macosx --show-sdk-version') printf '%s\n' '15.5' ;;
+  '--sdk macosx --show-sdk-path') printf '%s\n' '/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX15.5.sdk' ;;
+  '--find clang') printf '%s\n' "$PV_TEST_COMPILER_PATH" ;;
+  *) exit 78 ;;
+esac
+"#,
+    )
+}
+
+fn write_fake_xcodebuild(path: &Utf8Path) -> Result<()> {
+    write_executable(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+[ "${1:-}" = "-version" ] || exit 78
+printf '%s\n' 'Xcode 16.4'
+printf '%s\n' 'Build version 16F6'
 "#,
     )
 }
@@ -4776,41 +6228,39 @@ printf '\n' >>"$PV_TEST_SPC_LOG"
   exit 78
 }
 
-if [ -n "${PV_TEST_REQUIRE_STATICPHP_PHP83_FRANKENPHP_PATCH_CONTEXT:-}" ]; then
-  frankenphp_source_dir=
-  previous_arg=
-  for arg in "$@"; do
-    if [ "$previous_arg" = "--dl-custom-local" ]; then
-      case "$arg" in
-        frankenphp:*)
-          frankenphp_source_dir=${arg#frankenphp:}
-          ;;
-      esac
-    fi
-    previous_arg=$arg
-  done
+php_source_dir=
+frankenphp_source_dir=
+rar_source_dir=
+previous_arg=
+for arg in "$@"; do
+  if [ "$previous_arg" = "--dl-custom-local" ]; then
+    source_name=${arg%%:*}
+    source_dir=${arg#*:}
+    [ -L "source/$source_name" ] || exit 87
+    [ "$(readlink "source/$source_name")" = "$source_dir" ] || exit 88
+    case "$source_name" in
+      php-src) php_source_dir=$source_dir ;;
+      frankenphp) frankenphp_source_dir=$source_dir ;;
+      ext-rar) rar_source_dir=$source_dir ;;
+    esac
+  fi
+  previous_arg=$arg
+done
 
+if [ -n "${PV_TEST_REQUIRE_STATICPHP_PHP83_FRANKENPHP_PATCH_CONTEXT:-}" ]; then
+  [ -n "$php_source_dir" ] || exit 89
   [ -n "$frankenphp_source_dir" ] || exit 79
   [ -f "$frankenphp_source_dir/build/php.m4" ] || exit 80
   patch --dry-run -R -d "$frankenphp_source_dir" -p1 \
     <"$PV_TEST_STATICPHP_PHP83_AVX512_PATCH" >/dev/null || exit 81
+  for extension in pdo_pgsql pgsql; do
+    grep -F -x '  LIBS="-lpgcommon -lpgport $LIBS"' \
+      "$php_source_dir/ext/$extension/config.m4" >/dev/null || exit 90
+  done
 fi
 
 case " $* " in
   *" --build-shared="*xdebug*)
-    php_source_dir=
-    previous_arg=
-    for arg in "$@"; do
-      if [ "$previous_arg" = "--dl-custom-local" ]; then
-        case "$arg" in
-          php-src:*)
-            php_source_dir=${arg#php-src:}
-            ;;
-        esac
-      fi
-      previous_arg=$arg
-    done
-
     [ -n "$php_source_dir" ] || exit 82
     [ -L "$php_source_dir/m4" ] || exit 83
     [ "$(readlink "$php_source_dir/m4")" = "ext/xdebug/m4" ] || exit 84
@@ -4819,19 +6269,6 @@ esac
 
 case " $* " in
   *" --build-shared="*rar*)
-    rar_source_dir=
-    previous_arg=
-    for arg in "$@"; do
-      if [ "$previous_arg" = "--dl-custom-local" ]; then
-        case "$arg" in
-          ext-rar:*)
-            rar_source_dir=${arg#ext-rar:}
-            ;;
-        esac
-      fi
-      previous_arg=$arg
-    done
-
     [ -n "$rar_source_dir" ] || exit 85
     grep -F -x 'extra_cxxflags="-std=c++11 -Wall $cxxflags_null"' "$rar_source_dir/config.m4" >/dev/null || exit 86
     ;;
@@ -4878,11 +6315,19 @@ fn write_fake_codesign(path: &Utf8Path) -> Result<()> {
         path,
         r#"#!/bin/sh
 set -eu
+last_argument=
 printf 'argv=' >>"$PV_TEST_CODESIGN_LOG"
 for arg in "$@"; do
   printf '[%s]' "$arg" >>"$PV_TEST_CODESIGN_LOG"
+  last_argument=$arg
 done
 printf '\n' >>"$PV_TEST_CODESIGN_LOG"
+
+case "${PV_TEST_CODESIGN_REQUIRES_INSTALL_NAME:-}:$last_argument" in
+  1:*/openssl-3.5.8/lib/libssl.3.dylib | 1:*/openssl-3.5.8/lib/libcrypto.3.dylib)
+    grep -F "[$last_argument]" "$PV_TEST_INSTALL_NAME_LOG" >/dev/null || exit 79
+    ;;
+esac
 "#,
     )
 }
@@ -4936,6 +6381,16 @@ fn write_php_source_archive(path: &Utf8Path) -> Result<()> {
         "php-source/build/php.m4",
         PHP_83_AVX512_ORIGINAL_M4.as_bytes(),
     )?;
+    append_archive_file(
+        &mut builder,
+        "php-source/ext/pdo_pgsql/config.m4",
+        PHP_83_PDO_PGSQL_ORIGINAL_M4.as_bytes(),
+    )?;
+    append_archive_file(
+        &mut builder,
+        "php-source/ext/pgsql/config.m4",
+        PHP_83_PGSQL_ORIGINAL_M4.as_bytes(),
+    )?;
 
     let encoder = builder.into_inner()?;
     encoder.finish()?;
@@ -4965,6 +6420,50 @@ fn write_rar_source_archive(path: &Utf8Path) -> Result<()> {
     clippy::disallowed_types,
     reason = "release tooling tests create source tarball fixtures directly"
 )]
+fn write_postgres_source_archive(path: &Utf8Path) -> Result<()> {
+    let file = std::fs::File::create(path)?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+
+    append_archive_executable(
+        &mut builder,
+        "postgres-source/configure",
+        br#"#!/bin/sh
+set -eu
+
+printf 'argv=' >"$PV_TEST_CONFIGURE_LOG"
+prefix=
+with_ssl=false
+with_includes=false
+with_libraries=false
+for argument in "$@"; do
+  printf '[%s]' "$argument" >>"$PV_TEST_CONFIGURE_LOG"
+  case "$argument" in
+    --prefix=*) prefix=${argument#--prefix=} ;;
+    --with-ssl=openssl) with_ssl=true ;;
+    --with-includes=*) with_includes=true ;;
+    --with-libraries=*) with_libraries=true ;;
+  esac
+done
+printf '\n' >>"$PV_TEST_CONFIGURE_LOG"
+
+[ -n "$prefix" ] || exit 78
+[ "$with_ssl" = true ] || exit 78
+[ "$with_includes" = true ] || exit 78
+[ "$with_libraries" = true ] || exit 78
+printf '%s\n' "$prefix" >.pv-postgres-prefix
+"#,
+    )?;
+
+    let encoder = builder.into_inner()?;
+    encoder.finish()?;
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "release tooling tests create source tarball fixtures directly"
+)]
 fn write_openssl_source_archive(path: &Utf8Path) -> Result<()> {
     let file = std::fs::File::create(path)?;
     let encoder = GzEncoder::new(file, Compression::default());
@@ -4974,6 +6473,11 @@ fn write_openssl_source_archive(path: &Utf8Path) -> Result<()> {
         &mut builder,
         "openssl-source/Configure",
         b"openssl configure\n",
+    )?;
+    append_archive_file(
+        &mut builder,
+        "openssl-source/LICENSE.txt",
+        b"OpenSSL fixture license\n",
     )?;
 
     let encoder = builder.into_inner()?;
@@ -5122,6 +6626,20 @@ fn append_archive_file<W: std::io::Write>(
     Ok(())
 }
 
+fn append_archive_executable<W: std::io::Write>(
+    builder: &mut Builder<W>,
+    path: &str,
+    content: &[u8],
+) -> Result<()> {
+    let mut header = Header::new_gnu();
+    header.set_path(path)?;
+    header.set_size(content.len() as u64);
+    header.set_mode(0o755);
+    header.set_cksum();
+    builder.append(&header, content)?;
+    Ok(())
+}
+
 #[expect(
     clippy::disallowed_types,
     reason = "release tooling tests inspect archive contents"
@@ -5240,6 +6758,15 @@ fn create_dir_all(path: &Utf8Path) -> Result<()> {
 )]
 fn write_file(path: &Utf8Path, content: &str) -> Result<()> {
     std::fs::write(path, content)?;
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "release tooling tests corrupt a reusable dependency fixture"
+)]
+fn remove_file(path: &Utf8Path) -> Result<()> {
+    std::fs::remove_file(path)?;
     Ok(())
 }
 
