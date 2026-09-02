@@ -578,8 +578,8 @@ expression: manifest_json
               "pv_build_revision": "pv2",
               "platform": "darwin-amd64",
               "url": "https://artifacts.example.test/resources/postgres/17/17.10-pv2/darwin-amd64/postgres-17.10-pv2-darwin-amd64.tar.gz",
-              "sha256": "724a1f06fc5dc6cdb5eb7d113a5062771dc4dacf48465ce42400d8bab5b519b0",
-              "size": 511,
+              "sha256": "05c80713b91a90a746e2da222dfa64f94875945f9865d25aa7f5cd5f26528214",
+              "size": 506,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.gz",
@@ -595,7 +595,7 @@ expression: manifest_json
               "pv_build_revision": "pv2",
               "platform": "darwin-arm64",
               "url": "https://artifacts.example.test/resources/postgres/17/17.10-pv2/darwin-arm64/postgres-17.10-pv2-darwin-arm64.tar.gz",
-              "sha256": "8f7c0b01596b8479af871d26f5f4e55c9427278710ca66bacd77066e87838148",
+              "sha256": "765f191eece49eba239e2f9e951757e69c54d32edf2b51818044139f63e6ecde",
               "size": 508,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
@@ -617,8 +617,8 @@ expression: manifest_json
               "pv_build_revision": "pv2",
               "platform": "darwin-amd64",
               "url": "https://artifacts.example.test/resources/postgres/18/18.4-pv2/darwin-amd64/postgres-18.4-pv2-darwin-amd64.tar.gz",
-              "sha256": "7d07cc87ad90de56890a96c88b2f7758bdc5968ea060f5f2dd2aa2b407b25644",
-              "size": 512,
+              "sha256": "85c9363acbf4352b2e440f2e664865cab2d0a1f9c55fc362171351c71d782e09",
+              "size": 510,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://ftp.postgresql.org/pub/source/v18.4/postgresql-18.4.tar.gz",
@@ -634,8 +634,8 @@ expression: manifest_json
               "pv_build_revision": "pv2",
               "platform": "darwin-arm64",
               "url": "https://artifacts.example.test/resources/postgres/18/18.4-pv2/darwin-arm64/postgres-18.4-pv2-darwin-arm64.tar.gz",
-              "sha256": "f31c342e10c43e703527c073f7c770882e5de773f03c11e489eb70fe020424a3",
-              "size": 513,
+              "sha256": "649c2b67e65c451f5ce295e0275148118866f6bb08fe151baea04228dc8e6831",
+              "size": 510,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://ftp.postgresql.org/pub/source/v18.4/postgresql-18.4.tar.gz",

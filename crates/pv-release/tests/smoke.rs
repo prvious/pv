@@ -2049,7 +2049,7 @@ fn postgres_dependency_cache_contract_is_exact_and_track_independent() -> Result
     dependencies_script_sha256=<dependencies-script>
     cflags=
     cppflags=
-    ldflags=
+    ldflags=-Wl,-headerpad_max_install_names
     build_jobs=2
     "#);
 
@@ -2085,9 +2085,9 @@ fn postgres_smoke_uses_pv_auth_and_validates_supplied_extensions() -> Result<()>
     for relative_path in [
         "lib/libcrypto.3.dylib",
         "lib/libssl.3.dylib",
-        "lib/postgresql/pg_trgm.so",
-        "lib/postgresql/pgcrypto.so",
-        "lib/postgresql/sslinfo.so",
+        "lib/postgresql/pg_trgm.dylib",
+        "lib/postgresql/pgcrypto.dylib",
+        "lib/postgresql/sslinfo.dylib",
     ] {
         write_file(&artifact_root.join(relative_path), "mach-o fixture\n")?;
     }
@@ -2175,6 +2175,10 @@ fn postgres_build_recipe_packages_pv2_supplied_extensions() -> Result<()> {
     assert!(run.make_log.contains("make=[install-world-bin][pkglibdir="));
     assert!(run.openssl_build_log.contains("openssldir=/etc/ssl"));
     assert!(
+        run.openssl_build_log
+            .contains("ldflags=-Wl,-headerpad_max_install_names")
+    );
+    assert!(
         run.record_arguments_log
             .contains("[--license-file][OPENSSL-LICENSE]")
     );
@@ -2183,16 +2187,16 @@ fn postgres_build_recipe_packages_pv2_supplied_extensions() -> Result<()> {
             .contains("[--notice-file][THIRD-PARTY-NOTICES]")
     );
     assert!(run.deleted_rpaths_log.contains("openssl-3.5.8/lib"));
-    assert!(run.codesign_log.contains("lib/postgresql/pgcrypto.so"));
+    assert!(run.codesign_log.contains("lib/postgresql/pgcrypto.dylib"));
     assert!(!run.codesign_log.contains("libpgcommon.a"));
 
     let archive_entries = run.archive_entries.join("\n");
     for relative_path in [
         "lib/libcrypto.3.dylib",
         "lib/libssl.3.dylib",
-        "lib/postgresql/pg_trgm.so",
-        "lib/postgresql/pgcrypto.so",
-        "lib/postgresql/sslinfo.so",
+        "lib/postgresql/pg_trgm.dylib",
+        "lib/postgresql/pgcrypto.dylib",
+        "lib/postgresql/sslinfo.dylib",
         "share/extension/pg_trgm.control",
         "share/extension/pgcrypto.control",
         "share/extension/sslinfo.control",
@@ -5678,7 +5682,7 @@ case "${1:-}" in
     printf '%s\n' 'pg_regress fixture' >"$install_prefix/lib/postgresql/pgxs/src/test/regress/pg_regress"
     chmod 755 "$install_prefix/lib/postgresql/pgxs/src/test/regress/pg_regress"
     for extension in pg_trgm pgcrypto sslinfo; do
-      printf '%s fixture\n' "$extension" >"$install_prefix/lib/postgresql/$extension.so"
+      printf '%s fixture\n' "$extension" >"$install_prefix/lib/postgresql/$extension.dylib"
     done
     while IFS= read -r extension; do
       if [ -n "${PV_TEST_POSTGRES_INSTALL_MISMATCHED_CATALOG:-}" ] && [ "$extension" = unaccent ]; then
@@ -5752,11 +5756,12 @@ done
 [ -n "$openssl_dir" ] || exit 78
 [ "$MACOSX_DEPLOYMENT_TARGET" = "13.0" ] || exit 79
 
-printf 'configure-target=%s deployment=%s prefix=%s openssldir=%s\n' \
+printf 'configure-target=%s deployment=%s prefix=%s openssldir=%s ldflags=%s\n' \
   "$configure_target" \
   "$MACOSX_DEPLOYMENT_TARGET" \
   "$prefix" \
-  "$openssl_dir" >>"$PV_TEST_OPENSSL_BUILD_LOG"
+  "$openssl_dir" \
+  "${LDFLAGS:-}" >>"$PV_TEST_OPENSSL_BUILD_LOG"
 printf '%s\n' "$prefix" >.pv-openssl-prefix
 "#,
     )

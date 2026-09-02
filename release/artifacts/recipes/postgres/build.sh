@@ -153,9 +153,9 @@ copy_install_tree() {
   for library in \
     lib/libcrypto.3.dylib \
     lib/libssl.3.dylib \
-    lib/postgresql/pg_trgm.so \
-    lib/postgresql/pgcrypto.so \
-    lib/postgresql/sslinfo.so; do
+    lib/postgresql/pg_trgm.dylib \
+    lib/postgresql/pgcrypto.dylib \
+    lib/postgresql/sslinfo.dylib; do
     [ -f "$root_dir/$library" ] || die "Postgres artifact missing $library"
     pv_recipe_validate_macho_binary "$root_dir/$library" "$PLATFORM" "$DEPLOYMENT_TARGET"
   done

@@ -91,9 +91,9 @@ validate_packaged_macho_tree() {
     bin/psql \
     lib/libcrypto.3.dylib \
     lib/libssl.3.dylib \
-    lib/postgresql/pg_trgm.so \
-    lib/postgresql/pgcrypto.so \
-    lib/postgresql/sslinfo.so; do
+    lib/postgresql/pg_trgm.dylib \
+    lib/postgresql/pgcrypto.dylib \
+    lib/postgresql/sslinfo.dylib; do
     [ -f "$artifact_root/$relative_path" ] || die "Postgres archive missing $relative_path"
     validate_packaged_macho "$artifact_root/$relative_path"
   done
