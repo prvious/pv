@@ -1689,10 +1689,15 @@ fn validate_root_owned_regular_file(
     let metadata = std::fs::symlink_metadata(path).map_err(|error| {
         PlatformError::PrivilegedHelperInstallation(format!("could not inspect {path}: {error}"))
     })?;
-    let actual_mode = metadata.permissions().mode() & 0o777;
-    if !metadata.file_type().is_file() || metadata.uid() != 0 || actual_mode != expected_mode {
+    if !metadata.file_type().is_file() {
         return Err(PlatformError::PrivilegedHelperInstallation(format!(
-            "{path} must be a root-owned regular file with mode {expected_mode:o}"
+            "{path} must be a regular file"
+        )));
+    }
+    let actual_mode = metadata.permissions().mode() & 0o777;
+    if metadata.uid() != 0 || actual_mode != expected_mode {
+        return Err(PlatformError::PrivilegedHelperInstallation(format!(
+            "{path} must be root-owned with mode {expected_mode:o}"
         )));
     }
 
@@ -1929,7 +1934,7 @@ mod tests {
         assert!(matches!(
             validate_root_owned_regular_file(&link, 0o600),
             Err(PlatformError::PrivilegedHelperInstallation(message))
-                if message.contains("must be a root-owned regular file")
+                if message == format!("{link} must be a regular file")
         ));
 
         Ok(())
