@@ -804,15 +804,19 @@ fn setup_repairs_from_active_release_helper_metadata() -> anyhow::Result<()> {
         fixture.environment.as_ref(),
     )?;
     let _daemon_requests = daemon.finish()?;
+    let operations = fixture.environment.operations();
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert_eq!(
-        fixture.environment.operations().first(),
+        operations.first(),
         Some(&format!(
             "install helper {release_helper} prepared {}/config/helper version 1.1.0 protocol 1 sha256 {helper_sha256}",
             fixture.paths.root()
         ))
     );
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, operations));
+    });
 
     Ok(())
 }
