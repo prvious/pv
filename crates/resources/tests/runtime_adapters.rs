@@ -134,9 +134,9 @@ fn write_postgres_pv2_support_files(release: &Utf8Path) -> Result<()> {
     for relative_path in [
         "lib/libcrypto.3.dylib",
         "lib/libssl.3.dylib",
-        "lib/postgresql/pg_trgm.so",
-        "lib/postgresql/pgcrypto.so",
-        "lib/postgresql/sslinfo.so",
+        "lib/postgresql/pg_trgm.dylib",
+        "lib/postgresql/pgcrypto.dylib",
+        "lib/postgresql/sslinfo.dylib",
         "share/extension/pg_trgm.control",
         "share/extension/pgcrypto.control",
         "share/extension/sslinfo.control",

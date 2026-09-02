@@ -124,9 +124,9 @@ const SETUP_DEFAULT_POSTGRES_SUPPORT_FILES: &[(&str, &str)] = &[
     ("share/postgres.bki", "postgres catalog"),
     ("lib/libcrypto.3.dylib", "fixture libcrypto"),
     ("lib/libssl.3.dylib", "fixture libssl"),
-    ("lib/postgresql/pg_trgm.so", "fixture pg_trgm"),
-    ("lib/postgresql/pgcrypto.so", "fixture pgcrypto"),
-    ("lib/postgresql/sslinfo.so", "fixture sslinfo"),
+    ("lib/postgresql/pg_trgm.dylib", "fixture pg_trgm"),
+    ("lib/postgresql/pgcrypto.dylib", "fixture pgcrypto"),
+    ("lib/postgresql/sslinfo.dylib", "fixture sslinfo"),
     ("share/extension/pg_trgm.control", "fixture pg_trgm control"),
     (
         "share/extension/pgcrypto.control",
@@ -4106,7 +4106,7 @@ fn seed_postgres_preload_modules(
 
     for library in libraries {
         state::fs::write_sensitive_file(
-            &release_path.join(format!("lib/postgresql/{}.so", library.as_str())),
+            &release_path.join(format!("lib/postgresql/{}.dylib", library.as_str())),
             "fixture shared library",
         )?;
     }
@@ -4479,9 +4479,9 @@ fn write_postgres_support_files(release_path: &Utf8Path) -> Result<()> {
     for relative_path in [
         "lib/libcrypto.3.dylib",
         "lib/libssl.3.dylib",
-        "lib/postgresql/pg_trgm.so",
-        "lib/postgresql/pgcrypto.so",
-        "lib/postgresql/sslinfo.so",
+        "lib/postgresql/pg_trgm.dylib",
+        "lib/postgresql/pgcrypto.dylib",
+        "lib/postgresql/sslinfo.dylib",
         "share/extension/pg_trgm.control",
         "share/extension/pgcrypto.control",
         "share/extension/sslinfo.control",

@@ -291,7 +291,7 @@ fn validate_preload_libraries(context: &ManagedResourceRuntimeContext) -> Result
     for library in &context.postgres_preload_libraries {
         let module_path = context
             .artifact_path
-            .join(format!("lib/postgresql/{}.so", library.as_str()));
+            .join(format!("lib/postgresql/{}.dylib", library.as_str()));
         if !state::fs::path_is_file(&module_path)? {
             return Err(DaemonError::PostgresPreloadLibraryMissing {
                 track: context.track.clone(),

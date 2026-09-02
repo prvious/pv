@@ -16,6 +16,7 @@ PLATFORM=${PV_RECIPE_PLATFORM:-darwin-arm64}
 BUILD_JOBS=${PV_BUILD_JOBS:-2}
 SOURCE_CACHE_DIR=${PV_POSTGRES_SOURCE_CACHE_DIR:-"$ROOT/release/artifacts/out/source-cache"}
 WORK_DIR=${PV_POSTGRES_DEPENDENCY_WORK_DIR:-"$ROOT/release/artifacts/out/postgres-dependencies/$PLATFORM"}
+export LDFLAGS="${LDFLAGS:+$LDFLAGS }-Wl,-headerpad_max_install_names"
 
 need awk
 need basename
