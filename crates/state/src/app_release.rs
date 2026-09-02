@@ -39,6 +39,20 @@ impl AppReleaseLayout {
         })
     }
 
+    pub fn install_release_helper(
+        &self,
+        version: &str,
+        source: &Utf8Path,
+    ) -> Result<Utf8PathBuf, StateError> {
+        validate_app_release_version(version)?;
+        let helper_path = self.paths.app_release_helper(version);
+
+        fs::copy_file_atomically(source, &helper_path)?;
+        fs::secure_executable_file(&helper_path)?;
+
+        Ok(helper_path)
+    }
+
     pub fn activate_release(&self, version: &str) -> Result<(), StateError> {
         validate_app_release_version(version)?;
         let release_binary = self.paths.app_release_binary(version);

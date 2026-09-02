@@ -10,18 +10,26 @@ use std::collections::BTreeSet;
 use std::io::Read;
 use url::Url;
 
-const SUPPORTED_SCHEMA_VERSION: u64 = 1;
+const SUPPORTED_SCHEMA_VERSION: u64 = 2;
 const STABLE_CHANNEL: &str = "stable";
 const APP_INSTALLER_TEMPLATE: &str = r##"#!/usr/bin/env bash
 set -euo pipefail
 
 PV_VERSION=@@PV_VERSION@@
+HELPER_VERSION=@@HELPER_VERSION@@
+HELPER_PROTOCOL_VERSION=@@HELPER_PROTOCOL_VERSION@@
 ARM64_URL=@@ARM64_URL@@
 ARM64_SHA256=@@ARM64_SHA256@@
 ARM64_SIZE=@@ARM64_SIZE@@
+ARM64_HELPER_URL=@@ARM64_HELPER_URL@@
+ARM64_HELPER_SHA256=@@ARM64_HELPER_SHA256@@
+ARM64_HELPER_SIZE=@@ARM64_HELPER_SIZE@@
 AMD64_URL=@@AMD64_URL@@
 AMD64_SHA256=@@AMD64_SHA256@@
 AMD64_SIZE=@@AMD64_SIZE@@
+AMD64_HELPER_URL=@@AMD64_HELPER_URL@@
+AMD64_HELPER_SHA256=@@AMD64_HELPER_SHA256@@
+AMD64_HELPER_SIZE=@@AMD64_HELPER_SIZE@@
 
 YES=0
 NON_INTERACTIVE=0
@@ -31,6 +39,8 @@ PV_HOME="${HOME}/.pv"
 PV_BIN_DIR="${PV_HOME}/bin"
 PV_RELEASE_DIR="${HOME}/.pv/bin/releases/${PV_VERSION}"
 PV_RELEASE_BIN="${PV_RELEASE_DIR}/pv"
+PV_RELEASE_HELPER="${PV_RELEASE_DIR}/pv-helper"
+PV_RELEASE_HELPER_METADATA="${PV_RELEASE_DIR}/pv-helper.json"
 PV_ACTIVE_BIN="${PV_BIN_DIR}/pv"
 TMP_DIR=
 
@@ -43,7 +53,7 @@ Usage: install.sh [OPTIONS]
 Options:
   --yes              Accept PV installer confirmations
   --non-interactive  Disable prompts and fail when interactive input is required
-  --no-setup         Install the pv binary without running pv setup
+  --no-setup         Install pv and pv-helper without running pv setup
   --no-path          Skip shell profile PATH integration
   --help             Show this help
 USAGE
@@ -130,18 +140,25 @@ select_asset() {
       ASSET_URL="${ARM64_URL}"
       EXPECTED_SHA256="${ARM64_SHA256}"
       EXPECTED_SIZE="${ARM64_SIZE}"
+      HELPER_URL="${ARM64_HELPER_URL}"
+      HELPER_SHA256="${ARM64_HELPER_SHA256}"
+      HELPER_SIZE="${ARM64_HELPER_SIZE}"
       ;;
     darwin-amd64)
       ASSET_URL="${AMD64_URL}"
       EXPECTED_SHA256="${AMD64_SHA256}"
       EXPECTED_SIZE="${AMD64_SIZE}"
+      HELPER_URL="${AMD64_HELPER_URL}"
+      HELPER_SHA256="${AMD64_HELPER_SHA256}"
+      HELPER_SIZE="${AMD64_HELPER_SIZE}"
       ;;
     *)
       die "unsupported PV installer platform: ${platform}"
       ;;
   esac
 
-  if [ -z "${ASSET_URL}" ] || [ -z "${EXPECTED_SHA256}" ] || [ -z "${EXPECTED_SIZE}" ]; then
+  if [ -z "${ASSET_URL}" ] || [ -z "${EXPECTED_SHA256}" ] || [ -z "${EXPECTED_SIZE}" ] || \
+     [ -z "${HELPER_URL}" ] || [ -z "${HELPER_SHA256}" ] || [ -z "${HELPER_SIZE}" ]; then
     die "PV installer asset is unavailable for ${platform}"
   fi
 }
@@ -160,28 +177,31 @@ sha256_file() {
 }
 
 verify_download() {
-  local path actual_size actual_sha256
+  local path expected_size expected_sha256 actual_size actual_sha256
 
   path="$1"
+  expected_size="$2"
+  expected_sha256="$3"
   actual_size="$(wc -c < "${path}" | tr -d '[:space:]')"
-  if [ "${actual_size}" != "${EXPECTED_SIZE}" ]; then
+  if [ "${actual_size}" != "${expected_size}" ]; then
     rm -f "${path}"
-    die "download size mismatch: expected ${EXPECTED_SIZE} bytes, got ${actual_size}"
+    die "download size mismatch: expected ${expected_size} bytes, got ${actual_size}"
   fi
 
   actual_sha256="$(sha256_file "${path}")"
-  if [ "${actual_sha256}" != "${EXPECTED_SHA256}" ]; then
+  if [ "${actual_sha256}" != "${expected_sha256}" ]; then
     rm -f "${path}"
-    die "download checksum mismatch: expected ${EXPECTED_SHA256}, got ${actual_sha256}"
+    die "download checksum mismatch: expected ${expected_sha256}, got ${actual_sha256}"
   fi
 }
 
-download_asset() {
-  local download
+download_assets() {
+  local app_download helper_download
 
   TMP_DIR="${PV_HOME}/tmp/installer.$$"
   mkdir -p "${TMP_DIR}"
-  download="${TMP_DIR}/pv"
+  app_download="${TMP_DIR}/pv"
+  helper_download="${TMP_DIR}/pv-helper"
 
   curl --fail --location --silent --show-error \
     --connect-timeout 15 \
@@ -189,25 +209,49 @@ download_asset() {
     --retry 3 \
     --retry-delay 2 \
     --retry-connrefused \
-    --output "${download}" "${ASSET_URL}" || {
-    rm -f "${download}"
+    --output "${app_download}" "${ASSET_URL}" || {
+    rm -f "${app_download}"
     die "failed to download ${ASSET_URL}"
   }
 
-  verify_download "${download}"
-  install_binary "${download}"
+  verify_download "${app_download}" "${EXPECTED_SIZE}" "${EXPECTED_SHA256}"
+
+  curl --fail --location --silent --show-error \
+    --connect-timeout 15 \
+    --max-time 300 \
+    --retry 3 \
+    --retry-delay 2 \
+    --retry-connrefused \
+    --output "${helper_download}" "${HELPER_URL}" || {
+    rm -f "${helper_download}"
+    die "failed to download ${HELPER_URL}"
+  }
+
+  verify_download "${helper_download}" "${HELPER_SIZE}" "${HELPER_SHA256}"
+  install_binaries "${app_download}" "${helper_download}"
 }
 
-install_binary() {
-  local download release_tmp link_tmp
+install_binaries() {
+  local app_download helper_download release_tmp helper_tmp helper_metadata_tmp link_tmp
 
-  download="$1"
+  app_download="$1"
+  helper_download="$2"
   mkdir -p "${PV_RELEASE_DIR}" "${PV_BIN_DIR}"
-  chmod 755 "${download}"
+  chmod 755 "${app_download}" "${helper_download}"
 
   release_tmp="${PV_RELEASE_BIN}.tmp.$$"
-  mv "${download}" "${release_tmp}"
+  helper_tmp="${PV_RELEASE_HELPER}.tmp.$$"
+  mv "${app_download}" "${release_tmp}"
+  mv "${helper_download}" "${helper_tmp}"
   mv -f "${release_tmp}" "${PV_RELEASE_BIN}"
+  mv -f "${helper_tmp}" "${PV_RELEASE_HELPER}"
+
+  helper_metadata_tmp="${PV_RELEASE_HELPER_METADATA}.tmp.$$"
+  printf '{\n  "version": "%s",\n  "protocol_version": %s,\n  "sha256": "%s"\n}\n' \
+    "$HELPER_VERSION" "$HELPER_PROTOCOL_VERSION" "$HELPER_SHA256" \
+    > "${helper_metadata_tmp}"
+  chmod 600 "${helper_metadata_tmp}"
+  mv -f "${helper_metadata_tmp}" "${PV_RELEASE_HELPER_METADATA}"
 
   link_tmp="${PV_ACTIVE_BIN}.tmp.$$"
   rm -f "${link_tmp}"
@@ -215,200 +259,29 @@ install_binary() {
   mv -f "${link_tmp}" "${PV_ACTIVE_BIN}"
 }
 
-detect_shell_profile() {
-  local shell_path shell_name
+confirm_installation() {
+  local reply
 
-  shell_path="${SHELL:-}"
-  shell_name="${shell_path##*/}"
-  case "${shell_name}" in
-    zsh)
-      PROFILE_SHELL="zsh"
-      PROFILE_PATH="${HOME}/.zprofile"
-      ;;
-    bash)
-      PROFILE_SHELL="bash"
-      PROFILE_PATH="${HOME}/.bash_profile"
-      ;;
-    fish)
-      PROFILE_SHELL="fish"
-      PROFILE_PATH="${HOME}/.config/fish/config.fish"
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-profile_block() {
-  local shell_name
-
-  shell_name="$1"
-  case "${shell_name}" in
-    fish)
-      cat <<'FISH'
-# >>> PV ENV
-if test -x "$HOME/.pv/bin/pv"
-  eval ("$HOME/.pv/bin/pv" env --shell fish | string collect)
-end
-# <<< PV ENV
-FISH
-      ;;
-    *)
-      cat <<EOF
-# >>> PV ENV
-if [ -x "\$HOME/.pv/bin/pv" ]; then
-  eval "\$("\$HOME/.pv/bin/pv" env --shell ${shell_name})"
-fi
-# <<< PV ENV
-EOF
-      ;;
-  esac
-}
-
-manual_shell_instructions() {
-  local shell_name
-
-  shell_name="${1:-zsh}"
-  warn "add PV to your shell profile manually if you want pv on PATH in new terminals"
-  case "${shell_name}" in
-    fish)
-      printf '  "%s" env --shell fish | source\n' "${PV_ACTIVE_BIN}" >&2
-      ;;
-    bash|zsh)
-      printf '  eval "%s("%s" env --shell %s)"\n' '$' "${PV_ACTIVE_BIN}" "${shell_name}" >&2
-      ;;
-    *)
-      printf '  eval "%s("%s" env --shell zsh)"\n' '$' "${PV_ACTIVE_BIN}" >&2
-      ;;
-  esac
-}
-
-confirm_profile_edit() {
-  local action profile reply
-
-  action="$1"
-  profile="$2"
-  if [ "${YES}" -eq 1 ]; then
+  if [ "${NO_SETUP}" -eq 1 ] || [ "${YES}" -eq 1 ] || [ "${NON_INTERACTIVE}" -eq 1 ]; then
     return 0
   fi
 
-  if [ "${NON_INTERACTIVE}" -eq 1 ]; then
-    die "shell profile confirmation required to ${action} ${profile}"
+  if ! : 2>/dev/null </dev/tty >/dev/tty; then
+    die "setup confirmation requires a controlling terminal; rerun with --yes or --no-setup"
   fi
 
-  if [ ! -r /dev/tty ] || [ ! -w /dev/tty ]; then
-    warn "cannot prompt to ${action} ${profile}; skipping shell profile integration"
-    return 1
+  printf 'pv installer: Install PV and run setup? This may update your shell profile and request macOS administrator authentication. [y/N] ' >/dev/tty
+  if ! IFS= read -r reply </dev/tty; then
+    die "could not read setup confirmation; rerun with --yes or --no-setup"
   fi
-
-  printf 'pv installer: %s %s? [y/N] ' "${action}" "${profile}" >/dev/tty
-  IFS= read -r reply </dev/tty || return 1
   case "${reply}" in
     y|Y|yes|YES)
       return 0
       ;;
     *)
-      return 1
+      die "installation cancelled"
       ;;
   esac
-}
-
-write_profile_block() {
-  local profile block profile_dir timestamp backup tmp line inserted skipping
-
-  profile="$1"
-  block="$2"
-  profile_dir="${profile%/*}"
-  if [ "${profile_dir}" != "${profile}" ]; then
-    mkdir -p "${profile_dir}" || return 1
-  fi
-
-  if [ ! -f "${profile}" ]; then
-    printf '%s\n' "${block}" >"${profile}" || return 1
-    info "created ${profile} with PV ENV"
-    return 0
-  fi
-
-  tmp="${profile}.pv.tmp.$$"
-  : >"${tmp}" || return 1
-  inserted=0
-  skipping=0
-  while IFS= read -r line || [ -n "${line}" ]; do
-    if [ "${line}" = "# >>> PV ENV" ]; then
-      if [ "${inserted}" -eq 0 ]; then
-        printf '%s\n' "${block}" >>"${tmp}" || return 1
-        inserted=1
-      fi
-      skipping=1
-      continue
-    fi
-
-    if [ "${skipping}" -eq 1 ]; then
-      if [ "${line}" = "# <<< PV ENV" ]; then
-        skipping=0
-      fi
-      continue
-    fi
-
-    printf '%s\n' "${line}" >>"${tmp}" || return 1
-  done <"${profile}"
-
-  if [ "${skipping}" -eq 1 ]; then
-    rm -f "${tmp}"
-    warn "incomplete PV ENV block in ${profile}; leaving shell profile unchanged"
-    return 1
-  fi
-
-  if [ "${inserted}" -eq 0 ]; then
-    if [ -s "${tmp}" ]; then
-      printf '\n' >>"${tmp}" || return 1
-    fi
-    printf '%s\n' "${block}" >>"${tmp}" || return 1
-  fi
-
-  timestamp="$(date +%Y%m%d-%H%M%S)"
-  backup="${profile}.${timestamp}.pv.bak"
-  if ! cp "${profile}" "${backup}"; then
-    rm -f "${tmp}"
-    return 1
-  fi
-
-  mv "${tmp}" "${profile}" || return 1
-  info "updated ${profile}; backup saved at ${backup}"
-}
-
-install_shell_profile_block() {
-  local action block
-
-  if [ "${NO_SETUP}" -eq 1 ] || [ "${NO_PATH}" -eq 1 ]; then
-    return 0
-  fi
-
-  if ! detect_shell_profile; then
-    warn "unsupported or unknown shell '${SHELL:-}'; skipping shell profile integration"
-    manual_shell_instructions unknown
-    return 0
-  fi
-
-  if [ -f "${PROFILE_PATH}" ]; then
-    action="update"
-  else
-    action="create"
-  fi
-
-  if ! confirm_profile_edit "${action}" "${PROFILE_PATH}"; then
-    manual_shell_instructions "${PROFILE_SHELL}"
-    return 0
-  fi
-
-  block="$(profile_block "${PROFILE_SHELL}")"
-  if ! write_profile_block "${PROFILE_PATH}" "${block}"; then
-    if [ "${NON_INTERACTIVE}" -eq 1 ]; then
-      die "failed to ${action} ${PROFILE_PATH}"
-    fi
-    warn "failed to ${action} ${PROFILE_PATH}; continuing without shell profile integration"
-    manual_shell_instructions "${PROFILE_SHELL}"
-  fi
 }
 
 run_setup() {
@@ -416,12 +289,7 @@ run_setup() {
     return 0
   fi
 
-  install_shell_profile_block
-
-  set -- setup
-  if [ "${YES}" -eq 1 ]; then
-    set -- "$@" --yes
-  fi
+  set -- setup --yes
   if [ "${NON_INTERACTIVE}" -eq 1 ]; then
     set -- "$@" --non-interactive
   fi
@@ -437,7 +305,8 @@ run_setup() {
 }
 
 select_asset
-download_asset
+confirm_installation
+download_assets
 run_setup
 info "PV ${PV_VERSION} installed at ${PV_ACTIVE_BIN}"
 "##;
@@ -446,11 +315,15 @@ info "PV ${PV_VERSION} installed at ${PV_ACTIVE_BIN}"
 pub struct WriteAppReleaseRecordRequest {
     pub record: Utf8PathBuf,
     pub binary: Utf8PathBuf,
+    pub helper_binary: Utf8PathBuf,
     pub version: String,
     pub minimum_pv_version: String,
     pub published_at: String,
     pub platform: String,
     pub object_key: String,
+    pub helper_version: String,
+    pub helper_protocol_version: u32,
+    pub helper_object_key: String,
     pub source_url: String,
     pub source_sha256: String,
     pub recipe: String,
@@ -470,7 +343,17 @@ pub struct AppReleaseRecord {
     object_key: String,
     sha256: String,
     size: u64,
+    helper: AppReleaseHelper,
     provenance: AppReleaseProvenance,
+}
+
+#[derive(Clone, Debug)]
+pub struct AppReleaseHelper {
+    version: String,
+    protocol_version: u32,
+    object_key: String,
+    sha256: String,
+    size: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -495,7 +378,18 @@ struct RawAppReleaseRecord {
     object_key: String,
     sha256: String,
     size: u64,
+    helper: RawAppReleaseHelper,
     provenance: AppReleaseProvenance,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawAppReleaseHelper {
+    version: String,
+    protocol_version: u32,
+    object_key: String,
+    sha256: String,
+    size: u64,
 }
 
 #[derive(Serialize)]
@@ -509,7 +403,17 @@ struct AppReleaseRecordJson<'a> {
     object_key: &'a str,
     sha256: String,
     size: u64,
+    helper: AppReleaseHelperJson<'a>,
     provenance: AppReleaseProvenanceJson<'a>,
+}
+
+#[derive(Serialize)]
+struct AppReleaseHelperJson<'a> {
+    version: &'a str,
+    protocol_version: u32,
+    object_key: &'a str,
+    sha256: String,
+    size: u64,
 }
 
 #[derive(Serialize)]
@@ -537,12 +441,25 @@ struct AppManifestAssetJson {
     url: String,
     sha256: String,
     size: u64,
+    helper: AppManifestHelperAssetJson,
+}
+
+#[derive(Serialize)]
+struct AppManifestHelperAssetJson {
+    version: String,
+    protocol_version: u32,
+    url: String,
+    sha256: String,
+    size: u64,
 }
 
 struct InstallerAsset {
     url: String,
     sha256: String,
     size: u64,
+    helper_url: String,
+    helper_sha256: String,
+    helper_size: u64,
 }
 
 impl AppReleaseRecord {
@@ -594,6 +511,32 @@ impl AppReleaseRecord {
                 format!("object_key must be `{expected_object_key}`"),
             ));
         }
+        let helper_version = AppUpdateVersion::parse(raw.helper.version.clone())
+            .map_err(|error| invalid_app(path, format!("invalid helper version: {error}")))?;
+        if raw.helper.protocol_version == 0 {
+            return Err(invalid_app(
+                path,
+                "helper protocol_version must be greater than zero",
+            ));
+        }
+        Sha256Digest::parse(raw.helper.sha256.clone())
+            .map_err(|error| invalid_app(path, format!("invalid helper sha256: {error}")))?;
+        if raw.helper.size == 0 {
+            return Err(invalid_app(path, "helper size must be greater than zero"));
+        }
+        validate_relative_path(path, "helper.object_key", &raw.helper.object_key)?;
+        let expected_helper_object_key = format!(
+            "pv/{}/pv-helper-{}-{}",
+            raw.version,
+            helper_version.as_str(),
+            platform.as_str()
+        );
+        if raw.helper.object_key != expected_helper_object_key {
+            return Err(invalid_app(
+                path,
+                format!("helper.object_key must be `{expected_helper_object_key}`"),
+            ));
+        }
         raw.provenance.validate(path)?;
 
         Ok(Self {
@@ -607,6 +550,13 @@ impl AppReleaseRecord {
             object_key: raw.object_key,
             sha256: raw.sha256.to_ascii_lowercase(),
             size: raw.size,
+            helper: AppReleaseHelper {
+                version: raw.helper.version,
+                protocol_version: raw.helper.protocol_version,
+                object_key: raw.helper.object_key,
+                sha256: raw.helper.sha256.to_ascii_lowercase(),
+                size: raw.helper.size,
+            },
             provenance: raw.provenance,
         })
     }
@@ -651,8 +601,34 @@ impl AppReleaseRecord {
         self.size
     }
 
+    pub fn helper(&self) -> &AppReleaseHelper {
+        &self.helper
+    }
+
     pub fn provenance(&self) -> &AppReleaseProvenance {
         &self.provenance
+    }
+}
+
+impl AppReleaseHelper {
+    pub fn version(&self) -> &str {
+        &self.version
+    }
+
+    pub fn protocol_version(&self) -> u32 {
+        self.protocol_version
+    }
+
+    pub fn object_key(&self) -> &str {
+        &self.object_key
+    }
+
+    pub fn sha256(&self) -> &str {
+        &self.sha256
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
     }
 }
 
@@ -692,6 +668,7 @@ impl AppReleaseProvenance {
 
 pub fn write_app_release_record(request: &WriteAppReleaseRecordRequest) -> crate::Result<()> {
     let (sha256, size) = digest_and_size(&request.binary)?;
+    let (helper_sha256, helper_size) = digest_and_size(&request.helper_binary)?;
     let record = AppReleaseRecordJson {
         schema_version: SUPPORTED_SCHEMA_VERSION,
         channel: STABLE_CHANNEL,
@@ -702,6 +679,13 @@ pub fn write_app_release_record(request: &WriteAppReleaseRecordRequest) -> crate
         object_key: &request.object_key,
         sha256,
         size,
+        helper: AppReleaseHelperJson {
+            version: &request.helper_version,
+            protocol_version: request.helper_protocol_version,
+            object_key: &request.helper_object_key,
+            sha256: helper_sha256,
+            size: helper_size,
+        },
         provenance: AppReleaseProvenanceJson {
             source_url: &request.source_url,
             source_sha256: &request.source_sha256,
@@ -780,6 +764,13 @@ pub fn generate_app_manifest_json(
                 url: artifact_url(base_url, record.object_key()),
                 sha256: record.sha256().to_string(),
                 size: record.size(),
+                helper: AppManifestHelperAssetJson {
+                    version: record.helper().version().to_string(),
+                    protocol_version: record.helper().protocol_version(),
+                    url: artifact_url(base_url, record.helper().object_key()),
+                    sha256: record.helper().sha256().to_string(),
+                    size: record.helper().size(),
+                },
             })
             .collect(),
     };
@@ -817,12 +808,38 @@ pub fn generate_app_installer_script(
 
     Ok(APP_INSTALLER_TEMPLATE
         .replace("@@PV_VERSION@@", &shell_quote(first_record.version()))
+        .replace(
+            "@@HELPER_VERSION@@",
+            &shell_quote(first_record.helper().version()),
+        )
+        .replace(
+            "@@HELPER_PROTOCOL_VERSION@@",
+            &shell_quote(&first_record.helper().protocol_version().to_string()),
+        )
         .replace("@@ARM64_URL@@", &shell_quote(&arm64.url))
         .replace("@@ARM64_SHA256@@", &shell_quote(&arm64.sha256))
         .replace("@@ARM64_SIZE@@", &shell_quote(&arm64.size.to_string()))
+        .replace("@@ARM64_HELPER_URL@@", &shell_quote(&arm64.helper_url))
+        .replace(
+            "@@ARM64_HELPER_SHA256@@",
+            &shell_quote(&arm64.helper_sha256),
+        )
+        .replace(
+            "@@ARM64_HELPER_SIZE@@",
+            &shell_quote(&arm64.helper_size.to_string()),
+        )
         .replace("@@AMD64_URL@@", &shell_quote(&amd64.url))
         .replace("@@AMD64_SHA256@@", &shell_quote(&amd64.sha256))
-        .replace("@@AMD64_SIZE@@", &shell_quote(&amd64.size.to_string())))
+        .replace("@@AMD64_SIZE@@", &shell_quote(&amd64.size.to_string()))
+        .replace("@@AMD64_HELPER_URL@@", &shell_quote(&amd64.helper_url))
+        .replace(
+            "@@AMD64_HELPER_SHA256@@",
+            &shell_quote(&amd64.helper_sha256),
+        )
+        .replace(
+            "@@AMD64_HELPER_SIZE@@",
+            &shell_quote(&amd64.helper_size.to_string()),
+        ))
 }
 
 pub fn load_app_release_records(root: &Utf8Path) -> crate::Result<Vec<AppReleaseRecord>> {
@@ -866,6 +883,20 @@ fn validate_app_record_group(
             record.published_at(),
             record.path(),
         )?;
+        require_same_metadata(
+            "helper.version",
+            first_record.helper().version(),
+            record.helper().version(),
+            record.path(),
+        )?;
+        if first_record.helper().protocol_version() != record.helper().protocol_version() {
+            return Err(crate::ReleaseError::AppReleaseMetadataMismatch {
+                field: "helper.protocol_version",
+                expected: first_record.helper().protocol_version().to_string(),
+                actual: record.helper().protocol_version().to_string(),
+                path: record.path().to_string(),
+            });
+        }
         if !seen_platforms.insert(record.platform()) {
             return Err(crate::ReleaseError::DuplicateAppReleasePlatform {
                 platform: record.platform().as_str().to_string(),
@@ -886,6 +917,9 @@ fn installer_asset(
             url: String::new(),
             sha256: String::new(),
             size: 0,
+            helper_url: String::new(),
+            helper_sha256: String::new(),
+            helper_size: 0,
         };
     };
 
@@ -893,6 +927,9 @@ fn installer_asset(
         url: artifact_url(base_url, record.object_key()),
         sha256: record.sha256().to_string(),
         size: record.size(),
+        helper_url: artifact_url(base_url, record.helper().object_key()),
+        helper_sha256: record.helper().sha256().to_string(),
+        helper_size: record.helper().size(),
     }
 }
 
@@ -958,7 +995,7 @@ fn digest_and_size(path: &Utf8Path) -> crate::Result<(String, u64)> {
     Ok((HEXLOWER.encode(&hasher.finalize()), size))
 }
 
-fn artifact_url(base_url: &str, object_key: &str) -> String {
+pub(crate) fn artifact_url(base_url: &str, object_key: &str) -> String {
     format!(
         "{}/{}",
         base_url.trim_end_matches('/'),

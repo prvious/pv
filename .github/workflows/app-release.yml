@@ -13,6 +13,11 @@ on:
         required: true
         default: "darwin-arm64"
         type: string
+      helper_only:
+        description: "Release a new helper for the current stable app without rebuilding the app binary"
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -30,6 +35,9 @@ jobs:
       source_url: ${{ steps.metadata.outputs.source_url }}
       source_sha256: ${{ steps.metadata.outputs.source_sha256 }}
       app_platforms: ${{ steps.metadata.outputs.app_platforms }}
+      helper_version: ${{ steps.metadata.outputs.helper_version }}
+      helper_protocol_version: ${{ steps.metadata.outputs.helper_protocol_version }}
+      helper_only: ${{ steps.metadata.outputs.helper_only }}
 
     steps:
       - name: Checkout
@@ -43,14 +51,22 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           MINIMUM_PV_VERSION: ${{ inputs.minimum_pv_version }}
           APP_PLATFORMS: ${{ inputs.app_platforms }}
+          HELPER_ONLY: ${{ inputs.helper_only }}
           R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
         run: |
-          set -eu
+          set -euo pipefail
 
           if [ -z "$MINIMUM_PV_VERSION" ]; then
             printf '%s\n' "minimum_pv_version is required" >&2
             exit 1
           fi
+          case "$HELPER_ONLY" in
+            true|false) ;;
+            *)
+              printf '%s\n' "helper_only must be true or false" >&2
+              exit 1
+              ;;
+          esac
           app_platforms=$(printf '%s' "$APP_PLATFORMS" | tr -d '[:space:]')
           if [ -z "$app_platforms" ]; then
             printf '%s\n' "app_platforms is required" >&2
@@ -94,6 +110,17 @@ jobs:
             printf '%s\n' "failed to read PV app version from Cargo.toml" >&2
             exit 1
           fi
+          helper_version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/privileged-helper/Cargo.toml | head -n 1)
+          reported_helper_version=$(sed -n 's/^pub const PRIVILEGED_HELPER_VERSION: &str = "\(.*\)";/\1/p' crates/platform/src/helper.rs | head -n 1)
+          helper_protocol_version=$(sed -n 's/^pub const HELPER_PROTOCOL_VERSION: u32 = \([0-9][0-9]*\);/\1/p' crates/platform/src/helper.rs | head -n 1)
+          if [ -z "$helper_version" ] || [ -z "$reported_helper_version" ] || [ -z "$helper_protocol_version" ]; then
+            printf '%s\n' "failed to read privileged helper identity" >&2
+            exit 1
+          fi
+          if [ "$helper_version" != "$reported_helper_version" ]; then
+            printf '%s\n' "privileged helper package and protocol identity versions differ" >&2
+            exit 1
+          fi
 
           source_ref="${GITHUB_SHA:?}"
           if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
@@ -108,6 +135,16 @@ jobs:
             "$source_url" \
             -o "$source_archive"
           source_sha256=$(shasum -a 256 "$source_archive" | awk '{print $1}')
+          case "$source_sha256" in
+            (*[!0-9a-f]*|"")
+              printf '%s\n' "source checksum is not lowercase SHA-256" >&2
+              exit 1
+              ;;
+          esac
+          if [ "${#source_sha256}" -ne 64 ]; then
+            printf '%s\n' "source checksum is not lowercase SHA-256" >&2
+            exit 1
+          fi
           published_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 
           {
@@ -117,6 +154,9 @@ jobs:
             printf 'source_url=%s\n' "$source_url"
             printf 'source_sha256=%s\n' "$source_sha256"
             printf 'app_platforms=%s\n' "$app_platforms"
+            printf 'helper_version=%s\n' "$helper_version"
+            printf 'helper_protocol_version=%s\n' "$helper_protocol_version"
+            printf 'helper_only=%s\n' "$HELPER_ONLY"
           } >>"${GITHUB_OUTPUT:?}"
 
   build-app:
@@ -148,44 +188,175 @@ jobs:
         with:
           targets: ${{ matrix.rust_target }}
 
-      - name: Build app binary
+      - name: Build app and privileged helper binaries
         if: ${{ contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform)) }}
         env:
           PV_DEFAULT_APP_UPDATE_MANIFEST_URL: ${{ vars.R2_PUBLIC_BASE_URL }}/pv-app-manifest.json
           PV_DEFAULT_ARTIFACT_MANIFEST_URL: ${{ vars.R2_PUBLIC_BASE_URL }}/manifest.json
           PV_APP_BINARY: ${{ runner.temp }}/pv-app-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-${{ matrix.platform }}
+          PV_HELPER_BINARY: ${{ runner.temp }}/pv-app-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-helper-${{ needs.prepare-release.outputs.helper_version }}-${{ matrix.platform }}
+          HELPER_ONLY: ${{ needs.prepare-release.outputs.helper_only }}
+          R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
         run: |
-          set -eu
+          set -euo pipefail
 
           mkdir -p "$(dirname "$PV_APP_BINARY")"
-          cargo build --locked --release --package pv --bin pv --target "${{ matrix.rust_target }}"
-          install -m 755 "target/${{ matrix.rust_target }}/release/pv" "$PV_APP_BINARY"
+          current_manifest="$RUNNER_TEMP/current-pv-app-manifest.json"
+          if ! current_manifest_status=$(curl --location --silent --show-error \
+            --retry 3 --retry-delay 2 --retry-all-errors \
+            --output "$current_manifest" \
+            --write-out '%{http_code}' \
+            "$R2_PUBLIC_BASE_URL/pv-app-manifest.json"); then
+            printf '%s\n' "failed to fetch the current stable app manifest" >&2
+            exit 1
+          fi
+          case "$current_manifest_status" in
+            200)
+              current_version=$(jq -er '.version' "$current_manifest")
+              current_helper_version=$(jq -r --arg platform "${{ matrix.platform }}" '.assets[] | select(.platform == $platform) | (.helper.version // empty)' "$current_manifest")
+              current_helper_protocol=$(jq -r --arg platform "${{ matrix.platform }}" '.assets[] | select(.platform == $platform) | (.helper.protocol_version // empty)' "$current_manifest")
+              ;;
+            404)
+              if [ "$HELPER_ONLY" = true ]; then
+                printf '%s\n' "helper-only release requires a current stable app manifest" >&2
+                exit 1
+              fi
+              current_version=
+              current_helper_version=
+              current_helper_protocol=
+              ;;
+            *)
+              printf '%s\n' "current stable app manifest returned HTTP $current_manifest_status" >&2
+              exit 1
+              ;;
+          esac
+          if [ -z "$current_helper_version" ]; then
+            helper_version_relation=newer
+          else
+            helper_version_relation=$(awk \
+              -v current="$current_helper_version" \
+              -v candidate="${{ needs.prepare-release.outputs.helper_version }}" \
+              'BEGIN {
+                split(current, current_parts, ".");
+                split(candidate, candidate_parts, ".");
+                for (index = 1; index <= 3; index++) {
+                  if (candidate_parts[index] > current_parts[index]) { print "newer"; exit }
+                  if (candidate_parts[index] < current_parts[index]) { print "older"; exit }
+                }
+                print "same";
+              }')
+          fi
+          if [ "$helper_version_relation" = older ]; then
+            printf '%s\n' "helper version must not regress from current stable $current_helper_version" >&2
+            exit 1
+          fi
+
+          if [ "$helper_version_relation" = same ]; then
+            if [ "$current_helper_protocol" != "${{ needs.prepare-release.outputs.helper_protocol_version }}" ]; then
+              printf '%s\n' "an existing helper version must keep its published protocol" >&2
+              exit 1
+            fi
+            if [ "$HELPER_ONLY" = true ]; then
+              printf '%s\n' "helper-only release version must be newer than current stable helper $current_helper_version" >&2
+              exit 1
+            fi
+            helper_url=$(jq -er --arg platform "${{ matrix.platform }}" '.assets[] | select(.platform == $platform) | .helper.url' "$current_manifest")
+            helper_sha256=$(jq -er --arg platform "${{ matrix.platform }}" '.assets[] | select(.platform == $platform) | .helper.sha256' "$current_manifest")
+            helper_size=$(jq -er --arg platform "${{ matrix.platform }}" '.assets[] | select(.platform == $platform) | .helper.size' "$current_manifest")
+            curl --fail --location --silent --show-error \
+              --retry 3 --retry-delay 2 --retry-all-errors \
+              --output "$PV_HELPER_BINARY" "$helper_url"
+            actual_helper_sha256=$(shasum -a 256 "$PV_HELPER_BINARY" | awk '{print $1}')
+            actual_helper_size=$(stat -f '%z' "$PV_HELPER_BINARY")
+            if [ "$actual_helper_sha256" != "$helper_sha256" ] || [ "$actual_helper_size" != "$helper_size" ]; then
+              printf '%s\n' "current stable helper asset failed app-only reuse verification" >&2
+              exit 1
+            fi
+            chmod 755 "$PV_HELPER_BINARY"
+          else
+            cargo build --locked --release --package pv-privileged-helper --bin pv-helper --target "${{ matrix.rust_target }}"
+            codesign --force --sign - "target/${{ matrix.rust_target }}/release/pv-helper"
+            helper_sha256=$(shasum -a 256 "target/${{ matrix.rust_target }}/release/pv-helper" | awk '{print $1}')
+            case "$helper_sha256" in
+              (*[!0-9a-f]*|"")
+                printf '%s\n' "privileged helper checksum is not lowercase SHA-256" >&2
+                exit 1
+                ;;
+            esac
+            if [ "${#helper_sha256}" -ne 64 ]; then
+              printf '%s\n' "privileged helper checksum is not lowercase SHA-256" >&2
+              exit 1
+            fi
+            install -m 755 "target/${{ matrix.rust_target }}/release/pv-helper" "$PV_HELPER_BINARY"
+          fi
+
+          if [ "$HELPER_ONLY" = true ]; then
+            if [ "$current_version" != "${{ needs.prepare-release.outputs.version }}" ]; then
+              printf '%s\n' "helper-only release requires Cargo version $current_version, found ${{ needs.prepare-release.outputs.version }}" >&2
+              exit 1
+            fi
+            current_minimum_pv_version=$(jq -er '.minimum_pv_version' "$current_manifest")
+            printf 'PV_HELPER_ONLY_MINIMUM_PV_VERSION=%s\n' "$current_minimum_pv_version" >>"${GITHUB_ENV:?}"
+            app_url=$(jq -er --arg platform "${{ matrix.platform }}" '.assets[] | select(.platform == $platform) | .url' "$current_manifest")
+            app_sha256=$(jq -er --arg platform "${{ matrix.platform }}" '.assets[] | select(.platform == $platform) | .sha256' "$current_manifest")
+            app_size=$(jq -er --arg platform "${{ matrix.platform }}" '.assets[] | select(.platform == $platform) | .size' "$current_manifest")
+            if [ "$current_helper_protocol" != "${{ needs.prepare-release.outputs.helper_protocol_version }}" ]; then
+              printf '%s\n' "a helper protocol change requires a matching app release" >&2
+              exit 1
+            fi
+            curl --fail --location --silent --show-error \
+              --retry 3 --retry-delay 2 --retry-all-errors \
+              --output "$PV_APP_BINARY" "$app_url"
+            actual_app_sha256=$(shasum -a 256 "$PV_APP_BINARY" | awk '{print $1}')
+            actual_app_size=$(stat -f '%z' "$PV_APP_BINARY")
+            if [ "$actual_app_sha256" != "$app_sha256" ] || [ "$actual_app_size" != "$app_size" ]; then
+              printf '%s\n' "current stable app asset failed helper-only reuse verification" >&2
+              exit 1
+            fi
+            chmod 755 "$PV_APP_BINARY"
+          else
+            cargo build --locked --release --package pv --bin pv --target "${{ matrix.rust_target }}"
+            install -m 755 "target/${{ matrix.rust_target }}/release/pv" "$PV_APP_BINARY"
+          fi
 
       - name: Write app release record
         if: ${{ contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform)) }}
         env:
           PV_APP_BINARY: ${{ runner.temp }}/pv-app-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-${{ matrix.platform }}
+          PV_HELPER_BINARY: ${{ runner.temp }}/pv-app-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-helper-${{ needs.prepare-release.outputs.helper_version }}-${{ matrix.platform }}
           PV_APP_RECORD: ${{ runner.temp }}/pv-app-stage/pv/records/${{ needs.prepare-release.outputs.version }}/pv-${{ matrix.platform }}.json
           PV_APP_VERSION: ${{ needs.prepare-release.outputs.version }}
           PV_MINIMUM_PV_VERSION: ${{ needs.prepare-release.outputs.minimum_pv_version }}
           PV_PUBLISHED_AT: ${{ needs.prepare-release.outputs.published_at }}
           PV_APP_PLATFORM: ${{ matrix.platform }}
           PV_APP_OBJECT_KEY: pv/${{ needs.prepare-release.outputs.version }}/pv-${{ matrix.platform }}
+          PV_HELPER_VERSION: ${{ needs.prepare-release.outputs.helper_version }}
+          PV_HELPER_PROTOCOL_VERSION: ${{ needs.prepare-release.outputs.helper_protocol_version }}
+          PV_HELPER_OBJECT_KEY: pv/${{ needs.prepare-release.outputs.version }}/pv-helper-${{ needs.prepare-release.outputs.helper_version }}-${{ matrix.platform }}
           PV_SOURCE_URL: ${{ needs.prepare-release.outputs.source_url }}
           PV_SOURCE_SHA256: ${{ needs.prepare-release.outputs.source_sha256 }}
           PV_COMMIT: ${{ github.sha }}
           PV_BUILD_RUN_ID: ${{ github.run_id }}
+          HELPER_ONLY: ${{ needs.prepare-release.outputs.helper_only }}
         run: |
-          set -eu
+          set -euo pipefail
+
+          if [ "$HELPER_ONLY" = true ]; then
+            PV_MINIMUM_PV_VERSION="${PV_HELPER_ONLY_MINIMUM_PV_VERSION:?}"
+          fi
 
           cargo run --locked -p pv-release -- write-app-release-record \
             --record "$PV_APP_RECORD" \
             --binary "$PV_APP_BINARY" \
+            --helper-binary "$PV_HELPER_BINARY" \
             --version "$PV_APP_VERSION" \
             --minimum-pv-version "$PV_MINIMUM_PV_VERSION" \
             --published-at "$PV_PUBLISHED_AT" \
             --platform "$PV_APP_PLATFORM" \
             --object-key "$PV_APP_OBJECT_KEY" \
+            --helper-version "$PV_HELPER_VERSION" \
+            --helper-protocol-version "$PV_HELPER_PROTOCOL_VERSION" \
+            --helper-object-key "$PV_HELPER_OBJECT_KEY" \
             --source-url "$PV_SOURCE_URL" \
             --source-sha256 "$PV_SOURCE_SHA256" \
             --recipe .github/workflows/app-release.yml \
@@ -199,6 +370,7 @@ jobs:
           name: pv-app-release-build-${{ matrix.platform }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/pv-app-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-${{ matrix.platform }}
+            ${{ runner.temp }}/pv-app-stage/pv/${{ needs.prepare-release.outputs.version }}/pv-helper-${{ needs.prepare-release.outputs.helper_version }}-${{ matrix.platform }}
             ${{ runner.temp }}/pv-app-stage/pv/records/${{ needs.prepare-release.outputs.version }}/pv-${{ matrix.platform }}.json
           if-no-files-found: error
 
@@ -231,7 +403,7 @@ jobs:
           PV_APP_PLATFORMS: ${{ needs.prepare-release.outputs.app_platforms }}
           R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
         run: |
-          set -eu
+          set -euo pipefail
 
           download_dir="${RUNNER_TEMP:?}/pv-app-release-download"
           stage="${RUNNER_TEMP:?}/pv-app-release-stage"
@@ -241,9 +413,14 @@ jobs:
           IFS=',' read -r -a platforms <<< "$PV_APP_PLATFORMS"
           for platform in "${platforms[@]}"; do
             binary_source=$(find "$download_dir" -type f -path "*/$PV_APP_VERSION/pv-$platform" -print -quit)
+            helper_source=$(find "$download_dir" -type f -path "*/$PV_APP_VERSION/pv-helper-*-$platform" -print -quit)
             record_source=$(find "$download_dir" -type f -path "*/records/$PV_APP_VERSION/pv-$platform.json" -print -quit)
             if [ -z "$binary_source" ]; then
               printf '%s\n' "missing app binary for $platform" >&2
+              exit 1
+            fi
+            if [ -z "$helper_source" ]; then
+              printf '%s\n' "missing privileged helper for $platform" >&2
               exit 1
             fi
             if [ -z "$record_source" ]; then
@@ -251,6 +428,7 @@ jobs:
               exit 1
             fi
             cp "$binary_source" "$stage/pv/$PV_APP_VERSION/pv-$platform"
+            cp "$helper_source" "$stage/pv/$PV_APP_VERSION/$(basename "$helper_source")"
             cp "$record_source" "$stage/pv/records/$PV_APP_VERSION/pv-$platform.json"
           done
 

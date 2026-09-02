@@ -19,7 +19,7 @@ pub(crate) fn status(
     let system_path = resolver_test_path(environment)?;
     let prepared_state = platform::inspect_resolver_file(&prepared_path, None);
     let expected_config = resolver_config_from_state(&prepared_state);
-    let system_state = platform::inspect_resolver_file(&system_path, expected_config.as_ref());
+    let system_state = environment.inspect_resolver_file(&system_path, expected_config.as_ref());
     let mut output = Output::new(stdout, OutputMode::plain());
 
     output.line("DNS resolver status")?;
@@ -65,7 +65,7 @@ fn install_inner(
         return Err(error.into());
     }
 
-    let system_state = platform::inspect_resolver_file(&system_path, Some(&config));
+    let system_state = environment.inspect_resolver_file(&system_path, Some(&config));
     let mut output = Output::new(stdout, OutputMode::plain());
 
     output.line("Prepared PV DNS resolver config")?;
@@ -176,7 +176,7 @@ pub(crate) fn uninstall(
     let prepared_path = paths.resolver_config();
     let system_path = resolver_test_path(environment)?;
     let deleted_prepared = delete_optional_file(&prepared_path)?;
-    let system_state = platform::inspect_resolver_file(&system_path, None);
+    let system_state = environment.inspect_resolver_file(&system_path, None);
     let mut output = Output::new(stdout, OutputMode::plain());
 
     if deleted_prepared {

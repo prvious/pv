@@ -9,8 +9,8 @@ use rusqlite::{Connection, params};
 use state::testing::Migration;
 use state::{
     AppReleaseLayout, Database, EnvContextValues, GATEWAY_HTTP_PREFERRED_PORT,
-    GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, JobDiagnosticSubject, JobStatus,
-    ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
+    GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, HelperLifecycleLock, JobDiagnosticSubject,
+    JobStatus, ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
     ManagedResourceTrackRemovalInput, PortOwner, PortRequest, PostgresPreloadLibrary,
     ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
     ProjectMode, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
@@ -297,6 +297,47 @@ fn update_lock_rejects_concurrent_holder_and_ignores_stale_file() -> Result<()> 
     drop(first);
     let reacquired = UpdateLock::acquire(&paths)?;
     drop(reacquired);
+
+    Ok(())
+}
+
+#[test]
+fn helper_lifecycle_lock_rejects_concurrent_holder_and_ignores_stale_file() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::write_sensitive_file(&paths.helper_lifecycle_lock(), "leftover lock file\n")?;
+
+    let first = HelperLifecycleLock::acquire(&paths)?;
+    let second = HelperLifecycleLock::acquire(&paths);
+
+    assert!(matches!(
+        second,
+        Err(StateError::HelperLifecycleLockHeld { path }) if path == paths.helper_lifecycle_lock()
+    ));
+
+    drop(first);
+    let reacquired = HelperLifecycleLock::acquire(&paths)?;
+    drop(reacquired);
+
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "coordination lock test verifies that acquisition preserves existing home permissions"
+)]
+fn helper_lifecycle_lock_preserves_home_directory_permissions() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    state::fs::ensure_user_dir(&home)?;
+    std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o755))?;
+    let paths = PvPaths::for_home(&home);
+
+    let lock = HelperLifecycleLock::acquire(&paths)?;
+
+    assert_eq!(file_mode(&home)?, "755");
+    drop(lock);
 
     Ok(())
 }

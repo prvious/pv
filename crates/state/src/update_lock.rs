@@ -1,5 +1,7 @@
 #[cfg(unix)]
 use std::io;
+#[cfg(unix)]
+use std::os::fd::AsFd;
 
 use camino::Utf8Path;
 #[cfg(unix)]
@@ -13,6 +15,15 @@ use crate::{PvPaths, StateError, fs};
     reason = "coordination lock guard owns the OS-locked file handle"
 )]
 pub struct UpdateLock {
+    _file: std::fs::File,
+}
+
+#[derive(Debug)]
+#[expect(
+    clippy::disallowed_types,
+    reason = "privileged-helper lifecycle lock guard owns the OS-locked file handle"
+)]
+pub struct HelperLifecycleLock {
     _file: std::fs::File,
 }
 
@@ -32,6 +43,19 @@ impl UpdateLock {
     pub fn require_no_update_in_progress(paths: &PvPaths) -> Result<(), StateError> {
         let path = paths.update_lock();
         require_no_update_in_progress_at_path(&path)
+    }
+}
+
+impl HelperLifecycleLock {
+    pub fn acquire(paths: &PvPaths) -> Result<Self, StateError> {
+        require_file_locking()?;
+        let path = paths.helper_lifecycle_lock();
+        let file = open_update_lock_file(&path)?;
+        fs::secure_sensitive_file(&path)?;
+
+        lock_helper_lifecycle_exclusively(&file, &path)?;
+
+        Ok(Self { _file: file })
     }
 }
 
@@ -58,7 +82,7 @@ fn require_no_update_in_progress_at_path(path: &Utf8Path) -> Result<(), StateErr
 }
 
 #[cfg(unix)]
-fn lock_exclusively<FileHandle: std::os::fd::AsFd>(
+fn lock_exclusively<FileHandle: AsFd>(
     file: &FileHandle,
     path: &Utf8Path,
 ) -> Result<(), StateError> {
@@ -76,13 +100,40 @@ fn lock_exclusively<FileHandle: std::os::fd::AsFd>(
     }
 }
 
+#[cfg(unix)]
+fn lock_helper_lifecycle_exclusively<FileHandle: AsFd>(
+    file: &FileHandle,
+    path: &Utf8Path,
+) -> Result<(), StateError> {
+    match rustix::fs::flock(file, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            Err(StateError::HelperLifecycleLockHeld {
+                path: path.to_path_buf(),
+            })
+        }
+        Err(error) => Err(StateError::filesystem(
+            path.to_path_buf(),
+            io::Error::from(error),
+        )),
+    }
+}
+
 #[cfg(not(unix))]
 fn lock_exclusively<FileHandle>(_file: &FileHandle, _path: &Utf8Path) -> Result<(), StateError> {
     require_file_locking()
 }
 
+#[cfg(not(unix))]
+fn lock_helper_lifecycle_exclusively<FileHandle>(
+    _file: &FileHandle,
+    _path: &Utf8Path,
+) -> Result<(), StateError> {
+    require_file_locking()
+}
+
 #[cfg(unix)]
-fn inspect_existing_lock<FileHandle: std::os::fd::AsFd>(
+fn inspect_existing_lock<FileHandle: AsFd>(
     file: &FileHandle,
     path: &Utf8Path,
 ) -> Result<(), StateError> {

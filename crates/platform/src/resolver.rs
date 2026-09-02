@@ -1,8 +1,10 @@
 use std::io;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use serde::{Deserialize, Serialize};
 
 use crate::PlatformError;
+#[cfg(target_os = "macos")]
 use crate::command::run_system_command;
 
 pub const SYSTEM_RESOLVER_TEST_PATH: &str = "/etc/resolver/test";
@@ -10,12 +12,12 @@ const PV_MARKER: &str = "# Managed by PV";
 const PREPARED_MARKER: &str = "# Source: PV prepared resolver config for /etc/resolver/test";
 const LOOPBACK_NAMESERVER: &str = "nameserver 127.0.0.1";
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ResolverConfig {
     pub port: u16,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ResolverFileState {
     Missing {
         path: Utf8PathBuf,
@@ -140,22 +142,97 @@ pub fn install_resolver_config(
     prepared_path: &Utf8Path,
     system_path: &Utf8Path,
 ) -> Result<(), PlatformError> {
-    let parent = system_path.parent().ok_or_else(|| {
+    require_fixed_system_path(system_path)?;
+    let prepared = state::fs::read_to_string(prepared_path)
+        .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
+    let config = ResolverConfig::parse(&prepared).ok_or_else(|| {
         PlatformError::SystemIntegration(format!(
-            "resolver config path has no parent directory: {system_path}"
+            "prepared resolver config is not valid PV configuration: {prepared_path}"
         ))
     })?;
-    let parent = parent.as_str();
-    let prepared_path = prepared_path.as_str();
-    let system_path = system_path.as_str();
 
-    run_system_command("/usr/bin/sudo", &["/bin/mkdir", "-p", parent])?;
-    run_system_command(
-        "/usr/bin/sudo",
-        &["/usr/bin/install", "-m", "0644", prepared_path, system_path],
-    )
+    crate::PrivilegedHelperClient.apply_dns(&config)
 }
 
 pub fn remove_resolver_config(system_path: &Utf8Path) -> Result<(), PlatformError> {
-    run_system_command("/usr/bin/sudo", &["/bin/rm", "-f", system_path.as_str()])
+    require_fixed_system_path(system_path)?;
+    crate::PrivilegedHelperClient.remove_dns()
+}
+
+fn require_fixed_system_path(system_path: &Utf8Path) -> Result<(), PlatformError> {
+    if system_path == Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH) {
+        return Ok(());
+    }
+
+    Err(PlatformError::SystemIntegration(format!(
+        "resolver mutation requires fixed system path {SYSTEM_RESOLVER_TEST_PATH}"
+    )))
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn apply_resolver_config_privileged(
+    config: &ResolverConfig,
+) -> Result<(), PlatformError> {
+    let system_path = Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH);
+    match inspect_resolver_file(system_path, Some(config)) {
+        ResolverFileState::Conflict { path } => {
+            return Err(PlatformError::SystemIntegration(format!(
+                "system resolver config is not PV-owned: {path}"
+            )));
+        }
+        ResolverFileState::Unreadable { path, message } => {
+            return Err(PlatformError::SystemIntegration(format!(
+                "system resolver config could not be inspected: {path}: {message}"
+            )));
+        }
+        ResolverFileState::Missing { .. }
+        | ResolverFileState::Current { .. }
+        | ResolverFileState::Stale { .. } => {}
+    }
+    crate::helper::validate_root_owned_file_if_present(system_path)?;
+
+    let prepared_path = Utf8Path::new("/Library/Application Support/PV/resolver.test");
+    crate::helper::write_root_work_file(prepared_path, &config.render(), "0755")?;
+    run_system_command("/bin/mkdir", &["-p", "/etc/resolver"])?;
+    run_system_command(
+        "/usr/bin/install",
+        &[
+            "-o",
+            "root",
+            "-g",
+            "wheel",
+            "-m",
+            "0644",
+            prepared_path.as_str(),
+            SYSTEM_RESOLVER_TEST_PATH,
+        ],
+    )?;
+
+    match inspect_resolver_file(system_path, Some(config)) {
+        ResolverFileState::Current { .. } => Ok(()),
+        state => Err(PlatformError::SystemIntegration(format!(
+            "resolver config did not match after helper apply: {state:?}"
+        ))),
+    }
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn remove_resolver_config_privileged() -> Result<(), PlatformError> {
+    let system_path = Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH);
+    match inspect_resolver_file(system_path, None) {
+        ResolverFileState::Missing { .. } => return Ok(()),
+        ResolverFileState::Conflict { path } => {
+            return Err(PlatformError::SystemIntegration(format!(
+                "system resolver config is not PV-owned: {path}"
+            )));
+        }
+        ResolverFileState::Unreadable { path, message } => {
+            return Err(PlatformError::SystemIntegration(format!(
+                "system resolver config could not be inspected: {path}: {message}"
+            )));
+        }
+        ResolverFileState::Current { .. } | ResolverFileState::Stale { .. } => {}
+    }
+    crate::helper::validate_root_owned_file_if_present(system_path)?;
+    run_system_command("/bin/rm", &["-f", SYSTEM_RESOLVER_TEST_PATH])
 }

@@ -11,6 +11,7 @@ pub enum PlatformCapability {
     LowPortFrontend,
     ProcessContainment,
     ProcessInspection,
+    PrivilegedHelper,
     ResolverIntegration,
     TrustStore,
 }
@@ -25,6 +26,7 @@ impl PlatformCapability {
             Self::LowPortFrontend => "low-port frontend",
             Self::ProcessContainment => "process containment",
             Self::ProcessInspection => "process inspection",
+            Self::PrivilegedHelper => "privileged helper",
             Self::ResolverIntegration => "resolver integration",
             Self::TrustStore => "trust store",
         }

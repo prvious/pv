@@ -80,7 +80,7 @@ Managed Resources remain external binaries/artifacts managed by PV rather than R
 
 Initial PV distribution is a standalone install script/direct binary download. Homebrew support can be added after the release flow stabilizes. A signed `.pkg` is deferred unless macOS trust/onboarding requires it.
 
-The install script verifies the downloaded PV application binary against a published SHA-256 checksum before installing it. If checksum verification fails, installation deletes the bad download and stops before installing files, editing shell profiles, or running setup.
+The install script downloads the PV application and its separate privileged helper artifact, verifies each against its published SHA-256 checksum, and installs both plus the required adjacent `pv-helper.json` release metadata into the user-owned release directory. Setup and update require that metadata rather than relying on a checksum compiled into the application. If either verification fails, installation deletes the bad download and stops before editing shell profiles or running setup. Dogfood helper artifacts use ad-hoc code signing; Developer ID signing, notarization, and a signed package are deferred until public release.
 
 The stable installer URL serves a generated installer script based on PV app release metadata. The bash installer does not need to parse the JSON PV app update manifest. The installer script may embed or otherwise receive the resolved current PV version, platform asset URLs, and SHA-256 checksums from the server-side installer generation flow. The JSON PV app update manifest is used by the Rust self-updater.
 
@@ -88,25 +88,25 @@ The generated installer script installs the current stable PV release only in v1
 
 PV v1 has one stable installer/update channel for both the generated installer and `pv update`. Installer channel query parameters such as `?channel=preview`, nightly channels, and multi-channel update selection are out of v1 scope.
 
-By default, the install script installs the PV binary under `~/.pv/bin/releases/<version>/pv`, creates or updates the active `~/.pv/bin/pv` symlink, and then runs `pv setup` automatically. Before editing shell profiles, admin prompts, or large Managed Resource downloads, interactive installs ask for confirmation. Installer flags use the same prompt semantics as `pv setup`: `--yes` skips PV's own confirmations for automation, but does not bypass macOS authentication; `sudo` may still prompt for admin credentials. `--non-interactive` implies PV confirmations are accepted, disables all prompts, and fails if input, sudo authentication, or shell profile confirmation is required. A `--no-setup` flag installs only the PV binary without running setup. A `--no-path` flag skips automatic shell profile edits.
+By default, the install script installs `pv` and `pv-helper` under `~/.pv/bin/releases/<version>/`, creates or updates the active `~/.pv/bin/pv` symlink, asks once through the controlling terminal for consent to run setup, and then invokes `pv setup --yes`. That accepted installer confirmation covers PV's shell-profile, privileged-helper, and Managed Resource setup changes but does not bypass macOS authentication. `--yes` skips the installer confirmation for automation. `--non-interactive` implies PV confirmations are accepted, disables all prompts, and fails if input, helper lifecycle authentication, or shell profile confirmation is required. A `--no-setup` flag installs both user-owned release binaries without registering the root helper. A `--no-path` flag is forwarded to setup and skips automatic shell profile edits.
 
-The install script may create PV shell integration in the user's shell profile automatically with a clearly delimited PV-managed shell block. `pv setup` may repair that same block later. Shell profile edits must be idempotent and backed up first. If shell detection fails, the installer prints manual shell integration instructions instead of editing profile files.
+`pv setup`, including when invoked by the installer, may create or repair PV shell integration in the user's shell profile with a clearly delimited PV-managed shell block. Shell profile edits must be idempotent and backed up first. If shell detection fails, setup prints manual shell integration instructions instead of editing profile files.
 
-When automatic setup is enabled, the installer creates or repairs the `PV ENV` shell profile block before running `pv setup`. The installer still invokes setup through the absolute `~/.pv/bin/pv` path in the current process.
+When automatic setup is enabled, the installer invokes setup through the absolute `~/.pv/bin/pv` path in the current process. The installer does not implement a second shell-profile editing path.
 
-If the installer cannot edit the shell profile, it warns, prints manual shell integration instructions, and continues automatic setup unless strict non-interactive behavior requires failing instead.
+Setup reports shell-profile failures directly and provides manual integration guidance when shell detection cannot choose a supported profile.
 
-If shell detection finds an unsupported shell, the installer skips shell profile edits, prints manual shell integration instructions, and continues setup. Unsupported shell integration does not block DNS, ports, CA trust, daemon registration, or Managed Resource installation.
+If shell detection finds an unsupported shell, setup skips shell profile edits, prints manual shell integration instructions, and continues. Unsupported shell integration does not block DNS, ports, CA trust, daemon registration, or Managed Resource installation.
 
-The installer detects the user's shell from `$SHELL`. If `$SHELL` is missing or unsupported, the installer skips profile edits and prints manual shell integration instructions.
+Setup detects the user's shell from `$SHELL`. If `$SHELL` is missing or unsupported, setup skips profile edits and prints manual shell integration instructions.
 
-Shell profile backups created by PV append a timestamp and `.pv.bak`, such as `~/.zprofile.20260522-143012.pv.bak`.
+Shell profile backups created by setup append a timestamp and `.pv.bak`, such as `~/.zprofile.20260522-143012.pv.bak`.
 
-The installer edits only the detected shell's profile file for PATH setup: `~/.zprofile` for zsh, `~/.bash_profile` for bash, and `~/.config/fish/config.fish` for fish. It does not edit multiple shell profile files at once.
+Setup edits only the detected shell's profile file for PATH setup: `~/.zprofile` for zsh, `~/.bash_profile` for bash, and `~/.config/fish/config.fish` for fish. It does not edit multiple shell profile files at once.
 
-If the detected shell profile file does not exist, the installer may create it with only the `PV ENV` block after confirmation. No backup is needed when creating a new file, but the action is reported.
+If the detected shell profile file does not exist, setup may create it with only the `PV ENV` block after confirmation. No backup is needed when creating a new file, but the action is reported.
 
-The installer uses `PV ENV` delimiters for shell profile edits. The installer-managed block loads `pv env` so PV shims and Composer work in new shells. It should call the PV binary by absolute path and pass an explicit `--shell <shell>` for the detected profile so shell startup works even before `~/.pv/bin` has been added to PATH and does not rely on runtime shell detection. For POSIX-style shells, the block is:
+Setup uses `PV ENV` delimiters for shell profile edits. The PV-managed block loads `pv env` so PV shims and Composer work in new shells. It calls the PV binary by absolute path and passes an explicit `--shell <shell>` for the detected profile so shell startup works even before `~/.pv/bin` has been added to PATH and does not rely on runtime shell detection. For POSIX-style shells, the block is:
 
 ```sh
 # >>> PV ENV
@@ -118,9 +118,9 @@ fi
 
 Fish uses equivalent syntax with the same `PV ENV` delimiter labels.
 
-`pv setup` may repair a stale installer-managed `PV ENV` shell profile block, but only after confirmation because shell profiles are user-owned. `pv setup --yes` consents to this repair without prompting. `pv setup --non-interactive` fails instead of prompting for confirmation, shell profile repair, or sudo authentication. `pv setup --no-path` disables shell profile edits, including stale `PV ENV` block repair, but still prints manual shell integration instructions. When repairing the `PV ENV` block, PV replaces the block wholesale and does not preserve user edits inside it.
+`pv setup` may repair a stale PV-managed `PV ENV` shell profile block, but only after confirmation because shell profiles are user-owned. `pv setup --yes` consents to this repair without prompting. `pv setup --non-interactive` fails instead of prompting for confirmation, shell profile repair, or privileged-helper lifecycle authentication. `pv setup --no-path` disables shell profile edits, including stale `PV ENV` block repair, but still prints manual shell integration instructions. When repairing the `PV ENV` block, PV replaces the block wholesale and does not preserve user edits inside it.
 
-The installer does not try to source the updated shell profile into the current parent shell. After editing, it tells the user to open a new terminal or run the shown `pv env` command for the current session.
+Setup does not try to source the updated shell profile into the current parent shell. After editing, it tells the user to open a new terminal or run the shown `pv env` command for the current session.
 
 If binary installation succeeds but automatic setup fails, the install script keeps the binary installed, reports the setup failure clearly, and tells the user to rerun `pv setup` after fixing the issue.
 
@@ -176,7 +176,7 @@ Gateway readiness depends on that state. For `active`, readiness uses the public
 
 macOS updates or restarts may unload active rules while leaving PV-owned prepared and system files intact. Readable loaded-rule evidence classifies this as `inactive`; unavailable inspection plus failed public probes classifies it as `unknown`. Both cases direct the user to foreground `pv ports:install`. The daemon and periodic health tick may inspect files, run unprivileged `pfctl`, and perform bounded probes, but they never prompt, call `sudo`, reload `pf`, or mutate privileged files.
 
-`pv ports:install` remains the only focused repair path. It may use interactive privilege, reloads the PV-owned rules, then verifies the exact loaded rules and public HTTP/HTTPS behavior before reporting success. If the running Gateway passes those probes, PV records a fresh healthy Gateway observation. If the Gateway is not running or cannot yet be verified, PV invalidates only stale PF-derived Gateway readiness observations to `pending` and requests reconciliation; it does not clear unrelated Gateway config, process, or TLS failures. `pv setup` may perform the same foreground repair as part of setup.
+`pv ports:install` remains the only focused repair path. It uses the installed typed helper and never invokes `sudo` or prompts directly; `pv setup` may first use foreground sudo to install or repair the helper lifecycle. It reloads the PV-owned rules, then verifies the exact loaded rules and public HTTP/HTTPS behavior before reporting success. If the running Gateway passes those probes, PV records a fresh healthy Gateway observation. If the Gateway is not running or cannot yet be verified, PV invalidates only stale PF-derived Gateway readiness observations to `pending` and requests reconciliation; it does not clear unrelated Gateway config, process, or TLS failures. `pv setup` may perform the same foreground repair as part of setup.
 
 `pv status`, `pv doctor`, and `pv ports:status` use the same four state values and the same `pv ports:install` repair advice. Their JSON forms expose the stable lowercase `state` value plus evidence (`pfctl`, `probe`, or `unavailable`), expected redirect ports, any readable active ports, and the observation timestamp; they do not infer `active` from file state. Plain output uses the same words. `pv ports:status` exits zero only for `active` and non-zero for `inactive`, `drifted`, or `unknown`. `pv doctor` treats every non-active state as a failed required check after setup. `pv status` treats a non-active state as a failure whenever low-port routing is required, while preserving the intentional-daemon-disabled behavior where installed integrations are reported but not considered broken.
 
@@ -217,7 +217,7 @@ Setup may require an admin prompt for system-owned configuration, but the PV dae
 
 `pv setup` creates the required base directory structure under `~/.pv`, including `bin/`, `run/`, `logs/`, `downloads/`, `config/`, `certificates/`, `composer/`, and `resources/`, with correct permissions before starting the daemon or installing Managed Resources.
 
-`pv setup` may edit the user's shell profile only for the PV-managed `PV ENV` shell integration block, using the same confirmation and `--yes` / `--non-interactive` / `--no-path` behavior as the installer. It does not silently modify shell profiles.
+`pv setup` may edit the user's shell profile only for the PV-managed `PV ENV` shell integration block. `--yes` accepts the PV-owned edit, `--non-interactive` fails if an edit would be required, and `--no-path` skips shell profile integration. Setup does not silently modify shell profiles.
 
 After successful setup, PV prints concise shell integration next steps for `pv env`, using the detected shell where possible, plus optional shell completion generation instructions such as `pv completions zsh`. PV does not auto-install shell completions.
 
@@ -295,8 +295,6 @@ When a Project's PHP track or optional extension set changes, PV reconfigures on
 
 PV's local CA files are user-specific and live under `~/.pv/certificates/`. Trust is installed into the macOS System keychain so browsers trust Project certificates.
 
-PR 12 only prepares local CA files and read-only System trust inspection for these lower-level commands. The actual System keychain mutation required by this design remains PR 13 foreground setup/system-integration work.
-
 `pv dns:*` commands remain available as lower-level resolver inspection and repair commands even though `pv setup` handles first-time resolver configuration.
 
 `pv dns:install` installs or repairs `/etc/resolver/test` and ensures the PV daemon is running so the resolver can answer `.test` lookups. If the LaunchAgent is not registered, it tells the user to run `pv setup` or `pv daemon:enable`.
@@ -305,11 +303,19 @@ PR 12 only prepares local CA files and read-only System trust inspection for the
 
 `pv ports:install` enables `pf` if needed and installs only PV-owned anchor/rules. `pv ports:uninstall` removes PV-owned rules but does not disable `pf` globally because other software may rely on it.
 
-Privileged self-healing only happens from foreground commands such as `pv setup`, `pv dns:install`, and `pv ports:install`, where an admin prompt is expected. PV mutates stored port choices in `pv.db` only after the corresponding privileged system configuration repair succeeds.
+Privileged repair happens only from foreground commands such as `pv setup`, `pv dns:install`, and `pv ports:install`. PV mutates stored port choices in `pv.db` only after the corresponding privileged system configuration repair succeeds. The daemon may report drift but does not ask the helper to mutate system state.
 
-Foreground commands use `sudo` for v1 privileged operations. PV should run the smallest possible privileged commands and print clear explanations before prompting.
+PV uses a separate minimal `pv-helper` executable registered as the system launchd job `com.prvious.pv.helper`. Launchd creates the restricted `/var/run/com.prvious.pv.helper.sock` and activates the helper on demand. Once activated, the helper serves sequential connections until launchd stops it, avoiding launchd restart throttling between related operations. Its LaunchDaemon writes startup and uncaptured child-process diagnostics to `/var/log/com.prvious.pv.helper.err.log`. The daemon, Gateway, DNS resolver, and all Managed Resources remain unprivileged. The helper supports one installing macOS account per machine. Helper removal is restricted to the original installing UID, so that account must remove it before setup by a replacement account; an unavailable owner requires manual administrator recovery.
 
-PV generates privileged config files under `~/.pv` first, validates them where possible, then installs them with a minimal privileged copy/write step. If validation fails, PV does not touch system files. For `pf` rules, PV should use a reliable `pfctl` parse/dry-run mode when available; if that is unavailable or unreliable, PV validates expected file shape and fails safely before touching active rules.
+The helper accepts only versioned typed requests for status, DNS inspection/apply/removal, PF inspection/apply/reload/removal, and CA trust inspection/apply/removal. Requests cannot provide commands, executable paths, destination paths, raw configuration, environment behavior, or network operations. DNS and PF content is generated internally for fixed system destinations. `CaApply` reads only the installing account's fixed PV CA path, validates PV CA metadata and the requested fingerprint, stages that exact certificate in the fixed root work path, revalidates it, and trusts it. The helper revalidates ownership, conflicts, arguments, and expected state before each mutation. `pv.db` remains the only desired-state source of truth; root-owned helper metadata contains only the installing UID, helper version, and protocol version.
+
+The socket is restricted to the installing account, and the helper verifies the Unix peer UID before decoding and dispatching a bounded request. Protocol version is validated independently from app and helper versions. Install and replacement readiness uses a small protocol-neutral lifecycle probe, separate from the versioned operational request schema, so an app may verify a newly installed helper before activating a matching protocol update. Missing or incompatible helpers produce repair guidance to run `pv setup`; `pv doctor` reports cross-account authentication failures with guidance to use the original installing account or perform manual administrator recovery. Normal DNS, PF, and CA commands never fall back to `sudo`.
+
+`sudo` is used only by foreground helper lifecycle operations: initial install, replacement, repair, and removal. Initial setup therefore requires one administrator authentication, while later typed DNS, PF, and CA repairs continue without new prompts after sudo timestamp expiry or reboot. The helper installation path verifies the candidate checksum and ad-hoc code signature before replacing the root-owned executable and launchd registration.
+
+Helper install, replacement, and removal hold a persistent-file advisory lock under `/Library/PrivilegedHelperTools` for the full root-owned lifecycle transaction. This machine-wide lock serializes the fixed candidate, rollback, executable, metadata, plist, and launchd paths across macOS accounts. Setup, update, and uninstall also hold a persistent per-account lock at `~/.pv-helper-lifecycle.lock` across helper-dependent integration and state changes; keeping it outside `~/.pv` lets `pv uninstall --prune` remain serialized while removing that tree.
+
+`pv doctor` remains unprivileged and read-only. It reports helper availability, helper version, and helper protocol, uses narrowly scoped helper inspections when direct DNS, PF, or CA inspection is blocked, and continues reporting all other checks when the helper is unavailable.
 
 # More Info
 
@@ -463,15 +469,15 @@ Non-waiting commands such as `pv link` exit zero once desired state is recorded 
 
 Install and update commands submit daemon jobs, stream progress over the socket, and exit when the job completes or fails.
 
-`pv update` updates both the PV application and all installed Managed Resource tracks. Resource-specific update commands, such as `pv mysql:update`, update only installed tracks of that Managed Resource.
+`pv update` updates the PV application, its independently versioned privileged helper, and all installed Managed Resource tracks. Resource-specific update commands, such as `pv mysql:update`, update only installed tracks of that Managed Resource.
 
-`pv update` self-updates the PV application before Managed Resources so the latest daemon owns resource update logic and manifest interpretation. It downloads the new `pv` binary, verifies its SHA-256 checksum and byte count, installs it under `~/.pv/bin/releases/<version>/pv`, atomically points `~/.pv/bin/pv` at the new release, coordinates daemon restart, reconnects to the daemon, releases the self-update/daemon-mutation coordination lock, and then runs a daemon-owned Managed Resource update job. If checksum verification, binary replacement, daemon restart, daemon health, or startup migration health fails, `pv update` stops and reports the failure instead of continuing to Managed Resource updates.
+`pv update` updates the application and helper before Managed Resources so the latest daemon owns resource update logic and manifest interpretation. It downloads only changed app/helper components, verifies each SHA-256 checksum and byte count, updates the registered helper before activating an app that requires it, installs changed release files under `~/.pv/bin/releases/<version>/`, atomically updates `~/.pv/bin/pv` when the app changed, coordinates daemon restart only for an app update, releases the self-update/daemon-mutation coordination lock, and then runs a daemon-owned Managed Resource update job. If verification, helper lifecycle, binary replacement, daemon restart, daemon health, or startup migration health fails, `pv update` stops and reports the failure instead of continuing to Managed Resource updates.
 
 If the PV application is already current, `pv update` still continues to the daemon-owned Managed Resource update phase in the same foreground process after releasing the coordination lock. If a newer PV application release is activated successfully, `pv update` re-execs the active `~/.pv/bin/pv` through an internal hidden continuation path before submitting the Managed Resource update job. The continuation path skips the app-update phase, does not reprint the `PV update` header or app-phase lines, validates that it is running from the installed active release layout, and submits only the daemon-owned Managed Resource update phase.
 
 `pv update` does not prompt for confirmation before applying available PV application or Managed Resource updates. Running the command is the explicit user intent to update. Safety comes from checksum verification, atomic release installation, rollback, and non-destructive data handling.
 
-`pv update --check` refreshes the PV app update manifest and Managed Resource artifact manifest, reports available PV application updates, reports updates for installed Managed Resource tracks, and exits without applying changes. It checks PV application updates even when no Managed Resources are installed.
+`pv update --check` refreshes the PV app update manifest and Managed Resource artifact manifest, reports PV application and privileged-helper availability, reports updates for installed Managed Resource tracks, and exits without applying changes. It checks the app and helper even when no Managed Resources are installed.
 
 `pv update --check` exits zero when the update check succeeds, even if updates are available. It exits non-zero only when the check itself fails.
 
@@ -487,6 +493,7 @@ The plain `pv update` output is quiet and phase-based. Successful examples are:
 
 ```text
 PV update
+Privileged helper: current 1.0.0 (protocol 1)
 PV application: updated 0.1.0 -> 0.2.0
 Daemon restarted and healthy
 Managed Resources: updated 3 artifact(s)
@@ -496,12 +503,14 @@ Managed Resources reconciled: <daemon summary>
 ```text
 PV update
 PV application: current 0.2.0
+Privileged helper: current 1.0.0 (protocol 1)
 Managed Resources: current
 ```
 
 ```text
 PV update
 PV application: current 0.2.0
+Privileged helper: current 1.0.0 (protocol 1)
 Managed Resources: none installed
 ```
 
@@ -511,11 +520,14 @@ The plain `pv update --check` output is:
 
 ```text
 PV application: current 0.1.0
+Privileged helper: current 1.0.0 (protocol 1)
 Managed Resources:
   none installed
 ```
 
 When an application update is available, the first line is `PV application: update available <current-version> -> <latest-version> (<platform>)`. When the app update check cannot select an asset for the current platform, the first line is `PV application: unavailable <current-version> (<reason>)`. App manifest parse, compatibility, fetch, and cache errors are check failures, not availability statuses, so the command exits non-zero and reports the error on stderr.
+
+The helper line follows the app line as `Privileged helper: current <version> (protocol <protocol>)`, `Privileged helper: update required <current-version> -> <latest-version> (protocol <protocol>)`, or `Privileged helper: unavailable (<reason>)`. An older app manifest cannot repair a missing or protocol-mismatched helper and reports that no applicable helper repair exists.
 
 Installed Managed Resource tracks are listed one per line as `  <resource> <track>: <status> <details>`. Status values are `current`, `update available`, `blocked`, `revoked`, and `unavailable`. `current` includes the installed artifact version. `update available` includes `<current-artifact-version> -> <latest-artifact-version>`. `blocked` includes `requires PV <minimum-pv-version>, current PV <current-pv-version>` and is used when artifact metadata cannot be interpreted until PV itself is updated. `revoked` is used when the currently installed artifact is explicitly revoked in the refreshed artifact manifest; it includes the installed artifact version, revocation reason, and the replacement artifact version when one is available. `unavailable` is used for per-track metadata problems such as a missing resource, missing track, no installable platform candidate, or ambiguous artifact selection; it includes the installed artifact version and the reason. If the newest candidate in the refreshed artifact manifest is revoked but a non-revoked fallback exists, output keeps the normal `current`, `update available`, or `revoked` status and appends `; newest <revoked-artifact-version> revoked: <reason>`.
 
@@ -532,6 +544,17 @@ Installed Managed Resource tracks are listed one per line as `  <resource> <trac
       "url": "https://downloads.prvious.test/pv/0.1.0/pv-darwin-arm64",
       "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "size": 12345678
+    },
+    "helper": {
+      "status": "current",
+      "current_version": "1.0.0",
+      "latest_version": "1.0.0",
+      "current_protocol_version": 1,
+      "latest_protocol_version": 1,
+      "url": "https://downloads.prvious.test/pv/0.1.0/pv-helper-1.0.0-darwin-arm64",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "size": 2345678,
+      "reason": null
     },
     "reason": null
   },
@@ -552,7 +575,7 @@ Installed Managed Resource tracks are listed one per line as `  <resource> <trac
 }
 ```
 
-The JSON `app.status` values are `current`, `update_available`, and `unavailable`. `latest_version` and `asset` are `null` only for `unavailable`. The JSON Managed Resource `status` values are `current`, `update_available`, `blocked`, `revoked`, and `unavailable`. `current_artifact_version`, `current_artifact_path`, `resource`, and `track` always identify the installed track. `latest_artifact_version` is `null` only when no installable latest artifact can be selected or the check is blocked before parsing artifact metadata. `current_revocation`, `latest_revocation`, and `blocked_by` are nullable objects. Revocation objects contain `artifact_version` and `reason`. `blocked_by` contains `minimum_pv_version` and `current_pv_version`. `reason` is `null` except for `unavailable` statuses.
+The JSON `app.status` values are `current`, `update_available`, and `unavailable`. `latest_version` and `asset` are `null` only for `unavailable`. `app.helper` is present when a platform asset was selected and contains its own `status`, current/latest version, current/latest protocol, URL, checksum, size, and nullable reason. Helper status values are `current`, `update_available`, and `unavailable`; current identity fields are null when the helper cannot report them, and `reason` explains `unavailable`. The JSON Managed Resource `status` values are `current`, `update_available`, `blocked`, `revoked`, and `unavailable`. `current_artifact_version`, `current_artifact_path`, `resource`, and `track` always identify the installed track. `latest_artifact_version` is `null` only when no installable latest artifact can be selected or the check is blocked before parsing artifact metadata. `current_revocation`, `latest_revocation`, and `blocked_by` are nullable objects. Revocation objects contain `artifact_version` and `reason`. `blocked_by` contains `minimum_pv_version` and `current_pv_version`. `reason` is `null` except for `unavailable` statuses.
 
 The daemon protocol adds a read-only `managed_resource_update_check` request:
 
@@ -602,7 +625,7 @@ The v1 PV app update manifest is a single stable-channel release document. It do
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "channel": "stable",
   "version": "0.2.0",
   "minimum_pv_version": "0.1.0",
@@ -612,21 +635,35 @@ The v1 PV app update manifest is a single stable-channel release document. It do
       "platform": "darwin-arm64",
       "url": "https://downloads.prvious.test/pv/0.2.0/pv-darwin-arm64",
       "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "size": 12345678
+      "size": 12345678,
+      "helper": {
+        "version": "1.0.0",
+        "protocol_version": 1,
+        "url": "https://downloads.prvious.test/pv/0.2.0/pv-helper-1.0.0-darwin-arm64",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "size": 2345678
+      }
     },
     {
       "platform": "darwin-amd64",
       "url": "https://downloads.prvious.test/pv/0.2.0/pv-darwin-amd64",
       "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "size": 12345678
+      "size": 12345678,
+      "helper": {
+        "version": "1.0.0",
+        "protocol_version": 1,
+        "url": "https://downloads.prvious.test/pv/0.2.0/pv-helper-1.0.0-darwin-amd64",
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "size": 2345678
+      }
     }
   ]
 }
 ```
 
-`schema_version` must be `1`; newer schema versions fail as unsupported rather than being partially interpreted. `channel` must be exactly `stable`; runtime/user-facing channel selection is not part of v1. `version` and `minimum_pv_version` use PV's simple application version identity, `major.minor.patch` with no leading zero components. `minimum_pv_version` is the minimum currently installed PV application version that may apply this release; if the running PV binary is older than that value, self-update manifest parsing fails clearly and tells the user that a newer PV parser is required.
+`schema_version` must be `2`; other schema versions fail as unsupported rather than being partially interpreted. `channel` must be exactly `stable`; runtime/user-facing channel selection is not part of v1. `version`, `minimum_pv_version`, and helper `version` use PV's simple version identity, `major.minor.patch` with no leading zero components. `minimum_pv_version` is the minimum currently installed PV application version that may apply this release; if the running PV binary is older than that value, self-update manifest parsing fails clearly and tells the user that a newer PV parser is required.
 
-`published_at` must be an RFC 3339 timestamp for the PV application release. Each entry in `assets` describes one native PV application binary for one exact supported target platform. V1 app update assets support `darwin-arm64` and `darwin-amd64`; `any` is not valid for the PV application binary. Each `url` must be HTTPS, include a host, and include a non-empty final path segment that is not `.` or `..` and does not contain backslashes. Each `sha256` must be a 64-character hexadecimal digest, normalized case-insensitively by the parser. Each `size` must be a positive byte count.
+`published_at` must be an RFC 3339 timestamp for the PV application release. Each entry in `assets` describes a native PV application binary and separate native helper binary for one exact supported target platform. V1 app update assets support `darwin-arm64` and `darwin-amd64`; `any` is not valid. Helper `protocol_version` is a positive integer versioned independently from the app and helper release versions. Each `url` must be HTTPS, include a host, and include a non-empty final path segment that is not `.` or `..` and does not contain backslashes. Each `sha256` must be a 64-character hexadecimal digest, normalized case-insensitively by the parser. Each `size` must be a positive byte count.
 
 The manifest must contain at least one asset and must not contain duplicate assets for the same platform. Selecting the current platform returns the matching asset for the current target platform. If the current target platform is missing, selection fails clearly instead of falling back to another platform.
 
@@ -645,15 +682,18 @@ The PV application update phase runs in this order:
 3. Validate the installed active release symlink and running version.
 4. Validate or normalize the PV-owned LaunchAgent to `~/.pv/bin/pv daemon:run`.
 5. Fetch and parse the PV app update manifest.
-6. If the manifest version is not newer than the running version, report current, release the coordination lock, and continue to the Managed Resource phase in the same process.
-7. Download, verify, install, and activate the newer app release.
-8. Reload the validated PV-owned LaunchAgent with tolerant bootout/bootstrap, then kickstart the daemon without submitting `reconcile system`.
-9. Wait for daemon health.
-10. Release the coordination lock and re-exec the active `~/.pv/bin/pv` into the internal Managed Resource continuation.
+6. Compare the app version plus installed helper version/protocol with the selected platform asset. If both are current, report current, release the coordination lock, and continue to the Managed Resource phase in the same process.
+7. Download and verify only the changed components. For a combined app/helper update, store the checksummed helper and its user-owned version, protocol, and checksum metadata beside the target app release, then install or replace the root helper before app activation. For a helper-only update, install and lifecycle-probe the root helper from the command-scoped download first, then promote the helper plus metadata into the current release; promotion failure restores both the previous registered helper and release files. `pv setup` uses the active release metadata for later helper repair. A helper lifecycle failure stops before app activation.
+8. Install and activate the newer app release when its version changed.
+9. Reload the validated PV-owned LaunchAgent with tolerant bootout/bootstrap, then kickstart the daemon without submitting `reconcile system`.
+10. Wait for daemon health.
+11. Release the coordination lock and re-exec the active `~/.pv/bin/pv` into the internal Managed Resource continuation.
 
 The coordination lock covers the network fetch, binary swap, and daemon transition. `pv update` does not enqueue `reconcile system` or `update system` while the coordination lock is held. The Managed Resource update job is submitted only after the foreground app phase releases the lock or after the re-execed continuation starts.
 
-If the PV application is already current, top-level `pv update` reports current and continues to the daemon-owned Managed Resource update phase without download, reinstall, reactivation, or daemon restart.
+If the PV application and helper are already current, top-level `pv update` reports both current and continues to the daemon-owned Managed Resource update phase without download, reinstall, reactivation, or daemon restart. A helper-only update downloads and explicitly authenticates only the helper lifecycle operation, does not reactivate the app, and does not restart the daemon. Helper-only publication reuses and verifies the immutable current app assets, publishes new helper-version-scoped release records, and rejects protocol changes because those require a matching app release. An app-only update does not replace the registered helper and does not prompt for administrator authentication.
+
+As a one-time publication transition, release tooling may read only the version from a current schema-1 stable app manifest and requires the schema-2 candidate app version to be strictly newer. It does not carry legacy assets forward or add schema-1 support to runtime update parsing.
 
 Top-level `pv update` updates all installed Managed Resource tracks, not only tracks currently needed by linked Projects.
 
@@ -665,13 +705,13 @@ For `pv update --check`, the CLI fetches the PV app update manifest and computes
 
 User-facing `pv update` only performs PV application self-update when PV is running from the installed active release layout. Before mutation, `~/.pv/bin/pv` must be a symlink to `releases/<version>/pv`, that symlink target must exist and be a file, and the symlink version must match the running PV application version. If any precondition fails, `pv update` fails before download or activation and does not repair the layout by copying `current_exe()`.
 
-`pv update` is version-driven. If the manifest version equals or is lower than the running version, it reports current and does not download, reinstall, or reactivate the same version. Downgrades are out of v1 scope.
+PV application update is version-driven. If the manifest app version equals or is lower than the running version, it does not download, reinstall, or reactivate that app version. An equal app version may carry a same-protocol helper-only update. For an older app manifest, PV accepts only a strictly newer helper on the already-running protocol; it never downgrades a helper or uses the older manifest to repair a missing/protocol-mismatched helper. Downgrades are out of v1 scope.
 
 Installed and self-updating PV uses the stable active symlink as the LaunchAgent program path: `~/.pv/bin/pv daemon:run`. During update preflight, a PV-owned stale LaunchAgent plist is normalized to that stable path. After every actual app release activation, PV reloads the validated PV-owned launchd job with tolerant bootout/bootstrap before kickstart so launchd resolves the active symlink again and uses the current `ProgramArguments`. This reload is required whether the plist was already current or was normalized during preflight. If post-activation health fails, rollback restores the previous active symlink and repeats the same bootout/bootstrap/kickstart sequence before checking daemon health. A missing LaunchAgent fails before activation with guidance to run `pv setup` or `pv daemon:enable`. A non-PV-owned LaunchAgent fails before activation and is left unchanged. If LaunchAgent normalization succeeds but the manifest says the PV application is current, `pv update` exits zero without restarting or reloading the daemon.
 
-PV app binary downloads use a freshly created command-scoped temporary file under `~/.pv/downloads/`; an existing path is never reused or truncated. While streaming the response, PV writes to that temporary file, computes SHA-256, and counts bytes. After the stream completes, PV verifies byte count and digest against the selected manifest asset. Verification failure deletes the temporary file, fails before app release installation, and leaves the active release unchanged. Successful installation uses the self-update release layout helper, then removes the temporary download; v1 does not introduce a persistent PV app binary download cache.
+PV app and helper downloads use freshly created command-scoped temporary files under `~/.pv/downloads/`; an existing path is never reused or truncated. While streaming each response, PV computes SHA-256 and counts bytes. After the stream completes, PV verifies byte count and digest against the selected manifest component. Verification failure deletes the temporary file, fails before activation, and leaves the active release unchanged. Successful installation stores the binaries in the selected release directory, then removes the temporary downloads; v1 does not introduce a persistent app-component download cache.
 
-PV self-update keeps the previous PV application binary for rollback. If the updated binary cannot restart the daemon and report healthy, `pv update` restores the previous binary, restarts the daemon again, and reports that the app update was rolled back. A daemon protocol mismatch during the post-activation health check means the newly activated daemon is running with a newer protocol and is not by itself a rollback reason; subsequent user commands run through the newly active `~/.pv/bin/pv` binary.
+PV self-update keeps the previous PV application binary and helper candidate for rollback. If the updated binary cannot restart the daemon and report healthy, `pv update` restores the previous app and helper identities, restarts the daemon again, and reports that the app update was rolled back. If no helper was registered before the update, helper rollback removes the newly registered helper. A daemon protocol mismatch during the post-activation health check means the newly activated daemon is running with a newer protocol and is not by itself a rollback reason; subsequent user commands run through the newly active `~/.pv/bin/pv` binary.
 
 PV application rollback applies only to PV app update failures or post-update daemon health failure. If the PV app self-update succeeds but later Managed Resource updates fail, PV keeps the newer app binary installed and reports the Managed Resource update failure.
 
@@ -685,9 +725,11 @@ The daemon writes a minimal startup failure marker at `~/.pv/run/daemon-startup-
 
 PV application self-update restarts the daemon/control plane but does not stop currently running Gateway, Project-serving workers, or backing Managed Resource processes before swapping the PV binary. The updated daemon adopts existing PV-owned child processes where ownership verification passes and then reconciles or updates resources as needed when a later command requests that work.
 
-Rollback is attempted only after the active binary has changed. If daemon startup, daemon health, or migration health fails after activation and rollback succeeds, stdout reports `PV application: update failed; rolled back to <previous-version>` and stderr reports the original failure. A generic daemon health failure is reported as `daemon did not become healthy after update`; migration failure is reported as `database migration failed after update: <message>`.
+App rollback is attempted after activation was attempted. Helper rollback is also attempted when helper replacement itself fails, before any incompatible app can be activated. If daemon startup, daemon health, or migration health fails after activation and rollback succeeds, stdout reports `PV application: update failed; rolled back to <previous-version>` and stderr reports the original failure. A generic daemon health failure is reported as `daemon did not become healthy after update`; migration failure is reported as `database migration failed after update: <message>`.
 
-If restoring the previous active symlink fails, stdout reports that rollback failed and stderr includes both the original failure and the symlink restore failure. If the previous symlink is restored but daemon restart or health after rollback fails, stdout reports that the previous app release was restored, stderr includes the original failure, says daemon restart after rollback failed, and suggests `pv daemon:restart` or `pv setup`. After the previous symlink is restored, PV attempts to remove the failed new release directory even if daemon restart after rollback fails; cleanup failure is a warning, not the primary result.
+If restoring the previous active symlink fails, stdout reports that rollback failed and stderr includes both the original failure and the symlink restore failure. When the update replaced the helper, PV attempts to restore the previous helper state—reinstalling the previous helper or removing the newly registered helper—only when the previous app release is active after the rollback attempt. If the previous app release is not active, PV keeps the updated helper and retains its rollback candidate for repair. If the previous symlink is restored but daemon restart or health after rollback fails, stdout reports that the previous app release was restored, stderr includes the original failure, says daemon restart after rollback failed, and suggests `pv daemon:restart` or `pv setup`. After the previous symlink is restored, PV attempts to remove the failed new release directory even if daemon restart after rollback fails; cleanup failure is a warning, not the primary result.
+
+If reactivating the previous release reports an error but the active symlink already names that release, PV restores the previous helper and attempts to restart the daemon. Because the symlink update was not confirmed durable, rollback still reports failure and retains both the failed application release and helper rollback candidate for repair.
 
 PV coordinates foreground self-update with queued daemon mutations through an OS-level advisory filesystem lock whose legacy path remains `~/.pv/run/update.lock`. The foreground `pv update` process holds it during the binary swap and daemon transition. The daemon mutation queue holds the same lock while reconciliation or update work is queued or running. This is not a universal serializer for every foreground PV mutation.
 
@@ -717,7 +759,7 @@ Managed Resource uninstall commands remove installed binaries and runtime metada
 
 PV refuses to uninstall a Managed Resource track currently needed by a linked Project unless `--force` is provided. Forced uninstall marks affected Projects failed or pending; reconciliation may reinstall the track if Project config still declares it.
 
-`pv uninstall` is safe by default. It stops and unregisters the LaunchAgent, removes `/etc/resolver/test`, removes PV's `pf` redirect rules, removes PV local CA trust, removes the installer-managed `PV ENV` shell profile block when present, stops PV-managed processes, and removes PV app binaries, shims, runtime metadata, sockets, generated configs, and installed Managed Resource binaries. Before editing a shell profile during uninstall, PV creates a backup.
+`pv uninstall` is safe by default. It stops and unregisters the LaunchAgent, removes `/etc/resolver/test`, removes PV's `pf` redirect rules, removes PV local CA trust, deregisters and removes the root helper, removes the PV-managed `PV ENV` shell profile block when present, stops PV-managed processes, and removes PV app binaries, shims, runtime metadata, sockets, generated configs, and installed Managed Resource binaries. Helper removal cleans the exclusively PV-owned system support directory, including interrupted work files. macOS may request administrator authentication when helper artifacts exist; an installation created with `--no-setup` does not prompt merely to remove an absent helper. Before editing a shell profile during uninstall, PV creates a backup.
 
 By default, `pv uninstall` preserves logs, `pv.db`, certificates, Composer home/cache, Managed Resource data, and Project `.env` blocks. `pv uninstall --prune` removes all PV-owned state under `~/.pv` and PV-owned system integration files/trust. Prune deletes local PV-owned data trees rather than attempting logical cleanup inside Managed Resources first. Shell profile backups created by PV are user safety artifacts and are not removed by `--prune`. `--prune` requires interactive confirmation unless `--force` is also provided.
 

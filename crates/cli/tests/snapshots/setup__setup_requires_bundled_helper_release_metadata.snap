@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/setup.rs
+expression: output
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "PV setup\nEnsured PV state layout: <tempdir>/home/.pv\n",
+    stderr: "error: invalid privileged-helper release metadata at <tempdir>/bin/pv-helper.json: release metadata is missing; reinstall PV before running `pv setup`\n",
+}

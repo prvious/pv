@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/update.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "PV update\nPV application: update failed; rollback failed\n",
+    stderr: "error: PV application update failed (daemon did not become healthy after update); rollback failed: application reactivation: filesystem error at <pv-home>/bin: Permission denied (os error 13); retained failed application release at <pv-home>/bin/releases/0.3.0; retained helper rollback candidate at <pv-home>/downloads/pv-helper-rollback-<id>.tmp\n",
+}

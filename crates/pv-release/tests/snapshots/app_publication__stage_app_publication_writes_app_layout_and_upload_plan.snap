@@ -9,16 +9,24 @@ expression: expected_plan
       "object_key": "pv/0.2.0/pv-darwin-amd64"
     },
     {
-      "local_path": "pv/records/0.2.0/pv-darwin-amd64.json",
-      "object_key": "pv/records/0.2.0/pv-darwin-amd64.json"
+      "local_path": "pv/0.2.0/pv-helper-1.0.0-darwin-amd64",
+      "object_key": "pv/0.2.0/pv-helper-1.0.0-darwin-amd64"
+    },
+    {
+      "local_path": "pv/records/0.2.0/1.0.0/pv-darwin-amd64.json",
+      "object_key": "pv/records/0.2.0/1.0.0/pv-darwin-amd64.json"
     },
     {
       "local_path": "pv/0.2.0/pv-darwin-arm64",
       "object_key": "pv/0.2.0/pv-darwin-arm64"
     },
     {
-      "local_path": "pv/records/0.2.0/pv-darwin-arm64.json",
-      "object_key": "pv/records/0.2.0/pv-darwin-arm64.json"
+      "local_path": "pv/0.2.0/pv-helper-1.0.0-darwin-arm64",
+      "object_key": "pv/0.2.0/pv-helper-1.0.0-darwin-arm64"
+    },
+    {
+      "local_path": "pv/records/0.2.0/1.0.0/pv-darwin-arm64.json",
+      "object_key": "pv/records/0.2.0/1.0.0/pv-darwin-arm64.json"
     },
     {
       "local_path": "pv/manifests/runs/987654321/pv-app-manifest.json",

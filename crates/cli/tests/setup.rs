@@ -14,11 +14,13 @@ use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
 use platform::{
-    KeychainCertificate, KeychainTrustResult, LAUNCH_AGENT_LABEL, LaunchAgentConfig,
-    LocalCaMetadata, PfConfReference, PfRedirectConfig, ResolverConfig, generate_local_ca,
+    HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult, LAUNCH_AGENT_LABEL,
+    LaunchAgentConfig, LocalCaMetadata, PRIVILEGED_HELPER_VERSION, PfConfReference,
+    PfRedirectConfig, PrivilegedHelperStatus, ResolverConfig, generate_local_ca,
 };
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
@@ -40,6 +42,7 @@ struct TestEnvironment {
     input: Mutex<VecDeque<String>>,
     client: ScriptedClient,
     target_platform: TargetPlatform,
+    helper_status: Mutex<Option<PrivilegedHelperStatus>>,
 }
 
 impl TestEnvironment {
@@ -64,6 +67,11 @@ impl TestEnvironment {
             input: Mutex::new(VecDeque::new()),
             client: ScriptedClient::new(),
             target_platform,
+            helper_status: Mutex::new(Some(PrivilegedHelperStatus {
+                version: PRIVILEGED_HELPER_VERSION.to_string(),
+                protocol_version: HELPER_PROTOCOL_VERSION,
+                owner_uid: 501,
+            })),
         }
     }
 
@@ -89,6 +97,10 @@ impl TestEnvironment {
 
     fn text_request_count(&self) -> usize {
         self.client.text_request_count()
+    }
+
+    fn set_helper_missing(&self) {
+        *lock(&self.helper_status) = None;
     }
 }
 
@@ -276,13 +288,6 @@ impl Environment for TestEnvironment {
     fn active_pf_redirect_config(
         &self,
     ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
-        self.active_pf_redirect_config_with_privilege_mode(platform::PrivilegeMode::NonInteractive)
-    }
-
-    fn active_pf_redirect_config_with_privilege_mode(
-        &self,
-        _privilege_mode: platform::PrivilegeMode,
-    ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
         Ok(lock(&self.active_pf_config).clone())
     }
 
@@ -308,11 +313,7 @@ impl Environment for TestEnvironment {
         Ok(lock(&self.certificates).clone())
     }
 
-    fn trust_system_ca(
-        &self,
-        certificate_path: &Utf8Path,
-        _privilege_mode: platform::PrivilegeMode,
-    ) -> Result<(), platform::PlatformError> {
+    fn trust_system_ca(&self, certificate_path: &Utf8Path) -> Result<(), platform::PlatformError> {
         let certificate_pem = state::fs::read_to_string(certificate_path)
             .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
         let metadata = LocalCaMetadata::from_certificate_pem(&certificate_pem)?;
@@ -328,14 +329,44 @@ impl Environment for TestEnvironment {
         Ok(())
     }
 
-    fn untrust_system_ca(
-        &self,
-        fingerprint: &str,
-        _privilege_mode: platform::PrivilegeMode,
-    ) -> Result<(), platform::PlatformError> {
+    fn untrust_system_ca(&self, fingerprint: &str) -> Result<(), platform::PlatformError> {
         lock(&self.certificates)
             .retain(|certificate| certificate.metadata.fingerprint != fingerprint);
         lock(&self.operations).push(format!("untrust {fingerprint}"));
+
+        Ok(())
+    }
+
+    fn privileged_helper_status(&self) -> Result<PrivilegedHelperStatus, platform::PlatformError> {
+        lock(&self.helper_status)
+            .clone()
+            .ok_or(platform::PlatformError::PrivilegedHelperUnavailable)
+    }
+
+    fn install_privileged_helper(
+        &self,
+        candidate_path: &Utf8Path,
+        prepared_directory: &Utf8Path,
+        expected_sha256: &str,
+        helper_version: &str,
+        protocol_version: u32,
+    ) -> Result<platform::PrivilegedHelperInstallOutcome, platform::PlatformError> {
+        let status = PrivilegedHelperStatus {
+            version: helper_version.to_string(),
+            protocol_version,
+            owner_uid: 501,
+        };
+        *lock(&self.helper_status) = Some(status.clone());
+        lock(&self.operations).push(format!(
+            "install helper {candidate_path} prepared {prepared_directory} version {helper_version} protocol {protocol_version} sha256 {expected_sha256}"
+        ));
+
+        Ok(platform::PrivilegedHelperInstallOutcome::successful(status))
+    }
+
+    fn remove_privileged_helper(&self) -> Result<(), platform::PlatformError> {
+        *lock(&self.helper_status) = None;
+        lock(&self.operations).push("remove helper".to_string());
 
         Ok(())
     }
@@ -435,6 +466,7 @@ fn setup_records_default_resource_desired_tracks_before_reconciliation() -> anyh
 fn setup_fetches_manifest_before_recording_default_resources() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
+    seed_bundled_helper_metadata(&fixture)?;
     fixture
         .environment
         .script_manifest_text(setup_manifest_json()?);
@@ -471,7 +503,7 @@ fn setup_uses_cached_manifest_with_warning_when_refresh_fails() -> anyhow::Resul
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
 
-    seed_setup_manifest(&fixture.paths)?;
+    seed_setup_manifest(&fixture)?;
     fixture
         .environment
         .script_manifest_error(ResourcesError::HttpRequestFailed {
@@ -549,6 +581,7 @@ fn setup_manifest_missing_default_continues_core_setup_and_records_remaining_def
 -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
+    seed_bundled_helper_metadata(&fixture)?;
     fixture
         .environment
         .script_manifest_text(setup_manifest_json_without("mysql")?);
@@ -580,6 +613,7 @@ fn setup_manifest_platform_mismatch_continues_core_setup_and_records_valid_defau
 -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new_with_target_platform(tempdir.path(), TargetPlatform::DarwinAmd64);
+    seed_bundled_helper_metadata(&fixture)?;
     fixture
         .environment
         .script_manifest_text(setup_manifest_json_with_amd64_gap("frankenphp")?);
@@ -666,6 +700,7 @@ fn setup_non_interactive_fails_before_privileged_system_changes() -> anyhow::Res
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
     seed_online_setup_manifest(&fixture)?;
+    fixture.environment.set_helper_missing();
 
     let output = run_pv(
         &["setup", "--no-path", "--non-interactive"],
@@ -683,6 +718,121 @@ fn setup_non_interactive_fails_before_privileged_system_changes() -> anyhow::Res
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((output, fixture.environment.operations()));
     });
+
+    Ok(())
+}
+
+#[test]
+fn setup_installs_missing_helper_before_system_integrations() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    fixture.environment.set_helper_missing();
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+
+    let output = run_pv(
+        &["setup", "--no-path", "--yes"],
+        fixture.environment.as_ref(),
+    )?;
+    let _daemon_requests = daemon.finish()?;
+    let operations = fixture.environment.operations();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stdout.contains("Installed privileged helper 1.0.0"));
+    assert!(operations.first().is_some_and(|operation| {
+        operation == &format!(
+            "install helper {}/bin/pv-helper prepared {}/home/.pv/config/helper version 1.0.0 protocol 1 sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            tempdir.path(),
+            tempdir.path()
+        )
+    }));
+
+    Ok(())
+}
+
+#[test]
+fn setup_requires_bundled_helper_release_metadata() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    let metadata_path = Utf8Path::from_path(&fixture.environment.current_exe)
+        .ok_or_else(|| anyhow::anyhow!("test executable path is not UTF-8"))?
+        .with_file_name("pv-helper.json");
+    state::fs::delete_file(&metadata_path)?;
+    fixture.environment.set_helper_missing();
+
+    let output = run_pv(
+        &["setup", "--no-path", "--yes"],
+        fixture.environment.as_ref(),
+    )?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(fixture.environment.operations().is_empty());
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!(output);
+    });
+
+    Ok(())
+}
+
+#[test]
+fn setup_repairs_from_active_release_helper_metadata() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    fixture.environment.set_helper_missing();
+    let helper_bytes = b"pv helper 1.1.0\n";
+    let helper_sha256 = format!("{:x}", Sha256::digest(helper_bytes));
+    let release_version = env!("CARGO_PKG_VERSION");
+    let app_source = tempdir.path().join("release-pv");
+    state::fs::write_sensitive_file(&app_source, "pv\n")?;
+    let layout = state::AppReleaseLayout::new(fixture.paths.clone());
+    layout.install_release_binary(release_version, &app_source)?;
+    let release_helper = fixture.paths.app_release_helper(release_version);
+    state::fs::write_sensitive_file(&release_helper, std::str::from_utf8(helper_bytes)?)?;
+    state::fs::write_sensitive_file(
+        &release_helper.with_file_name("pv-helper.json"),
+        &format!(
+            "{{\n  \"version\": \"1.1.0\",\n  \"protocol_version\": 1,\n  \"sha256\": \"{helper_sha256}\"\n}}\n"
+        ),
+    )?;
+    layout.activate_release(release_version)?;
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+
+    let output = run_pv(
+        &["setup", "--no-path", "--yes"],
+        fixture.environment.as_ref(),
+    )?;
+    let _daemon_requests = daemon.finish()?;
+    let operations = fixture.environment.operations();
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(
+        operations.first(),
+        Some(&format!(
+            "install helper {release_helper} prepared {}/config/helper version 1.1.0 protocol 1 sha256 {helper_sha256}",
+            fixture.paths.root()
+        ))
+    );
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, operations));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn setup_requires_confirmation_before_installing_missing_helper() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    fixture.environment.set_helper_missing();
+
+    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.contains("requires confirmation"));
+    assert!(fixture.environment.operations().is_empty());
 
     Ok(())
 }
@@ -1162,21 +1312,32 @@ fn seed_uninstall_files(paths: &PvPaths) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn seed_setup_manifest(paths: &PvPaths) -> anyhow::Result<()> {
-    state::fs::ensure_layout(paths)?;
+fn seed_setup_manifest(fixture: &Fixture) -> anyhow::Result<()> {
+    state::fs::ensure_layout(&fixture.paths)?;
     state::fs::write_sensitive_file(
-        &paths.downloads().join("manifest.json"),
+        &fixture.paths.downloads().join("manifest.json"),
         &setup_manifest_json()?,
     )?;
+    seed_bundled_helper_metadata(fixture)?;
 
     Ok(())
 }
 
 fn seed_online_setup_manifest(fixture: &Fixture) -> anyhow::Result<()> {
-    seed_setup_manifest(&fixture.paths)?;
+    seed_setup_manifest(fixture)?;
     script_setup_manifest(fixture)?;
 
     Ok(())
+}
+
+fn seed_bundled_helper_metadata(fixture: &Fixture) -> anyhow::Result<()> {
+    let path = Utf8Path::from_path(&fixture.environment.current_exe)
+        .ok_or_else(|| anyhow::anyhow!("test executable path is not UTF-8"))?
+        .with_file_name("pv-helper.json");
+    write_file(
+        &path,
+        "{\n  \"version\": \"1.0.0\",\n  \"protocol_version\": 1,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
+    )
 }
 
 fn script_setup_manifest(fixture: &Fixture) -> anyhow::Result<()> {

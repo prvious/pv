@@ -10,13 +10,15 @@ Install PV from the stable installer URL published with the release candidate:
 curl -fsSL <installer-url> | bash
 ```
 
-The installer downloads the PV binary, verifies its SHA-256 checksum, installs it under `~/.pv/bin/releases/<version>/pv`, updates the active `~/.pv/bin/pv` symlink, and runs `pv setup` unless `--no-setup` is used.
+The installer downloads separate `pv` and `pv-helper` binaries, verifies both SHA-256 checksums, installs them under `~/.pv/bin/releases/<version>/`, updates the active `~/.pv/bin/pv` symlink, and runs `pv setup` unless `--no-setup` is used.
+
+On first setup, macOS asks for administrator authentication to register PV's small privileged helper. Later DNS, low-port redirect, and local-CA repairs use that on-demand helper without repeated `sudo` prompts, including after reboot. PV's daemon, Gateway, DNS resolver, and Managed Resources remain unprivileged. The helper supports one macOS account per machine. The original owning account must uninstall/remove its helper before the replacement account runs setup; if that account is unavailable, manual administrator recovery is required.
 
 Installer flags mirror setup behavior:
 
 - `--yes` accepts PV prompts, but macOS may still ask for administrator credentials.
 - `--non-interactive` disables prompts and fails if confirmation, shell profile editing, or macOS authentication is required.
-- `--no-setup` installs only the PV binary.
+- `--no-setup` installs both user-owned binaries without running setup or registering the root helper.
 - `--no-path` skips automatic shell profile edits.
 
 ## Setup
@@ -206,7 +208,7 @@ If a Project still declares a forced-uninstalled track, reconciliation fails unt
 
 ## Update
 
-Preview app and installed Managed Resource updates:
+Preview app, privileged-helper, and installed Managed Resource updates:
 
 ```shell
 pv update --check
@@ -221,7 +223,7 @@ Apply updates:
 pv update
 ```
 
-`pv update` updates the PV app first when a newer app release is available, restarts or reconnects to the daemon, then updates installed Managed Resource tracks. It does not install new default tracks simply because they exist; setup owns default desired installs.
+`pv update` compares the PV app and privileged helper independently. App-only releases do not replace the registered helper or request administrator authentication. A same-protocol helper-only release downloads a separately checksummed artifact, requests administrator authentication for helper replacement, reports the app as current, and does not restart the daemon. A combined app/helper release installs and lifecycle-probes the helper before activating an app that requires it, then restarts the daemon for the app transition. PV then updates installed Managed Resource tracks. It does not install new default tracks simply because they exist; setup owns default desired installs.
 
 ## Diagnostics
 
@@ -254,7 +256,7 @@ Safe uninstall preserves user data:
 pv uninstall
 ```
 
-By default, PV removes the daemon registration, DNS resolver config, `pf` redirects, local CA trust, PV app binaries, shims, runtime metadata, sockets, generated config, and download cache. It preserves logs, `pv.db`, certificates, Composer home/cache, Managed Resource data, and Project `.env` blocks.
+By default, PV removes the daemon registration, DNS resolver config, `pf` redirects, local CA trust, registered root helper, PV app binaries, shims, runtime metadata, sockets, generated config, and download cache. macOS may request administrator authentication to remove the helper. PV preserves logs, `pv.db`, certificates, Composer home/cache, Managed Resource data, and Project `.env` blocks.
 
 Remove all PV-owned state:
 

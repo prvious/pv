@@ -7,7 +7,7 @@ use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
 use url::Url;
 
-const SUPPORTED_SCHEMA_VERSION: u64 = 1;
+const SUPPORTED_SCHEMA_VERSION: u64 = 2;
 const STABLE_CHANNEL: &str = "stable";
 
 pub const APP_UPDATE_MANIFEST_URL_BUILD_ENV: &str = "PV_DEFAULT_APP_UPDATE_MANIFEST_URL";
@@ -45,6 +45,16 @@ pub struct AppUpdatePublishedAt(String);
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppUpdateAsset {
     platform: AppUpdatePlatform,
+    url: String,
+    sha256: Sha256Digest,
+    size: u64,
+    helper: PrivilegedHelperUpdateAsset,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PrivilegedHelperUpdateAsset {
+    version: AppUpdateVersion,
+    protocol_version: u32,
     url: String,
     sha256: Sha256Digest,
     size: u64,
@@ -95,6 +105,12 @@ pub enum AppUpdateManifestError {
     #[error("invalid PV app update asset size {size} for {platform}")]
     InvalidAssetSize { platform: String, size: u64 },
 
+    #[error("invalid PV privileged helper protocol version {protocol_version} for {platform}")]
+    InvalidHelperProtocolVersion {
+        platform: String,
+        protocol_version: u32,
+    },
+
     #[error("duplicate PV app update asset for {platform}")]
     DuplicatePlatform { platform: String },
 
@@ -123,6 +139,16 @@ struct RawManifest {
 #[derive(Debug, Deserialize)]
 struct RawAsset {
     platform: String,
+    url: String,
+    sha256: String,
+    size: u64,
+    helper: RawPrivilegedHelperAsset,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPrivilegedHelperAsset {
+    version: String,
+    protocol_version: u32,
     url: String,
     sha256: String,
     size: u64,
@@ -311,6 +337,10 @@ impl AppUpdateAsset {
         self.size
     }
 
+    pub fn helper(&self) -> &PrivilegedHelperUpdateAsset {
+        &self.helper
+    }
+
     fn from_raw(raw: RawAsset) -> Result<Self> {
         let platform = AppUpdatePlatform::parse(&raw.platform)?;
         if raw.size == 0 {
@@ -322,6 +352,52 @@ impl AppUpdateAsset {
 
         Ok(Self {
             platform,
+            url: validate_asset_url(raw.url)?,
+            sha256: Sha256Digest::parse(raw.sha256)?,
+            size: raw.size,
+            helper: PrivilegedHelperUpdateAsset::from_raw(raw.helper, platform)?,
+        })
+    }
+}
+
+impl PrivilegedHelperUpdateAsset {
+    pub fn version(&self) -> &AppUpdateVersion {
+        &self.version
+    }
+
+    pub fn protocol_version(&self) -> u32 {
+        self.protocol_version
+    }
+
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn sha256(&self) -> &Sha256Digest {
+        &self.sha256
+    }
+
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    fn from_raw(raw: RawPrivilegedHelperAsset, platform: AppUpdatePlatform) -> Result<Self> {
+        if raw.protocol_version == 0 {
+            return Err(AppUpdateManifestError::InvalidHelperProtocolVersion {
+                platform: platform.as_str().to_string(),
+                protocol_version: raw.protocol_version,
+            });
+        }
+        if raw.size == 0 {
+            return Err(AppUpdateManifestError::InvalidAssetSize {
+                platform: format!("{} privileged helper", platform.as_str()),
+                size: raw.size,
+            });
+        }
+
+        Ok(Self {
+            version: AppUpdateVersion::parse(raw.version)?,
+            protocol_version: raw.protocol_version,
             url: validate_asset_url(raw.url)?,
             sha256: Sha256Digest::parse(raw.sha256)?,
             size: raw.size,

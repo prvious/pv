@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use platform::{CaFileState, PfFileState, ResolverConfig, ResolverFileState, TrustDomainState};
+use platform::CaFileState;
 use resources::{
     ArtifactManifest, ArtifactManifestCache, ArtifactManifestSource, ResourceHttpClient,
     ResourceName, TargetPlatform, TrackName, TrackSelector, UreqResourceHttpClient,
@@ -15,6 +15,7 @@ use super::{ca, daemon as daemon_command, dns, ports};
 use crate::args::{SetupArgs, UninstallArgs};
 use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
+use crate::helper_release::{HelperReleaseMetadata, metadata_path as helper_metadata_path};
 use crate::output::{Output, OutputMode};
 use crate::progress::DownloadProgressRenderer;
 use crate::shell::Shell;
@@ -60,6 +61,11 @@ struct SetupResourcePlans {
     failures: Vec<String>,
 }
 
+struct PrivilegedHelperCandidate {
+    path: Utf8PathBuf,
+    metadata: HelperReleaseMetadata,
+}
+
 impl SetupResourceDefault {
     const fn manifest_default(resource_name: &'static str) -> Self {
         Self {
@@ -92,13 +98,29 @@ pub(crate) fn setup(
     install_command_shims(environment, &paths)?;
     let default_resource_plan = refresh_setup_artifact_manifest(environment, &paths, stdout)?;
 
-    if args.non_interactive && setup_requires_privileged_auth(environment, &paths)? {
+    let helper_candidate = privileged_helper_candidate(environment, &paths)?;
+    let helper_installation_required =
+        privileged_helper_installation_required(environment, &helper_candidate)?;
+    if args.non_interactive && helper_installation_required {
         let mut output = Output::new(stdout, OutputMode::plain());
         output.line(
-            "pv setup --non-interactive requires macOS authentication for system integrations.",
+            "pv setup --non-interactive requires macOS authentication to install or replace the privileged helper.",
         )?;
         output.line("Run `pv setup` interactively, then rerun with `--non-interactive`.")?;
 
+        return Ok(ExitCode::FAILURE);
+    }
+    if helper_installation_required
+        && !args.yes
+        && !confirm_privileged_helper_installation(environment, stdout)?
+    {
+        return Ok(ExitCode::FAILURE);
+    }
+
+    let _helper_lifecycle_lock = state::HelperLifecycleLock::acquire(&paths)?;
+    if ensure_privileged_helper(environment, &paths, helper_installation_required, stdout)?
+        != ExitCode::SUCCESS
+    {
         return Ok(ExitCode::FAILURE);
     }
 
@@ -116,11 +138,7 @@ pub(crate) fn setup(
         return Ok(ExitCode::FAILURE);
     }
     if !run_required_step("CA trust setup", stdout, |stdout| {
-        ca::trust_with_mode(
-            environment,
-            stdout,
-            setup_privilege_mode(args.non_interactive),
-        )
+        ca::trust(environment, stdout)
     })? {
         return Ok(ExitCode::FAILURE);
     }
@@ -322,6 +340,7 @@ pub(crate) fn uninstall(
         output.line("PV uninstall")?;
     }
 
+    let _helper_lifecycle_lock = state::HelperLifecycleLock::acquire(&paths)?;
     if !run_required_step("daemon removal", stdout, |stdout| {
         daemon_command::disable(environment, stdout)
     })? {
@@ -339,6 +358,11 @@ pub(crate) fn uninstall(
     }
     if !run_required_step("CA trust removal", stdout, |stdout| {
         untrust_ca_for_uninstall(environment, stdout)
+    })? {
+        return Ok(ExitCode::FAILURE);
+    }
+    if !run_required_step("privileged helper removal", stdout, |stdout| {
+        remove_helper_for_uninstall(environment, stdout)
     })? {
         return Ok(ExitCode::FAILURE);
     }
@@ -377,160 +401,122 @@ where
     Ok(false)
 }
 
-fn setup_requires_privileged_auth(
+fn privileged_helper_installation_required(
     environment: &impl Environment,
-    paths: &PvPaths,
+    candidate: &PrivilegedHelperCandidate,
 ) -> Result<bool, ExecuteError> {
-    if dns_setup_requires_privileged_auth(environment, paths)? {
-        return Ok(true);
+    match environment.privileged_helper_status() {
+        Ok(status) => Ok(status.version != candidate.metadata.version()
+            || status.protocol_version != candidate.metadata.protocol_version()),
+        Err(error) if helper_status_error_is_repairable(&error) => Ok(true),
+        Err(error) => Err(error.into()),
     }
-    if ports_setup_requires_privileged_auth(environment, paths)? {
-        return Ok(true);
-    }
-    if ca_setup_requires_privileged_auth(environment, paths)? {
-        return Ok(true);
-    }
-
-    Ok(false)
 }
 
-fn dns_setup_requires_privileged_auth(
+fn helper_status_error_is_repairable(error: &platform::PlatformError) -> bool {
+    matches!(
+        error,
+        platform::PlatformError::PrivilegedHelperUnavailable
+            | platform::PlatformError::PrivilegedHelperProtocolMismatch { .. }
+            | platform::PlatformError::PrivilegedHelperRejected { .. }
+            | platform::PlatformError::PrivilegedHelperRemote { .. }
+            | platform::PlatformError::PrivilegedHelperIo(_)
+            | platform::PlatformError::PrivilegedHelperProtocol(_)
+            | platform::PlatformError::SystemIntegration(_)
+    )
+}
+
+fn ensure_privileged_helper(
     environment: &impl Environment,
     paths: &PvPaths,
+    installation_required: bool,
+    stdout: &mut impl Write,
+) -> Result<ExitCode, ExecuteError> {
+    let candidate = privileged_helper_candidate(environment, paths)?;
+    let current_installation_required =
+        privileged_helper_installation_required(environment, &candidate)?;
+    if !current_installation_required {
+        let status = environment.privileged_helper_status()?;
+        let mut output = Output::new(stdout, OutputMode::plain());
+        output.line(&format!(
+            "Privileged helper: current {} (protocol {})",
+            status.version, status.protocol_version
+        ))?;
+
+        return Ok(ExitCode::SUCCESS);
+    }
+    if !installation_required {
+        return Err(platform::PlatformError::PrivilegedHelperInstallation(
+            "privileged-helper state changed during setup; rerun `pv setup`".to_string(),
+        )
+        .into());
+    }
+    let prepared_directory = paths.config().join("helper");
+    let install_outcome = environment.install_privileged_helper(
+        &candidate.path,
+        &prepared_directory,
+        candidate.metadata.sha256(),
+        candidate.metadata.version(),
+        candidate.metadata.protocol_version(),
+    )?;
+    let status = install_outcome.status();
+    let cleanup_warning = install_outcome
+        .cleanup_warning()
+        .map(|warning| format!("; warning: {warning}"))
+        .unwrap_or_default();
+    let mut output = Output::new(stdout, OutputMode::plain());
+    output.line(&format!(
+        "Installed privileged helper {} (protocol {}){cleanup_warning}",
+        status.version, status.protocol_version,
+    ))?;
+
+    Ok(ExitCode::SUCCESS)
+}
+
+fn privileged_helper_candidate(
+    environment: &impl Environment,
+    paths: &PvPaths,
+) -> Result<PrivilegedHelperCandidate, ExecuteError> {
+    let layout = state::AppReleaseLayout::new(paths.clone());
+    let path = if let Some(active_version) = layout.active_release()? {
+        paths.app_release_helper(&active_version)
+    } else {
+        current_executable(environment)?.with_file_name("pv-helper")
+    };
+    let metadata_path = helper_metadata_path(&path);
+    if !state::fs::path_entry_exists(&metadata_path)? {
+        return Err(CliError::InvalidPrivilegedHelperReleaseMetadata {
+            path: metadata_path.to_string(),
+            reason: "release metadata is missing; reinstall PV before running `pv setup`"
+                .to_string(),
+        }
+        .into());
+    }
+    let metadata = HelperReleaseMetadata::read(&path)?;
+
+    Ok(PrivilegedHelperCandidate { path, metadata })
+}
+
+fn confirm_privileged_helper_installation(
+    environment: &impl Environment,
+    stdout: &mut impl Write,
 ) -> Result<bool, ExecuteError> {
-    let prepared_state = platform::inspect_resolver_file(&paths.resolver_config(), None);
-    let expected_config = resolver_config_from_state(&prepared_state);
-    let system_path = resolver_test_path(environment)?;
-    let system_state = platform::inspect_resolver_file(&system_path, expected_config.as_ref());
+    let mut output = Output::new(stdout, OutputMode::plain());
+    if !environment.stdin_is_terminal() {
+        output.line("Privileged helper installation requires confirmation; rerun with --yes.")?;
+
+        return Ok(false);
+    }
+
+    output.line(
+        "Install or replace the PV privileged helper? macOS will request administrator authentication. [y/N]",
+    )?;
+    let response = environment.read_line()?;
 
     Ok(matches!(
-        system_state,
-        ResolverFileState::Missing { .. } | ResolverFileState::Stale { .. }
+        response.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
     ))
-}
-
-fn ports_setup_requires_privileged_auth(
-    environment: &impl Environment,
-    paths: &PvPaths,
-) -> Result<bool, ExecuteError> {
-    let prepared_anchor_state = platform::inspect_pf_anchor_file(&paths.pf_anchor_config(), None);
-    let prepared_reference_state =
-        platform::inspect_pf_conf_reference(&paths.pf_conf_reference_config(), None);
-    let expected_anchor = pf_config_from_anchor_state(&prepared_anchor_state);
-    let expected_reference = pf_reference_from_state(&prepared_reference_state);
-    let system_anchor_path = pf_anchor_path(environment)?;
-    let system_pf_conf_path = pf_conf_path(environment)?;
-    let system_anchor_state =
-        platform::inspect_pf_anchor_file(&system_anchor_path, expected_anchor.as_ref());
-    let system_reference_state =
-        platform::inspect_pf_conf_reference(&system_pf_conf_path, expected_reference.as_ref());
-
-    if matches!(
-        system_anchor_state,
-        PfFileState::Missing { .. } | PfFileState::Stale { .. }
-    ) || matches!(
-        system_reference_state,
-        PfFileState::Missing { .. } | PfFileState::Stale { .. }
-    ) {
-        return Ok(true);
-    }
-
-    let Some(expected_anchor) = expected_anchor else {
-        return Ok(false);
-    };
-    let active_config = environment.active_pf_redirect_config()?;
-
-    Ok(active_config.as_ref() != Some(&expected_anchor))
-}
-
-fn ca_setup_requires_privileged_auth(
-    environment: &impl Environment,
-    paths: &PvPaths,
-) -> Result<bool, ExecuteError> {
-    let local_state =
-        platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
-    let Some(metadata) = metadata_from_local_ca_state(&local_state) else {
-        return Ok(true);
-    };
-    let trust_state = system_trust_state(environment, Some(&metadata));
-
-    Ok(!matches!(trust_state, TrustDomainState::Current { .. }))
-}
-
-fn resolver_config_from_state(state: &ResolverFileState) -> Option<ResolverConfig> {
-    match state {
-        ResolverFileState::Current { port, .. }
-        | ResolverFileState::Stale {
-            actual_port: Some(port),
-            ..
-        } => Some(ResolverConfig::new(*port)),
-        ResolverFileState::Missing { .. }
-        | ResolverFileState::Stale {
-            actual_port: None, ..
-        }
-        | ResolverFileState::Conflict { .. }
-        | ResolverFileState::Unreadable { .. } => None,
-    }
-}
-
-fn pf_config_from_anchor_state(
-    state: &PfFileState<platform::PfRedirectConfig>,
-) -> Option<platform::PfRedirectConfig> {
-    match state {
-        PfFileState::Current { value, .. }
-        | PfFileState::Stale {
-            actual: Some(value),
-            ..
-        } => Some(value.clone()),
-        PfFileState::Missing { .. }
-        | PfFileState::Stale { actual: None, .. }
-        | PfFileState::Conflict { .. }
-        | PfFileState::Unreadable { .. } => None,
-    }
-}
-
-fn pf_reference_from_state(
-    state: &PfFileState<platform::PfConfReference>,
-) -> Option<platform::PfConfReference> {
-    match state {
-        PfFileState::Current { value, .. }
-        | PfFileState::Stale {
-            actual: Some(value),
-            ..
-        } => Some(*value),
-        PfFileState::Missing { .. }
-        | PfFileState::Stale { actual: None, .. }
-        | PfFileState::Conflict { .. }
-        | PfFileState::Unreadable { .. } => None,
-    }
-}
-
-fn metadata_from_local_ca_state(state: &CaFileState) -> Option<platform::LocalCaMetadata> {
-    match state {
-        CaFileState::Current { metadata, .. } => Some(metadata.clone()),
-        CaFileState::Missing { .. }
-        | CaFileState::RepairRequired { .. }
-        | CaFileState::Unreadable { .. } => None,
-    }
-}
-
-fn system_trust_state(
-    environment: &impl Environment,
-    metadata: Option<&platform::LocalCaMetadata>,
-) -> TrustDomainState {
-    struct EnvironmentTrustInspector<'environment, E> {
-        environment: &'environment E,
-    }
-
-    impl<E: Environment> platform::SystemTrustInspector for EnvironmentTrustInspector<'_, E> {
-        fn trusted_certificates(
-            &self,
-        ) -> Result<Vec<platform::KeychainCertificate>, platform::PlatformError> {
-            self.environment.trusted_ca_certificates()
-        }
-    }
-
-    platform::inspect_system_ca_trust(metadata, &EnvironmentTrustInspector { environment })
 }
 
 fn record_default_resource_desired_state(
@@ -766,7 +752,7 @@ fn untrust_ca_for_uninstall(
         }
 
         for fingerprint in fingerprints {
-            environment.untrust_system_ca(&fingerprint, platform::PrivilegeMode::Interactive)?;
+            environment.untrust_system_ca(&fingerprint)?;
             output.line(&format!(
                 "Removed stale PV local CA trust from the System keychain: {fingerprint}"
             ))?;
@@ -778,12 +764,15 @@ fn untrust_ca_for_uninstall(
     ca::untrust(environment, stdout)
 }
 
-const fn setup_privilege_mode(non_interactive: bool) -> platform::PrivilegeMode {
-    if non_interactive {
-        platform::PrivilegeMode::NonInteractive
-    } else {
-        platform::PrivilegeMode::Interactive
-    }
+fn remove_helper_for_uninstall(
+    environment: &impl Environment,
+    stdout: &mut impl Write,
+) -> Result<ExitCode, ExecuteError> {
+    environment.remove_privileged_helper()?;
+    let mut output = Output::new(stdout, OutputMode::plain());
+    output.line("Privileged helper removed")?;
+
+    Ok(ExitCode::SUCCESS)
 }
 
 fn remove_default_state(paths: &PvPaths, stdout: &mut impl Write) -> Result<(), ExecuteError> {
@@ -967,21 +956,6 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
 
 fn current_executable(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
     Utf8PathBuf::from_path_buf(environment.current_exe()?)
-        .map_err(|path| CliError::NonUtf8Path { path }.into())
-}
-
-fn resolver_test_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
-    Utf8PathBuf::from_path_buf(environment.resolver_test_path())
-        .map_err(|path| CliError::NonUtf8Path { path }.into())
-}
-
-fn pf_anchor_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
-    Utf8PathBuf::from_path_buf(environment.pf_anchor_path())
-        .map_err(|path| CliError::NonUtf8Path { path }.into())
-}
-
-fn pf_conf_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
-    Utf8PathBuf::from_path_buf(environment.pf_conf_path())
         .map_err(|path| CliError::NonUtf8Path { path }.into())
 }
 

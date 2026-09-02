@@ -1,0 +1,11 @@
+---
+source: crates/pv-release/tests/app_publication.rs
+expression: "command_failure(&output, fixture.root())"
+---
+CommandFailure {
+    status_code: Some(
+        1,
+    ),
+    stdout: "",
+    stderr: "Error: failed to stage app publication\n\nCaused by:\n    artifact file `<tempdir>/source-binaries/pv/0.2.0/pv-helper-1.0.0-darwin-amd64` size mismatch: expected 9, got 14\n",
+}

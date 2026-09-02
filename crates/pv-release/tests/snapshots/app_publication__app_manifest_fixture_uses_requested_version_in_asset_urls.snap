@@ -3,7 +3,7 @@ source: crates/pv-release/tests/app_publication.rs
 expression: "app_manifest_json_with_version(\"0.3.0\")?"
 ---
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "channel": "stable",
   "version": "0.3.0",
   "minimum_pv_version": "0.1.0",
@@ -13,13 +13,27 @@ expression: "app_manifest_json_with_version(\"0.3.0\")?"
       "platform": "darwin-amd64",
       "url": "https://downloads.prvious.test/pv/0.3.0/pv-darwin-amd64",
       "sha256": "74d2dd713a41a55013390be7118c03f6db008ed6778344a3b5a7f351fc2758df",
-      "size": 8
+      "size": 8,
+      "helper": {
+        "version": "1.0.0",
+        "protocol_version": 1,
+        "url": "https://downloads.prvious.test/pv/0.3.0/pv-helper-1.0.0-darwin-amd64",
+        "sha256": "5f31500732ae07fcc405db2402d66f2b7286ef3a71361e20719d2eccacaf4879",
+        "size": 9
+      }
     },
     {
       "platform": "darwin-arm64",
       "url": "https://downloads.prvious.test/pv/0.3.0/pv-darwin-arm64",
       "sha256": "86be0807a02eee20d5b7a39b650742bfd15703d9067387247d8c2573920ee466",
-      "size": 8
+      "size": 8,
+      "helper": {
+        "version": "1.0.0",
+        "protocol_version": 1,
+        "url": "https://downloads.prvious.test/pv/0.3.0/pv-helper-1.0.0-darwin-arm64",
+        "sha256": "5f31500732ae07fcc405db2402d66f2b7286ef3a71361e20719d2eccacaf4879",
+        "size": 9
+      }
     }
   ]
 }

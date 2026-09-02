@@ -21,10 +21,6 @@ struct Args {
 }
 
 #[derive(Debug, Subcommand)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "CLI subcommands intentionally keep parsed clap arguments inline"
-)]
 enum Command {
     GenerateManifest {
         #[arg(long)]
@@ -172,6 +168,8 @@ enum Command {
         #[arg(long)]
         binary: Utf8PathBuf,
         #[arg(long)]
+        helper_binary: Utf8PathBuf,
+        #[arg(long)]
         version: String,
         #[arg(long)]
         minimum_pv_version: String,
@@ -181,6 +179,12 @@ enum Command {
         platform: String,
         #[arg(long)]
         object_key: String,
+        #[arg(long)]
+        helper_version: String,
+        #[arg(long)]
+        helper_protocol_version: u32,
+        #[arg(long)]
+        helper_object_key: String,
         #[arg(long)]
         source_url: String,
         #[arg(long)]
@@ -374,11 +378,15 @@ pub fn run() -> anyhow::Result<()> {
         Command::WriteAppReleaseRecord {
             record,
             binary,
+            helper_binary,
             version,
             minimum_pv_version,
             published_at,
             platform,
             object_key,
+            helper_version,
+            helper_protocol_version,
+            helper_object_key,
             source_url,
             source_sha256,
             recipe,
@@ -387,11 +395,15 @@ pub fn run() -> anyhow::Result<()> {
         } => crate::app::write_app_release_record(&WriteAppReleaseRecordRequest {
             record,
             binary,
+            helper_binary,
             version,
             minimum_pv_version,
             published_at,
             platform,
             object_key,
+            helper_version,
+            helper_protocol_version,
+            helper_object_key,
             source_url,
             source_sha256,
             recipe,

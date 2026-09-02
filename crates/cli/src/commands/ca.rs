@@ -32,14 +32,6 @@ pub(crate) fn trust(
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
-    trust_with_mode(environment, stdout, platform::PrivilegeMode::Interactive)
-}
-
-pub(crate) fn trust_with_mode(
-    environment: &impl Environment,
-    stdout: &mut impl Write,
-    privilege_mode: platform::PrivilegeMode,
-) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let initial_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
@@ -68,13 +60,13 @@ pub(crate) fn trust_with_mode(
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::NotTrusted { .. } => {
-            environment.trust_system_ca(&paths.ca_certificate(), privilege_mode)?;
+            environment.trust_system_ca(&paths.ca_certificate())?;
             output.line("Trusted PV local CA in the System keychain.")?;
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::Denied { fingerprint } => {
-            environment.untrust_system_ca(&fingerprint, privilege_mode)?;
-            environment.trust_system_ca(&paths.ca_certificate(), privilege_mode)?;
+            environment.untrust_system_ca(&fingerprint)?;
+            environment.trust_system_ca(&paths.ca_certificate())?;
             output.line("Removed denied PV local CA trust from the System keychain.")?;
             output.line("Trusted PV local CA in the System keychain.")?;
             Ok(ExitCode::SUCCESS)
@@ -82,8 +74,8 @@ pub(crate) fn trust_with_mode(
         TrustDomainState::Stale {
             actual_fingerprint, ..
         } => {
-            environment.untrust_system_ca(&actual_fingerprint, privilege_mode)?;
-            environment.trust_system_ca(&paths.ca_certificate(), privilege_mode)?;
+            environment.untrust_system_ca(&actual_fingerprint)?;
+            environment.trust_system_ca(&paths.ca_certificate())?;
             output.line("Removed stale PV local CA trust from the System keychain.")?;
             output.line("Trusted PV local CA in the System keychain.")?;
             Ok(ExitCode::SUCCESS)
@@ -97,14 +89,6 @@ pub(crate) fn trust_with_mode(
 pub(crate) fn untrust(
     environment: &impl Environment,
     stdout: &mut impl Write,
-) -> Result<ExitCode, ExecuteError> {
-    untrust_with_mode(environment, stdout, platform::PrivilegeMode::Interactive)
-}
-
-pub(crate) fn untrust_with_mode(
-    environment: &impl Environment,
-    stdout: &mut impl Write,
-    privilege_mode: platform::PrivilegeMode,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let local_state =
@@ -123,14 +107,14 @@ pub(crate) fn untrust_with_mode(
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::Current { fingerprint } | TrustDomainState::Denied { fingerprint } => {
-            environment.untrust_system_ca(&fingerprint, privilege_mode)?;
+            environment.untrust_system_ca(&fingerprint)?;
             output.line("Removed PV local CA trust from the System keychain.")?;
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::Stale {
             actual_fingerprint, ..
         } => {
-            environment.untrust_system_ca(&actual_fingerprint, privilege_mode)?;
+            environment.untrust_system_ca(&actual_fingerprint)?;
             output.line("Removed stale PV local CA trust from the System keychain.")?;
             Ok(ExitCode::SUCCESS)
         }

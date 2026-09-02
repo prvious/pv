@@ -6,6 +6,7 @@ use platform::{
     CaFileState, LaunchAgentFileState, LocalCaMetadata, ResolverConfig, ResolverFileState,
     TrustDomainState,
 };
+use self_update::AppUpdateVersion;
 use serde::Serialize;
 use state::{Database, JobDiagnosticSubject, PvPaths, RuntimeObservedStatus, StateError};
 
@@ -13,6 +14,7 @@ use crate::args::DoctorArgs;
 use crate::environment::Environment;
 use crate::error::CliError;
 use crate::error::ExecuteError;
+use crate::helper_release::HelperReleaseMetadata;
 use crate::output::{Output, OutputMode};
 
 use super::pf_diagnostics::{PfRoutingDiagnostic, PfRoutingState};
@@ -54,6 +56,7 @@ impl DoctorReport {
         let checks = vec![
             layout_check(&paths),
             database_check(&paths, database.as_ref()),
+            privileged_helper_check(environment, &paths),
             launch_agent_check(&launch_agent),
             daemon_socket_check(&paths, &launch_agent),
             dns_check(environment, &paths)?,
@@ -111,6 +114,67 @@ impl DoctorReport {
         ))?;
 
         Ok(())
+    }
+}
+
+fn privileged_helper_check(environment: &impl Environment, paths: &PvPaths) -> DoctorCheck {
+    let version = match AppUpdateVersion::current() {
+        Ok(version) => version,
+        Err(error) => {
+            return DoctorCheck::fail(
+                "Privileged helper",
+                format!("could not determine the active PV version: {error}"),
+                "reinstall PV, then run `pv setup`",
+            );
+        }
+    };
+    let expected = match HelperReleaseMetadata::read(&paths.app_release_helper(version.as_str())) {
+        Ok(expected) => expected,
+        Err(error) => {
+            return DoctorCheck::fail(
+                "Privileged helper",
+                format!("active release helper metadata is invalid: {error}"),
+                "reinstall PV, then run `pv setup`",
+            );
+        }
+    };
+    let expected_version = expected.version();
+    let expected_protocol = expected.protocol_version();
+    match environment.privileged_helper_status() {
+        Ok(status)
+            if status.version == expected_version
+                && status.protocol_version == expected_protocol =>
+        {
+            DoctorCheck::pass(
+                "Privileged helper",
+                format!(
+                    "available at version {} with protocol {}",
+                    status.version, status.protocol_version
+                ),
+            )
+        }
+        Ok(status) => DoctorCheck::fail(
+            "Privileged helper",
+            format!(
+                "version {} with protocol {} is incompatible",
+                status.version, status.protocol_version
+            ),
+            "pv setup",
+        ),
+        Err(platform::PlatformError::PrivilegedHelperAuthentication(message)) => {
+            DoctorCheck::fail(
+                "Privileged helper",
+                "helper belongs to a different macOS account",
+                "use the original installing account to run pv uninstall; otherwise perform manual administrator recovery",
+            )
+            .with_detail(message)
+        }
+        Err(error) => DoctorCheck::fail(
+            "Privileged helper",
+            "helper is unavailable or incompatible",
+            "pv setup",
+        )
+        .with_detail(error.to_string()),
     }
 }
 
@@ -290,7 +354,7 @@ fn dns_check(environment: &impl Environment, paths: &PvPaths) -> Result<DoctorCh
     let prepared = platform::inspect_resolver_file(&paths.resolver_config(), None);
     let expected = resolver_config_from_state(&prepared);
     let system_path = resolver_test_path(environment)?;
-    let system = platform::inspect_resolver_file(&system_path, expected.as_ref());
+    let system = environment.inspect_resolver_file(&system_path, expected.as_ref());
 
     let check = match (&prepared, &system) {
         (ResolverFileState::Current { port, .. }, ResolverFileState::Current { .. }) => {

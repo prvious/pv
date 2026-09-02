@@ -46,6 +46,10 @@ enum ManifestErrorSnapshot {
         platform: String,
         size: u64,
     },
+    InvalidHelperProtocolVersion {
+        platform: String,
+        protocol_version: u32,
+    },
     DuplicatePlatform {
         platform: String,
     },
@@ -59,7 +63,7 @@ fn app_update_manifest_parses_stable_release_and_selects_platform() -> Result<()
     let manifest = AppUpdateManifest::parse(VALID_MANIFEST)?;
     let selected = manifest.select_platform(AppUpdatePlatform::DarwinArm64)?;
 
-    assert_eq!(manifest.schema_version(), 1);
+    assert_eq!(manifest.schema_version(), 2);
     assert_eq!(manifest.channel(), "stable");
     assert_eq!(manifest.version().as_str(), "0.2.0");
     assert_eq!(manifest.minimum_pv_version().as_str(), "0.1.0");
@@ -73,6 +77,8 @@ fn app_update_manifest_parses_stable_release_and_selects_platform() -> Result<()
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     );
     assert_eq!(selected.size(), 12345678);
+    assert_eq!(selected.helper().version().as_str(), "1.0.0");
+    assert_eq!(selected.helper().protocol_version(), 1);
 
     assert_debug_snapshot!(manifest);
 
@@ -82,7 +88,7 @@ fn app_update_manifest_parses_stable_release_and_selects_platform() -> Result<()
 #[test]
 fn app_update_manifest_rejects_schema_channel_version_and_compatibility_errors() -> Result<()> {
     let unsupported_schema =
-        VALID_MANIFEST.replacen("\"schema_version\": 1", "\"schema_version\": 2", 1);
+        VALID_MANIFEST.replacen("\"schema_version\": 2", "\"schema_version\": 3", 1);
     let preview_channel =
         VALID_MANIFEST.replacen("\"channel\": \"stable\"", "\"channel\": \"preview\"", 1);
     let invalid_version =
@@ -162,6 +168,45 @@ fn app_update_manifest_rejects_invalid_asset_fields() -> Result<()> {
 }
 
 #[test]
+fn app_update_manifest_rejects_invalid_helper_fields() -> Result<()> {
+    let invalid_version =
+        VALID_MANIFEST.replacen("\"version\": \"1.0.0\"", "\"version\": \"01.0.0\"", 1);
+    let invalid_protocol =
+        VALID_MANIFEST.replacen("\"protocol_version\": 1", "\"protocol_version\": 0", 1);
+    let invalid_url = VALID_MANIFEST.replacen(
+        "https://downloads.example.test/pv/0.2.0/pv-helper-1.0.0-darwin-arm64",
+        "http://downloads.example.test/pv/0.2.0/pv-helper-1.0.0-darwin-arm64",
+        1,
+    );
+    let invalid_checksum = VALID_MANIFEST.replacen(
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "not-a-helper-sha",
+        1,
+    );
+    let zero_size = VALID_MANIFEST.replacen("\"size\": 2345678", "\"size\": 0", 1);
+
+    let errors = [
+        ("invalid_helper_version", invalid_version),
+        ("invalid_helper_protocol", invalid_protocol),
+        ("invalid_helper_url", invalid_url),
+        ("invalid_helper_checksum", invalid_checksum),
+        ("zero_helper_size", zero_size),
+    ]
+    .into_iter()
+    .map(|(name, manifest)| {
+        Ok(InvalidManifestSnapshot {
+            name,
+            error: normalize_manifest_error(parse_manifest_error(&manifest)?),
+        })
+    })
+    .collect::<Result<Vec<_>>>()?;
+
+    assert_debug_snapshot!(errors);
+
+    Ok(())
+}
+
+#[test]
 fn app_update_manifest_selection_reports_missing_platform() -> Result<()> {
     let arm64_only = VALID_MANIFEST.replace(
         r#",
@@ -169,7 +214,14 @@ fn app_update_manifest_selection_reports_missing_platform() -> Result<()> {
       "platform": "darwin-amd64",
       "url": "https://downloads.example.test/pv/0.2.0/pv-darwin-amd64",
       "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "size": 12345678
+      "size": 12345678,
+      "helper": {
+        "version": "1.0.0",
+        "protocol_version": 1,
+        "url": "https://downloads.example.test/pv/0.2.0/pv-helper-1.0.0-darwin-amd64",
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "size": 2345678
+      }
     }"#,
         "",
     );
@@ -231,6 +283,13 @@ fn normalize_manifest_error(error: AppUpdateManifestError) -> ManifestErrorSnaps
         AppUpdateManifestError::InvalidAssetSize { platform, size } => {
             ManifestErrorSnapshot::InvalidAssetSize { platform, size }
         }
+        AppUpdateManifestError::InvalidHelperProtocolVersion {
+            platform,
+            protocol_version,
+        } => ManifestErrorSnapshot::InvalidHelperProtocolVersion {
+            platform,
+            protocol_version,
+        },
         AppUpdateManifestError::DuplicatePlatform { platform } => {
             ManifestErrorSnapshot::DuplicatePlatform { platform }
         }
@@ -252,7 +311,7 @@ fn select_platform_error(
 
 const VALID_MANIFEST: &str = r#"
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "channel": "stable",
   "version": "0.2.0",
   "minimum_pv_version": "0.1.0",
@@ -262,13 +321,27 @@ const VALID_MANIFEST: &str = r#"
       "platform": "darwin-arm64",
       "url": "https://downloads.example.test/pv/0.2.0/pv-darwin-arm64",
       "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "size": 12345678
+      "size": 12345678,
+      "helper": {
+        "version": "1.0.0",
+        "protocol_version": 1,
+        "url": "https://downloads.example.test/pv/0.2.0/pv-helper-1.0.0-darwin-arm64",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "size": 2345678
+      }
     },
     {
       "platform": "darwin-amd64",
       "url": "https://downloads.example.test/pv/0.2.0/pv-darwin-amd64",
       "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      "size": 12345678
+      "size": 12345678,
+      "helper": {
+        "version": "1.0.0",
+        "protocol_version": 1,
+        "url": "https://downloads.example.test/pv/0.2.0/pv-helper-1.0.0-darwin-amd64",
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "size": 2345678
+      }
     }
   ]
 }
