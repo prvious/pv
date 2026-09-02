@@ -5,6 +5,8 @@ use std::io::Read;
 #[cfg(any(target_os = "macos", all(test, unix)))]
 use std::io::Write;
 #[cfg(target_os = "macos")]
+use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 
 use camino::Utf8Path;
@@ -1081,8 +1083,6 @@ fn helper_artifacts_present(paths: &[&Utf8Path]) -> Result<bool, PlatformError> 
     reason = "helper removal checks fixed system directories without following symlinks"
 )]
 fn validate_helper_support_directory_for_removal() -> Result<(), PlatformError> {
-    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-
     let path = Utf8Path::new(HELPER_SUPPORT_DIRECTORY);
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -1109,8 +1109,6 @@ fn validate_helper_support_directory_for_removal() -> Result<(), PlatformError> 
     reason = "helper installer validates the candidate without following symlinks"
 )]
 fn validate_regular_file_owned_by(path: &Utf8Path, expected_uid: u32) -> Result<(), PlatformError> {
-    use std::os::unix::fs::MetadataExt as _;
-
     let metadata = std::fs::symlink_metadata(path).map_err(|error| {
         PlatformError::PrivilegedHelperInstallation(format!(
             "could not inspect helper candidate {path}: {error}"
@@ -1684,8 +1682,6 @@ fn validate_root_owned_regular_file(
     path: &Utf8Path,
     expected_mode: u32,
 ) -> Result<(), PlatformError> {
-    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-
     let metadata = std::fs::symlink_metadata(path).map_err(|error| {
         PlatformError::PrivilegedHelperInstallation(format!("could not inspect {path}: {error}"))
     })?;
@@ -1731,8 +1727,6 @@ fn root_owned_regular_file_present(
     reason = "privileged helper validates fixed system destinations before mutation"
 )]
 pub(crate) fn validate_root_owned_file_if_present(path: &Utf8Path) -> Result<bool, PlatformError> {
-    use std::os::unix::fs::MetadataExt as _;
-
     let metadata = match std::fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
@@ -1761,8 +1755,6 @@ pub(crate) fn write_root_work_file(
     content: &str,
     parent_mode: &str,
 ) -> Result<(), PlatformError> {
-    use std::os::unix::fs::PermissionsExt as _;
-
     let parent = path.parent().ok_or_else(|| {
         PlatformError::SystemIntegration(format!("root work file has no parent: {path}"))
     })?;

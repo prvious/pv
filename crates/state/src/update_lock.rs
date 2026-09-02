@@ -1,5 +1,7 @@
 #[cfg(unix)]
 use std::io;
+#[cfg(unix)]
+use std::os::fd::AsFd;
 
 use camino::Utf8Path;
 #[cfg(unix)]
@@ -80,7 +82,7 @@ fn require_no_update_in_progress_at_path(path: &Utf8Path) -> Result<(), StateErr
 }
 
 #[cfg(unix)]
-fn lock_exclusively<FileHandle: std::os::fd::AsFd>(
+fn lock_exclusively<FileHandle: AsFd>(
     file: &FileHandle,
     path: &Utf8Path,
 ) -> Result<(), StateError> {
@@ -99,7 +101,7 @@ fn lock_exclusively<FileHandle: std::os::fd::AsFd>(
 }
 
 #[cfg(unix)]
-fn lock_helper_lifecycle_exclusively<FileHandle: std::os::fd::AsFd>(
+fn lock_helper_lifecycle_exclusively<FileHandle: AsFd>(
     file: &FileHandle,
     path: &Utf8Path,
 ) -> Result<(), StateError> {
@@ -131,7 +133,7 @@ fn lock_helper_lifecycle_exclusively<FileHandle>(
 }
 
 #[cfg(unix)]
-fn inspect_existing_lock<FileHandle: std::os::fd::AsFd>(
+fn inspect_existing_lock<FileHandle: AsFd>(
     file: &FileHandle,
     path: &Utf8Path,
 ) -> Result<(), StateError> {

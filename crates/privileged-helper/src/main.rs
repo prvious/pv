@@ -1,6 +1,9 @@
 #[cfg(target_os = "macos")]
+use platform::serve_privileged_helper;
+
+#[cfg(target_os = "macos")]
 fn main() -> anyhow::Result<()> {
-    platform::serve_privileged_helper()?;
+    serve_privileged_helper()?;
 
     Ok(())
 }
