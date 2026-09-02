@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/update.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "PV update\nPV application: update failed; rolled back to 0.2.3\n",
+    stderr: "error: daemon did not become healthy after update; rollback warning: the previous release was activated but not durably synced: filesystem error at <pv-home>/bin: Permission denied (os error 13)\n",
+}

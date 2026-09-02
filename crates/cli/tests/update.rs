@@ -3,6 +3,11 @@ mod update_tests {
     use std::cell::RefCell;
     use std::collections::VecDeque;
     use std::ffi::OsString;
+    #[expect(
+        clippy::disallowed_types,
+        reason = "rollback tests keep a directory handle open while removing read permission"
+    )]
+    use std::fs::File;
     use std::fs::Permissions;
     use std::io::{self, BufRead, BufReader, Write};
     use std::os::unix::fs::PermissionsExt;
@@ -41,6 +46,7 @@ mod update_tests {
         exec_result: RefCell<Result<ExitCode, io::Error>>,
         launch_agent_unloaded: bool,
         delete_on_first_kickstart: RefCell<Option<Utf8PathBuf>>,
+        remove_bin_read_permission_on_first_kickstart: RefCell<Option<Utf8PathBuf>>,
         lock_probe: RefCell<Option<PvPaths>>,
         startup_marker_on_first_kickstart: RefCell<Option<(Utf8PathBuf, String)>>,
         helper_status: RefCell<Option<PrivilegedHelperStatus>>,
@@ -61,6 +67,7 @@ mod update_tests {
                 exec_result: RefCell::new(Ok(ExitCode::SUCCESS)),
                 launch_agent_unloaded: false,
                 delete_on_first_kickstart: RefCell::new(None),
+                remove_bin_read_permission_on_first_kickstart: RefCell::new(None),
                 lock_probe: RefCell::new(None),
                 startup_marker_on_first_kickstart: RefCell::new(None),
                 helper_status: RefCell::new(Some(PrivilegedHelperStatus {
@@ -96,6 +103,12 @@ mod update_tests {
 
         fn with_delete_on_first_kickstart(self, path: Utf8PathBuf) -> Self {
             self.delete_on_first_kickstart.replace(Some(path));
+            self
+        }
+
+        fn with_bin_sync_failure_on_first_kickstart(self, path: Utf8PathBuf) -> Self {
+            self.remove_bin_read_permission_on_first_kickstart
+                .replace(Some(path));
             self
         }
 
@@ -255,6 +268,14 @@ mod update_tests {
             }
             if let Some(path) = self.delete_on_first_kickstart.borrow_mut().take() {
                 state::fs::remove_file_if_exists(&path)
+                    .map_err(|error| platform::PlatformError::LaunchAgent(error.to_string()))?;
+            }
+            if let Some(path) = self
+                .remove_bin_read_permission_on_first_kickstart
+                .borrow_mut()
+                .take()
+            {
+                set_permissions(&path, 0o300)
                     .map_err(|error| platform::PlatformError::LaunchAgent(error.to_string()))?;
             }
             if let Some((path, content)) =
@@ -1982,6 +2003,85 @@ mod update_tests {
         }));
         assert_update_snapshot(
             "update_restores_previous_helper_and_reports_cleanup_warning",
+            output,
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::disallowed_types,
+        reason = "test must restore directory permissions through an already-open handle"
+    )]
+    fn update_completes_rollback_after_release_activation_sync_fails() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let layout = install_current_release(&paths)?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let bin_directory = File::open(paths.bin())
+            .map_err(|error| anyhow::anyhow!("failed to open bin directory: {error}"))?;
+        let daemon = FakeDaemon::start_until_idle(
+            &paths,
+            vec![
+                daemon_error_response("updated daemon boot failed"),
+                health_response(),
+            ],
+            Duration::from_millis(100),
+        )?;
+        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
+            .replace("\"version\": \"1.0.0\"", "\"version\": \"1.1.0\"")
+            .replace("pv-helper-1.0.0", "pv-helper-1.1.0");
+        let environment = TestEnvironment::new(
+            &home,
+            ScriptedClient::new()
+                .with_text(&manifest)
+                .with_download(APP_BINARY),
+        )
+        .with_bin_sync_failure_on_first_kickstart(paths.bin().to_path_buf());
+
+        let output = run_pv(&["update"], &environment);
+        bin_directory
+            .set_permissions(Permissions::from_mode(0o700))
+            .map_err(|error| anyhow::anyhow!("failed to restore bin permissions: {error}"))?;
+        let output = output?;
+        let daemon_requests = daemon.join()?;
+        let rollback_candidates = state::fs::read_dir_paths(paths.downloads())?
+            .into_iter()
+            .filter(|path| path.file_name().unwrap_or("").contains("helper-rollback"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert_eq!(
+            layout.active_release()?,
+            Some(CURRENT_APP_VERSION.to_string())
+        );
+        assert_eq!(
+            environment.helper_status.borrow().as_ref(),
+            Some(&PrivilegedHelperStatus {
+                version: PRIVILEGED_HELPER_VERSION.to_string(),
+                protocol_version: platform::HELPER_PROTOCOL_VERSION,
+                owner_uid: 501,
+            })
+        );
+        assert_eq!(rollback_candidates.len(), 0);
+        assert_eq!(
+            daemon_requests,
+            vec![
+                json!({
+                    "protocol_version": daemon::PROTOCOL_VERSION,
+                    "command": "health"
+                }),
+                json!({
+                    "protocol_version": daemon::PROTOCOL_VERSION,
+                    "command": "health"
+                })
+            ]
+        );
+        assert_update_snapshot(
+            "update_completes_rollback_after_release_activation_sync_fails",
             output,
         );
 
