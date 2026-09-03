@@ -185,6 +185,19 @@ pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, Daemo
     reconcile_gateway_runtimes_with_readiness_timeout(paths, RUNTIME_READINESS_TIMEOUT).await
 }
 
+pub(crate) async fn reconcile_gateway_runtimes_with_phase_log(
+    paths: &PvPaths,
+    phase_log: &structured_log::ReconciliationPhaseLog,
+) -> Result<String, DaemonError> {
+    reconcile_gateway_runtimes_with_pf_state(
+        paths,
+        RUNTIME_READINESS_TIMEOUT,
+        None,
+        Some(phase_log),
+    )
+    .await
+}
+
 pub fn probe_gateway_identity_blocking(
     expected: &platform::PfRedirectConfig,
     ca_certificate_path: &Utf8Path,
@@ -209,7 +222,7 @@ pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
     paths: &PvPaths,
     readiness_timeout: Duration,
 ) -> Result<String, DaemonError> {
-    reconcile_gateway_runtimes_with_pf_state(paths, readiness_timeout, None).await
+    reconcile_gateway_runtimes_with_pf_state(paths, readiness_timeout, None, None).await
 }
 
 #[doc(hidden)]
@@ -218,13 +231,15 @@ pub async fn reconcile_gateway_runtimes_with_pf_state_for_test(
     readiness_timeout: Duration,
     pf_routing_state: GatewayPfRoutingState,
 ) -> Result<String, DaemonError> {
-    reconcile_gateway_runtimes_with_pf_state(paths, readiness_timeout, Some(pf_routing_state)).await
+    reconcile_gateway_runtimes_with_pf_state(paths, readiness_timeout, Some(pf_routing_state), None)
+        .await
 }
 
 async fn reconcile_gateway_runtimes_with_pf_state(
     paths: &PvPaths,
     readiness_timeout: Duration,
     pf_routing_state: Option<GatewayPfRoutingState>,
+    phase_log: Option<&structured_log::ReconciliationPhaseLog>,
 ) -> Result<String, DaemonError> {
     let Some(gateway_command) = first_installed_caddy_command(paths)? else {
         record_runtime_observed(
@@ -233,10 +248,29 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             RuntimeObservedStatus::Stopped,
             Some(CADDY_NOT_INSTALLED),
         )?;
+        if let Some(phase_log) = phase_log {
+            phase_log.completed(
+                structured_log::ReconciliationPhase::Workers,
+                "php_workers",
+                structured_log::PhaseOutcome::Skipped,
+                Duration::ZERO,
+                &[("worker_count", 0), ("project_count", 0)],
+            );
+            phase_log.completed(
+                structured_log::ReconciliationPhase::Gateway,
+                "gateway",
+                structured_log::PhaseOutcome::Skipped,
+                Duration::ZERO,
+                &[("project_count", 0)],
+            );
+        }
 
         return Ok(CADDY_NOT_INSTALLED.to_owned());
     };
 
+    let worker_timer = phase_log.map(|phase_log| {
+        phase_log.start(structured_log::ReconciliationPhase::Workers, "php_workers")
+    });
     let supervisor = ProcessSupervisor::new(paths.clone());
     let plan = match build_runtime_plan(paths) {
         Ok(plan) => plan,
@@ -319,6 +353,24 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             Some(GATEWAY_RUNTIME_RECONCILED),
         )?;
     }
+    let worker_count = plan.workers.len();
+    let project_count = plan
+        .workers
+        .iter()
+        .map(|worker| worker.projects.len())
+        .sum::<usize>();
+    if let Some(worker_timer) = worker_timer {
+        worker_timer.finish(
+            structured_log::PhaseOutcome::Succeeded,
+            &[
+                ("worker_count", usize_as_u64(worker_count)),
+                ("project_count", usize_as_u64(project_count)),
+            ],
+        );
+    }
+
+    let gateway_timer = phase_log
+        .map(|phase_log| phase_log.start(structured_log::ReconciliationPhase::Gateway, "gateway"));
     let gateway_config = reconcile_gateway_config(paths, &gateway_command, &plan).await?;
     let pf_routing_state =
         pf_routing_state.unwrap_or_else(|| gateway_pf_routing_state(paths, &plan));
@@ -339,8 +391,18 @@ async fn reconcile_gateway_runtimes_with_pf_state(
     .await?;
     record_gateway_runtime_observed(paths, pf_routing_state, readiness_outcome)?;
     stop_stale_worker_runtimes(paths, &supervisor, &plan).await?;
+    if let Some(gateway_timer) = gateway_timer {
+        gateway_timer.finish(
+            structured_log::PhaseOutcome::Succeeded,
+            &[("project_count", usize_as_u64(project_count))],
+        );
+    }
 
     Ok(GATEWAY_RUNTIME_RECONCILED.to_owned())
+}
+
+fn usize_as_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 fn gateway_readiness_plan(

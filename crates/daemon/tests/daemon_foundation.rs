@@ -129,10 +129,40 @@ async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Res
     let lines = propagate_after_cleanup(lines_result, cleanup_result)?;
 
     let database = Database::open(&paths)?;
+    let jobs = database.recent_jobs()?;
+    let job_id = jobs
+        .iter()
+        .find(|job| job.kind == "reconcile" && job.scope == "system")
+        .map(|job| job.id.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing system reconciliation job"))?;
+    let log = state::fs::read_to_string(&paths.daemon_log())?;
+    let phase_events = log
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<Result<Vec<_>, _>>()?;
+    for phase in [
+        "queue",
+        "demand_discovery",
+        "resources",
+        "project_apply",
+        "workers",
+        "gateway",
+        "finalization",
+    ] {
+        let event = phase_events
+            .iter()
+            .find(|event| {
+                event["event"] == "reconciliation_phase_completed"
+                    && event["job_id"] == job_id
+                    && event["phase"] == phase
+            })
+            .ok_or_else(|| anyhow::anyhow!("missing {phase} phase event"))?;
+        assert!(event["elapsed_ms"].as_u64().is_some());
+    }
 
     assert_with_normalized_timestamps(
         "socket_protocol_streams_job_progress_and_persists_final_status",
-        (lines, database.recent_jobs()?),
+        (lines, jobs),
     )?;
 
     Ok(())
