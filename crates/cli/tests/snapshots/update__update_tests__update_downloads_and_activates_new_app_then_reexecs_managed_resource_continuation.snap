@@ -9,11 +9,11 @@ expression: snapshot
                 0,
             ),
         ),
-        stdout: "PV update\nPrivileged helper: current 1.0.0 (protocol 1)\nPV application: updated 0.2.3 -> 0.3.0\nDaemon restarted and healthy\n",
+        stdout: "PV update\nPrivileged helper: current 1.0.0 (protocol 1)\nPV application: updated 0.2.4 -> 0.3.0\nDaemon restarted and healthy\n",
         stderr: "",
     },
     [
-        "0.2.3",
+        "0.2.4",
         "0.3.0",
     ],
 )

@@ -9,5 +9,5 @@ RunOutput {
         ),
     ),
     stdout: "PV update\n",
-    stderr: "error: invalid privileged-helper release metadata at <pv-home>/bin/releases/0.2.3/pv-helper.json: helper checksum mismatch: expected <sha256>, got <sha256>\n",
+    stderr: "error: invalid privileged-helper release metadata at <pv-home>/bin/releases/0.2.4/pv-helper.json: helper checksum mismatch: expected <sha256>, got <sha256>\n",
 }
