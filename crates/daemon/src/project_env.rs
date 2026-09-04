@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 
 use camino::Utf8PathBuf;
@@ -39,6 +39,44 @@ pub(crate) struct ProjectResourceAllocationPlan {
     pub(crate) allocations: Vec<ResourceAllocationInput>,
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProjectDemand {
+    pub(crate) resource_tracks: BTreeSet<DemandedResourceTrack>,
+    pub(crate) php_track: Option<ProjectPhpTrackDemand>,
+    pub(crate) used_persisted_state: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProjectPhpTrackDemand {
+    php_configured: bool,
+    version_selector: Option<String>,
+    serves_http: bool,
+    track: String,
+}
+
+impl ProjectPhpTrackDemand {
+    fn matches(&self, php: Option<&config::PhpConfig>, serves_http: bool) -> bool {
+        self.php_configured == php.is_some()
+            && self.version_selector.as_deref() == php.and_then(config::PhpConfig::version_selector)
+            && self.serves_http == serves_http
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct DemandedResourceTrack {
+    pub(crate) resource_name: String,
+    pub(crate) track: String,
+}
+
+impl DemandedResourceTrack {
+    pub(crate) fn new(resource_name: impl Into<String>, track: impl Into<String>) -> Self {
+        Self {
+            resource_name: resource_name.into(),
+            track: track.into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedPhpRuntime {
     pub(crate) track: String,
@@ -68,6 +106,8 @@ pub(crate) async fn reconcile_project_env(
         paths,
         project_id,
         None,
+        None,
+        &BTreeSet::new(),
         DaemonDownloadProgress::disabled(),
     )
     .await
@@ -77,6 +117,8 @@ pub(crate) async fn reconcile_project_env_with_runtime_catalog_and_progress(
     paths: &PvPaths,
     project_id: &str,
     catalog: Option<&ManagedResourceRuntimeCatalog>,
+    discovered_demand: Option<&ProjectDemand>,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
     let mut database = Database::open(paths)?;
@@ -87,7 +129,17 @@ pub(crate) async fn reconcile_project_env_with_runtime_catalog_and_progress(
                 target: project_id.to_string(),
             })?;
 
-    match reconcile_loaded_project(paths, &mut database, &project, catalog, progress).await {
+    match reconcile_loaded_project(
+        paths,
+        &mut database,
+        &project,
+        catalog,
+        discovered_demand,
+        demanded_tracks,
+        progress,
+    )
+    .await
+    {
         Ok(summary) => Ok(summary),
         Err(error) => {
             let message = error.to_string();
@@ -117,6 +169,8 @@ pub(crate) async fn reconcile_project_env_with_catalog(
         database,
         &project,
         Some(catalog),
+        None,
+        &BTreeSet::new(),
         DaemonDownloadProgress::disabled(),
     )
     .await
@@ -142,11 +196,101 @@ pub(crate) fn validate_project_config_for_gateway(
     Ok(())
 }
 
+pub(crate) fn discover_project_demand(
+    paths: &PvPaths,
+    database: &Database,
+    project: &ProjectRecord,
+) -> Result<ProjectDemand, DaemonError> {
+    let discovered = (|| {
+        let config_file = ProjectConfigFile::read_from_root(&project.path)?;
+        let candidate_project = project_with_config_mode(project, &config_file.config);
+        let plan =
+            validate_project_config_and_plan(paths, database, &candidate_project, &config_file)?;
+        let php_track = maybe_resolve_project_php_track(
+            paths,
+            database,
+            &candidate_project,
+            config_file.config.php.as_ref(),
+            candidate_project.mode == ProjectMode::Served,
+            None,
+        )?;
+
+        Ok::<_, DaemonError>(project_demand_from_plan(
+            &plan,
+            config_file.config.php.as_ref(),
+            candidate_project.mode == ProjectMode::Served,
+            php_track,
+        ))
+    })();
+
+    // Discovery is conservative: current-config errors retain last-applied demand so the resource
+    // pass cannot tear down runtimes before authoritative application reports persistent errors.
+    match discovered {
+        Ok(demand) => Ok(demand),
+        Err(_error) => persisted_project_demand(database, project),
+    }
+}
+
+fn project_demand_from_plan(
+    plan: &ProjectResourcePlan,
+    php: Option<&config::PhpConfig>,
+    serves_http: bool,
+    php_track: Option<String>,
+) -> ProjectDemand {
+    let mut resource_tracks = plan
+        .resources
+        .iter()
+        .map(|resource| {
+            DemandedResourceTrack::new(resource.resource_name.clone(), resource.track.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    if let Some(track) = php_track.as_deref() {
+        resource_tracks.insert(DemandedResourceTrack::new("php", track));
+        resource_tracks.insert(DemandedResourceTrack::new("frankenphp", track));
+    }
+
+    ProjectDemand {
+        resource_tracks,
+        php_track: php_track.map(|track| ProjectPhpTrackDemand {
+            php_configured: php.is_some(),
+            version_selector: php
+                .and_then(config::PhpConfig::version_selector)
+                .map(str::to_owned),
+            serves_http,
+            track,
+        }),
+        used_persisted_state: false,
+    }
+}
+
+fn persisted_project_demand(
+    database: &Database,
+    project: &ProjectRecord,
+) -> Result<ProjectDemand, DaemonError> {
+    let mut resource_tracks = database
+        .project_managed_resources(&project.id)?
+        .into_iter()
+        .map(|resource| DemandedResourceTrack::new(resource.resource_name, resource.track))
+        .collect::<BTreeSet<_>>();
+    if let Some(track) = &project.php_runtime.track {
+        resource_tracks.insert(DemandedResourceTrack::new("php", track.clone()));
+        resource_tracks.insert(DemandedResourceTrack::new("frankenphp", track.clone()));
+    }
+
+    Ok(ProjectDemand {
+        resource_tracks,
+        php_track: None,
+        used_persisted_state: true,
+    })
+}
+
 async fn reconcile_loaded_project(
     paths: &PvPaths,
     database: &mut Database,
     project: &ProjectRecord,
     catalog: Option<&ManagedResourceRuntimeCatalog>,
+    discovered_demand: Option<&ProjectDemand>,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
     let config_file = match ProjectConfigFile::read_from_root(&project.path) {
@@ -161,18 +305,46 @@ async fn reconcile_loaded_project(
     let preflight_result = (|| {
         let plan =
             validate_project_config_and_plan(paths, database, &candidate_project, &config_file)?;
-        let resolved_php_runtime = maybe_resolve_project_php_runtime(
+        let php_track = maybe_resolve_project_php_track(
             paths,
             database,
             &candidate_project,
             config_file.config.php.as_ref(),
             serves_http,
+            discovered_demand.and_then(|demand| demand.php_track.as_ref()),
         )?;
 
-        Ok::<_, DaemonError>((plan, resolved_php_runtime))
+        Ok::<_, DaemonError>((plan, php_track))
     })();
-    let (plan, resolved_php_runtime) = match preflight_result {
+    let (plan, php_track) = match preflight_result {
         Ok(result) => result,
+        Err(error) => {
+            maintain_existing_project_tls_after_config_error(
+                paths,
+                project,
+                config_file.config.uses_tls_placeholders(),
+            );
+            return Err(error);
+        }
+    };
+    if discovered_demand.is_some()
+        && let Some(track) = php_track.as_deref()
+        && let Err(error) = install_project_php_pair(paths, catalog, track, progress.clone()).await
+    {
+        maintain_existing_project_tls_after_config_error(
+            paths,
+            project,
+            config_file.config.uses_tls_placeholders(),
+        );
+        return Err(error);
+    }
+    let resolved_php_runtime = match php_track
+        .map(|track| {
+            resolve_project_php_runtime_for_track(database, config_file.config.php.as_ref(), track)
+        })
+        .transpose()
+    {
+        Ok(runtime) => runtime,
         Err(error) => {
             maintain_existing_project_tls_after_config_error(
                 paths,
@@ -201,6 +373,7 @@ async fn reconcile_loaded_project(
                 &candidate_project,
                 &plan,
                 catalog,
+                demanded_tracks,
                 progress,
             )
             .await
@@ -210,6 +383,7 @@ async fn reconcile_loaded_project(
                 database,
                 &candidate_project,
                 &plan,
+                demanded_tracks,
                 progress,
             )
             .await
@@ -410,15 +584,50 @@ fn read_optional_file(path: &Utf8PathBuf) -> Result<Option<String>, DaemonError>
     }
 }
 
-fn maybe_resolve_project_php_runtime(
+async fn install_project_php_pair(
+    paths: &PvPaths,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    track: &str,
+    progress: DaemonDownloadProgress,
+) -> Result<(), DaemonError> {
+    let production_catalog;
+    let catalog = if let Some(catalog) = runtime_catalog {
+        catalog
+    } else {
+        production_catalog = ManagedResourceRuntimeCatalog::production()?;
+        &production_catalog
+    };
+    let demanded_tracks = BTreeSet::from([
+        DemandedResourceTrack::new("php", track),
+        DemandedResourceTrack::new("frankenphp", track),
+    ]);
+
+    crate::managed_resources::install_missing_resource_demands_with_catalog_and_progress(
+        paths,
+        catalog,
+        &demanded_tracks,
+        progress,
+    )
+    .await
+}
+
+fn maybe_resolve_project_php_track(
     paths: &PvPaths,
     database: &Database,
     project: &ProjectRecord,
     php: Option<&config::PhpConfig>,
     serves_http: bool,
-) -> Result<Option<ResolvedPhpRuntime>, DaemonError> {
+    discovered_php_track: Option<&ProjectPhpTrackDemand>,
+) -> Result<Option<String>, DaemonError> {
     if !serves_http && php.is_none() {
         return Ok(None);
+    }
+
+    if let Some(discovered_php_track) = discovered_php_track
+        && discovered_php_track.matches(php, serves_http)
+    {
+        // Keep `latest` stable when the resource pass refreshes the manifest between phases.
+        return Ok(Some(discovered_php_track.track.clone()));
     }
 
     if php.is_none()
@@ -429,7 +638,7 @@ fn maybe_resolve_project_php_runtime(
         return Ok(None);
     }
 
-    resolve_project_php_runtime(paths, database, project, php).map(Some)
+    selected_project_php_track(paths, database, project, php).map(Some)
 }
 
 pub(crate) fn resolve_project_php_runtime(
@@ -438,6 +647,17 @@ pub(crate) fn resolve_project_php_runtime(
     project: &ProjectRecord,
     php: Option<&config::PhpConfig>,
 ) -> Result<ResolvedPhpRuntime, DaemonError> {
+    let track = selected_project_php_track(paths, database, project, php)?;
+
+    resolve_project_php_runtime_for_track(database, php, track)
+}
+
+fn selected_project_php_track(
+    paths: &PvPaths,
+    database: &Database,
+    project: &ProjectRecord,
+    php: Option<&config::PhpConfig>,
+) -> Result<String, DaemonError> {
     let selector = php.and_then(config::PhpConfig::version_selector);
     let global_selector = database.global_php_default_track()?;
     let stored_selector = if selector.is_some()
@@ -447,8 +667,14 @@ pub(crate) fn resolve_project_php_runtime(
     } else {
         None
     };
-    let track =
-        resolve_project_php_track(paths, selector, stored_selector, global_selector.as_deref())?;
+    resolve_project_php_track(paths, selector, stored_selector, global_selector.as_deref())
+}
+
+fn resolve_project_php_runtime_for_track(
+    database: &Database,
+    php: Option<&config::PhpConfig>,
+    track: String,
+) -> Result<ResolvedPhpRuntime, DaemonError> {
     let requested_extensions = php
         .map(|php| php.requested_extensions().to_vec())
         .unwrap_or_default();

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Debug;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
@@ -1304,6 +1304,38 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
 
     drop(mailpit_port_guards);
     reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
+    let first_project = link_project(
+        &paths,
+        &tempdir.path().join("first-project"),
+        "first.test",
+        "serve: false\n",
+    )?;
+    let demanded_tracks = BTreeSet::from([crate::project_env::DemandedResourceTrack::new(
+        "mailpit",
+        FAKE_MAILPIT_TRACK,
+    )]);
+    let mut database = Database::open(&paths)?;
+    database.replace_project_managed_resources(&project.id, &[])?;
+    drop(database);
+    let catalog = super::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
+    let pid_before_apply =
+        state::fs::read_to_string(&paths.resource_pid("mailpit", FAKE_MAILPIT_TRACK))?;
+
+    crate::project_env::reconcile_project_env_with_runtime_catalog_and_progress(
+        &paths,
+        &first_project.id,
+        Some(&catalog),
+        None,
+        &demanded_tracks,
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+
+    assert_eq!(
+        state::fs::read_to_string(&paths.resource_pid("mailpit", FAKE_MAILPIT_TRACK))?,
+        pid_before_apply,
+        "applying an earlier Project should preserve a later Project's discovered runtime"
+    );
     let stale_port_guard = seed_mailpit_runtime_port(&paths, FAKE_MAILPIT_TRACK, "obsolete")?;
     drop(stale_port_guard);
     let caddy_fixture = setup_default_fixture("caddy")?;
@@ -1312,8 +1344,24 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
     let cleanup_snapshot = {
         let mut database = Database::open(&paths)?;
         database.unlink_project(&project.id)?;
-        let mut catalog = super::fake_runtime_catalog(resources::default_artifact_manifest_url())?;
-        catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
+
+        super::reconcile_system_resources_with_catalog_and_progress(
+            &paths,
+            &mut database,
+            &catalog,
+            &demanded_tracks,
+            crate::jobs::DaemonDownloadProgress::disabled(),
+        )
+        .await?;
+        assert_eq!(
+            runtime_files_exist(&paths, FAKE_MAILPIT_TRACK)?,
+            RuntimeFilePresence {
+                pid: true,
+                metadata: true,
+                config: true,
+            },
+            "discovered demand should preserve the running runtime"
+        );
 
         super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await?;
 
@@ -1636,6 +1684,7 @@ async fn project_download_failures_follow_original_plan_order() -> Result<()> {
         &project,
         &plan,
         &catalog,
+        &BTreeSet::new(),
         crate::jobs::DaemonDownloadProgress::disabled(),
     )
     .await;
