@@ -24,7 +24,7 @@ use protocol::{
     ManagedResourceUpdateCheck as ProtocolUpdateCheck,
     ManagedResourceUpdateCheckTrack as ProtocolUpdateCheckTrack,
 };
-use resources::{ManagedResourceCommands, ResourceAdapter, TrackName, TrackSelector};
+use resources::{ManagedResourceCommands, ResourceAdapter, TrackName};
 use state::{
     Database, EnvContextValues, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
     PortRequest, PostgresPreloadLibrary, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END,
@@ -34,7 +34,10 @@ use state::{
 use tokio::time::{sleep, timeout};
 
 use crate::jobs::DaemonDownloadProgress;
-use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness};
+use crate::{
+    DaemonError, ManagedResourceProjectFailure, ProcessSpec, ProcessSupervisor, ReadinessCheck,
+    wait_for_readiness,
+};
 
 const RESOURCE_HOST: &str = "127.0.0.1";
 const RESOURCE_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
@@ -300,14 +303,33 @@ pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
 
     stop_undemanded_catalog_runtimes(paths, database, catalog, &supervisor, &demanded_tracks)
         .await?;
-    let context = ResourceTrackReconciliationContext {
+    let install_requests = missing_project_install_requests(database, plan, catalog);
+    let mut prefetched_installs =
+        prefetch_missing_project_installs(paths, catalog, install_requests, progress.clone())
+            .await?;
+    let mut context = ResourceTrackReconciliationContext {
         catalog,
         supervisor: &supervisor,
         progress: &progress,
+        prefetched_installs: &mut prefetched_installs,
     };
 
-    for resource in &plan.resources {
-        reconcile_resource_track(paths, database, project, plan, &context, resource).await?;
+    for (index, resource) in plan.resources.iter().enumerate() {
+        if let Err(error) =
+            reconcile_resource_track(paths, database, project, plan, &mut context, resource).await
+        {
+            let mut failures = vec![ManagedResourceProjectFailure::new(
+                resource.resource_name.clone(),
+                resource.track.clone(),
+                error,
+            )];
+            failures.extend(take_project_prefetch_failures(
+                &plan.resources[index + 1..],
+                context.prefetched_installs,
+            ));
+
+            return Err(combined_project_resource_error(failures));
+        }
     }
 
     Ok(())
@@ -368,7 +390,7 @@ fn update_check_with_catalog(
 pub(crate) fn update_installed_with_progress(
     paths: PvPaths,
     catalog: Option<&ManagedResourceRuntimeCatalog>,
-    progress: &impl resources::DownloadProgress,
+    progress: &DaemonDownloadProgress,
 ) -> Result<ManagedResourceUpdateReport, DaemonError> {
     match catalog {
         Some(catalog) => update_installed_with_catalog(paths, catalog, progress),
@@ -383,7 +405,7 @@ pub(crate) fn update_installed_with_progress(
 fn update_installed_with_catalog(
     paths: PvPaths,
     catalog: &ManagedResourceRuntimeCatalog,
-    progress: &impl resources::DownloadProgress,
+    progress: &DaemonDownloadProgress,
 ) -> Result<ManagedResourceUpdateReport, DaemonError> {
     let commands = ManagedResourceCommands::new(
         paths,
@@ -397,11 +419,22 @@ fn update_installed_with_catalog(
         .map(|adapter| adapter as &dyn resources::ResourceAdapter)
         .collect::<Vec<_>>();
     let update_result = if let Some(client) = catalog.http_client.as_deref() {
-        commands.update_all_installed_with_progress(&resource_adapters, client, progress)
+        let snapshot = progress.latest_manifest_snapshot(&commands, client)?;
+        commands.update_all_installed_from_manifest_prefetched_with_progress(
+            &resource_adapters,
+            &snapshot,
+            client,
+            progress,
+        )
     } else {
         let client = resources::UreqResourceHttpClient::default();
-
-        commands.update_all_installed_with_progress(&resource_adapters, &client, progress)
+        let snapshot = progress.latest_manifest_snapshot(&commands, &client)?;
+        commands.update_all_installed_from_manifest_prefetched_with_progress(
+            &resource_adapters,
+            &snapshot,
+            &client,
+            progress,
+        )
     };
     let (update, failure) = match update_result {
         Ok(update) => (update, None),
@@ -529,13 +562,18 @@ impl DesiredResourceInstallPlan {
 
 #[derive(Debug)]
 struct DesiredResourceInstallFailure {
+    order: usize,
     label: String,
     error: DaemonError,
 }
 
 impl DesiredResourceInstallFailure {
-    fn new(label: String, error: DaemonError) -> Self {
-        Self { label, error }
+    fn new(order: usize, label: String, error: DaemonError) -> Self {
+        Self {
+            order,
+            label,
+            error,
+        }
     }
 
     fn message(&self) -> String {
@@ -594,6 +632,7 @@ fn missing_desired_resource_installs(
                         ),
                     };
                     failures.push(DesiredResourceInstallFailure::new(
+                        failures.len(),
                         format!("composer {}", record.track),
                         error,
                     ));
@@ -607,6 +646,7 @@ fn missing_desired_resource_installs(
                         resource: resource_name.to_string(),
                     };
                     failures.push(DesiredResourceInstallFailure::new(
+                        failures.len(),
                         format!("{} {}", record.resource_name, record.track),
                         error,
                     ));
@@ -616,6 +656,7 @@ fn missing_desired_resource_installs(
                     Ok(adapter) => adapter,
                     Err(error) => {
                         failures.push(DesiredResourceInstallFailure::new(
+                            failures.len(),
                             format!("{} {}", record.resource_name, record.track),
                             error,
                         ));
@@ -665,6 +706,7 @@ fn install_missing_desired_resource_tracks_blocking(
     installs: DesiredResourceInstallPlan,
     progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
+    let downloads_dir = paths.downloads().to_path_buf();
     let commands = ManagedResourceCommands::new(
         paths,
         install_options.manifest_url,
@@ -677,49 +719,65 @@ fn install_missing_desired_resource_tracks_blocking(
         installs,
         mut failures,
     } = installs;
+    if installs.is_empty() {
+        return finish_desired_resource_install_failures(failures);
+    }
+    let manifest_snapshot = match progress.manifest_snapshot(&commands, client) {
+        Ok(snapshot) => snapshot,
+        Err(error) if failures.is_empty() => return Err(error),
+        Err(error) => {
+            failures.push(DesiredResourceInstallFailure::new(
+                failures.len(),
+                "artifact manifest".to_owned(),
+                error,
+            ));
 
-    for install in installs {
+            return finish_desired_resource_install_failures(failures);
+        }
+    };
+    let mut resolved_installs = Vec::new();
+    let first_install_order = failures.len();
+    for (index, install) in installs.into_iter().enumerate() {
+        let order = first_install_order + index;
         let label = install.label();
-        let result = match install {
-            DesiredResourceInstall::PhpPair { track } => TrackName::new(track)
-                .map_err(DaemonError::from)
-                .and_then(|track| {
-                    commands
-                        .install_php_pair_with_progress(
-                            TrackSelector::Track(track),
-                            client,
-                            &progress,
-                        )
-                        .map(|_install| ())
-                        .map_err(DaemonError::from)
-                }),
-            DesiredResourceInstall::Composer => commands
-                .install_composer_with_progress(client, &progress)
-                .map(|_install| ())
-                .map_err(DaemonError::from),
-            DesiredResourceInstall::Runtime {
-                adapter,
-                resource_name,
-                track,
-            } => TrackName::new(track)
-                .map_err(DaemonError::from)
-                .and_then(|track| {
-                    install_runtime_resource_track_with_progress(
-                        &commands,
-                        client,
-                        &adapter,
-                        &resource_name,
-                        track,
-                        &progress,
-                    )
-                }),
-        };
-
-        if let Err(error) = result {
-            failures.push(DesiredResourceInstallFailure::new(label, error));
+        match resolve_desired_resource_install(&commands, &manifest_snapshot, install) {
+            Ok(install) => resolved_installs.push(ResolvedDesiredResourceInstall {
+                order,
+                label,
+                install,
+            }),
+            Err(error) => failures.push(DesiredResourceInstallFailure::new(order, label, error)),
         }
     }
+    let artifacts = unique_resolved_artifacts(&resolved_installs);
+    let downloads = prefetch_artifacts(&downloads_dir, client, artifacts, &progress);
 
+    for resolved in resolved_installs {
+        let download_failures =
+            resolved_download_failures(&downloads, &resolved.install, resolved.label.as_str());
+        if !download_failures.is_empty() {
+            failures.extend(download_failures.into_iter().map(|(label, error)| {
+                DesiredResourceInstallFailure::new(resolved.order, label, error)
+            }));
+            continue;
+        }
+        if let Err(error) =
+            install_resolved_desired_resource(&commands, &downloads, &progress, &resolved.install)
+        {
+            failures.push(DesiredResourceInstallFailure::new(
+                resolved.order,
+                resolved.label,
+                error,
+            ));
+        }
+    }
+    finish_desired_resource_install_failures(failures)
+}
+
+fn finish_desired_resource_install_failures(
+    mut failures: Vec<DesiredResourceInstallFailure>,
+) -> Result<(), DaemonError> {
+    failures.sort_by_key(|failure| failure.order);
     match failures.len() {
         0 => Ok(()),
         1 => Err(failures.remove(0).error),
@@ -732,10 +790,261 @@ fn install_missing_desired_resource_tracks_blocking(
     }
 }
 
+#[derive(Debug)]
+struct ResolvedDesiredResourceInstall {
+    order: usize,
+    label: String,
+    install: ResolvedDesiredResourceInstallKind,
+}
+
+#[derive(Debug)]
+enum ResolvedDesiredResourceInstallKind {
+    PhpPair {
+        php: resources::ManagedResourceInstallArtifact,
+        frankenphp: Box<resources::ManagedResourceInstallArtifact>,
+    },
+    Composer {
+        adapter: resources::RuntimeArtifactAdapter,
+        artifact: resources::ManagedResourceInstallArtifact,
+    },
+    Runtime {
+        adapter: resources::RuntimeArtifactAdapter,
+        artifact: resources::ManagedResourceInstallArtifact,
+    },
+}
+
+type ArtifactDownloadKey = (String, String, String);
+
+fn resolve_desired_resource_install(
+    commands: &ManagedResourceCommands,
+    manifest: &resources::ArtifactManifestRefresh,
+    install: DesiredResourceInstall,
+) -> Result<ResolvedDesiredResourceInstallKind, DaemonError> {
+    match install {
+        DesiredResourceInstall::PhpPair { track } => {
+            let track = TrackName::new(track)?;
+            let php_adapter = resources::php_adapter()?;
+            let frankenphp_adapter = resources::frankenphp_adapter()?;
+            let php = commands.resolve_install_artifact(&php_adapter, track.clone(), manifest)?;
+            let frankenphp =
+                commands.resolve_install_artifact(&frankenphp_adapter, track, manifest)?;
+
+            Ok(ResolvedDesiredResourceInstallKind::PhpPair {
+                php,
+                frankenphp: Box::new(frankenphp),
+            })
+        }
+        DesiredResourceInstall::Composer => {
+            let adapter = resources::composer_adapter()?;
+            let artifact =
+                commands.resolve_install_artifact(&adapter, TrackName::new("2")?, manifest)?;
+
+            Ok(ResolvedDesiredResourceInstallKind::Composer { adapter, artifact })
+        }
+        DesiredResourceInstall::Runtime {
+            adapter,
+            resource_name,
+            track,
+        } => {
+            if adapter.resource_name().as_str() != resource_name {
+                return Err(DaemonError::UnexpectedProtocolResponse {
+                    reason: format!(
+                        "runtime adapter resolved `{}` while reconciling `{resource_name}`",
+                        adapter.resource_name()
+                    ),
+                });
+            }
+            let artifact =
+                commands.resolve_install_artifact(&adapter, TrackName::new(track)?, manifest)?;
+
+            Ok(ResolvedDesiredResourceInstallKind::Runtime { adapter, artifact })
+        }
+    }
+}
+
+fn unique_resolved_artifacts(
+    installs: &[ResolvedDesiredResourceInstall],
+) -> BTreeMap<ArtifactDownloadKey, resources::ManifestArtifact> {
+    let mut artifacts = BTreeMap::new();
+    for resolved in installs {
+        match &resolved.install {
+            ResolvedDesiredResourceInstallKind::PhpPair { php, frankenphp } => {
+                insert_required_artifact(&mut artifacts, php);
+                insert_required_artifact(&mut artifacts, frankenphp);
+            }
+            ResolvedDesiredResourceInstallKind::Composer { artifact, .. }
+            | ResolvedDesiredResourceInstallKind::Runtime { artifact, .. } => {
+                insert_required_artifact(&mut artifacts, artifact);
+            }
+        }
+    }
+
+    artifacts
+}
+
+fn insert_required_artifact(
+    artifacts: &mut BTreeMap<ArtifactDownloadKey, resources::ManifestArtifact>,
+    resolved: &resources::ManagedResourceInstallArtifact,
+) {
+    if !resolved.download_required() {
+        return;
+    }
+    let artifact = resolved.artifact();
+    artifacts
+        .entry(artifact_download_key(artifact))
+        .or_insert_with(|| artifact.clone());
+}
+
+fn artifact_download_key(artifact: &resources::ManifestArtifact) -> ArtifactDownloadKey {
+    (
+        artifact.resource_name().as_str().to_owned(),
+        artifact.artifact_version().as_str().to_owned(),
+        artifact.sha256().as_str().to_owned(),
+    )
+}
+
+fn prefetch_artifacts(
+    downloads_dir: &Utf8Path,
+    client: &(impl resources::ResourceHttpClient + Sync + ?Sized),
+    artifacts: BTreeMap<ArtifactDownloadKey, resources::ManifestArtifact>,
+    progress: &(impl resources::DownloadProgress + Sync),
+) -> BTreeMap<ArtifactDownloadKey, resources::Result<resources::ArtifactDownload>> {
+    let (keys, artifacts): (Vec<_>, Vec<_>) = artifacts.into_iter().unzip();
+    let downloads = resources::ArtifactDownloader::new(downloads_dir)
+        .download_many_with_progress(&artifacts, client, progress);
+
+    keys.into_iter().zip(downloads).collect()
+}
+
+fn install_resolved_desired_resource(
+    commands: &ManagedResourceCommands,
+    downloads: &BTreeMap<ArtifactDownloadKey, resources::Result<resources::ArtifactDownload>>,
+    progress: &DaemonDownloadProgress,
+    install: &ResolvedDesiredResourceInstallKind,
+) -> Result<(), DaemonError> {
+    match install {
+        ResolvedDesiredResourceInstallKind::PhpPair { php, frankenphp } => {
+            let php_download = prefetched_download(downloads, php)?;
+            let frankenphp_download = prefetched_download(downloads, frankenphp)?;
+            commands.install_resolved_php_pair_with_progress(
+                php.clone(),
+                php_download,
+                frankenphp.as_ref().clone(),
+                frankenphp_download,
+                progress,
+            )?;
+        }
+        ResolvedDesiredResourceInstallKind::Composer { adapter, artifact } => {
+            let download = prefetched_download(downloads, artifact)?;
+            commands.install_resolved_artifact_with_progress(
+                adapter,
+                artifact.clone(),
+                download,
+                progress,
+            )?;
+        }
+        ResolvedDesiredResourceInstallKind::Runtime { adapter, artifact } => {
+            let download = prefetched_download(downloads, artifact)?;
+            commands.install_resolved_artifact_with_progress(
+                adapter,
+                artifact.clone(),
+                download,
+                progress,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn prefetched_download<'downloads>(
+    downloads: &'downloads BTreeMap<
+        ArtifactDownloadKey,
+        resources::Result<resources::ArtifactDownload>,
+    >,
+    resolved: &resources::ManagedResourceInstallArtifact,
+) -> Result<Option<&'downloads resources::ArtifactDownload>, DaemonError> {
+    if !resolved.download_required() {
+        return Ok(None);
+    }
+    let artifact = resolved.artifact();
+    let result = downloads
+        .get(&artifact_download_key(artifact))
+        .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+            reason: format!(
+                "missing prefetched artifact for {} {}",
+                artifact.resource_name(),
+                artifact.artifact_version()
+            ),
+        })?;
+
+    result
+        .as_ref()
+        .map(Some)
+        .map_err(|error| resources::ManagedResourceCommandError::from(error.clone()).into())
+}
+
+fn resolved_download_failures(
+    downloads: &BTreeMap<ArtifactDownloadKey, resources::Result<resources::ArtifactDownload>>,
+    install: &ResolvedDesiredResourceInstallKind,
+    label: &str,
+) -> Vec<(String, DaemonError)> {
+    let mut failures = Vec::new();
+    match install {
+        ResolvedDesiredResourceInstallKind::PhpPair { php, frankenphp } => {
+            for (resource_name, resolved) in [("php", php), ("frankenphp", frankenphp.as_ref())] {
+                if let Err(error) = prefetched_download(downloads, resolved) {
+                    failures.push((
+                        format!("{resource_name} {}", resolved.artifact().track()),
+                        error,
+                    ));
+                }
+            }
+        }
+        ResolvedDesiredResourceInstallKind::Composer { artifact, .. }
+        | ResolvedDesiredResourceInstallKind::Runtime { artifact, .. } => {
+            if let Err(error) = prefetched_download(downloads, artifact) {
+                failures.push((label.to_owned(), error));
+            }
+        }
+    }
+
+    failures
+}
+
 struct ResourceTrackReconciliationContext<'context> {
     catalog: &'context ManagedResourceRuntimeCatalog,
     supervisor: &'context ProcessSupervisor,
     progress: &'context DaemonDownloadProgress,
+    prefetched_installs: &'context mut BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>,
+}
+
+type ProjectTrackKey = (String, String);
+
+enum PrefetchedProjectInstall {
+    Ready {
+        adapter: resources::RuntimeArtifactAdapter,
+        resolved: Box<resources::ManagedResourceInstallArtifact>,
+        download: Option<resources::ArtifactDownload>,
+    },
+    Failed(DaemonError),
+}
+
+struct ResolvedProjectInstall {
+    key: ProjectTrackKey,
+    adapter: resources::RuntimeArtifactAdapter,
+    resolved: resources::ManagedResourceInstallArtifact,
+}
+
+enum ProjectInstallRequest {
+    Resolve {
+        key: ProjectTrackKey,
+        adapter: resources::RuntimeArtifactAdapter,
+    },
+    Failed {
+        key: ProjectTrackKey,
+        error: DaemonError,
+    },
 }
 
 async fn reconcile_resource_track(
@@ -743,7 +1052,7 @@ async fn reconcile_resource_track(
     database: &mut Database,
     project: &ProjectRecord,
     plan: &crate::project_env::ProjectResourcePlan,
-    reconciliation: &ResourceTrackReconciliationContext<'_>,
+    reconciliation: &mut ResourceTrackReconciliationContext<'_>,
     resource: &state::ProjectManagedResourceInput,
 ) -> Result<(), DaemonError> {
     let subject = RuntimeSubject::Resource {
@@ -770,10 +1079,9 @@ async fn reconcile_resource_track(
         let track_record = ensure_track_artifact(
             paths,
             database,
-            reconciliation.catalog,
-            adapter,
             resource,
             reconciliation.progress,
+            reconciliation.prefetched_installs,
         )
         .await?;
         let Some(artifact_path) = track_record.current_artifact_path else {
@@ -913,34 +1221,256 @@ fn unsupported_resource_has_seeded_env_context(
     Ok(has_context)
 }
 
+fn missing_project_install_requests(
+    database: &Database,
+    plan: &crate::project_env::ProjectResourcePlan,
+    catalog: &ManagedResourceRuntimeCatalog,
+) -> Vec<ProjectInstallRequest> {
+    let mut requests = Vec::new();
+    for resource in &plan.resources {
+        let key = (resource.resource_name.clone(), resource.track.clone());
+        match installed_track(database, &resource.resource_name, &resource.track) {
+            Ok(Some(_installed)) => continue,
+            Ok(None) => {}
+            Err(error) => {
+                requests.push(ProjectInstallRequest::Failed { key, error });
+                break;
+            }
+        }
+        let Some(adapter) = catalog.adapter(&resource.resource_name) else {
+            match unsupported_resource_has_seeded_env_context(database, resource) {
+                Ok(true) => continue,
+                Ok(false) => break,
+                Err(error) => {
+                    requests.push(ProjectInstallRequest::Failed { key, error });
+                    break;
+                }
+            }
+        };
+        match adapter.artifact_adapter() {
+            Ok(adapter) => requests.push(ProjectInstallRequest::Resolve { key, adapter }),
+            Err(error) => {
+                requests.push(ProjectInstallRequest::Failed { key, error });
+                break;
+            }
+        }
+    }
+
+    requests
+}
+
+fn take_project_prefetch_failures(
+    resources: &[state::ProjectManagedResourceInput],
+    prefetched_installs: &mut BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>,
+) -> Vec<ManagedResourceProjectFailure> {
+    let mut failures = Vec::new();
+    for resource in resources {
+        let key = (resource.resource_name.clone(), resource.track.clone());
+        if !matches!(
+            prefetched_installs.get(&key),
+            Some(PrefetchedProjectInstall::Failed(_))
+        ) {
+            continue;
+        }
+        let Some(PrefetchedProjectInstall::Failed(error)) = prefetched_installs.remove(&key) else {
+            continue;
+        };
+        failures.push(ManagedResourceProjectFailure::new(
+            resource.resource_name.clone(),
+            resource.track.clone(),
+            error,
+        ));
+    }
+
+    failures
+}
+
+fn combined_project_resource_error(
+    mut failures: Vec<ManagedResourceProjectFailure>,
+) -> DaemonError {
+    if failures.len() == 1 {
+        return failures.remove(0).into_error();
+    }
+
+    DaemonError::ManagedResourceProjectFailures { failures }
+}
+
+async fn prefetch_missing_project_installs(
+    paths: &PvPaths,
+    catalog: &ManagedResourceRuntimeCatalog,
+    requests: Vec<ProjectInstallRequest>,
+    progress: DaemonDownloadProgress,
+) -> Result<BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>, DaemonError> {
+    if requests.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let install_paths = paths.clone();
+    let install_options = catalog.install_options.clone();
+    let http_client = catalog.http_client.clone();
+    tokio::task::spawn_blocking(move || {
+        prefetch_missing_project_installs_blocking(
+            install_paths,
+            install_options,
+            http_client,
+            requests,
+            progress,
+        )
+    })
+    .await?
+}
+
+fn prefetch_missing_project_installs_blocking(
+    paths: PvPaths,
+    install_options: ManagedResourceInstallOptions,
+    http_client: Option<Arc<dyn resources::ResourceHttpClient + Send + Sync>>,
+    requests: Vec<ProjectInstallRequest>,
+    progress: DaemonDownloadProgress,
+) -> Result<BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>, DaemonError> {
+    let downloads_dir = paths.downloads().to_path_buf();
+    let commands = ManagedResourceCommands::new(
+        paths,
+        install_options.manifest_url,
+        install_options.target_platform,
+    );
+    let default_client = resources::UreqResourceHttpClient::default();
+    let client: &(dyn resources::ResourceHttpClient + Send + Sync) =
+        http_client.as_deref().unwrap_or(&default_client);
+    let mut prefetched = BTreeMap::new();
+    let mut resolve_requests = Vec::new();
+    for request in requests {
+        match request {
+            ProjectInstallRequest::Resolve { key, adapter } => {
+                resolve_requests.push((key, adapter));
+            }
+            ProjectInstallRequest::Failed { key, error } => {
+                prefetched.insert(key, PrefetchedProjectInstall::Failed(error));
+            }
+        }
+    }
+    if resolve_requests.is_empty() {
+        return Ok(prefetched);
+    }
+    let manifest_snapshot = progress.manifest_snapshot(&commands, client)?;
+    let mut resolved_installs = Vec::new();
+    for (key, adapter) in resolve_requests {
+        let (resource_name, track) = (&key.0, &key.1);
+        if adapter.resource_name().as_str() != resource_name {
+            let reason = format!(
+                "runtime adapter resolved `{}` while reconciling `{resource_name}`",
+                adapter.resource_name()
+            );
+            prefetched.insert(
+                key,
+                PrefetchedProjectInstall::Failed(DaemonError::UnexpectedProtocolResponse {
+                    reason,
+                }),
+            );
+            continue;
+        }
+        let resolved = match TrackName::new(track)
+            .map_err(DaemonError::from)
+            .and_then(|track| {
+                commands
+                    .resolve_install_artifact(&adapter, track, &manifest_snapshot)
+                    .map_err(Into::into)
+            }) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                prefetched.insert(key, PrefetchedProjectInstall::Failed(error));
+                continue;
+            }
+        };
+        resolved_installs.push(ResolvedProjectInstall {
+            key,
+            adapter,
+            resolved,
+        });
+    }
+
+    let mut artifacts = BTreeMap::new();
+    for install in &resolved_installs {
+        insert_required_artifact(&mut artifacts, &install.resolved);
+    }
+    let downloads = prefetch_artifacts(&downloads_dir, client, artifacts, &progress);
+    for install in resolved_installs {
+        let download = if install.resolved.download_required() {
+            downloads
+                .get(&artifact_download_key(install.resolved.artifact()))
+                .cloned()
+                .unwrap_or_else(|| {
+                    Err(resources::ResourcesError::MissingArtifactDownload {
+                        resource: install
+                            .resolved
+                            .artifact()
+                            .resource_name()
+                            .as_str()
+                            .to_string(),
+                        artifact_version: install
+                            .resolved
+                            .artifact()
+                            .artifact_version()
+                            .as_str()
+                            .to_string(),
+                    })
+                })
+                .map(Some)
+        } else {
+            Ok(None)
+        };
+        let prefetched_install = match download {
+            Ok(download) => PrefetchedProjectInstall::Ready {
+                adapter: install.adapter,
+                resolved: Box::new(install.resolved),
+                download,
+            },
+            Err(error) => PrefetchedProjectInstall::Failed(
+                resources::ManagedResourceCommandError::from(error).into(),
+            ),
+        };
+        prefetched.insert(install.key, prefetched_install);
+    }
+
+    Ok(prefetched)
+}
+
 async fn ensure_track_artifact(
     paths: &PvPaths,
     database: &mut Database,
-    catalog: &ManagedResourceRuntimeCatalog,
-    adapter: &dyn ManagedResourceRuntimeAdapter,
     resource: &state::ProjectManagedResourceInput,
     progress: &DaemonDownloadProgress,
+    prefetched_installs: &mut BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>,
 ) -> Result<ManagedResourceTrackRecord, DaemonError> {
     if let Some(record) = installed_track(database, &resource.resource_name, &resource.track)? {
         return Ok(record);
     }
 
-    let artifact_adapter = adapter.artifact_adapter()?;
-    let install_options = catalog.install_options.clone();
     let install_paths = paths.clone();
-    let resource_name = resource.resource_name.clone();
-    let track = resource.track.clone();
-    let http_client = catalog.http_client.clone();
     let progress = progress.clone();
+    let key = (resource.resource_name.clone(), resource.track.clone());
+    let prefetched = prefetched_installs.remove(&key).ok_or_else(|| {
+        DaemonError::UnexpectedProtocolResponse {
+            reason: format!(
+                "missing prefetched install for {} track {}",
+                resource.resource_name, resource.track
+            ),
+        }
+    })?;
+    let (artifact_adapter, resolved, download) = match prefetched {
+        PrefetchedProjectInstall::Ready {
+            adapter,
+            resolved,
+            download,
+        } => (adapter, *resolved, download),
+        PrefetchedProjectInstall::Failed(error) => return Err(error),
+    };
 
     tokio::task::spawn_blocking(move || {
-        install_missing_track_blocking(
+        install_prefetched_project_track_blocking(
             install_paths,
-            install_options,
-            http_client,
             artifact_adapter,
-            resource_name,
-            track,
+            resolved,
+            download,
             progress,
         )
     })
@@ -980,52 +1510,24 @@ fn installed_track(
     Ok(Some(record))
 }
 
-fn install_missing_track_blocking(
+fn install_prefetched_project_track_blocking(
     paths: PvPaths,
-    install_options: ManagedResourceInstallOptions,
-    http_client: Option<Arc<dyn resources::ResourceHttpClient + Send + Sync>>,
     adapter: resources::RuntimeArtifactAdapter,
-    resource_name: String,
-    track: String,
+    resolved: resources::ManagedResourceInstallArtifact,
+    download: Option<resources::ArtifactDownload>,
     progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     let commands = ManagedResourceCommands::new(
         paths,
-        install_options.manifest_url,
-        install_options.target_platform,
+        resources::default_artifact_manifest_url(),
+        resolved.target_platform(),
     );
-    let default_client = resources::UreqResourceHttpClient::default();
-    let client: &(dyn resources::ResourceHttpClient + Send + Sync) =
-        http_client.as_deref().unwrap_or(&default_client);
-    let track = TrackName::new(track)?;
-
-    install_runtime_resource_track_with_progress(
-        &commands,
-        client,
+    commands.install_resolved_artifact_with_progress(
         &adapter,
-        &resource_name,
-        track,
+        resolved,
+        download.as_ref(),
         &progress,
-    )
-}
-
-fn install_runtime_resource_track_with_progress(
-    commands: &ManagedResourceCommands,
-    client: &(impl resources::ResourceHttpClient + ?Sized),
-    adapter: &resources::RuntimeArtifactAdapter,
-    resource_name: &str,
-    track: TrackName,
-    progress: &DaemonDownloadProgress,
-) -> Result<(), DaemonError> {
-    commands.install_with_progress(adapter, TrackSelector::Track(track), client, progress)?;
-    if adapter.resource_name().as_str() != resource_name {
-        return Err(DaemonError::UnexpectedProtocolResponse {
-            reason: format!(
-                "runtime adapter installed `{}` while reconciling `{resource_name}`",
-                adapter.resource_name()
-            ),
-        });
-    }
+    )?;
 
     Ok(())
 }

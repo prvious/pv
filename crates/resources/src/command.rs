@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -9,10 +9,11 @@ use state::{
 use thiserror::Error;
 
 use crate::http::ResourceHttpClient;
+use crate::install::validate_artifact_matches_request;
 use crate::registry;
 use crate::runtime::{composer_adapter, frankenphp_adapter, php_adapter};
 use crate::{
-    ArtifactDownloader, ArtifactInstall, ArtifactInstaller, ArtifactManifest,
+    ArtifactDownload, ArtifactDownloader, ArtifactInstall, ArtifactInstaller, ArtifactManifest,
     ArtifactManifestCache, ArtifactManifestRefresh, ArtifactManifestSource, ArtifactVersion,
     DownloadProgress, ManifestArtifact, NoDownloadProgress, ResourceAdapter, ResourceName,
     ResourceOperation, ResourceOperationEvent, ResourceOperationOutcome, ResourcesError,
@@ -54,6 +55,11 @@ pub enum ManagedResourceCommandError {
         #[source]
         source: Box<ManagedResourceCommandError>,
         update: ManagedResourceUpdate,
+    },
+
+    #[error("Managed Resource updates failed: {}", format_update_failures(.failures))]
+    UpdateFailures {
+        failures: Vec<ManagedResourceUpdateFailure>,
     },
 }
 
@@ -103,6 +109,15 @@ pub struct ManagedResourceInstall {
     artifact_install: ArtifactInstall,
 }
 
+#[derive(Clone, Debug)]
+pub struct ManagedResourceInstallArtifact {
+    artifact: ManifestArtifact,
+    revoked_latest: Option<ManagedResourceRevokedLatest>,
+    download_required: bool,
+    manifest_source: ArtifactManifestSource,
+    target_platform: TargetPlatform,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagedResourceRevokedLatest {
     artifact_version: ArtifactVersion,
@@ -113,6 +128,56 @@ pub struct ManagedResourceRevokedLatest {
 pub struct ManagedResourceUpdate {
     installs: Vec<ManagedResourceInstall>,
 }
+
+#[derive(Clone)]
+enum PrefetchedUpdate<'adapter> {
+    PhpPair {
+        php: ManagedResourceInstallArtifact,
+        frankenphp: Box<ManagedResourceInstallArtifact>,
+    },
+    Artifact {
+        adapter: &'adapter dyn ResourceAdapter,
+        resolved: ManagedResourceInstallArtifact,
+    },
+}
+
+impl PrefetchedUpdate<'_> {
+    fn label(&self) -> String {
+        match self {
+            Self::PhpPair { php, .. } => format!("php/frankenphp {}", php.artifact().track()),
+            Self::Artifact { resolved, .. } => format!(
+                "{} {}",
+                resolved.artifact().resource_name(),
+                resolved.artifact().track()
+            ),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ManagedResourceUpdateFailure {
+    label: String,
+    error: Box<ManagedResourceCommandError>,
+}
+
+impl ManagedResourceUpdateFailure {
+    fn new(label: String, error: ManagedResourceCommandError) -> Self {
+        Self {
+            label,
+            error: Box::new(error),
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub fn error(&self) -> &ManagedResourceCommandError {
+        &self.error
+    }
+}
+
+type ArtifactDownloadKey = (String, String, String);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagedResourceUpdateCheck {
@@ -219,6 +284,16 @@ impl ManagedResourceCommands {
         progress: &impl DownloadProgress,
         latest_only: bool,
     ) -> ManagedResourceCommandResult<ArtifactManifestRefresh> {
+        self.refresh_manifest_result(client, progress, latest_only)
+            .map_err(Into::into)
+    }
+
+    fn refresh_manifest_result(
+        &self,
+        client: &(impl ResourceHttpClient + ?Sized),
+        progress: &impl DownloadProgress,
+        latest_only: bool,
+    ) -> crate::Result<ArtifactManifestRefresh> {
         let started_at = Instant::now();
         let cache = ArtifactManifestCache::new(self.paths.downloads());
         let result = if latest_only {
@@ -237,7 +312,123 @@ impl ManagedResourceCommands {
         };
         report_resource_operation(progress, ResourceOperation::Manifest, started_at, outcome);
 
-        result.map_err(Into::into)
+        result
+    }
+
+    pub fn manifest_snapshot_with_progress(
+        &self,
+        client: &(impl ResourceHttpClient + ?Sized),
+        progress: &impl DownloadProgress,
+    ) -> crate::Result<ArtifactManifestRefresh> {
+        self.refresh_manifest_result(client, progress, false)
+    }
+
+    pub fn latest_manifest_snapshot_with_progress(
+        &self,
+        client: &(impl ResourceHttpClient + ?Sized),
+        progress: &impl DownloadProgress,
+    ) -> crate::Result<ArtifactManifestRefresh> {
+        self.refresh_manifest_result(client, progress, true)
+    }
+
+    pub fn resolve_install_artifact(
+        &self,
+        adapter: &(impl ResourceAdapter + ?Sized),
+        track: TrackName,
+        refresh: &ArtifactManifestRefresh,
+    ) -> ManagedResourceCommandResult<ManagedResourceInstallArtifact> {
+        registry::resolve_canonical(adapter.resource_name().as_str())?;
+        let selection = refresh.manifest().select_latest(
+            adapter.resource_name(),
+            &track,
+            self.target_platform,
+        )?;
+        let download_required = !ArtifactInstaller::new(self.paths.resources())
+            .has_valid_existing_release(adapter, &track, selection.artifact())?;
+
+        Ok(ManagedResourceInstallArtifact {
+            artifact: selection.artifact().clone(),
+            revoked_latest: selection
+                .revoked_latest()
+                .map(revoked_fallback_from_artifact),
+            download_required,
+            manifest_source: refresh.source().clone(),
+            target_platform: self.target_platform,
+        })
+    }
+
+    pub fn install_resolved_artifact_with_progress(
+        &self,
+        adapter: &(impl ResourceAdapter + ?Sized),
+        resolved: ManagedResourceInstallArtifact,
+        download: Option<&ArtifactDownload>,
+        progress: &impl DownloadProgress,
+    ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
+        validate_prefetched_install(self, adapter, &resolved, download)?;
+        let mut database = Database::open(&self.paths)?;
+        database.record_managed_resource_track_desired(
+            adapter.resource_name().as_str(),
+            resolved.artifact.track().as_str(),
+            ManagedResourceDesiredState::Installed,
+        )?;
+        let install = self.install_prefetched_artifact(adapter, resolved, download, progress)?;
+        if let Err(error) = database.record_managed_resource_track_installed(
+            adapter.resource_name().as_str(),
+            install.track.as_str(),
+            install.artifact_version.as_str(),
+            &install.current_artifact_path,
+        ) {
+            return Err(self.rollback_after_error(&[&install], error.into()));
+        }
+
+        Ok(install)
+    }
+
+    pub fn install_resolved_php_pair_with_progress(
+        &self,
+        php_resolved: ManagedResourceInstallArtifact,
+        php_download: Option<&ArtifactDownload>,
+        frankenphp_resolved: ManagedResourceInstallArtifact,
+        frankenphp_download: Option<&ArtifactDownload>,
+        progress: &impl DownloadProgress,
+    ) -> ManagedResourceCommandResult<PhpPairInstall> {
+        let php_adapter = php_adapter()?;
+        let frankenphp_adapter = frankenphp_adapter()?;
+        validate_prefetched_install(self, &php_adapter, &php_resolved, php_download)?;
+        validate_prefetched_install(
+            self,
+            &frankenphp_adapter,
+            &frankenphp_resolved,
+            frankenphp_download,
+        )?;
+        if php_resolved.artifact.track() != frankenphp_resolved.artifact.track() {
+            return Err(ResourcesError::InvalidArtifactLayout {
+                resource: frankenphp_adapter.resource_name().as_str().to_string(),
+                reason: format!(
+                    "PHP pair tracks differ: php uses `{}`, frankenphp uses `{}`",
+                    php_resolved.artifact.track(),
+                    frankenphp_resolved.artifact.track()
+                ),
+            }
+            .into());
+        }
+        let php =
+            self.install_prefetched_artifact(&php_adapter, php_resolved, php_download, progress)?;
+        let frankenphp = match self.install_prefetched_artifact(
+            &frankenphp_adapter,
+            frankenphp_resolved,
+            frankenphp_download,
+            progress,
+        ) {
+            Ok(install) => install,
+            Err(error) => return Err(self.rollback_after_error(&[&php], error)),
+        };
+        let install = PhpPairInstall { php, frankenphp };
+        if let Err(error) = self.record_php_pair_install(&install) {
+            return Err(self.rollback_php_pair_after_error(&install, error));
+        }
+
+        Ok(install)
     }
 
     pub fn install(
@@ -418,7 +609,8 @@ impl ManagedResourceCommands {
                 let download = ArtifactDownloader::new(self.paths.downloads())
                     .download_with_progress(&artifact, context.client, context.progress)?;
                 let install_started_at = Instant::now();
-                let install = installer.install(adapter, &track, &artifact, download.path());
+                let install =
+                    installer.install(adapter, &track, &artifact, download.install_path());
                 report_resource_operation(
                     context.progress,
                     ResourceOperation::Install(&artifact),
@@ -448,6 +640,56 @@ impl ManagedResourceCommands {
             artifact_version: artifact.artifact_version().clone(),
             current_artifact_path,
             manifest_source: context.manifest_source.clone(),
+            revoked_latest,
+            downloaded_from_cache,
+            artifact_install: install,
+        })
+    }
+
+    fn install_prefetched_artifact(
+        &self,
+        adapter: &(impl ResourceAdapter + ?Sized),
+        resolved: ManagedResourceInstallArtifact,
+        download: Option<&ArtifactDownload>,
+        progress: &impl DownloadProgress,
+    ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
+        let ManagedResourceInstallArtifact {
+            artifact,
+            revoked_latest,
+            manifest_source,
+            ..
+        } = resolved;
+        let track = artifact.track().clone();
+        let started_at = Instant::now();
+        let installer = ArtifactInstaller::new(self.paths.resources());
+        let install = match installer.install_existing_release(adapter, &track, &artifact) {
+            Ok(Some(install)) => Ok((install, false)),
+            Ok(None) => {
+                let download = download.ok_or_else(|| ResourcesError::MissingArtifactDownload {
+                    resource: artifact.resource_name().as_str().to_string(),
+                    artifact_version: artifact.artifact_version().as_str().to_string(),
+                })?;
+                installer
+                    .install(adapter, &track, &artifact, download.install_path())
+                    .map(|install| (install, download.is_from_cache()))
+            }
+            Err(error) => Err(error),
+        };
+        report_resource_operation(
+            progress,
+            ResourceOperation::Install(&artifact),
+            started_at,
+            ResourceOperationOutcome::from_succeeded(install.is_ok()),
+        );
+        let (install, downloaded_from_cache) = install?;
+        let current_artifact_path = install.release_path().to_path_buf();
+
+        Ok(ManagedResourceInstall {
+            resource_name: adapter.resource_name().clone(),
+            track,
+            artifact_version: artifact.artifact_version().clone(),
+            current_artifact_path,
+            manifest_source,
             revoked_latest,
             downloaded_from_cache,
             artifact_install: install,
@@ -858,11 +1100,26 @@ impl ManagedResourceCommands {
         client: &(impl ResourceHttpClient + ?Sized),
         progress: &impl DownloadProgress,
     ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
-        for adapter in resource_adapters {
-            registry::resolve_canonical(adapter.resource_name().as_str())?;
-        }
-
+        validate_resource_adapters(resource_adapters)?;
         let refresh = self.refresh_manifest(client, progress, true)?;
+
+        self.update_all_installed_from_manifest_with_progress(
+            resource_adapters,
+            &refresh,
+            client,
+            progress,
+        )
+    }
+
+    pub fn update_all_installed_from_manifest_with_progress(
+        &self,
+        resource_adapters: &[&dyn ResourceAdapter],
+        refresh: &ArtifactManifestRefresh,
+        client: &(impl ResourceHttpClient + ?Sized),
+        progress: &impl DownloadProgress,
+    ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
+        validate_resource_adapters(resource_adapters)?;
+
         let manifest = refresh.manifest();
         let installed_tracks = self.list(None)?;
         let mut installs = Vec::new();
@@ -890,6 +1147,225 @@ impl ManagedResourceCommands {
             context,
         ) {
             return Err(partial_update_error(error, installs));
+        }
+
+        Ok(ManagedResourceUpdate { installs })
+    }
+
+    pub fn update_all_installed_from_manifest_prefetched_with_progress(
+        &self,
+        resource_adapters: &[&dyn ResourceAdapter],
+        refresh: &ArtifactManifestRefresh,
+        client: &(impl ResourceHttpClient + Sync + ?Sized),
+        progress: &(impl DownloadProgress + Sync),
+    ) -> ManagedResourceCommandResult<ManagedResourceUpdate> {
+        validate_resource_adapters(resource_adapters)?;
+        let manifest = refresh.manifest();
+        let installed_tracks = self.list(None)?;
+        let mut plan = Vec::new();
+        let mut planning_error = None;
+        let php = php_adapter()?;
+        let frankenphp = frankenphp_adapter()?;
+        let mut php_tracks = BTreeSet::new();
+        collect_installed_tracks(&installed_tracks, php.resource_name(), &mut php_tracks);
+        collect_installed_tracks(
+            &installed_tracks,
+            frankenphp.resource_name(),
+            &mut php_tracks,
+        );
+
+        for track in &php_tracks {
+            self.validate_install_selection(&php, track, manifest)?;
+            self.validate_install_selection(&frankenphp, track, manifest)?;
+        }
+        for track in php_tracks {
+            let failure_label = format!("php/frankenphp {track}");
+            let result = (|| {
+                let php_installed =
+                    find_installed_track(&installed_tracks, php.resource_name(), &track);
+                let frankenphp_installed =
+                    find_installed_track(&installed_tracks, frankenphp.resource_name(), &track);
+                if !self.track_needs_update(&php, &track, php_installed, manifest)?
+                    && !self.track_needs_update(
+                        &frankenphp,
+                        &track,
+                        frankenphp_installed,
+                        manifest,
+                    )?
+                {
+                    return Ok(None);
+                }
+                let php = self.resolve_install_artifact(&php, track.clone(), refresh)?;
+                let frankenphp = self.resolve_install_artifact(&frankenphp, track, refresh)?;
+
+                Ok(Some(PrefetchedUpdate::PhpPair {
+                    php,
+                    frankenphp: Box::new(frankenphp),
+                }))
+            })();
+            match result {
+                Ok(Some(update)) => plan.push(update),
+                Ok(None) => {}
+                Err(error) => {
+                    planning_error = Some(ManagedResourceUpdateFailure::new(failure_label, error));
+                    break;
+                }
+            }
+        }
+
+        let composer = composer_adapter()?;
+        let composer_track = composer_track()?;
+        if planning_error.is_none()
+            && let Some(installed) =
+                find_installed_track(&installed_tracks, composer.resource_name(), &composer_track)
+        {
+            match self.track_needs_update(&composer, &composer_track, Some(installed), manifest) {
+                Ok(true) => match self.resolve_install_artifact(&composer, composer_track, refresh)
+                {
+                    Ok(resolved) => plan.push(PrefetchedUpdate::Artifact {
+                        adapter: &composer,
+                        resolved,
+                    }),
+                    Err(error) => {
+                        planning_error = Some(ManagedResourceUpdateFailure::new(
+                            "composer 2".to_string(),
+                            error,
+                        ));
+                    }
+                },
+                Ok(false) => {}
+                Err(error) => {
+                    planning_error = Some(ManagedResourceUpdateFailure::new(
+                        "composer 2".to_string(),
+                        error,
+                    ));
+                }
+            }
+        }
+
+        'adapters: for adapter in resource_adapters {
+            if planning_error.is_some() {
+                break;
+            }
+            for installed in installed_tracks
+                .iter()
+                .filter(|track| track.resource_name() == adapter.resource_name())
+            {
+                let needs_update = match self.track_needs_update(
+                    *adapter,
+                    installed.track(),
+                    Some(installed),
+                    manifest,
+                ) {
+                    Ok(needs_update) => needs_update,
+                    Err(error) => {
+                        planning_error = Some(ManagedResourceUpdateFailure::new(
+                            format!("{} {}", adapter.resource_name(), installed.track()),
+                            error,
+                        ));
+                        break 'adapters;
+                    }
+                };
+                if !needs_update {
+                    continue;
+                }
+                match self.resolve_install_artifact(*adapter, installed.track().clone(), refresh) {
+                    Ok(resolved) => plan.push(PrefetchedUpdate::Artifact {
+                        adapter: *adapter,
+                        resolved,
+                    }),
+                    Err(error) => {
+                        planning_error = Some(ManagedResourceUpdateFailure::new(
+                            format!("{} {}", adapter.resource_name(), installed.track()),
+                            error,
+                        ));
+                        break 'adapters;
+                    }
+                }
+            }
+        }
+
+        let artifacts = unique_prefetched_update_artifacts(&plan);
+        let artifact_values = artifacts.values().cloned().collect::<Vec<_>>();
+        let download_results = ArtifactDownloader::new(self.paths.downloads())
+            .download_many_with_progress(&artifact_values, client, progress);
+        let downloads = artifacts
+            .into_keys()
+            .zip(download_results)
+            .collect::<BTreeMap<_, _>>();
+        let mut installs = Vec::new();
+        for index in 0..plan.len() {
+            let current_download_failures = prefetched_update_failures(&downloads, &plan[index]);
+            if !current_download_failures.is_empty() {
+                let download_failures = current_download_failures
+                    .into_iter()
+                    .chain(
+                        plan[index + 1..]
+                            .iter()
+                            .flat_map(|update| prefetched_update_failures(&downloads, update)),
+                    )
+                    .chain(planning_error.take())
+                    .collect();
+                return Err(partial_update_error(
+                    combined_update_error(download_failures),
+                    installs,
+                ));
+            }
+            let update = plan[index].clone();
+            let update_label = update.label();
+            let result = match update {
+                PrefetchedUpdate::PhpPair { php, frankenphp } => {
+                    match (
+                        prefetched_update_download(&downloads, &php),
+                        prefetched_update_download(&downloads, &frankenphp),
+                    ) {
+                        (Ok(php_download), Ok(frankenphp_download)) => self
+                            .install_resolved_php_pair_with_progress(
+                                php,
+                                php_download,
+                                *frankenphp,
+                                frankenphp_download,
+                                progress,
+                            )
+                            .map(|pair| vec![pair.php, pair.frankenphp]),
+                        (Err(error), _) | (_, Err(error)) => Err(error),
+                    }
+                }
+                PrefetchedUpdate::Artifact { adapter, resolved } => {
+                    match prefetched_update_download(&downloads, &resolved) {
+                        Ok(download) => self
+                            .install_resolved_artifact_with_progress(
+                                adapter, resolved, download, progress,
+                            )
+                            .map(|install| vec![install]),
+                        Err(error) => Err(error),
+                    }
+                }
+            };
+            match result {
+                Ok(update_installs) => installs.extend(update_installs),
+                Err(error) => {
+                    let failures =
+                        std::iter::once(ManagedResourceUpdateFailure::new(update_label, error))
+                            .chain(
+                                plan[index + 1..].iter().flat_map(|update| {
+                                    prefetched_update_failures(&downloads, update)
+                                }),
+                            )
+                            .chain(planning_error.take())
+                            .collect();
+                    return Err(partial_update_error(
+                        combined_update_error(failures),
+                        installs,
+                    ));
+                }
+            }
+        }
+        if let Some(error) = planning_error {
+            return Err(partial_update_error(
+                combined_update_error(vec![error]),
+                installs,
+            ));
         }
 
         Ok(ManagedResourceUpdate { installs })
@@ -1238,6 +1714,20 @@ impl ManagedResourceInstall {
 
     pub fn revoked_latest(&self) -> Option<&ManagedResourceRevokedLatest> {
         self.revoked_latest.as_ref()
+    }
+}
+
+impl ManagedResourceInstallArtifact {
+    pub fn artifact(&self) -> &ManifestArtifact {
+        &self.artifact
+    }
+
+    pub fn download_required(&self) -> bool {
+        self.download_required
+    }
+
+    pub fn target_platform(&self) -> TargetPlatform {
+        self.target_platform
     }
 }
 
@@ -1753,6 +2243,162 @@ fn revoked_fallback_from_artifact(artifact: &ManifestArtifact) -> ManagedResourc
             .unwrap_or_default()
             .to_string(),
     }
+}
+
+fn validate_resolved_install_artifact(
+    commands: &ManagedResourceCommands,
+    adapter: &(impl ResourceAdapter + ?Sized),
+    resolved: &ManagedResourceInstallArtifact,
+) -> ManagedResourceCommandResult<()> {
+    registry::resolve_canonical(adapter.resource_name().as_str())?;
+    if resolved.target_platform != commands.target_platform {
+        return Err(ResourcesError::InvalidArtifactLayout {
+            resource: adapter.resource_name().as_str().to_string(),
+            reason: format!(
+                "artifact was resolved for {}, not {}",
+                resolved.target_platform, commands.target_platform
+            ),
+        }
+        .into());
+    }
+    validate_artifact_matches_request(
+        adapter.resource_name(),
+        resolved.artifact.track(),
+        &resolved.artifact,
+    )?;
+
+    Ok(())
+}
+
+fn validate_prefetched_install(
+    commands: &ManagedResourceCommands,
+    adapter: &(impl ResourceAdapter + ?Sized),
+    resolved: &ManagedResourceInstallArtifact,
+    download: Option<&ArtifactDownload>,
+) -> ManagedResourceCommandResult<()> {
+    validate_resolved_install_artifact(commands, adapter, resolved)?;
+    if !resolved.download_required() {
+        return Ok(());
+    }
+    let download = download.ok_or_else(|| ResourcesError::MissingArtifactDownload {
+        resource: resolved.artifact.resource_name().as_str().to_string(),
+        artifact_version: resolved.artifact.artifact_version().as_str().to_string(),
+    })?;
+    download.validate_for(&resolved.artifact)?;
+
+    Ok(())
+}
+
+fn validate_resource_adapters(
+    resource_adapters: &[&dyn ResourceAdapter],
+) -> ManagedResourceCommandResult<()> {
+    for adapter in resource_adapters {
+        registry::resolve_canonical(adapter.resource_name().as_str())?;
+    }
+
+    Ok(())
+}
+
+fn unique_prefetched_update_artifacts(
+    plan: &[PrefetchedUpdate<'_>],
+) -> BTreeMap<ArtifactDownloadKey, ManifestArtifact> {
+    let mut artifacts = BTreeMap::new();
+    for update in plan {
+        match update {
+            PrefetchedUpdate::PhpPair { php, frankenphp } => {
+                insert_required_update_artifact(&mut artifacts, php);
+                insert_required_update_artifact(&mut artifacts, frankenphp);
+            }
+            PrefetchedUpdate::Artifact { resolved, .. } => {
+                insert_required_update_artifact(&mut artifacts, resolved);
+            }
+        }
+    }
+
+    artifacts
+}
+
+fn insert_required_update_artifact(
+    artifacts: &mut BTreeMap<ArtifactDownloadKey, ManifestArtifact>,
+    resolved: &ManagedResourceInstallArtifact,
+) {
+    if !resolved.download_required() {
+        return;
+    }
+    artifacts
+        .entry(artifact_download_key(resolved.artifact()))
+        .or_insert_with(|| resolved.artifact().clone());
+}
+
+fn artifact_download_key(artifact: &ManifestArtifact) -> ArtifactDownloadKey {
+    (
+        artifact.resource_name().as_str().to_string(),
+        artifact.artifact_version().as_str().to_string(),
+        artifact.sha256().as_str().to_string(),
+    )
+}
+
+fn prefetched_update_download<'download>(
+    downloads: &'download BTreeMap<ArtifactDownloadKey, crate::Result<ArtifactDownload>>,
+    resolved: &ManagedResourceInstallArtifact,
+) -> ManagedResourceCommandResult<Option<&'download ArtifactDownload>> {
+    if !resolved.download_required() {
+        return Ok(None);
+    }
+    let artifact = resolved.artifact();
+    downloads
+        .get(&artifact_download_key(artifact))
+        .ok_or_else(|| ResourcesError::MissingArtifactDownload {
+            resource: artifact.resource_name().as_str().to_string(),
+            artifact_version: artifact.artifact_version().as_str().to_string(),
+        })?
+        .as_ref()
+        .map(Some)
+        .map_err(|error| error.clone().into())
+}
+
+fn prefetched_update_failures(
+    downloads: &BTreeMap<ArtifactDownloadKey, crate::Result<ArtifactDownload>>,
+    update: &PrefetchedUpdate<'_>,
+) -> Vec<ManagedResourceUpdateFailure> {
+    let mut failures = Vec::new();
+    match update {
+        PrefetchedUpdate::PhpPair { php, frankenphp } => {
+            for (resource_name, resolved) in [("php", php), ("frankenphp", frankenphp)] {
+                if let Err(error) = prefetched_update_download(downloads, resolved) {
+                    failures.push(ManagedResourceUpdateFailure::new(
+                        format!("{resource_name} {}", resolved.artifact().track()),
+                        error,
+                    ));
+                }
+            }
+        }
+        PrefetchedUpdate::Artifact { resolved, .. } => {
+            if let Err(error) = prefetched_update_download(downloads, resolved) {
+                failures.push(ManagedResourceUpdateFailure::new(update.label(), error));
+            }
+        }
+    }
+
+    failures
+}
+
+fn combined_update_error(
+    mut failures: Vec<ManagedResourceUpdateFailure>,
+) -> ManagedResourceCommandError {
+    if failures.len() == 1 {
+        return *failures.remove(0).error;
+    }
+
+    ManagedResourceCommandError::UpdateFailures { failures }
+}
+
+fn format_update_failures(failures: &[ManagedResourceUpdateFailure]) -> String {
+    failures
+        .iter()
+        .map(|failure| format!("{}: {}", failure.label, failure.error))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn composer_track() -> ManagedResourceCommandResult<TrackName> {

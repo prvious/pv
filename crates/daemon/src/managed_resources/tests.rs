@@ -1,8 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fmt::Debug;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::Duration;
 
 use crate::{
@@ -307,6 +308,112 @@ impl resources::ResourceHttpClient for RecordingManifestClient {
         Err(resources::ResourcesError::HttpRequestFailed {
             url: url.to_string(),
             reason: "downloads are not used by update checks".to_string(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct GatedArtifactClient {
+    manifest: String,
+    archives: BTreeMap<String, Vec<u8>>,
+    manifest_requests: Arc<AtomicUsize>,
+    active_downloads: Arc<AtomicUsize>,
+    maximum_active_downloads: Arc<AtomicUsize>,
+    download_started_sender: mpsc::Sender<()>,
+    release_downloads: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl resources::ResourceHttpClient for GatedArtifactClient {
+    fn get_text(&self, _url: &str) -> resources::Result<String> {
+        self.manifest_requests.fetch_add(1, Ordering::SeqCst);
+
+        Ok(self.manifest.clone())
+    }
+
+    fn download(&self, url: &str, writer: &mut dyn std::io::Write) -> resources::Result<()> {
+        let archive =
+            self.archives
+                .get(url)
+                .ok_or_else(|| resources::ResourcesError::HttpRequestFailed {
+                    url: url.to_owned(),
+                    reason: "missing scripted archive".to_owned(),
+                })?;
+        let active_downloads = self.active_downloads.fetch_add(1, Ordering::SeqCst) + 1;
+        self.maximum_active_downloads
+            .fetch_max(active_downloads, Ordering::SeqCst);
+        if self.download_started_sender.send(()).is_err() {
+            self.active_downloads.fetch_sub(1, Ordering::SeqCst);
+
+            return Err(resources::ResourcesError::HttpRequestFailed {
+                url: url.to_owned(),
+                reason: "download gate receiver closed".to_owned(),
+            });
+        }
+        let released = self.release_downloads.0.lock().map_err(|_poison| {
+            resources::ResourcesError::HttpRequestFailed {
+                url: url.to_owned(),
+                reason: "download release gate lock poisoned".to_owned(),
+            }
+        });
+        let released = released.and_then(|released| {
+            self.release_downloads
+                .1
+                .wait_while(released, |released| !*released)
+                .map_err(|_poison| resources::ResourcesError::HttpRequestFailed {
+                    url: url.to_owned(),
+                    reason: "download release gate lock poisoned".to_owned(),
+                })
+        });
+        let result = released.and_then(|_released| {
+            std::io::Write::write_all(writer, archive).map_err(|error| {
+                resources::ResourcesError::DownloadWriteFailed {
+                    url: url.to_owned(),
+                    reason: error.to_string(),
+                }
+            })
+        });
+        self.active_downloads.fetch_sub(1, Ordering::SeqCst);
+
+        result
+    }
+}
+
+#[derive(Debug)]
+struct SequencedManifestArtifactClient {
+    manifests: Mutex<VecDeque<String>>,
+    archives: BTreeMap<String, Vec<u8>>,
+    manifest_requests: Arc<AtomicUsize>,
+}
+
+impl resources::ResourceHttpClient for SequencedManifestArtifactClient {
+    fn get_text(&self, url: &str) -> resources::Result<String> {
+        self.manifest_requests.fetch_add(1, Ordering::SeqCst);
+        self.manifests
+            .lock()
+            .map_err(|_poison| resources::ResourcesError::HttpRequestFailed {
+                url: url.to_owned(),
+                reason: "manifest response lock poisoned".to_owned(),
+            })?
+            .pop_front()
+            .ok_or_else(|| resources::ResourcesError::HttpRequestFailed {
+                url: url.to_owned(),
+                reason: "no scripted manifest response".to_owned(),
+            })
+    }
+
+    fn download(&self, url: &str, writer: &mut dyn std::io::Write) -> resources::Result<()> {
+        let archive =
+            self.archives
+                .get(url)
+                .ok_or_else(|| resources::ResourcesError::HttpStatusFailed {
+                    url: url.to_owned(),
+                    status_code: 404,
+                })?;
+        std::io::Write::write_all(writer, archive).map_err(|error| {
+            resources::ResourcesError::DownloadWriteFailed {
+                url: url.to_owned(),
+                reason: error.to_string(),
+            }
         })
     }
 }
@@ -1317,6 +1424,390 @@ async fn system_reconciliation_installs_desired_setup_defaults_without_starting_
             "setup default install unexpectedly wrote runtime files for {resource_name}"
         );
     }
+
+    Ok(())
+}
+
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test runs the blocking install plan on a thread so downloads can be gate-controlled"
+)]
+fn system_setup_default_downloads_are_parallel_and_bounded_at_four() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let (manifest, archives) =
+        remote_setup_default_fixtures(tempdir.path(), SETUP_DEFAULT_FIXTURES)?;
+    let mut database = Database::open(&paths)?;
+    record_desired_setup_tracks(&mut database, &setup_default_tracks())?;
+    let catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    let installs = super::missing_desired_resource_installs(&database, &catalog)?;
+    let install_options = catalog.install_options.clone();
+    drop(database);
+
+    let manifest_requests = Arc::new(AtomicUsize::new(0));
+    let active_downloads = Arc::new(AtomicUsize::new(0));
+    let maximum_active_downloads = Arc::new(AtomicUsize::new(0));
+    let release_downloads = Arc::new((Mutex::new(false), Condvar::new()));
+    let (download_started_sender, download_started_receiver) = mpsc::channel();
+    let client = Arc::new(GatedArtifactClient {
+        manifest,
+        archives,
+        manifest_requests: Arc::clone(&manifest_requests),
+        active_downloads: Arc::clone(&active_downloads),
+        maximum_active_downloads: Arc::clone(&maximum_active_downloads),
+        download_started_sender,
+        release_downloads: Arc::clone(&release_downloads),
+    });
+    let http_client: Arc<dyn resources::ResourceHttpClient + Send + Sync> = client;
+    let install_paths = paths.clone();
+    let install_thread = std::thread::spawn(move || {
+        super::install_missing_desired_resource_tracks_blocking(
+            install_paths,
+            install_options,
+            Some(http_client),
+            installs,
+            crate::jobs::DaemonDownloadProgress::disabled(),
+        )
+    });
+
+    for _download in 0..resources::MAX_PARALLEL_ARTIFACT_DOWNLOADS {
+        download_started_receiver.recv_timeout(Duration::from_secs(5))?;
+    }
+    assert_eq!(
+        active_downloads.load(Ordering::SeqCst),
+        resources::MAX_PARALLEL_ARTIFACT_DOWNLOADS
+    );
+    assert_eq!(
+        download_started_receiver.recv_timeout(Duration::from_millis(250)),
+        Err(mpsc::RecvTimeoutError::Timeout),
+        "a fifth download started before the first four were released"
+    );
+    let database = Database::open(&paths)?;
+    assert!(
+        database
+            .managed_resource_tracks()?
+            .iter()
+            .all(|track| track.installed_version.is_none()),
+        "artifact state was committed before all downloads completed"
+    );
+    drop(database);
+    {
+        let mut released = release_downloads
+            .0
+            .lock()
+            .map_err(|_poison| anyhow!("download release gate lock poisoned"))?;
+        *released = true;
+        release_downloads.1.notify_all();
+    }
+    let install_result = install_thread
+        .join()
+        .map_err(|_panic| anyhow!("setup default install thread panicked"))?;
+    install_result?;
+
+    let maximum_active_downloads = maximum_active_downloads.load(Ordering::SeqCst);
+    assert!(maximum_active_downloads > 1);
+    assert!(maximum_active_downloads <= resources::MAX_PARALLEL_ARTIFACT_DOWNLOADS);
+    assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
+
+    Ok(())
+}
+
+#[test]
+fn project_scope_missing_installs_share_one_manifest_snapshot() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let fixtures = [
+        setup_default_fixture("caddy")?,
+        setup_default_fixture("redis")?,
+    ];
+    let (manifest, archives) = remote_setup_default_fixtures(tempdir.path(), &fixtures)?;
+    let manifest_requests = Arc::new(AtomicUsize::new(0));
+    let client = Arc::new(SequencedManifestArtifactClient {
+        manifests: Mutex::new(VecDeque::from([
+            manifest,
+            EMPTY_ARTIFACT_MANIFEST.to_owned(),
+        ])),
+        archives,
+        manifest_requests: Arc::clone(&manifest_requests),
+    });
+    let install_options = super::ManagedResourceInstallOptions {
+        manifest_url: TEST_ARTIFACT_MANIFEST_URL.to_owned(),
+        target_platform: resources::TargetPlatform::current()?,
+    };
+    let progress = crate::jobs::DaemonDownloadProgress::disabled();
+
+    let requests = [
+        (
+            "caddy",
+            SETUP_DEFAULT_CADDY_TRACK,
+            resources::caddy_adapter()?,
+        ),
+        (
+            "redis",
+            SETUP_DEFAULT_REDIS_TRACK,
+            resources::redis_adapter()?,
+        ),
+    ]
+    .into_iter()
+    .map(
+        |(resource_name, track, adapter)| super::ProjectInstallRequest::Resolve {
+            key: (resource_name.to_owned(), track.to_owned()),
+            adapter,
+        },
+    )
+    .collect();
+    let http_client: Arc<dyn resources::ResourceHttpClient + Send + Sync> = client;
+    let prefetched = super::prefetch_missing_project_installs_blocking(
+        paths.clone(),
+        install_options,
+        Some(http_client),
+        requests,
+        progress.clone(),
+    )?;
+    for (_key, install) in prefetched {
+        let super::PrefetchedProjectInstall::Ready {
+            adapter,
+            resolved,
+            download,
+        } = install
+        else {
+            bail!("expected resolved Project install");
+        };
+        super::install_prefetched_project_track_blocking(
+            paths.clone(),
+            adapter,
+            *resolved,
+            download,
+            progress.clone(),
+        )?;
+    }
+
+    assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
+    let database = Database::open(&paths)?;
+    assert!(
+        database
+            .managed_resource_track("redis", SETUP_DEFAULT_REDIS_TRACK)?
+            .installed_version
+            .is_some(),
+        "the second install should use snapshot A instead of fetching empty snapshot B"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_download_failures_follow_original_plan_order() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "env: {}\n",
+    )?;
+    let fixtures = [
+        setup_default_fixture("mailpit")?,
+        setup_default_fixture("redis")?,
+    ];
+    let (manifest, _archives) = remote_setup_default_fixtures(tempdir.path(), &fixtures)?;
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    catalog.install_options.manifest_url = TEST_ARTIFACT_MANIFEST_URL.to_owned();
+    catalog.http_client = Some(Arc::new(SequencedManifestArtifactClient {
+        manifests: Mutex::new(VecDeque::from([manifest])),
+        archives: BTreeMap::new(),
+        manifest_requests: Arc::new(AtomicUsize::new(0)),
+    }));
+    let plan = crate::project_env::ProjectResourcePlan {
+        resources: fixtures
+            .iter()
+            .map(|fixture| ProjectManagedResourceInput {
+                resource_name: fixture.resource_name.to_owned(),
+                track: fixture.track.to_owned(),
+            })
+            .collect(),
+        allocations: BTreeMap::new(),
+    };
+    let mut database = Database::open(&paths)?;
+
+    let result = super::reconcile_project_resources_with_catalog_and_progress(
+        &paths,
+        &mut database,
+        &project,
+        &plan,
+        &catalog,
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await;
+    let Err(DaemonError::ManagedResourceProjectFailures { failures }) = result else {
+        bail!("expected aggregated Project Managed Resource failures");
+    };
+    let failures = failures
+        .iter()
+        .map(|failure| {
+            (
+                failure.resource_name(),
+                failure.track(),
+                failure.error().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_debug_snapshot!(failures, @r###"
+    [
+        (
+            "mailpit",
+            "1",
+            "Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/mailpit-1.27.0-pv1-any.tar.gz`",
+        ),
+        (
+            "redis",
+            "8.8",
+            "Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/redis-8.8.0-pv1-any.tar.gz`",
+        ),
+    ]
+    "###);
+    assert!(
+        database
+            .managed_resource_tracks()?
+            .iter()
+            .all(|track| track.installed_version.is_none())
+    );
+
+    Ok(())
+}
+
+#[test]
+fn setup_default_download_failures_follow_original_plan_order() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let fixtures = [
+        setup_default_fixture("caddy")?,
+        setup_default_fixture("mysql")?,
+        setup_default_fixture("redis")?,
+    ];
+    let (manifest, _archives) = remote_setup_default_fixtures(tempdir.path(), &fixtures)?;
+    let mut database = Database::open(&paths)?;
+    record_desired_setup_tracks(
+        &mut database,
+        &[
+            ("caddy", SETUP_DEFAULT_CADDY_TRACK),
+            ("mysql", SETUP_DEFAULT_MYSQL_TRACK),
+            ("redis", SETUP_DEFAULT_REDIS_TRACK),
+        ],
+    )?;
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    catalog.install_options.manifest_url = TEST_ARTIFACT_MANIFEST_URL.to_owned();
+    let installs = super::missing_desired_resource_installs(&database, &catalog)?;
+    drop(database);
+    let client: Arc<dyn resources::ResourceHttpClient + Send + Sync> =
+        Arc::new(SequencedManifestArtifactClient {
+            manifests: Mutex::new(VecDeque::from([manifest])),
+            archives: BTreeMap::new(),
+            manifest_requests: Arc::new(AtomicUsize::new(0)),
+        });
+
+    let result = super::install_missing_desired_resource_tracks_blocking(
+        paths,
+        catalog.install_options,
+        Some(client),
+        installs,
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    );
+    let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
+        bail!("expected setup default download failures");
+    };
+
+    assert_debug_snapshot!(failures, @r###"
+    [
+        "caddy 2: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/caddy-2.11.4-pv1-any.tar.gz`",
+        "mysql 8.4: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/mysql-8.4.0-pv1-any.tar.gz`",
+        "redis 8.8: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/redis-8.8.0-pv1-any.tar.gz`",
+    ]
+    "###);
+
+    Ok(())
+}
+
+#[test]
+fn failure_only_setup_plan_does_not_fetch_manifest() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    record_desired_setup_tracks(&mut database, &[("unsupported", "1")])?;
+    let catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    let installs = super::missing_desired_resource_installs(&database, &catalog)?;
+    drop(database);
+    let manifest_requests = Arc::new(AtomicUsize::new(0));
+    let client: Arc<dyn resources::ResourceHttpClient + Send + Sync> =
+        Arc::new(SequencedManifestArtifactClient {
+            manifests: Mutex::new(VecDeque::new()),
+            archives: BTreeMap::new(),
+            manifest_requests: Arc::clone(&manifest_requests),
+        });
+
+    let result = super::install_missing_desired_resource_tracks_blocking(
+        paths,
+        catalog.install_options,
+        Some(client),
+        installs,
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    );
+
+    assert!(matches!(
+        result,
+        Err(DaemonError::UnsupportedManagedResourceRuntime { resource })
+            if resource == "unsupported"
+    ));
+    assert_eq!(manifest_requests.load(Ordering::SeqCst), 0);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_failure_does_not_hide_existing_setup_plan_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    record_desired_setup_tracks(
+        &mut database,
+        &[("unsupported", "1"), ("redis", SETUP_DEFAULT_REDIS_TRACK)],
+    )?;
+    let catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    let installs = super::missing_desired_resource_installs(&database, &catalog)?;
+    drop(database);
+    let client: Arc<dyn resources::ResourceHttpClient + Send + Sync> =
+        Arc::new(SequencedManifestArtifactClient {
+            manifests: Mutex::new(VecDeque::new()),
+            archives: BTreeMap::new(),
+            manifest_requests: Arc::new(AtomicUsize::new(0)),
+        });
+
+    let result = super::install_missing_desired_resource_tracks_blocking(
+        paths,
+        catalog.install_options,
+        Some(client),
+        installs,
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    );
+    let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
+        bail!("expected existing and manifest failures to be aggregated");
+    };
+    let failure_labels = failures
+        .iter()
+        .map(|failure| {
+            failure
+                .split_once(':')
+                .map_or(failure.as_str(), |(label, _message)| label)
+        })
+        .collect::<Vec<_>>();
+
+    assert_debug_snapshot!(failure_labels, @r###"
+    [
+        "unsupported 1",
+        "artifact manifest",
+    ]
+    "###);
 
     Ok(())
 }
@@ -3900,6 +4391,35 @@ fn seed_setup_default_cached_fixture(
     Ok(())
 }
 
+fn remote_setup_default_fixtures(
+    tempdir: &Utf8Path,
+    fixtures: &[SetupDefaultFixture],
+) -> Result<(String, BTreeMap<String, Vec<u8>>)> {
+    let mut manifest_fixtures = Vec::new();
+    let mut archives = BTreeMap::new();
+
+    for fixture in fixtures {
+        let archive_path = tempdir.join(format!("remote-{}", fixture.archive_file_name));
+        create_setup_default_archive(tempdir, &archive_path, fixture)?;
+        let bytes = read_fixture_bytes(&archive_path)?;
+        let sha256 = sha256_file(&archive_path)?;
+        manifest_fixtures.push(CachedSetupDefaultFixture {
+            fixture: *fixture,
+            sha256,
+            size: u64::try_from(bytes.len())?,
+        });
+        archives.insert(
+            format!(
+                "https://artifacts.example.test/{}",
+                fixture.archive_file_name
+            ),
+            bytes,
+        );
+    }
+
+    Ok((setup_default_manifest(&manifest_fixtures), archives))
+}
+
 #[derive(Clone, Debug)]
 struct CachedSetupDefaultFixture {
     fixture: SetupDefaultFixture,
@@ -5397,6 +5917,14 @@ fn copy_file(from: &Utf8Path, to: &Utf8Path) -> Result<()> {
     std::fs::copy(from, to)?;
 
     Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "daemon runtime tests read generated artifact archives into scripted clients"
+)]
+fn read_fixture_bytes(path: &Utf8Path) -> Result<Vec<u8>> {
+    Ok(std::fs::read(path)?)
 }
 
 #[expect(
