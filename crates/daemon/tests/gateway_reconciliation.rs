@@ -1,10 +1,10 @@
-use anyhow::{Error, Result, bail};
+use anyhow::{Context, Error, Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use daemon::gateway::{
     CaddyCliCommand, GatewayPfRoutingState, build_runtime_plan, gateway_process_spec,
     promote_validated_config_for_test, reconcile_gateway_runtimes_with_pf_state_for_test,
-    validate_config, worker_process_spec,
+    reconcile_project_gateway_runtimes_for_test, validate_config, worker_process_spec,
 };
 use daemon::{CaddyAdminError, CaddyAdminOperation, DaemonError, ProcessSupervisor};
 use insta::{Settings, assert_debug_snapshot};
@@ -12,8 +12,8 @@ use rcgen::generate_simple_self_signed;
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
 use serde_json::{Value, json};
 use state::{
-    Database, GatewayPort, LinkProjectInput, PortOwner, PortRequest, ProjectMode, PvPaths,
-    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, fs,
+    Database, GatewayPort, LinkProjectInput, PortOwner, PortRequest, ProjectMode,
+    ProjectPhpRuntimeInput, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, fs,
 };
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -686,6 +686,890 @@ env:
     assert!(worker_metadata["applied_config_fingerprint"].is_string());
     assert_ne!(gateway_metadata["replacement_required"], true);
     assert_ne!(worker_metadata["replacement_required"], true);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn targeted_project_reconciliation_touches_only_old_and_new_workers() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let acme = create_project_with_config(
+        tempdir.path(),
+        "acme",
+        "php: \"8.4\"\ndocument_root: public\n",
+    )?;
+    let other = create_project_with_config(tempdir.path(), "other", "php: \"8.4\"\n")?;
+    let unrelated = create_project_with_config(tempdir.path(), "api", "php: \"8.3\"\n")?;
+    let caddy_release = tempdir.path().join("fake-caddy-release");
+    let frankenphp_83_release = tempdir.path().join("fake-frankenphp-83-release");
+    let frankenphp_84_release = tempdir.path().join("fake-frankenphp-84-release");
+    let frankenphp_85_release = tempdir.path().join("fake-frankenphp-85-release");
+    write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
+    for release in [
+        &frankenphp_83_release,
+        &frankenphp_84_release,
+        &frankenphp_85_release,
+    ] {
+        write_stateful_fake_frankenphp(&release.join("bin/frankenphp"))?;
+    }
+
+    let mut database = Database::open(&paths)?;
+    let acme = database
+        .link_project(LinkProjectInput {
+            path: acme.clone(),
+            original_path: acme.clone(),
+            primary_hostname: "acme.test".to_owned(),
+            config_path: acme.join("pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    let mut other_project_id = None;
+    let mut unrelated_project_id = None;
+    for (project, hostname, track) in [
+        (&other, "other.test", "8.4"),
+        (&unrelated, "api.acme.test", "8.3"),
+    ] {
+        let linked = database.link_project(LinkProjectInput {
+            path: project.clone(),
+            original_path: project.clone(),
+            primary_hostname: hostname.to_owned(),
+            config_path: project.join("pv.yml"),
+            desired_php_track: Some(track.to_owned()),
+            additional_hostnames: Vec::new(),
+        })?;
+        if track == "8.3" {
+            unrelated_project_id = Some(linked.project.id);
+        } else {
+            other_project_id = Some(linked.project.id);
+        }
+    }
+    let other_project_id =
+        other_project_id.ok_or_else(|| anyhow::anyhow!("expected same-runtime Project id"))?;
+    let unrelated_project_id =
+        unrelated_project_id.ok_or_else(|| anyhow::anyhow!("expected unrelated Project id"))?;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    for (track, release) in [
+        ("8.3", &frankenphp_83_release),
+        ("8.4", &frankenphp_84_release),
+        ("8.5", &frankenphp_85_release),
+    ] {
+        database.record_managed_resource_track_installed(
+            "frankenphp",
+            track,
+            &format!("fake-frankenphp-{track}-pv1"),
+            release,
+        )?;
+    }
+    let ports = available_loopback_ports(5)?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.3", ports[2]), ("8.4", ports[3]), ("8.5", ports[4])],
+    )?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
+    let worker_83_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.3"))?;
+    let worker_84_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?;
+    let gateway_loads = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
+    let worker_83_requests = fake_admin_requests(&paths.worker_root_config("8.3"))?.len();
+    let worker_84_loads = fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len();
+    let unrelated_gateway_fragment_path = paths
+        .gateway_projects_config_dir()
+        .join(format!("{unrelated_project_id}.Caddyfile"));
+    let unrelated_worker_fragment_path = paths
+        .worker_projects_config_dir("8.3")
+        .join(format!("{unrelated_project_id}.Caddyfile"));
+    let other_worker_fragment_path = paths
+        .worker_projects_config_dir("8.4")
+        .join(format!("{other_project_id}.Caddyfile"));
+    let unrelated_gateway_fragment = fs::read_to_string(&unrelated_gateway_fragment_path)?;
+    let unrelated_worker_fragment = fs::read_to_string(&unrelated_worker_fragment_path)?;
+    let other_worker_fragment = fs::read_to_string(&other_worker_fragment_path)?;
+
+    fs::write_sensitive_file(&unrelated.join("pv.yml"), "php: [\n")?;
+    fs::write_sensitive_file(
+        &acme.config_path,
+        r#"php: "8.4"
+document_root: public
+env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
+    reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &acme.id,
+        Duration::from_secs(5),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await?;
+
+    assert_eq!(
+        required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?,
+        gateway_pid
+    );
+    assert_eq!(
+        required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?,
+        worker_84_pid
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
+        gateway_loads
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
+        worker_84_loads
+    );
+    assert_eq!(
+        fake_admin_requests(&paths.worker_root_config("8.3"))?.len(),
+        worker_83_requests
+    );
+    assert_eq!(
+        fs::read_to_string(&other_worker_fragment_path)?,
+        other_worker_fragment
+    );
+    assert_eq!(
+        fs::read_to_string(&unrelated_gateway_fragment_path)?,
+        unrelated_gateway_fragment
+    );
+    assert_eq!(
+        fs::read_to_string(&unrelated_worker_fragment_path)?,
+        unrelated_worker_fragment
+    );
+
+    fs::write_sensitive_file(&acme.path.join("web/index.php"), "<?php\n")?;
+    fs::write_sensitive_file(&acme.config_path, "php: \"8.4\"\ndocument_root: web\n")?;
+    reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &acme.id,
+        Duration::from_secs(5),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await?;
+
+    assert_eq!(
+        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
+        worker_84_loads + 1
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
+        gateway_loads
+    );
+    assert_eq!(
+        fake_admin_requests(&paths.worker_root_config("8.3"))?.len(),
+        worker_83_requests
+    );
+    assert_eq!(
+        fs::read_to_string(&other_worker_fragment_path)?,
+        other_worker_fragment
+    );
+
+    fs::write_sensitive_file(
+        &acme.config_path,
+        "php: \"8.4\"\ndocument_root: web\nhostnames:\n  - www.acme.test\n",
+    )?;
+    reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &acme.id,
+        Duration::from_secs(5),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await?;
+
+    assert_eq!(
+        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
+        gateway_loads + 1
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
+        worker_84_loads + 2
+    );
+    assert_eq!(
+        fake_admin_requests(&paths.worker_root_config("8.3"))?.len(),
+        worker_83_requests
+    );
+
+    fs::write_sensitive_file(
+        &acme.config_path,
+        "php: \"8.5\"\ndocument_root: web\nhostnames:\n  - www.acme.test\n",
+    )?;
+    let mut database = Database::open(&paths)?;
+    database.replace_project_php_runtime(
+        &acme.id,
+        Some(&ProjectPhpRuntimeInput {
+            track: "8.5".to_owned(),
+            requested_extensions: Vec::new(),
+            loaded_extensions: Vec::new(),
+            ignored_extensions: Vec::new(),
+        }),
+    )?;
+    drop(database);
+    reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &acme.id,
+        Duration::from_secs(5),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await?;
+
+    assert_eq!(
+        required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?,
+        gateway_pid
+    );
+    assert_eq!(
+        required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.3"))?,
+        worker_83_pid
+    );
+    assert_eq!(
+        required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?,
+        worker_84_pid
+    );
+    assert!(paths.worker_pid("8.5").exists());
+    assert_eq!(
+        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
+        gateway_loads + 2
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
+        worker_84_loads + 3
+    );
+    assert_eq!(
+        fake_admin_requests(&paths.worker_root_config("8.3"))?.len(),
+        worker_83_requests
+    );
+    assert_eq!(
+        fs::read_to_string(&unrelated_gateway_fragment_path)?,
+        unrelated_gateway_fragment
+    );
+    assert_eq!(
+        fs::read_to_string(&unrelated_worker_fragment_path)?,
+        unrelated_worker_fragment
+    );
+    assert_eq!(
+        fs::read_to_string(&other_worker_fragment_path)?,
+        other_worker_fragment
+    );
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    for track in ["8.3", "8.4", "8.5"] {
+        stop_runtime_from_pid_file(&paths.worker_pid(track)).await?;
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn targeted_project_reconciliation_does_not_activate_tampered_unrelated_fragments()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let target = create_project_with_config(tempdir.path(), "target", "php: \"8.4\"\n")?;
+    let peer = create_project_with_config(tempdir.path(), "peer", "php: \"8.4\"\n")?;
+    let caddy_release = tempdir.path().join("fake-caddy-release");
+    let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
+    write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
+    write_stateful_fake_frankenphp(&frankenphp_release.join("bin/frankenphp"))?;
+
+    let mut database = Database::open(&paths)?;
+    let target = database
+        .link_project(LinkProjectInput {
+            path: target.clone(),
+            original_path: target.clone(),
+            primary_hostname: "acme.test".to_owned(),
+            config_path: target.join("pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    let peer = database
+        .link_project(LinkProjectInput {
+            path: peer.clone(),
+            original_path: peer.clone(),
+            primary_hostname: "other.test".to_owned(),
+            config_path: peer.join("pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-8.4-pv1",
+        &frankenphp_release,
+    )?;
+    let ports = available_loopback_ports(3)?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let gateway_fragment_path = paths
+        .gateway_projects_config_dir()
+        .join(format!("{}.Caddyfile", peer.id));
+    let worker_fragment_path = paths
+        .worker_projects_config_dir("8.4")
+        .join(format!("{}.Caddyfile", peer.id));
+    let gateway_fragment = fs::read_to_string(&gateway_fragment_path)?;
+    let gateway_loads = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
+    let worker_loads = fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len();
+
+    fs::write_sensitive_file(&gateway_fragment_path, "# tampered Gateway fragment\n")?;
+    reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &target.id,
+        Duration::from_secs(5),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await?;
+
+    assert_eq!(
+        fs::read_to_string(&gateway_fragment_path)?,
+        "# tampered Gateway fragment\n"
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
+        gateway_loads
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
+        worker_loads
+    );
+
+    fs::write_sensitive_file(&gateway_fragment_path, &gateway_fragment)?;
+    fs::write_sensitive_file(&worker_fragment_path, "# tampered worker fragment\n")?;
+    reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &target.id,
+        Duration::from_secs(5),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await?;
+
+    assert_eq!(
+        fs::read_to_string(&worker_fragment_path)?,
+        "# tampered worker fragment\n"
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
+        gateway_loads
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
+        worker_loads
+    );
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn targeted_project_reconciliation_promotes_split_peer_runtime_state() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let target = create_project_with_config(tempdir.path(), "target", "php: \"8.4\"\n")?;
+    let peer = create_project_with_config(tempdir.path(), "peer", "php: \"8.4\"\n")?;
+    let caddy_release = tempdir.path().join("fake-caddy-release");
+    let frankenphp_84_release = tempdir.path().join("fake-frankenphp-84-release");
+    let frankenphp_85_release = tempdir.path().join("fake-frankenphp-85-release");
+    write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
+    write_stateful_fake_frankenphp(&frankenphp_84_release.join("bin/frankenphp"))?;
+    write_stateful_fake_frankenphp(&frankenphp_85_release.join("bin/frankenphp"))?;
+
+    let mut database = Database::open(&paths)?;
+    let target = database
+        .link_project(LinkProjectInput {
+            path: target.clone(),
+            original_path: target.clone(),
+            primary_hostname: "acme.test".to_owned(),
+            config_path: target.join("pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    let peer = database
+        .link_project(LinkProjectInput {
+            path: peer.clone(),
+            original_path: peer.clone(),
+            primary_hostname: "other.test".to_owned(),
+            config_path: peer.join("pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    for (track, release) in [
+        ("8.4", &frankenphp_84_release),
+        ("8.5", &frankenphp_85_release),
+    ] {
+        database.record_managed_resource_track_installed(
+            "frankenphp",
+            track,
+            &format!("fake-frankenphp-{track}-pv1"),
+            release,
+        )?;
+    }
+    let ports = available_loopback_ports(4)?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2]), ("8.5", ports[3])],
+    )?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+    fs::write_sensitive_file(&peer.config_path, "php: \"8.5\"\n")?;
+    let mut database = Database::open(&paths)?;
+    database.replace_project_php_runtime(
+        &peer.id,
+        Some(&ProjectPhpRuntimeInput {
+            track: "8.5".to_owned(),
+            requested_extensions: Vec::new(),
+            loaded_extensions: Vec::new(),
+            ignored_extensions: Vec::new(),
+        }),
+    )?;
+    drop(database);
+    write_failing_config_validator(&caddy_release.join("bin/caddy"))?;
+
+    let failed = reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &peer.id,
+        Duration::from_secs(5),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await;
+
+    assert!(matches!(
+        failed,
+        Err(DaemonError::UnexpectedProtocolResponse { reason })
+            if reason.contains("Caddy config validation failed")
+    ));
+    write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
+    let peer_gateway_fragment_path = paths
+        .gateway_projects_config_dir()
+        .join(format!("{}.Caddyfile", peer.id));
+    assert!(
+        fs::read_to_string(&peer_gateway_fragment_path)?
+            .contains(&format!("reverse_proxy 127.0.0.1:{}", ports[2]))
+    );
+    assert!(
+        paths
+            .worker_projects_config_dir("8.4")
+            .join(format!("{}.Caddyfile", peer.id))
+            .exists()
+    );
+    assert!(
+        paths
+            .worker_projects_config_dir("8.5")
+            .join(format!("{}.Caddyfile", peer.id))
+            .exists()
+    );
+    let gateway_loads = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
+    let worker_84_loads = fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len();
+    let worker_85_loads = fake_admin_load_bodies(&paths.worker_root_config("8.5"))?.len();
+    fs::write_sensitive_file(
+        &target.config_path,
+        "php: \"8.4\"\nenv:\n  APP_ENV: local\n",
+    )?;
+    reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &target.id,
+        Duration::from_secs(5),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await?;
+
+    assert_eq!(
+        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
+        gateway_loads
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
+        worker_84_loads
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.worker_root_config("8.5"))?.len(),
+        worker_85_loads
+    );
+
+    fs::write_sensitive_file(&peer.config_path, "php: [\n")?;
+    fs::write_sensitive_file(&target.path.join("web/index.php"), "<?php\n")?;
+    fs::write_sensitive_file(&target.config_path, "php: \"8.4\"\ndocument_root: web\n")?;
+    reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &target.id,
+        Duration::from_secs(5),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await?;
+
+    assert!(
+        fs::read_to_string(&peer_gateway_fragment_path)?
+            .contains(&format!("reverse_proxy 127.0.0.1:{}", ports[2]))
+    );
+    assert!(
+        paths
+            .worker_projects_config_dir("8.4")
+            .join(format!("{}.Caddyfile", peer.id))
+            .exists()
+    );
+    assert!(
+        !paths
+            .worker_projects_config_dir("8.5")
+            .join(format!("{}.Caddyfile", peer.id))
+            .exists()
+    );
+    assert!(!paths.worker_pid("8.5").exists());
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn targeted_project_reconciliation_uses_verified_fragment_snapshot() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let target = create_project_with_config(tempdir.path(), "target", "php: \"8.4\"\n")?;
+    let peer = create_project_with_config(tempdir.path(), "peer", "php: \"8.4\"\n")?;
+    let caddy_release = tempdir.path().join("fake-caddy-release");
+    let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
+    write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
+    write_stateful_fake_frankenphp(&frankenphp_release.join("bin/frankenphp"))?;
+
+    let mut database = Database::open(&paths)?;
+    let target = database
+        .link_project(LinkProjectInput {
+            path: target.clone(),
+            original_path: target.clone(),
+            primary_hostname: "acme.test".to_owned(),
+            config_path: target.join("pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    let peer = database
+        .link_project(LinkProjectInput {
+            path: peer.clone(),
+            original_path: peer.clone(),
+            primary_hostname: "other.test".to_owned(),
+            config_path: peer.join("pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-8.4-pv1",
+        &frankenphp_release,
+    )?;
+    let ports = available_loopback_ports(3)?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let gateway_loads = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
+    let worker_loads = fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len();
+    let peer_gateway_fragment_path = paths
+        .gateway_projects_config_dir()
+        .join(format!("{}.Caddyfile", peer.id));
+    write_fake_admin_control(
+        &paths.worker_root_config("8.4"),
+        json!({"load_delay_ms": 500}),
+    )?;
+    fs::write_sensitive_file(&target.path.join("web/index.php"), "<?php\n")?;
+    fs::write_sensitive_file(&target.config_path, "php: \"8.4\"\ndocument_root: web\n")?;
+
+    let mutation_paths = paths.clone();
+    let mutation_fragment_path = peer_gateway_fragment_path.clone();
+    let mutate_fragment = async move {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if fake_admin_load_bodies(&mutation_paths.worker_root_config("8.4"))?.len()
+                    > worker_loads
+                {
+                    return Ok::<(), Error>(());
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await??;
+        fs::write_sensitive_file(&mutation_fragment_path, "# raced Gateway fragment\n")?;
+
+        Ok::<(), Error>(())
+    };
+    let (reconciled, mutated) = tokio::join!(
+        reconcile_project_gateway_runtimes_for_test(
+            &paths,
+            &target.id,
+            Duration::from_secs(5),
+            GatewayPfRoutingState::Inactive,
+        ),
+        mutate_fragment,
+    );
+    reconciled?;
+    mutated?;
+
+    assert_eq!(
+        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
+        worker_loads + 1
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
+        gateway_loads
+    );
+    assert_eq!(
+        fs::read_to_string(&peer_gateway_fragment_path)?,
+        "# raced Gateway fragment\n"
+    );
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is_ready()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = create_project_with_config(
+        tempdir.path(),
+        "acme",
+        "php: \"8.4\"\ndocument_root: public\n",
+    )?;
+    let caddy_release = tempdir.path().join("fake-caddy-release");
+    let frankenphp_84_release = tempdir.path().join("fake-frankenphp-84-release");
+    let frankenphp_85_release = tempdir.path().join("fake-frankenphp-85-release");
+    write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
+    write_stateful_fake_frankenphp(&frankenphp_84_release.join("bin/frankenphp"))?;
+    fs::write_sensitive_file(
+        &frankenphp_85_release.join("bin/frankenphp"),
+        "#!/bin/sh\nif [ \"$1\" = validate ]; then exit 0; fi\nexit 1\n",
+    )?;
+    set_executable(&frankenphp_85_release.join("bin/frankenphp"))?;
+
+    let mut database = Database::open(&paths)?;
+    let project = database
+        .link_project(LinkProjectInput {
+            path: project_root.clone(),
+            original_path: project_root,
+            primary_hostname: "acme.test".to_owned(),
+            config_path: tempdir.path().join("acme/pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-8.4-pv1",
+        &frankenphp_84_release,
+    )?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.5",
+        "fake-frankenphp-8.5-pv1",
+        &frankenphp_85_release,
+    )?;
+    let ports = available_loopback_ports(4)?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2]), ("8.5", ports[3])],
+    )?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
+    let old_worker_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?;
+    let gateway_root = fs::read_to_string(&paths.gateway_root_config())?;
+    let old_worker_root = fs::read_to_string(&paths.worker_root_config("8.4"))?;
+    let gateway_loads = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
+
+    fs::write_sensitive_file(
+        &project.config_path,
+        "php: \"8.5\"\ndocument_root: public\n",
+    )?;
+    let mut database = Database::open(&paths)?;
+    database.replace_project_php_runtime(
+        &project.id,
+        Some(&ProjectPhpRuntimeInput {
+            track: "8.5".to_owned(),
+            requested_extensions: Vec::new(),
+            loaded_extensions: Vec::new(),
+            ignored_extensions: Vec::new(),
+        }),
+    )?;
+    drop(database);
+    let failed = reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &project.id,
+        Duration::from_millis(250),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await;
+
+    assert!(
+        matches!(
+            &failed,
+            Err(DaemonError::MissingProcessIdentity { name, .. })
+                if name == "php-worker-8.5"
+        ),
+        "unexpected worker startup failure: {failed:?}"
+    );
+    assert!(process_is_alive(gateway_pid)?);
+    assert!(process_is_alive(old_worker_pid)?);
+    assert_eq!(
+        fs::read_to_string(&paths.gateway_root_config())?,
+        gateway_root
+    );
+    assert_eq!(
+        fs::read_to_string(&paths.worker_root_config("8.4"))?,
+        old_worker_root
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
+        gateway_loads
+    );
+    assert!(!paths.worker_pid("8.5").exists());
+
+    write_stateful_fake_frankenphp(&frankenphp_85_release.join("bin/frankenphp"))?;
+    reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &project.id,
+        Duration::from_secs(5),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await
+    .context("retrying PHP runtime transition")?;
+
+    assert_eq!(
+        required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?,
+        gateway_pid
+    );
+    assert!(paths.worker_pid("8.5").exists());
+    assert!(!process_is_alive(old_worker_pid)?);
+    assert!(!paths.worker_pid("8.4").exists());
+    assert!(!paths.worker_runtime_metadata("8.4").exists());
+
+    let new_worker_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.5"))?;
+    let gateway_fragment_path = paths
+        .gateway_projects_config_dir()
+        .join(format!("{}.Caddyfile", project.id));
+    let worker_fragment_path = paths
+        .worker_projects_config_dir("8.5")
+        .join(format!("{}.Caddyfile", project.id));
+    fs::write_sensitive_file(&project.config_path, "serve: false\nphp: \"8.5\"\n")?;
+    let mut database = Database::open(&paths)?;
+    database.link_project_with_mode(
+        LinkProjectInput {
+            path: project.path.clone(),
+            original_path: project.original_path.clone(),
+            primary_hostname: "ignored.test".to_owned(),
+            config_path: project.config_path.clone(),
+            desired_php_track: Some("8.5".to_owned()),
+            additional_hostnames: Vec::new(),
+        },
+        ProjectMode::ResourceOnly,
+    )?;
+    drop(database);
+    write_fake_admin_control(
+        &paths.gateway_root_config(),
+        json!({"load_statuses": [422]}),
+    )?;
+
+    let failed = reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &project.id,
+        Duration::from_millis(250),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await;
+
+    assert!(matches!(
+        failed,
+        Err(DaemonError::CaddyAdmin(CaddyAdminError::LoadRejected {
+            status: 422,
+            ..
+        }))
+    ));
+    assert!(gateway_fragment_path.exists());
+    assert!(worker_fragment_path.exists());
+    assert!(process_is_alive(new_worker_pid)?);
+
+    write_fake_admin_control(
+        &paths.gateway_root_config(),
+        json!({"load_statuses": [200]}),
+    )?;
+    reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &project.id,
+        Duration::from_secs(5),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await
+    .context("retrying resource-only transition")?;
+
+    assert!(!gateway_fragment_path.exists());
+    assert!(!worker_fragment_path.exists());
+    assert!(!process_is_alive(new_worker_pid)?);
+    assert!(!paths.worker_pid("8.5").exists());
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
 
     Ok(())
 }
@@ -1601,7 +2485,7 @@ document_root: public
 }
 
 #[test]
-fn gateway_runtime_plan_skips_invalid_config_fallback_when_persisted_loaded_extension_metadata_is_missing()
+fn gateway_runtime_plan_fails_when_persisted_extension_runtime_cannot_be_reconstructed()
 -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1629,13 +2513,18 @@ fn gateway_runtime_plan_skips_invalid_config_fallback_when_persisted_loaded_exte
     drop(database);
     seed_installed_php_with_extensions(&paths, "8.4", &[])?;
 
-    let plan = build_runtime_plan(&paths)?;
+    let result = build_runtime_plan(&paths);
     let database = Database::open(&paths)?;
     let observed = database
         .project_env_observed_state(&project.project.id)?
         .ok_or_else(|| anyhow::anyhow!("expected Project env observed failure"))?;
 
-    assert!(plan.workers.is_empty());
+    assert!(matches!(
+        result,
+        Err(DaemonError::Resources(
+            resources::ResourcesError::InvalidArtifactLayout { resource, .. }
+        )) if resource == "php"
+    ));
     assert!(matches!(
         observed.status,
         state::ProjectEnvObservedStatus::Failed
@@ -1646,6 +2535,53 @@ fn gateway_runtime_plan_skips_invalid_config_fallback_when_persisted_loaded_exte
             .as_deref()
             .is_some_and(|message| { message.contains("persisted PHP extension `redis`") })
     );
+
+    Ok(())
+}
+
+#[test]
+fn gateway_runtime_plan_rejects_route_without_matching_worker_fragment() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("acme");
+
+    create_project(&project_root, "php: [\n")?;
+    let mut database = Database::open(&paths)?;
+    let project = database
+        .link_project(LinkProjectInput {
+            path: project_root.clone(),
+            original_path: project_root,
+            primary_hostname: "acme.test".to_owned(),
+            config_path: tempdir.path().join("acme/pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    let ports = available_loopback_ports(3)?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
+    drop(database);
+    fs::write_sensitive_file(
+        &paths
+            .gateway_projects_config_dir()
+            .join(format!("{}.Caddyfile", project.id)),
+        &format!("    reverse_proxy 127.0.0.1:{} {{\n", ports[2]),
+    )?;
+    fs::write_sensitive_file(&paths.worker_runtime_metadata("8.4"), "{}")?;
+
+    let result = build_runtime_plan(&paths);
+
+    assert!(matches!(
+        result,
+        Err(DaemonError::UnexpectedProtocolResponse { reason })
+            if reason.contains(&project.id)
+                && reason.contains("does not match a preserved PHP worker")
+    ));
 
     Ok(())
 }
@@ -1822,7 +2758,7 @@ hostnames:
     let gateway_fragment = fs::read_to_string(&gateway_fragment_path)?;
     let worker_fragment = fs::read_to_string(&worker_fragment_path)?;
 
-    write_failing_frankenphp_validator(&fake_frankenphp)?;
+    write_failing_config_validator(&fake_frankenphp)?;
     fs::write_sensitive_file(
         &project_root.join("pv.yml"),
         r#"php: "8.4"
@@ -3559,7 +4495,7 @@ fn write_failing_validator(path: &Utf8Path) -> Result<camino::Utf8PathBuf> {
     Ok(path.to_path_buf())
 }
 
-fn write_failing_frankenphp_validator(path: &Utf8Path) -> Result<()> {
+fn write_failing_config_validator(path: &Utf8Path) -> Result<()> {
     fs::write_sensitive_file(
         path,
         r#"#!/bin/sh
@@ -4089,6 +5025,11 @@ fn runtime_metadata_pid(path: &Utf8Path) -> Result<Option<u32>> {
     let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
 
     metadata_pid(&metadata).map(Some)
+}
+
+fn required_runtime_metadata_pid(path: &Utf8Path) -> Result<u32> {
+    runtime_metadata_pid(path)?
+        .ok_or_else(|| anyhow::anyhow!("expected runtime metadata at {path}"))
 }
 
 fn process_is_alive(pid: u32) -> Result<bool> {
