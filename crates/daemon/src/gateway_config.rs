@@ -255,6 +255,8 @@ pub(crate) struct PromotedConfigTree {
     previous_root_content: Option<String>,
 }
 
+pub(crate) type ConfigTreeContents = (String, Vec<(String, String)>);
+
 impl PromotedConfigTree {
     pub(crate) fn previous_root_content(&self) -> Option<&str> {
         self.previous_root_content.as_deref()
@@ -262,6 +264,34 @@ impl PromotedConfigTree {
 
     pub(crate) fn previous_fragment_contents(&self) -> &[String] {
         self.fragments.previous_contents()
+    }
+
+    pub(crate) fn previous_tree_contents(&self) -> Result<Option<ConfigTreeContents>, DaemonError> {
+        if !self.root.active_existed {
+            return Ok(None);
+        }
+
+        let root = fs::read_to_string(&self.root.backup_path)?;
+        let mut fragments = if self.fragments.active_existed {
+            fs::read_dir_paths(&self.fragments.backup_dir)?
+                .into_iter()
+                .map(|path| {
+                    let file_name = path.file_name().ok_or_else(|| {
+                        DaemonError::UnexpectedProtocolResponse {
+                            reason: format!("config fragment path `{path}` has no file name"),
+                        }
+                    })?;
+                    let content = fs::read_to_string(&path)?;
+
+                    Ok((file_name.to_owned(), content))
+                })
+                .collect::<Result<Vec<_>, DaemonError>>()?
+        } else {
+            Vec::new()
+        };
+        fragments.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+
+        Ok(Some((root, fragments)))
     }
 
     pub(crate) fn cleanup(self) -> Result<(), ConfigBackupCleanupError> {

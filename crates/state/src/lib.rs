@@ -54,6 +54,11 @@ pub mod testing {
     }
 
     #[cfg(any(test, feature = "test-support"))]
+    pub fn fail_next_sensitive_write(path: camino::Utf8PathBuf) {
+        crate::fs::fail_next_sensitive_write(path);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn remove_database_auxiliary_file_before_hardening(
         path: camino::Utf8PathBuf,
     ) -> Receiver<()> {
