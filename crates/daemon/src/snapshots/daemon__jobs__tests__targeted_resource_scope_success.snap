@@ -1,0 +1,31 @@
+---
+source: crates/daemon/src/jobs.rs
+expression: success_snapshot
+---
+(
+    "Managed Resource mailpit track 1.0 reconciled; Project env reconciled for 2 Projects",
+    [
+        Resource {
+            name: "mailpit",
+            track: "1.0",
+        },
+        Project {
+            id: "<project_id>",
+        },
+        Project {
+            id: "<project_id>",
+        },
+    ],
+    [
+        Some(
+            Rendered,
+        ),
+        Some(
+            Rendered,
+        ),
+        None,
+    ],
+    "# >>> PV MANAGED\nMAIL_HOST=127.0.0.1\n# <<< PV MANAGED\n",
+    "EXISTING=beta\n# >>> PV MANAGED\nMAIL_HOST=127.0.0.1\n# <<< PV MANAGED\n",
+    false,
+)

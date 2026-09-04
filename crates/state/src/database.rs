@@ -1423,6 +1423,32 @@ impl Database {
         project_managed_resources_in_connection(&self.connection, project_id)
     }
 
+    pub fn projects_demanding_managed_resource_track(
+        &self,
+        resource_name: &str,
+        track: &str,
+    ) -> Result<Vec<ProjectRecord>, StateError> {
+        validate_managed_resource_identity("name", resource_name)?;
+        validate_concrete_track(track)?;
+        let mut statement = self.connection.prepare(
+            "SELECT projects.id, projects.path, projects.original_path, projects.primary_hostname, projects.config_path, projects.desired_php_track, projects.created_at, projects.updated_at, projects.project_slug, projects.serves_http
+            FROM projects
+            INNER JOIN project_managed_resources
+                ON project_managed_resources.project_id = projects.id
+            WHERE project_managed_resources.resource_name = ?1
+            AND project_managed_resources.track = ?2
+            ORDER BY projects.project_slug",
+        )?;
+        let rows = statement.query_map(params![resource_name, track], project_from_row)?;
+        let mut projects = Vec::new();
+
+        for row in rows {
+            projects.push(row?.into_record(&self.connection)?);
+        }
+
+        Ok(projects)
+    }
+
     pub fn record_managed_resource_track_desired(
         &mut self,
         resource_name: &str,

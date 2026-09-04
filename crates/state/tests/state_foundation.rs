@@ -1415,6 +1415,53 @@ fn project_managed_resources_recalculate_usage_counts() -> Result<()> {
 }
 
 #[test]
+fn projects_demanding_managed_resource_track_are_selected_exactly() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let acme = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+    let beta = link_test_project(&mut database, tempdir.path(), "beta", "beta.test")?;
+    let other = link_test_project(&mut database, tempdir.path(), "other", "other.test")?;
+
+    database.replace_project_managed_resources(
+        &acme.id,
+        &[ProjectManagedResourceInput {
+            resource_name: "mysql".to_owned(),
+            track: "8.4".to_owned(),
+        }],
+    )?;
+    database.replace_project_managed_resources(
+        &beta.id,
+        &[ProjectManagedResourceInput {
+            resource_name: "mysql".to_owned(),
+            track: "8.4".to_owned(),
+        }],
+    )?;
+    database.replace_project_managed_resources(
+        &other.id,
+        &[
+            ProjectManagedResourceInput {
+                resource_name: "mysql".to_owned(),
+                track: "8.0".to_owned(),
+            },
+            ProjectManagedResourceInput {
+                resource_name: "redis".to_owned(),
+                track: "8.4".to_owned(),
+            },
+        ],
+    )?;
+
+    let projects = database.projects_demanding_managed_resource_track("mysql", "8.4")?;
+    let selected_projects = projects
+        .into_iter()
+        .map(|project| (project.slug, project.primary_hostname))
+        .collect::<Vec<_>>();
+    assert_debug_snapshot!(selected_projects);
+
+    Ok(())
+}
+
+#[test]
 fn resource_allocations_preserve_generated_names_and_env_context() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
