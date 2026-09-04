@@ -12,6 +12,7 @@ use tokio::task::JoinError;
 use tokio_util::codec::LinesCodecError;
 
 use crate::caddy_admin::CaddyAdminError;
+use crate::reconciliation::ReconciliationScopeParseError;
 
 #[derive(Debug)]
 pub struct ManagedResourceProjectFailure {
@@ -160,6 +161,9 @@ pub enum DaemonError {
 
     #[error("state error: {0}")]
     State(#[from] StateError),
+
+    #[error("reconciliation scope error: {0}")]
+    ReconciliationScope(#[from] ReconciliationScopeParseError),
 
     #[error("Project config error: {0}")]
     Config(#[from] ConfigError),

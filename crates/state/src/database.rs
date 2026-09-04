@@ -473,7 +473,7 @@ pub struct ProjectEnvObservedStateRecord {
     pub warnings: Vec<ProjectEnvObservedWarningRecord>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum RuntimeSubject {
     Gateway,
     PhpWorker { php_track: String },

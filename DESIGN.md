@@ -237,7 +237,7 @@ If a LaunchAgent with PV's expected label already exists but is not PV-owned, `p
 
 The daemon runs as the logged-in user, owns reconciliation, and manages PV child processes. macOS starts it after login and restarts it after crashes.
 
-The daemon restarts crashed desired child processes through reconciliation. Commands and file watchers request reconciliation, and the daemon also runs a lightweight periodic health tick every 30 seconds to detect drift. The tick enqueues targeted reconciliation when it finds something wrong rather than running full system reconciliation every time.
+The daemon restarts crashed desired child processes through reconciliation. Commands and file watchers request reconciliation, and the daemon also runs a lightweight periodic health tick every 30 seconds to detect drift. The first tick waits the full interval so startup reconciliation remains the only startup pass. The scanner opens `pv.db` read-only, derives desired runtime probes only from persisted Project, runtime, and port state, and never invokes runtime planning, assigns ports, refreshes manifests, or writes observed state. It probes at most 4 runtimes concurrently and enqueues targeted reconciliation when it finds something wrong rather than running full system reconciliation every time.
 
 If a PV-managed child process crashes repeatedly, the daemon applies restart backoff instead of restarting it forever in a tight loop. If the process keeps crashing, PV marks the affected runtime as failed or degraded in observed state. The periodic health tick may retry later, and `pv restart` gives users an explicit manual recovery path.
 
