@@ -391,6 +391,392 @@ document_root: public
 }
 
 #[tokio::test]
+async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let track = "8.4";
+    let extension_sets = [
+        Vec::new(),
+        vec!["redis"],
+        vec!["xdebug"],
+        vec!["apcu"],
+        vec!["redis", "xdebug"],
+    ];
+    let mut runtime_keys = extension_sets
+        .iter()
+        .map(|extensions| {
+            state::php_runtime_key(
+                track,
+                &extensions
+                    .iter()
+                    .map(|extension| (*extension).to_owned())
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    runtime_keys.sort();
+    let hostnames = [
+        "acme.test",
+        "api.acme.test",
+        "broken.test",
+        "changed.acme.test",
+        "other.test",
+    ];
+    let mut database = Database::open(&paths)?;
+    let ports = available_loopback_ports(runtime_keys.len() + 2)?;
+    for (index, (extensions, hostname)) in extension_sets.iter().zip(hostnames).enumerate() {
+        let extensions = extensions.join(", ");
+        let project_root = create_project_with_config(
+            tempdir.path(),
+            &format!("project-{index}"),
+            &format!("php:\n  version: \"{track}\"\n  extensions: [{extensions}]\n"),
+        )?;
+        database.link_project(LinkProjectInput {
+            path: project_root.clone(),
+            original_path: project_root.clone(),
+            primary_hostname: hostname.to_owned(),
+            config_path: project_root.join("pv.yml"),
+            desired_php_track: Some(track.to_owned()),
+            additional_hostnames: Vec::new(),
+        })?;
+    }
+    drop(database);
+    let release_path =
+        seed_installed_php_with_extensions(&paths, track, &["apcu", "redis", "xdebug"])?;
+    seed_installed_frankenphp_with_extensions(
+        &paths,
+        track,
+        &release_path,
+        &["apcu", "redis", "xdebug"],
+    )?;
+    write_fake_frankenphp(&release_path.join("bin/frankenphp"))?;
+    let mut database = Database::open(&paths)?;
+    let worker_ports = runtime_keys
+        .iter()
+        .zip(&ports[2..])
+        .map(|(runtime_key, port)| (runtime_key.as_str(), *port))
+        .collect::<Vec<_>>();
+    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &worker_ports)?;
+    drop(database);
+    ensure_fake_caddy(&paths)?;
+
+    let gates = runtime_keys
+        .iter()
+        .map(|track| {
+            Utf8PathBuf::from(format!(
+                "{}.readiness-gate",
+                paths.worker_root_config(track)
+            ))
+        })
+        .collect::<Vec<_>>();
+    let probes = runtime_keys
+        .iter()
+        .map(|track| {
+            Utf8PathBuf::from(format!(
+                "{}.readiness-probed",
+                paths.worker_root_config(track)
+            ))
+        })
+        .collect::<Vec<_>>();
+    for gate in &gates {
+        fs::write_sensitive_file(gate, "wait\n")?;
+    }
+
+    let reconciliation_paths = paths.clone();
+    let mut reconciliation = tokio::spawn(async move {
+        reconcile_gateway_runtimes_with_readiness_timeout(
+            &reconciliation_paths,
+            Duration::from_secs(5),
+        )
+        .await
+    });
+    tokio::select! {
+        result = &mut reconciliation => {
+            bail!("worker readiness reconciliation finished before the first wave was gated: {result:#?}");
+        }
+        result = wait_for_existing_path_count(&probes, 4) => result?,
+    }
+
+    assert!(
+        runtime_keys
+            .iter()
+            .all(|runtime_key| paths.worker_pid(runtime_key).exists())
+    );
+    assert!(!probes[4].exists());
+    assert!(!paths.gateway_pid().exists());
+    let worker_pids = runtime_keys
+        .iter()
+        .map(|runtime_key| {
+            required_runtime_metadata_pid(&paths.worker_runtime_metadata(runtime_key))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    for runtime_key in &runtime_keys {
+        let metadata: Value = serde_json::from_str(&fs::read_to_string(
+            &paths.worker_runtime_metadata(runtime_key),
+        )?)?;
+        assert!(metadata["replacement_required"].is_null());
+        assert!(metadata["applied_config_fingerprint"].is_null());
+    }
+
+    reconciliation.abort();
+    let cancellation = match reconciliation.await {
+        Ok(result) => bail!("worker readiness reconciliation was not cancelled: {result:?}"),
+        Err(error) => error,
+    };
+    assert!(cancellation.is_cancelled());
+    for gate in &gates {
+        fs::remove_file(gate)?;
+    }
+    assert!(!paths.gateway_pid().exists());
+
+    let summary = timeout(
+        Duration::from_secs(10),
+        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(5)),
+    )
+    .await
+    .context("cancelled worker readiness reconciliation did not recover")??;
+    assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
+    for (runtime_key, worker_pid) in runtime_keys.iter().zip(&worker_pids) {
+        assert_eq!(
+            required_runtime_metadata_pid(&paths.worker_runtime_metadata(runtime_key))?,
+            *worker_pid
+        );
+    }
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    for runtime_key in runtime_keys {
+        stop_runtime_from_pid_file(&paths.worker_pid(&runtime_key)).await?;
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn matching_worker_recovers_after_post_load_readiness_is_cancelled() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let track = "8.4";
+    let project_root = create_project_with_config(
+        tempdir.path(),
+        "acme",
+        "php: \"8.4\"\ndocument_root: public\n",
+    )?;
+    let caddy_release = tempdir.path().join("fake-caddy-release");
+    write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
+
+    let release_path = seed_installed_php_with_extensions(&paths, track, &[])?;
+    seed_installed_frankenphp_with_extensions(&paths, track, &release_path, &[])?;
+    write_stateful_fake_frankenphp(&release_path.join("bin/frankenphp"))?;
+    let ports = available_loopback_ports(4)?;
+    let mut database = Database::open(&paths)?;
+    database.link_project(LinkProjectInput {
+        path: project_root.clone(),
+        original_path: project_root.clone(),
+        primary_hostname: "acme.test".to_owned(),
+        config_path: project_root.join("pv.yml"),
+        desired_php_track: Some(track.to_owned()),
+        additional_hostnames: Vec::new(),
+    })?;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[(track, ports[2])],
+    )?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
+    let worker_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata(track))?;
+    let gateway_root = read_test_bytes(paths.gateway_root_config())?;
+    let gateway_load_count = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
+    let load_accepted_marker = tempdir.path().join("matching-worker-load-accepted");
+    write_fake_admin_control(
+        &paths.worker_root_config(track),
+        json!({"load_accepted_marker": load_accepted_marker.as_str()}),
+    )?;
+    let mut database = Database::open(&paths)?;
+    database.release_port(PortOwner::PhpWorker {
+        php_runtime_key: track.to_owned(),
+    })?;
+    database.assign_port(
+        PortRequest::php_worker(track, ports[3], ports[3], ports[3]),
+        |_port| true,
+    )?;
+    drop(database);
+
+    let reconciliation_paths = paths.clone();
+    let mut reconciliation = tokio::spawn(async move {
+        reconcile_gateway_runtimes_with_readiness_timeout(
+            &reconciliation_paths,
+            Duration::from_secs(5),
+        )
+        .await
+    });
+    tokio::select! {
+        result = &mut reconciliation => {
+            let requests = fake_admin_requests(&paths.worker_root_config(track))?;
+            bail!("matching worker reconciliation finished before post-load readiness was gated: result={result:#?}, requests={requests:#?}");
+        }
+        result = wait_for_existing_path_count(std::slice::from_ref(&load_accepted_marker), 1) => result?,
+    }
+
+    let pending_metadata: Value =
+        serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata(track))?)?;
+    assert_eq!(pending_metadata["replacement_required"], true);
+    assert!(pending_metadata["applied_config_fingerprint"].is_null());
+    assert!(process_is_alive(worker_pid)?);
+    assert_eq!(
+        required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?,
+        gateway_pid
+    );
+    assert_eq!(read_test_bytes(paths.gateway_root_config())?, gateway_root);
+    assert_eq!(
+        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
+        gateway_load_count
+    );
+
+    reconciliation.abort();
+    let cancellation = match reconciliation.await {
+        Ok(result) => bail!("matching worker reconciliation was not cancelled: {result:?}"),
+        Err(error) => error,
+    };
+    assert!(cancellation.is_cancelled());
+    write_fake_admin_control(&paths.worker_root_config(track), json!({}))?;
+
+    let summary = timeout(
+        Duration::from_secs(10),
+        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(5)),
+    )
+    .await
+    .context("cancelled matching worker reconciliation did not recover")??;
+    let replacement_worker_pid =
+        required_runtime_metadata_pid(&paths.worker_runtime_metadata(track))?;
+    let replacement_metadata: Value =
+        serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata(track))?)?;
+
+    wait_for_process_exit(worker_pid).await?;
+    assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
+    assert_ne!(replacement_worker_pid, worker_pid);
+    assert_ne!(replacement_metadata["replacement_required"], true);
+    assert!(replacement_metadata["applied_config_fingerprint"].is_string());
+    assert_eq!(
+        required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?,
+        gateway_pid
+    );
+    assert_eq!(read_test_bytes(paths.gateway_root_config())?, gateway_root);
+    assert_eq!(
+        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
+        gateway_load_count + 1
+    );
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid(track)).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let track = "8.4";
+    let base_project =
+        create_project_with_config(tempdir.path(), "base", "php:\n  version: \"8.4\"\n")?;
+    let redis_project = create_project_with_config(
+        tempdir.path(),
+        "redis",
+        "php:\n  version: \"8.4\"\n  extensions: [redis]\n",
+    )?;
+    let xdebug_project = create_project_with_config(
+        tempdir.path(),
+        "xdebug",
+        "php:\n  version: \"8.4\"\n  extensions: [xdebug]\n",
+    )?;
+    link_project_record(&paths, &base_project, "acme.test", Some(track))?;
+
+    let release_path = seed_installed_php_with_extensions(&paths, track, &["redis", "xdebug"])?;
+    seed_installed_frankenphp_with_extensions(&paths, track, &release_path, &["redis", "xdebug"])?;
+    write_fake_frankenphp(&release_path.join("bin/frankenphp"))?;
+    ensure_fake_caddy(&paths)?;
+
+    let base_runtime_key = state::php_runtime_key(track, &[])?;
+    let redis_runtime_key = state::php_runtime_key(track, &["redis".to_owned()])?;
+    let xdebug_runtime_key = state::php_runtime_key(track, &["xdebug".to_owned()])?;
+    let ports = available_loopback_ports(5)?;
+    let mut database = Database::open(&paths)?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[
+            (&base_runtime_key, ports[2]),
+            (&redis_runtime_key, ports[3]),
+            (&xdebug_runtime_key, ports[4]),
+        ],
+    )?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
+    let base_worker_pid =
+        required_runtime_metadata_pid(&paths.worker_runtime_metadata(&base_runtime_key))?;
+    let gateway_root = read_test_bytes(paths.gateway_root_config())?;
+    let gateway_load_count = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
+
+    link_project_record(&paths, &redis_project, "api.acme.test", Some(track))?;
+    link_project_record(&paths, &xdebug_project, "other.test", Some(track))?;
+    let redis_failure_marker = Utf8PathBuf::from(format!(
+        "{}.readiness-fail",
+        paths.worker_root_config(&redis_runtime_key)
+    ));
+    fs::write_sensitive_file(&redis_failure_marker, "fail\n")?;
+
+    let result =
+        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(5)).await;
+    let xdebug_worker_pid =
+        required_runtime_metadata_pid(&paths.worker_runtime_metadata(&xdebug_runtime_key))?;
+    let gateway_still_running = process_is_alive(gateway_pid)?;
+    let base_worker_still_running = process_is_alive(base_worker_pid)?;
+    let xdebug_worker_running = process_is_alive(xdebug_worker_pid)?;
+    let gateway_pid_after = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
+    let gateway_root_after = read_test_bytes(paths.gateway_root_config())?;
+    let gateway_load_count_after = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
+    let redis_runtime_removed = !paths.worker_pid(&redis_runtime_key).exists()
+        && !paths.worker_runtime_metadata(&redis_runtime_key).exists();
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid(&base_runtime_key)).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid(&xdebug_runtime_key)).await?;
+
+    assert!(
+        matches!(
+        &result,
+        Err(DaemonError::UnexpectedProtocolResponse { reason })
+            if reason.contains(&format!("php-worker-{redis_runtime_key}"))
+        ),
+        "unexpected worker failure: {result:?}"
+    );
+    assert!(gateway_still_running);
+    assert!(base_worker_still_running);
+    assert!(xdebug_worker_running);
+    assert_eq!(gateway_pid_after, gateway_pid);
+    assert_eq!(gateway_root_after, gateway_root);
+    assert_eq!(gateway_load_count_after, gateway_load_count);
+    assert!(redis_runtime_removed);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn gateway_reconciliation_starts_gateway_without_linked_projects() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -5021,6 +5407,23 @@ fn seed_gateway_test_tls(paths: &PvPaths) -> Result<()> {
 fn available_loopback_ports(count: usize) -> Result<Vec<u16>> {
     let listeners = reserve_loopback_ports(count)?;
     loopback_ports(&listeners)
+}
+
+async fn wait_for_existing_path_count(paths: &[Utf8PathBuf], expected: usize) -> Result<()> {
+    timeout(Duration::from_secs(10), async {
+        loop {
+            let existing = paths.iter().filter(|path| path.exists()).count();
+            if existing == expected {
+                return;
+            }
+
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .with_context(|| format!("expected {expected} readiness probes"))?;
+
+    Ok(())
 }
 
 fn reserve_loopback_ports(count: usize) -> Result<Vec<TcpListener>> {

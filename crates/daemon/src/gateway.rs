@@ -34,11 +34,12 @@ use crate::project_env::{
 use crate::structured_log;
 use crate::supervisor::{
     ManagedProcess, probe_readiness_once, runtime_exited_before_readiness_error,
-    wait_for_started_runtime_readiness,
+    wait_for_bounded_runtime_readiness, wait_for_started_runtime_readiness,
 };
 use crate::{
     CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, CaddyAdminVerifier,
-    DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness,
+    DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, RuntimeReconciliationFailure,
+    wait_for_readiness,
 };
 
 #[expect(
@@ -527,14 +528,18 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         }
     };
     let mut worker_commands = Vec::new();
+    let mut worker_failures = Vec::new();
 
     for worker in &plan.workers {
-        let worker_runtime = required_installed_worker_runtime(paths, worker)?;
-        worker_commands.push((worker, worker_runtime));
+        match required_installed_worker_runtime(paths, worker) {
+            Ok(worker_runtime) => worker_commands.push((worker, worker_runtime)),
+            Err(error) => worker_failures.push((worker.runtime_key.clone(), error)),
+        }
     }
 
+    let mut pending_workers = Vec::new();
     for (worker, worker_runtime) in worker_commands {
-        reconcile_planned_worker(
+        match prepare_planned_worker(
             paths,
             &supervisor,
             worker,
@@ -542,7 +547,24 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             readiness_timeout,
             None,
         )
-        .await?;
+        .await
+        {
+            Ok(PreparedWorkerReconciliation::Complete) => {}
+            Ok(PreparedWorkerReconciliation::Pending(worker)) => pending_workers.push(worker),
+            Err(error) => worker_failures.push((worker.runtime_key.clone(), error)),
+        }
+    }
+    let mut completed_workers =
+        wait_for_bounded_runtime_readiness(pending_workers, |worker| (*worker).wait()).await;
+    completed_workers.sort_by(|left, right| left.runtime_key.cmp(&right.runtime_key));
+    for worker in completed_workers {
+        let runtime_key = worker.runtime_key.clone();
+        if let Err(error) = finish_planned_worker(paths, worker).await {
+            worker_failures.push((runtime_key, error));
+        }
+    }
+    if !worker_failures.is_empty() {
+        return Err(combined_runtime_reconciliation_error(worker_failures));
     }
     let worker_count = plan.workers.len();
     let project_count = plan
@@ -664,6 +686,55 @@ async fn reconcile_planned_worker(
     readiness_timeout: Duration,
     preserved_fragments: Option<&BTreeMap<String, String>>,
 ) -> Result<(), DaemonError> {
+    let prepared = prepare_planned_worker(
+        paths,
+        supervisor,
+        worker,
+        worker_runtime,
+        readiness_timeout,
+        preserved_fragments,
+    )
+    .await?;
+    match prepared {
+        PreparedWorkerReconciliation::Complete => Ok(()),
+        PreparedWorkerReconciliation::Pending(worker) => {
+            finish_planned_worker(paths, (*worker).wait().await).await
+        }
+    }
+}
+
+enum PreparedWorkerReconciliation {
+    Complete,
+    Pending(Box<PendingWorkerReconciliation>),
+}
+
+struct PendingWorkerReconciliation {
+    runtime_key: String,
+    runtime: PendingPromotedRuntime,
+}
+
+struct CompletedWorkerReconciliation {
+    runtime_key: String,
+    runtime: CompletedPromotedRuntime,
+}
+
+impl PendingWorkerReconciliation {
+    async fn wait(self) -> CompletedWorkerReconciliation {
+        CompletedWorkerReconciliation {
+            runtime_key: self.runtime_key,
+            runtime: self.runtime.wait().await,
+        }
+    }
+}
+
+async fn prepare_planned_worker(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    worker: &PhpWorkerRuntimePlan,
+    worker_runtime: &InstalledFrankenphpRuntime,
+    readiness_timeout: Duration,
+    preserved_fragments: Option<&BTreeMap<String, String>>,
+) -> Result<PreparedWorkerReconciliation, DaemonError> {
     let subject = worker_runtime_subject(worker);
     let process_spec = match worker_process_spec(
         paths,
@@ -710,7 +781,7 @@ async fn reconcile_planned_worker(
             RuntimeObservedStatus::Running,
             Some(GATEWAY_RUNTIME_RECONCILED),
         )?;
-        return Ok(());
+        return Ok(PreparedWorkerReconciliation::Complete);
     }
     let private_environment =
         match worker_config_private_environment(paths, worker, &worker_runtime.artifact_root) {
@@ -730,7 +801,7 @@ async fn reconcile_planned_worker(
         &desired_config,
     )
     .await?;
-    start_or_adopt_promoted_runtime(
+    let runtime = prepare_promoted_runtime(
         paths,
         supervisor,
         promoted_config,
@@ -740,6 +811,21 @@ async fn reconcile_planned_worker(
         subject.clone(),
     )
     .await?;
+
+    Ok(PreparedWorkerReconciliation::Pending(Box::new(
+        PendingWorkerReconciliation {
+            runtime_key: worker.runtime_key.clone(),
+            runtime,
+        },
+    )))
+}
+
+async fn finish_planned_worker(
+    paths: &PvPaths,
+    completed: CompletedWorkerReconciliation,
+) -> Result<(), DaemonError> {
+    let subject = completed.runtime.subject.clone();
+    finish_promoted_runtime(completed.runtime).await?;
     record_runtime_observed(
         paths,
         subject,
@@ -748,6 +834,20 @@ async fn reconcile_planned_worker(
     )?;
 
     Ok(())
+}
+
+fn combined_runtime_reconciliation_error(mut failures: Vec<(String, DaemonError)>) -> DaemonError {
+    failures.sort_by(|left, right| left.0.cmp(&right.0));
+    if failures.len() == 1 {
+        return failures.remove(0).1;
+    }
+
+    DaemonError::RuntimeReconciliationFailures {
+        failures: failures
+            .into_iter()
+            .map(|(runtime_key, error)| RuntimeReconciliationFailure::new(runtime_key, error))
+            .collect(),
+    }
 }
 
 fn required_installed_worker_runtime(
@@ -2364,6 +2464,96 @@ async fn start_or_adopt_promoted_runtime(
     desired_fingerprint: &str,
     subject: RuntimeSubject,
 ) -> Result<RuntimeReadinessOutcome, DaemonError> {
+    let pending = prepare_promoted_runtime(
+        paths,
+        supervisor,
+        promoted_config,
+        spec,
+        readiness,
+        desired_fingerprint,
+        subject,
+    )
+    .await?;
+
+    finish_promoted_runtime(pending.wait().await).await
+}
+
+struct PendingPromotedRuntime {
+    paths: PvPaths,
+    promoted_config: PromotedConfigTree,
+    spec: ProcessSpec,
+    readiness: RuntimeReadinessPlan,
+    desired_fingerprint: String,
+    subject: RuntimeSubject,
+    previous_fingerprint: Option<String>,
+    restoration_readiness: RuntimeReadinessPlan,
+    started: StartedRuntimeTransaction,
+}
+
+struct CompletedPromotedRuntime {
+    paths: PvPaths,
+    promoted_config: PromotedConfigTree,
+    spec: ProcessSpec,
+    subject: RuntimeSubject,
+    previous_fingerprint: Option<String>,
+    restoration_readiness: RuntimeReadinessPlan,
+    result: Result<RuntimeReadinessOutcome, RuntimeTransactionError>,
+}
+
+struct PromotedRuntimeRecovery {
+    paths: PvPaths,
+    promoted_config: PromotedConfigTree,
+    spec: ProcessSpec,
+    subject: RuntimeSubject,
+    previous_fingerprint: Option<String>,
+    restoration_readiness: RuntimeReadinessPlan,
+}
+
+impl PendingPromotedRuntime {
+    async fn wait(self) -> CompletedPromotedRuntime {
+        let Self {
+            paths,
+            promoted_config,
+            spec,
+            readiness,
+            desired_fingerprint,
+            subject,
+            previous_fingerprint,
+            restoration_readiness,
+            started,
+        } = self;
+        let supervisor = ProcessSupervisor::new(paths.clone());
+        let result = finish_runtime_transaction(
+            &paths,
+            &supervisor,
+            &spec,
+            &readiness,
+            &desired_fingerprint,
+            started,
+        )
+        .await;
+
+        CompletedPromotedRuntime {
+            paths,
+            promoted_config,
+            spec,
+            subject,
+            previous_fingerprint,
+            restoration_readiness,
+            result,
+        }
+    }
+}
+
+async fn prepare_promoted_runtime(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    promoted_config: PromotedConfigTree,
+    spec: ProcessSpec,
+    readiness: RuntimeReadinessPlan,
+    desired_fingerprint: &str,
+    subject: RuntimeSubject,
+) -> Result<PendingPromotedRuntime, DaemonError> {
     let matching_runtime = match supervisor.verify_ownership(&spec) {
         Ok(Some(runtime)) => (!runtime.replacement_required()
             && promoted_config
@@ -2407,97 +2597,154 @@ async fn start_or_adopt_promoted_runtime(
         None
     };
     let restoration_readiness = if let Some(previous_readiness) = &previous_readiness {
-        previous_readiness
+        previous_readiness.clone()
     } else {
-        &readiness
+        readiness.clone()
     };
-    let result = start_or_adopt_runtime(
-        paths,
-        supervisor,
-        &spec,
-        readiness.clone(),
-        matching_runtime,
-        desired_fingerprint,
-    )
-    .await;
+    let started =
+        match begin_runtime_transaction(paths, supervisor, &spec, &readiness, matching_runtime)
+            .await
+        {
+            Ok(started) => started,
+            Err(error) => {
+                return Err(recover_promoted_runtime(
+                    PromotedRuntimeRecovery {
+                        paths: paths.clone(),
+                        promoted_config,
+                        spec,
+                        subject,
+                        previous_fingerprint,
+                        restoration_readiness,
+                    },
+                    error,
+                )
+                .await);
+            }
+        };
 
+    Ok(PendingPromotedRuntime {
+        paths: paths.clone(),
+        promoted_config,
+        spec,
+        readiness,
+        desired_fingerprint: desired_fingerprint.to_owned(),
+        subject,
+        previous_fingerprint,
+        restoration_readiness,
+        started,
+    })
+}
+
+async fn finish_promoted_runtime(
+    completed: CompletedPromotedRuntime,
+) -> Result<RuntimeReadinessOutcome, DaemonError> {
+    let CompletedPromotedRuntime {
+        paths,
+        promoted_config,
+        spec,
+        subject,
+        previous_fingerprint,
+        restoration_readiness,
+        result,
+    } = completed;
     match result {
         Ok(outcome) => {
             if let Err(error) = promoted_config.cleanup() {
                 structured_log::runtime_config_cleanup_failed(
-                    paths,
+                    &paths,
                     &spec.name,
                     &error.to_string(),
                 );
             }
             Ok(outcome)
         }
-        Err(RuntimeTransactionError { error, recovery }) => {
-            let error = *error;
-            let error = match recovery {
-                RuntimeRecovery::Rollback => match promoted_config.rollback() {
-                    Ok(()) => error,
-                    Err(rollback_error) => {
-                        runtime_config_rollback_failed_error(error, rollback_error)
-                    }
-                },
-                RuntimeRecovery::RollbackPending => match promoted_config.rollback() {
-                    Ok(()) => match supervisor.clear_replacement_required(&spec) {
-                        Ok(true) => error,
-                        Ok(false) => compound_runtime_restore_error(
-                            error,
-                            CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
-                        ),
-                        Err(clear_error) => compound_runtime_restore_error(error, clear_error),
-                    },
-                    Err(rollback_error) => {
-                        runtime_config_rollback_failed_error(error, rollback_error)
-                    }
-                },
-                RuntimeRecovery::RollbackAndRestore => {
-                    let verified_previous_fingerprint = verified_previous_config_fingerprint(
-                        &promoted_config,
-                        previous_fingerprint.as_deref(),
-                    );
-                    match promoted_config.rollback() {
-                        Ok(()) => match verified_previous_fingerprint {
-                            Ok(previous_fingerprint) => {
-                                restore_runtime_after_failed_load(
-                                    paths,
-                                    supervisor,
-                                    &spec,
-                                    restoration_readiness,
-                                    &previous_fingerprint,
-                                    error,
-                                )
-                                .await
-                            }
-                            Err(verification_error) => {
-                                compound_runtime_restore_error(error, verification_error)
-                            }
-                        },
-                        Err(rollback_error) => {
-                            runtime_config_rollback_failed_error(error, rollback_error)
-                        }
-                    }
-                }
-                RuntimeRecovery::PreservePending => {
-                    // Keep the desired promoted tree when runtime state is uncertain. The branch
-                    // that selected this disposition owns the specific recovery rationale.
-                    if let Err(cleanup_error) = promoted_config.cleanup() {
-                        structured_log::runtime_config_cleanup_failed(
-                            paths,
-                            &spec.name,
-                            &cleanup_error.to_string(),
-                        );
-                    }
-                    error
-                }
-            };
-            record_runtime_error(paths, subject, &error)?;
+        Err(error) => Err(recover_promoted_runtime(
+            PromotedRuntimeRecovery {
+                paths,
+                promoted_config,
+                spec,
+                subject,
+                previous_fingerprint,
+                restoration_readiness,
+            },
+            error,
+        )
+        .await),
+    }
+}
 
-            Err(error)
+async fn recover_promoted_runtime(
+    recovery: PromotedRuntimeRecovery,
+    transaction: RuntimeTransactionError,
+) -> DaemonError {
+    let PromotedRuntimeRecovery {
+        paths,
+        promoted_config,
+        spec,
+        subject,
+        previous_fingerprint,
+        restoration_readiness,
+    } = recovery;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let RuntimeTransactionError { error, recovery } = transaction;
+    let error = *error;
+    let error = match recovery {
+        RuntimeRecovery::Rollback => match promoted_config.rollback() {
+            Ok(()) => error,
+            Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
+        },
+        RuntimeRecovery::RollbackPending => match promoted_config.rollback() {
+            Ok(()) => match supervisor.clear_replacement_required(&spec) {
+                Ok(true) => error,
+                Ok(false) => compound_runtime_restore_error(
+                    error,
+                    CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
+                ),
+                Err(clear_error) => compound_runtime_restore_error(error, clear_error),
+            },
+            Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
+        },
+        RuntimeRecovery::RollbackAndRestore => {
+            let verified_previous_fingerprint = verified_previous_config_fingerprint(
+                &promoted_config,
+                previous_fingerprint.as_deref(),
+            );
+            match promoted_config.rollback() {
+                Ok(()) => match verified_previous_fingerprint {
+                    Ok(previous_fingerprint) => {
+                        restore_runtime_after_failed_load(
+                            &paths,
+                            &supervisor,
+                            &spec,
+                            &restoration_readiness,
+                            &previous_fingerprint,
+                            error,
+                        )
+                        .await
+                    }
+                    Err(verification_error) => {
+                        compound_runtime_restore_error(error, verification_error)
+                    }
+                },
+                Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
+            }
         }
+        RuntimeRecovery::PreservePending => {
+            // Keep the desired promoted tree when runtime state is uncertain. The branch that
+            // selected this disposition owns the specific recovery rationale.
+            if let Err(cleanup_error) = promoted_config.cleanup() {
+                structured_log::runtime_config_cleanup_failed(
+                    &paths,
+                    &spec.name,
+                    &cleanup_error.to_string(),
+                );
+            }
+            error
+        }
+    };
+    match record_runtime_error(&paths, subject, &error) {
+        Ok(()) => error,
+        Err(recording_error) => recording_error,
     }
 }
 
@@ -2574,20 +2821,18 @@ async fn load_runtime_config(
     }
 }
 
-async fn start_or_adopt_runtime(
+enum StartedRuntimeTransaction {
+    Matching,
+    Fresh(Box<ManagedProcess>),
+}
+
+async fn begin_runtime_transaction(
     paths: &PvPaths,
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
-    readiness: RuntimeReadinessPlan,
+    readiness: &RuntimeReadinessPlan,
     matching_runtime: bool,
-    desired_fingerprint: &str,
-) -> Result<RuntimeReadinessOutcome, RuntimeTransactionError> {
-    let RuntimeReadinessPlan {
-        check,
-        failure_policy,
-        timeout: readiness_timeout,
-        admin_endpoint,
-    } = readiness;
+) -> Result<StartedRuntimeTransaction, RuntimeTransactionError> {
     if matching_runtime {
         if supervisor.verify_ownership(spec)?.is_none() {
             return Err(RuntimeTransactionError::new(
@@ -2596,33 +2841,70 @@ async fn start_or_adopt_runtime(
         }
 
         let active_content = read_config_bytes(&spec.config_path)?;
-        let client = CaddyAdminClient::new().with_timeout(readiness_timeout);
+        let client = CaddyAdminClient::new().with_timeout(readiness.timeout);
         load_runtime_config(
             paths,
             supervisor,
             spec,
             client,
-            &admin_endpoint,
+            &readiness.admin_endpoint,
             active_content,
         )
         .await?;
         verify_runtime_ownership(supervisor, spec)
             .map_err(RuntimeTransactionError::pending_preserve)?;
 
-        if let Err(error) = wait_for_owned_readiness(check.clone(), readiness_timeout, || {
+        return Ok(StartedRuntimeTransaction::Matching);
+    }
+    if let Some(adopted) = supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)? {
+        adopted.stop(Duration::from_secs(1)).await?;
+    } else if foreign_listener_is_ready(&readiness.check).await {
+        return Err(RuntimeTransactionError::new(
+            DaemonError::UnexpectedProtocolResponse {
+                reason: format!(
+                    "runtime `{}` is listening but no PV-owned process could be verified",
+                    spec.name
+                ),
+            },
+        ));
+    }
+
+    delete_optional_file(readiness.admin_endpoint.path()).map_err(RuntimeTransactionError::new)?;
+    let process = supervisor.start(spec.clone()).await?;
+
+    Ok(StartedRuntimeTransaction::Fresh(Box::new(process)))
+}
+
+async fn finish_runtime_transaction(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    readiness: &RuntimeReadinessPlan,
+    desired_fingerprint: &str,
+    started: StartedRuntimeTransaction,
+) -> Result<RuntimeReadinessOutcome, RuntimeTransactionError> {
+    let RuntimeReadinessPlan {
+        check,
+        failure_policy,
+        timeout: readiness_timeout,
+        admin_endpoint,
+    } = readiness;
+    let StartedRuntimeTransaction::Fresh(process) = started else {
+        let client = CaddyAdminClient::new().with_timeout(*readiness_timeout);
+        if let Err(error) = wait_for_owned_readiness(check.clone(), *readiness_timeout, || {
             verify_runtime_ownership(supervisor, spec)
         })
         .await
         {
-            if failure_policy == ReadinessFailurePolicy::PreserveRuntime
+            if *failure_policy == ReadinessFailurePolicy::PreserveRuntime
                 && supervisor
                     .verify_ownership(spec)
                     .map_err(RuntimeTransactionError::pending_preserve)?
                     .is_some()
                 && client
                     .wait_until_ready_with(
-                        &admin_endpoint,
-                        readiness_timeout,
+                        admin_endpoint,
+                        *readiness_timeout,
                         runtime_ownership_verifier(paths, spec),
                     )
                     .await
@@ -2639,27 +2921,14 @@ async fn start_or_adopt_runtime(
         record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
 
         return Ok(RuntimeReadinessOutcome::Verified);
-    } else if let Some(adopted) = supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)? {
-        adopted.stop(Duration::from_secs(1)).await?;
-    } else if foreign_listener_is_ready(&check).await {
-        return Err(RuntimeTransactionError::new(
-            DaemonError::UnexpectedProtocolResponse {
-                reason: format!(
-                    "runtime `{}` is listening but no PV-owned process could be verified",
-                    spec.name
-                ),
-            },
-        ));
-    }
-
-    delete_optional_file(admin_endpoint.path()).map_err(RuntimeTransactionError::new)?;
-    let mut process = supervisor.start(spec.clone()).await?;
+    };
+    let mut process = *process;
     let admin_readiness = async {
         CaddyAdminClient::new()
-            .with_timeout(readiness_timeout)
+            .with_timeout(*readiness_timeout)
             .wait_until_ready_with(
-                &admin_endpoint,
-                readiness_timeout,
+                admin_endpoint,
+                *readiness_timeout,
                 runtime_ownership_verifier(paths, spec),
             )
             .await
@@ -2687,7 +2956,7 @@ async fn start_or_adopt_runtime(
         }
     }
 
-    let service_readiness = wait_for_owned_readiness(check, readiness_timeout, || {
+    let service_readiness = wait_for_owned_readiness(check.clone(), *readiness_timeout, || {
         verify_runtime_ownership(supervisor, spec)
     });
     if let Err(error) = wait_for_started_runtime_readiness(
@@ -2699,7 +2968,7 @@ async fn start_or_adopt_runtime(
     .await
     {
         record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
-        if failure_policy == ReadinessFailurePolicy::PreserveRuntime {
+        if *failure_policy == ReadinessFailurePolicy::PreserveRuntime {
             let process_exited = match process.has_exited() {
                 Ok(process_exited) => process_exited,
                 Err(error) => {
@@ -3671,17 +3940,55 @@ mod tests {
     use platform::{ActivePfRedirectInspection, PfRedirectConfig};
     use state::{Database, LinkProjectInput, PvPaths};
 
-    use crate::ReadinessCheck;
     use crate::gateway_config::GatewayProjectRoute;
+    use crate::{DaemonError, ReadinessCheck};
 
     use super::{
         GatewayPfRoutingState, GatewayReadinessPorts, GatewayRuntimePlan, ReadinessFailurePolicy,
         RuntimePlan, build_target_runtime_plan, classify_gateway_pf_routing_state,
-        gateway_project_config_fragments, gateway_public_readiness_check,
-        gateway_readiness_check_for_ports, gateway_readiness_hostname, gateway_readiness_plan,
-        gateway_readiness_ports, previous_runtime_readiness_from_parts, project_config_file_name,
+        combined_runtime_reconciliation_error, gateway_project_config_fragments,
+        gateway_public_readiness_check, gateway_readiness_check_for_ports,
+        gateway_readiness_hostname, gateway_readiness_plan, gateway_readiness_ports,
+        previous_runtime_readiness_from_parts, project_config_file_name,
         spawn_gateway_pf_inspection,
     };
+
+    #[test]
+    fn runtime_reconciliation_failures_are_sorted_by_runtime_key() -> Result<()> {
+        let error = combined_runtime_reconciliation_error(vec![
+            (
+                "8.4+xdebug".to_owned(),
+                DaemonError::UnexpectedProtocolResponse {
+                    reason: "xdebug failed".to_owned(),
+                },
+            ),
+            (
+                "8.4+redis".to_owned(),
+                DaemonError::UnexpectedProtocolResponse {
+                    reason: "redis failed".to_owned(),
+                },
+            ),
+        ]);
+
+        match error {
+            DaemonError::RuntimeReconciliationFailures { failures } => {
+                let failures = failures
+                    .iter()
+                    .map(|failure| format!("{}: {}", failure.runtime_key(), failure.error()))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    failures,
+                    [
+                        "8.4+redis: daemon protocol error: redis failed",
+                        "8.4+xdebug: daemon protocol error: xdebug failed",
+                    ]
+                );
+            }
+            error => anyhow::bail!("expected aggregate runtime failure, got {error:?}"),
+        }
+
+        Ok(())
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn pf_inspection_does_not_block_the_async_executor() -> Result<()> {

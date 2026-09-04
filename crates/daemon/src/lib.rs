@@ -37,7 +37,7 @@ pub use client::{
     wait_until_healthy_blocking,
 };
 pub use dns::{dns_port_available, response_bytes};
-pub use error::{DaemonError, ManagedResourceProjectFailure};
+pub use error::{DaemonError, ManagedResourceProjectFailure, RuntimeReconciliationFailure};
 pub use protocol::PROTOCOL_VERSION;
 pub use reconciliation::{
     EnqueueResult, QueuedReconciliation, ReconciliationDebouncer, ReconciliationJob,
