@@ -248,6 +248,12 @@ async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> R
     let lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
     let (certificate_pem, private_key_pem) = read_project_tls_files(&paths, &project)?;
+    let project_scope = format!("project:{}", project.id);
+    let project_jobs = database
+        .recent_jobs()?
+        .into_iter()
+        .filter(|job| job.scope == project_scope)
+        .collect::<Vec<_>>();
 
     assert_project_certificate_matches(&certificate_pem, &private_key_pem, "acme.test", &local_ca);
 
@@ -257,7 +263,7 @@ async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> R
             lines,
             read_dotenv(&project)?,
             database.project_env_observed_state(&project.id)?,
-            database.recent_jobs()?,
+            project_jobs,
         ),
         tempdir.path(),
     )?;
@@ -605,11 +611,11 @@ async fn daemon_health_tick_replaces_expiring_tls_certificate_without_explicit_r
     );
 
     let database = Database::open(&paths)?;
-    assert!(
-        database
-            .recent_jobs()?
-            .into_iter()
-            .all(|job| job.scope != "system")
+    let jobs = database.recent_jobs()?;
+    assert_eq!(
+        jobs.iter().filter(|job| job.scope == "system").count(),
+        1,
+        "the health tick should not add another System reconciliation after startup"
     );
 
     Ok(())
