@@ -13,6 +13,39 @@ use tokio_util::codec::LinesCodecError;
 
 use crate::caddy_admin::CaddyAdminError;
 
+#[derive(Debug)]
+pub struct ManagedResourceProjectFailure {
+    resource_name: String,
+    track: String,
+    error: Box<DaemonError>,
+}
+
+impl ManagedResourceProjectFailure {
+    pub(crate) fn new(resource_name: String, track: String, error: DaemonError) -> Self {
+        Self {
+            resource_name,
+            track,
+            error: Box::new(error),
+        }
+    }
+
+    pub fn resource_name(&self) -> &str {
+        &self.resource_name
+    }
+
+    pub fn track(&self) -> &str {
+        &self.track
+    }
+
+    pub fn error(&self) -> &DaemonError {
+        &self.error
+    }
+
+    pub(crate) fn into_error(self) -> DaemonError {
+        *self.error
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DaemonError {
     #[error("I/O error: {0}")]
@@ -120,6 +153,14 @@ pub enum DaemonError {
     #[error("Managed Resource default installs failed: {}", default_install_failures(.failures))]
     ManagedResourceDefaultInstallFailures { failures: Vec<String> },
 
+    #[error(
+        "Project Managed Resource reconciliation failed: {}",
+        project_resource_failures(.failures)
+    )]
+    ManagedResourceProjectFailures {
+        failures: Vec<ManagedResourceProjectFailure>,
+    },
+
     #[error("Redis readiness failed: {0}")]
     Redis(#[from] redis::RedisError),
 
@@ -199,6 +240,19 @@ pub enum DaemonError {
 
 fn default_install_failures(failures: &[String]) -> String {
     failures.join("; ")
+}
+
+fn project_resource_failures(failures: &[ManagedResourceProjectFailure]) -> String {
+    failures
+        .iter()
+        .map(|failure| {
+            format!(
+                "{} {}: {}",
+                failure.resource_name, failure.track, failure.error
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn managed_resource_partial_update_summary(update: &ManagedResourceUpdate) -> String {
