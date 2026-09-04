@@ -556,6 +556,107 @@ async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() 
 }
 
 #[tokio::test]
+async fn fresh_gateway_exit_is_reported_before_the_readiness_timeout() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let caddy_release = tempdir.path().join("fast-exit-caddy-release");
+    write_fast_exit_runtime(&caddy_release.join("bin/caddy"))?;
+
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fast-exit-caddy-pv1",
+        &caddy_release,
+    )?;
+    let ports = available_loopback_ports(2)?;
+    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
+    drop(database);
+
+    let result = timeout(
+        Duration::from_secs(5),
+        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(60)),
+    )
+    .await
+    .context("Gateway reconciliation waited for the readiness timeout after Caddy exited")?;
+
+    assert!(
+        matches!(
+            result,
+            Err(DaemonError::UnexpectedProtocolResponse { ref reason })
+                if reason.contains("runtime `gateway` exited before readiness was verified")
+        ),
+        "unexpected Gateway exit result: {result:?}"
+    );
+    assert!(!paths.gateway_pid().exists());
+    assert!(!paths.gateway_runtime_metadata().exists());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn fresh_worker_exit_is_reported_before_the_readiness_timeout() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("acme");
+    let frankenphp_release = tempdir.path().join("fast-exit-frankenphp-release");
+    write_fast_exit_runtime(&frankenphp_release.join("bin/frankenphp"))?;
+    create_project(
+        &project_root,
+        r#"php: "8.4"
+document_root: public
+"#,
+    )?;
+
+    let mut database = Database::open(&paths)?;
+    database.link_project(LinkProjectInput {
+        path: project_root.clone(),
+        original_path: project_root.clone(),
+        primary_hostname: "acme.test".to_owned(),
+        config_path: project_root.join("pv.yml"),
+        desired_php_track: Some("8.4".to_owned()),
+        additional_hostnames: Vec::new(),
+    })?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fast-exit-frankenphp-pv1",
+        &frankenphp_release,
+    )?;
+    let ports = available_loopback_ports(3)?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
+    drop(database);
+    ensure_fake_caddy(&paths)?;
+
+    let result = timeout(
+        Duration::from_secs(5),
+        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(60)),
+    )
+    .await
+    .context("Gateway reconciliation waited for the readiness timeout after FrankenPHP exited")?;
+
+    assert!(
+        matches!(
+            result,
+            Err(DaemonError::UnexpectedProtocolResponse { ref reason })
+                if reason.contains("runtime `php-worker-8.4` exited before readiness was verified")
+        ),
+        "unexpected worker exit result: {result:?}"
+    );
+    assert!(!paths.worker_pid("8.4").exists());
+    assert!(!paths.worker_runtime_metadata("8.4").exists());
+    assert!(!paths.gateway_pid().exists());
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn gateway_reconciliation_preserves_running_runtimes_after_env_only_edit() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -4582,6 +4683,29 @@ fn write_stateful_fake_frankenphp(path: &Utf8Path) -> Result<()> {
         FAKE_STATEFUL_FRANKENPHP_SCRIPT,
         FAKE_STATEFUL_RUNTIME_SERVER_SCRIPT,
     )
+}
+
+fn write_fast_exit_runtime(path: &Utf8Path) -> Result<()> {
+    fs::write_sensitive_file(
+        path,
+        r#"#!/bin/sh
+set -eu
+
+if [ "$1" = "validate" ]; then
+  exit 0
+fi
+
+if [ "$1" = "run" ]; then
+  sleep 1
+  exit 42
+fi
+
+exit 2
+"#,
+    )?;
+    set_executable(path)?;
+
+    Ok(())
 }
 
 fn fake_admin_control_path(config_path: &Utf8Path) -> Utf8PathBuf {

@@ -10,8 +10,8 @@ use crate::managed_resources::sql::{
     self, SqlAdminContext, SqlAllocationRequest, SqlEngine, sql_resource_env,
 };
 use crate::managed_resources::{
-    ManagedResourcePortSpec, ManagedResourceReadiness, ManagedResourceRuntimeAdapter,
-    ManagedResourceRuntimeContext, RESOURCE_HOST,
+    ManagedResourcePortSpec, ManagedResourcePreparationFuture, ManagedResourceReadiness,
+    ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext, RESOURCE_HOST,
 };
 use crate::{DaemonError, ProcessSpec};
 
@@ -54,6 +54,26 @@ impl ManagedResourceRuntimeAdapter for PostgresRuntimeAdapter {
         POSTGRES_PORTS
     }
 
+    fn prepare_runtime<'a>(
+        &'a self,
+        paths: &'a PvPaths,
+        context: &'a ManagedResourceRuntimeContext,
+    ) -> ManagedResourcePreparationFuture<'a> {
+        Box::pin(async move {
+            let paths = paths.clone();
+            let context = context.clone();
+            spawn_postgres_preparation(move || {
+                let port = required_port(&context)?;
+                let config = postgres_config(&context, port)?;
+                validate_preload_library_files(&context)?;
+                let admin = admin_context(&context)?;
+                initialize_data_dir_if_missing(&paths, &context, &admin)?;
+                write_postgres_config(&paths, &context, &config)
+            })
+            .await
+        })
+    }
+
     fn build_process_spec(
         &self,
         paths: &PvPaths,
@@ -61,9 +81,6 @@ impl ManagedResourceRuntimeAdapter for PostgresRuntimeAdapter {
     ) -> Result<ProcessSpec, DaemonError> {
         let port = required_port(context)?;
         let config = postgres_config(context, port)?;
-        let admin = admin_context(context)?;
-        initialize_data_dir_if_missing(paths, context, &admin)?;
-        write_postgres_config(paths, context, &config)?;
 
         Ok(ProcessSpec {
             name: format!("{}-{}", context.resource_name, context.track),
@@ -149,6 +166,13 @@ impl ManagedResourceRuntimeAdapter for PostgresRuntimeAdapter {
             Ok(())
         })
     }
+}
+
+async fn spawn_postgres_preparation<Prepare>(prepare: Prepare) -> Result<(), DaemonError>
+where
+    Prepare: FnOnce() -> Result<(), DaemonError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(prepare).await?
 }
 
 fn initialize_data_dir_if_missing(
@@ -248,7 +272,18 @@ fn postgres_config(
     context: &ManagedResourceRuntimeContext,
     port: u16,
 ) -> Result<String, DaemonError> {
-    validate_preload_libraries(context)?;
+    if context
+        .postgres_preload_libraries
+        .contains(&PostgresPreloadLibrary::TimescaleDb)
+        && context
+            .postgres_preload_libraries
+            .contains(&PostgresPreloadLibrary::PgDuckDb)
+    {
+        return Err(DaemonError::UnsafePostgresPreloadCombination {
+            track: context.track.clone(),
+        });
+    }
+
     let preload_libraries = context
         .postgres_preload_libraries
         .iter()
@@ -275,19 +310,9 @@ fn postgres_config(
     Ok(config)
 }
 
-fn validate_preload_libraries(context: &ManagedResourceRuntimeContext) -> Result<(), DaemonError> {
-    if context
-        .postgres_preload_libraries
-        .contains(&PostgresPreloadLibrary::TimescaleDb)
-        && context
-            .postgres_preload_libraries
-            .contains(&PostgresPreloadLibrary::PgDuckDb)
-    {
-        return Err(DaemonError::UnsafePostgresPreloadCombination {
-            track: context.track.clone(),
-        });
-    }
-
+fn validate_preload_library_files(
+    context: &ManagedResourceRuntimeContext,
+) -> Result<(), DaemonError> {
     for library in &context.postgres_preload_libraries {
         let module_path = context
             .artifact_path
@@ -371,5 +396,33 @@ fn delete_optional_file(path: &camino::Utf8Path) -> Result<(), DaemonError> {
             Ok(())
         }
         Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use anyhow::Result;
+
+    use super::spawn_postgres_preparation;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn postgres_preparation_does_not_block_the_async_executor() -> Result<()> {
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let preparation = tokio::spawn(spawn_postgres_preparation(move || {
+            let _result = started_sender.send(());
+            release_receiver.recv().map_err(std::io::Error::other)?;
+
+            Ok(())
+        }));
+
+        started_receiver.await?;
+        tokio::task::yield_now().await;
+        release_sender.send(())?;
+        preparation.await??;
+
+        Ok(())
     }
 }
