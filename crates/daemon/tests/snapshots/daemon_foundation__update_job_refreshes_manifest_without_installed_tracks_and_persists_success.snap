@@ -16,5 +16,5 @@ expression: snapshot
         "2.11.4-pv1",
     ),
     true,
-    1,
+    2,
 )

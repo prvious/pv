@@ -5,7 +5,7 @@ expression: snapshot
 (
     [
         Object {
-            "message": String("PV self-update/daemon mutation coordination is active; the OS lock is held on <update-lock>"),
+            "message": String("PV self-update/daemon mutation coordination is active; the OS lock is held on <jobs-lock>"),
             "protocol_version": Number(3),
             "status": String("error"),
             "type": String("response"),
@@ -27,5 +27,20 @@ expression: snapshot
             "type": String("response"),
         },
     ],
-    [],
+    [
+        JobRecord {
+            id: "job_000001",
+            kind: "reconcile",
+            scope: "system",
+            status: Succeeded,
+            started_at: "<timestamp>",
+            finished_at: Some(
+                "<timestamp>",
+            ),
+            summary: Some(
+                "Gateway runtime reconciled",
+            ),
+            error: None,
+        },
+    ],
 )

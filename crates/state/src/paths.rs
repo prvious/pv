@@ -99,6 +99,10 @@ impl PvPaths {
         self.run().join("update.lock")
     }
 
+    pub fn jobs_lock(&self) -> Utf8PathBuf {
+        self.run().join("jobs.lock")
+    }
+
     pub fn helper_lifecycle_lock(&self) -> Utf8PathBuf {
         self.root.with_file_name(".pv-helper-lifecycle.lock")
     }

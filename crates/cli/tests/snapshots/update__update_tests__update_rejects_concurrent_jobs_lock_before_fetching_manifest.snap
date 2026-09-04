@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/update.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "PV update\n",
+    stderr: "error: PV self-update/daemon mutation coordination is active; the OS lock is held on <pv-home>/run/jobs.lock\n",
+}
