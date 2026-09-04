@@ -96,6 +96,13 @@ impl ManagedResourceReadiness {
             check: Box::new(check),
         })
     }
+
+    pub(crate) async fn probe_once(&self) -> Result<(), DaemonError> {
+        match self {
+            Self::TcpHttp(check) => crate::supervisor::probe_readiness_once(check).await,
+            Self::Async(check) => (check.check)().await,
+        }
+    }
 }
 
 impl From<ReadinessCheck> for ManagedResourceReadiness {
@@ -266,6 +273,60 @@ impl ManagedResourceRuntimeCatalog {
 
     fn adapter(&self, resource_name: &str) -> Option<&dyn ManagedResourceRuntimeAdapter> {
         self.adapters.get(resource_name).map(Box::as_ref)
+    }
+
+    pub(crate) fn has_runtime_adapter(&self, resource_name: &str) -> bool {
+        self.adapter(resource_name).is_some()
+    }
+
+    pub(crate) fn persisted_health_probe(
+        &self,
+        paths: &PvPaths,
+        database: &Database,
+        track: &ManagedResourceTrackRecord,
+        assignments: &[state::PortAssignment],
+    ) -> Result<Option<ManagedResourceReadiness>, DaemonError> {
+        let Some(adapter) = self.adapter(&track.resource_name) else {
+            return Ok(None);
+        };
+        let Some(artifact_path) = track.current_artifact_path.clone() else {
+            return Ok(None);
+        };
+        let ports = assignments
+            .iter()
+            .filter_map(|assignment| match &assignment.owner {
+                state::PortOwner::Resource {
+                    name,
+                    track: assigned_track,
+                    port,
+                } if name == &track.resource_name && assigned_track == &track.track => {
+                    Some((port.clone(), assignment.port))
+                }
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        if adapter
+            .port_specs()
+            .iter()
+            .any(|port| !ports.contains_key(port.name))
+        {
+            return Ok(None);
+        }
+        let context = ManagedResourceRuntimeContext {
+            resource_name: track.resource_name.clone(),
+            track: track.track.clone(),
+            artifact_path,
+            data_dir: paths.resource_data_dir(&track.resource_name, &track.track),
+            ports,
+            env: track.env.clone(),
+            postgres_preload_libraries: if track.resource_name == "postgres" {
+                database.postgres_track_preload_libraries(&track.track)?
+            } else {
+                Vec::new()
+            },
+        };
+
+        adapter.readiness(&context).map(Some)
     }
 
     fn artifact_adapters(&self) -> Result<Vec<resources::RuntimeArtifactAdapter>, DaemonError> {

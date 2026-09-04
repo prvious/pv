@@ -290,6 +290,76 @@ pub(crate) fn project_tls_maintenance_failed(paths: &PvPaths, project_id: &str, 
     );
 }
 
+pub(crate) fn runtime_health_scan_failed(paths: &PvPaths, error: &str) {
+    append_with_stderr_fallback(
+        paths,
+        "error",
+        "runtime",
+        "runtime_health_scan_failed",
+        "runtime health scan failed",
+        &[("error", error)],
+        &format!("PV runtime health scan failed: {error}"),
+    );
+}
+
+pub(crate) fn runtime_health_probe_failed(
+    paths: &PvPaths,
+    subject: &str,
+    scope: &str,
+    error: &str,
+) {
+    append_with_stderr_fallback(
+        paths,
+        "error",
+        "runtime",
+        "runtime_health_probe_failed",
+        "runtime health probe failed",
+        &[("subject", subject), ("scope", scope), ("error", error)],
+        &format!("PV runtime health probe failed for {subject} ({scope}): {error}"),
+    );
+}
+
+pub(crate) fn background_reconciliation_error_recording_failed(
+    paths: &PvPaths,
+    scope: &str,
+    reconciliation_error: &str,
+    recording_error: &str,
+) {
+    append_with_stderr_fallback(
+        paths,
+        "error",
+        "reconciliation",
+        "background_reconciliation_error_recording_failed",
+        "failed to record background reconciliation error",
+        &[
+            ("scope", scope),
+            ("reconciliation_error", reconciliation_error),
+            ("recording_error", recording_error),
+        ],
+        &format!(
+            "PV background reconciliation failed for {scope}: {reconciliation_error}; additionally failed to record the error: {recording_error}"
+        ),
+    );
+}
+
+fn append_with_stderr_fallback(
+    paths: &PvPaths,
+    level: &str,
+    target: &str,
+    event: &str,
+    message: &str,
+    fields: &[(&str, &str)],
+    fallback: &str,
+) {
+    if let Err(log_error) = append(paths, level, target, event, message, fields) {
+        let mut standard_error = io::stderr().lock();
+        let _fallback_result = writeln!(
+            standard_error,
+            "{fallback}; additionally failed to write the daemon log: {log_error}"
+        );
+    }
+}
+
 fn append_best_effort(
     paths: &PvPaths,
     level: &str,

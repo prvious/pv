@@ -4,6 +4,7 @@ mod dns;
 mod error;
 pub mod gateway;
 pub mod gateway_config;
+mod health;
 mod ipc;
 mod jobs;
 mod managed_resources;
@@ -319,6 +320,7 @@ mod tests {
 
     use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
+    use insta::assert_debug_snapshot;
     use platform::{PlatformCapability, PlatformError, PlatformTarget};
     use state::PvPaths;
     use tokio::sync::oneshot;
@@ -558,6 +560,68 @@ mod tests {
         );
         assert_eq!(events[0]["runtime"], "gateway");
         assert_eq!(events[0]["error"], expected_error);
+
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_health_background_failures_write_structured_diagnostics() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+
+        super::structured_log::runtime_health_scan_failed(&paths, "state unavailable");
+        super::structured_log::runtime_health_probe_failed(
+            &paths,
+            "PhpWorker { php_track: \"8.4\" }",
+            "project:demo",
+            "metadata invalid",
+        );
+        super::structured_log::background_reconciliation_error_recording_failed(
+            &paths,
+            "project:demo",
+            "jobs lock unavailable",
+            "database unavailable",
+        );
+
+        let content = state::fs::read_to_string(&paths.daemon_log())?;
+        let events = content
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<Result<Vec<_>, _>>()?;
+        let stable_events = events
+            .iter()
+            .map(|event| {
+                [
+                    "level",
+                    "target",
+                    "event",
+                    "message",
+                    "subject",
+                    "scope",
+                    "error",
+                    "reconciliation_error",
+                    "recording_error",
+                ]
+                .into_iter()
+                .map(|field| {
+                    let value = event
+                        .get(field)
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("-");
+                    format!("{field}={value}")
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+            })
+            .collect::<Vec<_>>();
+
+        assert_debug_snapshot!(stable_events, @r#"
+        [
+            "level=error target=runtime event=runtime_health_scan_failed message=runtime health scan failed subject=- scope=- error=state unavailable reconciliation_error=- recording_error=-",
+            "level=error target=runtime event=runtime_health_probe_failed message=runtime health probe failed subject=PhpWorker { php_track: \"8.4\" } scope=project:demo error=metadata invalid reconciliation_error=- recording_error=-",
+            "level=error target=reconciliation event=background_reconciliation_error_recording_failed message=failed to record background reconciliation error subject=- scope=project:demo error=- reconciliation_error=jobs lock unavailable recording_error=database unavailable",
+        ]
+        "#);
 
         Ok(())
     }

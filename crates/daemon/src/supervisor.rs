@@ -517,6 +517,10 @@ impl AdoptedProcess {
         self.owned.pid()
     }
 
+    pub(crate) fn uses_current_artifact(&self, artifact_root: &Utf8Path) -> bool {
+        !self.owned.replacement_required() && self.owned.command.starts_with(artifact_root)
+    }
+
     pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
         require_process_containment()?;
         if !self.owned.matches_live()? {
