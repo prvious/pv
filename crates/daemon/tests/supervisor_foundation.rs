@@ -568,11 +568,18 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
 
     assert_eq!(owned.pid(), process.pid());
     assert_eq!(adopted.pid(), process.pid());
-    assert!(supervisor.mark_replacement_required(&spec)?);
+    assert!(supervisor.record_applied_config(&spec, "sha256:v1:applied")?);
+    let applied = supervisor
+        .verify_ownership(&spec)?
+        .ok_or_else(|| anyhow!("runtime with applied config lost ownership"))?;
     assert_eq!(
-        runtime_metadata(process.metadata_path())?["replacement_required"],
-        true
+        applied.applied_config_fingerprint(),
+        Some("sha256:v1:applied")
     );
+    assert!(supervisor.mark_replacement_required(&spec)?);
+    let pending_metadata = runtime_metadata(process.metadata_path())?;
+    assert_eq!(pending_metadata["replacement_required"], true);
+    assert!(pending_metadata["applied_config_fingerprint"].is_null());
     let replacement = supervisor
         .verify_ownership(&spec)?
         .ok_or_else(|| anyhow!("replacement-required runtime lost ownership"))?;

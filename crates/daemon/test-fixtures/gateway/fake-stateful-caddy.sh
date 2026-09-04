@@ -3,6 +3,7 @@ set -eu
 
 if [ "$1" = "validate" ]; then
   test -f "$3"
+  printf '%s\n' "$3" >> "${3%/*}/fake-validator-spawns.log"
   exit 0
 fi
 
