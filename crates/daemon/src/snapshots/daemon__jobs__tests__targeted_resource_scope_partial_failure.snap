@@ -1,0 +1,34 @@
+---
+source: crates/daemon/src/jobs.rs
+expression: partial_snapshot
+---
+(
+    "Managed Resource mailpit track 1.0 reconciled; Project env reconciled for 1 of 2 Projects; failures: beta.test: Project `<project_id>` env dependencies do not match their last applied state",
+    [
+        Resource {
+            name: "mailpit",
+            track: "1.0",
+        },
+        Project {
+            id: "<project_id>",
+        },
+    ],
+    [
+        Some(
+            Rendered,
+        ),
+        Some(
+            Failed,
+        ),
+        None,
+    ],
+    [
+        (
+            "mailpit",
+            "1.0",
+        ),
+    ],
+    "# >>> PV MANAGED\nMAIL_HOST=127.0.0.1\n# <<< PV MANAGED\n",
+    false,
+    false,
+)

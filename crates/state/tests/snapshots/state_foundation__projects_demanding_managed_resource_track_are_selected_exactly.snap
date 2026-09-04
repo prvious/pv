@@ -1,0 +1,18 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: selected_projects
+---
+[
+    (
+        "acme",
+        Some(
+            "acme.test",
+        ),
+    ),
+    (
+        "beta",
+        Some(
+            "beta.test",
+        ),
+    ),
+]
