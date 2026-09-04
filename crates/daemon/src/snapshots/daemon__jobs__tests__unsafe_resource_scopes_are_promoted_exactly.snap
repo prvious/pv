@@ -1,0 +1,64 @@
+---
+source: crates/daemon/src/jobs.rs
+expression: effective_scopes
+---
+[
+    (
+        Resource {
+            name: ReconciliationScopeComponent(
+                "php",
+            ),
+            track: ReconciliationScopeComponent(
+                "8.4",
+            ),
+        },
+        System,
+    ),
+    (
+        Resource {
+            name: ReconciliationScopeComponent(
+                "frankenphp",
+            ),
+            track: ReconciliationScopeComponent(
+                "8.4",
+            ),
+        },
+        System,
+    ),
+    (
+        Resource {
+            name: ReconciliationScopeComponent(
+                "caddy",
+            ),
+            track: ReconciliationScopeComponent(
+                "2",
+            ),
+        },
+        Resource {
+            name: ReconciliationScopeComponent(
+                "caddy",
+            ),
+            track: ReconciliationScopeComponent(
+                "2",
+            ),
+        },
+    ),
+    (
+        Resource {
+            name: ReconciliationScopeComponent(
+                "mailpit",
+            ),
+            track: ReconciliationScopeComponent(
+                "1.0",
+            ),
+        },
+        Resource {
+            name: ReconciliationScopeComponent(
+                "mailpit",
+            ),
+            track: ReconciliationScopeComponent(
+                "1.0",
+            ),
+        },
+    ),
+]

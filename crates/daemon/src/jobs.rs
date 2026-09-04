@@ -10,12 +10,14 @@ use crate::gateway::{
 use crate::ipc::LocalStream;
 use crate::managed_resources::{
     ManagedResourceRuntimeCatalog, ManagedResourceUpdateReport,
+    reconcile_persisted_resource_track_with_progress,
     reconcile_system_resources_with_catalog_and_progress, reconcile_system_resources_with_progress,
     stop_undemanded_system_resource_runtimes,
 };
 use crate::project_env::{
     DemandedResourceTrack, ProjectDemand, discover_project_demand,
-    reconcile_project_env_with_runtime_catalog_and_progress,
+    reconcile_project_env_from_persisted_state,
+    reconcile_project_env_with_runtime_catalog_and_progress, record_project_env_failure,
 };
 use crate::reconciliation::{
     EnqueueResult, ReconciliationJobTiming, ReconciliationQueue, ReconciliationScope,
@@ -1060,22 +1062,26 @@ async fn complete_managed_resource_reconciliation_with_progress(
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
-    phase_log.completed(
+    let resource_timer = phase_log.start(
         ReconciliationPhase::Resources,
-        &format!("{}:{}", name.as_str(), track.as_str()),
-        PhaseOutcome::Skipped,
-        Duration::ZERO,
-        &[("resource_count", 0)],
+        format!("{}:{}", name.as_str(), track.as_str()),
     );
-    let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
-    let project_result = reconcile_system_projects_with_progress(
+    let resource_result = reconcile_persisted_resource_track_with_progress(
         paths,
+        name.as_str(),
+        track.as_str(),
         runtime_catalog,
-        &BTreeSet::new(),
-        &BTreeMap::new(),
-        &progress,
+        progress,
     )
     .await;
+    resource_timer.finish(
+        PhaseOutcome::from_succeeded(resource_result.is_ok()),
+        &[("resource_count", 1)],
+    );
+    let (projects, resource_failures) = resource_result?;
+
+    let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "dependent_projects");
+    let project_result = reconcile_persisted_project_envs(paths, &projects, resource_failures);
     finish_project_phase(project_timer, &project_result);
     let project_report = project_result?;
     let summary =
@@ -1087,6 +1093,62 @@ async fn complete_managed_resource_reconciliation_with_progress(
     coverage.extend(project_report.successful_project_coverage());
 
     Ok(CompletedReconciliationJob { summary, coverage })
+}
+
+fn reconcile_persisted_project_envs(
+    paths: &PvPaths,
+    projects: &[ProjectRecord],
+    mut resource_failures: BTreeMap<String, DaemonError>,
+) -> Result<SystemProjectReconciliationReport, DaemonError> {
+    let mut report = SystemProjectReconciliationReport {
+        total: projects.len(),
+        ..SystemProjectReconciliationReport::default()
+    };
+
+    for project in projects {
+        let project_label = project.primary_hostname.as_deref().unwrap_or(&project.slug);
+        if let Some(error) = resource_failures.remove(&project.id) {
+            let error_message = error.to_string();
+            let mut database = match Database::open(paths) {
+                Ok(database) => database,
+                Err(recording) => {
+                    return Err(DaemonError::ProjectAllocationFailureRecordingFailed {
+                        project_id: project.id.clone(),
+                        allocation: Box::new(error),
+                        recording: Box::new(recording.into()),
+                    });
+                }
+            };
+            if let Err(recording) =
+                record_project_env_failure(&mut database, &project.id, &error_message)
+            {
+                return Err(DaemonError::ProjectAllocationFailureRecordingFailed {
+                    project_id: project.id.clone(),
+                    allocation: Box::new(error),
+                    recording: Box::new(recording),
+                });
+            }
+            report
+                .failures
+                .push(format!("{project_label}: {error_message}"));
+            continue;
+        }
+        match reconcile_project_env_from_persisted_state(paths, &project.id) {
+            Ok(summary) => {
+                report.succeeded += 1;
+                report.successful_project_ids.push(project.id.clone());
+                report.summaries.push(summary.to_owned());
+            }
+            Err(error @ DaemonError::ProjectEnvFailureRecordingFailed { .. }) => {
+                return Err(error);
+            }
+            Err(error) => {
+                report.failures.push(format!("{project_label}: {error}"));
+            }
+        }
+    }
+
+    Ok(report)
 }
 
 async fn complete_reconciliation_job(
@@ -1125,7 +1187,8 @@ async fn complete_reconciliation_job_with_progress(
         &[],
     );
     let progress = progress.with_phase_log(phase_log.clone());
-    let result = match scope {
+    let effective_scope = effective_reconciliation_scope(scope);
+    let result = match &effective_scope {
         ReconciliationScope::System => {
             complete_system_reconciliation_with_progress(
                 paths,
@@ -1214,6 +1277,17 @@ async fn complete_reconciliation_job_with_progress(
     );
 
     final_result
+}
+
+fn effective_reconciliation_scope(scope: &ReconciliationScope) -> ReconciliationScope {
+    match scope {
+        ReconciliationScope::Resource { name, .. }
+            if matches!(name.as_str(), "php" | "frankenphp") =>
+        {
+            ReconciliationScope::System
+        }
+        scope => scope.clone(),
+    }
 }
 
 fn fail_reconciliation_job(
@@ -1649,14 +1723,10 @@ fn managed_resource_reconciliation_summary(
     project_report: &SystemProjectReconciliationReport,
 ) -> String {
     let Some(project_summary) = system_project_summary(project_report) else {
-        return format!(
-            "Managed Resource {resource_name} track {track} standalone reconciliation deferred"
-        );
+        return format!("Managed Resource {resource_name} track {track} reconciled");
     };
 
-    format!(
-        "Managed Resource {resource_name} track {track} standalone reconciliation deferred; {project_summary}"
-    )
+    format!("Managed Resource {resource_name} track {track} reconciled; {project_summary}")
 }
 
 fn reconciliation_progress_message(scope: &ReconciliationScope, summary: &str) -> String {
@@ -1668,7 +1738,8 @@ fn reconciliation_progress_message(scope: &ReconciliationScope, summary: &str) -
 }
 
 fn reconciliation_started_message(scope: &ReconciliationScope) -> &'static str {
-    match scope {
+    let effective_scope = effective_reconciliation_scope(scope);
+    match &effective_scope {
         ReconciliationScope::Project { .. } => "Project env reconciliation started",
         ReconciliationScope::System => "System reconciliation started",
         ReconciliationScope::Resource { name, .. } if gateway_runtime_resource(name.as_str()) => {
@@ -1893,22 +1964,27 @@ mod tests {
     use serde_json::json;
     use state::{
         Database, GatewayPort, JobDiagnosticSubject, JobStatus, LinkProjectInput,
-        ManagedResourceDesiredState, PortRequest, ProjectManagedResourceInput, ProjectMode,
-        ProjectPhpRuntimeInput, PvPaths, RuntimeObservedStatus, RuntimeSubject, StateError,
-        UpdateLock,
+        ManagedResourceDesiredState, PortRequest, ProjectEnvObservedStatus,
+        ProjectManagedResourceInput, ProjectMode, ProjectPhpRuntimeInput, PvPaths,
+        RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
     };
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, duplex};
     use tokio::sync::{mpsc::channel, oneshot};
     use tokio::time::{Duration, timeout};
 
+    use crate::project_env::reconcile_project_env_from_persisted_state;
+
     use super::{
         FOREGROUND_JOB_PROGRESS_BUFFER, FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent,
-        SystemProjectReconciliationReport, complete_or_fail_background_reconciliation,
-        complete_streamed_job_with_heartbeat, complete_streamed_job_with_heartbeat_and_events,
+        SystemProjectReconciliationReport, complete_managed_resource_reconciliation_with_progress,
+        complete_or_fail_background_reconciliation, complete_streamed_job_with_heartbeat,
+        complete_streamed_job_with_heartbeat_and_events,
         complete_system_reconciliation_with_progress, complete_update_job,
         completed_system_reconciliation_coverage, discover_system_project_demand,
-        enqueue_reconciliation_job, foreground_reconciliation_result,
-        reconcile_project_env_and_missing_resources, reconcile_system_projects_with_progress,
+        effective_reconciliation_scope, enqueue_reconciliation_job,
+        foreground_reconciliation_result, managed_resource_reconciliation_summary,
+        reconcile_persisted_project_envs, reconcile_project_env_and_missing_resources,
+        reconcile_system_projects_with_progress,
         reconcile_system_resources_with_runtime_catalog_and_progress,
         record_background_reconciliation_error, run_background_reconciliation_job,
         start_reconciliation_job, start_update_job, stop_undemanded_system_resource_runtimes,
@@ -1944,6 +2020,222 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/test-fixtures/gateway/fake-caddy-server.py"
     ));
+
+    #[tokio::test]
+    async fn targeted_resource_scope_records_exact_partial_and_success_coverage()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut database = Database::open(&paths)?;
+        let project_config = r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+"#;
+        let mut projects = Vec::new();
+        for name in ["acme", "beta", "unrelated"] {
+            let project_path = tempdir.path().join(name);
+            let config_path = project_path.join("pv.yml");
+            state::fs::write_sensitive_file(&config_path, project_config)?;
+            let linked = database.link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path,
+                primary_hostname: format!("{name}.test"),
+                config_path,
+                desired_php_track: None,
+                additional_hostnames: Vec::new(),
+            })?;
+            projects.push(linked.project);
+        }
+        let desired_resource = ProjectManagedResourceInput {
+            resource_name: "mailpit".to_owned(),
+            track: MAILPIT_TEST_TRACK.to_owned(),
+        };
+        for project in &projects[..2] {
+            database.replace_project_managed_resources(
+                &project.id,
+                std::slice::from_ref(&desired_resource),
+            )?;
+        }
+        database.record_managed_resource_track_env_context(
+            "mailpit",
+            MAILPIT_TEST_TRACK,
+            &BTreeMap::from([("smtp_host".to_owned(), "127.0.0.1".to_owned())]),
+        )?;
+        drop(database);
+
+        state::fs::write_sensitive_file(
+            &projects[1].config_path,
+            r#"mailpit:
+  version: "1.1"
+  env:
+    MAIL_HOST: "${smtp_host}"
+"#,
+        )?;
+        let scope = ReconciliationScope::resource("mailpit", MAILPIT_TEST_TRACK)?;
+        let ReconciliationScope::Resource { name, track } = &scope else {
+            return Err(anyhow::anyhow!("expected resource reconciliation scope"));
+        };
+        let catalog =
+            crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_url(
+                OFFLINE_TEST_MANIFEST_URL,
+            )?;
+        let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
+            &paths,
+            "targeted-resource-partial",
+            &scope.to_string(),
+        );
+        let partial = complete_managed_resource_reconciliation_with_progress(
+            &paths,
+            name,
+            track,
+            Some(&catalog),
+            super::DaemonDownloadProgress::disabled(),
+            &phase_log,
+        )
+        .await?;
+        let database = Database::open(&paths)?;
+        let partial_statuses = projects
+            .iter()
+            .map(|project| {
+                database
+                    .project_env_observed_state(&project.id)
+                    .map(|observed| observed.map(|observed| observed.status))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let persisted_beta_demand = database
+            .project_managed_resources(&projects[1].id)?
+            .into_iter()
+            .map(|resource| (resource.resource_name, resource.track))
+            .collect::<Vec<_>>();
+        drop(database);
+        let partial_snapshot = (
+            partial.summary,
+            partial.coverage,
+            partial_statuses,
+            persisted_beta_demand,
+            state::fs::read_to_string(&projects[0].path.join(".env"))?,
+            state::fs::path_entry_exists(&projects[1].path.join(".env"))?,
+            state::fs::path_entry_exists(&projects[2].path.join(".env"))?,
+        );
+
+        state::fs::write_sensitive_file(&projects[1].config_path, project_config)?;
+        reconcile_project_env_from_persisted_state(&paths, &projects[1].id)?;
+        assert_eq!(
+            Database::open(&paths)?
+                .project_env_observed_state(&projects[1].id)?
+                .map(|observed| observed.status),
+            Some(ProjectEnvObservedStatus::Rendered)
+        );
+        state::fs::write_sensitive_file(&projects[1].path.join(".env"), "EXISTING=beta\n")?;
+        let allocation_report = reconcile_persisted_project_envs(
+            &paths,
+            &projects[..2],
+            BTreeMap::from([(
+                projects[1].id.clone(),
+                DaemonError::UnexpectedProtocolResponse {
+                    reason: "fixture rejected allocation `database`".to_owned(),
+                },
+            )]),
+        )?;
+        let mut allocation_coverage = vec![JobDiagnosticSubject::Resource {
+            name: "mailpit".to_owned(),
+            track: MAILPIT_TEST_TRACK.to_owned(),
+        }];
+        allocation_coverage.extend(allocation_report.successful_project_coverage());
+        let database = Database::open(&paths)?;
+        let allocation_statuses = projects[..2]
+            .iter()
+            .map(|project| {
+                database
+                    .project_env_observed_state(&project.id)
+                    .map(|observed| observed.map(|observed| observed.status))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        drop(database);
+        let allocation_partial_snapshot = (
+            managed_resource_reconciliation_summary(
+                "mailpit",
+                MAILPIT_TEST_TRACK,
+                &allocation_report,
+            ),
+            allocation_coverage,
+            allocation_statuses,
+            state::fs::read_to_string(&projects[1].path.join(".env"))?,
+        );
+        let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
+            &paths,
+            "targeted-resource-success",
+            &scope.to_string(),
+        );
+        let success = complete_managed_resource_reconciliation_with_progress(
+            &paths,
+            name,
+            track,
+            Some(&catalog),
+            super::DaemonDownloadProgress::disabled(),
+            &phase_log,
+        )
+        .await?;
+        let database = Database::open(&paths)?;
+        let success_statuses = projects
+            .iter()
+            .map(|project| {
+                database
+                    .project_env_observed_state(&project.id)
+                    .map(|observed| observed.map(|observed| observed.status))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(
+            success_statuses,
+            [
+                Some(ProjectEnvObservedStatus::Rendered),
+                Some(ProjectEnvObservedStatus::Rendered),
+                None,
+            ]
+        );
+        let success_snapshot = (
+            success.summary,
+            success.coverage,
+            success_statuses,
+            state::fs::read_to_string(&projects[0].path.join(".env"))?,
+            state::fs::read_to_string(&projects[1].path.join(".env"))?,
+            state::fs::path_entry_exists(&projects[2].path.join(".env"))?,
+        );
+
+        let mut settings = Settings::clone_current();
+        settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+        settings.add_filter(r#"id: "[a-z0-9]{10}""#, r#"id: "<project_id>""#);
+        settings.add_filter(r"Project `[a-z0-9]{10}`", "Project `<project_id>`");
+        settings.bind(|| {
+            assert_debug_snapshot!("targeted_resource_scope_partial_failure", partial_snapshot);
+            assert_debug_snapshot!(
+                "targeted_resource_scope_allocation_partial_failure",
+                allocation_partial_snapshot
+            );
+            assert_debug_snapshot!("targeted_resource_scope_success", success_snapshot);
+        });
+
+        Ok(())
+    }
+
+    #[test]
+    fn unsafe_resource_scopes_are_promoted_exactly() -> anyhow::Result<()> {
+        let scopes = [
+            ReconciliationScope::resource("php", "8.4")?,
+            ReconciliationScope::resource("frankenphp", "8.4")?,
+            ReconciliationScope::resource("caddy", "2")?,
+            ReconciliationScope::resource("mailpit", "1.0")?,
+        ];
+        let effective_scopes = scopes
+            .iter()
+            .map(|scope| (scope.clone(), effective_reconciliation_scope(scope)))
+            .collect::<Vec<_>>();
+
+        assert_debug_snapshot!(effective_scopes);
+
+        Ok(())
+    }
 
     #[test]
     fn system_coverage_excludes_failed_projects_and_their_resources() -> anyhow::Result<()> {
