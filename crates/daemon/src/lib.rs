@@ -516,7 +516,14 @@ mod tests {
                 .iter()
                 .any(|event| event["event"] == "daemon_stopped")
         );
-        assert!(events.iter().all(|event| event["target"] == "daemon"));
+        assert!(
+            events
+                .iter()
+                .filter(|event| {
+                    event["event"] == "daemon_started" || event["event"] == "daemon_stopped"
+                })
+                .all(|event| event["target"] == "daemon")
+        );
 
         Ok(())
     }

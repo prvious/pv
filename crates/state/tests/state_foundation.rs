@@ -10,7 +10,7 @@ use state::testing::Migration;
 use state::{
     AppReleaseLayout, Database, EnvContextValues, GATEWAY_HTTP_PREFERRED_PORT,
     GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, HelperLifecycleLock, JobDiagnosticSubject,
-    JobStatus, ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
+    JobStatus, JobsLock, ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
     ManagedResourceTrackRemovalInput, PortOwner, PortRequest, PostgresPreloadLibrary,
     ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
     ProjectMode, ProjectPhpRuntimeInput, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END,
@@ -170,6 +170,7 @@ fn pv_paths_include_self_update_artifacts() {
         paths.update_lock().as_str(),
         "/Users/alice/.pv/run/update.lock"
     );
+    assert_eq!(paths.jobs_lock().as_str(), "/Users/alice/.pv/run/jobs.lock");
 }
 
 #[test]
@@ -298,6 +299,24 @@ fn update_lock_rejects_concurrent_holder_and_ignores_stale_file() -> Result<()> 
     drop(first);
     let reacquired = UpdateLock::acquire(&paths)?;
     drop(reacquired);
+
+    Ok(())
+}
+
+#[test]
+fn update_and_jobs_locks_are_independent() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let update_lock = UpdateLock::acquire(&paths)?;
+    let jobs_lock = JobsLock::acquire(&paths)?;
+
+    assert!(matches!(
+        JobsLock::acquire(&paths),
+        Err(StateError::CoordinationLockHeld { path }) if path == paths.jobs_lock()
+    ));
+
+    drop(jobs_lock);
+    drop(update_lock);
 
     Ok(())
 }

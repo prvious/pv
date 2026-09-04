@@ -112,9 +112,23 @@ mod update_tests {
             self
         }
 
-        fn with_update_lock_probe(self, paths: PvPaths) -> Self {
+        fn with_lock_probe(self, paths: PvPaths) -> Self {
             self.lock_probe.replace(Some(paths));
             self
+        }
+
+        fn record_lock_probe(&self, phase: &str) {
+            let Some(paths) = self.lock_probe.borrow().clone() else {
+                return;
+            };
+            let update_lock = lock_probe_state(state::UpdateLock::acquire(&paths));
+            let jobs_lock = lock_probe_state(state::JobsLock::acquire(&paths));
+            self.operations
+                .borrow_mut()
+                .push(format!("{phase} update lock {update_lock}"));
+            self.operations
+                .borrow_mut()
+                .push(format!("{phase} jobs lock {jobs_lock}"));
         }
 
         fn with_startup_marker_on_first_kickstart(self, path: Utf8PathBuf, content: &str) -> Self {
@@ -178,6 +192,14 @@ mod update_tests {
         }
     }
 
+    fn lock_probe_state<Guard>(result: Result<Guard, state::StateError>) -> String {
+        match result {
+            Ok(_guard) => "free".to_string(),
+            Err(state::StateError::CoordinationLockHeld { .. }) => "held".to_string(),
+            Err(error) => format!("failed: {error}"),
+        }
+    }
+
     impl Environment for TestEnvironment {
         fn var_os(&self, _key: &str) -> Option<OsString> {
             None
@@ -211,6 +233,7 @@ mod update_tests {
             self.execs
                 .borrow_mut()
                 .push((program.to_path_buf(), args.to_vec()));
+            self.record_lock_probe("exec");
 
             self.exec_result.replace(Ok(ExitCode::SUCCESS))
         }
@@ -256,16 +279,7 @@ mod update_tests {
             self.operations
                 .borrow_mut()
                 .push(format!("kickstart {LAUNCH_AGENT_LABEL}"));
-            if let Some(paths) = self.lock_probe.borrow().as_ref() {
-                let probe = match state::UpdateLock::acquire(paths) {
-                    Ok(_lock) => "lock probe free".to_string(),
-                    Err(state::StateError::CoordinationLockHeld { .. }) => {
-                        "lock probe held".to_string()
-                    }
-                    Err(error) => format!("lock probe failed: {error}"),
-                };
-                self.operations.borrow_mut().push(probe);
-            }
+            self.record_lock_probe("kickstart");
             if let Some(path) = self.delete_on_first_kickstart.borrow_mut().take() {
                 state::fs::remove_file_if_exists(&path)
                     .map_err(|error| platform::PlatformError::LaunchAgent(error.to_string()))?;
@@ -1424,7 +1438,8 @@ mod update_tests {
     }
 
     #[test]
-    fn update_holds_lock_until_daemon_transition_finishes() -> anyhow::Result<()> {
+    fn update_holds_locks_through_daemon_transition_and_releases_before_reexec()
+    -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
@@ -1442,11 +1457,12 @@ mod update_tests {
                 ))
                 .with_download(APP_BINARY),
         )
-        .with_update_lock_probe(paths.clone());
+        .with_lock_probe(paths.clone());
 
         let output = run_pv(&["update"], &environment)?;
         let _daemon_requests = daemon.join()?;
-        let reacquired = state::UpdateLock::acquire(&paths);
+        let update_lock = state::UpdateLock::acquire(&paths);
+        let jobs_lock = state::JobsLock::acquire(&paths);
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
         assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
@@ -1456,10 +1472,14 @@ mod update_tests {
                 format!("bootout {LAUNCH_AGENT_LABEL}"),
                 format!("bootstrap {}", launch_agent_path(&paths)),
                 format!("kickstart {LAUNCH_AGENT_LABEL}"),
-                "lock probe held".to_string(),
+                "kickstart update lock held".to_string(),
+                "kickstart jobs lock held".to_string(),
+                "exec update lock free".to_string(),
+                "exec jobs lock free".to_string(),
             ]
         );
-        assert!(reacquired.is_ok());
+        assert!(update_lock.is_ok());
+        assert!(jobs_lock.is_ok());
 
         Ok(())
     }
@@ -1542,6 +1562,30 @@ mod update_tests {
         assert!(output.stderr.contains(paths.update_lock().as_str()));
         assert_update_snapshot(
             "update_rejects_concurrent_update_lock_before_fetching_manifest",
+            output,
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_rejects_concurrent_jobs_lock_before_fetching_manifest() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let _jobs_lock = state::JobsLock::acquire(&paths)?;
+        let environment = TestEnvironment::new(&home, PanickingClient);
+
+        let output = run_pv(&["update"], &environment)?;
+        let update_lock = state::UpdateLock::acquire(&paths)?;
+
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert_eq!(output.stdout, "PV update\n");
+        assert!(output.stderr.contains(paths.jobs_lock().as_str()));
+        drop(update_lock);
+        assert_update_snapshot(
+            "update_rejects_concurrent_jobs_lock_before_fetching_manifest",
             output,
         );
 

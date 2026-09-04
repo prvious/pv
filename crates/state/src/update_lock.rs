@@ -19,6 +19,16 @@ pub struct UpdateLock {
 }
 
 #[derive(Debug)]
+#[must_use = "dropping the guard releases the daemon jobs lock"]
+#[expect(
+    clippy::disallowed_types,
+    reason = "coordination lock guard owns the OS-locked file handle"
+)]
+pub struct JobsLock {
+    _file: std::fs::File,
+}
+
+#[derive(Debug)]
 #[expect(
     clippy::disallowed_types,
     reason = "privileged-helper lifecycle lock guard owns the OS-locked file handle"
@@ -32,7 +42,7 @@ impl UpdateLock {
         require_file_locking()?;
         fs::ensure_user_dir(paths.run())?;
         let path = paths.update_lock();
-        let file = open_update_lock_file(&path)?;
+        let file = open_lock_file(&path)?;
         fs::secure_sensitive_file(&path)?;
 
         lock_exclusively(&file, &path)?;
@@ -46,11 +56,25 @@ impl UpdateLock {
     }
 }
 
+impl JobsLock {
+    pub fn acquire(paths: &PvPaths) -> Result<Self, StateError> {
+        require_file_locking()?;
+        fs::ensure_user_dir(paths.run())?;
+        let path = paths.jobs_lock();
+        let file = open_lock_file(&path)?;
+        fs::secure_sensitive_file(&path)?;
+
+        lock_exclusively(&file, &path)?;
+
+        Ok(Self { _file: file })
+    }
+}
+
 impl HelperLifecycleLock {
     pub fn acquire(paths: &PvPaths) -> Result<Self, StateError> {
         require_file_locking()?;
         let path = paths.helper_lifecycle_lock();
-        let file = open_update_lock_file(&path)?;
+        let file = open_lock_file(&path)?;
         fs::secure_sensitive_file(&path)?;
 
         lock_helper_lifecycle_exclusively(&file, &path)?;
@@ -173,7 +197,7 @@ fn require_file_locking() -> Result<(), StateError> {
     clippy::disallowed_types,
     reason = "coordination lock helper owns direct file handles for OS locking"
 )]
-fn open_update_lock_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
+fn open_lock_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
     std::fs::OpenOptions::new()
         .read(true)
         .write(true)

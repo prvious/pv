@@ -475,9 +475,9 @@ Install and update commands submit daemon jobs, stream progress over the socket,
 
 `pv update` updates the PV application, its independently versioned privileged helper, and all installed Managed Resource tracks. Resource-specific update commands, such as `pv mysql:update`, update only installed tracks of that Managed Resource.
 
-`pv update` updates the application and helper before Managed Resources so the latest daemon owns resource update logic and manifest interpretation. It downloads only changed app/helper components, verifies each SHA-256 checksum and byte count, updates the registered helper before activating an app that requires it, installs changed release files under `~/.pv/bin/releases/<version>/`, atomically updates `~/.pv/bin/pv` when the app changed, coordinates daemon restart only for an app update, releases the self-update/daemon-mutation coordination lock, and then runs a daemon-owned Managed Resource update job. If verification, helper lifecycle, binary replacement, daemon restart, daemon health, or startup migration health fails, `pv update` stops and reports the failure instead of continuing to Managed Resource updates.
+`pv update` updates the application and helper before Managed Resources so the latest daemon owns resource update logic and manifest interpretation. It downloads only changed app/helper components, verifies each SHA-256 checksum and byte count, updates the registered helper before activating an app that requires it, installs changed release files under `~/.pv/bin/releases/<version>/`, atomically updates `~/.pv/bin/pv` when the app changed, coordinates daemon restart only for an app update, releases its update and daemon-job locks, and then runs a daemon-owned Managed Resource update job. If verification, helper lifecycle, binary replacement, daemon restart, daemon health, or startup migration health fails, `pv update` stops and reports the failure instead of continuing to Managed Resource updates.
 
-If the PV application is already current, `pv update` still continues to the daemon-owned Managed Resource update phase in the same foreground process after releasing the coordination lock. If a newer PV application release is activated successfully, `pv update` re-execs the active `~/.pv/bin/pv` through an internal hidden continuation path before submitting the Managed Resource update job. The continuation path skips the app-update phase, does not reprint the `PV update` header or app-phase lines, validates that it is running from the installed active release layout, and submits only the daemon-owned Managed Resource update phase.
+If the PV application is already current, `pv update` still continues to the daemon-owned Managed Resource update phase in the same foreground process after releasing the update and daemon-job locks. If a newer PV application release is activated successfully, `pv update` re-execs the active `~/.pv/bin/pv` through an internal hidden continuation path before submitting the Managed Resource update job. The continuation path skips the app-update phase, does not reprint the `PV update` header or app-phase lines, validates that it is running from the installed active release layout, and submits only the daemon-owned Managed Resource update phase.
 
 `pv update` does not prompt for confirmation before applying available PV application or Managed Resource updates. Running the command is the explicit user intent to update. Safety comes from checksum verification, atomic release installation, rollback, and non-destructive data handling.
 
@@ -487,7 +487,7 @@ If the PV application is already current, `pv update` still continues to the dae
 
 `pv update --check` requires the PV daemon to be running. If the daemon is not available, it fails with a clear message suggesting `pv daemon:restart` or `pv setup`.
 
-`pv update --check` is read-only and does not take the coordination lock. If a foreground self-update or daemon mutation owns the lock, it fails clearly instead of waiting or mutating state.
+`pv update --check` is read-only and does not retain either lock for the duration of the check. At its CLI and daemon preflight boundaries, it fails clearly if a foreground self-update owns `update.lock` instead of waiting during the daemon transition.
 
 `pv update --check --json` is supported in v1 and reports machine-readable PV application update availability plus installed Managed Resource track update availability. Non-check update progress does not need JSON output in v1.
 
@@ -677,23 +677,23 @@ PV v1 relies on HTTPS/GitHub trust for the PV app update manifest itself. The ap
 
 For `pv update`, the CLI fetches the PV app update manifest and performs PV binary self-update before handing Managed Resource update work to the daemon. The daemon owns Managed Resource manifest refresh, install, update, and runtime reconciliation through a mutating `RunJob` request with `kind = "update"` and `scope = "system"`.
 
-The mutating PV application phase runs in the foreground `pv update` process. The foreground process activates the new `~/.pv/bin/pv` symlink when needed, restarts or kickstarts the daemon, waits for daemon health, reports success or rollback, and releases the coordination lock before Managed Resource work begins. App-current continuation submits the daemon update job from the same process. App-updated continuation re-execs the active `~/.pv/bin/pv` into a hidden internal continuation path so the newly active CLI/protocol submits the daemon update job.
+The mutating PV application phase runs in the foreground `pv update` process. The foreground process activates the new `~/.pv/bin/pv` symlink when needed, restarts or kickstarts the daemon, waits for daemon health, reports success or rollback, and releases the update and daemon-job locks before Managed Resource work begins. App-current continuation submits the daemon update job from the same process. App-updated continuation re-execs the active `~/.pv/bin/pv` into a hidden internal continuation path so the newly active CLI/protocol submits the daemon update job.
 
 The PV application update phase runs in this order:
 
 1. Print `PV update`.
-2. Acquire the self-update/daemon-mutation coordination lock at `~/.pv/run/update.lock`.
+2. Acquire `~/.pv/run/update.lock`, then `~/.pv/run/jobs.lock`.
 3. Validate the installed active release symlink and running version.
 4. Validate or normalize the PV-owned LaunchAgent to `~/.pv/bin/pv daemon:run`.
 5. Fetch and parse the PV app update manifest.
-6. Compare the app version plus installed helper version/protocol with the selected platform asset. If both are current, report current, release the coordination lock, and continue to the Managed Resource phase in the same process.
+6. Compare the app version plus installed helper version/protocol with the selected platform asset. If both are current, report current, release both locks, and continue to the Managed Resource phase in the same process.
 7. Download and verify only the changed components. For a combined app/helper update, store the checksummed helper and its user-owned version, protocol, and checksum metadata beside the target app release, then install or replace the root helper before app activation. For a helper-only update, install and lifecycle-probe the root helper from the command-scoped download first, then promote the helper plus metadata into the current release; promotion failure restores both the previous registered helper and release files. `pv setup` uses the active release metadata for later helper repair. A helper lifecycle failure stops before app activation.
 8. Install and activate the newer app release when its version changed.
 9. Reload the validated PV-owned LaunchAgent with tolerant bootout/bootstrap, then kickstart the daemon without submitting `reconcile system`.
 10. Wait for daemon health.
-11. Release the coordination lock and re-exec the active `~/.pv/bin/pv` into the internal Managed Resource continuation.
+11. Release both locks and re-exec the active `~/.pv/bin/pv` into the internal Managed Resource continuation.
 
-The coordination lock covers the network fetch, binary swap, and daemon transition. `pv update` does not enqueue `reconcile system` or `update system` while the coordination lock is held. The Managed Resource update job is submitted only after the foreground app phase releases the lock or after the re-execed continuation starts.
+The two locks cover the network fetch, binary swap, and daemon transition. `pv update` does not enqueue `reconcile system` or `update system` while it holds them. The Managed Resource update job is submitted only after the foreground app phase releases both locks or after the re-execed continuation starts.
 
 If the PV application and helper are already current, top-level `pv update` reports both current and continues to the daemon-owned Managed Resource update phase without download, reinstall, reactivation, or daemon restart. A helper-only update downloads and explicitly authenticates only the helper lifecycle operation, does not reactivate the app, and does not restart the daemon. Helper-only publication reuses and verifies the immutable current app assets, publishes new helper-version-scoped release records, and rejects protocol changes because those require a matching app release. An app-only update does not replace the registered helper and does not prompt for administrator authentication.
 
@@ -735,11 +735,11 @@ If restoring the previous active symlink fails, stdout reports that rollback fai
 
 If reactivating the previous release reports an error but the active symlink already names that release, PV restores the previous helper and attempts to restart the daemon. Because the symlink update was not confirmed durable, rollback still reports failure and retains both the failed application release and helper rollback candidate for repair.
 
-PV coordinates foreground self-update with queued daemon mutations through an OS-level advisory filesystem lock whose legacy path remains `~/.pv/run/update.lock`. The foreground `pv update` process holds it during the binary swap and daemon transition. The daemon mutation queue holds the same lock while reconciliation or update work is queued or running. This is not a universal serializer for every foreground PV mutation.
+PV uses two OS-level advisory filesystem locks. `~/.pv/run/update.lock` protects foreground self-update and the daemon transition. `~/.pv/run/jobs.lock` protects the daemon mutation queue. `pv update` acquires `update.lock` and then `jobs.lock` before changing the application or daemon; the daemon queue acquires only `jobs.lock` and never waits while holding `update.lock`. Ordinary mutating CLI preflight checks only `update.lock`, so an active daemon reconciliation does not reject unrelated intent recording.
 
-Contention errors describe the active self-update/daemon-mutation coordination lock and its backing path. The persistent `update.lock` file is not itself evidence of contention: it may remain after the owning process exits, and an unlocked stale file does not block work. The active OS lock is released automatically when its owning file handle closes. Newly generated CLI, daemon, and job errors use this neutral coordination terminology. Previously persisted job summaries and errors remain historical data and are returned verbatim; PV does not migrate or retroactively normalize their wording.
+Contention errors describe the active coordination lock and its backing path. Persistent lock files are not themselves evidence of contention: they may remain after the owning process exits, and unlocked stale files do not block work. Active OS locks are released automatically when their owning file handles close.
 
-While the coordination lock is held, conflicting mutating commands fail clearly instead of waiting. The daemon rejects new mutating requests; it does not queue them behind a foreground self-update. Simple local read-only commands that do not require daemon protocol compatibility, such as `pv env`, may still run. Read-only commands that need daemon state, such as `pv status`, fail clearly during the transition.
+While `update.lock` is held, commands that require stable CLI/daemon compatibility fail clearly instead of waiting. While `pv update` owns `jobs.lock`, the daemon rejects direct mutation requests rather than queueing them behind the foreground update. Simple local read-only commands that do not require daemon protocol compatibility, such as `pv env`, may still run.
 
 After a successful PV application self-update, PV keeps the current app release plus one previous app release under `~/.pv/bin/releases/`. Older app releases are pruned. Pruning never removes the active release or the previous rollback release. If pruning fails after a successful app update and healthy daemon restart, `pv update` exits zero and reports the cleanup failure as a warning on stderr.
 
@@ -838,7 +838,9 @@ Concurrent writes use SQLite transactions with a short busy timeout. If a comman
 
 The daemon accepts multiple reconciliation requests but runs reconciliation jobs one at a time in a queue for v1. Internal work inside a job, such as artifact downloads, may still run in parallel.
 
-Daemon reconciliation job metadata and final status are persisted in `pv.db`. Live progress streaming is kept in memory. If the daemon crashes mid-job, the next daemon startup marks interrupted jobs failed or abandoned and reconciles desired state again.
+Daemon reconciliation job metadata and final status are persisted in `pv.db`. Live progress streaming is kept in memory. Every successful daemon startup schedules one System reconciliation through the mutation queue after listener and DNS health are available. If the previous daemon was interrupted mid-job, startup first marks those jobs failed or abandoned. Startup waits asynchronously for `jobs.lock` without blocking daemon health or recording a failed job for lock contention. Startup, ordinary System reconciliation, and System update jobs have distinct queue identities; repeated ordinary `reconcile system` requests received while startup is queued or running coalesce into at most one trailing ordinary reconciliation that rereads current desired state.
+
+After self-update restarts the daemon, the startup System reconciliation may begin after `jobs.lock` is released before or alongside the foreground Managed Resource continuation. Both requests serialize through `jobs.lock` and reconcile current state, so their order does not lose requested work.
 
 Once the daemon accepts a long-running job, the job continues even if the initiating CLI process disconnects. The CLI socket stream is a progress subscriber, not the owner of the work.
 

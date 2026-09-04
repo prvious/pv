@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use camino::Utf8PathBuf;
 use camino_tempfile::tempdir;
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::rdata::{A, AAAA};
@@ -9,7 +10,7 @@ use rcgen::generate_simple_self_signed;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use state::{
-    AppReleaseLayout, DNS_PREFERRED_PORT, Database, GatewayPort, JobRecord, JobStatus,
+    AppReleaseLayout, DNS_PREFERRED_PORT, Database, GatewayPort, JobRecord, JobStatus, JobsLock,
     LinkProjectInput, PortOwner, PortRequest, PvPaths, RUNTIME_PORT_FALLBACK_END,
     RUNTIME_PORT_FALLBACK_START, UpdateLock,
 };
@@ -169,6 +170,7 @@ async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Res
 async fn unsupported_job_streams_failure_event_and_persists_failed_status() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let jobs_lock = JobsLock::acquire(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
 
     let lines = request_lines(
@@ -183,6 +185,7 @@ async fn unsupported_job_streams_failure_event_and_persists_failed_status() -> R
     .await?;
 
     daemon.shutdown().await?;
+    drop(jobs_lock);
 
     let database = Database::open(&paths)?;
 
@@ -198,48 +201,174 @@ async fn unsupported_job_streams_failure_event_and_persists_failed_status() -> R
 async fn valid_reconciliation_scopes_stream_stub_completion() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    seed_foundation_caddy(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
 
-    let resource_lines = request_lines(
-        &paths,
-        json!({
-            "protocol_version": daemon::PROTOCOL_VERSION,
-            "command": "run_job",
-            "kind": "reconcile",
-            "scope": "resource:mysql:8.4",
-        }),
-    )
-    .await?;
+    let result = async {
+        wait_for_succeeded_job_id(&paths, "job_000001").await?;
+        let resource_lines = request_lines(
+            &paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "reconcile",
+                "scope": "resource:mysql:8.4",
+            }),
+        )
+        .await?;
 
-    daemon.shutdown().await?;
-
-    let database = Database::open(&paths)?;
+        Ok::<_, anyhow::Error>((resource_lines, Database::open(&paths)?.recent_jobs()?))
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    let snapshot = propagate_after_cleanup(result, cleanup_result)?;
 
     assert_with_normalized_timestamps(
         "valid_reconciliation_scopes_stream_stub_completion",
-        (resource_lines, database.recent_jobs()?),
+        snapshot,
     )?;
 
     Ok(())
 }
 
 #[tokio::test]
-async fn update_lock_rejects_mutating_jobs_but_keeps_health_available() -> Result<()> {
+async fn update_locks_delay_startup_reconciliation_but_keep_health_available() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    seed_foundation_caddy(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     let update_lock = UpdateLock::acquire(&paths)?;
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let jobs_lock = JobsLock::acquire(&paths)?;
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
 
-    let run_job_lines = request_lines(
-        &paths,
-        json!({
-            "protocol_version": daemon::PROTOCOL_VERSION,
-            "command": "run_job",
-            "kind": "reconcile",
-            "scope": "system",
-        }),
+    let result = async {
+        let run_job_lines = request_lines(
+            &paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "reconcile",
+                "scope": "system",
+            }),
+        )
+        .await?;
+        let health_lines = request_lines(
+            &paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "health",
+            }),
+        )
+        .await?;
+        let update_check_lines = request_lines(
+            &paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "managed_resource_update_check",
+            }),
+        )
+        .await?;
+
+        assert!(Database::open(&paths)?.recent_jobs()?.is_empty());
+
+        drop(jobs_lock);
+        drop(update_lock);
+        wait_for_succeeded_job_scope(&paths, "system").await?;
+
+        let database = Database::open(&paths)?;
+        let run_job_lines =
+            normalize_lock_path(run_job_lines, paths.jobs_lock().as_str(), "<jobs-lock>");
+        let update_check_lines = normalize_lock_path(
+            update_check_lines,
+            paths.update_lock().as_str(),
+            "<update-lock>",
+        );
+
+        Ok::<_, anyhow::Error>((
+            run_job_lines,
+            health_lines,
+            update_check_lines,
+            database.recent_jobs()?,
+        ))
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    let snapshot = propagate_after_cleanup(result, cleanup_result)?;
+
+    assert_with_normalized_timestamps(
+        "update_locks_delay_startup_reconciliation_but_keep_health_available",
+        snapshot,
     )
-    .await?;
+}
+
+#[tokio::test]
+async fn daemon_shutdown_cancels_startup_reconciliation_waiting_for_jobs_lock() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let jobs_lock = JobsLock::acquire(&paths)?;
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+
+    timeout(Duration::from_secs(1), daemon.shutdown()).await??;
+    drop(jobs_lock);
+    sleep(Duration::from_millis(100)).await;
+
+    let _jobs_lock = JobsLock::acquire(&paths)?;
+    assert!(Database::open(&paths)?.recent_jobs()?.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn daemon_shutdown_cancels_active_startup_reconciliation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let [validation_started, _release_validation] = seed_barrier_foundation_caddy(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+
+    let result = async {
+        let daemon =
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        gateway_guard.attach_daemon(daemon);
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if state::fs::path_entry_exists(&validation_started)? {
+                    return Ok::<(), anyhow::Error>(());
+                }
+                sleep(JOB_STATUS_POLL_INTERVAL).await;
+            }
+        })
+        .await??;
+        wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
+
+        timeout(Duration::from_secs(1), gateway_guard.shutdown_daemon()).await??;
+
+        let job = wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
+        assert_eq!(
+            job.error.as_deref(),
+            Some("reconciliation was abandoned before completion")
+        );
+
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    propagate_after_cleanup(result, cleanup_result)
+}
+
+#[tokio::test]
+async fn startup_reconciliation_records_non_contention_enqueue_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_user_dir(&paths.jobs_lock())?;
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+
     let health_lines = request_lines(
         &paths,
         json!({
@@ -248,34 +377,126 @@ async fn update_lock_rejects_mutating_jobs_but_keeps_health_available() -> Resul
         }),
     )
     .await?;
-    let update_check_lines = request_lines(
-        &paths,
-        json!({
-            "protocol_version": daemon::PROTOCOL_VERSION,
-            "command": "managed_resource_update_check",
-        }),
-    )
-    .await?;
+    let job = wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
 
     daemon.shutdown().await?;
-    drop(update_lock);
 
-    let database = Database::open(&paths)?;
-    let run_job_lines = normalize_update_lock_path(run_job_lines, paths.update_lock().as_str());
-    let update_check_lines =
-        normalize_update_lock_path(update_check_lines, paths.update_lock().as_str());
-
-    assert_with_normalized_timestamps(
-        "update_lock_rejects_mutating_jobs_but_keeps_health_available",
-        (
-            run_job_lines,
-            health_lines,
-            update_check_lines,
-            database.recent_jobs()?,
-        ),
-    )?;
+    assert_eq!(health_lines[0]["status"], json!("ok"));
+    assert_eq!(job.kind, "reconcile");
+    assert!(
+        job.error
+            .as_deref()
+            .is_some_and(|error| error.contains(paths.jobs_lock().as_str()))
+    );
 
     Ok(())
+}
+
+#[tokio::test]
+async fn startup_reconciliation_starts_then_adopts_gateway_across_daemon_restart() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    seed_foundation_caddy(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+
+    let result = async {
+        let daemon =
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        gateway_guard.attach_daemon(daemon);
+        wait_for_succeeded_job_id(&paths, "job_000001").await?;
+        let initial_pid = state::fs::read_to_string(&paths.gateway_pid())?;
+
+        gateway_guard.shutdown_daemon().await?;
+
+        let daemon =
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        gateway_guard.attach_daemon(daemon);
+        wait_for_succeeded_job_id(&paths, "job_000002").await?;
+        let adopted_pid = state::fs::read_to_string(&paths.gateway_pid())?;
+        let jobs = Database::open(&paths)?.recent_jobs()?;
+
+        Ok::<_, anyhow::Error>((initial_pid, adopted_pid, jobs))
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    let (initial_pid, adopted_pid, jobs) = propagate_after_cleanup(result, cleanup_result)?;
+
+    assert_eq!(adopted_pid, initial_pid);
+    assert_eq!(jobs.len(), 2);
+    assert!(jobs.iter().all(|job| {
+        job.kind == "reconcile" && job.scope == "system" && job.status == JobStatus::Succeeded
+    }));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn repeated_system_requests_during_startup_create_one_trailing_job() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let [validation_started, release_validation] = seed_barrier_foundation_caddy(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+
+    let result = async {
+        let daemon =
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        gateway_guard.attach_daemon(daemon);
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if state::fs::path_entry_exists(&validation_started)? {
+                    return Ok::<(), anyhow::Error>(());
+                }
+                sleep(JOB_STATUS_POLL_INTERVAL).await;
+            }
+        })
+        .await??;
+
+        let request = serde_json::to_string(&json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "reconcile",
+            "scope": "system",
+        }))?;
+        let mut readers = Vec::new();
+        let mut responses = Vec::new();
+        for _ in 0..3 {
+            let mut stream = UnixStream::connect(paths.daemon_socket()).await?;
+            stream.write_all(request.as_bytes()).await?;
+            stream.write_all(b"\n").await?;
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await?;
+            responses.push(serde_json::from_str::<Value>(line.trim_end())?);
+            readers.push(reader);
+        }
+
+        assert!(responses.iter().all(|response| {
+            response["job_id"] == "job_000002"
+                && response["status"]
+                    .as_str()
+                    .is_some_and(|status| status == "accepted" || status == "coalesced")
+        }));
+        state::fs::write_sensitive_file(&release_validation, "release\n")?;
+
+        for mut reader in readers {
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).await? == 0 {
+                    break;
+                }
+            }
+        }
+        wait_for_succeeded_job_count(&paths, "system", 2).await?;
+
+        let jobs = Database::open(&paths)?.recent_jobs()?;
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs.iter().all(|job| job.status == JobStatus::Succeeded));
+
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    propagate_after_cleanup(result, cleanup_result)
 }
 
 #[tokio::test]
@@ -337,10 +558,12 @@ async fn daemon_start_marks_abandoned_running_jobs_failed() -> Result<()> {
     database.start_job("reconcile", "system")?;
     database.start_job("update", "system")?;
     drop(database);
+    let jobs_lock = JobsLock::acquire(&paths)?;
 
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     daemon.shutdown().await?;
+    drop(jobs_lock);
 
     let database = Database::open(&paths)?;
 
@@ -385,6 +608,7 @@ async fn duplicate_daemon_start_does_not_fail_live_running_jobs() -> Result<()> 
 async fn managed_resource_update_check_returns_success_response() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let jobs_lock = JobsLock::acquire(&paths)?;
     let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
     let manifest_requests = manifest_client.request_count();
     let daemon =
@@ -405,6 +629,7 @@ async fn managed_resource_update_check_returns_success_response() -> Result<()> 
     .await?;
 
     daemon.shutdown().await?;
+    drop(jobs_lock);
 
     assert_with_normalized_timestamps(
         "managed_resource_update_check_returns_success_response",
@@ -476,7 +701,7 @@ async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_suc
     assert_eq!(job.scope, "system");
     assert_eq!(job.status, JobStatus::Succeeded);
     assert_eq!(manifest_request_count(&manifest_requests)?, 1);
-    assert_eq!(database.recent_jobs()?.len(), 1);
+    assert_eq!(database.recent_jobs()?.len(), 2);
     assert_with_normalized_timestamps(
         "update_job_refreshes_manifest_without_installed_tracks_and_persists_success",
         (
@@ -497,10 +722,10 @@ async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_suc
 }
 
 #[tokio::test]
-async fn update_lock_rejects_update_jobs_before_manifest_refresh() -> Result<()> {
+async fn jobs_lock_rejects_update_jobs_before_manifest_refresh() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let update_lock = UpdateLock::acquire(&paths)?;
+    let jobs_lock = JobsLock::acquire(&paths)?;
     let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
     let manifest_requests = manifest_client.request_count();
     let daemon =
@@ -523,13 +748,13 @@ async fn update_lock_rejects_update_jobs_before_manifest_refresh() -> Result<()>
     .await?;
 
     daemon.shutdown().await?;
-    drop(update_lock);
+    drop(jobs_lock);
 
-    let lines = normalize_update_lock_path(lines, paths.update_lock().as_str());
+    let lines = normalize_lock_path(lines, paths.jobs_lock().as_str(), "<jobs-lock>");
     let database = Database::open(&paths)?;
 
     assert_with_normalized_timestamps(
-        "update_lock_rejects_update_jobs_before_manifest_refresh",
+        "jobs_lock_rejects_update_jobs_before_manifest_refresh",
         (
             lines,
             database.recent_jobs()?,
@@ -540,7 +765,7 @@ async fn update_lock_rejects_update_jobs_before_manifest_refresh() -> Result<()>
     Ok(())
 }
 
-fn normalize_update_lock_path(mut lines: Vec<Value>, update_lock_path: &str) -> Vec<Value> {
+fn normalize_lock_path(mut lines: Vec<Value>, lock_path: &str, placeholder: &str) -> Vec<Value> {
     for line in &mut lines {
         let Some(message) = line.get_mut("message") else {
             continue;
@@ -549,7 +774,7 @@ fn normalize_update_lock_path(mut lines: Vec<Value>, update_lock_path: &str) -> 
             continue;
         };
 
-        *message = json!(message_text.replace(update_lock_path, "<update-lock>"));
+        *message = json!(message_text.replace(lock_path, placeholder));
     }
 
     lines
@@ -589,6 +814,28 @@ fn seed_foundation_caddy(paths: &PvPaths) -> Result<()> {
         |_port| true,
     )?;
     Ok(())
+}
+
+fn seed_barrier_foundation_caddy(paths: &PvPaths) -> Result<[Utf8PathBuf; 2]> {
+    seed_foundation_caddy(paths)?;
+    let executable = paths.home().join("fake-caddy-release/bin/caddy");
+    let validation_started = paths.run().join("startup-validation-started");
+    let release_validation = paths.run().join("release-startup-validation");
+    let wrapper_source = paths.home().join("caddy-startup-barrier");
+    let caddy_script = FOUNDATION_FAKE_CADDY_SCRIPT
+        .strip_prefix("#!/bin/sh\n")
+        .ok_or_else(|| anyhow!("fake Caddy script is missing its shebang"))?;
+    state::fs::write_sensitive_file(
+        &wrapper_source,
+        &format!(
+            "#!/bin/sh\nset -eu\nif [ \"${{1:-}}\" = \"validate\" ]; then\n  : > \"{validation_started}\"\n  while [ ! -f \"{release_validation}\" ]; do sleep 0.01; done\nfi\n{caddy_script}"
+        ),
+    )?;
+    let wrapper_install =
+        AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.1", &wrapper_source)?;
+    state::fs::rename(wrapper_install.binary_path(), &executable)?;
+
+    Ok([validation_started, release_validation])
 }
 
 fn available_foundation_gateway_ports() -> Result<[u16; 2]> {
@@ -656,6 +903,14 @@ impl SeededGatewayGuard {
 
     fn attach_worker(&mut self, track: &str) {
         self.worker_track = Some(track.to_owned());
+    }
+
+    async fn shutdown_daemon(&mut self) -> Result<()> {
+        let Some(daemon) = self.daemon.take() else {
+            return Ok(());
+        };
+
+        daemon.shutdown().await.map_err(|error| anyhow!(error))
     }
 
     async fn shutdown_and_cleanup(&mut self) -> Result<()> {
@@ -917,6 +1172,7 @@ async fn blocking_client_waits_for_reconciliation_stream_completion() -> Result<
 async fn blocking_client_checks_managed_resource_updates() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let jobs_lock = JobsLock::acquire(&paths)?;
     let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
     let manifest_requests = manifest_client.request_count();
     let daemon =
@@ -933,6 +1189,7 @@ async fn blocking_client_checks_managed_resource_updates() -> Result<()> {
     })
     .await??;
     daemon.shutdown().await?;
+    drop(jobs_lock);
 
     assert!(update_check.managed_resources.is_empty());
     assert_eq!(manifest_request_count(&manifest_requests)?, 1);
@@ -1068,6 +1325,7 @@ async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
 async fn blocking_client_reports_failed_job_streams() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let jobs_lock = JobsLock::acquire(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
     let client_paths = paths.clone();
 
@@ -1076,6 +1334,7 @@ async fn blocking_client_reports_failed_job_streams() -> Result<()> {
     })
     .await?;
     daemon.shutdown().await?;
+    drop(jobs_lock);
     let database = Database::open(&paths)?;
     let jobs = database.recent_jobs()?;
 
@@ -1084,12 +1343,14 @@ async fn blocking_client_reports_failed_job_streams() -> Result<()> {
         Err(daemon::DaemonError::DaemonRejected { message })
             if message == "unsupported daemon job `unsupported` with scope `system`"
     ));
-    assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0].kind, "unsupported");
-    assert_eq!(jobs[0].scope, "system");
-    assert_eq!(jobs[0].status, JobStatus::Failed);
+    let job = jobs
+        .iter()
+        .find(|job| job.kind == "unsupported")
+        .ok_or_else(|| anyhow!("missing unsupported job"))?;
+    assert_eq!(job.scope, "system");
+    assert_eq!(job.status, JobStatus::Failed);
     assert_eq!(
-        jobs[0].error.as_deref(),
+        job.error.as_deref(),
         Some("unsupported daemon job `unsupported` with scope `system`")
     );
 
@@ -1180,6 +1441,7 @@ async fn blocking_client_times_out_when_daemon_withholds_response() -> Result<()
 async fn invalid_reconciliation_scope_reports_scope_parse_failure() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let jobs_lock = JobsLock::acquire(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
 
     let lines = request_lines(
@@ -1194,6 +1456,7 @@ async fn invalid_reconciliation_scope_reports_scope_parse_failure() -> Result<()
     .await?;
 
     daemon.shutdown().await?;
+    drop(jobs_lock);
 
     let database = Database::open(&paths)?;
 
@@ -1209,6 +1472,7 @@ async fn invalid_reconciliation_scope_reports_scope_parse_failure() -> Result<()
 async fn protocol_mismatch_returns_restart_guidance_without_creating_a_job() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let _jobs_lock = JobsLock::acquire(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
 
     let lines = request_lines(
@@ -1350,7 +1614,7 @@ async fn disconnected_job_stream_still_persists_final_status() -> Result<()> {
         assert_eq!(health_lines[0]["status"], json!("ok"));
         assert_eq!(health_lines[0]["message"], json!("daemon healthy"));
 
-        wait_for_succeeded_job_id(&paths, "job_000001").await?;
+        wait_for_succeeded_job_count(&paths, "system", 2).await?;
 
         Ok::<(), anyhow::Error>(())
     }
@@ -1664,6 +1928,14 @@ async fn wait_for_succeeded_job_id(paths: &PvPaths, id: &str) -> Result<JobRecor
 }
 
 async fn wait_for_succeeded_job_scope(paths: &PvPaths, scope: &str) -> Result<JobRecord> {
+    wait_for_job_scope_status(paths, scope, JobStatus::Succeeded).await
+}
+
+async fn wait_for_job_scope_status(
+    paths: &PvPaths,
+    scope: &str,
+    status: JobStatus,
+) -> Result<JobRecord> {
     let deadline = Instant::now() + JOB_STATUS_WAIT_TIMEOUT;
 
     loop {
@@ -1671,7 +1943,7 @@ async fn wait_for_succeeded_job_scope(paths: &PvPaths, scope: &str) -> Result<Jo
         if let Some(job) = database
             .recent_jobs()?
             .into_iter()
-            .find(|job| job.scope == scope && job.status == JobStatus::Succeeded)
+            .find(|job| job.scope == scope && job.status == status)
         {
             return Ok(job);
         }
@@ -1684,7 +1956,36 @@ async fn wait_for_succeeded_job_scope(paths: &PvPaths, scope: &str) -> Result<Jo
     }
 
     Err(anyhow::anyhow!(
-        "succeeded job with scope {scope:?} was not recorded"
+        "{status:?} job with scope {scope:?} was not recorded"
+    ))
+}
+
+async fn wait_for_succeeded_job_count(
+    paths: &PvPaths,
+    scope: &str,
+    expected_count: usize,
+) -> Result<()> {
+    let deadline = Instant::now() + JOB_STATUS_WAIT_TIMEOUT;
+
+    loop {
+        let succeeded_count = Database::open(paths)?
+            .recent_jobs()?
+            .into_iter()
+            .filter(|job| job.scope == scope && job.status == JobStatus::Succeeded)
+            .count();
+        if succeeded_count >= expected_count {
+            return Ok(());
+        }
+
+        if Instant::now() >= deadline {
+            break;
+        }
+
+        sleep(JOB_STATUS_POLL_INTERVAL).await;
+    }
+
+    Err(anyhow!(
+        "expected {expected_count} succeeded jobs with scope {scope:?}"
     ))
 }
 
