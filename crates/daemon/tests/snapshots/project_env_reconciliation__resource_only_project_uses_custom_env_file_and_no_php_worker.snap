@@ -24,12 +24,12 @@ expression: snapshot
         },
         Object {
             "job_id": String("job_000001"),
-            "message": String("Project env rendered"),
+            "message": String("Project env rendered; Gateway runtime unchanged; Project has no route changes"),
             "type": String("progress"),
         },
         Object {
             "job_id": String("job_000001"),
-            "summary": String("Project env rendered"),
+            "summary": String("Project env rendered; Gateway runtime unchanged; Project has no route changes"),
             "type": String("job_completed"),
         },
     ],
