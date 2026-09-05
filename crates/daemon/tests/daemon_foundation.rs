@@ -114,15 +114,19 @@ async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Res
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
 
-    let lines_result = request_lines(
-        &paths,
-        json!({
-            "protocol_version": daemon::PROTOCOL_VERSION,
-            "command": "run_job",
-            "kind": "reconcile",
-            "scope": "system",
-        }),
-    )
+    let lines_result = async {
+        wait_for_succeeded_job_id(&paths, "job_000001").await?;
+        request_lines(
+            &paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "reconcile",
+                "scope": "system",
+            }),
+        )
+        .await
+    }
     .await;
 
     let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
