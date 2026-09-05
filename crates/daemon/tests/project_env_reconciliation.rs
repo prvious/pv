@@ -590,8 +590,17 @@ async fn daemon_health_tick_replaces_expiring_tls_certificate_without_explicit_r
         state::fs::read_to_string(&paths.project_tls_certificate(&project.id))?;
     let config_modified_at = state::fs::modified_at(&project.config_path)?;
 
+    let finished_system_jobs = finished_system_job_count(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    wait_for_new_finished_system_job(&paths, finished_system_jobs).await?;
+    let jobs_before_health_tick = Database::open(&paths)?.recent_jobs()?;
+    assert_eq!(jobs_before_health_tick.len(), 1);
+    assert_eq!(jobs_before_health_tick[0].scope, "system");
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(30)).await;
+    tokio::task::yield_now().await;
+    tokio::time::resume();
     let job = wait_for_succeeded_project_job(&paths, &project.id).await?;
     let (certificate_pem, private_key_pem) = read_project_tls_files(&paths, &project)?;
     daemon.shutdown().await?;
@@ -1334,8 +1343,14 @@ async fn malformed_config_with_existing_tls_is_renewed_by_daemon_health() -> Res
         Err(error) => error.to_string(),
     };
 
+    let finished_system_jobs = finished_system_job_count(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    wait_for_new_finished_system_job(&paths, finished_system_jobs).await?;
+    tokio::time::pause();
+    tokio::time::advance(std::time::Duration::from_secs(30)).await;
+    tokio::task::yield_now().await;
+    tokio::time::resume();
     let mut failed_job = None;
     for _attempt in 0..50 {
         let certificate_exists =

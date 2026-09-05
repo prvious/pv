@@ -4238,7 +4238,7 @@ async fn gateway_reconciliation_rolls_back_config_when_runtime_readiness_fails()
     drop(database);
 
     let result =
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(100)).await;
+        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(250)).await;
     let root_config = fs::read_to_string(&paths.gateway_root_config())?;
     let load_bodies = fake_admin_load_bodies(&paths.gateway_root_config())?;
     let requests = fake_admin_requests(&paths.gateway_root_config())?;

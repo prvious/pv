@@ -1091,8 +1091,16 @@ async fn gateway_pf_routing_state(
     paths: &PvPaths,
     plan: &RuntimePlan,
 ) -> Result<GatewayPfRoutingState, DaemonError> {
+    gateway_pf_routing_state_for_ports(paths, plan.gateway.http_port, plan.gateway.https_port).await
+}
+
+async fn gateway_pf_routing_state_for_ports(
+    paths: &PvPaths,
+    http_port: u16,
+    https_port: u16,
+) -> Result<GatewayPfRoutingState, DaemonError> {
     let paths = paths.clone();
-    let expected = platform::PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port);
+    let expected = platform::PfRedirectConfig::new(http_port, https_port);
     spawn_gateway_pf_inspection(move || {
         let files_current = pf_files_current(&paths, &expected);
 
@@ -1104,6 +1112,44 @@ async fn gateway_pf_routing_state(
         }
     })
     .await
+}
+
+/// Returns true only when the Gateway is ready and its PF integration needs no reconciliation.
+pub(crate) async fn persisted_gateway_is_healthy(
+    paths: &PvPaths,
+    http_port: u16,
+    https_port: u16,
+) -> Result<bool, DaemonError> {
+    let pf_routing_state = gateway_pf_routing_state_for_ports(paths, http_port, https_port).await?;
+    let probe_ports = if pf_routing_state == GatewayPfRoutingState::Inactive {
+        GatewayReadinessPorts {
+            http: http_port,
+            https: https_port,
+        }
+    } else {
+        GatewayReadinessPorts {
+            http: PUBLIC_HTTP_PORT,
+            https: PUBLIC_HTTPS_PORT,
+        }
+    };
+    let check = gateway_identity_readiness_check(
+        http_port,
+        https_port,
+        probe_ports.http,
+        probe_ports.https,
+        &paths.ca_certificate(),
+    );
+
+    let ready = matches!(
+        timeout(OWNED_READINESS_PROBE_TIMEOUT, probe_readiness_once(&check)).await,
+        Ok(Ok(()))
+    );
+
+    Ok(ready
+        && !matches!(
+            pf_routing_state,
+            GatewayPfRoutingState::Inactive | GatewayPfRoutingState::Drifted
+        ))
 }
 
 async fn spawn_gateway_pf_inspection<Inspect>(

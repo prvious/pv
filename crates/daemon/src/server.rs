@@ -1,23 +1,25 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::ProjectConfigFile;
 use futures_util::StreamExt;
-use state::{Database, ProjectMode, PvPaths};
+use state::PvPaths;
 use tokio::io::AsyncRead;
 use tokio::sync::oneshot;
 use tokio::task::{JoinHandle, JoinSet};
-use tokio::time::{MissedTickBehavior, sleep, timeout};
+use tokio::time::{Instant, sleep, sleep_until, timeout};
 
 use crate::DaemonError;
+use crate::health::{
+    RUNTIME_HEALTH_INTERVAL, RuntimeHealthScan, RuntimeRecoveryBackoff, scan_runtime_health,
+};
 use crate::ipc::{LocalListener, LocalStream};
 use crate::jobs::{
     record_background_reconciliation_error, run_background_reconciliation_job, run_job,
     run_startup_reconciliation_job,
 };
 use crate::managed_resources::ManagedResourceRuntimeCatalog;
-use crate::project_env::{project_tls_artifact_exists, project_tls_files_are_current};
-use crate::reconciliation::{ReconciliationQueue, ReconciliationScope};
+use crate::reconciliation::ReconciliationQueue;
+use crate::structured_log;
 use crate::watcher::ProjectConfigWatcher;
 use protocol::{
     DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION, write_line,
@@ -27,7 +29,6 @@ const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 const PROJECT_CONFIG_DEBOUNCE: Duration = Duration::from_millis(50);
 const PROJECT_CONFIG_WATCH_INTERVAL: Duration = Duration::from_millis(100);
 const REQUEST_LINE_TIMEOUT: Duration = Duration::from_secs(30);
-const TLS_HEALTH_INTERVAL: Duration = Duration::from_secs(30);
 
 pub(crate) async fn serve(
     paths: PvPaths,
@@ -69,9 +70,15 @@ pub(crate) async fn serve(
                     runtime_catalog.as_deref(),
                 )
                 .await
+                    && let Err(recording_error) =
+                        record_background_reconciliation_error(&paths, &scope_text, &error)
                 {
-                    let _result =
-                        record_background_reconciliation_error(&paths, &scope_text, &error);
+                    structured_log::background_reconciliation_error_recording_failed(
+                        &paths,
+                        &scope_text,
+                        &error.to_string(),
+                        &recording_error.to_string(),
+                    );
                 }
             });
         },
@@ -83,10 +90,9 @@ pub(crate) async fn serve(
     );
     let mut watcher_task = tokio::spawn(watcher.run());
     let mut watcher_task_finished = false;
-    let mut tls_health_task: Option<JoinHandle<Result<Vec<ReconciliationScope>, DaemonError>>> =
-        None;
-    let mut tls_health_interval = tokio::time::interval(TLS_HEALTH_INTERVAL);
-    tls_health_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut runtime_health_task: Option<JoinHandle<Result<RuntimeHealthScan, DaemonError>>> = None;
+    let mut recovery_backoff = RuntimeRecoveryBackoff::default();
+    let mut next_health_scan = recovery_backoff.next_scan_at(Instant::now());
 
     let result = loop {
         tokio::select! {
@@ -116,33 +122,51 @@ pub(crate) async fn serve(
                     break Err(error);
                 }
             }
-            tls_health_result = async {
-                match tls_health_task.as_mut() {
+            runtime_health_result = async {
+                match runtime_health_task.as_mut() {
                     Some(task) => Some(task.await),
                     None => None,
                 }
-            }, if tls_health_task.is_some() => {
-                tls_health_task = None;
-                if let Some(tls_health_result) = tls_health_result {
-                    match tls_health_result {
-                        Ok(Ok(scopes)) => {
+            }, if runtime_health_task.is_some() => {
+                runtime_health_task = None;
+                let now = Instant::now();
+                if let Some(runtime_health_result) = runtime_health_result {
+                    match runtime_health_result {
+                        Ok(Ok(scan)) => {
+                            for error in &scan.errors {
+                                structured_log::runtime_health_probe_failed(
+                                    &paths,
+                                    &error.subject,
+                                    &error.scope,
+                                    &error.error,
+                                );
+                            }
+                            let mut scopes = recovery_backoff.scopes_to_reconcile(now, &scan);
+                            scopes.extend(scan.maintenance_scopes);
                             for scope in scopes {
                                 debouncer.request(scope).await;
                             }
+                            next_health_scan = recovery_backoff.next_scan_at(now);
                         }
-                        Ok(Err(_error)) => {}
+                        Ok(Err(error)) => {
+                            structured_log::runtime_health_scan_failed(&paths, &error.to_string());
+                            next_health_scan = now + RUNTIME_HEALTH_INTERVAL;
+                        }
                         Err(error) if error.is_panic() => break Err(error.into()),
-                        Err(_error) => {}
+                        Err(error) => {
+                            structured_log::runtime_health_scan_failed(&paths, &error.to_string());
+                            next_health_scan = now + RUNTIME_HEALTH_INTERVAL;
+                        }
                     }
                 }
             }
-            _ = tls_health_interval.tick() => {
-                if tls_health_task.is_none() {
-                    let health_paths = paths.clone();
-                    tls_health_task = Some(tokio::task::spawn_blocking(move || {
-                        collect_project_tls_health_scopes(&health_paths)
-                    }));
-                }
+            _ = sleep_until(next_health_scan), if runtime_health_task.is_none() => {
+                let health_paths = paths.clone();
+                let health_runtime_catalog = runtime_catalog.clone();
+                runtime_health_task = Some(tokio::spawn(scan_runtime_health(
+                    health_paths,
+                    health_runtime_catalog,
+                )));
             }
             accepted = listener.accept() => {
                 match accepted {
@@ -181,7 +205,7 @@ pub(crate) async fn serve(
         watcher_task.abort();
         let _join_result = watcher_task.await;
     }
-    if let Some(task) = tls_health_task.take() {
+    if let Some(task) = runtime_health_task.take() {
         task.abort();
         let _join_result = task.await;
     }
@@ -218,41 +242,6 @@ async fn stop_startup_task(
     };
 
     handle_startup_task_result(paths, task.await)
-}
-
-fn collect_project_tls_health_scopes(
-    paths: &PvPaths,
-) -> Result<Vec<ReconciliationScope>, DaemonError> {
-    let Some(database) = Database::open_read_only(paths)? else {
-        return Ok(Vec::new());
-    };
-    let ca_certificate_pem = state::fs::read_to_string(&paths.ca_certificate())?;
-    let _ca_private_key_pem = state::fs::read_to_string(&paths.ca_private_key())?;
-    let projects = database.projects()?;
-    let mut scopes = Vec::new();
-
-    for project in projects {
-        if project.mode == ProjectMode::ResourceOnly {
-            continue;
-        }
-        let should_assess = match ProjectConfigFile::read_from_root(&project.path) {
-            Ok(config_file) => config_file.config.uses_tls_placeholders(),
-            Err(_error) => project_tls_artifact_exists(paths, &project).unwrap_or(false),
-        };
-        if !should_assess {
-            continue;
-        }
-        let Ok(is_current) = project_tls_files_are_current(paths, &project, &ca_certificate_pem)
-        else {
-            continue;
-        };
-        if !is_current && let Ok(scope) = ReconciliationScope::project(project.id) {
-            scopes.push(scope);
-        }
-    }
-
-    scopes.sort();
-    Ok(scopes)
 }
 
 async fn handle_connection(
@@ -350,7 +339,8 @@ mod tests {
     use time::{Duration as CertificateDuration, OffsetDateTime};
     use tokio::io::duplex;
 
-    use super::{collect_project_tls_health_scopes, read_request_line};
+    use super::read_request_line;
+    use crate::health::collect_project_tls_health_scopes;
     use crate::reconciliation::ReconciliationScope;
     use protocol::transport;
 
@@ -419,7 +409,10 @@ mod tests {
         state::fs::remove_file(&paths.project_tls_private_key(&malformed_cert_only_project.id))?;
         state::fs::remove_file(&paths.project_tls_certificate(&malformed_key_only_project.id))?;
 
-        let scopes = collect_project_tls_health_scopes(&paths)?;
+        let Some(database) = Database::open_read_only(&paths)? else {
+            anyhow::bail!("health test database was not created");
+        };
+        let scopes = collect_project_tls_health_scopes(&paths, &database)?;
         let mut expected_scopes = vec![
             ReconciliationScope::project(expiring_project.id.clone())?,
             ReconciliationScope::project(invalid_project.id.clone())?,
@@ -454,7 +447,10 @@ mod tests {
             "env: [\n",
         )?;
 
-        assert!(collect_project_tls_health_scopes(&paths)?.is_empty());
+        let Some(database) = Database::open_read_only(&paths)? else {
+            anyhow::bail!("health test database was not created");
+        };
+        assert!(collect_project_tls_health_scopes(&paths, &database)?.is_empty());
         assert!(!state::fs::path_entry_exists(
             &paths.project_tls_certificate(&project.id)
         )?);
