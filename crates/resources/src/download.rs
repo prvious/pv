@@ -1,11 +1,12 @@
 use std::io::Write;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
+use camino_tempfile::Utf8TempDir;
 use sha2::{Digest, Sha256};
 
 use crate::fs;
@@ -17,9 +18,8 @@ use crate::{
 const DOWNLOAD_ATTEMPTS: usize = 2;
 const DOWNLOAD_RETRY_BACKOFF: Duration = Duration::from_millis(300);
 pub const MAX_PARALLEL_ARTIFACT_DOWNLOADS: usize = 4;
-static VERIFIED_DOWNLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ArtifactDownload {
     path: Utf8PathBuf,
     from_cache: bool,
@@ -29,9 +29,10 @@ pub struct ArtifactDownload {
     sha256: Sha256Digest,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 struct VerifiedArtifactFile {
     path: Utf8PathBuf,
+    _directory: Utf8TempDir,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -297,16 +298,16 @@ impl ArtifactDownload {
 
 impl VerifiedArtifactFile {
     fn new_for(cache_path: &Utf8Path) -> Result<Arc<Self>> {
-        let Some(parent) = cache_path.parent() else {
-            return Err(ResourcesError::Filesystem {
-                path: cache_path.to_string(),
-                reason: "artifact download has no parent directory".to_string(),
-            });
-        };
-        let counter = VERIFIED_DOWNLOAD_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = parent.join(format!(".verified-{}-{counter}.tar.gz", std::process::id()));
+        let directory = Utf8TempDir::new().map_err(|error| ResourcesError::Filesystem {
+            path: cache_path.to_string(),
+            reason: format!("could not create verified artifact temporary directory: {error}"),
+        })?;
+        let path = directory.path().join("artifact.tar.gz");
 
-        Ok(Arc::new(Self { path }))
+        Ok(Arc::new(Self {
+            path,
+            _directory: directory,
+        }))
     }
 
     fn copy_and_hash(source_path: &Utf8Path) -> Result<(Arc<Self>, String)> {
@@ -340,18 +341,6 @@ impl VerifiedArtifactFile {
         let actual = sha256_digest_hex(hasher.finalize());
 
         Ok((verified_file, actual))
-    }
-}
-
-impl Drop for VerifiedArtifactFile {
-    fn drop(&mut self) {
-        if let Err(error) = fs::remove_file_if_exists(&self.path) {
-            let _fallback_result = writeln!(
-                std::io::stderr().lock(),
-                "PV could not remove verified artifact snapshot `{}`: {error}",
-                self.path
-            );
-        }
     }
 }
 

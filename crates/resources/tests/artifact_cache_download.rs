@@ -12,6 +12,7 @@ use resources::{
     DownloadProgress, DownloadProgressEvent, ManifestArtifact, ResourceHttpClient, ResourceName,
     ResourcesError, TargetPlatform, TrackName, UreqResourceHttpClient,
 };
+use state::fs::read_dir_paths;
 
 #[test]
 fn manifest_cache_fetches_latest_and_falls_back_to_cached_manifest() -> Result<()> {
@@ -158,7 +159,8 @@ fn manifest_cache_rejects_incompatible_latest_manifest_even_when_cached_manifest
 #[test]
 fn artifact_downloader_caches_verified_artifacts_by_manifest_checksum() -> Result<()> {
     let tempdir = tempdir()?;
-    let downloader = ArtifactDownloader::new(tempdir.path().join("downloads"));
+    let downloads_dir = tempdir.path().join("downloads");
+    let downloader = ArtifactDownloader::new(&downloads_dir);
     let artifact = redis_artifact()?;
     let client = ScriptedClient::new().with_bytes(ARTIFACT_BYTES);
 
@@ -175,6 +177,11 @@ fn artifact_downloader_caches_verified_artifacts_by_manifest_checksum() -> Resul
     assert!(cached.is_from_cache());
     assert_eq!(downloaded.path(), cached.path());
     assert_debug_snapshot!(cached.path().file_name());
+    assert_eq!(
+        read_dir_paths(&downloads_dir)?,
+        vec![cached.path().to_path_buf()],
+        "live verified snapshots must stay outside persistent downloads"
+    );
 
     Ok(())
 }
