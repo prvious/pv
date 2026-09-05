@@ -42,8 +42,15 @@ pub(crate) struct ProjectResourceAllocationPlan {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ProjectDemand {
     pub(crate) resource_tracks: BTreeSet<DemandedResourceTrack>,
+    resource_selections: BTreeMap<String, ProjectResourceTrackDemand>,
     pub(crate) php_track: Option<ProjectPhpTrackDemand>,
     pub(crate) used_persisted_state: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProjectResourceTrackDemand {
+    version_selector: Option<String>,
+    track: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -191,7 +198,7 @@ pub(crate) fn validate_project_config_for_gateway(
     project: &ProjectRecord,
     config_file: &ProjectConfigFile,
 ) -> Result<(), DaemonError> {
-    let _plan = validate_project_config_and_plan(paths, database, project, config_file)?;
+    let _plan = validate_project_config_and_plan(paths, database, project, config_file, None)?;
 
     Ok(())
 }
@@ -204,8 +211,13 @@ pub(crate) fn discover_project_demand(
     let discovered = (|| {
         let config_file = ProjectConfigFile::read_from_root(&project.path)?;
         let candidate_project = project_with_config_mode(project, &config_file.config);
-        let plan =
-            validate_project_config_and_plan(paths, database, &candidate_project, &config_file)?;
+        let plan = validate_project_config_and_plan(
+            paths,
+            database,
+            &candidate_project,
+            &config_file,
+            None,
+        )?;
         let php_track = maybe_resolve_project_php_track(
             paths,
             database,
@@ -217,7 +229,7 @@ pub(crate) fn discover_project_demand(
 
         Ok::<_, DaemonError>(project_demand_from_plan(
             &plan,
-            config_file.config.php.as_ref(),
+            &config_file.config,
             candidate_project.mode == ProjectMode::Served,
             php_track,
         ))
@@ -233,10 +245,27 @@ pub(crate) fn discover_project_demand(
 
 fn project_demand_from_plan(
     plan: &ProjectResourcePlan,
-    php: Option<&config::PhpConfig>,
+    config: &ProjectConfig,
     serves_http: bool,
     php_track: Option<String>,
 ) -> ProjectDemand {
+    let php = config.php.as_ref();
+    let resource_selections = plan
+        .resources
+        .iter()
+        .map(|resource| {
+            (
+                resource.resource_name.clone(),
+                ProjectResourceTrackDemand {
+                    version_selector: config
+                        .resources
+                        .get(&resource.resource_name)
+                        .and_then(|config| config.track.clone()),
+                    track: resource.track.clone(),
+                },
+            )
+        })
+        .collect();
     let mut resource_tracks = plan
         .resources
         .iter()
@@ -251,6 +280,7 @@ fn project_demand_from_plan(
 
     ProjectDemand {
         resource_tracks,
+        resource_selections,
         php_track: php_track.map(|track| ProjectPhpTrackDemand {
             php_configured: php.is_some(),
             version_selector: php
@@ -279,6 +309,7 @@ fn persisted_project_demand(
 
     Ok(ProjectDemand {
         resource_tracks,
+        resource_selections: BTreeMap::new(),
         php_track: None,
         used_persisted_state: true,
     })
@@ -303,8 +334,13 @@ async fn reconcile_loaded_project(
     let candidate_project = project_with_config_mode(project, &config_file.config);
     let serves_http = candidate_project.mode == ProjectMode::Served;
     let preflight_result = (|| {
-        let plan =
-            validate_project_config_and_plan(paths, database, &candidate_project, &config_file)?;
+        let plan = validate_project_config_and_plan(
+            paths,
+            database,
+            &candidate_project,
+            &config_file,
+            discovered_demand,
+        )?;
         let php_track = maybe_resolve_project_php_track(
             paths,
             database,
@@ -749,6 +785,7 @@ fn validate_project_config_and_plan(
     database: &Database,
     project: &ProjectRecord,
     config_file: &ProjectConfigFile,
+    discovered_demand: Option<&ProjectDemand>,
 ) -> Result<ProjectResourcePlan, DaemonError> {
     if project.mode == ProjectMode::Served && config_file.config.serve {
         database.validate_project_hostnames(
@@ -759,7 +796,13 @@ fn validate_project_config_and_plan(
     }
     config::validate_project_env_shape(&config_file.config)?;
 
-    let plan = project_resource_plan(paths, database, project, &config_file.config)?;
+    let plan = project_resource_plan(
+        paths,
+        database,
+        project,
+        &config_file.config,
+        discovered_demand,
+    )?;
     if config_file.config.has_env_mappings() {
         let existing_content = read_optional_project_env_file(project, &config_file.config)?;
         config::validate_managed_env_block(existing_content.as_deref())?;
@@ -837,6 +880,7 @@ fn project_resource_plan(
     database: &Database,
     project: &ProjectRecord,
     config: &ProjectConfig,
+    discovered_demand: Option<&ProjectDemand>,
 ) -> Result<ProjectResourcePlan, DaemonError> {
     let mut resources = Vec::new();
     let mut allocation_plans = BTreeMap::new();
@@ -849,12 +893,19 @@ fn project_resource_plan(
     for (resource, resource_config) in &config.resources {
         let resource_name = ResourceName::new(resource.clone())?;
         let existing_track = existing_resource_tracks.get(resource);
-        let track = resolved_project_resource_track(
-            paths,
-            &resource_name,
-            resource_config.track.as_deref(),
-            existing_track.map(String::as_str),
-        )?;
+        let discovered_track = discovered_demand
+            .and_then(|demand| demand.resource_selections.get(resource))
+            .filter(|selection| selection.version_selector == resource_config.track);
+        let track = if let Some(selection) = discovered_track {
+            selection.track.clone()
+        } else {
+            resolved_project_resource_track(
+                paths,
+                &resource_name,
+                resource_config.track.as_deref(),
+                existing_track.map(String::as_str),
+            )?
+        };
 
         resources.push(ProjectManagedResourceInput {
             resource_name: resource.clone(),
