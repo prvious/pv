@@ -324,9 +324,10 @@ pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
                 error,
             )];
             failures.extend(take_project_prefetch_failures(
+                database,
                 &plan.resources[index + 1..],
                 context.prefetched_installs,
-            ));
+            )?);
 
             return Err(combined_project_resource_error(failures));
         }
@@ -1260,9 +1261,10 @@ fn missing_project_install_requests(
 }
 
 fn take_project_prefetch_failures(
+    database: &mut Database,
     resources: &[state::ProjectManagedResourceInput],
     prefetched_installs: &mut BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>,
-) -> Vec<ManagedResourceProjectFailure> {
+) -> Result<Vec<ManagedResourceProjectFailure>, DaemonError> {
     let mut failures = Vec::new();
     for resource in resources {
         let key = (resource.resource_name.clone(), resource.track.clone());
@@ -1275,6 +1277,14 @@ fn take_project_prefetch_failures(
         let Some(PrefetchedProjectInstall::Failed(error)) = prefetched_installs.remove(&key) else {
             continue;
         };
+        database.record_runtime_observed_snapshot(
+            RuntimeSubject::Resource {
+                name: resource.resource_name.clone(),
+                track: resource.track.clone(),
+            },
+            RuntimeObservedStatus::Failed,
+            Some(&error.to_string()),
+        )?;
         failures.push(ManagedResourceProjectFailure::new(
             resource.resource_name.clone(),
             resource.track.clone(),
@@ -1282,7 +1292,7 @@ fn take_project_prefetch_failures(
         ));
     }
 
-    failures
+    Ok(failures)
 }
 
 fn combined_project_resource_error(
@@ -1351,7 +1361,16 @@ fn prefetch_missing_project_installs_blocking(
     if resolve_requests.is_empty() {
         return Ok(prefetched);
     }
-    let manifest_snapshot = progress.manifest_snapshot(&commands, client)?;
+    let manifest_snapshot = match progress.manifest_snapshot(&commands, client) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            if let Some((key, _adapter)) = resolve_requests.into_iter().next() {
+                prefetched.insert(key, PrefetchedProjectInstall::Failed(error));
+            }
+
+            return Ok(prefetched);
+        }
+    };
     let mut resolved_installs = Vec::new();
     for (key, adapter) in resolve_requests {
         let (resource_name, track) = (&key.0, &key.1);
