@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+import errno
 import http.server
 import os
 import signal
 import socketserver
 import sys
 import threading
+import time
 
 
 smtp_port = sys.argv[1]
@@ -23,16 +25,39 @@ class HttpServer(http.server.ThreadingHTTPServer):
         self.server_name, self.server_port = self.server_address[:2]
 
 
+class HttpHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200 if self.path == "/ready" else 404)
+        self.end_headers()
+
+    def log_message(self, _format, *_args):
+        pass
+
+
 class TcpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
     daemon_threads = True
 
 
-smtp = TcpServer(("127.0.0.1", int(smtp_port)), SmtpHandler)
-dashboard = HttpServer(
-    ("127.0.0.1", int(dashboard_port)),
-    http.server.SimpleHTTPRequestHandler,
-)
+def bind_servers():
+    while True:
+        smtp_server = None
+        try:
+            smtp_server = TcpServer(("127.0.0.1", int(smtp_port)), SmtpHandler)
+            dashboard_server = HttpServer(
+                ("127.0.0.1", int(dashboard_port)),
+                HttpHandler,
+            )
+            return smtp_server, dashboard_server
+        except OSError as error:
+            if smtp_server is not None:
+                smtp_server.server_close()
+            if error.errno != errno.EADDRINUSE:
+                raise
+            time.sleep(0.05)
+
+
+smtp, dashboard = bind_servers()
 shutdown_requested = threading.Event()
 shutdown_thread = None
 received_signal = None

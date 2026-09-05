@@ -2882,7 +2882,7 @@ async fn rustfs_allocation_failure_preserves_project_env_and_records_failed_runt
     let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
     state::fs::write_sensitive_file(&project.path.join(".env"), "EXISTING=value\n")?;
     seed_auth_rejecting_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
-    reserve_available_rustfs_ports(&paths)?;
+    reserve_rustfs_ports(&paths, 19_040, 19_041)?;
 
     let result = reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await;
     let snapshot = {
@@ -2931,7 +2931,7 @@ async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
     seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
-    reserve_available_rustfs_ports(&paths)?;
+    reserve_rustfs_ports(&paths, 19_050, 19_051)?;
 
     reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
     let first_snapshot = rustfs_runtime_credential_snapshot(&paths, &project.id)?;
@@ -4330,17 +4330,6 @@ fn reserve_rustfs_ports(paths: &PvPaths, api_port: u16, console_port: u16) -> Re
     reserve_rustfs_port(&mut database, "console", console_port)?;
 
     Ok(())
-}
-
-fn reserve_available_rustfs_ports(paths: &PvPaths) -> Result<()> {
-    let api_listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let console_listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let api_port = api_listener.local_addr()?.port();
-    let console_port = console_listener.local_addr()?.port();
-    drop(api_listener);
-    drop(console_listener);
-
-    reserve_rustfs_ports(paths, api_port, console_port)
 }
 
 fn reserve_rustfs_port(database: &mut Database, port_name: &str, port: u16) -> Result<()> {
