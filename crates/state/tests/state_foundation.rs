@@ -13,8 +13,9 @@ use state::{
     JobStatus, ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
     ManagedResourceTrackRemovalInput, PortOwner, PortRequest, PostgresPreloadLibrary,
     ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
-    ProjectMode, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
-    ResourceAllocationInput, RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
+    ProjectMode, ProjectPhpRuntimeInput, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END,
+    RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput, RuntimeObservedStatus, RuntimeSubject,
+    StateError, UpdateLock,
 };
 
 #[test]
@@ -1457,6 +1458,64 @@ fn projects_demanding_managed_resource_track_are_selected_exactly() -> Result<()
         .map(|project| (project.slug, project.primary_hostname))
         .collect::<Vec<_>>();
     assert_debug_snapshot!(selected_projects);
+
+    Ok(())
+}
+
+#[test]
+fn php_runtime_demand_is_exact_and_excludes_resource_only_projects() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let acme = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+    let beta_path = tempdir.path().join("beta");
+    let beta = database
+        .link_project_with_mode(
+            state::LinkProjectInput {
+                path: beta_path.clone(),
+                original_path: beta_path.clone(),
+                primary_hostname: "ignored.test".to_string(),
+                config_path: beta_path.join("pv.yml"),
+                desired_php_track: None,
+                additional_hostnames: Vec::new(),
+            },
+            ProjectMode::ResourceOnly,
+        )?
+        .project;
+    let other = link_test_project(&mut database, tempdir.path(), "other", "other.test")?;
+
+    database.replace_project_php_runtime(
+        &acme.id,
+        Some(&ProjectPhpRuntimeInput {
+            track: "8.4".to_owned(),
+            requested_extensions: vec!["redis".to_owned()],
+            loaded_extensions: vec!["redis".to_owned()],
+            ignored_extensions: Vec::new(),
+        }),
+    )?;
+    database.replace_project_php_runtime(
+        &beta.id,
+        Some(&ProjectPhpRuntimeInput {
+            track: "8.5".to_owned(),
+            requested_extensions: vec!["redis".to_owned()],
+            loaded_extensions: vec!["redis".to_owned()],
+            ignored_extensions: Vec::new(),
+        }),
+    )?;
+    database.replace_project_php_runtime(
+        &other.id,
+        Some(&ProjectPhpRuntimeInput {
+            track: "8.4".to_owned(),
+            requested_extensions: Vec::new(),
+            loaded_extensions: Vec::new(),
+            ignored_extensions: Vec::new(),
+        }),
+    )?;
+
+    assert!(database.php_runtime_is_demanded("8.4+redis")?);
+    assert!(database.php_runtime_is_demanded("8.4")?);
+    assert!(!database.php_runtime_is_demanded("8.5+redis")?);
+    assert!(!database.php_runtime_is_demanded("8.4+xdebug")?);
 
     Ok(())
 }

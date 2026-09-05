@@ -167,6 +167,31 @@ pub struct RuntimeProject {
     pub document_root: Utf8PathBuf,
 }
 
+struct TargetedRuntimePlan {
+    plan: RuntimePlan,
+    current_runtime_key: Option<String>,
+}
+
+pub(crate) enum ProjectGatewayReconciliationOutcome {
+    Reconciled {
+        summary: String,
+        gateway_evaluated: bool,
+    },
+    PromoteSystem,
+}
+
+struct ActiveProjectGatewayImpact {
+    served: bool,
+    runtime_keys: BTreeSet<String>,
+    gateway_fragments: BTreeMap<String, String>,
+    worker_fragments: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+struct ActiveRuntimeConfigSnapshot {
+    root: String,
+    fragments: BTreeMap<String, String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct InstalledFrankenphpRuntime {
     command: CaddyCliCommand,
@@ -196,6 +221,224 @@ pub(crate) async fn reconcile_gateway_runtimes_with_phase_log(
         Some(phase_log),
     )
     .await
+}
+
+pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
+    paths: &PvPaths,
+    project_id: &str,
+    phase_log: &structured_log::ReconciliationPhaseLog,
+) -> Result<ProjectGatewayReconciliationOutcome, DaemonError> {
+    reconcile_project_gateway_runtimes(
+        paths,
+        project_id,
+        RUNTIME_READINESS_TIMEOUT,
+        None,
+        phase_log,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn reconcile_project_gateway_runtimes_for_test(
+    paths: &PvPaths,
+    project_id: &str,
+    readiness_timeout: Duration,
+    pf_routing_state: GatewayPfRoutingState,
+) -> Result<String, DaemonError> {
+    let phase_log = structured_log::ReconciliationPhaseLog::new(
+        paths,
+        "targeted-gateway-test",
+        &format!("project:{project_id}"),
+    );
+    match reconcile_project_gateway_runtimes(
+        paths,
+        project_id,
+        readiness_timeout,
+        Some(pf_routing_state),
+        &phase_log,
+    )
+    .await?
+    {
+        ProjectGatewayReconciliationOutcome::Reconciled { summary, .. } => Ok(summary),
+        ProjectGatewayReconciliationOutcome::PromoteSystem => {
+            reconcile_gateway_runtimes_with_pf_state(
+                paths,
+                readiness_timeout,
+                Some(pf_routing_state),
+                Some(&phase_log),
+            )
+            .await
+        }
+    }
+}
+
+async fn reconcile_project_gateway_runtimes(
+    paths: &PvPaths,
+    project_id: &str,
+    readiness_timeout: Duration,
+    pf_routing_state: Option<GatewayPfRoutingState>,
+    phase_log: &structured_log::ReconciliationPhaseLog,
+) -> Result<ProjectGatewayReconciliationOutcome, DaemonError> {
+    if resource_only_project_has_no_runtime_fragments(paths, project_id)? {
+        return Ok(skipped_project_gateway_outcome(phase_log));
+    }
+    let Some(gateway_command) = first_installed_caddy_command(paths)? else {
+        let summary = reconcile_gateway_runtimes_with_pf_state(
+            paths,
+            readiness_timeout,
+            pf_routing_state,
+            Some(phase_log),
+        )
+        .await?;
+
+        return Ok(ProjectGatewayReconciliationOutcome::Reconciled {
+            summary,
+            gateway_evaluated: true,
+        });
+    };
+    let mut targeted = match build_target_runtime_plan(paths, project_id) {
+        Ok(Some(targeted)) => targeted,
+        Ok(None) => return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem),
+        Err(error) => {
+            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
+
+            return Err(error);
+        }
+    };
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let target_active_impact = match verified_active_project_gateway_impact(
+        paths,
+        &supervisor,
+        &gateway_command,
+        &targeted,
+        project_id,
+    )? {
+        Some(active_impact) => active_impact,
+        None => return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem),
+    };
+    if target_project_gateway_impact_is_unchanged(
+        paths,
+        &targeted,
+        &target_active_impact,
+        project_id,
+    )? {
+        return Ok(skipped_project_gateway_outcome(phase_log));
+    }
+    if !complete_targeted_runtime_plan(paths, project_id, &mut targeted)? {
+        return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem);
+    }
+    let active_impact = match verified_active_project_gateway_impact(
+        paths,
+        &supervisor,
+        &gateway_command,
+        &targeted,
+        project_id,
+    )? {
+        Some(active_impact) => active_impact,
+        None => return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem),
+    };
+    let worker_timer = phase_log.start(
+        structured_log::ReconciliationPhase::Workers,
+        "target_project",
+    );
+    let mut reconciled_worker_count = 0;
+
+    if let Some(runtime_key) = targeted.current_runtime_key.as_deref() {
+        let worker = targeted
+            .plan
+            .workers
+            .iter()
+            .find(|worker| worker.runtime_key == runtime_key)
+            .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                reason: format!(
+                    "targeted runtime plan is missing current PHP worker `{runtime_key}`"
+                ),
+            })?;
+        let worker_runtime = required_installed_worker_runtime(paths, worker)?;
+        reconcile_planned_worker(
+            paths,
+            &supervisor,
+            worker,
+            &worker_runtime,
+            readiness_timeout,
+            active_impact.worker_fragments.get(runtime_key),
+        )
+        .await?;
+        reconciled_worker_count += 1;
+    }
+
+    let gateway_required = active_impact.served
+        || targeted.current_runtime_key.is_some()
+        || !active_impact.runtime_keys.is_empty();
+    let gateway_timer = phase_log.start(
+        structured_log::ReconciliationPhase::Gateway,
+        "target_project",
+    );
+    if gateway_required {
+        reconcile_planned_gateway(
+            paths,
+            &supervisor,
+            &targeted.plan,
+            &gateway_command,
+            pf_routing_state,
+            readiness_timeout,
+            Some(&active_impact.gateway_fragments),
+        )
+        .await?;
+    }
+    gateway_timer.finish(
+        if gateway_required {
+            structured_log::PhaseOutcome::Succeeded
+        } else {
+            structured_log::PhaseOutcome::Skipped
+        },
+        &[("project_count", usize_as_u64(usize::from(gateway_required)))],
+    );
+
+    for previous_runtime_key in active_impact
+        .runtime_keys
+        .iter()
+        .filter(|runtime_key| Some(runtime_key.as_str()) != targeted.current_runtime_key.as_deref())
+    {
+        if let Some(worker) = targeted
+            .plan
+            .workers
+            .iter()
+            .find(|worker| worker.runtime_key == *previous_runtime_key)
+        {
+            let worker_runtime = required_installed_worker_runtime(paths, worker)?;
+            reconcile_planned_worker(
+                paths,
+                &supervisor,
+                worker,
+                &worker_runtime,
+                readiness_timeout,
+                active_impact.worker_fragments.get(previous_runtime_key),
+            )
+            .await?;
+            reconciled_worker_count += 1;
+        } else {
+            stop_worker_if_undemanded(paths, &supervisor, previous_runtime_key).await?;
+        }
+    }
+    worker_timer.finish(
+        structured_log::PhaseOutcome::Succeeded,
+        &[
+            ("worker_count", usize_as_u64(reconciled_worker_count)),
+            ("project_count", 1),
+        ],
+    );
+
+    let summary = if gateway_required {
+        GATEWAY_RUNTIME_RECONCILED.to_owned()
+    } else {
+        "Gateway runtime unchanged; Project has no routes".to_owned()
+    };
+
+    Ok(ProjectGatewayReconciliationOutcome::Reconciled {
+        summary,
+        gateway_evaluated: gateway_required,
+    })
 }
 
 pub fn probe_gateway_identity_blocking(
@@ -283,113 +526,20 @@ async fn reconcile_gateway_runtimes_with_pf_state(
     let mut worker_commands = Vec::new();
 
     for worker in &plan.workers {
-        let subject = worker_runtime_subject(worker);
-        let worker_runtime = match installed_frankenphp_runtime_for_track(paths, &worker.php_track)
-        {
-            Ok(Some(runtime)) => runtime,
-            Ok(None) => {
-                let error = DaemonError::UnexpectedProtocolResponse {
-                    reason: format!(
-                        "FrankenPHP is not installed for PHP track `{}`",
-                        worker.php_track
-                    ),
-                };
-                record_runtime_error(paths, subject, &error)?;
-
-                return Err(error);
-            }
-            Err(error) => {
-                record_runtime_error(paths, subject, &error)?;
-
-                return Err(error);
-            }
-        };
+        let worker_runtime = required_installed_worker_runtime(paths, worker)?;
         worker_commands.push((worker, worker_runtime));
     }
 
     for (worker, worker_runtime) in worker_commands {
-        let subject = worker_runtime_subject(worker);
-        let process_spec = match worker_process_spec(
+        reconcile_planned_worker(
             paths,
+            &supervisor,
             worker,
-            &worker_runtime.command,
-            &worker_runtime.artifact_root,
-        ) {
-            Ok(process_spec) => process_spec,
-            Err(error) => {
-                record_runtime_error(paths, subject.clone(), &error)?;
-
-                return Err(error);
-            }
-        };
-        let desired_config = match desired_worker_config(paths, worker) {
-            Ok(desired_config) => desired_config,
-            Err(error) => {
-                record_runtime_error(paths, subject.clone(), &error)?;
-
-                return Err(error);
-            }
-        };
-        let readiness = RuntimeReadinessPlan {
-            check: ReadinessCheck::Tcp {
-                host: "127.0.0.1".to_owned(),
-                port: worker.port,
-            },
-            failure_policy: ReadinessFailurePolicy::FailRuntime,
-            timeout: readiness_timeout,
-            admin_endpoint: CaddyAdminEndpoint::new(worker.admin_socket_path.clone()),
-        };
-        if reconcile_unchanged_runtime(
-            &supervisor,
-            &process_spec,
-            &readiness,
-            &desired_config.fingerprint,
-        )
-        .await
-        .is_some()
-        {
-            record_runtime_observed(
-                paths,
-                subject,
-                RuntimeObservedStatus::Running,
-                Some(GATEWAY_RUNTIME_RECONCILED),
-            )?;
-            continue;
-        }
-        let private_environment =
-            match worker_config_private_environment(paths, worker, &worker_runtime.artifact_root) {
-                Ok(private_environment) => private_environment,
-                Err(error) => {
-                    record_runtime_error(paths, subject.clone(), &error)?;
-
-                    return Err(error);
-                }
-            };
-        let promoted_config = promote_runtime_config_tree(
-            paths,
-            &worker_runtime.command,
-            subject.clone(),
-            paths.worker_root_config(&worker.runtime_key),
-            private_environment,
-            &desired_config,
+            &worker_runtime,
+            readiness_timeout,
+            None,
         )
         .await?;
-        start_or_adopt_promoted_runtime(
-            paths,
-            &supervisor,
-            promoted_config,
-            process_spec,
-            readiness,
-            &desired_config.fingerprint,
-            subject.clone(),
-        )
-        .await?;
-        record_runtime_observed(
-            paths,
-            subject,
-            RuntimeObservedStatus::Running,
-            Some(GATEWAY_RUNTIME_RECONCILED),
-        )?;
     }
     let worker_count = plan.workers.len();
     let project_count = plan
@@ -409,54 +559,16 @@ async fn reconcile_gateway_runtimes_with_pf_state(
 
     let gateway_timer = phase_log
         .map(|phase_log| phase_log.start(structured_log::ReconciliationPhase::Gateway, "gateway"));
-    let desired_gateway_config = match desired_gateway_config(paths, &plan) {
-        Ok(desired_config) => desired_config,
-        Err(error) => {
-            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
-
-            return Err(error);
-        }
-    };
-    let pf_routing_state =
-        pf_routing_state.unwrap_or_else(|| gateway_pf_routing_state(paths, &plan));
-    let gateway_readiness = gateway_readiness_plan(
+    reconcile_planned_gateway(
+        paths,
+        &supervisor,
         &plan,
-        desired_gateway_config.readiness_hostname,
+        &gateway_command,
         pf_routing_state,
         readiness_timeout,
-    );
-    let gateway_spec = gateway_process_spec(paths, &gateway_command);
-    let readiness_outcome = if let Some(outcome) = reconcile_unchanged_runtime(
-        &supervisor,
-        &gateway_spec,
-        &gateway_readiness,
-        &desired_gateway_config.tree.fingerprint,
+        None,
     )
-    .await
-    {
-        outcome
-    } else {
-        let promoted_config = promote_runtime_config_tree(
-            paths,
-            &gateway_command,
-            RuntimeSubject::Gateway,
-            paths.gateway_root_config(),
-            caddy_xdg_environment(paths),
-            &desired_gateway_config.tree,
-        )
-        .await?;
-        start_or_adopt_promoted_runtime(
-            paths,
-            &supervisor,
-            promoted_config,
-            gateway_spec,
-            gateway_readiness,
-            &desired_gateway_config.tree.fingerprint,
-            RuntimeSubject::Gateway,
-        )
-        .await?
-    };
-    record_gateway_runtime_observed(paths, pf_routing_state, readiness_outcome)?;
+    .await?;
     if let Some(gateway_timer) = gateway_timer {
         gateway_timer.finish(
             structured_log::PhaseOutcome::Succeeded,
@@ -476,6 +588,187 @@ async fn reconcile_gateway_runtimes_with_pf_state(
     }
 
     Ok(GATEWAY_RUNTIME_RECONCILED.to_owned())
+}
+
+async fn reconcile_planned_gateway(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    plan: &RuntimePlan,
+    gateway_command: &CaddyCliCommand,
+    pf_routing_state: Option<GatewayPfRoutingState>,
+    readiness_timeout: Duration,
+    preserved_fragments: Option<&BTreeMap<String, String>>,
+) -> Result<(), DaemonError> {
+    let desired_gateway_config = match desired_gateway_config(paths, plan, preserved_fragments) {
+        Ok(desired_config) => desired_config,
+        Err(error) => {
+            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
+
+            return Err(error);
+        }
+    };
+    let pf_routing_state =
+        pf_routing_state.unwrap_or_else(|| gateway_pf_routing_state(paths, plan));
+    let gateway_readiness = gateway_readiness_plan(
+        plan,
+        desired_gateway_config.readiness_hostname,
+        pf_routing_state,
+        readiness_timeout,
+    );
+    let gateway_spec = gateway_process_spec(paths, gateway_command);
+    let readiness_outcome = if let Some(outcome) = reconcile_unchanged_runtime(
+        supervisor,
+        &gateway_spec,
+        &gateway_readiness,
+        &desired_gateway_config.tree.fingerprint,
+    )
+    .await
+    {
+        outcome
+    } else {
+        let promoted_config = promote_runtime_config_tree(
+            paths,
+            gateway_command,
+            RuntimeSubject::Gateway,
+            paths.gateway_root_config(),
+            caddy_xdg_environment(paths),
+            &desired_gateway_config.tree,
+        )
+        .await?;
+        start_or_adopt_promoted_runtime(
+            paths,
+            supervisor,
+            promoted_config,
+            gateway_spec,
+            gateway_readiness,
+            &desired_gateway_config.tree.fingerprint,
+            RuntimeSubject::Gateway,
+        )
+        .await?
+    };
+    record_gateway_runtime_observed(paths, pf_routing_state, readiness_outcome)?;
+
+    Ok(())
+}
+
+async fn reconcile_planned_worker(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    worker: &PhpWorkerRuntimePlan,
+    worker_runtime: &InstalledFrankenphpRuntime,
+    readiness_timeout: Duration,
+    preserved_fragments: Option<&BTreeMap<String, String>>,
+) -> Result<(), DaemonError> {
+    let subject = worker_runtime_subject(worker);
+    let process_spec = match worker_process_spec(
+        paths,
+        worker,
+        &worker_runtime.command,
+        &worker_runtime.artifact_root,
+    ) {
+        Ok(process_spec) => process_spec,
+        Err(error) => {
+            record_runtime_error(paths, subject.clone(), &error)?;
+
+            return Err(error);
+        }
+    };
+    let desired_config = match desired_worker_config(paths, worker, preserved_fragments) {
+        Ok(desired_config) => desired_config,
+        Err(error) => {
+            record_runtime_error(paths, subject.clone(), &error)?;
+
+            return Err(error);
+        }
+    };
+    let readiness = RuntimeReadinessPlan {
+        check: ReadinessCheck::Tcp {
+            host: "127.0.0.1".to_owned(),
+            port: worker.port,
+        },
+        failure_policy: ReadinessFailurePolicy::FailRuntime,
+        timeout: readiness_timeout,
+        admin_endpoint: CaddyAdminEndpoint::new(worker.admin_socket_path.clone()),
+    };
+    if reconcile_unchanged_runtime(
+        supervisor,
+        &process_spec,
+        &readiness,
+        &desired_config.fingerprint,
+    )
+    .await
+    .is_some()
+    {
+        record_runtime_observed(
+            paths,
+            subject,
+            RuntimeObservedStatus::Running,
+            Some(GATEWAY_RUNTIME_RECONCILED),
+        )?;
+        return Ok(());
+    }
+    let private_environment =
+        match worker_config_private_environment(paths, worker, &worker_runtime.artifact_root) {
+            Ok(private_environment) => private_environment,
+            Err(error) => {
+                record_runtime_error(paths, subject.clone(), &error)?;
+
+                return Err(error);
+            }
+        };
+    let promoted_config = promote_runtime_config_tree(
+        paths,
+        &worker_runtime.command,
+        subject.clone(),
+        paths.worker_root_config(&worker.runtime_key),
+        private_environment,
+        &desired_config,
+    )
+    .await?;
+    start_or_adopt_promoted_runtime(
+        paths,
+        supervisor,
+        promoted_config,
+        process_spec,
+        readiness,
+        &desired_config.fingerprint,
+        subject.clone(),
+    )
+    .await?;
+    record_runtime_observed(
+        paths,
+        subject,
+        RuntimeObservedStatus::Running,
+        Some(GATEWAY_RUNTIME_RECONCILED),
+    )?;
+
+    Ok(())
+}
+
+fn required_installed_worker_runtime(
+    paths: &PvPaths,
+    worker: &PhpWorkerRuntimePlan,
+) -> Result<InstalledFrankenphpRuntime, DaemonError> {
+    let subject = worker_runtime_subject(worker);
+    match installed_frankenphp_runtime_for_track(paths, &worker.php_track) {
+        Ok(Some(runtime)) => Ok(runtime),
+        Ok(None) => {
+            let error = DaemonError::UnexpectedProtocolResponse {
+                reason: format!(
+                    "FrankenPHP is not installed for PHP track `{}`",
+                    worker.php_track
+                ),
+            };
+            record_runtime_error(paths, subject, &error)?;
+
+            Err(error)
+        }
+        Err(error) => {
+            record_runtime_error(paths, subject, &error)?;
+
+            Err(error)
+        }
+    }
 }
 
 fn usize_as_u64(value: usize) -> u64 {
@@ -1062,15 +1355,7 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
         )?;
     }
 
-    let workers = projects_by_runtime_key
-        .into_values()
-        .map(|mut worker| {
-            worker
-                .projects
-                .sort_by(|left, right| left.primary_hostname.cmp(&right.primary_hostname));
-            worker
-        })
-        .collect();
+    let workers = sorted_runtime_workers(projects_by_runtime_key);
 
     Ok(RuntimePlan {
         gateway: GatewayRuntimePlan {
@@ -1083,6 +1368,538 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
         },
         workers,
     })
+}
+
+fn build_target_runtime_plan(
+    paths: &PvPaths,
+    project_id: &str,
+) -> Result<Option<TargetedRuntimePlan>, DaemonError> {
+    let mut database = Database::open(paths)?;
+    let gateway_ports = database.assign_gateway_ports(local_loopback_port_available)?;
+    let mut projects_by_runtime_key: BTreeMap<String, PhpWorkerRuntimePlan> = BTreeMap::new();
+    let mut current_runtime_key = None;
+    let project =
+        database
+            .project_by_id(project_id)?
+            .ok_or_else(|| StateError::ProjectNotFound {
+                target: project_id.to_owned(),
+            })?;
+
+    if project.mode == ProjectMode::Served {
+        let config_file = match ProjectConfigFile::read_from_root(&project.path) {
+            Ok(config_file) => config_file,
+            Err(_error) => return Ok(None),
+        };
+        if !config_file.config.serve
+            || validate_project_config_for_gateway(paths, &database, &project, &config_file)
+                .is_err()
+        {
+            return Ok(None);
+        }
+        let primary_hostname =
+            project
+                .primary_hostname
+                .clone()
+                .ok_or_else(|| StateError::ProjectNotServed {
+                    project_id: project.id.clone(),
+                })?;
+        let runtime = resolve_project_php_runtime(
+            paths,
+            &database,
+            &project,
+            config_file.config.php.as_ref(),
+        )?;
+        let persisted_runtime_key = persisted_project_runtime_key(&project)?;
+        if persisted_runtime_key.as_deref() != Some(runtime.runtime_key.as_str()) {
+            return Ok(None);
+        }
+        let document_root =
+            resolve_project_document_root(&project.path, Some(&config_file.config))?;
+        let runtime_project = RuntimeProject {
+            id: project.id,
+            render_config: true,
+            primary_hostname: primary_hostname.clone(),
+            hostnames: additional_hostnames(
+                &primary_hostname,
+                project.additional_hostnames,
+                config_file.config.hostnames,
+            ),
+            project_root: project.path,
+            document_root,
+        };
+        current_runtime_key = Some(runtime.runtime_key.clone());
+        append_runtime_project(
+            paths,
+            &mut database,
+            &mut projects_by_runtime_key,
+            runtime,
+            runtime_project,
+        )?;
+    }
+
+    let workers = sorted_runtime_workers(projects_by_runtime_key);
+    Ok(Some(TargetedRuntimePlan {
+        plan: RuntimePlan {
+            gateway: GatewayRuntimePlan {
+                http_port: gateway_ports.http.port,
+                https_port: gateway_ports.https.port,
+                admin_socket_path: paths.gateway_admin_socket(),
+                ca_certificate_path: paths.ca_certificate(),
+                ca_private_key_path: paths.ca_private_key(),
+                storage_path: gateway_storage_path(paths)?,
+            },
+            workers,
+        },
+        current_runtime_key,
+    }))
+}
+
+fn complete_targeted_runtime_plan(
+    paths: &PvPaths,
+    project_id: &str,
+    targeted: &mut TargetedRuntimePlan,
+) -> Result<bool, DaemonError> {
+    let mut database = Database::open(paths)?;
+    let mut projects_by_runtime_key = std::mem::take(&mut targeted.plan.workers)
+        .into_iter()
+        .map(|worker| (worker.runtime_key.clone(), worker))
+        .collect::<BTreeMap<_, _>>();
+
+    for project in database.projects()? {
+        if project.id != project_id
+            && !append_targeted_persisted_runtime_project(
+                paths,
+                &mut database,
+                &mut projects_by_runtime_key,
+                project,
+            )?
+        {
+            return Ok(false);
+        }
+    }
+
+    targeted.plan.workers = sorted_runtime_workers(projects_by_runtime_key);
+
+    Ok(true)
+}
+
+fn resource_only_project_has_no_runtime_fragments(
+    paths: &PvPaths,
+    project_id: &str,
+) -> Result<bool, DaemonError> {
+    let database = Database::open(paths)?;
+    let project =
+        database
+            .project_by_id(project_id)?
+            .ok_or_else(|| StateError::ProjectNotFound {
+                target: project_id.to_owned(),
+            })?;
+    if project.mode == ProjectMode::Served {
+        return Ok(false);
+    }
+
+    let file_name = project_config_file_name(project_id);
+    if fs::path_entry_exists(&paths.gateway_projects_config_dir().join(&file_name))? {
+        return Ok(false);
+    }
+    for runtime_key in runtime_worker_tracks(paths)? {
+        if fs::path_entry_exists(
+            &paths
+                .worker_projects_config_dir(&runtime_key)
+                .join(&file_name),
+        )? {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+fn target_project_gateway_impact_is_unchanged(
+    paths: &PvPaths,
+    targeted: &TargetedRuntimePlan,
+    active_impact: &ActiveProjectGatewayImpact,
+    project_id: &str,
+) -> Result<bool, DaemonError> {
+    let Some(current_runtime_key) = targeted.current_runtime_key.as_deref() else {
+        return Ok(!active_impact.served && active_impact.runtime_keys.is_empty());
+    };
+    if !active_impact.served
+        || active_impact.runtime_keys.len() != 1
+        || !active_impact.runtime_keys.contains(current_runtime_key)
+    {
+        return Ok(false);
+    }
+    let Some(worker) = targeted
+        .plan
+        .workers
+        .iter()
+        .find(|worker| worker.runtime_key == current_runtime_key)
+    else {
+        return Ok(false);
+    };
+    let Some(project) = worker
+        .projects
+        .iter()
+        .find(|project| project.id == project_id)
+    else {
+        return Ok(false);
+    };
+    let file_name = project_config_file_name(project_id);
+    let expected_gateway_fragment = render_gateway_project_config(&GatewayProjectRoute {
+        id: project.id.clone(),
+        render_config: true,
+        primary_hostname: project.primary_hostname.clone(),
+        hostnames: project.hostnames.clone(),
+        worker_port: worker.port,
+        access_log_path: paths.gateway_access_log(),
+    })?;
+    let expected_worker_fragment = render_php_worker_project_config(
+        &PhpWorkerProject {
+            primary_hostname: project.primary_hostname.clone(),
+            hostnames: project.hostnames.clone(),
+            project_root: project.project_root.clone(),
+            document_root: project.document_root.clone(),
+        },
+        worker.port,
+    )?;
+
+    let gateway_unchanged =
+        active_impact.gateway_fragments.get(&file_name) == Some(&expected_gateway_fragment);
+    let worker_unchanged = active_impact
+        .worker_fragments
+        .get(current_runtime_key)
+        .and_then(|fragments| fragments.get(&file_name))
+        == Some(&expected_worker_fragment);
+    Ok(gateway_unchanged && worker_unchanged)
+}
+
+fn skipped_project_gateway_outcome(
+    phase_log: &structured_log::ReconciliationPhaseLog,
+) -> ProjectGatewayReconciliationOutcome {
+    phase_log.completed(
+        structured_log::ReconciliationPhase::Workers,
+        "target_project",
+        structured_log::PhaseOutcome::Skipped,
+        Duration::ZERO,
+        &[("worker_count", 0), ("project_count", 0)],
+    );
+    phase_log.completed(
+        structured_log::ReconciliationPhase::Gateway,
+        "target_project",
+        structured_log::PhaseOutcome::Skipped,
+        Duration::ZERO,
+        &[("project_count", 0)],
+    );
+
+    ProjectGatewayReconciliationOutcome::Reconciled {
+        summary: "Gateway runtime unchanged; Project has no route changes".to_owned(),
+        gateway_evaluated: false,
+    }
+}
+
+fn verified_active_project_gateway_impact(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    gateway_command: &CaddyCliCommand,
+    targeted: &TargetedRuntimePlan,
+    project_id: &str,
+) -> Result<Option<ActiveProjectGatewayImpact>, DaemonError> {
+    let file_name = project_config_file_name(project_id);
+    let gateway_fragment_exists =
+        fs::path_entry_exists(&paths.gateway_projects_config_dir().join(&file_name))?;
+    let preserves_gateway_fragments = targeted
+        .plan
+        .workers
+        .iter()
+        .flat_map(|worker| &worker.projects)
+        .any(|project| !project.render_config);
+    let gateway_fragments = if gateway_fragment_exists || preserves_gateway_fragments {
+        let Some(snapshot) = verified_active_runtime_config(
+            supervisor,
+            &gateway_process_spec(paths, gateway_command),
+            &paths.gateway_root_config(),
+            &paths.gateway_projects_config_dir(),
+        )?
+        else {
+            return Ok(None);
+        };
+        snapshot.fragments
+    } else {
+        BTreeMap::new()
+    };
+
+    let mut runtime_keys = BTreeSet::new();
+    let mut worker_fragments = BTreeMap::new();
+    for runtime_key in runtime_worker_tracks(paths)? {
+        if !fs::path_entry_exists(
+            &paths
+                .worker_projects_config_dir(&runtime_key)
+                .join(&file_name),
+        )? {
+            continue;
+        }
+        let worker = if let Some(worker) = targeted
+            .plan
+            .workers
+            .iter()
+            .find(|worker| worker.runtime_key == runtime_key)
+        {
+            worker.clone()
+        } else {
+            let Some(worker) = active_worker_plan(paths, &runtime_key)? else {
+                return Ok(None);
+            };
+            worker
+        };
+        let Some(snapshot) = verified_active_worker_config(paths, supervisor, &worker)? else {
+            return Ok(None);
+        };
+        worker_fragments.insert(runtime_key.clone(), snapshot.fragments);
+        runtime_keys.insert(runtime_key);
+    }
+
+    if gateway_fragment_exists && runtime_keys.is_empty() {
+        return Ok(None);
+    }
+
+    if let Some(current_runtime_key) = targeted.current_runtime_key.as_deref()
+        && !runtime_keys.contains(current_runtime_key)
+    {
+        let worker = targeted
+            .plan
+            .workers
+            .iter()
+            .find(|worker| worker.runtime_key == current_runtime_key)
+            .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                reason: format!(
+                    "targeted runtime plan is missing current PHP worker `{current_runtime_key}`"
+                ),
+            })?;
+        if worker.projects.iter().any(|project| !project.render_config)
+            && !worker_fragments.contains_key(current_runtime_key)
+        {
+            let Some(snapshot) = verified_active_worker_config(paths, supervisor, worker)? else {
+                return Ok(None);
+            };
+            worker_fragments.insert(current_runtime_key.to_owned(), snapshot.fragments);
+        }
+    }
+
+    Ok(Some(ActiveProjectGatewayImpact {
+        served: gateway_fragment_exists,
+        runtime_keys,
+        gateway_fragments,
+        worker_fragments,
+    }))
+}
+
+fn active_worker_plan(
+    paths: &PvPaths,
+    runtime_key: &str,
+) -> Result<Option<PhpWorkerRuntimePlan>, DaemonError> {
+    let mut components = runtime_key.split('+');
+    let Some(track) = components.next() else {
+        return Ok(None);
+    };
+    let loaded_extensions = components.map(str::to_owned).collect::<Vec<_>>();
+    if state::php_runtime_key(track, &loaded_extensions)? != runtime_key {
+        return Ok(None);
+    }
+
+    let database = Database::open(paths)?;
+    let Some(port) = database
+        .assigned_ports()?
+        .into_iter()
+        .find_map(|assignment| {
+            matches!(
+                assignment.owner,
+                PortOwner::PhpWorker { ref php_runtime_key } if php_runtime_key == runtime_key
+            )
+            .then_some(assignment.port)
+        })
+    else {
+        return Ok(None);
+    };
+    let loaded_modules = match loaded_php_extension_modules(&database, track, &loaded_extensions) {
+        Ok(loaded_modules) => loaded_modules,
+        Err(_error) => return Ok(None),
+    };
+
+    Ok(Some(PhpWorkerRuntimePlan {
+        php_track: track.to_owned(),
+        runtime_key: runtime_key.to_owned(),
+        loaded_modules,
+        port,
+        admin_socket_path: paths.worker_admin_socket(runtime_key),
+        projects: Vec::new(),
+    }))
+}
+
+fn verified_active_worker_config(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    worker: &PhpWorkerRuntimePlan,
+) -> Result<Option<ActiveRuntimeConfigSnapshot>, DaemonError> {
+    let Some(runtime) = installed_frankenphp_runtime_for_track(paths, &worker.php_track)? else {
+        return Ok(None);
+    };
+    let spec = worker_process_spec(paths, worker, &runtime.command, &runtime.artifact_root)?;
+
+    verified_active_runtime_config(
+        supervisor,
+        &spec,
+        &paths.worker_root_config(&worker.runtime_key),
+        &paths.worker_projects_config_dir(&worker.runtime_key),
+    )
+}
+
+fn verified_active_runtime_config(
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    root_path: &Utf8Path,
+    fragments_directory: &Utf8Path,
+) -> Result<Option<ActiveRuntimeConfigSnapshot>, DaemonError> {
+    let Some(runtime) = supervisor.verify_ownership(spec)? else {
+        return Ok(None);
+    };
+    let Some(recorded_fingerprint) = runtime.applied_config_fingerprint() else {
+        return Ok(None);
+    };
+    let Some(snapshot) = active_runtime_config_snapshot(root_path, fragments_directory)? else {
+        return Ok(None);
+    };
+    let active_fingerprint = runtime_config_fingerprint(
+        &snapshot.root,
+        snapshot
+            .fragments
+            .iter()
+            .map(|(file_name, content)| (file_name.as_str(), content.as_str())),
+    );
+
+    if runtime.replacement_required() || active_fingerprint != recorded_fingerprint {
+        return Ok(None);
+    }
+
+    Ok(Some(snapshot))
+}
+
+fn active_runtime_config_snapshot(
+    root_path: &Utf8Path,
+    fragments_directory: &Utf8Path,
+) -> Result<Option<ActiveRuntimeConfigSnapshot>, DaemonError> {
+    let root = match fs::read_to_string(root_path) {
+        Ok(root) => root,
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut fragments = BTreeMap::new();
+    for path in read_directory_files(fragments_directory)? {
+        if path.extension() != Some("Caddyfile") {
+            continue;
+        }
+        let Some(file_name) = path.file_name() else {
+            continue;
+        };
+        fragments.insert(file_name.to_owned(), fs::read_to_string(&path)?);
+    }
+
+    Ok(Some(ActiveRuntimeConfigSnapshot { root, fragments }))
+}
+
+fn append_targeted_persisted_runtime_project(
+    paths: &PvPaths,
+    database: &mut Database,
+    projects_by_runtime_key: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
+    project: state::ProjectRecord,
+) -> Result<bool, DaemonError> {
+    if project.mode == ProjectMode::ResourceOnly {
+        return Ok(true);
+    }
+    let Some(runtime) = (match persisted_project_php_runtime(database, &project) {
+        Ok(runtime) => runtime,
+        Err(_error) => return Ok(false),
+    }) else {
+        return Ok(false);
+    };
+    let file_name = project_config_file_name(&project.id);
+    let gateway_fragment =
+        read_preserved_project_config_fragment(&paths.gateway_projects_config_dir(), &file_name)?;
+    let worker_fragment = read_preserved_project_config_fragment(
+        &paths.worker_projects_config_dir(&runtime.runtime_key),
+        &file_name,
+    )?;
+    let (Some(gateway_fragment), Some(_worker_fragment)) = (gateway_fragment, worker_fragment)
+    else {
+        return Ok(false);
+    };
+    let primary_hostname =
+        project
+            .primary_hostname
+            .clone()
+            .ok_or_else(|| StateError::ProjectNotServed {
+                project_id: project.id.clone(),
+            })?;
+    let runtime_project = RuntimeProject {
+        id: project.id,
+        render_config: false,
+        primary_hostname: primary_hostname.clone(),
+        hostnames: additional_hostnames(
+            &primary_hostname,
+            project.additional_hostnames,
+            Vec::new(),
+        ),
+        project_root: project.path.clone(),
+        document_root: project.path,
+    };
+    let worker_port = append_runtime_project(
+        paths,
+        database,
+        projects_by_runtime_key,
+        runtime,
+        runtime_project.clone(),
+    )?;
+    let expected_gateway_fragment = render_gateway_project_config(&GatewayProjectRoute {
+        id: runtime_project.id,
+        render_config: false,
+        primary_hostname: runtime_project.primary_hostname,
+        hostnames: runtime_project.hostnames,
+        worker_port,
+        access_log_path: paths.gateway_access_log(),
+    })?;
+    if gateway_fragment != expected_gateway_fragment {
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
+fn persisted_project_runtime_key(
+    project: &state::ProjectRecord,
+) -> Result<Option<String>, DaemonError> {
+    project
+        .php_runtime
+        .track
+        .as_deref()
+        .map(|track| state::php_runtime_key(track, &project.php_runtime.loaded_extensions))
+        .transpose()
+        .map_err(Into::into)
+}
+
+fn sorted_runtime_workers(
+    projects_by_runtime_key: BTreeMap<String, PhpWorkerRuntimePlan>,
+) -> Vec<PhpWorkerRuntimePlan> {
+    projects_by_runtime_key
+        .into_values()
+        .map(|mut worker| {
+            worker
+                .projects
+                .sort_by(|left, right| left.primary_hostname.cmp(&right.primary_hostname));
+            worker
+        })
+        .collect()
 }
 
 fn resolve_project_document_root(
@@ -1132,7 +1949,7 @@ fn append_persisted_runtime_project(
             .ok_or_else(|| StateError::ProjectNotServed {
                 project_id: project.id.clone(),
             })?;
-    let runtime = match persisted_project_php_runtime(database, &project) {
+    let mut runtime = match persisted_project_php_runtime(database, &project) {
         Ok(Some(runtime)) => runtime,
         Ok(None) => return Ok(()),
         Err(
@@ -1148,7 +1965,7 @@ fn append_persisted_runtime_project(
                 &[],
             )?;
 
-            return Ok(());
+            return Err(error);
         }
         Err(error) => return Err(error),
     };
@@ -1164,6 +1981,22 @@ fn append_persisted_runtime_project(
         project_root: project.path.clone(),
         document_root: project.path,
     };
+    if let Some(gateway_fragment) = read_preserved_project_config_fragment(
+        &paths.gateway_projects_config_dir(),
+        &project_config_file_name(&runtime_project.id),
+    )? {
+        runtime = active_project_runtime_for_gateway_fragment(
+            paths,
+            &runtime_project.id,
+            &gateway_fragment,
+        )?
+        .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+            reason: format!(
+                "active Gateway route for Project `{}` does not match a preserved PHP worker",
+                runtime_project.id
+            ),
+        })?;
+    }
 
     append_runtime_project(
         paths,
@@ -1171,7 +2004,52 @@ fn append_persisted_runtime_project(
         projects_by_runtime_key,
         runtime,
         runtime_project,
-    )
+    )?;
+
+    Ok(())
+}
+
+fn active_project_runtime_for_gateway_fragment(
+    paths: &PvPaths,
+    project_id: &str,
+    gateway_fragment: &str,
+) -> Result<Option<ResolvedPhpRuntime>, DaemonError> {
+    let file_name = project_config_file_name(project_id);
+    for runtime_key in runtime_worker_tracks(paths)? {
+        if !fs::path_entry_exists(
+            &paths
+                .worker_projects_config_dir(&runtime_key)
+                .join(&file_name),
+        )? {
+            continue;
+        }
+        let Some(worker) = active_worker_plan(paths, &runtime_key)? else {
+            continue;
+        };
+        if !gateway_fragment_targets_worker(gateway_fragment, worker.port) {
+            continue;
+        }
+        let loaded_extensions = runtime_key
+            .split('+')
+            .skip(1)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+
+        return Ok(Some(ResolvedPhpRuntime {
+            track: worker.php_track,
+            runtime_key: worker.runtime_key,
+            requested_extensions: loaded_extensions.clone(),
+            loaded_extensions,
+            ignored_extensions: Vec::new(),
+            loaded_modules: worker.loaded_modules,
+        }));
+    }
+
+    Ok(None)
+}
+
+fn gateway_fragment_targets_worker(gateway_fragment: &str, port: u16) -> bool {
+    gateway_fragment.contains(&format!("    reverse_proxy 127.0.0.1:{port} {{\n"))
 }
 
 fn append_runtime_project(
@@ -1180,10 +2058,12 @@ fn append_runtime_project(
     projects_by_runtime_key: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
     runtime: ResolvedPhpRuntime,
     runtime_project: RuntimeProject,
-) -> Result<(), DaemonError> {
-    match projects_by_runtime_key.entry(runtime.runtime_key.clone()) {
+) -> Result<u16, DaemonError> {
+    let port = match projects_by_runtime_key.entry(runtime.runtime_key.clone()) {
         btree_map::Entry::Occupied(mut entry) => {
+            let port = entry.get().port;
             entry.get_mut().projects.push(runtime_project);
+            port
         }
         btree_map::Entry::Vacant(entry) => {
             let port_assignment = database
@@ -1198,10 +2078,11 @@ fn append_runtime_project(
                 admin_socket_path,
                 projects: vec![runtime_project],
             });
+            port_assignment.port
         }
-    }
+    };
 
-    Ok(())
+    Ok(port)
 }
 
 fn persisted_project_php_runtime(
@@ -1291,11 +2172,12 @@ struct DesiredGatewayConfig {
 fn desired_gateway_config(
     paths: &PvPaths,
     plan: &RuntimePlan,
+    preserved_fragments: Option<&BTreeMap<String, String>>,
 ) -> Result<DesiredGatewayConfig, DaemonError> {
     let routes = gateway_project_routes(paths, plan);
     let active_dir = paths.gateway_projects_config_dir();
     let candidate_dir = candidate_config_dir_for(&active_dir);
-    let fragments = gateway_project_config_fragments(paths, &routes)?;
+    let fragments = gateway_project_config_fragments(paths, &routes, preserved_fragments)?;
     let readiness_hostname = gateway_readiness_hostname(&fragments);
     let import_project_configs = !fragments.is_empty();
     let mut config_input = GatewayConfigInput {
@@ -1331,10 +2213,11 @@ fn desired_gateway_config(
 fn desired_worker_config(
     paths: &PvPaths,
     worker: &PhpWorkerRuntimePlan,
+    preserved_fragments: Option<&BTreeMap<String, String>>,
 ) -> Result<DesiredRuntimeConfigTree, DaemonError> {
     let active_dir = paths.worker_projects_config_dir(&worker.runtime_key);
     let candidate_dir = candidate_config_dir_for(&active_dir);
-    let fragments = worker_project_config_fragments(paths, worker)?;
+    let fragments = worker_project_config_fragments(paths, worker, preserved_fragments)?;
     let fragment_project_ids = fragments
         .iter()
         .map(|fragment| fragment.project_id.as_str())
@@ -2214,6 +3097,7 @@ fn update_fingerprint_component(hasher: &mut Sha256, component: &[u8]) {
 fn gateway_project_config_fragments(
     paths: &PvPaths,
     routes: &[GatewayProjectRoute],
+    preserved_fragments: Option<&BTreeMap<String, String>>,
 ) -> Result<Vec<ProjectConfigFragment>, DaemonError> {
     let active_dir = paths.gateway_projects_config_dir();
     let mut fragments = Vec::new();
@@ -2222,6 +3106,17 @@ fn gateway_project_config_fragments(
         let file_name = project_config_file_name(&route.id);
         let content = if route.render_config {
             Some(render_gateway_project_config(route)?)
+        } else if let Some(preserved_fragments) = preserved_fragments {
+            Some(
+                preserved_fragments
+                    .get(&file_name)
+                    .cloned()
+                    .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                        reason: format!(
+                            "verified Gateway config is missing preserved Project fragment `{file_name}`"
+                        ),
+                    })?,
+            )
         } else {
             read_preserved_project_config_fragment(&active_dir, &file_name)?
         };
@@ -2243,6 +3138,7 @@ fn gateway_project_config_fragments(
 fn worker_project_config_fragments(
     paths: &PvPaths,
     worker: &PhpWorkerRuntimePlan,
+    preserved_fragments: Option<&BTreeMap<String, String>>,
 ) -> Result<Vec<ProjectConfigFragment>, DaemonError> {
     let active_dir = paths.worker_projects_config_dir(&worker.runtime_key);
     let mut fragments = Vec::new();
@@ -2258,6 +3154,17 @@ fn worker_project_config_fragments(
             };
 
             Some(render_php_worker_project_config(&input, worker.port)?)
+        } else if let Some(preserved_fragments) = preserved_fragments {
+            Some(
+                preserved_fragments
+                    .get(&file_name)
+                    .cloned()
+                    .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                        reason: format!(
+                            "verified PHP worker config is missing preserved Project fragment `{file_name}`"
+                        ),
+                    })?,
+            )
         } else {
             read_preserved_project_config_fragment(&active_dir, &file_name)?
         };
@@ -2326,6 +3233,35 @@ async fn stop_stale_worker_runtimes(
         )?;
         cleanup_stale_worker_runtime(paths, &runtime_key)?;
     }
+
+    Ok(())
+}
+
+async fn stop_worker_if_undemanded(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    runtime_key: &str,
+) -> Result<(), DaemonError> {
+    let database = Database::open(paths)?;
+    let is_demanded = database.php_runtime_is_demanded(runtime_key)?;
+    drop(database);
+    if is_demanded {
+        return Ok(());
+    }
+
+    if let Some(adopted) = supervisor.adopt_recorded(
+        &paths.worker_pid(runtime_key),
+        &paths.worker_runtime_metadata(runtime_key),
+    )? {
+        adopted.stop(Duration::from_secs(1)).await?;
+    }
+    record_runtime_observed(
+        paths,
+        php_runtime_subject(runtime_key),
+        RuntimeObservedStatus::Stopped,
+        Some("PHP worker stopped; no Projects remain on this runtime"),
+    )?;
+    cleanup_stale_worker_runtime(paths, runtime_key)?;
 
     Ok(())
 }
@@ -2701,18 +3637,43 @@ mod tests {
     use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
     use platform::{ActivePfRedirectInspection, PfRedirectConfig};
-    use state::PvPaths;
+    use state::{Database, LinkProjectInput, PvPaths};
 
     use crate::ReadinessCheck;
     use crate::gateway_config::GatewayProjectRoute;
 
     use super::{
         GatewayPfRoutingState, GatewayReadinessPorts, GatewayRuntimePlan, ReadinessFailurePolicy,
-        RuntimePlan, classify_gateway_pf_routing_state, gateway_project_config_fragments,
-        gateway_public_readiness_check, gateway_readiness_check_for_ports,
-        gateway_readiness_hostname, gateway_readiness_plan, gateway_readiness_ports,
-        previous_runtime_readiness_from_parts, project_config_file_name,
+        RuntimePlan, build_target_runtime_plan, classify_gateway_pf_routing_state,
+        gateway_project_config_fragments, gateway_public_readiness_check,
+        gateway_readiness_check_for_ports, gateway_readiness_hostname, gateway_readiness_plan,
+        gateway_readiness_ports, previous_runtime_readiness_from_parts, project_config_file_name,
     };
+
+    #[test]
+    fn targeted_runtime_plan_promotes_uncertain_project_to_system() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(&config_path, "php: [\n")?;
+        let mut database = Database::open(&paths)?;
+        let project = database
+            .link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path,
+                primary_hostname: "project.test".to_owned(),
+                config_path,
+                desired_php_track: Some("8.4".to_owned()),
+                additional_hostnames: Vec::new(),
+            })?
+            .project;
+        drop(database);
+
+        assert!(build_target_runtime_plan(&paths, &project.id)?.is_none());
+
+        Ok(())
+    }
 
     #[test]
     fn gateway_readiness_uses_https_for_hostname_before_ca_file_exists() -> Result<()> {
@@ -2973,6 +3934,7 @@ mod tests {
                 worker_port: 8123,
                 access_log_path: paths.gateway_access_log(),
             }],
+            None,
         )?;
 
         assert_eq!(fragments.len(), 1);
