@@ -1944,8 +1944,10 @@ async fn run_project_reconciliation(
 ) -> Result<Vec<Value>> {
     ensure_reconciliation_dns_port(paths)?;
 
+    let finished_system_jobs = finished_system_job_count(paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    wait_for_new_finished_system_job(paths, finished_system_jobs).await?;
     let lines = request_lines(
         paths,
         json!({
@@ -1980,6 +1982,34 @@ async fn wait_for_succeeded_project_job(paths: &PvPaths, project_id: &str) -> Re
     Err(anyhow!(
         "succeeded job with scope {scope:?} was not recorded"
     ))
+}
+
+fn finished_system_job_count(paths: &PvPaths) -> Result<usize> {
+    let database = Database::open(paths)?;
+
+    Ok(database
+        .recent_jobs()?
+        .into_iter()
+        .filter(|job| {
+            job.scope == "system"
+                && matches!(
+                    job.status,
+                    state::JobStatus::Succeeded | state::JobStatus::Failed
+                )
+        })
+        .count())
+}
+
+async fn wait_for_new_finished_system_job(paths: &PvPaths, existing_count: usize) -> Result<()> {
+    for _attempt in 0..100 {
+        if finished_system_job_count(paths)? > existing_count {
+            return Ok(());
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    Err(anyhow!("new finished startup System job was not recorded"))
 }
 
 fn ensure_reconciliation_dns_port(paths: &PvPaths) -> Result<()> {
