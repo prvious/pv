@@ -2,7 +2,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use state::{PvPaths, StateError, UpdateLock};
 use thiserror::Error;
@@ -50,6 +50,7 @@ pub struct QueuedReconciliation {
     job: ReconciliationJob,
     inner: Arc<QueueInner>,
     abandon_job: Option<JobFinalizer>,
+    enqueued_at: Instant,
     released: bool,
 }
 
@@ -57,7 +58,14 @@ pub struct RunningReconciliation {
     job: ReconciliationJob,
     inner: Arc<QueueInner>,
     abandon_job: Option<JobFinalizer>,
+    timing: ReconciliationJobTiming,
     finished: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ReconciliationJobTiming {
+    enqueued_at: Instant,
+    started_at: Instant,
 }
 
 #[derive(Clone)]
@@ -164,6 +172,7 @@ impl ReconciliationQueue {
             job,
             inner: Arc::clone(&self.inner),
             abandon_job: Some(Box::new(abandon_job)),
+            enqueued_at: Instant::now(),
             released: false,
         }))
     }
@@ -242,6 +251,7 @@ impl ReconciliationQueue {
             job,
             inner: Arc::clone(&self.inner),
             abandon_job: Some(Box::new(abandon_job)),
+            enqueued_at: Instant::now(),
             released: false,
         }))
     }
@@ -270,11 +280,16 @@ impl QueuedReconciliation {
                     state.active = Some(job.clone());
                     let abandon_job = queued.abandon_job.take();
                     queued.released = true;
+                    let started_at = Instant::now();
 
                     return RunningReconciliation {
                         job,
                         inner: Arc::clone(&queued.inner),
                         abandon_job,
+                        timing: ReconciliationJobTiming {
+                            enqueued_at: queued.enqueued_at,
+                            started_at,
+                        },
                         finished: false,
                     };
                 }
@@ -286,6 +301,30 @@ impl QueuedReconciliation {
 
     pub fn job_id(&self) -> &str {
         &self.job.job_id
+    }
+}
+
+impl ReconciliationJobTiming {
+    #[cfg(test)]
+    pub(crate) fn immediate() -> Self {
+        let now = Instant::now();
+
+        Self {
+            enqueued_at: now,
+            started_at: now,
+        }
+    }
+
+    pub(crate) fn queue_wait(self) -> Duration {
+        self.started_at.saturating_duration_since(self.enqueued_at)
+    }
+
+    pub(crate) fn execution_elapsed(self) -> Duration {
+        self.execution_elapsed_at(Instant::now())
+    }
+
+    fn execution_elapsed_at(self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.started_at)
     }
 }
 
@@ -310,6 +349,10 @@ impl RunningReconciliation {
 
     pub fn job_id(&self) -> &str {
         &self.job.job_id
+    }
+
+    pub(crate) fn timing(&self) -> ReconciliationJobTiming {
+        self.timing
     }
 
     pub fn finish(mut self) {
@@ -568,12 +611,68 @@ fn lock_debounce_state(state: &DebounceState) -> MutexGuard<'_, DebounceInner> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use tokio::time::{Duration, sleep, timeout};
 
     use super::{
-        EnqueueResult, QueuedReconciliation, ReconciliationDebouncer, ReconciliationQueue,
-        ReconciliationQueueKey, ReconciliationScope, ReconciliationScopeParseError,
+        EnqueueResult, QueuedReconciliation, ReconciliationDebouncer, ReconciliationJobTiming,
+        ReconciliationQueue, ReconciliationQueueKey, ReconciliationScope,
+        ReconciliationScopeParseError,
     };
+
+    #[test]
+    fn job_timing_separates_queue_wait_from_execution() {
+        let enqueued_at = Instant::now();
+        let started_at = enqueued_at + Duration::from_millis(11);
+        let timing = ReconciliationJobTiming {
+            enqueued_at,
+            started_at,
+        };
+
+        assert_eq!(timing.queue_wait(), Duration::from_millis(11));
+        assert_eq!(
+            timing.execution_elapsed_at(started_at + Duration::from_millis(7)),
+            Duration::from_millis(7)
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_job_timing_uses_actual_enqueue_and_start_boundaries() -> anyhow::Result<()> {
+        let queue = ReconciliationQueue::new();
+        let active = queued(queue.enqueue(ReconciliationScope::System, || {
+            Ok::<String, anyhow::Error>("job_1".to_string())
+        })?)?
+        .wait_for_turn()
+        .await;
+        let enqueued_before = Instant::now();
+        let waiting = queued(
+            queue.enqueue(ReconciliationScope::project("project_1")?, || {
+                Ok::<String, anyhow::Error>("job_2".to_string())
+            })?,
+        )?;
+        let enqueued_after = Instant::now();
+
+        sleep(Duration::from_millis(10)).await;
+        let released_at = Instant::now();
+        active.finish();
+        let running = timeout(Duration::from_secs(1), waiting.wait_for_turn()).await?;
+        let started_after = Instant::now();
+        let timing = running.timing();
+
+        assert!(timing.enqueued_at >= enqueued_before);
+        assert!(timing.enqueued_at <= enqueued_after);
+        assert!(timing.started_at >= released_at);
+        assert!(timing.started_at <= started_after);
+        assert!(timing.queue_wait() >= Duration::from_millis(10));
+        assert_eq!(
+            timing.execution_elapsed_at(timing.started_at),
+            Duration::ZERO
+        );
+        running.finish();
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn queue_runs_one_scope_at_a_time_and_coalesces_duplicates() -> anyhow::Result<()> {
