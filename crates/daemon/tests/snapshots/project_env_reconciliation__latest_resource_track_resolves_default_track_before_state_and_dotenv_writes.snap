@@ -5,30 +5,30 @@ expression: snapshot
 (
     [
         Object {
-            "job_id": String("job_000001"),
+            "job_id": String("job_000002"),
             "message": String("job accepted"),
             "protocol_version": Number(3),
             "status": String("accepted"),
             "type": String("response"),
         },
         Object {
-            "job_id": String("job_000001"),
+            "job_id": String("job_000002"),
             "kind": String("reconcile"),
             "scope": String("project:<project_id>"),
             "type": String("job_started"),
         },
         Object {
-            "job_id": String("job_000001"),
+            "job_id": String("job_000002"),
             "message": String("Project env reconciliation started"),
             "type": String("log"),
         },
         Object {
-            "job_id": String("job_000001"),
+            "job_id": String("job_000002"),
             "message": String("Project env rendered"),
             "type": String("progress"),
         },
         Object {
-            "job_id": String("job_000001"),
+            "job_id": String("job_000002"),
             "summary": String("Project env rendered"),
             "type": String("job_completed"),
         },
@@ -59,7 +59,7 @@ expression: snapshot
         },
     ),
     JobRecord {
-        id: "job_000001",
+        id: "job_000002",
         kind: "reconcile",
         scope: "project:<project_id>",
         status: Succeeded,

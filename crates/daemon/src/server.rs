@@ -13,6 +13,7 @@ use crate::DaemonError;
 use crate::ipc::{LocalListener, LocalStream};
 use crate::jobs::{
     record_background_reconciliation_error, run_background_reconciliation_job, run_job,
+    run_startup_reconciliation_job,
 };
 use crate::managed_resources::ManagedResourceRuntimeCatalog;
 use crate::project_env::{project_tls_artifact_exists, project_tls_files_are_current};
@@ -36,6 +37,20 @@ pub(crate) async fn serve(
 ) -> Result<(), DaemonError> {
     let mut connections = JoinSet::new();
     let queue = ReconciliationQueue::new();
+    let startup_paths = paths.clone();
+    let startup_queue = queue.clone();
+    let startup_runtime_catalog = runtime_catalog.clone();
+    let (startup_shutdown, startup_shutdown_receiver) = oneshot::channel();
+    let mut startup_shutdown = Some(startup_shutdown);
+    let mut startup_task = Some(tokio::spawn(async move {
+        run_startup_reconciliation_job(
+            startup_paths,
+            startup_queue,
+            startup_runtime_catalog.as_deref(),
+            startup_shutdown_receiver,
+        )
+        .await
+    }));
     let background_paths = paths.clone();
     let background_queue = queue.clone();
     let background_runtime_catalog = runtime_catalog.clone();
@@ -67,30 +82,38 @@ pub(crate) async fn serve(
         PROJECT_CONFIG_WATCH_INTERVAL,
     );
     let mut watcher_task = tokio::spawn(watcher.run());
+    let mut watcher_task_finished = false;
     let mut tls_health_task: Option<JoinHandle<Result<Vec<ReconciliationScope>, DaemonError>>> =
         None;
     let mut tls_health_interval = tokio::time::interval(TLS_HEALTH_INTERVAL);
     tls_health_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
-    loop {
+    let result = loop {
         tokio::select! {
             _ = &mut shutdown => {
-                watcher_task.abort();
-                let _join_result = watcher_task.await;
-                if let Some(task) = tls_health_task.take() {
-                    task.abort();
-                }
-                connections.abort_all();
-                while connections.join_next().await.is_some() {}
-
-                return Ok(());
+                break Ok(());
             }
             watcher_result = &mut watcher_task => {
-                match watcher_result {
-                    Ok(Ok(())) => return Ok(()),
-                    Ok(Err(error)) => return Err(error),
-                    Err(error) if error.is_panic() => return Err(error.into()),
-                    Err(_error) => return Ok(()),
+                watcher_task_finished = true;
+                break match watcher_result {
+                    Ok(Ok(())) => Ok(()),
+                    Ok(Err(error)) => Err(error),
+                    Err(error) if error.is_panic() => Err(error.into()),
+                    Err(_error) => Ok(()),
+                };
+            }
+            startup_result = async {
+                match startup_task.as_mut() {
+                    Some(task) => Some(task.await),
+                    None => None,
+                }
+            }, if startup_task.is_some() => {
+                startup_task = None;
+                startup_shutdown = None;
+                if let Some(startup_result) = startup_result
+                    && let Err(error) = handle_startup_task_result(&paths, startup_result)
+                {
+                    break Err(error);
                 }
             }
             tls_health_result = async {
@@ -108,7 +131,7 @@ pub(crate) async fn serve(
                             }
                         }
                         Ok(Err(_error)) => {}
-                        Err(error) if error.is_panic() => return Err(error.into()),
+                        Err(error) if error.is_panic() => break Err(error.into()),
                         Err(_error) => {}
                     }
                 }
@@ -147,12 +170,54 @@ pub(crate) async fn serve(
                 match joined {
                     Some(Ok(Ok(()))) | None => {}
                     Some(Ok(Err(_error))) => {}
-                    Some(Err(error)) if error.is_panic() => return Err(error.into()),
+                    Some(Err(error)) if error.is_panic() => break Err(error.into()),
                     Some(Err(_error)) => {}
                 }
             }
         }
+    };
+
+    if !watcher_task_finished {
+        watcher_task.abort();
+        let _join_result = watcher_task.await;
     }
+    if let Some(task) = tls_health_task.take() {
+        task.abort();
+        let _join_result = task.await;
+    }
+    let startup_result =
+        stop_startup_task(&paths, startup_shutdown.take(), startup_task.take()).await;
+    connections.abort_all();
+    while connections.join_next().await.is_some() {}
+
+    result?;
+    startup_result
+}
+
+fn handle_startup_task_result(
+    paths: &PvPaths,
+    result: Result<Result<(), DaemonError>, tokio::task::JoinError>,
+) -> Result<(), DaemonError> {
+    match result {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => record_background_reconciliation_error(paths, "system", &error),
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn stop_startup_task(
+    paths: &PvPaths,
+    shutdown: Option<oneshot::Sender<()>>,
+    task: Option<JoinHandle<Result<(), DaemonError>>>,
+) -> Result<(), DaemonError> {
+    if let Some(shutdown) = shutdown {
+        let _send_result = shutdown.send(());
+    }
+    let Some(task) = task else {
+        return Ok(());
+    };
+
+    handle_startup_task_result(paths, task.await)
 }
 
 fn collect_project_tls_health_scopes(

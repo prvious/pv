@@ -4,7 +4,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use state::{PvPaths, StateError, UpdateLock};
+use state::{JobsLock, PvPaths, StateError};
 use thiserror::Error;
 use tokio::sync::Notify;
 
@@ -43,6 +43,7 @@ pub struct ReconciliationJob {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ReconciliationQueueKey {
     Reconcile(ReconciliationScope),
+    StartupSystem,
     UpdateSystem,
 }
 
@@ -109,7 +110,7 @@ struct DebounceState {
 struct QueueState {
     active: Option<ReconciliationJob>,
     queued: VecDeque<ReconciliationJob>,
-    update_lock: Option<UpdateLock>,
+    jobs_lock: Option<JobsLock>,
 }
 
 #[derive(Debug, Default)]
@@ -128,7 +129,8 @@ impl ReconciliationQueue {
         }
     }
 
-    pub fn enqueue<E>(
+    #[cfg(test)]
+    fn enqueue<E>(
         &self,
         scope: ReconciliationScope,
         create_job_id: impl FnOnce() -> Result<String, E>,
@@ -136,7 +138,8 @@ impl ReconciliationQueue {
         self.enqueue_with_abandon(scope, create_job_id, |_job_id| {})
     }
 
-    pub(crate) fn enqueue_with_abandon<E>(
+    #[cfg(test)]
+    fn enqueue_with_abandon<E>(
         &self,
         scope: ReconciliationScope,
         create_job_id: impl FnOnce() -> Result<String, E>,
@@ -147,6 +150,7 @@ impl ReconciliationQueue {
         self.enqueue_with_key(scope, key, create_job_id, abandon_job)
     }
 
+    #[cfg(test)]
     fn enqueue_with_key<E>(
         &self,
         scope: ReconciliationScope,
@@ -210,6 +214,24 @@ impl ReconciliationQueue {
         )
     }
 
+    pub(crate) fn enqueue_startup_with_abandon<E>(
+        &self,
+        paths: &PvPaths,
+        create_job_id: impl FnOnce() -> Result<String, E>,
+        abandon_job: impl FnOnce(&str) + Send + 'static,
+    ) -> Result<EnqueueResult, E>
+    where
+        E: From<StateError>,
+    {
+        self.enqueue_mutating_with_key(
+            paths,
+            ReconciliationScope::System,
+            ReconciliationQueueKey::StartupSystem,
+            create_job_id,
+            abandon_job,
+        )
+    }
+
     fn enqueue_mutating_with_key<E>(
         &self,
         paths: &PvPaths,
@@ -227,16 +249,16 @@ impl ReconciliationQueue {
             return Ok(EnqueueResult::Coalesced(job));
         }
 
-        let acquired_lock = state.update_lock.is_none();
+        let acquired_lock = state.jobs_lock.is_none();
         if acquired_lock {
-            state.update_lock = Some(UpdateLock::acquire(paths).map_err(E::from)?);
+            state.jobs_lock = Some(JobsLock::acquire(paths).map_err(E::from)?);
         }
 
         let job_id = match create_job_id() {
             Ok(job_id) => job_id,
             Err(error) => {
                 if acquired_lock && state.active.is_none() && state.queued.is_empty() {
-                    state.update_lock = None;
+                    state.jobs_lock = None;
                 }
 
                 return Err(error);
@@ -564,7 +586,7 @@ fn remove_queued_job(inner: &QueueInner, job: &ReconciliationJob) -> bool {
     state.queued.retain(|queued| queued.job_id != job.job_id);
 
     if state.queued.len() != queued_len {
-        release_update_lock_if_idle(&mut state);
+        release_jobs_lock_if_idle(&mut state);
         inner.notify.notify_waiters();
         return true;
     }
@@ -581,7 +603,7 @@ fn release_active_job(inner: &QueueInner, job: &ReconciliationJob) -> bool {
         .is_some_and(|active| active.job_id == job.job_id)
     {
         state.active = None;
-        release_update_lock_if_idle(&mut state);
+        release_jobs_lock_if_idle(&mut state);
         inner.notify.notify_waiters();
         return true;
     }
@@ -589,9 +611,9 @@ fn release_active_job(inner: &QueueInner, job: &ReconciliationJob) -> bool {
     false
 }
 
-fn release_update_lock_if_idle(state: &mut QueueState) {
+fn release_jobs_lock_if_idle(state: &mut QueueState) {
     if state.active.is_none() && state.queued.is_empty() {
-        state.update_lock = None;
+        state.jobs_lock = None;
     }
 }
 
@@ -794,6 +816,30 @@ mod tests {
 
         let running_reconcile = timeout(Duration::from_secs(1), reconcile.wait_for_turn()).await?;
         assert_eq!(running_reconcile.scope(), &ReconciliationScope::System);
+        assert_eq!(running_reconcile.job_id(), "job_2");
+        running_reconcile.finish();
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn startup_system_does_not_coalesce_with_trailing_reconcile_system() -> anyhow::Result<()>
+    {
+        let queue = ReconciliationQueue::new();
+        let startup = queued(queue.enqueue_with_key(
+            ReconciliationScope::System,
+            ReconciliationQueueKey::StartupSystem,
+            || Ok::<String, anyhow::Error>("job_1".to_string()),
+            |_job_id| {},
+        )?)?;
+        let reconcile = queued(queue.enqueue(ReconciliationScope::System, || {
+            Ok::<String, anyhow::Error>("job_2".to_string())
+        })?)?;
+
+        let running_startup = startup.wait_for_turn().await;
+        running_startup.finish();
+
+        let running_reconcile = timeout(Duration::from_secs(1), reconcile.wait_for_turn()).await?;
         assert_eq!(running_reconcile.job_id(), "job_2");
         running_reconcile.finish();
 

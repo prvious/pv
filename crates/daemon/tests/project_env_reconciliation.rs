@@ -248,6 +248,12 @@ async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> R
     let lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
     let (certificate_pem, private_key_pem) = read_project_tls_files(&paths, &project)?;
+    let project_scope = format!("project:{}", project.id);
+    let project_jobs = database
+        .recent_jobs()?
+        .into_iter()
+        .filter(|job| job.scope == project_scope)
+        .collect::<Vec<_>>();
 
     assert_project_certificate_matches(&certificate_pem, &private_key_pem, "acme.test", &local_ca);
 
@@ -257,7 +263,7 @@ async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> R
             lines,
             read_dotenv(&project)?,
             database.project_env_observed_state(&project.id)?,
-            database.recent_jobs()?,
+            project_jobs,
         ),
         tempdir.path(),
     )?;
@@ -605,11 +611,11 @@ async fn daemon_health_tick_replaces_expiring_tls_certificate_without_explicit_r
     );
 
     let database = Database::open(&paths)?;
-    assert!(
-        database
-            .recent_jobs()?
-            .into_iter()
-            .all(|job| job.scope != "system")
+    let jobs = database.recent_jobs()?;
+    assert_eq!(
+        jobs.iter().filter(|job| job.scope == "system").count(),
+        1,
+        "the health tick should not add another System reconciliation after startup"
     );
 
     Ok(())
@@ -1938,8 +1944,10 @@ async fn run_project_reconciliation(
 ) -> Result<Vec<Value>> {
     ensure_reconciliation_dns_port(paths)?;
 
+    let finished_system_jobs = finished_system_job_count(paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    wait_for_new_finished_system_job(paths, finished_system_jobs).await?;
     let lines = request_lines(
         paths,
         json!({
@@ -1974,6 +1982,34 @@ async fn wait_for_succeeded_project_job(paths: &PvPaths, project_id: &str) -> Re
     Err(anyhow!(
         "succeeded job with scope {scope:?} was not recorded"
     ))
+}
+
+fn finished_system_job_count(paths: &PvPaths) -> Result<usize> {
+    let database = Database::open(paths)?;
+
+    Ok(database
+        .recent_jobs()?
+        .into_iter()
+        .filter(|job| {
+            job.scope == "system"
+                && matches!(
+                    job.status,
+                    state::JobStatus::Succeeded | state::JobStatus::Failed
+                )
+        })
+        .count())
+}
+
+async fn wait_for_new_finished_system_job(paths: &PvPaths, existing_count: usize) -> Result<()> {
+    for _attempt in 0..100 {
+        if finished_system_job_count(paths)? > existing_count {
+            return Ok(());
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    Err(anyhow!("new finished startup System job was not recorded"))
 }
 
 fn ensure_reconciliation_dns_port(paths: &PvPaths) -> Result<()> {
