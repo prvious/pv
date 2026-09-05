@@ -1502,7 +1502,7 @@ async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is
         gateway_pid
     );
     assert!(paths.worker_pid("8.5").exists());
-    assert!(!process_is_alive(old_worker_pid)?);
+    wait_for_process_exit(old_worker_pid).await?;
     assert!(!paths.worker_pid("8.4").exists());
     assert!(!paths.worker_runtime_metadata("8.4").exists());
 
@@ -1566,7 +1566,7 @@ async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is
 
     assert!(!gateway_fragment_path.exists());
     assert!(!worker_fragment_path.exists());
-    assert!(!process_is_alive(new_worker_pid)?);
+    wait_for_process_exit(new_worker_pid).await?;
     assert!(!paths.worker_pid("8.5").exists());
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
