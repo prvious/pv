@@ -24,7 +24,22 @@ expression: snapshot
         },
         Object {
             "job_id": String("job_000002"),
-            "message": String("Project env rendered"),
+            "message": String("project_apply"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000002"),
+            "message": String("workers"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000002"),
+            "message": String("gateway"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000002"),
+            "message": String("finalization"),
             "type": String("progress"),
         },
         Object {
@@ -51,6 +66,16 @@ expression: snapshot
             "job_id": String("job_000004"),
             "message": String("Project env reconciliation started"),
             "type": String("log"),
+        },
+        Object {
+            "job_id": String("job_000004"),
+            "message": String("project_apply"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000004"),
+            "message": String("finalization"),
+            "type": String("progress"),
         },
         Object {
             "error": String("Project config error: unknown Project config env placeholder `url` in `env.BAD_URL`"),

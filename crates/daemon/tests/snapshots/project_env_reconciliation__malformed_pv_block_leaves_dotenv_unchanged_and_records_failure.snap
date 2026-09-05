@@ -23,6 +23,16 @@ expression: snapshot
             "type": String("log"),
         },
         Object {
+            "job_id": String("job_000002"),
+            "message": String("project_apply"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000002"),
+            "message": String("finalization"),
+            "type": String("progress"),
+        },
+        Object {
             "error": String("Project config error: malformed PV-managed .env block: start marker without end marker"),
             "job_id": String("job_000002"),
             "type": String("job_failed"),
