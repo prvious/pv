@@ -302,10 +302,7 @@ fn append(
         record.insert((*key).to_string(), Value::String((*value).to_string()));
     }
 
-    let mut file = state::fs::open_append_file(&paths.daemon_log())?;
-    writeln!(file, "{}", Value::Object(record))?;
-
-    Ok(())
+    append_record(paths, record)
 }
 
 fn append_phase(
@@ -354,8 +351,14 @@ fn append_phase(
         Value::from(elapsed_milliseconds(elapsed)),
     );
     record.insert("subject".to_string(), Value::String(subject.to_string()));
-    let mut file = state::fs::open_append_file(&log.paths.daemon_log())?;
-    writeln!(file, "{}", Value::Object(record))?;
+    append_record(&log.paths, record)
+}
+
+fn append_record(paths: &PvPaths, record: Map<String, Value>) -> Result<(), DaemonError> {
+    // Serialize the full line before appending to avoid interleaving JSON fragments.
+    let line = format!("{}\n", Value::Object(record));
+    let mut file = state::fs::open_append_file(&paths.daemon_log())?;
+    file.write_all(line.as_bytes())?;
 
     Ok(())
 }
@@ -373,13 +376,62 @@ fn timestamp() -> Result<String, DaemonError> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Barrier;
+    use std::thread;
     use std::time::Duration;
 
     use camino_tempfile::tempdir;
     use serde_json::Value;
     use state::PvPaths;
 
-    use super::{PhaseOutcome, ReconciliationPhase, ReconciliationPhaseLog};
+    use super::{PhaseOutcome, ReconciliationPhase, ReconciliationPhaseLog, job_started};
+
+    #[test]
+    fn concurrent_phase_and_job_events_remain_complete_json_lines() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let log = ReconciliationPhaseLog::new(&paths, "job_1", "system");
+        let barrier = Barrier::new(2);
+        let events_per_writer = 200;
+
+        thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..events_per_writer {
+                    barrier.wait();
+                    job_started(&paths, "job_2", "reconcile", "project:project_1");
+                }
+            });
+            scope.spawn(|| {
+                for _ in 0..events_per_writer {
+                    barrier.wait();
+                    log.completed(
+                        ReconciliationPhase::Manifest,
+                        "artifact_manifest",
+                        PhaseOutcome::Succeeded,
+                        Duration::from_millis(12),
+                        &[("manifest_count", 1)],
+                    );
+                }
+            });
+        });
+
+        let events = state::fs::read_to_string(&paths.daemon_log())?
+            .lines()
+            .map(serde_json::from_str::<Value>)
+            .collect::<Result<Vec<_>, _>>()?;
+        assert_eq!(events.len(), events_per_writer * 2);
+        for event in ["job_started", "reconciliation_phase_completed"] {
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|record| record["event"] == event)
+                    .count(),
+                events_per_writer
+            );
+        }
+
+        Ok(())
+    }
 
     #[test]
     fn reconciliation_phase_log_and_timer_record_each_completion_once() -> anyhow::Result<()> {
