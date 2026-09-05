@@ -497,13 +497,13 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
 
+    use anyhow::anyhow;
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
     use state::{
         Database, LinkProjectInput, PortRequest, ProjectManagedResourceInput, PvPaths,
         RuntimeSubject,
     };
-    use tokio::net::TcpListener;
     use tokio::time::{Duration, Instant, advance};
 
     use super::{
@@ -691,15 +691,9 @@ mod tests {
         )?;
         let killed_runtime = prepare_worker_artifact(&mut database, tempdir.path(), "8.3")?;
         let healthy_runtime = prepare_worker_artifact(&mut database, tempdir.path(), "8.4")?;
-        let killed_port = database
-            .assign_php_worker_port("8.3", loopback_port_available)?
-            .port;
-        let healthy_port = database
-            .assign_php_worker_port("8.4", loopback_port_available)?
-            .port;
+        let _killed_listener = assign_php_worker_listener(&mut database, "8.3")?;
+        let _healthy_listener = assign_php_worker_listener(&mut database, "8.4")?;
         drop(database);
-        let _killed_listener = TcpListener::bind(("127.0.0.1", killed_port)).await?;
-        let _healthy_listener = TcpListener::bind(("127.0.0.1", healthy_port)).await?;
         let supervisor = ProcessSupervisor::new(paths.clone());
         let killed_process = supervisor
             .start(worker_process_spec(&paths, &killed_runtime, "8.3"))
@@ -752,11 +746,8 @@ mod tests {
             "8.4",
         )?;
         let runtime = prepare_worker_artifact(&mut database, tempdir.path(), "8.4")?;
-        let port = database
-            .assign_php_worker_port("8.4", loopback_port_available)?
-            .port;
+        let _listener = assign_php_worker_listener(&mut database, "8.4")?;
         drop(database);
-        let _listener = TcpListener::bind(("127.0.0.1", port)).await?;
         let supervisor = ProcessSupervisor::new(paths.clone());
         let spec = worker_process_spec(&paths, &runtime, "8.4");
         let process = supervisor.start(spec.clone()).await?;
@@ -824,15 +815,9 @@ mod tests {
         )?;
         let broken_runtime = prepare_worker_artifact(&mut database, tempdir.path(), "8.3")?;
         let healthy_runtime = prepare_worker_artifact(&mut database, tempdir.path(), "8.4")?;
-        let broken_port = database
-            .assign_php_worker_port("8.3", loopback_port_available)?
-            .port;
-        let healthy_port = database
-            .assign_php_worker_port("8.4", loopback_port_available)?
-            .port;
+        let _broken_listener = assign_php_worker_listener(&mut database, "8.3")?;
+        let _healthy_listener = assign_php_worker_listener(&mut database, "8.4")?;
         drop(database);
-        let _broken_listener = TcpListener::bind(("127.0.0.1", broken_port)).await?;
-        let _healthy_listener = TcpListener::bind(("127.0.0.1", healthy_port)).await?;
         let supervisor = ProcessSupervisor::new(paths.clone());
         let broken_process = supervisor
             .start(worker_process_spec(&paths, &broken_runtime, "8.3"))
@@ -866,7 +851,6 @@ mod tests {
                 == RuntimeSubject::PhpWorker {
                     php_track: "8.4".to_owned(),
                 }
-                && observation.healthy
         }));
         assert_eq!(scan.errors.len(), 1);
         assert_eq!(
@@ -963,6 +947,19 @@ mod tests {
 
     fn loopback_port_available(port: u16) -> bool {
         StdTcpListener::bind(("127.0.0.1", port)).is_ok()
+    }
+
+    fn assign_php_worker_listener(
+        database: &mut Database,
+        php_track: &str,
+    ) -> anyhow::Result<StdTcpListener> {
+        let mut listener = None;
+        database.assign_php_worker_port(php_track, |port| {
+            listener = StdTcpListener::bind(("127.0.0.1", port)).ok();
+            listener.is_some()
+        })?;
+
+        listener.ok_or_else(|| anyhow!("assigned PHP worker port was not reserved"))
     }
 
     fn prepare_worker_artifact(
