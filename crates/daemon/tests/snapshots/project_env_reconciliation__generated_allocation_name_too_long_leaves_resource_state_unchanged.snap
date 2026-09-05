@@ -23,6 +23,16 @@ expression: snapshot
             "type": String("log"),
         },
         Object {
+            "job_id": String("job_000002"),
+            "message": String("project_apply"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000002"),
+            "message": String("finalization"),
+            "type": String("progress"),
+        },
+        Object {
             "error": String("Managed Resource error: generated Resource allocation name `project_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` for `postgres` allocation `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa` exceeds 63 characters"),
             "job_id": String("job_000002"),
             "type": String("job_failed"),

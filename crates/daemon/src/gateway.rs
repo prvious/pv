@@ -252,6 +252,7 @@ pub async fn reconcile_project_gateway_runtimes_for_test(
     let phase_log = structured_log::ReconciliationPhaseLog::new(
         paths,
         "targeted-gateway-test",
+        "reconcile",
         &format!("project:{project_id}"),
     );
     match reconcile_project_gateway_runtimes(

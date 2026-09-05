@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value};
 use state::PvPaths;
+use tokio::sync::watch;
 
 use crate::DaemonError;
 
@@ -10,7 +11,9 @@ use crate::DaemonError;
 pub(crate) struct ReconciliationPhaseLog {
     paths: PvPaths,
     job_id: String,
+    kind: String,
     scope: String,
+    progress: Option<watch::Sender<Vec<ReconciliationPhase>>>,
 }
 
 #[derive(Clone, Copy)]
@@ -21,7 +24,7 @@ pub(crate) enum PhaseOutcome {
     Fallback,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ReconciliationPhase {
     Queue,
     DemandDiscovery,
@@ -44,12 +47,22 @@ pub(crate) struct PhaseTimer {
 }
 
 impl ReconciliationPhaseLog {
-    pub(crate) fn new(paths: &PvPaths, job_id: &str, scope: &str) -> Self {
+    pub(crate) fn new(paths: &PvPaths, job_id: &str, kind: &str, scope: &str) -> Self {
         Self {
             paths: paths.clone(),
             job_id: job_id.to_owned(),
+            kind: kind.to_owned(),
             scope: scope.to_owned(),
+            progress: None,
         }
+    }
+
+    pub(crate) fn with_progress(
+        mut self,
+        progress: Option<watch::Sender<Vec<ReconciliationPhase>>>,
+    ) -> Self {
+        self.progress = progress;
+        self
     }
 
     pub(crate) fn start(
@@ -57,6 +70,7 @@ impl ReconciliationPhaseLog {
         phase: ReconciliationPhase,
         subject: impl Into<String>,
     ) -> PhaseTimer {
+        self.report_progress(phase);
         PhaseTimer {
             log: self.clone(),
             phase,
@@ -86,15 +100,34 @@ impl ReconciliationPhaseLog {
         counts: &[(&str, u64)],
         fields: &[(&str, &str)],
     ) {
+        self.report_progress(phase);
         if let Err(error) = append_phase(self, phase, subject, outcome, elapsed, counts, fields) {
             let mut standard_error = io::stderr().lock();
             let _fallback_result = writeln!(
                 standard_error,
-                "PV reconciliation phase log failed: job_id={} phase={} subject={subject}: {error}",
+                "PV job phase log failed: job_id={} kind={} phase={} subject={subject}: {error}",
                 self.job_id,
+                self.kind,
                 phase.as_str(),
             );
         }
+    }
+
+    fn report_progress(&self, phase: ReconciliationPhase) {
+        if phase == ReconciliationPhase::Queue {
+            return;
+        }
+        let Some(progress) = &self.progress else {
+            return;
+        };
+        let _changed = progress.send_if_modified(|phases| {
+            if phases.last().copied() == Some(phase) {
+                return false;
+            }
+            phases.push(phase);
+
+            true
+        });
     }
 }
 
@@ -424,7 +457,7 @@ fn append_phase(
         Value::String("reconciliation phase completed".to_string()),
     );
     record.insert("job_id".to_string(), Value::String(log.job_id.clone()));
-    record.insert("kind".to_string(), Value::String("reconcile".to_string()));
+    record.insert("kind".to_string(), Value::String(log.kind.clone()));
     record.insert("scope".to_string(), Value::String(log.scope.clone()));
     record.insert(
         "phase".to_string(),
@@ -478,7 +511,7 @@ mod tests {
     fn concurrent_phase_and_job_events_remain_complete_json_lines() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let log = ReconciliationPhaseLog::new(&paths, "job_1", "system");
+        let log = ReconciliationPhaseLog::new(&paths, "job_1", "reconcile", "system");
         let barrier = Barrier::new(2);
         let events_per_writer = 200;
 
@@ -525,7 +558,7 @@ mod tests {
     fn reconciliation_phase_log_and_timer_record_each_completion_once() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let log = ReconciliationPhaseLog::new(&paths, "job_1", "system");
+        let log = ReconciliationPhaseLog::new(&paths, "job_1", "reconcile", "system");
 
         log.completed(
             ReconciliationPhase::Manifest,
@@ -537,12 +570,19 @@ mod tests {
         log.start(ReconciliationPhase::Download, "php:8.5")
             .finish(PhaseOutcome::Succeeded, &[("artifact_count", 1)]);
         drop(log.start(ReconciliationPhase::Install, "php:8.5"));
+        ReconciliationPhaseLog::new(&paths, "job_2", "update", "system").completed(
+            ReconciliationPhase::Finalization,
+            "job",
+            PhaseOutcome::Succeeded,
+            Duration::from_millis(3),
+            &[],
+        );
 
         let events = state::fs::read_to_string(&paths.daemon_log())?
             .lines()
             .map(serde_json::from_str::<Value>)
             .collect::<Result<Vec<_>, _>>()?;
-        assert_eq!(events.len(), 3);
+        assert_eq!(events.len(), 4);
         assert_eq!(events[0]["event"], "reconciliation_phase_completed");
         assert_eq!(events[0]["job_id"], "job_1");
         assert_eq!(events[0]["kind"], "reconcile");
@@ -558,6 +598,9 @@ mod tests {
         assert_eq!(events[2]["phase"], "install");
         assert_eq!(events[2]["outcome"], "failed");
         assert!(events[2]["elapsed_ms"].as_u64().is_some());
+        assert_eq!(events[3]["job_id"], "job_2");
+        assert_eq!(events[3]["kind"], "update");
+        assert_eq!(events[3]["phase"], "finalization");
 
         Ok(())
     }

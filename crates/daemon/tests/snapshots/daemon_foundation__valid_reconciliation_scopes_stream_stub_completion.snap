@@ -24,7 +24,17 @@ expression: snapshot
         },
         Object {
             "job_id": String("job_000002"),
-            "message": String("Managed Resource mysql track 8.4 reconciled"),
+            "message": String("resources"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000002"),
+            "message": String("project_apply"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000002"),
+            "message": String("finalization"),
             "type": String("progress"),
         },
         Object {

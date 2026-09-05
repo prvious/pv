@@ -21,7 +21,8 @@ use crate::project_env::{
     reconcile_project_env_with_runtime_catalog_and_progress, record_project_env_failure,
 };
 use crate::reconciliation::{
-    EnqueueResult, ReconciliationJobTiming, ReconciliationQueue, ReconciliationScope,
+    EnqueueResult, QueuedReconciliation, ReconciliationJobTiming, ReconciliationQueue,
+    ReconciliationScope, RunningReconciliation,
 };
 use crate::structured_log::{self, PhaseOutcome, ReconciliationPhase, ReconciliationPhaseLog};
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
@@ -30,12 +31,13 @@ use state::{
 };
 use tokio::io::AsyncWrite;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::time::{Duration, Instant, MissedTickBehavior, interval_at, timeout};
 
 const FOREGROUND_JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const FOREGROUND_JOB_STREAM_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
 const FOREGROUND_JOB_PROGRESS_BUFFER: usize = 16;
+const FOREGROUND_JOB_QUEUE_HEARTBEAT: &str = "Waiting for the reconciliation slot";
 const STARTUP_JOBS_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug)]
@@ -82,15 +84,20 @@ struct StreamedJobCompletion {
 #[derive(Clone, Debug)]
 pub(crate) struct DaemonDownloadProgress {
     sender: Option<Sender<ForegroundJobEvent>>,
+    phase_sender: Option<watch::Sender<Vec<ReconciliationPhase>>>,
     phase_log: Option<Arc<Mutex<ReconciliationPhaseLog>>>,
     manifest_snapshot:
         Arc<OnceLock<Result<Arc<resources::ArtifactManifestRefresh>, resources::ResourcesError>>>,
 }
 
 impl DaemonDownloadProgress {
-    fn new(sender: Sender<ForegroundJobEvent>) -> Self {
+    fn new(
+        sender: Sender<ForegroundJobEvent>,
+        phase_sender: watch::Sender<Vec<ReconciliationPhase>>,
+    ) -> Self {
         Self {
             sender: Some(sender),
+            phase_sender: Some(phase_sender),
             phase_log: None,
             manifest_snapshot: Arc::new(OnceLock::new()),
         }
@@ -99,6 +106,7 @@ impl DaemonDownloadProgress {
     pub(crate) fn disabled() -> Self {
         Self {
             sender: None,
+            phase_sender: None,
             phase_log: None,
             manifest_snapshot: Arc::new(OnceLock::new()),
         }
@@ -358,7 +366,13 @@ async fn run_reconciliation_job(
             .await
             .map_err(DaemonError::from);
             let stream_is_open = accepted_result.is_ok();
-            let running = queued.wait_for_turn().await;
+            let (running, stream_is_open) = wait_for_foreground_turn(
+                queued,
+                &mut transport,
+                stream_is_open,
+                FOREGROUND_JOB_HEARTBEAT_INTERVAL,
+            )
+            .await;
             let scope = running.scope().clone();
             let result = stream_started_reconciliation_job(
                 paths,
@@ -446,7 +460,13 @@ async fn run_update_job(
             .await
             .map_err(DaemonError::from);
             let stream_is_open = accepted_result.is_ok();
-            let running = queued.wait_for_turn().await;
+            let (running, stream_is_open) = wait_for_foreground_turn(
+                queued,
+                &mut transport,
+                stream_is_open,
+                FOREGROUND_JOB_HEARTBEAT_INTERVAL,
+            )
+            .await;
             let result = stream_started_update_job(
                 paths,
                 transport,
@@ -537,7 +557,8 @@ where
 
     let (update_result, transport_is_open) = if stream_is_open && started_stream_result.is_ok() {
         let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
-        let progress = DaemonDownloadProgress::new(event_sender);
+        let (phase_sender, phase_receiver) = watch::channel(Vec::new());
+        let progress = DaemonDownloadProgress::new(event_sender, phase_sender);
         let completion = complete_streamed_job_with_heartbeat_and_events(
             &mut transport,
             job_id,
@@ -545,6 +566,7 @@ where
             FOREGROUND_JOB_HEARTBEAT_INTERVAL,
             complete_update_job_with_progress(&paths, job_id, runtime_catalog, progress),
             event_receiver,
+            phase_receiver,
         )
         .await;
 
@@ -563,14 +585,6 @@ where
 
     match update_result {
         Ok(summary) => {
-            write_foreground_terminal_event(
-                &mut transport,
-                &DaemonEvent::Progress {
-                    job_id,
-                    message: &summary,
-                },
-            )
-            .await?;
             write_foreground_terminal_event(
                 &mut transport,
                 &DaemonEvent::JobCompleted {
@@ -602,6 +616,45 @@ fn foreground_reconciliation_result(
 ) -> Result<(), DaemonError> {
     reconciliation_result?;
     accepted_result
+}
+
+async fn wait_for_foreground_turn<Stream>(
+    queued: QueuedReconciliation,
+    transport: &mut DaemonTransport<Stream>,
+    mut stream_is_open: bool,
+    heartbeat_interval: Duration,
+) -> (RunningReconciliation, bool)
+where
+    Stream: AsyncWrite + Unpin,
+{
+    let job_id = queued.job_id().to_string();
+    let wait_for_turn = queued.wait_for_turn();
+    tokio::pin!(wait_for_turn);
+    let mut heartbeat = interval_at(Instant::now() + heartbeat_interval, heartbeat_interval);
+    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    loop {
+        tokio::select! {
+            biased;
+            running = &mut wait_for_turn => return (running, stream_is_open),
+            _ = heartbeat.tick(), if stream_is_open => {
+                let event = DaemonEvent::Log {
+                    job_id: &job_id,
+                    message: FOREGROUND_JOB_QUEUE_HEARTBEAT,
+                };
+                if !matches!(
+                    timeout(
+                        FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,
+                        write_line(transport, &event),
+                    )
+                    .await,
+                    Ok(Ok(()))
+                ) {
+                    stream_is_open = false;
+                }
+            }
+        }
+    }
 }
 
 async fn stream_started_reconciliation_job<Stream>(
@@ -641,7 +694,8 @@ where
     let (reconciliation_result, transport_is_open) =
         if stream_is_open && started_stream_result.is_ok() {
             let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
-            let progress = DaemonDownloadProgress::new(event_sender);
+            let (phase_sender, phase_receiver) = watch::channel(Vec::new());
+            let progress = DaemonDownloadProgress::new(event_sender, phase_sender);
             let completion = complete_streamed_job_with_heartbeat_and_events(
                 &mut transport,
                 job_id,
@@ -656,6 +710,7 @@ where
                     timing,
                 ),
                 event_receiver,
+                phase_receiver,
             )
             .await;
 
@@ -674,15 +729,6 @@ where
 
     match reconciliation_result {
         Ok(summary) => {
-            let progress = reconciliation_progress_message(&scope, &summary);
-            write_foreground_terminal_event(
-                &mut transport,
-                &DaemonEvent::Progress {
-                    job_id,
-                    message: &progress,
-                },
-            )
-            .await?;
             write_foreground_terminal_event(
                 &mut transport,
                 &DaemonEvent::JobCompleted {
@@ -749,6 +795,7 @@ async fn complete_streamed_job_with_heartbeat_and_events<Stream, Completion>(
     heartbeat_interval: Duration,
     completion: Completion,
     mut events: Receiver<ForegroundJobEvent>,
+    mut phases: watch::Receiver<Vec<ReconciliationPhase>>,
 ) -> StreamedJobCompletion
 where
     Stream: AsyncWrite + Unpin,
@@ -758,24 +805,47 @@ where
     heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
     tokio::pin!(completion);
     let mut events_open = true;
+    let mut phases_open = true;
+    let mut next_phase = 0;
 
     loop {
         tokio::select! {
+            biased;
+            phase_changed = phases.changed(), if phases_open => {
+                if phase_changed.is_err() {
+                    phases_open = false;
+                    continue;
+                }
+                if !write_pending_phases(transport, job_id, &mut phases, &mut next_phase).await {
+                    return StreamedJobCompletion {
+                        result: completion.await,
+                        transport_is_open: false,
+                    };
+                }
+            }
             result = &mut completion => {
-                return StreamedJobCompletion {
+                return finish_streamed_job(
+                    transport,
+                    job_id,
+                    &mut phases,
+                    &mut next_phase,
                     result,
-                    transport_is_open: true,
-                };
+                )
+                .await;
             }
             event = events.recv(), if events_open => {
                 if let Some(event) = event {
                     let write_result = write_foreground_job_event(transport, job_id, event);
                     tokio::select! {
                         result = &mut completion => {
-                            return StreamedJobCompletion {
+                            return finish_streamed_job(
+                                transport,
+                                job_id,
+                                &mut phases,
+                                &mut next_phase,
                                 result,
-                                transport_is_open: true,
-                            };
+                            )
+                            .await;
                         }
                         write_result = timeout(FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, write_result) => {
                             if !matches!(write_result, Ok(Ok(()))) {
@@ -798,10 +868,14 @@ where
                 let heartbeat_result = write_line(transport, &heartbeat_event);
                 tokio::select! {
                     result = &mut completion => {
-                        return StreamedJobCompletion {
+                        return finish_streamed_job(
+                            transport,
+                            job_id,
+                            &mut phases,
+                            &mut next_phase,
                             result,
-                            transport_is_open: true,
-                        };
+                        )
+                        .await;
                     }
                     heartbeat_result = timeout(FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, heartbeat_result) => {
                         if !matches!(heartbeat_result, Ok(Ok(()))) {
@@ -815,6 +889,64 @@ where
             }
         }
     }
+}
+
+async fn finish_streamed_job<Stream>(
+    transport: &mut DaemonTransport<Stream>,
+    job_id: &str,
+    phases: &mut watch::Receiver<Vec<ReconciliationPhase>>,
+    next_phase: &mut usize,
+    result: Result<String, DaemonError>,
+) -> StreamedJobCompletion
+where
+    Stream: AsyncWrite + Unpin,
+{
+    let has_pending_phase = phases.borrow().len() > *next_phase;
+    let transport_is_open = if has_pending_phase {
+        write_pending_phases(transport, job_id, phases, next_phase).await
+    } else {
+        true
+    };
+
+    StreamedJobCompletion {
+        result,
+        transport_is_open,
+    }
+}
+
+async fn write_pending_phases<Stream>(
+    transport: &mut DaemonTransport<Stream>,
+    job_id: &str,
+    phases: &mut watch::Receiver<Vec<ReconciliationPhase>>,
+    next_phase: &mut usize,
+) -> bool
+where
+    Stream: AsyncWrite + Unpin,
+{
+    let pending = {
+        let phases = phases.borrow_and_update();
+        phases.get(*next_phase..).unwrap_or_default().to_vec()
+    };
+    *next_phase += pending.len();
+
+    for phase in pending {
+        let event = DaemonEvent::Progress {
+            job_id,
+            message: phase.as_str(),
+        };
+        if !matches!(
+            timeout(
+                FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,
+                write_line(transport, &event),
+            )
+            .await,
+            Ok(Ok(()))
+        ) {
+            return false;
+        }
+    }
+
+    true
 }
 
 async fn write_foreground_terminal_event<Stream>(
@@ -945,7 +1077,11 @@ async fn complete_update_job_with_progress(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
 ) -> Result<String, DaemonError> {
-    let result = complete_update_job_inner(paths, runtime_catalog, progress).await;
+    let phase_log = ReconciliationPhaseLog::new(paths, job_id, "update", "system")
+        .with_progress(progress.phase_sender.clone());
+    let progress = progress.with_phase_log(phase_log.clone());
+    let result = complete_update_job_inner(paths, runtime_catalog, progress, &phase_log).await;
+    let finalization_timer = phase_log.start(ReconciliationPhase::Finalization, "job");
 
     match &result {
         Ok(completed) => {
@@ -962,6 +1098,7 @@ async fn complete_update_job_with_progress(
             structured_log::job_failed(paths, job_id, "update", "system", &error_message);
         }
     }
+    finalization_timer.finish(PhaseOutcome::from_succeeded(result.is_ok()), &[]);
 
     result
         .map(|completed| completed.summary)
@@ -972,6 +1109,7 @@ async fn complete_update_job_inner(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
+    phase_log: &ReconciliationPhaseLog,
 ) -> Result<CompletedUpdateJob, FailedUpdateJob> {
     let report = if runtime_catalog.is_none() {
         let update_paths = paths.clone();
@@ -1003,6 +1141,7 @@ async fn complete_update_job_inner(
                 paths,
                 runtime_catalog,
                 progress,
+                phase_log,
                 update_error,
             )
             .await);
@@ -1019,15 +1158,20 @@ async fn complete_update_job_inner(
     let project_report = complete_update_step_with_caddy_compensation(
         paths,
         &report,
-        reconcile_system_projects_and_resources_with_progress(paths, runtime_catalog, progress)
-            .await,
+        reconcile_system_projects_and_resources_with_progress(
+            paths,
+            runtime_catalog,
+            progress,
+            phase_log,
+        )
+        .await,
         JobDiagnosticSubject::SystemReconciliation,
     )
     .await?;
     let gateway_summary = complete_update_step_with_caddy_compensation(
         paths,
         &report,
-        reconcile_gateway_runtimes(paths).await,
+        reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await,
         JobDiagnosticSubject::GatewayRuntime,
     )
     .await?;
@@ -1093,18 +1237,25 @@ async fn reconcile_partial_update_failure(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
+    phase_log: &ReconciliationPhaseLog,
     update_error: DaemonError,
 ) -> FailedUpdateJob {
-    if let Err(reconciliation_error) =
-        reconcile_system_projects_and_resources_with_progress(paths, runtime_catalog, progress)
-            .await
+    if let Err(reconciliation_error) = reconcile_system_projects_and_resources_with_progress(
+        paths,
+        runtime_catalog,
+        progress,
+        phase_log,
+    )
+    .await
     {
         return FailedUpdateJob::new(
             partial_update_reconciliation_error(update_error, reconciliation_error),
             JobDiagnosticSubject::UpdateAssessment,
         );
     }
-    if let Err(reconciliation_error) = reconcile_gateway_runtimes(paths).await {
+    if let Err(reconciliation_error) =
+        reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await
+    {
         return FailedUpdateJob::new(
             partial_update_reconciliation_error(update_error, reconciliation_error),
             JobDiagnosticSubject::UpdateAssessment,
@@ -1266,7 +1417,8 @@ async fn complete_reconciliation_job_with_progress(
     timing: ReconciliationJobTiming,
 ) -> Result<String, DaemonError> {
     let scope_text = scope.to_string();
-    let phase_log = ReconciliationPhaseLog::new(paths, job_id, &scope_text);
+    let phase_log = ReconciliationPhaseLog::new(paths, job_id, "reconcile", &scope_text)
+        .with_progress(progress.phase_sender.clone());
     phase_log.completed(
         ReconciliationPhase::Queue,
         "job",
@@ -1410,34 +1562,13 @@ async fn complete_system_reconciliation_with_progress(
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
-    let discovery_timer = phase_log.start(ReconciliationPhase::DemandDiscovery, "linked_projects");
-    let discovery_result = discover_system_project_demand(paths);
-    finish_demand_discovery_phase(discovery_timer, &discovery_result);
-    let demand = discovery_result?;
-
-    let resources_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
-    let resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
+    let project_report = reconcile_system_projects_and_resources_with_progress(
         paths,
         runtime_catalog,
-        &demand.resource_tracks,
-        progress.clone(),
+        progress,
+        phase_log,
     )
-    .await;
-    resources_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
-    resources_result?;
-
-    let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
-    let project_result = reconcile_system_projects_with_progress(
-        paths,
-        runtime_catalog,
-        &demand.resource_tracks,
-        &demand.project_demands,
-        &progress,
-    )
-    .await;
-    finish_project_phase(project_timer, &project_result);
-    let project_report = project_result?;
-    stop_undemanded_system_resource_runtimes(paths, runtime_catalog).await?;
+    .await?;
     let gateway_summary = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await?;
     let summary = system_reconciliation_summary(&project_report, &gateway_summary);
     let coverage = completed_system_reconciliation_coverage(paths, &project_report)?;
@@ -1681,23 +1812,35 @@ async fn reconcile_system_projects_and_resources_with_progress(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
+    phase_log: &ReconciliationPhaseLog,
 ) -> Result<SystemProjectReconciliationReport, DaemonError> {
-    let demand = discover_system_project_demand(paths)?;
-    reconcile_system_resources_with_runtime_catalog_and_progress(
+    let discovery_timer = phase_log.start(ReconciliationPhase::DemandDiscovery, "linked_projects");
+    let discovery_result = discover_system_project_demand(paths);
+    finish_demand_discovery_phase(discovery_timer, &discovery_result);
+    let demand = discovery_result?;
+
+    let resources_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
+    let resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
         paths,
         runtime_catalog,
         &demand.resource_tracks,
         progress.clone(),
     )
-    .await?;
-    let report = reconcile_system_projects_with_progress(
+    .await;
+    resources_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
+    resources_result?;
+
+    let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
+    let project_result = reconcile_system_projects_with_progress(
         paths,
         runtime_catalog,
         &demand.resource_tracks,
         &demand.project_demands,
         &progress,
     )
-    .await?;
+    .await;
+    finish_project_phase(project_timer, &project_result);
+    let report = project_result?;
     stop_undemanded_system_resource_runtimes(paths, runtime_catalog).await?;
 
     Ok(report)
@@ -1830,14 +1973,6 @@ fn managed_resource_reconciliation_summary(
     };
 
     format!("Managed Resource {resource_name} track {track} reconciled; {project_summary}")
-}
-
-fn reconciliation_progress_message(scope: &ReconciliationScope, summary: &str) -> String {
-    match scope {
-        ReconciliationScope::System
-        | ReconciliationScope::Resource { .. }
-        | ReconciliationScope::Project { .. } => summary.to_string(),
-    }
 }
 
 fn reconciliation_started_message(scope: &ReconciliationScope) -> &'static str {
@@ -2072,7 +2207,9 @@ mod tests {
         RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
     };
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, duplex};
-    use tokio::sync::{mpsc::channel, oneshot};
+    #[cfg(unix)]
+    use tokio::net::UnixStream;
+    use tokio::sync::{mpsc::channel, oneshot, watch};
     use tokio::time::{Duration, timeout};
 
     use crate::project_env::reconcile_project_env_from_persisted_state;
@@ -2085,15 +2222,15 @@ mod tests {
         complete_streamed_job_with_heartbeat, complete_streamed_job_with_heartbeat_and_events,
         complete_system_reconciliation_with_progress, complete_update_job,
         completed_system_reconciliation_coverage, discover_system_project_demand,
-        effective_reconciliation_scope, enqueue_reconciliation_job,
+        effective_reconciliation_scope, enqueue_reconciliation_job, enqueue_update_job,
         foreground_reconciliation_result, managed_resource_reconciliation_summary,
         reconcile_persisted_project_envs, reconcile_project_env_and_missing_resources,
         reconcile_system_projects_with_progress,
         reconcile_system_resources_with_runtime_catalog_and_progress,
         record_background_reconciliation_error, run_background_reconciliation_job,
-        start_reconciliation_job, start_update_job, stop_undemanded_system_resource_runtimes,
-        stream_started_reconciliation_job, stream_started_update_job,
-        write_coalesced_update_response,
+        run_reconciliation_job, start_reconciliation_job, start_update_job,
+        stop_undemanded_system_resource_runtimes, stream_started_reconciliation_job,
+        stream_started_update_job, wait_for_foreground_turn, write_coalesced_update_response,
     };
     use crate::reconciliation::{
         EnqueueResult, ReconciliationJobTiming, ReconciliationQueue, ReconciliationScope,
@@ -2170,6 +2307,7 @@ mod tests {
         let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
             &paths,
             "resource-only-project-test",
+            "reconcile",
             &scope.to_string(),
         );
 
@@ -2259,6 +2397,7 @@ mod tests {
         let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
             &paths,
             "project-system-promotion-test",
+            "reconcile",
             &scope.to_string(),
         );
 
@@ -2360,6 +2499,7 @@ mod tests {
         let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
             &paths,
             "targeted-resource-partial",
+            "reconcile",
             &scope.to_string(),
         );
         let partial = complete_managed_resource_reconciliation_with_progress(
@@ -2443,6 +2583,7 @@ mod tests {
         let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
             &paths,
             "targeted-resource-success",
+            "reconcile",
             &scope.to_string(),
         );
         let success = complete_managed_resource_reconciliation_with_progress(
@@ -2658,6 +2799,7 @@ mod tests {
         let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
             &paths,
             "system-demand-discovery-test",
+            "reconcile",
             "system",
         );
         complete_system_reconciliation_with_progress(
@@ -3449,13 +3591,18 @@ mod tests {
             OFFLINE_TEST_MANIFEST_URL,
             resource_client,
         )?;
-        let download_progress = reconciliation_download_progress_events(
+        let events = reconciliation_events(
             paths.clone(),
             &job_id,
             ReconciliationScope::System,
             &catalog,
         )
         .await?;
+        let download_progress = events
+            .iter()
+            .filter(|event| event["type"] == "download_progress")
+            .cloned()
+            .collect::<Vec<_>>();
 
         assert_eq!(
             download_progress.first(),
@@ -3477,6 +3624,19 @@ mod tests {
                 .ok_or_else(|| anyhow::anyhow!("missing {phase} phase event"))?;
             assert!(event["elapsed_ms"].as_u64().is_some());
         }
+        let live_phases = live_phase_names(&events);
+        assert_eq!(
+            live_phases,
+            [
+                "demand_discovery",
+                "resources",
+                "manifest",
+                "download",
+                "install",
+                "resources",
+                "finalization",
+            ]
+        );
 
         Ok(())
     }
@@ -3523,6 +3683,17 @@ mod tests {
             events
                 .iter()
                 .any(|event| { event["type"] == "job_failed" && event["job_id"] == job_id })
+        );
+        let live_phases = live_phase_names(&events);
+        assert_eq!(
+            live_phases,
+            [
+                "demand_discovery",
+                "resources",
+                "manifest",
+                "resources",
+                "finalization",
+            ]
         );
         let database = Database::open(&paths)?;
         let job = database
@@ -3581,8 +3752,12 @@ mod tests {
             OFFLINE_TEST_MANIFEST_URL,
             resource_client,
         )?;
-        let download_progress =
-            reconciliation_download_progress_events(paths, &job_id, scope, &catalog).await?;
+        let events = reconciliation_events(paths, &job_id, scope, &catalog).await?;
+        let download_progress = events
+            .iter()
+            .filter(|event| event["type"] == "download_progress")
+            .cloned()
+            .collect::<Vec<_>>();
 
         assert_eq!(
             download_progress.first(),
@@ -3595,6 +3770,18 @@ mod tests {
                 "downloaded_bytes": 0,
                 "total_bytes": total_bytes,
             }))
+        );
+        let live_phases = live_phase_names(&events);
+        assert_eq!(
+            live_phases,
+            [
+                "project_apply",
+                "manifest",
+                "download",
+                "install",
+                "project_apply",
+                "finalization",
+            ]
         );
 
         Ok(())
@@ -3705,10 +3892,9 @@ mod tests {
             OFFLINE_TEST_MANIFEST_URL,
             client,
         )?;
-        let download_progress = update_download_progress_events(paths, &job_id, &catalog).await?;
-
-        assert!(download_progress.iter().any(|progress| {
-            progress
+        let events = update_events(paths, &job_id, &catalog).await?;
+        assert!(events.iter().any(|event| {
+            event
                 == &json!({
                     "type": "download_progress",
                     "job_id": job_id,
@@ -3719,6 +3905,38 @@ mod tests {
                     "total_bytes": composer_size,
                 })
         }));
+        assert_eq!(
+            events.first(),
+            Some(&json!({
+                "type": "job_started",
+                "job_id": job_id,
+                "kind": "update",
+                "scope": "system",
+            }))
+        );
+        assert_eq!(
+            events.get(1).and_then(|event| event["type"].as_str()),
+            Some("log")
+        );
+        assert_eq!(
+            live_phase_names(&events),
+            [
+                "manifest",
+                "download",
+                "install",
+                "demand_discovery",
+                "resources",
+                "download",
+                "install",
+                "resources",
+                "finalization",
+            ],
+            "{events:#?}"
+        );
+        assert_eq!(
+            events.last().and_then(|event| event["type"].as_str()),
+            Some("job_failed")
+        );
         assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
 
         Ok(())
@@ -3775,6 +3993,7 @@ mod tests {
         let (client, server) = duplex(1024);
         let mut writer = protocol::transport(server);
         let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
+        let (_phase_sender, phase_receiver) = watch::channel(Vec::new());
         let (finish_sender, finish_receiver) = oneshot::channel::<()>();
         let task = tokio::spawn(async move {
             complete_streamed_job_with_heartbeat_and_events(
@@ -3790,6 +4009,7 @@ mod tests {
                     Ok("job done".to_string())
                 },
                 event_receiver,
+                phase_receiver,
             )
             .await
         });
@@ -3833,8 +4053,214 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn streamed_job_writes_ordered_phases_and_heartbeat() -> anyhow::Result<()> {
+        let (client, server) = duplex(1024);
+        let mut writer = protocol::transport(server);
+        let (_event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
+        let (phase_sender, phase_receiver) = watch::channel(Vec::new());
+        let (finish_sender, finish_receiver) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            complete_streamed_job_with_heartbeat_and_events(
+                &mut writer,
+                "job_1",
+                "job still running",
+                Duration::from_millis(20),
+                async {
+                    finish_receiver.await.map_err(|_error| {
+                        crate::DaemonError::Io(io::Error::other("completion cancelled"))
+                    })?;
+
+                    Ok("job done".to_string())
+                },
+                event_receiver,
+                phase_receiver,
+            )
+            .await
+        });
+        let mut reader = protocol::transport(client);
+
+        phase_sender.send_modify(|phases| {
+            phases.push(crate::structured_log::ReconciliationPhase::DemandDiscovery);
+        });
+        let discovery = timeout(Duration::from_millis(100), reader.next())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("missing demand discovery phase"))??;
+        phase_sender.send_modify(|phases| {
+            phases.push(crate::structured_log::ReconciliationPhase::Resources);
+        });
+        let resources = timeout(Duration::from_millis(100), reader.next())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("missing resources phase"))??;
+        let heartbeat = timeout(Duration::from_millis(100), reader.next())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("missing heartbeat"))??;
+
+        assert_eq!(
+            [discovery, resources, heartbeat]
+                .map(|line| serde_json::from_str::<serde_json::Value>(&line))
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()?,
+            vec![
+                json!({
+                    "type": "progress",
+                    "job_id": "job_1",
+                    "message": "demand_discovery",
+                }),
+                json!({
+                    "type": "progress",
+                    "job_id": "job_1",
+                    "message": "resources",
+                }),
+                json!({
+                    "type": "log",
+                    "job_id": "job_1",
+                    "message": "job still running",
+                }),
+            ]
+        );
+
+        finish_sender
+            .send(())
+            .map_err(|_error| anyhow::anyhow!("completion task dropped"))?;
+        assert_eq!(task.await?.result?, "job done");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn streamed_job_flushes_batched_phases_before_completion() -> anyhow::Result<()> {
+        let (client, server) = duplex(1024);
+        let mut writer = protocol::transport(server);
+        let (_event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
+        let (phase_sender, phase_receiver) = watch::channel(Vec::new());
+        phase_sender.send_modify(|phases| {
+            phases.extend([
+                crate::structured_log::ReconciliationPhase::DemandDiscovery,
+                crate::structured_log::ReconciliationPhase::Resources,
+                crate::structured_log::ReconciliationPhase::Finalization,
+            ]);
+        });
+
+        let completion = complete_streamed_job_with_heartbeat_and_events(
+            &mut writer,
+            "job_1",
+            "job still running",
+            Duration::from_secs(60),
+            async { Ok("job done".to_string()) },
+            event_receiver,
+            phase_receiver,
+        )
+        .await;
+        let mut reader = protocol::transport(client);
+        let mut events = Vec::new();
+        for _phase in 0..3 {
+            let line = timeout(Duration::from_millis(100), reader.next())
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("missing batched phase"))??;
+            events.push(serde_json::from_str::<serde_json::Value>(&line)?);
+        }
+
+        assert_eq!(completion.result?, "job done");
+        assert!(completion.transport_is_open);
+        assert_eq!(
+            events,
+            vec![
+                json!({
+                    "type": "progress",
+                    "job_id": "job_1",
+                    "message": "demand_discovery",
+                }),
+                json!({
+                    "type": "progress",
+                    "job_id": "job_1",
+                    "message": "resources",
+                }),
+                json!({
+                    "type": "progress",
+                    "job_id": "job_1",
+                    "message": "finalization",
+                }),
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn download_progress_flood_does_not_hide_phase() -> anyhow::Result<()> {
+        let (client, server) = duplex(8192);
+        let mut writer = protocol::transport(server);
+        let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
+        let total_bytes = u64::try_from(FOREGROUND_JOB_PROGRESS_BUFFER)?;
+        for downloaded_bytes in 0..FOREGROUND_JOB_PROGRESS_BUFFER {
+            event_sender.try_send(ForegroundJobEvent::DownloadProgress {
+                resource: "redis".to_string(),
+                track: "8.8".to_string(),
+                artifact_version: "8.8.1-pv1".to_string(),
+                downloaded_bytes: u64::try_from(downloaded_bytes)?,
+                total_bytes,
+            })?;
+        }
+        let (phase_sender, phase_receiver) = watch::channel(Vec::new());
+        phase_sender.send_modify(|phases| {
+            phases.push(crate::structured_log::ReconciliationPhase::Install);
+        });
+        let (finish_sender, finish_receiver) = oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            complete_streamed_job_with_heartbeat_and_events(
+                &mut writer,
+                "job_1",
+                "job still running",
+                Duration::from_secs(60),
+                async {
+                    finish_receiver.await.map_err(|_error| {
+                        crate::DaemonError::Io(io::Error::other("completion cancelled"))
+                    })?;
+
+                    Ok("job done".to_string())
+                },
+                event_receiver,
+                phase_receiver,
+            )
+            .await
+        });
+        let mut reader = protocol::transport(client);
+        let mut phase = None;
+
+        for _event in 0..=FOREGROUND_JOB_PROGRESS_BUFFER {
+            let line = timeout(Duration::from_millis(100), reader.next())
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("job stream ended before phase"))??;
+            let event = serde_json::from_str::<serde_json::Value>(&line)?;
+            if event["type"] == "progress" {
+                phase = Some(event);
+                break;
+            }
+        }
+
+        assert_eq!(
+            phase,
+            Some(json!({
+                "type": "progress",
+                "job_id": "job_1",
+                "message": "install",
+            }))
+        );
+        finish_sender
+            .send(())
+            .map_err(|_error| anyhow::anyhow!("completion task dropped"))?;
+        assert_eq!(task.await?.result?, "job done");
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn streamed_job_completion_wins_when_heartbeat_write_blocks() -> anyhow::Result<()> {
-        let mut writer = protocol::transport(PendingStream);
+        let (blocked_write_sender, blocked_write_receiver) = oneshot::channel();
+        let mut writer = protocol::transport(InitiallyWritableStream::with_blocked_write_signal(
+            0,
+            blocked_write_sender,
+        ));
         let (finish_sender, finish_receiver) = oneshot::channel::<()>();
         let mut task = tokio::spawn(async move {
             complete_streamed_job_with_heartbeat(
@@ -3853,7 +4279,9 @@ mod tests {
             .await
         });
 
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        timeout(Duration::from_millis(100), blocked_write_receiver)
+            .await?
+            .map_err(|_error| anyhow::anyhow!("heartbeat writer dropped"))?;
         finish_sender
             .send(())
             .map_err(|_error| anyhow::anyhow!("completion task dropped"))?;
@@ -3869,8 +4297,13 @@ mod tests {
     #[tokio::test]
     async fn streamed_job_completion_wins_when_download_progress_write_blocks() -> anyhow::Result<()>
     {
-        let mut writer = protocol::transport(PendingStream);
+        let (blocked_write_sender, blocked_write_receiver) = oneshot::channel();
+        let mut writer = protocol::transport(InitiallyWritableStream::with_blocked_write_signal(
+            0,
+            blocked_write_sender,
+        ));
         let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
+        let (phase_sender, phase_receiver) = watch::channel(Vec::new());
         let (finish_sender, finish_receiver) = oneshot::channel::<()>();
         let mut task = tokio::spawn(async move {
             complete_streamed_job_with_heartbeat_and_events(
@@ -3886,6 +4319,7 @@ mod tests {
                     Ok("job done".to_string())
                 },
                 event_receiver,
+                phase_receiver,
             )
             .await
         });
@@ -3900,7 +4334,12 @@ mod tests {
             })
             .await
             .map_err(|_error| anyhow::anyhow!("progress receiver dropped"))?;
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        timeout(Duration::from_millis(100), blocked_write_receiver)
+            .await?
+            .map_err(|_error| anyhow::anyhow!("progress writer dropped"))?;
+        phase_sender.send_modify(|phases| {
+            phases.push(crate::structured_log::ReconciliationPhase::Install);
+        });
         finish_sender
             .send(())
             .map_err(|_error| anyhow::anyhow!("completion task dropped"))?;
@@ -3908,15 +4347,19 @@ mod tests {
         if outcome.is_err() {
             task.abort();
         }
-        assert_eq!((outcome??).result?, "job done");
+        let completion = outcome??;
+
+        assert_eq!(completion.result?, "job done");
+        assert!(!completion.transport_is_open);
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn streamed_job_ignores_download_progress_write_errors() -> anyhow::Result<()> {
-        let mut writer = protocol::transport(FailingWriteStream);
-        let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
+    async fn slow_phase_subscriber_does_not_cancel_completion() -> anyhow::Result<()> {
+        let mut writer = protocol::transport(PendingStream);
+        let (_event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
+        let (phase_sender, phase_receiver) = watch::channel(Vec::new());
         let (finish_sender, finish_receiver) = oneshot::channel::<()>();
         let mut task = tokio::spawn(async move {
             complete_streamed_job_with_heartbeat_and_events(
@@ -3932,6 +4375,51 @@ mod tests {
                     Ok("job done".to_string())
                 },
                 event_receiver,
+                phase_receiver,
+            )
+            .await
+        });
+
+        phase_sender.send_modify(|phases| {
+            phases.push(crate::structured_log::ReconciliationPhase::Resources);
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        finish_sender
+            .send(())
+            .map_err(|_error| anyhow::anyhow!("completion task dropped"))?;
+        let outcome = timeout(Duration::from_millis(300), &mut task).await;
+        if outcome.is_err() {
+            task.abort();
+        }
+        let completion = outcome??;
+
+        assert_eq!(completion.result?, "job done");
+        assert!(!completion.transport_is_open);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn streamed_job_ignores_download_progress_write_errors() -> anyhow::Result<()> {
+        let mut writer = protocol::transport(FailingWriteStream::default());
+        let (event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
+        let (_phase_sender, phase_receiver) = watch::channel(Vec::new());
+        let (finish_sender, finish_receiver) = oneshot::channel::<()>();
+        let mut task = tokio::spawn(async move {
+            complete_streamed_job_with_heartbeat_and_events(
+                &mut writer,
+                "job_1",
+                "job still running",
+                Duration::from_secs(60),
+                async {
+                    finish_receiver.await.map_err(|_error| {
+                        crate::DaemonError::Io(io::Error::other("completion cancelled"))
+                    })?;
+
+                    Ok("job done".to_string())
+                },
+                event_receiver,
+                phase_receiver,
             )
             .await
         });
@@ -4043,7 +4531,18 @@ mod tests {
         }
     }
 
-    struct FailingWriteStream;
+    #[derive(Default)]
+    struct FailingWriteStream {
+        failed_write_sender: Option<oneshot::Sender<()>>,
+    }
+
+    impl FailingWriteStream {
+        fn with_signal(failed_write_sender: oneshot::Sender<()>) -> Self {
+            Self {
+                failed_write_sender: Some(failed_write_sender),
+            }
+        }
+    }
 
     impl AsyncRead for FailingWriteStream {
         fn poll_read(
@@ -4057,10 +4556,13 @@ mod tests {
 
     impl AsyncWrite for FailingWriteStream {
         fn poll_write(
-            self: Pin<&mut Self>,
+            mut self: Pin<&mut Self>,
             _context: &mut Context<'_>,
             _buffer: &[u8],
         ) -> Poll<io::Result<usize>> {
+            if let Some(sender) = self.failed_write_sender.take() {
+                let _send_result = sender.send(());
+            }
             Poll::Ready(Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "stream closed",
@@ -4328,6 +4830,149 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queued_foreground_job_streams_heartbeats_until_its_turn() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let queue = ReconciliationQueue::new();
+        let first = queued(enqueue_update_job(&paths, &queue)?)?;
+        let running = first.wait_for_turn().await;
+        let waiting = queued(enqueue_reconciliation_job(
+            &paths,
+            &queue,
+            ReconciliationScope::System,
+        )?)?;
+        let waiting_job_id = waiting.job_id().to_string();
+        let (client, server) = duplex(1024);
+        let task = tokio::spawn(async move {
+            let mut transport = protocol::transport(server);
+            wait_for_foreground_turn(waiting, &mut transport, true, Duration::from_millis(5)).await
+        });
+        let mut reader = protocol::transport(client);
+
+        for _heartbeat in 0..2 {
+            let line = timeout(Duration::from_millis(100), reader.next())
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("missing queued heartbeat"))??;
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&line)?,
+                json!({
+                    "type": "log",
+                    "job_id": waiting_job_id,
+                    "message": "Waiting for the reconciliation slot",
+                })
+            );
+        }
+
+        running.finish();
+        let (waiting_running, stream_is_open) = task.await?;
+        assert!(stream_is_open);
+        assert_eq!(waiting_running.job_id(), waiting_job_id);
+        waiting_running.finish();
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn queued_foreground_job_continues_after_heartbeat_write_fails() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let queue = ReconciliationQueue::new();
+        let first = queued(enqueue_update_job(&paths, &queue)?)?;
+        let running = first.wait_for_turn().await;
+        let waiting = queued(enqueue_reconciliation_job(
+            &paths,
+            &queue,
+            ReconciliationScope::System,
+        )?)?;
+        let waiting_job_id = waiting.job_id().to_string();
+        let (failed_write_sender, failed_write_receiver) = oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut transport =
+                protocol::transport(FailingWriteStream::with_signal(failed_write_sender));
+            wait_for_foreground_turn(waiting, &mut transport, true, Duration::from_millis(5)).await
+        });
+
+        timeout(Duration::from_millis(100), failed_write_receiver)
+            .await?
+            .map_err(|_error| anyhow::anyhow!("queued heartbeat writer dropped"))?;
+        running.finish();
+        let (waiting_running, stream_is_open) = task.await?;
+
+        assert!(!stream_is_open);
+        assert_eq!(waiting_running.job_id(), waiting_job_id);
+        waiting_running.finish();
+
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn queued_foreground_reconciliation_streams_only_after_its_turn() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let queue = ReconciliationQueue::new();
+        let first = queued(enqueue_update_job(&paths, &queue)?)?;
+        let running = first.wait_for_turn().await;
+        let (client, server) = UnixStream::pair()?;
+        let task_paths = paths.clone();
+        let task_queue = queue.clone();
+        let scope = ReconciliationScope::resource("caddy", "2")?;
+        let task = tokio::spawn(async move {
+            run_reconciliation_job(
+                task_paths,
+                task_queue,
+                protocol::transport(server),
+                scope,
+                None,
+            )
+            .await
+        });
+        let mut reader = protocol::transport(client);
+        let accepted = timeout(Duration::from_millis(100), reader.next())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("missing accepted response"))??;
+        let accepted = serde_json::from_str::<serde_json::Value>(&accepted)?;
+
+        assert_eq!(accepted["type"], "response");
+        assert_eq!(accepted["status"], "accepted");
+        assert!(
+            timeout(Duration::from_millis(20), reader.next())
+                .await
+                .is_err()
+        );
+
+        running.finish();
+        let mut events = Vec::new();
+        loop {
+            let line = timeout(Duration::from_millis(500), reader.next())
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("job stream ended before completion"))??;
+            let event = serde_json::from_str::<serde_json::Value>(&line)?;
+            let completed = event["type"] == "job_completed";
+            events.push(event);
+            if completed {
+                break;
+            }
+        }
+
+        assert_eq!(events[0]["type"], "job_started");
+        assert_eq!(events[1]["type"], "log");
+        let phases = live_phase_names(&events);
+        assert_eq!(
+            phases,
+            ["workers", "gateway", "finalization"],
+            "{events:#?}"
+        );
+        assert_eq!(
+            events.last().and_then(|event| event["type"].as_str()),
+            Some("job_completed")
+        );
+        task.await??;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn background_reconciliation_coalesces_under_daemon_jobs_lock() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -4449,7 +5094,7 @@ mod tests {
         }
     }
 
-    async fn reconciliation_download_progress_events(
+    async fn reconciliation_events(
         paths: PvPaths,
         job_id: &str,
         scope: ReconciliationScope,
@@ -4469,15 +5114,20 @@ mod tests {
         .await?;
 
         let mut reader = protocol::transport(client);
-        let mut download_progress = Vec::new();
+        let mut events = Vec::new();
         while let Some(line) = reader.next().await {
-            let event = serde_json::from_str::<serde_json::Value>(&line?)?;
-            if event.get("type").and_then(serde_json::Value::as_str) == Some("download_progress") {
-                download_progress.push(event);
-            }
+            events.push(serde_json::from_str::<serde_json::Value>(&line?)?);
         }
 
-        Ok(download_progress)
+        Ok(events)
+    }
+
+    fn live_phase_names(events: &[serde_json::Value]) -> Vec<&str> {
+        events
+            .iter()
+            .filter(|event| event["type"] == "progress")
+            .filter_map(|event| event["message"].as_str())
+            .collect()
     }
 
     fn reconciliation_phase_events(
@@ -4491,21 +5141,6 @@ mod tests {
             .into_iter()
             .filter(|event| {
                 event["event"] == "reconciliation_phase_completed" && event["job_id"] == job_id
-            })
-            .collect())
-    }
-
-    async fn update_download_progress_events(
-        paths: PvPaths,
-        job_id: &str,
-        catalog: &crate::managed_resources::ManagedResourceRuntimeCatalog,
-    ) -> anyhow::Result<Vec<serde_json::Value>> {
-        let events = update_events(paths, job_id, catalog).await?;
-
-        Ok(events
-            .into_iter()
-            .filter(|event| {
-                event.get("type").and_then(serde_json::Value::as_str) == Some("download_progress")
             })
             .collect())
     }

@@ -1,6 +1,7 @@
 use futures_util::StreamExt;
 use serde_json::Value;
 use state::PvPaths;
+use tokio::io::AsyncRead;
 use tokio::time::{Duration, Instant, sleep, timeout};
 
 use crate::{DaemonError, ipc};
@@ -37,6 +38,14 @@ pub struct JobDownloadProgress {
 }
 
 pub trait JobEventHandler {
+    fn job_accepted(&mut self, _job_id: &str) {}
+
+    fn job_started(&mut self, _kind: &str, _scope: &str) {}
+
+    fn progress(&mut self, _message: &str) {}
+
+    fn log(&mut self, _message: &str) {}
+
     fn download_progress(&mut self, _progress: JobDownloadProgress) {}
 }
 
@@ -144,6 +153,7 @@ async fn run_job(
     let response = read_response(&mut transport).await?;
     validate_response_contract(&response)?;
     let id = accepted_job_id(&response)?;
+    events.job_accepted(&id);
     let summary = read_job_completion(&mut transport, &id, events).await?;
 
     Ok(CompletedJob { id, summary })
@@ -327,8 +337,20 @@ async fn read_job_completion(
     expected_job_id: &str,
     events: &mut impl JobEventHandler,
 ) -> Result<String, DaemonError> {
+    read_job_completion_with_timeout(transport, expected_job_id, events, DAEMON_EVENT_TIMEOUT).await
+}
+
+async fn read_job_completion_with_timeout<Stream>(
+    transport: &mut protocol::DaemonTransport<Stream>,
+    expected_job_id: &str,
+    events: &mut impl JobEventHandler,
+    event_timeout: Duration,
+) -> Result<String, DaemonError>
+where
+    Stream: AsyncRead + Unpin,
+{
     loop {
-        let Some(line) = timeout(DAEMON_EVENT_TIMEOUT, transport.next())
+        let Some(line) = timeout(event_timeout, transport.next())
             .await
             .map_err(|_| DaemonError::ProtocolTimedOut { phase: "job event" })?
         else {
@@ -395,8 +417,23 @@ fn parse_job_event(
     })?;
 
     match line_type {
-        "job_started" | "progress" | "log" => {
+        "job_started" => {
             validate_job_event_id(&value, expected_job_id)?;
+            events.job_started(
+                job_event_string_field(&value, "job_started", "kind")?,
+                job_event_string_field(&value, "job_started", "scope")?,
+            );
+            Ok(None)
+        }
+        "progress" => {
+            validate_job_event_id(&value, expected_job_id)?;
+            events.progress(job_event_string_field(&value, "progress", "message")?);
+
+            Ok(None)
+        }
+        "log" => {
+            validate_job_event_id(&value, expected_job_id)?;
+            events.log(job_event_string_field(&value, "log", "message")?);
 
             Ok(None)
         }
@@ -433,6 +470,18 @@ fn parse_job_event(
             reason: format!("daemon sent unexpected `{line_type}` line"),
         }),
     }
+}
+
+fn job_event_string_field<'value>(
+    value: &'value Value,
+    event: &str,
+    field: &str,
+) -> Result<&'value str, DaemonError> {
+    value.get(field).and_then(Value::as_str).ok_or_else(|| {
+        DaemonError::UnexpectedProtocolResponse {
+            reason: format!("daemon sent {event} without a {field}"),
+        }
+    })
 }
 
 fn parse_download_progress_event(value: &Value) -> Result<JobDownloadProgress, DaemonError> {
@@ -482,17 +531,61 @@ fn validate_job_event_id(value: &Value, expected_job_id: &str) -> Result<(), Dae
 
 #[cfg(test)]
 mod tests {
-    use super::{JobDownloadProgress, JobEventHandler, parse_job_event};
+    use insta::assert_debug_snapshot;
+    use tokio::io::duplex;
+    use tokio::sync::oneshot;
+    use tokio::time::{Duration, sleep};
+
+    use super::{
+        JobDownloadProgress, JobEventHandler, parse_job_event, read_job_completion_with_timeout,
+    };
 
     #[derive(Default)]
     struct RecordingEvents {
         downloads: Vec<JobDownloadProgress>,
+        started: Vec<(String, String)>,
+        progress: Vec<String>,
+        logs: Vec<String>,
     }
 
     impl JobEventHandler for RecordingEvents {
+        fn job_started(&mut self, kind: &str, scope: &str) {
+            self.started.push((kind.to_string(), scope.to_string()));
+        }
+
+        fn progress(&mut self, message: &str) {
+            self.progress.push(message.to_string());
+        }
+
+        fn log(&mut self, message: &str) {
+            self.logs.push(message.to_string());
+        }
+
         fn download_progress(&mut self, progress: JobDownloadProgress) {
             self.downloads.push(progress);
         }
+    }
+
+    #[test]
+    fn parse_job_event_reports_started_progress_and_log_events() -> anyhow::Result<()> {
+        let mut events = RecordingEvents::default();
+
+        for line in [
+            r#"{"type":"job_started","job_id":"job-1","kind":"reconcile","scope":"system"}"#,
+            r#"{"type":"progress","job_id":"job-1","message":"demand_discovery"}"#,
+            r#"{"type":"log","job_id":"job-1","message":"Reconciliation still running"}"#,
+        ] {
+            assert_eq!(parse_job_event(line, "job-1", &mut events)?, None);
+        }
+
+        assert_eq!(
+            events.started,
+            vec![("reconcile".to_string(), "system".to_string())]
+        );
+        assert_eq!(events.progress, vec!["demand_discovery"]);
+        assert_eq!(events.logs, vec!["Reconciliation still running"]);
+
+        Ok(())
     }
 
     #[test]
@@ -515,6 +608,150 @@ mod tests {
                 total_bytes: 100,
             }]
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn parse_job_event_rejects_invalid_callback_events() {
+        let lines = [
+            r#"{"type":"job_started","job_id":"job-1","scope":"system"}"#,
+            r#"{"type":"job_started","job_id":"job-1","kind":"reconcile","scope":1}"#,
+            r#"{"type":"progress","job_id":"job-1"}"#,
+            r#"{"type":"log","job_id":"job-1","message":false}"#,
+            r#"{"type":"progress","job_id":"job-2","message":"resources"}"#,
+        ];
+        let mut errors = Vec::new();
+
+        for line in lines {
+            let mut events = RecordingEvents::default();
+            errors.push(
+                parse_job_event(line, "job-1", &mut events).map_err(|error| error.to_string()),
+            );
+            assert!(events.started.is_empty());
+            assert!(events.progress.is_empty());
+            assert!(events.logs.is_empty());
+            assert!(events.downloads.is_empty());
+        }
+
+        assert_debug_snapshot!(errors, @r#"
+        [
+            Err(
+                "daemon protocol error: daemon sent job_started without a kind",
+            ),
+            Err(
+                "daemon protocol error: daemon sent job_started without a scope",
+            ),
+            Err(
+                "daemon protocol error: daemon sent progress without a message",
+            ),
+            Err(
+                "daemon protocol error: daemon sent log without a message",
+            ),
+            Err(
+                "daemon protocol error: daemon sent event for job `job-2` while waiting for `job-1`",
+            ),
+        ]
+        "#);
+    }
+
+    #[tokio::test]
+    async fn queued_job_heartbeats_extend_event_timeout() -> anyhow::Result<()> {
+        let (client, server) = duplex(1024);
+        let mut reader = protocol::transport(client);
+        let writer = tokio::spawn(async move {
+            let mut writer = protocol::transport(server);
+            for _heartbeat in 0..10 {
+                sleep(Duration::from_millis(20)).await;
+                protocol::write_line(
+                    &mut writer,
+                    &protocol::DaemonEvent::Log {
+                        job_id: "job-1",
+                        message: "Waiting for the reconciliation slot",
+                    },
+                )
+                .await?;
+            }
+            protocol::write_line(
+                &mut writer,
+                &protocol::DaemonEvent::JobStarted {
+                    job_id: "job-1",
+                    kind: "reconcile",
+                    scope: "system",
+                },
+            )
+            .await?;
+            protocol::write_line(
+                &mut writer,
+                &protocol::DaemonEvent::JobCompleted {
+                    job_id: "job-1",
+                    summary: "done",
+                },
+            )
+            .await?;
+
+            Ok::<(), protocol::ProtocolError>(())
+        });
+        let mut events = RecordingEvents::default();
+
+        let summary = read_job_completion_with_timeout(
+            &mut reader,
+            "job-1",
+            &mut events,
+            Duration::from_millis(100),
+        )
+        .await?;
+
+        writer.await??;
+        assert_eq!(summary, "done");
+        assert_eq!(
+            events.started,
+            vec![("reconcile".to_string(), "system".to_string())]
+        );
+        assert_eq!(
+            events.logs,
+            vec!["Waiting for the reconciliation slot".to_string(); 10]
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn started_job_retains_running_event_timeout() -> anyhow::Result<()> {
+        let (client, server) = duplex(1024);
+        let mut reader = protocol::transport(client);
+        let (finish_sender, finish_receiver) = oneshot::channel::<()>();
+        let writer = tokio::spawn(async move {
+            let mut writer = protocol::transport(server);
+            protocol::write_line(
+                &mut writer,
+                &protocol::DaemonEvent::JobStarted {
+                    job_id: "job-1",
+                    kind: "reconcile",
+                    scope: "system",
+                },
+            )
+            .await?;
+            let _finish_result = finish_receiver.await;
+
+            Ok::<(), protocol::ProtocolError>(())
+        });
+        let mut events = RecordingEvents::default();
+
+        let result = read_job_completion_with_timeout(
+            &mut reader,
+            "job-1",
+            &mut events,
+            Duration::from_millis(10),
+        )
+        .await;
+
+        let _finish_result = finish_sender.send(());
+        writer.await??;
+        assert!(matches!(
+            result,
+            Err(super::DaemonError::ProtocolTimedOut { phase: "job event" })
+        ));
 
         Ok(())
     }
