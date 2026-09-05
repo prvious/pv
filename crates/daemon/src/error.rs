@@ -161,6 +161,9 @@ pub enum DaemonError {
         failures: Vec<ManagedResourceProjectFailure>,
     },
 
+    #[error("System reconciliation failed: {}", system_reconciliation_failures(.failures))]
+    SystemReconciliationFailures { failures: Vec<DaemonError> },
+
     #[error("Redis readiness failed: {0}")]
     Redis(#[from] redis::RedisError),
 
@@ -240,6 +243,14 @@ pub enum DaemonError {
 
 fn default_install_failures(failures: &[String]) -> String {
     failures.join("; ")
+}
+
+fn system_reconciliation_failures(failures: &[DaemonError]) -> String {
+    failures
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn project_resource_failures(failures: &[ManagedResourceProjectFailure]) -> String {

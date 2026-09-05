@@ -926,29 +926,40 @@ async fn complete_update_job_inner(
         });
     }
 
-    let project_report = complete_update_step_with_caddy_compensation(
-        paths,
-        &report,
+    let project_result =
         reconcile_system_projects_and_resources_with_progress(paths, runtime_catalog, progress)
-            .await,
-        JobDiagnosticSubject::SystemReconciliation,
-    )
-    .await?;
-    let gateway_summary = complete_update_step_with_caddy_compensation(
-        paths,
-        &report,
-        reconcile_gateway_runtimes(paths).await,
-        JobDiagnosticSubject::GatewayRuntime,
-    )
-    .await?;
+            .await;
+    let gateway_result = reconcile_gateway_runtimes(paths).await;
+    let (project_report, gateway_summary) = match (project_result, gateway_result) {
+        (Ok(project_report), Ok(gateway_summary)) => (project_report, gateway_summary),
+        (project_result, gateway_result) => {
+            let subject = if project_result.is_err() {
+                JobDiagnosticSubject::SystemReconciliation
+            } else {
+                JobDiagnosticSubject::GatewayRuntime
+            };
+            let error = combined_system_reconciliation_error(
+                [project_result.err(), gateway_result.err()]
+                    .into_iter()
+                    .flatten()
+                    .collect(),
+            );
+            return Err(compensate_caddy_update_failure(paths, &report, error, subject).await);
+        }
+    };
     let reconciliation_summary = system_reconciliation_summary(&project_report, &gateway_summary);
-    let coverage = complete_update_step_with_caddy_compensation(
-        paths,
-        &report,
-        completed_system_reconciliation_coverage(paths, &project_report),
-        JobDiagnosticSubject::SystemReconciliation,
-    )
-    .await?;
+    let coverage = match completed_system_reconciliation_coverage(paths, &project_report) {
+        Ok(coverage) => coverage,
+        Err(error) => {
+            return Err(compensate_caddy_update_failure(
+                paths,
+                &report,
+                error,
+                JobDiagnosticSubject::SystemReconciliation,
+            )
+            .await);
+        }
+    };
 
     let summary = format!(
         "updated {} artifact(s); reconciled: {reconciliation_summary}",
@@ -956,18 +967,6 @@ async fn complete_update_job_inner(
     );
 
     Ok(CompletedUpdateJob { summary, coverage })
-}
-
-async fn complete_update_step_with_caddy_compensation<T>(
-    paths: &PvPaths,
-    report: &ManagedResourceUpdateReport,
-    result: Result<T, DaemonError>,
-    subject: JobDiagnosticSubject,
-) -> Result<T, FailedUpdateJob> {
-    match result {
-        Ok(value) => Ok(value),
-        Err(error) => Err(compensate_caddy_update_failure(paths, report, error, subject).await),
-    }
 }
 
 async fn compensate_caddy_update_failure(
@@ -1005,18 +1004,20 @@ async fn reconcile_partial_update_failure(
     progress: DaemonDownloadProgress,
     update_error: DaemonError,
 ) -> FailedUpdateJob {
-    if let Err(reconciliation_error) =
+    let project_result =
         reconcile_system_projects_and_resources_with_progress(paths, runtime_catalog, progress)
-            .await
-    {
+            .await;
+    let gateway_result = reconcile_gateway_runtimes(paths).await;
+    let failures = [project_result.err(), gateway_result.err()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    if !failures.is_empty() {
         return FailedUpdateJob::new(
-            partial_update_reconciliation_error(update_error, reconciliation_error),
-            JobDiagnosticSubject::UpdateAssessment,
-        );
-    }
-    if let Err(reconciliation_error) = reconcile_gateway_runtimes(paths).await {
-        return FailedUpdateJob::new(
-            partial_update_reconciliation_error(update_error, reconciliation_error),
+            partial_update_reconciliation_error(
+                update_error,
+                combined_system_reconciliation_error(failures),
+            ),
             JobDiagnosticSubject::UpdateAssessment,
         );
     }
@@ -1262,8 +1263,6 @@ async fn complete_system_reconciliation_with_progress(
     )
     .await;
     resources_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
-    resources_result?;
-
     let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
     let project_result = reconcile_system_projects_with_progress(
         paths,
@@ -1274,9 +1273,31 @@ async fn complete_system_reconciliation_with_progress(
     )
     .await;
     finish_project_phase(project_timer, &project_result);
-    let project_report = project_result?;
-    stop_undemanded_system_resource_runtimes(paths, runtime_catalog).await?;
-    let gateway_summary = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await?;
+    let cleanup_result = stop_undemanded_system_resource_runtimes(paths, runtime_catalog).await;
+    let gateway_result = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await;
+    let (project_report, gateway_summary) = match (
+        resources_result,
+        project_result,
+        cleanup_result,
+        gateway_result,
+    ) {
+        (Ok(()), Ok(project_report), Ok(()), Ok(gateway_summary)) => {
+            (project_report, gateway_summary)
+        }
+        (resources_result, project_result, cleanup_result, gateway_result) => {
+            return Err(combined_system_reconciliation_error(
+                [
+                    resources_result.err(),
+                    project_result.err(),
+                    cleanup_result.err(),
+                    gateway_result.err(),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
+            ));
+        }
+    };
     let summary = system_reconciliation_summary(&project_report, &gateway_summary);
     let coverage = completed_system_reconciliation_coverage(paths, &project_report)?;
 
@@ -1506,24 +1527,46 @@ async fn reconcile_system_projects_and_resources_with_progress(
     progress: DaemonDownloadProgress,
 ) -> Result<SystemProjectReconciliationReport, DaemonError> {
     let demand = discover_system_project_demand(paths)?;
-    reconcile_system_resources_with_runtime_catalog_and_progress(
+    let resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
         paths,
         runtime_catalog,
         &demand.resource_tracks,
         progress.clone(),
     )
-    .await?;
-    let report = reconcile_system_projects_with_progress(
+    .await;
+    let project_result = reconcile_system_projects_with_progress(
         paths,
         runtime_catalog,
         &demand.resource_tracks,
         &demand.project_demands,
         &progress,
     )
-    .await?;
-    stop_undemanded_system_resource_runtimes(paths, runtime_catalog).await?;
+    .await;
+    let cleanup_result = stop_undemanded_system_resource_runtimes(paths, runtime_catalog).await;
 
-    Ok(report)
+    match (resources_result, project_result, cleanup_result) {
+        (Ok(()), Ok(report), Ok(())) => Ok(report),
+        (resources_result, project_result, cleanup_result) => {
+            Err(combined_system_reconciliation_error(
+                [
+                    resources_result.err(),
+                    project_result.err(),
+                    cleanup_result.err(),
+                ]
+                .into_iter()
+                .flatten()
+                .collect(),
+            ))
+        }
+    }
+}
+
+fn combined_system_reconciliation_error(mut failures: Vec<DaemonError>) -> DaemonError {
+    if failures.len() == 1 {
+        failures.remove(0)
+    } else {
+        DaemonError::SystemReconciliationFailures { failures }
+    }
 }
 
 async fn reconcile_system_resources_with_runtime_catalog_and_progress(
@@ -1887,15 +1930,16 @@ mod tests {
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
     use futures_util::StreamExt;
-    use insta::{Settings, assert_debug_snapshot};
+    use insta::{Settings, assert_debug_snapshot, assert_snapshot};
     use rcgen::generate_simple_self_signed;
+    use resources::{ManagedResourceCommandError, ResourceHttpClient, ResourcesError};
     use rusqlite::Connection;
     use serde_json::json;
     use state::{
         Database, GatewayPort, JobDiagnosticSubject, JobStatus, LinkProjectInput,
-        ManagedResourceDesiredState, PortRequest, ProjectManagedResourceInput, ProjectMode,
-        ProjectPhpRuntimeInput, PvPaths, RuntimeObservedStatus, RuntimeSubject, StateError,
-        UpdateLock,
+        ManagedResourceDesiredState, PortRequest, ProjectEnvObservedStatus,
+        ProjectManagedResourceInput, ProjectMode, ProjectPhpRuntimeInput, PvPaths,
+        RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
     };
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, duplex};
     use tokio::sync::{mpsc::channel, oneshot};
@@ -2126,6 +2170,193 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn system_install_failure_preserves_unrelated_php_project_application()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        seed_cached_php_pair(&paths, tempdir.path())?;
+        seed_installed_caddy(&paths)?;
+        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let manifest = state::fs::read_to_string(&paths.downloads().join("manifest.json"))?;
+        let mut database = Database::open(&paths)?;
+        let mut projects = Vec::new();
+        for (name, config) in [
+            (
+                "ready",
+                "serve: false\nphp:\n  version: \"8.5\"\nenv:\n  APP_NAME: applied\n",
+            ),
+            ("failed", "serve: false\nmailpit:\n  version: \"1.0\"\n"),
+        ] {
+            let project_path = tempdir.path().join(name);
+            let config_path = project_path.join("pv.yml");
+            state::fs::write_sensitive_file(&config_path, config)?;
+            let linked = database.link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path,
+                primary_hostname: format!("{name}.test"),
+                config_path,
+                desired_php_track: None,
+                additional_hostnames: Vec::new(),
+            })?;
+            projects.push(linked.project);
+        }
+        database.record_managed_resource_track_desired(
+            "mailpit",
+            MAILPIT_TEST_TRACK,
+            ManagedResourceDesiredState::Installed,
+        )?;
+        drop(database);
+        let catalog = crate::managed_resources::fake_runtime_catalog_with_manifest_client(
+            OFFLINE_TEST_MANIFEST_URL,
+            MultiArtifactClient {
+                manifest,
+                archives: BTreeMap::new(),
+            },
+        )?;
+        let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
+            &paths,
+            "system-install-failure-test",
+            "system",
+        );
+
+        let result = complete_system_reconciliation_with_progress(
+            &paths,
+            Some(&catalog),
+            super::DaemonDownloadProgress::disabled(),
+            &phase_log,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
+                ResourcesError::ResourceNotInManifest { resource }
+            ))) if resource == "mailpit"
+        ));
+        let database = Database::open(&paths)?;
+        for (project, expected_status) in projects.iter().zip([
+            ProjectEnvObservedStatus::Rendered,
+            ProjectEnvObservedStatus::Failed,
+        ]) {
+            let state = database.project_env_observed_state(&project.id)?;
+            assert_eq!(state.map(|state| state.status), Some(expected_status));
+        }
+        assert_snapshot!(
+            state::fs::read_to_string(&projects[0].path.join(".env"))?,
+            @r"
+        # >>> PV MANAGED
+        APP_NAME=applied
+        # <<< PV MANAGED
+        "
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn system_cleanup_failure_still_reconciles_gateway_and_preserves_errors()
+    -> anyhow::Result<()> {
+        for fail_gateway in [false, true] {
+            let tempdir = tempdir()?;
+            let paths = PvPaths::for_home(tempdir.path().join("home"));
+            seed_cached_php_pair(&paths, tempdir.path())?;
+            seed_installed_caddy(&paths)?;
+            let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+            seed_installed_artifact(
+                &paths,
+                "mailpit",
+                MAILPIT_TEST_TRACK,
+                MAILPIT_TEST_ARTIFACT_VERSION,
+                "bin/pv-fake-mailpit",
+            )?;
+            if fail_gateway {
+                let caddy_path = paths.resources().join("caddy/2/current/bin/caddy");
+                state::fs::write_sensitive_file(&caddy_path, "#!/bin/sh\nexit 1\n")?;
+                set_executable(&caddy_path)?;
+            }
+            let manifest = state::fs::read_to_string(&paths.downloads().join("manifest.json"))?;
+            let project_path = tempdir.path().join("project");
+            let config_path = project_path.join("pv.yml");
+            state::fs::write_sensitive_file(
+                &config_path,
+                "php:\n  version: \"8.5\"\nmailpit:\n  version: \"1.0\"\n",
+            )?;
+            let mut database = Database::open(&paths)?;
+            let linked = database.link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path,
+                primary_hostname: "project.test".to_owned(),
+                config_path: config_path.clone(),
+                desired_php_track: None,
+                additional_hostnames: Vec::new(),
+            })?;
+            drop(database);
+            state::fs::write_sensitive_file(
+                &paths.resource_pid("mailpit", MAILPIT_TEST_TRACK),
+                "2147483647",
+            )?;
+            state::fs::write_sensitive_file(
+                &paths.resource_runtime_metadata("mailpit", MAILPIT_TEST_TRACK),
+                "not JSON",
+            )?;
+            let catalog = crate::managed_resources::fake_runtime_catalog_with_manifest_client(
+                OFFLINE_TEST_MANIFEST_URL,
+                DisablingProjectArtifactClient {
+                    inner: MultiArtifactClient {
+                        manifest,
+                        archives: BTreeMap::new(),
+                    },
+                    config_path,
+                },
+            )?;
+            let job_id = "system-cleanup-failure-test";
+            let phase_log =
+                crate::structured_log::ReconciliationPhaseLog::new(&paths, job_id, "system");
+
+            let result = complete_system_reconciliation_with_progress(
+                &paths,
+                Some(&catalog),
+                super::DaemonDownloadProgress::disabled(),
+                &phase_log,
+            )
+            .await;
+
+            let error = result
+                .err()
+                .ok_or_else(|| anyhow::anyhow!("expected cleanup failure"))?;
+            if fail_gateway {
+                let DaemonError::SystemReconciliationFailures { failures } = error else {
+                    anyhow::bail!("expected both cleanup and Gateway errors: {error}");
+                };
+                assert!(matches!(
+                    failures.as_slice(),
+                    [
+                        DaemonError::Json(_),
+                        DaemonError::UnexpectedProtocolResponse { .. }
+                    ]
+                ));
+            } else {
+                assert!(matches!(error, DaemonError::Json(_)));
+            }
+            let database = Database::open(&paths)?;
+            let project = database
+                .project_by_id(&linked.project.id)?
+                .ok_or_else(|| anyhow::anyhow!("expected linked project"))?;
+            assert_eq!(project.mode, ProjectMode::ResourceOnly);
+            assert!(database.project_managed_resources(&project.id)?.is_empty());
+            let phases = reconciliation_phase_events(&paths, job_id)?;
+            let expected_outcome = if fail_gateway { "failed" } else { "succeeded" };
+            assert!(
+                phases.iter().any(
+                    |phase| phase["phase"] == "gateway" && phase["outcome"] == expected_outcome
+                )
+            );
+        }
+
+        Ok(())
+    }
+
     #[test]
     fn demand_discovery_is_read_only_and_deduplicates_resource_only_projects() -> anyhow::Result<()>
     {
@@ -2167,14 +2398,13 @@ mod tests {
             )])
         );
         for project_id in &project_ids {
-            assert_eq!(
-                demand.project_demands.get(project_id),
-                Some(&super::ProjectDemand {
-                    resource_tracks: demand.resource_tracks.clone(),
-                    php_track: None,
-                    used_persisted_state: false,
-                })
-            );
+            let project_demand = demand
+                .project_demands
+                .get(project_id)
+                .ok_or_else(|| anyhow::anyhow!("expected discovered project demand"))?;
+            assert_eq!(project_demand.resource_tracks, demand.resource_tracks);
+            assert!(project_demand.php_track.is_none());
+            assert!(!project_demand.used_persisted_state);
         }
         let database = Database::open(&paths)?;
         assert_eq!(database.projects()?, projects_before);
@@ -4315,6 +4545,29 @@ mod tests {
     struct MultiArtifactClient {
         manifest: String,
         archives: BTreeMap<String, Vec<u8>>,
+    }
+
+    struct DisablingProjectArtifactClient {
+        inner: MultiArtifactClient,
+        config_path: Utf8PathBuf,
+    }
+
+    impl ResourceHttpClient for DisablingProjectArtifactClient {
+        fn get_text(&self, url: &str) -> resources::Result<String> {
+            state::fs::write_sensitive_file(
+                &self.config_path,
+                "serve: false\nenv:\n  APP_NAME: applied\n",
+            )
+            .map_err(|error| ResourcesError::Filesystem {
+                path: self.config_path.to_string(),
+                reason: error.to_string(),
+            })?;
+            self.inner.get_text(url)
+        }
+
+        fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
+            self.inner.download(url, writer)
+        }
     }
 
     struct SequencedMultiArtifactClient {
