@@ -1674,6 +1674,91 @@ async fn project_download_failures_follow_original_plan_order() -> Result<()> {
             .all(|track| track.installed_version.is_none())
     );
 
+    let states = database.runtime_observed_states()?;
+    for resource in &plan.resources {
+        assert_runtime_status_for_resource(
+            &states,
+            &resource.resource_name,
+            &resource.track,
+            RuntimeObservedStatus::Failed,
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_manifest_failure_preserves_earlier_installed_resource_work() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "env: {}\n",
+    )?;
+    seed_mailpit_fixture_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+    drop(seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?);
+    let manifest_requests = Arc::new(AtomicUsize::new(0));
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    catalog.install_options.manifest_url = TEST_ARTIFACT_MANIFEST_URL.to_owned();
+    catalog.http_client = Some(Arc::new(SequencedManifestArtifactClient {
+        manifests: Mutex::new(VecDeque::new()),
+        archives: BTreeMap::new(),
+        manifest_requests: Arc::clone(&manifest_requests),
+    }));
+    let plan = crate::project_env::ProjectResourcePlan {
+        resources: [
+            ("mailpit", FAKE_MAILPIT_TRACK),
+            ("redis", SETUP_DEFAULT_REDIS_TRACK),
+        ]
+        .into_iter()
+        .map(|(resource_name, track)| ProjectManagedResourceInput {
+            resource_name: resource_name.to_owned(),
+            track: track.to_owned(),
+        })
+        .collect(),
+        allocations: BTreeMap::new(),
+    };
+    let mut database = Database::open(&paths)?;
+    let result = super::reconcile_project_resources_with_catalog_and_progress(
+        &paths,
+        &mut database,
+        &project,
+        &plan,
+        &catalog,
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await;
+    let states = database.runtime_observed_states()?;
+    let empty_plan = crate::project_env::ProjectResourcePlan {
+        resources: Vec::new(),
+        allocations: BTreeMap::new(),
+    };
+    super::reconcile_project_resources_with_catalog_and_progress(
+        &paths,
+        &mut database,
+        &project,
+        &empty_plan,
+        &catalog,
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+    assert!(result.is_err());
+    assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
+    assert_runtime_status_for_resource(
+        &states,
+        "mailpit",
+        FAKE_MAILPIT_TRACK,
+        RuntimeObservedStatus::Running,
+    );
+    assert_runtime_status_for_resource(
+        &states,
+        "redis",
+        SETUP_DEFAULT_REDIS_TRACK,
+        RuntimeObservedStatus::Failed,
+    );
+
     Ok(())
 }
 
