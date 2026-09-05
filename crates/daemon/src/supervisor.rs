@@ -5,6 +5,7 @@ use std::time::Duration;
 use std::{fmt, future::Future, io};
 
 use camino::{Utf8Path, Utf8PathBuf};
+use futures_util::{StreamExt, stream};
 use platform::PlatformCapability;
 #[cfg(target_os = "macos")]
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
@@ -28,6 +29,7 @@ const SCRIPT_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
+const RUNTIME_READINESS_CONCURRENCY_LIMIT: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProcessSignal {
@@ -463,6 +465,21 @@ where
             }
         }
     }
+}
+
+pub(crate) async fn wait_for_bounded_runtime_readiness<Item, Output, Wait, Readiness>(
+    items: impl IntoIterator<Item = Item>,
+    wait: Wait,
+) -> Vec<Output>
+where
+    Wait: FnMut(Item) -> Readiness,
+    Readiness: Future<Output = Output>,
+{
+    stream::iter(items)
+        .map(wait)
+        .buffer_unordered(RUNTIME_READINESS_CONCURRENCY_LIMIT)
+        .collect()
+        .await
 }
 
 pub(crate) fn runtime_exited_before_readiness_error(runtime_name: &str) -> DaemonError {
@@ -1190,6 +1207,80 @@ fn timestamp() -> Result<String, DaemonError> {
         time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
 
     Ok(time::OffsetDateTime::now_utc().format(format)?)
+}
+
+#[cfg(test)]
+mod bounded_readiness_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::time::Duration;
+
+    use anyhow::{Result, anyhow};
+    use tokio::sync::Semaphore;
+    use tokio::time::timeout;
+
+    use super::wait_for_bounded_runtime_readiness;
+
+    #[tokio::test]
+    async fn readiness_waits_overlap_at_the_fixed_bound() -> Result<()> {
+        let started = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum_active = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Semaphore::new(0));
+        let task = tokio::spawn(wait_for_bounded_runtime_readiness(0..8, {
+            let started = Arc::clone(&started);
+            let active = Arc::clone(&active);
+            let maximum_active = Arc::clone(&maximum_active);
+            let gate = Arc::clone(&gate);
+
+            move |item| {
+                let started = Arc::clone(&started);
+                let active = Arc::clone(&active);
+                let maximum_active = Arc::clone(&maximum_active);
+                let gate = Arc::clone(&gate);
+
+                async move {
+                    started.fetch_add(1, Ordering::SeqCst);
+                    let active_now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    maximum_active.fetch_max(active_now, Ordering::SeqCst);
+                    let permit = gate
+                        .acquire_owned()
+                        .await
+                        .map_err(|error| anyhow!("readiness gate closed: {error}"))?;
+                    permit.forget();
+                    active.fetch_sub(1, Ordering::SeqCst);
+
+                    Ok::<_, anyhow::Error>(item)
+                }
+            }
+        }));
+
+        timeout(Duration::from_secs(1), async {
+            while started.load(Ordering::SeqCst) < 4 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        for _attempt in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(started.load(Ordering::SeqCst), 4);
+        assert_eq!(active.load(Ordering::SeqCst), 4);
+        assert_eq!(maximum_active.load(Ordering::SeqCst), 4);
+
+        gate.add_permits(8);
+        let outcomes = timeout(Duration::from_secs(1), task)
+            .await??
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+
+        assert_eq!(outcomes.len(), 8);
+        assert_eq!(maximum_active.load(Ordering::SeqCst), 4);
+
+        Ok(())
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]

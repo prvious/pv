@@ -215,6 +215,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             response_body = b"rejected\n"
         self.send_body(status, response_body)
+        self.wfile.flush()
+        load_accepted_marker = state.consume_value("load_accepted_marker", None)
+        if accepted and isinstance(load_accepted_marker, str):
+            pathlib.Path(load_accepted_marker).write_text(
+                "accepted\n", encoding="utf-8"
+            )
         if accepted and state.consume_value("exit_after_load", False):
             threading.Timer(0.05, os._exit, args=(0,)).start()
 

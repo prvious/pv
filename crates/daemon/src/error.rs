@@ -46,6 +46,29 @@ impl ManagedResourceProjectFailure {
     }
 }
 
+#[derive(Debug)]
+pub struct RuntimeReconciliationFailure {
+    runtime_key: String,
+    error: Box<DaemonError>,
+}
+
+impl RuntimeReconciliationFailure {
+    pub(crate) fn new(runtime_key: String, error: DaemonError) -> Self {
+        Self {
+            runtime_key,
+            error: Box::new(error),
+        }
+    }
+
+    pub fn runtime_key(&self) -> &str {
+        &self.runtime_key
+    }
+
+    pub fn error(&self) -> &DaemonError {
+        &self.error
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum DaemonError {
     #[error("I/O error: {0}")]
@@ -164,6 +187,17 @@ pub enum DaemonError {
         recording: Box<DaemonError>,
     },
 
+    #[error(
+        "Managed Resource `{resource_name}` track `{track}` reconciliation failed with `{reconciliation}`; additionally failed to record the runtime failure: {recording}"
+    )]
+    ManagedResourceRuntimeFailureRecordingFailed {
+        resource_name: String,
+        track: String,
+        reconciliation: Box<DaemonError>,
+        #[source]
+        recording: Box<DaemonError>,
+    },
+
     #[error("Managed Resource error: {0}")]
     Resources(#[from] ResourcesError),
 
@@ -182,6 +216,11 @@ pub enum DaemonError {
     )]
     ManagedResourceProjectFailures {
         failures: Vec<ManagedResourceProjectFailure>,
+    },
+
+    #[error("runtime reconciliation failed: {}", runtime_reconciliation_failures(.failures))]
+    RuntimeReconciliationFailures {
+        failures: Vec<RuntimeReconciliationFailure>,
     },
 
     #[error("Redis readiness failed: {0}")]
@@ -274,6 +313,14 @@ fn project_resource_failures(failures: &[ManagedResourceProjectFailure]) -> Stri
                 failure.resource_name, failure.track, failure.error
             )
         })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn runtime_reconciliation_failures(failures: &[RuntimeReconciliationFailure]) -> String {
+    failures
+        .iter()
+        .map(|failure| format!("{}: {}", failure.runtime_key, failure.error))
         .collect::<Vec<_>>()
         .join("; ")
 }
