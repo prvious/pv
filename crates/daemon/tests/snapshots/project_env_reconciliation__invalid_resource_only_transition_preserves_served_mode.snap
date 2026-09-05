@@ -23,6 +23,16 @@ expression: snapshot
             "type": String("log"),
         },
         Object {
+            "job_id": String("job_000002"),
+            "message": String("project_apply"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000002"),
+            "message": String("finalization"),
+            "type": String("progress"),
+        },
+        Object {
             "error": String("Project config error: duplicate rendered Project env key `DATABASE_URL` from same-depth mappings `postgres.allocations.analytics.env.DATABASE_URL` and `postgres.allocations.app.env.DATABASE_URL`"),
             "job_id": String("job_000002"),
             "type": String("job_failed"),
