@@ -29,8 +29,7 @@ pub(crate) struct FakeMailpitRuntimeAdapter {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FakeMailpitReadiness {
-    Smtp,
-    ExitAfterDashboardReadiness,
+    Dashboard,
     UnservedDashboardPort { timeout: Duration },
 }
 
@@ -41,7 +40,7 @@ impl FakeMailpitRuntimeAdapter {
                 ResourceName::new("mailpit")?,
                 "bin/pv-fake-mailpit",
             ),
-            readiness: FakeMailpitReadiness::Smtp,
+            readiness: FakeMailpitReadiness::Dashboard,
         })
     }
 
@@ -58,13 +57,7 @@ impl FakeMailpitRuntimeAdapter {
     }
 
     pub(crate) fn exits_after_readiness() -> Result<Self, DaemonError> {
-        Ok(Self {
-            artifact_adapter: RuntimeArtifactAdapter::new(
-                ResourceName::new("mailpit")?,
-                "bin/pv-fake-mailpit",
-            ),
-            readiness: FakeMailpitReadiness::ExitAfterDashboardReadiness,
-        })
+        Self::new()
     }
 }
 
@@ -121,12 +114,7 @@ impl ManagedResourceRuntimeAdapter for FakeMailpitRuntimeAdapter {
         context: &ManagedResourceRuntimeContext,
     ) -> Result<ManagedResourceReadiness, DaemonError> {
         match self.readiness {
-            FakeMailpitReadiness::Smtp => Ok(ReadinessCheck::Tcp {
-                host: RESOURCE_HOST.to_string(),
-                port: required_port(context, "smtp")?,
-            }
-            .into()),
-            FakeMailpitReadiness::ExitAfterDashboardReadiness => Ok(ReadinessCheck::Http {
+            FakeMailpitReadiness::Dashboard => Ok(ReadinessCheck::Http {
                 host: RESOURCE_HOST.to_string(),
                 port: required_port(context, "dashboard")?,
                 path: "/ready".to_string(),
@@ -143,8 +131,7 @@ impl ManagedResourceRuntimeAdapter for FakeMailpitRuntimeAdapter {
 
     fn readiness_timeout(&self) -> Duration {
         match self.readiness {
-            FakeMailpitReadiness::Smtp => Duration::from_secs(15),
-            FakeMailpitReadiness::ExitAfterDashboardReadiness => Duration::from_secs(15),
+            FakeMailpitReadiness::Dashboard => Duration::from_secs(15),
             FakeMailpitReadiness::UnservedDashboardPort { timeout } => timeout,
         }
     }
