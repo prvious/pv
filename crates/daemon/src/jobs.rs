@@ -1193,11 +1193,14 @@ async fn complete_system_reconciliation_with_progress(
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
-    let discovery_timer = phase_log.start(ReconciliationPhase::DemandDiscovery, "linked_projects");
-    let discovery_result =
+    let initial_project_timer = phase_log.start(
+        ReconciliationPhase::ProjectApply,
+        "linked_projects_initial_pass",
+    );
+    let initial_project_result =
         reconcile_system_projects_with_progress(paths, runtime_catalog, &progress).await;
-    finish_project_phase(discovery_timer, &discovery_result);
-    discovery_result?;
+    finish_project_phase(initial_project_timer, &initial_project_result);
+    initial_project_result?;
 
     let resources_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
     let resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(

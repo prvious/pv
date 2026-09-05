@@ -390,12 +390,22 @@ async fn reconcile_gateway_runtimes_with_pf_state(
     )
     .await?;
     record_gateway_runtime_observed(paths, pf_routing_state, readiness_outcome)?;
-    stop_stale_worker_runtimes(paths, &supervisor, &plan).await?;
     if let Some(gateway_timer) = gateway_timer {
         gateway_timer.finish(
             structured_log::PhaseOutcome::Succeeded,
             &[("project_count", usize_as_u64(project_count))],
         );
+    }
+
+    let cleanup_timer = phase_log.map(|phase_log| {
+        phase_log.start(
+            structured_log::ReconciliationPhase::Workers,
+            "stale_workers",
+        )
+    });
+    stop_stale_worker_runtimes(paths, &supervisor, &plan).await?;
+    if let Some(cleanup_timer) = cleanup_timer {
+        cleanup_timer.finish(structured_log::PhaseOutcome::Succeeded, &[]);
     }
 
     Ok(GATEWAY_RUNTIME_RECONCILED.to_owned())

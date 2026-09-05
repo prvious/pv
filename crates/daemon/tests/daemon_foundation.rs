@@ -136,29 +136,27 @@ async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Res
         .map(|job| job.id.as_str())
         .ok_or_else(|| anyhow::anyhow!("missing system reconciliation job"))?;
     let log = state::fs::read_to_string(&paths.daemon_log())?;
-    let phase_events = log
+    let mut phase_events = log
         .lines()
-        .map(serde_json::from_str::<serde_json::Value>)
-        .collect::<Result<Vec<_>, _>>()?;
-    for phase in [
-        "queue",
-        "demand_discovery",
-        "resources",
-        "project_apply",
-        "workers",
-        "gateway",
-        "finalization",
-    ] {
-        let event = phase_events
-            .iter()
-            .find(|event| {
-                event["event"] == "reconciliation_phase_completed"
-                    && event["job_id"] == job_id
-                    && event["phase"] == phase
-            })
-            .ok_or_else(|| anyhow::anyhow!("missing {phase} phase event"))?;
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|event| {
+            event["event"] == "reconciliation_phase_completed" && event["job_id"] == job_id
+        })
+        .collect::<Vec<_>>();
+    for event in &mut phase_events {
         assert!(event["elapsed_ms"].as_u64().is_some());
+        if event["phase"] == "finalization" {
+            assert!(event["total_execution_ms"].as_u64().is_some());
+        }
+        if let Some(record) = event.as_object_mut() {
+            for field in ["timestamp", "job_id", "elapsed_ms", "total_execution_ms"] {
+                record.remove(field);
+            }
+        }
     }
+    assert_debug_snapshot!("system_reconciliation_phases", phase_events);
 
     assert_with_normalized_timestamps(
         "socket_protocol_streams_job_progress_and_persists_final_status",
