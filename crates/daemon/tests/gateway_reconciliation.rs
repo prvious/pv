@@ -556,7 +556,7 @@ async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() 
 }
 
 #[tokio::test]
-async fn gateway_reconciliation_preserves_running_runtimes_on_second_reconcile() -> Result<()> {
+async fn gateway_reconciliation_preserves_running_runtimes_after_env_only_edit() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_root = tempdir.path().join("acme");
@@ -609,6 +609,15 @@ document_root: public
         .ok_or_else(|| anyhow::anyhow!("expected worker runtime metadata"))?;
     let gateway_validations = fake_validator_spawns(&paths.gateway_root_config())?;
     let worker_validations = fake_validator_spawns(&paths.worker_root_config("8.4"))?;
+
+    fs::write_sensitive_file(
+        &project_root.join("pv.yml"),
+        r#"php: "8.4"
+document_root: public
+env:
+  APP_URL: "${project_url}"
+"#,
+    )?;
 
     reconcile_gateway_runtimes(&paths).await?;
     let second_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?

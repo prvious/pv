@@ -27,9 +27,9 @@ use protocol::{
 use resources::{ManagedResourceCommands, ResourceAdapter, TrackName};
 use state::{
     Database, EnvContextValues, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
-    PortRequest, PostgresPreloadLibrary, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END,
-    RUNTIME_PORT_FALLBACK_START, ResourceAllocationRecord, RuntimeObservedStatus, RuntimeSubject,
-    StateError,
+    PortRequest, PostgresPreloadLibrary, ProjectManagedResourceInput, ProjectRecord, PvPaths,
+    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationRecord,
+    RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 use tokio::time::{sleep, timeout};
 
@@ -323,8 +323,9 @@ pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
     };
 
     for (index, resource) in plan.resources.iter().enumerate() {
+        let allocations = desired_allocations(database, project, plan, resource)?;
         if let Err(error) =
-            reconcile_resource_track(paths, database, project, plan, &mut context, resource).await
+            reconcile_resource_track(paths, database, &mut context, resource, &allocations).await
         {
             let mut failures = vec![ManagedResourceProjectFailure::new(
                 resource.resource_name.clone(),
@@ -342,6 +343,124 @@ pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
     }
 
     Ok(())
+}
+
+pub(crate) async fn reconcile_persisted_resource_track_with_progress(
+    paths: &PvPaths,
+    resource_name: &str,
+    track: &str,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: DaemonDownloadProgress,
+) -> Result<(Vec<ProjectRecord>, BTreeMap<String, DaemonError>), DaemonError> {
+    let production_catalog;
+    let catalog = if let Some(catalog) = runtime_catalog {
+        catalog
+    } else {
+        production_catalog = ManagedResourceRuntimeCatalog::production()?;
+        &production_catalog
+    };
+    let mut database = Database::open(paths)?;
+    let projects = database.projects_demanding_managed_resource_track(resource_name, track)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+
+    if projects.is_empty() {
+        let track_record = database
+            .managed_resource_tracks()?
+            .into_iter()
+            .find(|record| record.resource_name == resource_name && record.track == track);
+        if let Some(track_record) = track_record {
+            if track_record.usage_count > 0 {
+                return Err(DaemonError::UnexpectedProtocolResponse {
+                    reason: format!(
+                        "resource {resource_name} track {track} has usage without dependent Projects"
+                    ),
+                });
+            }
+            if catalog.adapter(resource_name).is_some() {
+                stop_resource_runtime(paths, &mut database, &supervisor, &track_record).await?;
+            }
+        }
+
+        return Ok((projects, BTreeMap::new()));
+    }
+
+    let resource = state::ProjectManagedResourceInput {
+        resource_name: resource_name.to_owned(),
+        track: track.to_owned(),
+    };
+    let plan = crate::project_env::ProjectResourcePlan {
+        resources: vec![resource.clone()],
+        allocations: BTreeMap::new(),
+    };
+    let install_requests = missing_project_install_requests(&database, &plan, catalog);
+    let mut prefetched_installs =
+        prefetch_missing_project_installs(paths, catalog, install_requests, progress.clone())
+            .await?;
+    let mut context = ResourceTrackReconciliationContext {
+        catalog,
+        supervisor: &supervisor,
+        progress: &progress,
+        prefetched_installs: &mut prefetched_installs,
+    };
+
+    reconcile_resource_track(paths, &mut database, &mut context, &resource, &[]).await?;
+
+    let mut project_failures = BTreeMap::new();
+    if let Some(adapter) = catalog.adapter(resource_name) {
+        let runtime_context =
+            persisted_resource_runtime_context(paths, &mut database, adapter, &resource)?;
+        for project in &projects {
+            let allocations = database
+                .resource_allocations(&project.id, resource_name)?
+                .into_iter()
+                .filter(|allocation| allocation.track == track)
+                .collect::<Vec<_>>();
+            if let Err(error) = adapter
+                .reconcile_allocations(
+                    paths,
+                    &mut database,
+                    &runtime_context,
+                    &runtime_context.env,
+                    &allocations,
+                )
+                .await
+            {
+                project_failures.insert(project.id.clone(), error);
+            }
+        }
+    }
+
+    Ok((projects, project_failures))
+}
+
+fn persisted_resource_runtime_context(
+    paths: &PvPaths,
+    database: &mut Database,
+    adapter: &dyn ManagedResourceRuntimeAdapter,
+    resource: &ProjectManagedResourceInput,
+) -> Result<ManagedResourceRuntimeContext, DaemonError> {
+    let track = database.managed_resource_track(&resource.resource_name, &resource.track)?;
+    let Some(artifact_path) = track.current_artifact_path else {
+        return Err(DaemonError::ManagedResourceArtifactMissing {
+            resource: resource.resource_name.clone(),
+            track: resource.track.clone(),
+        });
+    };
+    let ports = assign_named_ports(database, adapter, &resource.resource_name, &resource.track)?;
+
+    Ok(ManagedResourceRuntimeContext {
+        resource_name: resource.resource_name.clone(),
+        track: resource.track.clone(),
+        artifact_path,
+        data_dir: paths.resource_data_dir(&resource.resource_name, &resource.track),
+        ports,
+        env: track.env,
+        postgres_preload_libraries: if resource.resource_name == "postgres" {
+            database.postgres_track_preload_libraries(&resource.track)?
+        } else {
+            Vec::new()
+        },
+    })
 }
 
 pub(crate) async fn reconcile_system_resources_with_progress(
@@ -1134,10 +1253,9 @@ enum ProjectInstallRequest {
 async fn reconcile_resource_track(
     paths: &PvPaths,
     database: &mut Database,
-    project: &ProjectRecord,
-    plan: &crate::project_env::ProjectResourcePlan,
     reconciliation: &mut ResourceTrackReconciliationContext<'_>,
     resource: &state::ProjectManagedResourceInput,
+    allocations: &[ResourceAllocationRecord],
 ) -> Result<(), DaemonError> {
     let subject = RuntimeSubject::Resource {
         name: resource.resource_name.clone(),
@@ -1208,12 +1326,11 @@ async fn reconcile_resource_track(
             let mut runtime_attempt = ResourceRuntimeAttempt {
                 paths,
                 database,
-                project,
-                plan,
                 adapter,
                 supervisor: reconciliation.supervisor,
                 resource,
                 subject: &subject,
+                allocations,
             };
             let result = runtime_attempt.run(&context).await;
 
@@ -1247,12 +1364,11 @@ async fn reconcile_resource_track(
 struct ResourceRuntimeAttempt<'a> {
     paths: &'a PvPaths,
     database: &'a mut Database,
-    project: &'a ProjectRecord,
-    plan: &'a crate::project_env::ProjectResourcePlan,
     adapter: &'a dyn ManagedResourceRuntimeAdapter,
     supervisor: &'a ProcessSupervisor,
     resource: &'a state::ProjectManagedResourceInput,
     subject: &'a RuntimeSubject,
+    allocations: &'a [ResourceAllocationRecord],
 }
 
 impl ResourceRuntimeAttempt<'_> {
@@ -1274,10 +1390,8 @@ impl ResourceRuntimeAttempt<'_> {
 
         start_or_adopt_runtime(self.supervisor, spec, &readiness, readiness_timeout).await?;
 
-        let allocations =
-            desired_allocations(self.database, self.project, self.plan, self.resource)?;
         self.adapter
-            .reconcile_allocations(self.paths, self.database, &context, &env, &allocations)
+            .reconcile_allocations(self.paths, self.database, &context, &env, self.allocations)
             .await?;
         self.database.record_runtime_observed_snapshot(
             self.subject.clone(),
