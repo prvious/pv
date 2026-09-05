@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::DaemonError;
 use crate::gateway::{
-    CADDY_NOT_INSTALLED, reconcile_gateway_runtimes, reconcile_gateway_runtimes_with_phase_log,
+    CADDY_NOT_INSTALLED, ProjectGatewayReconciliationOutcome, reconcile_gateway_runtimes,
+    reconcile_gateway_runtimes_with_phase_log, reconcile_project_gateway_runtimes_with_phase_log,
 };
 use crate::ipc::LocalStream;
 use crate::managed_resources::{
@@ -1369,7 +1370,7 @@ async fn complete_project_reconciliation_with_progress(
         paths,
         id.as_str(),
         runtime_catalog,
-        progress,
+        progress.clone(),
     )
     .await;
     project_timer.finish(
@@ -1377,21 +1378,36 @@ async fn complete_project_reconciliation_with_progress(
         &[("project_count", 1)],
     );
     let project_env_summary = project_result?;
-    let gateway_summary = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await?;
+    let gateway_outcome =
+        reconcile_project_gateway_runtimes_with_phase_log(paths, id.as_str(), phase_log).await?;
+    let (gateway_summary, gateway_evaluated) = match gateway_outcome {
+        ProjectGatewayReconciliationOutcome::Reconciled {
+            summary,
+            gateway_evaluated,
+        } => (summary, gateway_evaluated),
+        ProjectGatewayReconciliationOutcome::PromoteSystem => {
+            return complete_system_reconciliation_with_progress(
+                paths,
+                runtime_catalog,
+                progress,
+                phase_log,
+            )
+            .await;
+        }
+    };
     let summary = if gateway_summary == CADDY_NOT_INSTALLED {
         project_env_summary.as_str().to_string()
     } else {
         format!("{}; {gateway_summary}", project_env_summary.as_str())
     };
-    Ok(CompletedReconciliationJob {
-        summary,
-        coverage: vec![
-            JobDiagnosticSubject::Project {
-                id: id.as_str().to_owned(),
-            },
-            JobDiagnosticSubject::GatewayRuntime,
-        ],
-    })
+    let mut coverage = vec![JobDiagnosticSubject::Project {
+        id: id.as_str().to_owned(),
+    }];
+    if gateway_evaluated {
+        coverage.push(JobDiagnosticSubject::GatewayRuntime);
+    }
+
+    Ok(CompletedReconciliationJob { summary, coverage })
 }
 
 fn finish_project_phase(
@@ -1977,8 +1993,8 @@ mod tests {
     use super::{
         FOREGROUND_JOB_PROGRESS_BUFFER, FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent,
         SystemProjectReconciliationReport, complete_managed_resource_reconciliation_with_progress,
-        complete_or_fail_background_reconciliation, complete_streamed_job_with_heartbeat,
-        complete_streamed_job_with_heartbeat_and_events,
+        complete_or_fail_background_reconciliation, complete_project_reconciliation_with_progress,
+        complete_streamed_job_with_heartbeat, complete_streamed_job_with_heartbeat_and_events,
         complete_system_reconciliation_with_progress, complete_update_job,
         completed_system_reconciliation_coverage, discover_system_project_demand,
         effective_reconciliation_scope, enqueue_reconciliation_job,
@@ -2020,6 +2036,179 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/test-fixtures/gateway/fake-caddy-server.py"
     ));
+
+    #[tokio::test]
+    async fn resource_only_project_without_active_route_excludes_gateway_coverage()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("resource-only");
+        let config_path = project_path.join("pv.yml");
+        let uncertain_path = tempdir.path().join("uncertain");
+        let uncertain_config_path = uncertain_path.join("pv.yml");
+        state::fs::write_sensitive_file(&config_path, "serve: false\n")?;
+        state::fs::write_sensitive_file(&uncertain_config_path, "serve: false\n")?;
+        let mut database = Database::open(&paths)?;
+        let project = database
+            .link_project_with_mode(
+                LinkProjectInput {
+                    path: project_path.clone(),
+                    original_path: project_path,
+                    primary_hostname: "ignored.test".to_owned(),
+                    config_path,
+                    desired_php_track: None,
+                    additional_hostnames: Vec::new(),
+                },
+                ProjectMode::ResourceOnly,
+            )?
+            .project;
+        let uncertain = database
+            .link_project(LinkProjectInput {
+                path: uncertain_path.clone(),
+                original_path: uncertain_path,
+                primary_hostname: "uncertain.test".to_owned(),
+                config_path: uncertain_config_path,
+                desired_php_track: None,
+                additional_hostnames: Vec::new(),
+            })?
+            .project;
+        drop(database);
+        seed_installed_caddy(&paths)?;
+        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let scope = ReconciliationScope::project(project.id.clone())?;
+        let ReconciliationScope::Project { id } = &scope else {
+            return Err(anyhow::anyhow!("expected Project scope"));
+        };
+        let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
+            &paths,
+            "resource-only-project-test",
+            &scope.to_string(),
+        );
+
+        let completed = complete_project_reconciliation_with_progress(
+            &paths,
+            id,
+            None,
+            super::DaemonDownloadProgress::disabled(),
+            &phase_log,
+        )
+        .await?;
+
+        assert_eq!(
+            completed.coverage,
+            [JobDiagnosticSubject::Project { id: project.id }]
+        );
+        assert!(!paths.gateway_pid().exists());
+        assert_eq!(
+            Database::open(&paths)?
+                .project_by_id(&uncertain.id)?
+                .ok_or_else(|| anyhow::anyhow!("expected uncertain Project"))?
+                .mode,
+            ProjectMode::Served
+        );
+        let phase_events = reconciliation_phase_events(&paths, "resource-only-project-test")?;
+        for phase in ["workers", "gateway"] {
+            let event = phase_events
+                .iter()
+                .find(|event| event["phase"] == phase)
+                .ok_or_else(|| anyhow::anyhow!("missing skipped {phase} phase"))?;
+            assert_eq!(event["outcome"], "skipped");
+            assert_eq!(event["elapsed_ms"], 0);
+            assert_eq!(event["subject"], "target_project");
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn uncertain_project_gateway_plan_promotes_to_system_reconciliation() -> anyhow::Result<()>
+    {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let target_path = tempdir.path().join("target");
+        let target_config_path = target_path.join("pv.yml");
+        let uncertain_path = tempdir.path().join("uncertain");
+        let uncertain_config_path = uncertain_path.join("pv.yml");
+        state::fs::write_sensitive_file(&target_config_path, "serve: false\n")?;
+        state::fs::write_sensitive_file(&uncertain_config_path, "serve: false\n")?;
+        let mut database = Database::open(&paths)?;
+        let target = database
+            .link_project_with_mode(
+                LinkProjectInput {
+                    path: target_path.clone(),
+                    original_path: target_path,
+                    primary_hostname: "ignored.test".to_owned(),
+                    config_path: target_config_path,
+                    desired_php_track: None,
+                    additional_hostnames: Vec::new(),
+                },
+                ProjectMode::ResourceOnly,
+            )?
+            .project;
+        let uncertain = database
+            .link_project(LinkProjectInput {
+                path: uncertain_path.clone(),
+                original_path: uncertain_path,
+                primary_hostname: "uncertain.test".to_owned(),
+                config_path: uncertain_config_path,
+                desired_php_track: None,
+                additional_hostnames: Vec::new(),
+            })?
+            .project;
+        drop(database);
+        state::fs::write_sensitive_file(
+            &paths
+                .gateway_projects_config_dir()
+                .join(format!("{}.Caddyfile", target.id)),
+            "# stale active target route\n",
+        )?;
+        seed_installed_caddy(&paths)?;
+        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let scope = ReconciliationScope::project(target.id.clone())?;
+        let ReconciliationScope::Project { id } = &scope else {
+            return Err(anyhow::anyhow!("expected Project scope"));
+        };
+        let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
+            &paths,
+            "project-system-promotion-test",
+            &scope.to_string(),
+        );
+
+        let completed = complete_project_reconciliation_with_progress(
+            &paths,
+            id,
+            None,
+            super::DaemonDownloadProgress::disabled(),
+            &phase_log,
+        )
+        .await?;
+        let database = Database::open(&paths)?;
+        let uncertain = database
+            .project_by_id(&uncertain.id)?
+            .ok_or_else(|| anyhow::anyhow!("expected uncertain Project"))?;
+
+        assert_eq!(uncertain.mode, ProjectMode::ResourceOnly);
+        assert!(
+            completed
+                .coverage
+                .contains(&JobDiagnosticSubject::SystemReconciliation)
+        );
+        assert!(
+            completed
+                .coverage
+                .contains(&JobDiagnosticSubject::GatewayRuntime)
+        );
+        assert_eq!(
+            completed
+                .coverage
+                .iter()
+                .filter(|subject| matches!(subject, JobDiagnosticSubject::Project { .. }))
+                .count(),
+            2
+        );
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn targeted_resource_scope_records_exact_partial_and_success_coverage()

@@ -1449,6 +1449,34 @@ impl Database {
         Ok(projects)
     }
 
+    pub fn php_runtime_is_demanded(&self, runtime_key: &str) -> Result<bool, StateError> {
+        validate_php_runtime_key(runtime_key)?;
+        let mut statement = self.connection.prepare(
+            "SELECT id, desired_php_track, desired_php_loaded_extensions_json
+            FROM projects
+            WHERE serves_http = 1
+            AND desired_php_track IS NOT NULL",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+
+        for row in rows {
+            let (project_id, track, loaded_extensions_json) = row?;
+            let loaded_extensions =
+                parse_runtime_extension_json(&project_id, "loaded", &loaded_extensions_json)?;
+            if php_runtime_key(&track, &loaded_extensions)? == runtime_key {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
     pub fn record_managed_resource_track_desired(
         &mut self,
         resource_name: &str,
