@@ -590,9 +590,10 @@ async fn daemon_health_tick_replaces_expiring_tls_certificate_without_explicit_r
         state::fs::read_to_string(&paths.project_tls_certificate(&project.id))?;
     let config_modified_at = state::fs::modified_at(&project.config_path)?;
 
+    let finished_system_jobs = finished_system_job_count(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
-    wait_for_finished_system_job(&paths).await?;
+    wait_for_new_finished_system_job(&paths, finished_system_jobs).await?;
     let jobs_before_health_tick = Database::open(&paths)?.recent_jobs()?;
     assert_eq!(jobs_before_health_tick.len(), 1);
     assert_eq!(jobs_before_health_tick[0].scope, "system");
@@ -1342,9 +1343,10 @@ async fn malformed_config_with_existing_tls_is_renewed_by_daemon_health() -> Res
         Err(error) => error.to_string(),
     };
 
+    let finished_system_jobs = finished_system_job_count(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
-    wait_for_finished_system_job(&paths).await?;
+    wait_for_new_finished_system_job(&paths, finished_system_jobs).await?;
     tokio::time::pause();
     tokio::time::advance(std::time::Duration::from_secs(30)).await;
     tokio::task::yield_now().await;
@@ -2023,25 +2025,6 @@ async fn wait_for_new_finished_system_job(paths: &PvPaths, existing_count: usize
     }
 
     Err(anyhow!("new finished startup System job was not recorded"))
-}
-
-async fn wait_for_finished_system_job(paths: &PvPaths) -> Result<JobRecord> {
-    for _attempt in 0..100 {
-        let database = Database::open(paths)?;
-        if let Some(job) = database.recent_jobs()?.into_iter().find(|job| {
-            job.scope == "system"
-                && matches!(
-                    job.status,
-                    state::JobStatus::Succeeded | state::JobStatus::Failed
-                )
-        }) {
-            return Ok(job);
-        }
-
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-
-    Err(anyhow!("finished startup System job was not recorded"))
 }
 
 fn ensure_reconciliation_dns_port(paths: &PvPaths) -> Result<()> {
