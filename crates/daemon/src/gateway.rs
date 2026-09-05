@@ -32,7 +32,10 @@ use crate::project_env::{
     ResolvedPhpRuntime, resolve_project_php_runtime, validate_project_config_for_gateway,
 };
 use crate::structured_log;
-use crate::supervisor::{ManagedProcess, probe_readiness_once};
+use crate::supervisor::{
+    ManagedProcess, probe_readiness_once, runtime_exited_before_readiness_error,
+    wait_for_started_runtime_readiness,
+};
 use crate::{
     CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, CaddyAdminVerifier,
     DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness,
@@ -46,7 +49,7 @@ type RuntimeProcessCommand = tokio::process::Command;
 
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
-const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
+const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
 const PF_PUBLIC_READINESS_TIMEOUT: Duration = Duration::from_secs(2);
 const FOREIGN_LISTENER_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
 const OWNED_READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -607,8 +610,10 @@ async fn reconcile_planned_gateway(
             return Err(error);
         }
     };
-    let pf_routing_state =
-        pf_routing_state.unwrap_or_else(|| gateway_pf_routing_state(paths, plan));
+    let pf_routing_state = match pf_routing_state {
+        Some(pf_routing_state) => pf_routing_state,
+        None => gateway_pf_routing_state(paths, plan).await?,
+    };
     let gateway_readiness = gateway_readiness_plan(
         plan,
         desired_gateway_config.readiness_hostname,
@@ -982,16 +987,32 @@ fn gateway_readiness_ports(
     }
 }
 
-fn gateway_pf_routing_state(paths: &PvPaths, plan: &RuntimePlan) -> GatewayPfRoutingState {
+async fn gateway_pf_routing_state(
+    paths: &PvPaths,
+    plan: &RuntimePlan,
+) -> Result<GatewayPfRoutingState, DaemonError> {
+    let paths = paths.clone();
     let expected = platform::PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port);
-    let files_current = pf_files_current(paths, &expected);
+    spawn_gateway_pf_inspection(move || {
+        let files_current = pf_files_current(&paths, &expected);
 
-    match platform::inspect_active_pf_redirects_unprivileged() {
-        Ok(inspection) => {
-            classify_gateway_pf_routing_state(&expected, Some(&inspection), files_current)
+        match platform::inspect_active_pf_redirects_unprivileged() {
+            Ok(inspection) => {
+                classify_gateway_pf_routing_state(&expected, Some(&inspection), files_current)
+            }
+            Err(_error) => classify_gateway_pf_routing_state(&expected, None, files_current),
         }
-        Err(_error) => classify_gateway_pf_routing_state(&expected, None, files_current),
-    }
+    })
+    .await
+}
+
+async fn spawn_gateway_pf_inspection<Inspect>(
+    inspect: Inspect,
+) -> Result<GatewayPfRoutingState, DaemonError>
+where
+    Inspect: FnOnce() -> GatewayPfRoutingState + Send + 'static,
+{
+    Ok(tokio::task::spawn_blocking(inspect).await?)
 }
 
 fn classify_gateway_pf_routing_state(
@@ -2633,15 +2654,24 @@ async fn start_or_adopt_runtime(
 
     delete_optional_file(admin_endpoint.path()).map_err(RuntimeTransactionError::new)?;
     let mut process = supervisor.start(spec.clone()).await?;
-    if let Err(error) = CaddyAdminClient::new()
-        .with_timeout(readiness_timeout)
-        .wait_until_ready_with(
-            &admin_endpoint,
-            readiness_timeout,
-            runtime_ownership_verifier(paths, spec),
-        )
-        .await
-        .map_err(DaemonError::from)
+    let admin_readiness = async {
+        CaddyAdminClient::new()
+            .with_timeout(readiness_timeout)
+            .wait_until_ready_with(
+                &admin_endpoint,
+                readiness_timeout,
+                runtime_ownership_verifier(paths, spec),
+            )
+            .await
+            .map_err(DaemonError::from)
+    };
+    if let Err(error) = wait_for_started_runtime_readiness(
+        &mut process,
+        &spec.name,
+        admin_readiness,
+        OWNED_READINESS_POLL_INTERVAL,
+    )
+    .await
     {
         record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
         return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
@@ -2657,9 +2687,15 @@ async fn start_or_adopt_runtime(
         }
     }
 
-    if let Err(error) = wait_for_owned_readiness(check, readiness_timeout, || {
+    let service_readiness = wait_for_owned_readiness(check, readiness_timeout, || {
         verify_runtime_ownership(supervisor, spec)
-    })
+    });
+    if let Err(error) = wait_for_started_runtime_readiness(
+        &mut process,
+        &spec.name,
+        service_readiness,
+        OWNED_READINESS_POLL_INTERVAL,
+    )
     .await
     {
         record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
@@ -2693,12 +2729,7 @@ async fn start_or_adopt_runtime(
         }
     };
     if process_exited {
-        let error = DaemonError::UnexpectedProtocolResponse {
-            reason: format!(
-                "runtime `{}` exited before readiness was verified",
-                spec.name
-            ),
-        };
+        let error = runtime_exited_before_readiness_error(&spec.name);
         return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
     }
     record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
@@ -3631,6 +3662,7 @@ fn worker_config_private_environment(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::sync::mpsc;
     use std::time::Duration;
 
     use anyhow::Result;
@@ -3648,7 +3680,28 @@ mod tests {
         gateway_project_config_fragments, gateway_public_readiness_check,
         gateway_readiness_check_for_ports, gateway_readiness_hostname, gateway_readiness_plan,
         gateway_readiness_ports, previous_runtime_readiness_from_parts, project_config_file_name,
+        spawn_gateway_pf_inspection,
     };
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pf_inspection_does_not_block_the_async_executor() -> Result<()> {
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let inspection = tokio::spawn(spawn_gateway_pf_inspection(move || {
+            let _result = started_sender.send(());
+            let _result = release_receiver.recv();
+
+            GatewayPfRoutingState::Inactive
+        }));
+
+        started_receiver.await?;
+        tokio::task::yield_now().await;
+        release_sender.send(())?;
+
+        assert_eq!(inspection.await??, GatewayPfRoutingState::Inactive);
+
+        Ok(())
+    }
 
     #[test]
     fn targeted_runtime_plan_promotes_uncertain_project_to_system() -> Result<()> {
