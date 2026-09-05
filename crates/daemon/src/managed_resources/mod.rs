@@ -516,10 +516,13 @@ pub(crate) async fn reconcile_system_resources_with_catalog_and_progress(
     stop_undemanded_catalog_runtimes(paths, database, catalog, &supervisor, demanded_tracks)
         .await?;
 
-    install_missing_resource_demands_with_catalog_and_progress(
+    let installs =
+        missing_desired_resource_installs_with_demands(database, catalog, demanded_tracks)?;
+    install_missing_desired_resource_tracks(
         paths,
-        catalog,
-        demanded_tracks,
+        catalog.install_options.clone(),
+        catalog.http_client.clone(),
+        installs,
         progress,
     )
     .await
@@ -533,7 +536,7 @@ pub(crate) async fn install_missing_resource_demands_with_catalog_and_progress(
 ) -> Result<(), DaemonError> {
     let installs = {
         let database = Database::open(paths)?;
-        missing_desired_resource_installs_with_demands(&database, catalog, demanded_tracks)?
+        missing_resource_installs(&database, catalog, demanded_tracks)?
     };
 
     install_missing_desired_resource_tracks(
@@ -550,8 +553,8 @@ pub(crate) async fn stop_undemanded_system_resource_runtimes(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), DaemonError> {
-    // Post-apply usage supersedes conservative discovery demand while failed Projects retain their
-    // last-valid usage protection.
+    // Post-apply usage supersedes conservative discovery demand while Projects with invalid config
+    // retain their last-valid usage protection.
     let production_catalog;
     let catalog = if let Some(catalog) = runtime_catalog {
         catalog
@@ -668,6 +671,23 @@ fn missing_desired_resource_installs_with_demands(
     catalog: &ManagedResourceRuntimeCatalog,
     demanded_tracks: &BTreeSet<DemandedResourceTrack>,
 ) -> Result<DesiredResourceInstallPlan, DaemonError> {
+    let mut demanded_tracks = demanded_tracks.clone();
+    demanded_tracks.extend(
+        database
+            .managed_resource_tracks()?
+            .into_iter()
+            .filter(|record| record.desired_state == ManagedResourceDesiredState::Installed)
+            .map(|record| DemandedResourceTrack::new(record.resource_name, record.track)),
+    );
+
+    missing_resource_installs(database, catalog, &demanded_tracks)
+}
+
+fn missing_resource_installs(
+    database: &Database,
+    catalog: &ManagedResourceRuntimeCatalog,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
+) -> Result<DesiredResourceInstallPlan, DaemonError> {
     let mut php_pair_tracks = BTreeSet::new();
     let mut caddy_tracks = BTreeSet::new();
     let mut composer_missing = false;
@@ -685,15 +705,7 @@ fn missing_desired_resource_installs_with_demands(
             DemandedResourceTrack::new(record.resource_name.clone(), record.track.clone())
         })
         .collect::<BTreeSet<_>>();
-    let mut missing_tracks = records
-        .into_iter()
-        .filter(|record| {
-            record.desired_state == ManagedResourceDesiredState::Installed
-                && record.current_artifact_path.is_none()
-        })
-        .map(|record| DemandedResourceTrack::new(record.resource_name, record.track))
-        .collect::<BTreeSet<_>>();
-    missing_tracks.extend(demanded_tracks.difference(&installed_tracks).cloned());
+    let missing_tracks = demanded_tracks.difference(&installed_tracks).cloned();
 
     for demanded_track in missing_tracks {
         let DemandedResourceTrack {
