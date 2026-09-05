@@ -109,6 +109,7 @@ pub struct OwnedRuntime {
     command: Utf8PathBuf,
     arguments: Vec<String>,
     replacement_required: bool,
+    applied_config_fingerprint: Option<String>,
     process_start_identity: platform::ProcessStartIdentity,
     process_executable_identity: Option<ProcessExecutableIdentity>,
 }
@@ -171,6 +172,8 @@ struct RuntimeMetadata {
     track: String,
     #[serde(default, skip_serializing_if = "is_false")]
     replacement_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    applied_config_fingerprint: Option<String>,
     log_path: String,
     started_at: String,
     #[serde(default)]
@@ -263,6 +266,7 @@ impl ProcessSupervisor {
                 command: spec.command.clone(),
                 arguments: spec.arguments.clone(),
                 replacement_required: metadata.replacement_required,
+                applied_config_fingerprint: metadata.applied_config_fingerprint,
                 process_start_identity,
                 process_executable_identity: metadata.process_executable_identity,
             }));
@@ -272,17 +276,26 @@ impl ProcessSupervisor {
     }
 
     pub fn mark_replacement_required(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
-        self.set_replacement_required(spec, true)
+        self.set_config_application_state(spec, true, None)
     }
 
     pub fn clear_replacement_required(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
-        self.set_replacement_required(spec, false)
+        self.set_config_application_state(spec, false, None)
     }
 
-    fn set_replacement_required(
+    pub fn record_applied_config(
+        &self,
+        spec: &ProcessSpec,
+        fingerprint: &str,
+    ) -> Result<bool, DaemonError> {
+        self.set_config_application_state(spec, false, Some(fingerprint))
+    }
+
+    fn set_config_application_state(
         &self,
         spec: &ProcessSpec,
         replacement_required: bool,
+        applied_config_fingerprint: Option<&str>,
     ) -> Result<bool, DaemonError> {
         require_process_containment()?;
         let Some(pid) = read_pid_file(&spec.pid_path)? else {
@@ -308,6 +321,7 @@ impl ProcessSupervisor {
         }
 
         metadata.replacement_required = replacement_required;
+        metadata.applied_config_fingerprint = applied_config_fingerprint.map(str::to_owned);
         let encoded = serde_json::to_string(&metadata)?;
         fs::write_sensitive_file(&spec.metadata_path, &encoded)?;
 
@@ -354,6 +368,7 @@ impl ProcessSupervisor {
                     command: spec.command,
                     arguments: spec.arguments,
                     replacement_required: metadata.replacement_required,
+                    applied_config_fingerprint: metadata.applied_config_fingerprint,
                     process_start_identity,
                     process_executable_identity: metadata.process_executable_identity,
                 },
@@ -428,6 +443,10 @@ impl OwnedRuntime {
 
     pub fn replacement_required(&self) -> bool {
         self.replacement_required
+    }
+
+    pub fn applied_config_fingerprint(&self) -> Option<&str> {
+        self.applied_config_fingerprint.as_deref()
     }
 
     fn matches_live(&self) -> Result<bool, DaemonError> {
@@ -939,6 +958,7 @@ fn write_runtime_metadata(
         resource_name: spec.resource_name.clone(),
         track: spec.track.clone(),
         replacement_required: false,
+        applied_config_fingerprint: None,
         log_path: spec.log_path.to_string(),
         started_at,
         process_start_identity: Some(process_start_identity),
