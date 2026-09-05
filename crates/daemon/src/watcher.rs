@@ -46,29 +46,52 @@ impl ProjectConfigWatcher {
     }
 
     async fn poll_once(&mut self) -> Result<(), DaemonError> {
-        let database = Database::open(&self.paths)?;
-        let watches = database.project_config_watches()?;
-        let mut current_configs = BTreeMap::new();
+        let paths = self.paths.clone();
+        let current_configs =
+            spawn_project_config_snapshot(move || load_project_config_snapshots(&paths)).await?;
 
-        for watch in watches {
-            let watched_config = project_config_snapshot(&watch.project_path)?;
-
+        for (project_id, watched_config) in &current_configs {
             if let Some(previous_config) = self
                 .watched_configs
-                .insert(watch.project_id.clone(), watched_config.clone())
-                && previous_config != watched_config
-                && let Ok(scope) = ReconciliationScope::project(watch.project_id.clone())
+                .insert(project_id.clone(), watched_config.clone())
+                && previous_config != *watched_config
+                && let Ok(scope) = ReconciliationScope::project(project_id.clone())
             {
                 self.debouncer.request(scope).await;
             }
-
-            current_configs.insert(watch.project_id, watched_config);
         }
 
         self.watched_configs = current_configs;
 
         Ok(())
     }
+}
+
+async fn spawn_project_config_snapshot<Snapshot>(
+    snapshot: Snapshot,
+) -> Result<BTreeMap<String, WatchedConfig>, DaemonError>
+where
+    Snapshot: FnOnce() -> Result<BTreeMap<String, WatchedConfig>, DaemonError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(snapshot).await?
+}
+
+fn load_project_config_snapshots(
+    paths: &PvPaths,
+) -> Result<BTreeMap<String, WatchedConfig>, DaemonError> {
+    let Some(database) = Database::open_read_only(paths)? else {
+        return Ok(BTreeMap::new());
+    };
+    database
+        .project_config_watches()?
+        .into_iter()
+        .map(|watch| {
+            Ok((
+                watch.project_id,
+                project_config_snapshot(&watch.project_path)?,
+            ))
+        })
+        .collect()
 }
 
 fn project_config_snapshot(project_path: &Utf8Path) -> Result<WatchedConfig, DaemonError> {
@@ -80,6 +103,8 @@ fn project_config_snapshot(project_path: &Utf8Path) -> Result<WatchedConfig, Dae
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::sync::mpsc;
     use std::time::Duration;
 
     use anyhow::{Result, anyhow};
@@ -89,20 +114,40 @@ mod tests {
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
     use tokio::time::timeout;
 
-    use super::ProjectConfigWatcher;
+    use super::{ProjectConfigWatcher, spawn_project_config_snapshot};
     use crate::reconciliation::ReconciliationDebouncer;
 
     #[tokio::test]
     async fn watcher_returns_poll_errors_to_the_task_owner() -> Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
-        fs::write_sensitive_file(paths.root(), "not a directory")?;
+        fs::write_sensitive_file(paths.db(), "not a database")?;
         let debouncer = ReconciliationDebouncer::new(Duration::from_millis(1), |_scope| {});
         let watcher = ProjectConfigWatcher::new(paths, debouncer, Duration::from_millis(1));
 
-        let result = timeout(Duration::from_millis(50), watcher.run()).await?;
+        let result = timeout(Duration::from_secs(1), watcher.run()).await?;
 
         assert!(result.is_err());
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn watcher_snapshot_does_not_block_the_async_executor() -> Result<()> {
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let snapshot = tokio::spawn(spawn_project_config_snapshot(move || {
+            let _result = started_sender.send(());
+            release_receiver.recv().map_err(std::io::Error::other)?;
+
+            Ok(BTreeMap::new())
+        }));
+
+        started_receiver.await?;
+        tokio::task::yield_now().await;
+        release_sender.send(())?;
+
+        assert!(snapshot.await??.is_empty());
 
         Ok(())
     }
