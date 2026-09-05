@@ -141,6 +141,29 @@ pub enum DaemonError {
     #[error("Project config error: {0}")]
     Config(#[from] ConfigError),
 
+    #[error("Project `{project_id}` env dependencies do not match their last applied state")]
+    ProjectEnvDependenciesNotApplied { project_id: String },
+
+    #[error(
+        "Project `{project_id}` Managed Resource allocation failed with `{allocation}`; additionally failed to record the Project failure: {recording}"
+    )]
+    ProjectAllocationFailureRecordingFailed {
+        project_id: String,
+        allocation: Box<DaemonError>,
+        #[source]
+        recording: Box<DaemonError>,
+    },
+
+    #[error(
+        "Project `{project_id}` env reconciliation failed with `{reconciliation}`; additionally failed to record the Project failure: {recording}"
+    )]
+    ProjectEnvFailureRecordingFailed {
+        project_id: String,
+        reconciliation: Box<DaemonError>,
+        #[source]
+        recording: Box<DaemonError>,
+    },
+
     #[error("Managed Resource error: {0}")]
     Resources(#[from] ResourcesError),
 

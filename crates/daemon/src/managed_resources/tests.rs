@@ -1284,6 +1284,259 @@ fn unready_fake_runtime_uses_http_readiness_to_avoid_parallel_tcp_collisions() -
 }
 
 #[tokio::test]
+async fn targeted_resource_reconciliation_preserves_other_tracks_and_stops_final_consumer()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let first = link_project(
+        &paths,
+        &tempdir.path().join("first"),
+        "first.test",
+        r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+"#,
+    )?;
+    let second = link_project(
+        &paths,
+        &tempdir.path().join("second"),
+        "second.test",
+        r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+"#,
+    )?;
+    let other_track = link_project(
+        &paths,
+        &tempdir.path().join("other-track"),
+        "other.test",
+        r#"mailpit:
+  version: "1.1"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+"#,
+    )?;
+    seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+    seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_NEXT_TRACK)?;
+    let current_track_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+    let other_track_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_NEXT_TRACK)?;
+    drop((current_track_port_guards, other_track_port_guards));
+
+    reconcile_project_env_with_fake_runtime_catalog(&paths, &first.id).await?;
+    reconcile_project_env_with_fake_runtime_catalog(&paths, &second.id).await?;
+    reconcile_project_env_with_fake_runtime_catalog(&paths, &other_track.id).await?;
+    let original_current_pid =
+        resource_runtime_metadata_pid(&paths, "mailpit", FAKE_MAILPIT_TRACK)?;
+    let original_other_pid =
+        resource_runtime_metadata_pid(&paths, "mailpit", FAKE_MAILPIT_NEXT_TRACK)?;
+    let catalog = super::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
+
+    super::reconcile_persisted_resource_track_with_progress(
+        &paths,
+        "mailpit",
+        FAKE_MAILPIT_TRACK,
+        Some(&catalog),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+    assert_eq!(
+        resource_runtime_metadata_pid(&paths, "mailpit", FAKE_MAILPIT_TRACK)?,
+        original_current_pid
+    );
+    assert_eq!(
+        resource_runtime_metadata_pid(&paths, "mailpit", FAKE_MAILPIT_NEXT_TRACK)?,
+        original_other_pid
+    );
+
+    {
+        let mut database = Database::open(&paths)?;
+        database.replace_project_managed_resources(&first.id, &[])?;
+    }
+    super::reconcile_persisted_resource_track_with_progress(
+        &paths,
+        "mailpit",
+        FAKE_MAILPIT_TRACK,
+        Some(&catalog),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+    assert_eq!(
+        resource_runtime_metadata_pid(&paths, "mailpit", FAKE_MAILPIT_TRACK)?,
+        original_current_pid
+    );
+
+    {
+        let mut database = Database::open(&paths)?;
+        database.replace_project_managed_resources(&second.id, &[])?;
+    }
+    super::reconcile_persisted_resource_track_with_progress(
+        &paths,
+        "mailpit",
+        FAKE_MAILPIT_TRACK,
+        Some(&catalog),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+    assert_eq!(
+        runtime_files_exist(&paths, FAKE_MAILPIT_TRACK)?,
+        RuntimeFilePresence {
+            pid: false,
+            metadata: false,
+            config: false,
+        }
+    );
+    assert_eq!(
+        resource_runtime_metadata_pid(&paths, "mailpit", FAKE_MAILPIT_NEXT_TRACK)?,
+        original_other_pid
+    );
+
+    {
+        let mut database = Database::open(&paths)?;
+        database.replace_project_managed_resources(&other_track.id, &[])?;
+    }
+    super::reconcile_persisted_resource_track_with_progress(
+        &paths,
+        "mailpit",
+        FAKE_MAILPIT_NEXT_TRACK,
+        Some(&catalog),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+
+    let database = Database::open(&paths)?;
+    assert_runtime_status(
+        &database.runtime_observed_states()?,
+        FAKE_MAILPIT_TRACK,
+        RuntimeObservedStatus::Stopped,
+    );
+    assert!(database.assigned_ports()?.into_iter().all(|assignment| {
+        !matches!(
+            assignment.owner,
+            PortOwner::Resource { name, track, .. }
+                if name == "mailpit" && track == FAKE_MAILPIT_TRACK
+        )
+    }));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn targeted_resource_reconciliation_isolates_project_allocation_failures() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let broken = link_project(
+        &paths,
+        &tempdir.path().join("broken"),
+        "broken.test",
+        r#"mysql:
+  version: "8.0"
+  allocations:
+    broken:
+      env:
+        DATABASE_URL: "${url}"
+"#,
+    )?;
+    let healthy = link_project(
+        &paths,
+        &tempdir.path().join("healthy"),
+        "healthy.test",
+        r#"mysql:
+  version: "8.0"
+  allocations:
+    healthy:
+      env:
+        DATABASE_URL: "${url}"
+"#,
+    )?;
+    state::fs::write_sensitive_file(&broken.path.join(".env"), "EXISTING=broken\n")?;
+    state::fs::write_sensitive_file(&healthy.path.join(".env"), "EXISTING=healthy\n")?;
+    let desired_resource = ProjectManagedResourceInput {
+        resource_name: "mysql".to_owned(),
+        track: FAKE_SQL_TRACK.to_owned(),
+    };
+    let mut database = Database::open(&paths)?;
+    for (project, allocation_name) in [(&broken, "broken"), (&healthy, "healthy")] {
+        database.replace_project_managed_resources(
+            &project.id,
+            std::slice::from_ref(&desired_resource),
+        )?;
+        let generated =
+            resources::generated_allocation_name("mysql", &project.slug, allocation_name)?;
+        database.replace_project_resource_allocations(
+            &project.id,
+            "mysql",
+            FAKE_SQL_TRACK,
+            &[ResourceAllocationInput {
+                allocation_name: allocation_name.to_owned(),
+                generated_name: generated.generated_name().to_owned(),
+            }],
+        )?;
+    }
+    drop(database);
+    seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
+    let hook_events = Arc::new(Mutex::new(Vec::new()));
+    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: OFFLINE_TEST_MANIFEST_URL.to_owned(),
+            target_platform: resources::TargetPlatform::current()?,
+        },
+        AsyncSqlHookRuntimeAdapter::failing_allocation(Arc::clone(&hook_events), "broken")?,
+    );
+
+    let (projects, failures) = super::reconcile_persisted_resource_track_with_progress(
+        &paths,
+        "mysql",
+        FAKE_SQL_TRACK,
+        Some(&catalog),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+    for project in &projects {
+        if !failures.contains_key(&project.id) {
+            crate::project_env::reconcile_project_env_from_persisted_state(&paths, &project.id)?;
+        }
+    }
+    let database = Database::open(&paths)?;
+    let broken_allocation = database.resource_allocations(&broken.id, "mysql")?;
+    let healthy_allocation = database.resource_allocations(&healthy.id, "mysql")?;
+    let [broken_allocation] = broken_allocation.as_slice() else {
+        bail!("expected one broken Project allocation, got {broken_allocation:#?}");
+    };
+    let [healthy_allocation] = healthy_allocation.as_slice() else {
+        bail!("expected one healthy Project allocation, got {healthy_allocation:#?}");
+    };
+    assert_eq!(projects.len(), 2);
+    assert_eq!(failures.len(), 1);
+    assert!(failures.contains_key(&broken.id));
+    assert_eq!(broken_allocation.status, ResourceAllocationStatus::Desired);
+    assert_eq!(healthy_allocation.status, ResourceAllocationStatus::Ready);
+    assert_eq!(read_dotenv(&broken)?, "EXISTING=broken\n");
+    assert!(read_dotenv(&healthy)?.contains("DATABASE_URL=mysql://"));
+    drop(database);
+
+    {
+        let mut database = Database::open(&paths)?;
+        database.replace_project_managed_resources(&broken.id, &[])?;
+        database.replace_project_managed_resources(&healthy.id, &[])?;
+    }
+    super::reconcile_persisted_resource_track_with_progress(
+        &paths,
+        "mysql",
+        FAKE_SQL_TRACK,
+        Some(&catalog),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -2629,7 +2882,7 @@ async fn rustfs_allocation_failure_preserves_project_env_and_records_failed_runt
     let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
     state::fs::write_sensitive_file(&project.path.join(".env"), "EXISTING=value\n")?;
     seed_auth_rejecting_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
-    reserve_available_rustfs_ports(&paths)?;
+    reserve_rustfs_ports(&paths, 19_040, 19_041)?;
 
     let result = reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await;
     let snapshot = {
@@ -2678,7 +2931,7 @@ async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
     seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
-    reserve_available_rustfs_ports(&paths)?;
+    reserve_rustfs_ports(&paths, 19_050, 19_051)?;
 
     reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
     let first_snapshot = rustfs_runtime_credential_snapshot(&paths, &project.id)?;
@@ -4079,17 +4332,6 @@ fn reserve_rustfs_ports(paths: &PvPaths, api_port: u16, console_port: u16) -> Re
     Ok(())
 }
 
-fn reserve_available_rustfs_ports(paths: &PvPaths) -> Result<()> {
-    let api_listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let console_listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let api_port = api_listener.local_addr()?.port();
-    let console_port = console_listener.local_addr()?.port();
-    drop(api_listener);
-    drop(console_listener);
-
-    reserve_rustfs_ports(paths, api_port, console_port)
-}
-
 fn reserve_rustfs_port(database: &mut Database, port_name: &str, port: u16) -> Result<()> {
     database.assign_port(
         PortRequest::resource_port("rustfs", RUSTFS_TRACK, port_name, port, port, port),
@@ -5469,6 +5711,7 @@ done
 struct AsyncSqlHookRuntimeAdapter {
     artifact_adapter: RuntimeArtifactAdapter,
     hook_events: Arc<Mutex<Vec<String>>>,
+    failing_allocation: Option<String>,
 }
 
 impl AsyncSqlHookRuntimeAdapter {
@@ -5479,7 +5722,18 @@ impl AsyncSqlHookRuntimeAdapter {
                 "bin/pv-fake-sql",
             ),
             hook_events,
+            failing_allocation: None,
         })
+    }
+
+    fn failing_allocation(
+        hook_events: Arc<Mutex<Vec<String>>>,
+        allocation_name: &str,
+    ) -> Result<Self> {
+        let mut adapter = Self::new(hook_events)?;
+        adapter.failing_allocation = Some(allocation_name.to_owned());
+
+        Ok(adapter)
     }
 }
 
@@ -5580,6 +5834,14 @@ impl super::ManagedResourceRuntimeAdapter for AsyncSqlHookRuntimeAdapter {
             let port = required_sql_port(context)?;
 
             for allocation in allocations {
+                if self.failing_allocation.as_deref() == Some(allocation.allocation_name.as_str()) {
+                    return Err(crate::DaemonError::UnexpectedProtocolResponse {
+                        reason: format!(
+                            "fixture rejected allocation `{}`",
+                            allocation.allocation_name
+                        ),
+                    });
+                }
                 database.mark_resource_allocation_ready(
                     &allocation.project_id,
                     &allocation.resource_name,

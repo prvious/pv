@@ -609,7 +609,6 @@ fn fake_mailpit_fixture_cli_ignores_extra_arguments() -> Result<()> {
     let dashboard_port = dashboard_listener.local_addr()?.port();
 
     materialize_fixture(&fixture, FAKE_MAILPIT_FIXTURE)?;
-    drop(smtp_listener);
     drop(dashboard_listener);
 
     let mut child = FixtureCommand::new(fixture.as_std_path())
@@ -621,11 +620,18 @@ fn fake_mailpit_fixture_cli_ignores_extra_arguments() -> Result<()> {
         .current_dir(tempdir.path())
         .spawn()?;
     let lifecycle = (|| {
+        thread::sleep(Duration::from_millis(250));
+        let running_while_smtp_is_reserved = child.try_wait()?.is_none();
+        drop(smtp_listener);
         let readiness =
             wait_for_loopback_ports([smtp_port, dashboard_port], Duration::from_secs(3))?;
         let running_after_readiness = child.try_wait()?.is_none();
 
-        Ok::<_, anyhow::Error>((readiness, running_after_readiness))
+        Ok::<_, anyhow::Error>((
+            running_while_smtp_is_reserved,
+            readiness,
+            running_after_readiness,
+        ))
     })();
     let cleanup = kill_and_reap_child(&mut child);
 

@@ -1,0 +1,25 @@
+---
+source: crates/daemon/src/jobs.rs
+expression: allocation_partial_snapshot
+---
+(
+    "Managed Resource mailpit track 1.0 reconciled; Project env reconciled for 1 of 2 Projects; failures: beta.test: daemon protocol error: fixture rejected allocation `database`",
+    [
+        Resource {
+            name: "mailpit",
+            track: "1.0",
+        },
+        Project {
+            id: "<project_id>",
+        },
+    ],
+    [
+        Some(
+            Rendered,
+        ),
+        Some(
+            Failed,
+        ),
+    ],
+    "EXISTING=beta\n",
+)
