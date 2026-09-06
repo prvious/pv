@@ -3513,6 +3513,7 @@ mod tests {
             let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
                 &paths,
                 "fatal-track",
+                "reconcile",
                 &scope.to_string(),
             );
             let result = complete_managed_resource_reconciliation_with_progress(
@@ -3836,6 +3837,7 @@ mod tests {
             let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
                 &paths,
                 "php-dependency",
+                "reconcile",
                 &scope.to_string(),
             );
             let completion = complete_managed_resource_reconciliation_with_progress(
@@ -3966,6 +3968,7 @@ mod tests {
             let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
                 &paths,
                 "dependency-readiness",
+                "reconcile",
                 &scope.to_string(),
             );
             let previous_env =
