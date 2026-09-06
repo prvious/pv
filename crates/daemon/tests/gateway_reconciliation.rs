@@ -7,7 +7,7 @@ use daemon::gateway::{
     validate_config, worker_process_spec,
 };
 use daemon::{CaddyAdminError, CaddyAdminOperation, DaemonError, ProcessSupervisor};
-use insta::{Settings, assert_debug_snapshot};
+use insta::{Settings, allow_duplicates, assert_debug_snapshot};
 use rcgen::generate_simple_self_signed;
 use resources::{PHP_TRACK_DEFAULT_INI, php_track_defaults};
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
@@ -758,6 +758,102 @@ async fn gateway_reconciliation_takes_full_path_when_applied_fingerprint_is_miss
     );
     assert!(metadata["applied_config_fingerprint"].is_string());
     assert_ne!(metadata["replacement_required"], true);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_reconciliation_validates_changed_or_missing_ca_key() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let caddy_release = tempdir.path().join("fake-caddy-release");
+    let executable = caddy_release.join("bin/caddy");
+    write_stateful_fake_caddy(&executable)?;
+
+    let ports = available_loopback_ports(2)?;
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let initial_metadata: Value =
+        serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
+    let initial_root = read_test_bytes(paths.gateway_root_config())?;
+    let initial_current = fake_admin_current_bytes(&paths.gateway_root_config())?;
+    let initial_certificate = read_test_bytes(paths.ca_certificate())?;
+
+    write_failing_validator(&executable)?;
+    let unchanged_result = reconcile_gateway_runtimes(&paths).await;
+    let unchanged_metadata: Value =
+        serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
+    let unchanged_loads = fake_admin_load_bodies(&paths.gateway_root_config())?;
+
+    let mut outcomes = Vec::new();
+    for replacement in [Some("invalid replacement key\n"), None] {
+        if let Some(replacement) = replacement {
+            fs::write_sensitive_file(&paths.ca_private_key(), replacement)?;
+        } else {
+            fs::remove_file(&paths.ca_private_key())?;
+        }
+        let result = reconcile_gateway_runtimes(&paths).await;
+        let metadata: Value =
+            serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
+        outcomes.push((
+            result,
+            metadata,
+            Database::open(&paths)?.runtime_observed_states()?,
+            read_test_bytes(paths.gateway_root_config())?,
+            fake_admin_current_bytes(&paths.gateway_root_config())?,
+            read_test_bytes(paths.ca_certificate())?,
+            fake_admin_load_bodies(&paths.gateway_root_config())?,
+        ));
+    }
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+
+    assert_eq!(unchanged_result?, GATEWAY_RECONCILIATION_SUMMARY);
+    assert_eq!(unchanged_metadata["pid"], initial_metadata["pid"]);
+    assert_eq!(
+        unchanged_metadata["applied_config_fingerprint"],
+        initial_metadata["applied_config_fingerprint"]
+    );
+    assert!(unchanged_loads.is_empty());
+    assert!(initial_metadata["applied_config_fingerprint"].is_string());
+
+    for (result, metadata, runtime_states, root, current, certificate, loads) in outcomes {
+        let Err(DaemonError::UnexpectedProtocolResponse { reason }) = result else {
+            bail!("expected CA-key change to reach the rejecting validator, got {result:?}");
+        };
+        let mut settings = Settings::clone_current();
+        settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+        settings.add_filter(r"\.candidate\.\d+\.\d+\.tmp", ".candidate.<id>.tmp");
+        settings.bind(|| {
+            allow_duplicates! {
+                assert_debug_snapshot!(reason, @r#""Caddy config validation failed for <tempdir>/home/.pv/config/gateway/Caddyfile.candidate.<id>.tmp: status=exit status: 42; stdout=validator stdout\n; stderr=validator stderr\n""#);
+            }
+        });
+        let gateway_status = runtime_states
+            .iter()
+            .find(|record| record.subject == RuntimeSubject::Gateway)
+            .map(|record| record.status);
+        assert_eq!(gateway_status, Some(RuntimeObservedStatus::Failed));
+        assert_eq!(metadata["pid"], initial_metadata["pid"]);
+        assert_eq!(
+            metadata["applied_config_fingerprint"],
+            initial_metadata["applied_config_fingerprint"]
+        );
+        assert_ne!(metadata["replacement_required"], true);
+        assert_eq!(root, initial_root);
+        assert_eq!(current, initial_current);
+        assert_eq!(certificate, initial_certificate);
+        assert!(loads.is_empty());
+    }
 
     Ok(())
 }

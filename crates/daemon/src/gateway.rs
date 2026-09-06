@@ -1126,18 +1126,24 @@ fn resolve_project_document_root(
 }
 
 fn gateway_storage_path(paths: &PvPaths) -> Result<Utf8PathBuf, DaemonError> {
-    let suffix = match fs::read_to_string(&paths.ca_certificate()) {
-        Ok(certificate) => {
-            let digest = Sha256::digest(certificate.as_bytes());
-            format!("{digest:x}")
+    let mut hasher = Sha256::new();
+    for path in [paths.ca_certificate(), paths.ca_private_key()] {
+        match fs::read_to_string(&path) {
+            Ok(content) => {
+                hasher.update([1]);
+                update_fingerprint_component(&mut hasher, content.as_bytes());
+            }
+            Err(StateError::Filesystem { source, .. })
+                if source.kind() == io::ErrorKind::NotFound =>
+            {
+                hasher.update([0]);
+            }
+            Err(error) => return Err(error.into()),
         }
-        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-            "missing-ca".to_owned()
-        }
-        Err(error) => return Err(error.into()),
-    };
+    }
 
-    Ok(paths.certificates().join(format!("caddy-{suffix}")))
+    let digest = hasher.finalize();
+    Ok(paths.certificates().join(format!("caddy-{digest:x}")))
 }
 
 fn append_persisted_runtime_project(
