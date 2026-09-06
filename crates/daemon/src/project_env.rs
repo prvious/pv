@@ -391,7 +391,9 @@ async fn reconcile_loaded_project(
             project,
             config_file.config.uses_tls_placeholders(),
         );
-        return Err(error);
+        return Err(DaemonError::ProjectResourceInstallation {
+            source: Box::new(error),
+        });
     }
     let resolved_php_runtime = match php_track
         .map(|track| {
