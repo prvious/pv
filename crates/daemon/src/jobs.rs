@@ -1133,19 +1133,13 @@ fn reconcile_persisted_project_envs(
         let project_label = project.primary_hostname.as_deref().unwrap_or(&project.slug);
         if let Some(error) = resource_failures.remove(&project.id) {
             let error_message = error.to_string();
-            let mut database = match Database::open(paths) {
-                Ok(database) => database,
-                Err(recording) => {
-                    return Err(DaemonError::ProjectAllocationFailureRecordingFailed {
-                        project_id: project.id.clone(),
-                        allocation: Box::new(error),
-                        recording: Box::new(recording.into()),
+            let recording_result =
+                Database::open(paths)
+                    .map_err(DaemonError::from)
+                    .and_then(|mut database| {
+                        record_project_env_failure(&mut database, &project.id, &error_message)
                     });
-                }
-            };
-            if let Err(recording) =
-                record_project_env_failure(&mut database, &project.id, &error_message)
-            {
+            if let Err(recording) = recording_result {
                 return Err(DaemonError::ProjectAllocationFailureRecordingFailed {
                     project_id: project.id.clone(),
                     allocation: Box::new(error),
@@ -2090,13 +2084,14 @@ mod tests {
     use insta::{Settings, allow_duplicates, assert_debug_snapshot, assert_snapshot};
     use rcgen::generate_simple_self_signed;
     use resources::{ManagedResourceCommandError, ResourceHttpClient, ResourcesError};
-    use rusqlite::Connection;
+    use rusqlite::{Connection, Error as SqliteError};
     use serde_json::json;
     use state::{
         Database, GatewayPort, JobDiagnosticSubject, JobStatus, LinkProjectInput,
         ManagedResourceDesiredState, PortRequest, ProjectEnvObservedStatus,
-        ProjectManagedResourceInput, ProjectMode, ProjectPhpRuntimeInput, PvPaths,
-        RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
+        ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectMode,
+        ProjectPhpRuntimeInput, PvPaths, ResourceAllocationInput, RuntimeObservedStatus,
+        RuntimeSubject, StateError, UpdateLock,
     };
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, duplex};
     use tokio::sync::{mpsc::channel, oneshot};
@@ -2198,6 +2193,34 @@ mod tests {
             MAILPIT_TEST_TRACK,
             &BTreeMap::from([("smtp_host".to_owned(), "127.0.0.1".to_owned())]),
         )?;
+        database.replace_project_php_runtime(
+            &projects[1].id,
+            Some(&ProjectPhpRuntimeInput {
+                track: PHP_TEST_TRACK.to_owned(),
+                requested_extensions: vec!["unsupported_fixture".to_owned()],
+                loaded_extensions: Vec::new(),
+                ignored_extensions: vec!["unsupported_fixture".to_owned()],
+            }),
+        )?;
+        let persisted_php_runtime = database
+            .project_by_id(&projects[1].id)?
+            .ok_or_else(|| anyhow::anyhow!("expected Beta Project"))?
+            .php_runtime;
+        database.record_project_env_observed_snapshot(
+            &projects[1].id,
+            ProjectEnvObservedStatus::Warning,
+            Some("Project runtime has warnings"),
+            &[
+                ProjectEnvObservedWarningInput {
+                    kind: "ignored_php_extension".to_owned(),
+                    message: "ignored unsupported PHP extension `unsupported_fixture`".to_owned(),
+                },
+                ProjectEnvObservedWarningInput {
+                    kind: "duplicate_key".to_owned(),
+                    message: "a previously duplicated env key".to_owned(),
+                },
+            ],
+        )?;
         drop(database);
 
         state::fs::write_sensitive_file(
@@ -2245,6 +2268,18 @@ mod tests {
             .map(|resource| (resource.resource_name, resource.track))
             .collect::<Vec<_>>();
         drop(database);
+        assert_eq!(
+            partial.coverage,
+            vec![
+                JobDiagnosticSubject::Resource {
+                    name: "mailpit".to_owned(),
+                    track: MAILPIT_TEST_TRACK.to_owned()
+                },
+                JobDiagnosticSubject::Project {
+                    id: projects[0].id.clone()
+                },
+            ]
+        );
         let partial_snapshot = (
             partial.summary,
             partial.coverage,
@@ -2261,7 +2296,7 @@ mod tests {
             Database::open(&paths)?
                 .project_env_observed_state(&projects[1].id)?
                 .map(|observed| observed.status),
-            Some(ProjectEnvObservedStatus::Rendered)
+            Some(ProjectEnvObservedStatus::Warning)
         );
         state::fs::write_sensitive_file(&projects[1].path.join(".env"), "EXISTING=beta\n")?;
         let allocation_report = reconcile_persisted_project_envs(
@@ -2289,6 +2324,18 @@ mod tests {
             })
             .collect::<Result<Vec<_>, _>>()?;
         drop(database);
+        assert_eq!(
+            allocation_coverage,
+            vec![
+                JobDiagnosticSubject::Resource {
+                    name: "mailpit".to_owned(),
+                    track: MAILPIT_TEST_TRACK.to_owned()
+                },
+                JobDiagnosticSubject::Project {
+                    id: projects[0].id.clone()
+                },
+            ]
+        );
         let allocation_partial_snapshot = (
             managed_resource_reconciliation_summary(
                 "mailpit",
@@ -2326,9 +2373,45 @@ mod tests {
             success_statuses,
             [
                 Some(ProjectEnvObservedStatus::Rendered),
-                Some(ProjectEnvObservedStatus::Rendered),
+                Some(ProjectEnvObservedStatus::Warning),
                 None,
             ]
+        );
+        assert_eq!(
+            success.coverage,
+            vec![
+                JobDiagnosticSubject::Resource {
+                    name: "mailpit".to_owned(),
+                    track: MAILPIT_TEST_TRACK.to_owned()
+                },
+                JobDiagnosticSubject::Project {
+                    id: projects[0].id.clone()
+                },
+                JobDiagnosticSubject::Project {
+                    id: projects[1].id.clone()
+                },
+            ]
+        );
+        assert_eq!(
+            database
+                .project_by_id(&projects[1].id)?
+                .ok_or_else(|| anyhow::anyhow!("expected Beta Project"))?
+                .php_runtime,
+            persisted_php_runtime
+        );
+        let warnings = database
+            .project_env_observed_state(&projects[1].id)?
+            .ok_or_else(|| anyhow::anyhow!("expected recovered Beta observation"))?
+            .warnings
+            .into_iter()
+            .map(|warning| (warning.kind, warning.message))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            warnings,
+            vec![(
+                "ignored_php_extension".to_owned(),
+                "ignored unsupported PHP extension `unsupported_fixture`".to_owned()
+            )]
         );
         let success_snapshot = (
             success.summary,
@@ -2352,6 +2435,363 @@ mod tests {
             assert_debug_snapshot!("targeted_resource_scope_success", success_snapshot);
         });
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn targeted_resource_track_failure_records_dependent_project_failures()
+    -> anyhow::Result<()> {
+        let mut outcomes = Vec::new();
+        for reject_observation in [false, true] {
+            let tempdir = tempdir()?;
+            let paths = PvPaths::for_home(tempdir.path().join("home"));
+            seed_installed_artifact(
+                &paths,
+                "mailpit",
+                MAILPIT_TEST_TRACK,
+                MAILPIT_TEST_ARTIFACT_VERSION,
+                "bin/pv-fake-mailpit",
+            )?;
+            let executable = paths
+                .resources()
+                .join("mailpit/1.0/current/bin/pv-fake-mailpit");
+            state::fs::write_sensitive_file(&executable, FAKE_MAILPIT_SCRIPT)?;
+            set_executable(&executable)?;
+            let mut database = Database::open(&paths)?;
+            let mut projects = Vec::new();
+            let previous_env =
+                "USER_VALUE=kept\n# >>> PV MANAGED\nMAIL_HOST=previous\n# <<< PV MANAGED\n";
+            for name in ["acme", "beta", "unrelated"] {
+                let project_path = tempdir.path().join(name);
+                let config_path = project_path.join("pv.yml");
+                state::fs::write_sensitive_file(
+                    &config_path,
+                    "mailpit:\n  version: \"1.0\"\n  env:\n    MAIL_HOST: \"${smtp_host}\"\n",
+                )?;
+                state::fs::write_sensitive_file(&project_path.join(".env"), previous_env)?;
+                let project = database
+                    .link_project(LinkProjectInput {
+                        path: project_path.clone(),
+                        original_path: project_path,
+                        primary_hostname: format!("{name}.test"),
+                        config_path,
+                        desired_php_track: None,
+                        additional_hostnames: Vec::new(),
+                    })?
+                    .project;
+                database.record_project_env_observed_snapshot(
+                    &project.id,
+                    ProjectEnvObservedStatus::Rendered,
+                    Some("last valid env"),
+                    &[],
+                )?;
+                if name != "unrelated" {
+                    database.replace_project_managed_resources(
+                        &project.id,
+                        &[ProjectManagedResourceInput {
+                            resource_name: "mailpit".to_owned(),
+                            track: MAILPIT_TEST_TRACK.to_owned(),
+                        }],
+                    )?;
+                }
+                projects.push(project);
+            }
+            let unrelated_before = database.project_env_observed_state(&projects[2].id)?;
+            if reject_observation {
+                Connection::open(paths.db().as_std_path())?.execute_batch(
+                    "CREATE TRIGGER reject_project_failure BEFORE INSERT ON observed_states
+                     WHEN NEW.subject_kind = 'project_env'
+                     BEGIN SELECT RAISE(FAIL, 'fixture rejected Project failure observation'); END;"
+                )?;
+            }
+            let catalog =
+                crate::managed_resources::fake_unready_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
+            let scope = ReconciliationScope::resource("mailpit", MAILPIT_TEST_TRACK)?;
+            let ReconciliationScope::Resource { name, track } = &scope else {
+                return Err(anyhow::anyhow!("expected resource scope"));
+            };
+            let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
+                &paths,
+                "fatal-track",
+                &scope.to_string(),
+            );
+            let result = complete_managed_resource_reconciliation_with_progress(
+                &paths,
+                name,
+                track,
+                Some(&catalog),
+                super::DaemonDownloadProgress::disabled(),
+                &phase_log,
+            )
+            .await;
+            let observations = projects
+                .iter()
+                .map(|project| database.project_env_observed_state(&project.id))
+                .collect::<Result<Vec<_>, _>>()?;
+            let files_preserved = projects
+                .iter()
+                .map(|project| state::fs::read_to_string(&project.path.join(".env")))
+                .collect::<Result<Vec<_>, _>>()?
+                .iter()
+                .all(|content| content == previous_env);
+            let runtime_failed = database.runtime_observed_states()?.iter().any(|observed| {
+                observed.subject
+                    == RuntimeSubject::Resource {
+                        name: "mailpit".to_owned(),
+                        track: MAILPIT_TEST_TRACK.to_owned(),
+                    }
+                    && observed.status == RuntimeObservedStatus::Failed
+            });
+            for project in &projects[..2] {
+                database.replace_project_managed_resources(&project.id, &[])?;
+            }
+            drop(database);
+            stop_undemanded_system_resource_runtimes(&paths, Some(&catalog)).await?;
+            let correct_error = match (&result, reject_observation) {
+                (
+                    Err(DaemonError::ReadinessTimedOut {
+                        timeout_ms: 100, ..
+                    }),
+                    false,
+                ) => true,
+                (
+                    Err(DaemonError::ProjectEnvFailureRecordingFailed {
+                        project_id,
+                        reconciliation,
+                        recording,
+                    }),
+                    true,
+                ) => {
+                    projects[..2]
+                        .iter()
+                        .any(|project| &project.id == project_id)
+                        && matches!(
+                            reconciliation.as_ref(),
+                            DaemonError::ReadinessTimedOut {
+                                timeout_ms: 100,
+                                ..
+                            }
+                        )
+                        && matches!(recording.as_ref(), DaemonError::State(StateError::Sqlite(SqliteError::SqliteFailure(_, Some(message)))) if message == "fixture rejected Project failure observation")
+                }
+                _ => false,
+            };
+            let dependents_failed = reject_observation
+                || observations[..2].iter().all(|observed| {
+                    observed.as_ref().is_some_and(|observed| {
+                        observed.status == ProjectEnvObservedStatus::Failed
+                            && observed.message == result.as_ref().err().map(ToString::to_string)
+                    })
+                });
+            outcomes.push((
+                format!(
+                    "reject_observation={reject_observation}, error={:?}",
+                    result.as_ref().err()
+                ),
+                [
+                    correct_error,
+                    dependents_failed,
+                    files_preserved,
+                    runtime_failed,
+                    observations[2] == unrelated_before,
+                    !state::fs::path_entry_exists(
+                        &paths.resource_pid("mailpit", MAILPIT_TEST_TRACK),
+                    )?,
+                ],
+            ));
+        }
+        assert!(
+            outcomes
+                .iter()
+                .all(|(_, checks)| checks.iter().all(|passed| *passed)),
+            "fatal track outcomes: {outcomes:#?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn targeted_resource_scope_refuses_unready_sibling_dependencies() -> anyhow::Result<()> {
+        let mut checks = Vec::new();
+        for with_mappings in [true, false] {
+            let tempdir = tempdir()?;
+            let paths = PvPaths::for_home(tempdir.path().join("home"));
+            let project_path = tempdir.path().join("project");
+            let config_path = project_path.join("pv.yml");
+            let mappings = if with_mappings {
+                "  env:\n    MAIL_HOST: \"${smtp_host}\"\n"
+            } else {
+                ""
+            };
+            state::fs::write_sensitive_file(
+                &config_path,
+                &format!(
+                    "mailpit:\n  version: \"1.0\"\n{mappings}mysql:\n  version: \"8.0\"\n  allocations:\n    app: {{}}\n"
+                ),
+            )?;
+            let mut database = Database::open(&paths)?;
+            let project = database
+                .link_project(LinkProjectInput {
+                    path: project_path.clone(),
+                    original_path: project_path.clone(),
+                    primary_hostname: "project.test".to_owned(),
+                    config_path,
+                    desired_php_track: None,
+                    additional_hostnames: Vec::new(),
+                })?
+                .project;
+            database.replace_project_managed_resources(
+                &project.id,
+                &[
+                    ProjectManagedResourceInput {
+                        resource_name: "mailpit".to_owned(),
+                        track: "1.0".to_owned(),
+                    },
+                    ProjectManagedResourceInput {
+                        resource_name: "mysql".to_owned(),
+                        track: "8.0".to_owned(),
+                    },
+                ],
+            )?;
+            for (resource, track) in [("mailpit", "1.0"), ("mysql", "8.0")] {
+                database.record_managed_resource_track_env_context(
+                    resource,
+                    track,
+                    &BTreeMap::from([("smtp_host".to_owned(), "127.0.0.1".to_owned())]),
+                )?;
+            }
+            let generated = resources::generated_allocation_name("mysql", &project.slug, "app")?;
+            database.replace_project_resource_allocations(
+                &project.id,
+                "mysql",
+                "8.0",
+                &[ResourceAllocationInput {
+                    allocation_name: "app".to_owned(),
+                    generated_name: generated.generated_name().to_owned(),
+                }],
+            )?;
+            let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_url(OFFLINE_TEST_MANIFEST_URL)?;
+            let scope = ReconciliationScope::resource("mailpit", "1.0")?;
+            let ReconciliationScope::Resource { name, track } = &scope else {
+                return Err(anyhow::anyhow!("expected resource scope"));
+            };
+            let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
+                &paths,
+                "dependency-readiness",
+                &scope.to_string(),
+            );
+            let previous_env =
+                "USER_VALUE=kept\n# >>> PV MANAGED\nMAIL_HOST=previous\n# <<< PV MANAGED\n";
+            for status in [
+                None,
+                Some(RuntimeObservedStatus::Failed),
+                Some(RuntimeObservedStatus::Degraded),
+                Some(RuntimeObservedStatus::Running),
+            ] {
+                if status == Some(RuntimeObservedStatus::Failed) {
+                    database.mark_resource_allocation_ready(
+                        &project.id,
+                        "mysql",
+                        "8.0",
+                        "app",
+                        &BTreeMap::new(),
+                    )?;
+                }
+                if let Some(status) = status {
+                    database.record_runtime_observed_snapshot(
+                        RuntimeSubject::Resource {
+                            name: "mysql".to_owned(),
+                            track: "8.0".to_owned(),
+                        },
+                        status,
+                        Some("fixture mysql readiness diagnostic"),
+                    )?;
+                }
+                let resource_observations = database.runtime_observed_states()?;
+                state::fs::write_sensitive_file(&project_path.join(".env"), previous_env)?;
+                database.record_project_env_observed_snapshot(
+                    &project.id,
+                    ProjectEnvObservedStatus::Failed,
+                    Some("previous dependency failure"),
+                    &[],
+                )?;
+                let result = reconcile_project_env_from_persisted_state(&paths, &project.id);
+                let completion = complete_managed_resource_reconciliation_with_progress(
+                    &paths,
+                    name,
+                    track,
+                    Some(&catalog),
+                    super::DaemonDownloadProgress::disabled(),
+                    &phase_log,
+                )
+                .await?;
+                let healthy = status == Some(RuntimeObservedStatus::Running);
+                let correct_result = match (&result, status) {
+                    (
+                        Err(DaemonError::Config(ConfigError::MissingAllocationEnvContext {
+                            resource,
+                            allocation,
+                        })),
+                        None,
+                    ) => resource == "mysql" && allocation == "app",
+                    (
+                        Err(DaemonError::ProjectEnvDependenciesNotApplied { project_id, .. }),
+                        Some(RuntimeObservedStatus::Failed | RuntimeObservedStatus::Degraded),
+                    ) => {
+                        let status_name = if status == Some(RuntimeObservedStatus::Failed) {
+                            "failed"
+                        } else {
+                            "degraded"
+                        };
+                        project_id == &project.id
+                            && result.as_ref().err().map(ToString::to_string)
+                                == Some(format!(
+                                    "Project `{}` env dependencies cannot be refreshed: required resource mysql track 8.0 is {status_name}: fixture mysql readiness diagnostic",
+                                    project.id
+                                ))
+                    }
+                    (Ok(_), Some(RuntimeObservedStatus::Running)) => true,
+                    _ => false,
+                };
+                let mut expected_coverage = vec![JobDiagnosticSubject::Resource {
+                    name: "mailpit".to_owned(),
+                    track: "1.0".to_owned(),
+                }];
+                if healthy {
+                    expected_coverage.push(JobDiagnosticSubject::Project {
+                        id: project.id.clone(),
+                    });
+                }
+                let expected_env = if healthy && with_mappings {
+                    previous_env.replace("MAIL_HOST=previous", "MAIL_HOST=127.0.0.1")
+                } else {
+                    previous_env.to_owned()
+                };
+                let observed = database
+                    .project_env_observed_state(&project.id)?
+                    .ok_or_else(|| anyhow::anyhow!("expected Project observation"))?;
+                checks.push((
+                    format!("mappings={with_mappings}, status={status:?}, result={result:?}"),
+                    [
+                        correct_result,
+                        completion.coverage == expected_coverage,
+                        observed.status
+                            == if healthy {
+                                ProjectEnvObservedStatus::Rendered
+                            } else {
+                                ProjectEnvObservedStatus::Failed
+                            },
+                        state::fs::read_to_string(&project_path.join(".env"))? == expected_env,
+                        database.runtime_observed_states()? == resource_observations,
+                    ],
+                ));
+            }
+        }
+        assert!(
+            checks
+                .iter()
+                .all(|(_, checks)| checks.iter().all(|passed| *passed)),
+            "dependency outcomes: {checks:#?}"
+        );
         Ok(())
     }
 

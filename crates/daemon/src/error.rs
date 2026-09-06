@@ -141,8 +141,8 @@ pub enum DaemonError {
     #[error("Project config error: {0}")]
     Config(#[from] ConfigError),
 
-    #[error("Project `{project_id}` env dependencies do not match their last applied state")]
-    ProjectEnvDependenciesNotApplied { project_id: String },
+    #[error("Project `{project_id}` env dependencies cannot be refreshed: {reason}")]
+    ProjectEnvDependenciesNotApplied { project_id: String, reason: String },
 
     #[error(
         "Project `{project_id}` Managed Resource allocation failed with `{allocation}`; additionally failed to record the Project failure: {recording}"
