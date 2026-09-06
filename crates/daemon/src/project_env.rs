@@ -909,7 +909,10 @@ fn project_resource_plan(
         let existing_track = existing_resource_tracks.get(resource);
         let discovered_track = discovered_demand
             .and_then(|demand| demand.resource_selections.get(resource))
-            .filter(|selection| selection.version_selector == resource_config.track);
+            .filter(|selection| {
+                selection.version_selector.as_deref().unwrap_or("latest")
+                    == resource_config.track.as_deref().unwrap_or("latest")
+            });
         let track = if let Some(selection) = discovered_track {
             selection.track.clone()
         } else {

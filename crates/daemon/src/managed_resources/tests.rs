@@ -1826,7 +1826,7 @@ async fn project_application_pins_resource_track_until_selector_changes() -> Res
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "serve: false\nmailpit:\n  version: latest\n",
+        "serve: false\nmailpit: {}\n",
     )?;
     let mut refreshed: Value = serde_json::from_str(&state::fs::read_to_string(
         &paths.downloads().join("manifest.json"),
@@ -1861,6 +1861,10 @@ async fn project_application_pins_resource_track_until_selector_changes() -> Res
     .await?;
     drop(seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?);
     drop(seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_NEXT_TRACK)?);
+    state::fs::write_sensitive_file(
+        &project.config_path,
+        "serve: false\nmailpit:\n  version: latest\n",
+    )?;
 
     let first_result = reconcile_project_env_with_runtime_catalog_and_progress(
         &paths,
@@ -2106,14 +2110,11 @@ async fn system_reconciliation_job_records_missing_gateway_when_caddy_install_fa
         Some(&catalog),
     )
     .await;
-    let Err(DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
-        ResourcesError::ResourceNotInManifest { resource },
-    ))) = result
-    else {
-        bail!("expected missing Caddy manifest entry to fail system reconciliation job");
+    let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
+        bail!("expected missing Caddy installation to fail system reconciliation job: {result:#?}");
     };
-
-    assert_eq!(resource, "caddy");
+    assert_eq!(failures, ["caddy 2: installation is still pending"]);
+    let error_message = DaemonError::ManagedResourceDefaultInstallFailures { failures }.to_string();
 
     let database = Database::open(&paths)?;
     let job = database
@@ -2122,12 +2123,7 @@ async fn system_reconciliation_job_records_missing_gateway_when_caddy_install_fa
         .find(|job| job.scope == "system")
         .ok_or_else(|| anyhow::anyhow!("missing system reconciliation job"))?;
     assert_eq!(job.status, JobStatus::Failed);
-    assert_eq!(
-        job.error.as_deref(),
-        Some(
-            "Managed Resource command failed: artifact manifest does not include Managed Resource `caddy`"
-        )
-    );
+    assert_eq!(job.error.as_deref(), Some(error_message.as_str()));
 
     let caddy_record = database.managed_resource_track("caddy", SETUP_DEFAULT_CADDY_TRACK)?;
     assert_eq!(
@@ -2281,16 +2277,13 @@ async fn system_reconciliation_job_fails_unsupported_manifest_track_without_part
         bail!("expected install and Gateway fixture failures: {result:#?}");
     };
     let [
-        DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
-            ResourcesError::TrackNotFound { resource, track },
-        )),
+        DaemonError::ManagedResourceDefaultInstallFailures { failures: pending },
         _gateway_failure,
     ] = failures.as_slice()
     else {
-        bail!("expected the unsupported MySQL track before the Gateway failure: {failures:#?}");
+        bail!("expected the pending MySQL track before the Gateway failure: {failures:#?}");
     };
-    assert_eq!(resource, "mysql");
-    assert_eq!(track, unsupported_track);
+    assert_eq!(pending, &["mysql 9.9: installation is still pending"]);
     let error_message = DaemonError::SystemReconciliationFailures { failures }.to_string();
 
     let database = Database::open(&paths)?;
