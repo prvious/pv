@@ -1320,16 +1320,18 @@ async fn complete_system_reconciliation_with_progress(
             (project_report, gateway_summary)
         }
         (resources_result, project_result, cleanup_result, gateway_result) => {
+            let project_failures = match project_result {
+                Ok(report) => report.failures,
+                Err(error) => vec![error],
+            };
             return Err(combined_system_reconciliation_error(
-                [
-                    resources_result.err(),
-                    project_result.err(),
-                    cleanup_result.err(),
-                    gateway_result.err(),
-                ]
-                .into_iter()
-                .flatten()
-                .collect(),
+                resources_result
+                    .err()
+                    .into_iter()
+                    .chain(project_failures)
+                    .chain(cleanup_result.err())
+                    .chain(gateway_result.err())
+                    .collect(),
             ));
         }
     };
@@ -1491,13 +1493,13 @@ fn missing_gateway_runtime_resource(paths: &PvPaths) -> Result<bool, DaemonError
         }))
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default)]
 struct SystemProjectReconciliationReport {
     total: usize,
     succeeded: usize,
     successful_project_ids: Vec<String>,
     summaries: Vec<String>,
-    failures: Vec<String>,
+    failures: Vec<DaemonError>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1550,7 +1552,10 @@ async fn reconcile_system_projects_with_progress(
             }
             Err(error) => {
                 let project_label = project.primary_hostname.as_deref().unwrap_or(&project.slug);
-                report.failures.push(format!("{project_label}: {error}"));
+                report.failures.push(DaemonError::ProjectReconciliation {
+                    project_label: project_label.to_owned(),
+                    source: Box::new(error),
+                });
             }
         }
     }
@@ -1596,15 +1601,17 @@ async fn reconcile_system_projects_and_resources_with_progress(
     match (resources_result, project_result, cleanup_result) {
         (Ok(()), Ok(report), Ok(())) => Ok(report),
         (resources_result, project_result, cleanup_result) => {
+            let project_failures = match project_result {
+                Ok(report) => report.failures,
+                Err(error) => vec![error],
+            };
             Err(combined_system_reconciliation_error(
-                [
-                    resources_result.err(),
-                    project_result.err(),
-                    cleanup_result.err(),
-                ]
-                .into_iter()
-                .flatten()
-                .collect(),
+                resources_result
+                    .err()
+                    .into_iter()
+                    .chain(project_failures)
+                    .chain(cleanup_result.err())
+                    .collect(),
             ))
         }
     }
@@ -1741,7 +1748,12 @@ fn system_project_summary(report: &SystemProjectReconciliationReport) -> Option<
             "Project env reconciled for {} of {} Projects; failures: {}",
             report.succeeded,
             report.total,
-            report.failures.join(", ")
+            report
+                .failures
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
 
@@ -1998,6 +2010,7 @@ mod tests {
 
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
+    use config::ConfigError;
     use futures_util::StreamExt;
     use insta::{Settings, allow_duplicates, assert_debug_snapshot, assert_snapshot};
     use rcgen::generate_simple_self_signed;
@@ -2109,7 +2122,15 @@ mod tests {
             succeeded: 1,
             successful_project_ids: vec![successful.project.id],
             summaries: vec!["Project env current".to_owned()],
-            failures: vec![format!("failed.test: {}", failed.project.id)],
+            failures: vec![DaemonError::ProjectReconciliation {
+                project_label: "failed.test".to_owned(),
+                source: Box::new(
+                    StateError::ProjectNotFound {
+                        target: failed.project.id,
+                    }
+                    .into(),
+                ),
+            }],
         };
 
         let coverage = completed_system_reconciliation_coverage(&paths, &report)?;
@@ -2125,7 +2146,14 @@ mod tests {
     #[tokio::test]
     async fn system_reconciliation_verifies_php_for_project_linked_after_discovery()
     -> anyhow::Result<()> {
-        for (update_path, fail_install) in [(true, false), (true, true), (false, true)] {
+        let mut mixed_errors = Vec::new();
+        for (update_path, fail_install, fail_env) in [
+            (true, false, false),
+            (true, true, false),
+            (false, true, false),
+            (true, true, true),
+            (false, true, true),
+        ] {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
             seed_cached_php_pair(&paths, tempdir.path())?;
@@ -2157,6 +2185,33 @@ mod tests {
                 &config_path,
                 "serve: false\nphp: \"8.5\"\nenv:\n  APP_NAME: late\n",
             )?;
+            let malformed_env = "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_NAME=old\n";
+            let env_project = if fail_env {
+                let env_project_path = tempdir.path().join("invalid-env");
+                let env_config_path = env_project_path.join("pv.yml");
+                state::fs::write_sensitive_file(
+                    &env_config_path,
+                    "serve: false\nenv:\n  APP_NAME: project\n",
+                )?;
+                state::fs::write_sensitive_file(&env_project_path.join(".env"), malformed_env)?;
+                Some(
+                    Database::open(&paths)?
+                        .link_project_with_mode(
+                            LinkProjectInput {
+                                path: env_project_path.clone(),
+                                original_path: env_project_path,
+                                primary_hostname: "invalid-env.test".to_owned(),
+                                config_path: env_config_path,
+                                desired_php_track: None,
+                                additional_hostnames: Vec::new(),
+                            },
+                            ProjectMode::ResourceOnly,
+                        )?
+                        .project,
+                )
+            } else {
+                None
+            };
             let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
                 OFFLINE_TEST_MANIFEST_URL,
                 LinkingProjectArtifactClient {
@@ -2172,12 +2227,22 @@ mod tests {
                     },
                 },
             )?;
-            assert!(Database::open(&paths)?.projects()?.is_empty());
+            assert!(
+                Database::open(&paths)?
+                    .projects()?
+                    .iter()
+                    .all(|project| project.path != project_path)
+            );
 
-            let job_id = "system-late-project-test";
+            let job_id = if !update_path && fail_env {
+                start_reconciliation_job(&paths, "system")?
+            } else {
+                "system-late-project-test".to_owned()
+            };
             let phase_log =
-                crate::structured_log::ReconciliationPhaseLog::new(&paths, job_id, "system");
+                crate::structured_log::ReconciliationPhaseLog::new(&paths, &job_id, "system");
             let progress = super::DaemonDownloadProgress::disabled();
+            let mut streamed_error = None;
             let result = if update_path {
                 reconcile_system_projects_and_resources_with_progress(
                     &paths,
@@ -2191,6 +2256,34 @@ mod tests {
                         assert!(report.failures.is_empty());
                     }
                 })
+            } else if fail_env {
+                let (client, daemon) = duplex(64 * 1024);
+                stream_started_reconciliation_job(
+                    paths.clone(),
+                    protocol::transport(daemon),
+                    true,
+                    &job_id,
+                    ReconciliationScope::System,
+                    Some(&catalog),
+                    ReconciliationJobTiming::immediate(),
+                )
+                .await?;
+                let mut reader = protocol::transport(client);
+                while let Some(line) = reader.next().await {
+                    let event = serde_json::from_str::<serde_json::Value>(&line?)?;
+                    if event["type"] == "job_failed" {
+                        streamed_error = event["error"].as_str().map(str::to_owned);
+                    }
+                }
+                let job = Database::open(&paths)?
+                    .recent_jobs()?
+                    .into_iter()
+                    .find(|job| job.id == job_id)
+                    .ok_or_else(|| anyhow::anyhow!("expected failed job"))?;
+                assert_eq!(job.status, JobStatus::Failed);
+                assert!(streamed_error.is_some());
+                assert_eq!(streamed_error, job.error);
+                Ok(())
             } else {
                 complete_system_reconciliation_with_progress(
                     &paths,
@@ -2211,19 +2304,109 @@ mod tests {
             let project = database
                 .projects()?
                 .into_iter()
-                .next()
+                .find(|project| project.path == project_path)
                 .ok_or_else(|| anyhow::anyhow!("expected late Project"))?;
             if fail_install {
-                let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result
-                else {
-                    anyhow::bail!("expected late PHP installation failure: {:?}", result.err());
-                };
-                allow_duplicates! {
-                    assert_debug_snapshot!(failures, @r#"
-                    [
-                        "php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`: missing scripted archive",
-                    ]
-                    "#);
+                if let Some(env_project) = env_project {
+                    let message = if let Some(message) = streamed_error {
+                        message
+                    } else {
+                        let error = result
+                            .err()
+                            .ok_or_else(|| anyhow::anyhow!("expected mixed failure"))?;
+                        let DaemonError::SystemReconciliationFailures { failures } = &error else {
+                            anyhow::bail!("expected mixed system failure: {error}");
+                        };
+                        let [
+                            DaemonError::ManagedResourceDefaultInstallFailures { .. },
+                            DaemonError::ProjectReconciliation {
+                                project_label: env_label,
+                                source: env_source,
+                            },
+                            DaemonError::ProjectReconciliation {
+                                project_label: install_label,
+                                source: install_source,
+                            },
+                        ] = failures.as_slice()
+                        else {
+                            anyhow::bail!(
+                                "expected resource, env, and Project installation failures: {failures:?}"
+                            );
+                        };
+                        assert_eq!(env_label, "invalid-env");
+                        assert!(matches!(
+                            env_source.as_ref(),
+                            DaemonError::Config(ConfigError::MalformedManagedEnvBlock { .. })
+                        ));
+                        assert_eq!(install_label, "late.test");
+                        let DaemonError::ProjectResourceInstallation { source } =
+                            install_source.as_ref()
+                        else {
+                            anyhow::bail!("expected Project installation source: {install_source}");
+                        };
+                        assert!(matches!(
+                            source.as_ref(),
+                            DaemonError::ManagedResourceCommand(
+                                ManagedResourceCommandError::Resources(
+                                    ResourcesError::HttpRequestFailed { .. }
+                                )
+                            )
+                        ));
+                        error.to_string()
+                    };
+                    mixed_errors.push((update_path, message));
+                    assert_eq!(
+                        state::fs::read_to_string(&env_project.path.join(".env"))?,
+                        malformed_env
+                    );
+                    assert_eq!(
+                        database
+                            .project_env_observed_state(&env_project.id)?
+                            .map(|state| state.status),
+                        Some(ProjectEnvObservedStatus::Failed)
+                    );
+                } else {
+                    let error = result.err().ok_or_else(|| {
+                        anyhow::anyhow!("expected installation and Project failure")
+                    })?;
+                    let error_message = error.to_string();
+                    let DaemonError::SystemReconciliationFailures { failures: errors } = error
+                    else {
+                        anyhow::bail!("expected system failure: {error}");
+                    };
+                    let [
+                        DaemonError::ManagedResourceDefaultInstallFailures { failures },
+                        DaemonError::ProjectReconciliation {
+                            project_label,
+                            source,
+                        },
+                    ] = errors.as_slice()
+                    else {
+                        anyhow::bail!("expected resource and Project failures: {errors:?}");
+                    };
+                    assert_eq!(project_label, "late.test");
+                    let DaemonError::ProjectResourceInstallation { source } = source.as_ref()
+                    else {
+                        anyhow::bail!("expected Project installation source: {source}");
+                    };
+                    assert!(matches!(
+                        source.as_ref(),
+                        DaemonError::ManagedResourceCommand(
+                            ManagedResourceCommandError::Resources(
+                                ResourcesError::HttpRequestFailed { .. }
+                            )
+                        )
+                    ));
+                    allow_duplicates! {
+                        assert_snapshot!(error_message, @r#"System reconciliation failed: Managed Resource default installs failed: php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`: missing scripted archive; late.test: Project application stopped after resource installation failed"#);
+                    }
+                    allow_duplicates! {
+                        assert_debug_snapshot!(failures, @r#"
+                        [
+                            "php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`: missing scripted archive",
+                        ]
+                        "#);
+                    }
                 }
                 assert!(database.managed_resource_tracks()?.iter().all(|track| {
                     track.resource_name != "php" || track.current_artifact_path.is_none()
@@ -2236,7 +2419,7 @@ mod tests {
                 );
                 assert!(!state::fs::path_exists(&project_path.join(".env")));
                 if !update_path {
-                    let phases = reconciliation_phase_events(&paths, job_id)?;
+                    let phases = reconciliation_phase_events(&paths, &job_id)?;
                     assert!(
                         phases.iter().any(|phase| phase["phase"] == "resources"
                             && phase["outcome"] == "succeeded")
@@ -2270,6 +2453,18 @@ mod tests {
             # <<< PV MANAGED
             ");
         }
+        assert_debug_snapshot!(mixed_errors, @r#"
+        [
+            (
+                true,
+                "System reconciliation failed: Managed Resource default installs failed: php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`: missing scripted archive; invalid-env: Project config error: malformed PV-managed .env block: start marker without end marker; late.test: Project application stopped after resource installation failed",
+            ),
+            (
+                false,
+                "System reconciliation failed: Managed Resource default installs failed: php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`: missing scripted archive; invalid-env: Project config error: malformed PV-managed .env block: start marker without end marker; late.test: Project application stopped after resource installation failed",
+            ),
+        ]
+        "#);
         Ok(())
     }
 
@@ -2535,9 +2730,36 @@ mod tests {
         )
         .await;
 
-        let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
-            anyhow::bail!("expected current installation failure: {:?}", result.err());
+        let error = result
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("expected installation and Project failure"))?;
+        let error_message = error.to_string();
+        let DaemonError::SystemReconciliationFailures { failures: errors } = error else {
+            anyhow::bail!("expected system failure: {error}");
         };
+        let [
+            DaemonError::ManagedResourceDefaultInstallFailures { failures },
+            DaemonError::ProjectReconciliation {
+                project_label,
+                source,
+            },
+        ] = errors.as_slice()
+        else {
+            anyhow::bail!("expected resource and Project failures: {errors:?}");
+        };
+        assert_eq!(project_label, "failed.test");
+        let DaemonError::ProjectResourceInstallation { source } = source.as_ref() else {
+            anyhow::bail!("expected Project installation source: {source}");
+        };
+        assert!(matches!(
+            source.as_ref(),
+            DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
+                ResourcesError::ResourceNotInManifest { .. }
+            ))
+        ));
+        allow_duplicates! {
+            assert_snapshot!(error_message, @r#"System reconciliation failed: Managed Resource default installs failed: mailpit 1.0: Managed Resource command failed: artifact manifest does not include Managed Resource `mailpit`; failed.test: Project application stopped after resource installation failed"#);
+        }
         assert_debug_snapshot!(failures, @r#"
         [
             "mailpit 1.0: Managed Resource command failed: artifact manifest does not include Managed Resource `mailpit`",
@@ -2721,9 +2943,36 @@ mod tests {
         Database::open(&paths)?.replace_project_managed_resources(&linked.project.id, &[])?;
         stop_undemanded_system_resource_runtimes(&paths, Some(&catalog)).await?;
         let (result, snapshot) = verification?;
-        let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
-            anyhow::bail!("expected current installation failure: {:?}", result.err());
+        let error = result
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("expected installation and Project failure"))?;
+        let error_message = error.to_string();
+        let DaemonError::SystemReconciliationFailures { failures: errors } = error else {
+            anyhow::bail!("expected system failure: {error}");
         };
+        let [
+            DaemonError::ManagedResourceDefaultInstallFailures { failures },
+            DaemonError::ProjectReconciliation {
+                project_label,
+                source,
+            },
+        ] = errors.as_slice()
+        else {
+            anyhow::bail!("expected resource and Project failures: {errors:?}");
+        };
+        assert_eq!(project_label, "project.test");
+        let DaemonError::ProjectResourceInstallation { source } = source.as_ref() else {
+            anyhow::bail!("expected Project installation source: {source}");
+        };
+        assert!(matches!(
+            source.as_ref(),
+            DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
+                ResourcesError::HttpRequestFailed { .. }
+            ))
+        ));
+        allow_duplicates! {
+            assert_snapshot!(error_message, @r#"System reconciliation failed: Managed Resource default installs failed: mailpit 1.1: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/mailpit-1.1.0-pv1-any.tar.gz`: missing scripted archive; project.test: Project application stopped after resource installation failed"#);
+        }
         assert_debug_snapshot!(failures, @r#"
         [
             "mailpit 1.1: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/mailpit-1.1.0-pv1-any.tar.gz`: missing scripted archive",
@@ -2825,10 +3074,39 @@ mod tests {
             assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
             let database = Database::open(&paths)?;
             if download_failures == 2 {
-                let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result
-                else {
-                    anyhow::bail!("expected current installation failure: {:?}", result.err());
+                let error = result
+                    .err()
+                    .ok_or_else(|| anyhow::anyhow!("expected installation and Project failure"))?;
+                let error_message = error.to_string();
+                let DaemonError::SystemReconciliationFailures { failures: errors } = error else {
+                    anyhow::bail!("expected system failure: {error}");
                 };
+                let [
+                    DaemonError::ManagedResourceDefaultInstallFailures { failures },
+                    DaemonError::ProjectReconciliation {
+                        project_label,
+                        source,
+                    },
+                ] = errors.as_slice()
+                else {
+                    anyhow::bail!("expected resource and Project failures: {errors:?}");
+                };
+                assert_eq!(project_label, "project.test");
+                let DaemonError::ProjectResourceInstallation { source } = source.as_ref() else {
+                    anyhow::bail!("expected Project installation source: {source}");
+                };
+                assert!(matches!(
+                    source.as_ref(),
+                    DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
+                        ResourcesError::HttpStatusFailed {
+                            status_code: 410,
+                            ..
+                        }
+                    ))
+                ));
+                allow_duplicates! {
+                    assert_snapshot!(error_message, @r#"System reconciliation failed: Managed Resource default installs failed: php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP status 410 for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`; project.test: Project application stopped after resource installation failed"#);
+                }
                 allow_duplicates! {
                     assert_debug_snapshot!(failures, @r#"
                     [
@@ -2993,10 +3271,36 @@ mod tests {
                 track.resource_name != "mailpit" || track.current_artifact_path.is_none()
             }));
             if replacement {
-                let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result
-                else {
-                    anyhow::bail!("expected current installation failure: {:?}", result.err());
+                let error = result
+                    .err()
+                    .ok_or_else(|| anyhow::anyhow!("expected installation and Project failure"))?;
+                let error_message = error.to_string();
+                let DaemonError::SystemReconciliationFailures { failures: errors } = error else {
+                    anyhow::bail!("expected system failure: {error}");
                 };
+                let [
+                    DaemonError::ManagedResourceDefaultInstallFailures { failures },
+                    DaemonError::ProjectReconciliation {
+                        project_label,
+                        source,
+                    },
+                ] = errors.as_slice()
+                else {
+                    anyhow::bail!("expected resource and Project failures: {errors:?}");
+                };
+                assert_eq!(project_label, "project.test");
+                let DaemonError::ProjectResourceInstallation { source } = source.as_ref() else {
+                    anyhow::bail!("expected Project installation source: {source}");
+                };
+                assert!(matches!(
+                    source.as_ref(),
+                    DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
+                        ResourcesError::TrackNotFound { .. }
+                    ))
+                ));
+                allow_duplicates! {
+                    assert_snapshot!(error_message, @r#"System reconciliation failed: Managed Resource default installs failed: mailpit 1.1: Managed Resource command failed: artifact manifest resource `mailpit` has no track `1.1`; project.test: Project application stopped after resource installation failed"#);
+                }
                 assert_debug_snapshot!(failures, @r#"
                 [
                     "mailpit 1.1: Managed Resource command failed: artifact manifest resource `mailpit` has no track `1.1`",

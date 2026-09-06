@@ -161,6 +161,15 @@ pub enum DaemonError {
         failures: Vec<ManagedResourceProjectFailure>,
     },
 
+    #[error(transparent)]
+    ProjectResourceInstallation { source: Box<DaemonError> },
+
+    #[error("{project_label}: {source}")]
+    ProjectReconciliation {
+        project_label: String,
+        source: Box<DaemonError>,
+    },
+
     #[error("System reconciliation failed: {}", system_reconciliation_failures(.failures))]
     SystemReconciliationFailures { failures: Vec<DaemonError> },
 
@@ -248,7 +257,15 @@ fn default_install_failures(failures: &[String]) -> String {
 fn system_reconciliation_failures(failures: &[DaemonError]) -> String {
     failures
         .iter()
-        .map(ToString::to_string)
+        .map(|failure| match failure {
+            DaemonError::ProjectReconciliation {
+                project_label,
+                source,
+            } if matches!(source.as_ref(), DaemonError::ProjectResourceInstallation { .. }) => {
+                format!("{project_label}: Project application stopped after resource installation failed")
+            }
+            _ => failure.to_string(),
+        })
         .collect::<Vec<_>>()
         .join("; ")
 }
