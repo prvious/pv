@@ -65,7 +65,7 @@ impl ProjectPhpTrackDemand {
     fn matches(&self, php: Option<&config::PhpConfig>, serves_http: bool) -> bool {
         self.php_configured == php.is_some()
             && self.version_selector.as_deref() == php.and_then(config::PhpConfig::version_selector)
-            && self.serves_http == serves_http
+            && (self.php_configured || self.serves_http == serves_http)
     }
 }
 
@@ -364,8 +364,14 @@ async fn reconcile_loaded_project(
         }
     };
     if discovered_demand.is_some()
-        && let Some(track) = php_track.as_deref()
-        && let Err(error) = install_project_php_pair(paths, catalog, track, progress.clone()).await
+        && let Err(error) = install_project_resources(
+            paths,
+            catalog,
+            &plan,
+            php_track.as_deref(),
+            progress.clone(),
+        )
+        .await
     {
         maintain_existing_project_tls_after_config_error(
             paths,
@@ -620,10 +626,11 @@ fn read_optional_file(path: &Utf8PathBuf) -> Result<Option<String>, DaemonError>
     }
 }
 
-async fn install_project_php_pair(
+async fn install_project_resources(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    track: &str,
+    plan: &ProjectResourcePlan,
+    php_track: Option<&str>,
     progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     let production_catalog;
@@ -633,10 +640,17 @@ async fn install_project_php_pair(
         production_catalog = ManagedResourceRuntimeCatalog::production()?;
         &production_catalog
     };
-    let demanded_tracks = BTreeSet::from([
-        DemandedResourceTrack::new("php", track),
-        DemandedResourceTrack::new("frankenphp", track),
-    ]);
+    let mut demanded_tracks = plan
+        .resources
+        .iter()
+        .map(|resource| {
+            DemandedResourceTrack::new(resource.resource_name.clone(), resource.track.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    if let Some(track) = php_track {
+        demanded_tracks.insert(DemandedResourceTrack::new("php", track));
+        demanded_tracks.insert(DemandedResourceTrack::new("frankenphp", track));
+    }
 
     crate::managed_resources::install_missing_resource_demands_with_catalog_and_progress(
         paths,
