@@ -29,12 +29,12 @@ use state::{
     Database, EnvContextValues, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
     PortRequest, PostgresPreloadLibrary, ProjectManagedResourceInput, ProjectRecord, PvPaths,
     RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationRecord,
-    RuntimeObservedStatus, RuntimeSubject, StateError,
+    ResourceAllocationStatus, RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 use tokio::time::{sleep, timeout};
 
 use crate::jobs::DaemonDownloadProgress;
-use crate::project_env::DemandedResourceTrack;
+use crate::project_env::{DemandedResourceTrack, record_project_env_failure};
 use crate::{
     DaemonError, ManagedResourceProjectFailure, ProcessSpec, ProcessSupervisor, ReadinessCheck,
     wait_for_readiness,
@@ -384,53 +384,110 @@ pub(crate) async fn reconcile_persisted_resource_track_with_progress(
         return Ok((projects, BTreeMap::new()));
     }
 
-    let resource = state::ProjectManagedResourceInput {
-        resource_name: resource_name.to_owned(),
-        track: track.to_owned(),
-    };
-    let plan = crate::project_env::ProjectResourcePlan {
-        resources: vec![resource.clone()],
-        allocations: BTreeMap::new(),
-    };
-    let install_requests = missing_project_install_requests(&database, &plan, catalog);
-    let mut prefetched_installs =
-        prefetch_missing_project_installs(paths, catalog, install_requests, progress.clone())
-            .await?;
-    let mut context = ResourceTrackReconciliationContext {
-        catalog,
-        supervisor: &supervisor,
-        progress: &progress,
-        prefetched_installs: &mut prefetched_installs,
-    };
+    let result: Result<_, DaemonError> = async {
+        let resource = state::ProjectManagedResourceInput {
+            resource_name: resource_name.to_owned(),
+            track: track.to_owned(),
+        };
+        let plan = crate::project_env::ProjectResourcePlan {
+            resources: vec![resource.clone()],
+            allocations: BTreeMap::new(),
+        };
+        let install_requests = missing_project_install_requests(&database, &plan, catalog);
+        let mut prefetched_installs =
+            prefetch_missing_project_installs(paths, catalog, install_requests, progress.clone())
+                .await?;
+        let mut context = ResourceTrackReconciliationContext {
+            catalog,
+            supervisor: &supervisor,
+            progress: &progress,
+            prefetched_installs: &mut prefetched_installs,
+        };
 
-    reconcile_resource_track(paths, &mut database, &mut context, &resource, &[]).await?;
+        reconcile_resource_track(paths, &mut database, &mut context, &resource, &[]).await?;
 
-    let mut project_failures = BTreeMap::new();
-    if let Some(adapter) = catalog.adapter(resource_name) {
-        let runtime_context =
-            persisted_resource_runtime_context(paths, &mut database, adapter, &resource)?;
-        for project in &projects {
-            let allocations = database
-                .resource_allocations(&project.id, resource_name)?
-                .into_iter()
-                .filter(|allocation| allocation.track == track)
-                .collect::<Vec<_>>();
-            if let Err(error) = adapter
-                .reconcile_allocations(
-                    paths,
-                    &mut database,
-                    &runtime_context,
-                    &runtime_context.env,
-                    &allocations,
-                )
-                .await
-            {
-                project_failures.insert(project.id.clone(), error);
+        let mut project_failures = BTreeMap::new();
+        if let Some(adapter) = catalog.adapter(resource_name) {
+            let runtime_context =
+                persisted_resource_runtime_context(paths, &mut database, adapter, &resource)?;
+            for project in &projects {
+                let allocations = database
+                    .resource_allocations(&project.id, resource_name)?
+                    .into_iter()
+                    .filter(|allocation| {
+                        allocation.track == track
+                            && allocation.status != ResourceAllocationStatus::Inactive
+                    })
+                    .collect::<Vec<_>>();
+                if let Err(error) = adapter
+                    .reconcile_allocations(
+                        paths,
+                        &mut database,
+                        &runtime_context,
+                        &runtime_context.env,
+                        &allocations,
+                    )
+                    .await
+                {
+                    let error = record_allocation_reconciliation_failure(
+                        &mut database,
+                        &allocations,
+                        error,
+                    );
+                    if matches!(
+                        &error,
+                        DaemonError::ProjectAllocationFailureRecordingFailed { .. }
+                    ) {
+                        return Err(error);
+                    }
+                    project_failures.insert(project.id.clone(), error);
+                }
             }
         }
-    }
 
-    Ok((projects, project_failures))
+        Ok(project_failures)
+    }
+    .await;
+
+    match result {
+        Ok(project_failures) => Ok((projects, project_failures)),
+        Err(reconciliation) => {
+            let message = reconciliation.to_string();
+            for project in &projects {
+                if let Err(recording) =
+                    record_project_env_failure(&mut database, &project.id, &message)
+                {
+                    return Err(DaemonError::ProjectEnvFailureRecordingFailed {
+                        project_id: project.id.clone(),
+                        reconciliation: Box::new(reconciliation),
+                        recording: Box::new(recording),
+                    });
+                }
+            }
+            Err(reconciliation)
+        }
+    }
+}
+
+fn record_allocation_reconciliation_failure(
+    database: &mut Database,
+    allocations: &[ResourceAllocationRecord],
+    error: DaemonError,
+) -> DaemonError {
+    if let Some(allocation) = allocations.first()
+        && let Err(recording) = database.invalidate_project_resource_allocation_readiness(
+            &allocation.project_id,
+            &allocation.resource_name,
+            &allocation.track,
+        )
+    {
+        return DaemonError::ProjectAllocationFailureRecordingFailed {
+            project_id: allocation.project_id.clone(),
+            allocation: Box::new(error),
+            recording: Box::new(recording.into()),
+        };
+    }
+    error
 }
 
 fn persisted_resource_runtime_context(
@@ -1497,9 +1554,17 @@ impl ResourceRuntimeAttempt<'_> {
 
         start_or_adopt_runtime(self.supervisor, spec, &readiness, readiness_timeout).await?;
 
-        self.adapter
+        if let Err(error) = self
+            .adapter
             .reconcile_allocations(self.paths, self.database, &context, &env, self.allocations)
-            .await?;
+            .await
+        {
+            return Err(record_allocation_reconciliation_failure(
+                self.database,
+                self.allocations,
+                error,
+            ));
+        }
         self.database.record_runtime_observed_snapshot(
             self.subject.clone(),
             RuntimeObservedStatus::Running,

@@ -14,7 +14,8 @@ use state::{
     Database, LinkProjectInput, ManagedResourceDesiredState, ProjectEnvObservedStatus,
     ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectMode,
     ProjectPhpRuntimeInput, ProjectReconciliationStateInput, ProjectRecord, PvPaths,
-    ResourceAllocationInput, ResourceAllocationRecord, ResourceAllocationStatus, StateError,
+    ResourceAllocationInput, ResourceAllocationRecord, ResourceAllocationStatus,
+    RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 
 use crate::DaemonError;
@@ -207,20 +208,8 @@ pub(crate) fn reconcile_project_env_from_persisted_state(
             .has_env_mappings()
             .then(|| persisted_project_env_context(paths, &database, &project))
             .transpose()?;
-        let runtime_warnings = database
-            .project_env_observed_state(&project.id)?
-            .map(|observed| {
-                observed
-                    .warnings
-                    .into_iter()
-                    .filter(|warning| warning.kind == "ignored_php_extension")
-                    .map(|warning| ProjectEnvObservedWarningInput {
-                        kind: warning.kind,
-                        message: warning.message,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+        let runtime_warnings =
+            ignored_php_extension_warnings(&project.php_runtime.ignored_extensions);
         let rendered =
             render_project_env(&project, &config_file, context.as_ref(), runtime_warnings)?;
         database.record_project_env_observed_snapshot(
@@ -534,7 +523,7 @@ async fn reconcile_loaded_project(
 
         let runtime_warnings = resolved_php_runtime
             .as_ref()
-            .map(ignored_php_extension_warnings)
+            .map(|runtime| ignored_php_extension_warnings(&runtime.ignored_extensions))
             .unwrap_or_default();
         let requested_php_extensions = config_file
             .config
@@ -1188,9 +1177,8 @@ fn render_project_env(
     })
 }
 
-// Env-only reconciliation intentionally reads current env mappings while resolving every
-// placeholder from persisted Project/runtime state. Non-env config is applied by Project/Gateway
-// reconciliation, and PR 4's desired fingerprint remains the sole config-content equality oracle.
+// Use current env mappings with persisted Project/resource values. Full Project reconciliation
+// applies changes to the serving mode, resource tracks, and allocation identities checked here.
 fn validate_persisted_project_env_dependencies(
     paths: &PvPaths,
     database: &Database,
@@ -1236,7 +1224,41 @@ fn validate_persisted_project_env_dependencies(
     if candidate_project.mode != project.mode || !resources_match || !allocations_match {
         return Err(DaemonError::ProjectEnvDependenciesNotApplied {
             project_id: project.id.clone(),
+            reason: "serving mode, resource tracks, or allocation identities differ from their last applied state".to_owned(),
         });
+    }
+    for resource in &plan.resources {
+        planned_allocation_contexts(
+            database,
+            &project.id,
+            &resource.resource_name,
+            &resource.track,
+            plan.allocations.get(&resource.resource_name),
+        )?;
+    }
+    for observed in database.runtime_observed_states()? {
+        if let RuntimeSubject::Resource { name, track } = &observed.subject
+            && plan
+                .resources
+                .iter()
+                .any(|resource| resource.resource_name == *name && resource.track == *track)
+        {
+            let status = match observed.status {
+                RuntimeObservedStatus::Failed => "failed",
+                RuntimeObservedStatus::Degraded => "degraded",
+                _ => continue,
+            };
+            return Err(DaemonError::ProjectEnvDependenciesNotApplied {
+                project_id: project.id.clone(),
+                reason: format!(
+                    "required resource {name} track {track} is {status}: {}",
+                    observed
+                        .message
+                        .as_deref()
+                        .unwrap_or("no diagnostic recorded")
+                ),
+            });
+        }
     }
 
     Ok(())
@@ -1449,10 +1471,9 @@ fn observed_warnings(warnings: &[ProjectEnvWarning]) -> Vec<ProjectEnvObservedWa
 }
 
 fn ignored_php_extension_warnings(
-    runtime: &ResolvedPhpRuntime,
+    ignored_extensions: &[String],
 ) -> Vec<ProjectEnvObservedWarningInput> {
-    runtime
-        .ignored_extensions
+    ignored_extensions
         .iter()
         .map(|extension| ProjectEnvObservedWarningInput {
             kind: "ignored_php_extension".to_string(),

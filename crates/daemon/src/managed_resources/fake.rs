@@ -55,10 +55,6 @@ impl FakeMailpitRuntimeAdapter {
             },
         })
     }
-
-    pub(crate) fn exits_after_readiness() -> Result<Self, DaemonError> {
-        Self::new()
-    }
 }
 
 impl ManagedResourceRuntimeAdapter for FakeMailpitRuntimeAdapter {
@@ -113,20 +109,16 @@ impl ManagedResourceRuntimeAdapter for FakeMailpitRuntimeAdapter {
         &self,
         context: &ManagedResourceRuntimeContext,
     ) -> Result<ManagedResourceReadiness, DaemonError> {
-        match self.readiness {
-            FakeMailpitReadiness::Dashboard => Ok(ReadinessCheck::Http {
-                host: RESOURCE_HOST.to_string(),
-                port: required_port(context, "dashboard")?,
-                path: "/ready".to_string(),
-            }
-            .into()),
-            FakeMailpitReadiness::UnservedDashboardPort { .. } => Ok(ReadinessCheck::Http {
-                host: RESOURCE_HOST.to_string(),
-                port: required_port(context, "dashboard")?,
-                path: "/__pv_unready_fixture__".to_string(),
-            }
-            .into()),
+        let path = match self.readiness {
+            FakeMailpitReadiness::Dashboard => "/ready",
+            FakeMailpitReadiness::UnservedDashboardPort { .. } => "/__pv_unready_fixture__",
+        };
+        Ok(ReadinessCheck::Http {
+            host: RESOURCE_HOST.to_string(),
+            port: required_port(context, "dashboard")?,
+            path: path.to_string(),
         }
+        .into())
     }
 
     fn readiness_timeout(&self) -> Duration {

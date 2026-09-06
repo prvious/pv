@@ -3,7 +3,7 @@ source: crates/daemon/src/jobs.rs
 expression: partial_snapshot
 ---
 (
-    "Managed Resource mailpit track 1.0 reconciled; Project env reconciled for 1 of 2 Projects; failures: beta.test: Project `<project_id>` env dependencies do not match their last applied state",
+    "Managed Resource mailpit track 1.0 reconciled; Project env reconciled for 1 of 2 Projects; failures: beta.test: Project `<project_id>` env dependencies cannot be refreshed: serving mode, resource tracks, or allocation identities differ from their last applied state",
     [
         Resource {
             name: "mailpit",

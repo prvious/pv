@@ -21,7 +21,7 @@ expression: success_snapshot
             Rendered,
         ),
         Some(
-            Rendered,
+            Warning,
         ),
         None,
     ],

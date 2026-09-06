@@ -115,9 +115,8 @@ impl JobDiagnosticSubject {
             ["project", id] if !id.is_empty() => Self::Project {
                 id: (*id).to_owned(),
             },
-            ["resource", name, _track] if matches!(*name, "caddy" | "php" | "frankenphp") => {
-                Self::GatewayRuntime
-            }
+            ["resource", "caddy", _track] => Self::GatewayRuntime,
+            ["resource", "php" | "frankenphp", _track] => Self::SystemReconciliation,
             ["resource", name, track] if !name.is_empty() && !track.is_empty() => Self::Resource {
                 name: (*name).to_owned(),
                 track: (*track).to_owned(),
@@ -1837,6 +1836,32 @@ impl Database {
         transaction.commit()?;
 
         Ok(records)
+    }
+
+    pub fn invalidate_project_resource_allocation_readiness(
+        &mut self,
+        project_id: &str,
+        resource_name: &str,
+        track: &str,
+    ) -> Result<(), StateError> {
+        validate_resource_allocation_identity("resource", resource_name)?;
+        validate_concrete_track(track)?;
+        let updated_at = timestamp()?;
+        self.transaction(|transaction| {
+            transaction.execute(
+                "UPDATE resource_allocations SET status = ?1, updated_at = ?2
+                 WHERE project_id = ?3 AND resource_name = ?4 AND track = ?5 AND status = ?6",
+                params![
+                    ResourceAllocationStatus::Desired.as_str(),
+                    updated_at,
+                    project_id,
+                    resource_name,
+                    track,
+                    ResourceAllocationStatus::Ready.as_str(),
+                ],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn mark_resource_allocation_ready(
