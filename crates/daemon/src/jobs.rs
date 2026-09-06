@@ -1152,9 +1152,10 @@ fn reconcile_persisted_project_envs(
                     recording: Box::new(recording),
                 });
             }
-            report
-                .failures
-                .push(format!("{project_label}: {error_message}"));
+            report.failures.push(DaemonError::ProjectReconciliation {
+                project_label: project_label.to_owned(),
+                source: Box::new(error),
+            });
             continue;
         }
         match reconcile_project_env_from_persisted_state(paths, &project.id) {
@@ -1167,7 +1168,10 @@ fn reconcile_persisted_project_envs(
                 return Err(error);
             }
             Err(error) => {
-                report.failures.push(format!("{project_label}: {error}"));
+                report.failures.push(DaemonError::ProjectReconciliation {
+                    project_label: project_label.to_owned(),
+                    source: Box::new(error),
+                });
             }
         }
     }
