@@ -1198,7 +1198,8 @@ fn validate_persisted_project_env_dependencies(
     config_file: &ProjectConfigFile,
 ) -> Result<(), DaemonError> {
     let candidate_project = project_with_config_mode(project, &config_file.config);
-    let plan = validate_project_config_and_plan(paths, database, &candidate_project, config_file)?;
+    let plan =
+        validate_project_config_and_plan(paths, database, &candidate_project, config_file, None)?;
     let persisted_resources = database
         .project_managed_resources(&project.id)?
         .into_iter()
