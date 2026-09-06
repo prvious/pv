@@ -363,6 +363,15 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             timeout: readiness_timeout,
             admin_endpoint: CaddyAdminEndpoint::new(worker.admin_socket_path.clone()),
         };
+        let private_environment =
+            match worker_config_private_environment(paths, worker, &worker_runtime.artifact_root) {
+                Ok(private_environment) => private_environment,
+                Err(error) => {
+                    record_runtime_error(paths, subject.clone(), &error)?;
+
+                    return Err(error);
+                }
+            };
         if reconcile_unchanged_runtime(
             &supervisor,
             &process_spec,
@@ -380,15 +389,6 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             )?;
             continue;
         }
-        let private_environment =
-            match worker_config_private_environment(paths, worker, &worker_runtime.artifact_root) {
-                Ok(private_environment) => private_environment,
-                Err(error) => {
-                    record_runtime_error(paths, subject.clone(), &error)?;
-
-                    return Err(error);
-                }
-            };
         let promoted_config = promote_runtime_config_tree(
             paths,
             &worker_runtime.command,
