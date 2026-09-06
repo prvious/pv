@@ -11,7 +11,8 @@ use crate::{
     jobs::DaemonDownloadProgress,
     managed_resources::{ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext},
     project_env::{
-        discover_project_demand, reconcile_project_env_with_runtime_catalog_and_progress,
+        DemandedResourceTrack, discover_project_demand,
+        reconcile_project_env_with_runtime_catalog_and_progress,
     },
     reconciliation::{ReconciliationQueue, ReconciliationScope},
 };
@@ -1315,10 +1316,8 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
         "first.test",
         "serve: false\n",
     )?;
-    let demanded_tracks = BTreeSet::from([crate::project_env::DemandedResourceTrack::new(
-        "mailpit",
-        FAKE_MAILPIT_TRACK,
-    )]);
+    let demanded_tracks =
+        BTreeSet::from([DemandedResourceTrack::new("mailpit", FAKE_MAILPIT_TRACK)]);
     let mut database = Database::open(&paths)?;
     database.replace_project_managed_resources(&project.id, &[])?;
     drop(database);
@@ -1326,13 +1325,13 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
     let pid_before_apply =
         state::fs::read_to_string(&paths.resource_pid("mailpit", FAKE_MAILPIT_TRACK))?;
 
-    crate::project_env::reconcile_project_env_with_runtime_catalog_and_progress(
+    reconcile_project_env_with_runtime_catalog_and_progress(
         &paths,
         &first_project.id,
         Some(&catalog),
         None,
         &demanded_tracks,
-        crate::jobs::DaemonDownloadProgress::disabled(),
+        DaemonDownloadProgress::disabled(),
     )
     .await?;
 
@@ -1355,7 +1354,7 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
             &mut database,
             &catalog,
             &demanded_tracks,
-            crate::jobs::DaemonDownloadProgress::disabled(),
+            DaemonDownloadProgress::disabled(),
         )
         .await?;
         assert_eq!(
