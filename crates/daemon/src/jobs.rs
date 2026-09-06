@@ -1152,7 +1152,8 @@ fn reconcile_persisted_project_envs(
             });
             continue;
         }
-        match reconcile_project_env_from_persisted_state(paths, &project.id) {
+        let mut database = Database::open(paths)?;
+        match reconcile_project_env_from_persisted_state(paths, &mut database, &project.id) {
             Ok(summary) => {
                 report.succeeded += 1;
                 report.successful_project_ids.push(project.id.clone());
@@ -2291,7 +2292,11 @@ mod tests {
         );
 
         state::fs::write_sensitive_file(&projects[1].config_path, project_config)?;
-        reconcile_project_env_from_persisted_state(&paths, &projects[1].id)?;
+        reconcile_project_env_from_persisted_state(
+            &paths,
+            &mut Database::open(&paths)?,
+            &projects[1].id,
+        )?;
         assert_eq!(
             Database::open(&paths)?
                 .project_env_observed_state(&projects[1].id)?
@@ -2610,6 +2615,143 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn targeted_resource_job_fails_when_project_lookup_failure_cannot_be_recorded()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut database = Database::open(&paths)?;
+        let config = "mailpit:\n  version: '1.0'\n  env:\n    MAIL_HOST: '${smtp_host}'\n";
+        let mut projects = Vec::new();
+        for name in ["acme", "beta"] {
+            let project_path = tempdir.path().join(name);
+            let config_path = project_path.join("pv.yml");
+            state::fs::write_sensitive_file(&config_path, config)?;
+            let project = database
+                .link_project(LinkProjectInput {
+                    path: project_path.clone(),
+                    original_path: project_path,
+                    primary_hostname: format!("{name}.test"),
+                    config_path,
+                    desired_php_track: None,
+                    additional_hostnames: Vec::new(),
+                })?
+                .project;
+            database.replace_project_managed_resources(
+                &project.id,
+                &[ProjectManagedResourceInput {
+                    resource_name: "mailpit".to_owned(),
+                    track: MAILPIT_TEST_TRACK.to_owned(),
+                }],
+            )?;
+            projects.push(project);
+        }
+        database.record_managed_resource_track_env_context(
+            "mailpit",
+            MAILPIT_TEST_TRACK,
+            &BTreeMap::from([("smtp_host".to_owned(), "127.0.0.1".to_owned())]),
+        )?;
+        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_url(OFFLINE_TEST_MANIFEST_URL)?;
+        let scope = ReconciliationScope::resource("mailpit", MAILPIT_TEST_TRACK)?;
+        run_background_reconciliation_job(
+            paths.clone(),
+            ReconciliationQueue::new(),
+            scope.clone(),
+            Some(&catalog),
+        )
+        .await?;
+        let beta_before = database.project_env_observed_state(&projects[1].id)?;
+        let beta_env = state::fs::read_to_string(&projects[1].path.join(".env"))?;
+        let previous_ids = database
+            .recent_jobs()?
+            .into_iter()
+            .map(|job| job.id)
+            .collect::<BTreeSet<_>>();
+        state::fs::write_sensitive_file(
+            &projects[0].path.join(".env"),
+            "USER_VALUE=kept\n# >>> PV MANAGED\nMAIL_HOST=previous\n# <<< PV MANAGED\n",
+        )?;
+        Connection::open(paths.db().as_std_path())?.execute_batch(&format!(
+            "CREATE TRIGGER corrupt_later_project BEFORE INSERT ON observed_states
+             WHEN NEW.subject_kind = 'project_env' AND NEW.subject_id = '{}' AND NEW.status = 'rendered'
+             BEGIN UPDATE projects SET path = X'00' WHERE id = '{}'; END;
+             CREATE TRIGGER reject_later_project_failure BEFORE INSERT ON observed_states
+             WHEN NEW.subject_kind = 'project_env' AND NEW.subject_id = '{}' AND NEW.status = 'failed'
+             BEGIN SELECT RAISE(FAIL, 'fixture rejected Project lookup failure observation'); END;",
+            projects[0].id, projects[1].id, projects[1].id,
+        ))?;
+        let result = run_background_reconciliation_job(
+            paths.clone(),
+            ReconciliationQueue::new(),
+            scope,
+            Some(&catalog),
+        )
+        .await;
+        let jobs = database
+            .recent_jobs()?
+            .into_iter()
+            .filter(|job| !previous_ids.contains(&job.id))
+            .collect::<Vec<_>>();
+        let [job] = jobs.as_slice() else {
+            return Err(anyhow::anyhow!(
+                "expected one new reconciliation job: {jobs:#?}"
+            ));
+        };
+        let coverage = state::testing::transaction(&mut database, |transaction| {
+            let mut statement = transaction.prepare("SELECT subject_kind, subject_id FROM job_diagnostic_outcomes WHERE job_id = ?1 AND outcome = 'success' ORDER BY subject_kind, subject_id")?;
+            statement
+                .query_map([&job.id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<BTreeSet<_>>>()
+        })?;
+        let error_message = result.as_ref().err().map(ToString::to_string);
+        let exact_error = matches!(&result,
+            Err(DaemonError::ProjectEnvFailureRecordingFailed { project_id, reconciliation, recording })
+            if project_id == &projects[1].id
+                && matches!(reconciliation.as_ref(), DaemonError::State(StateError::Sqlite(SqliteError::InvalidColumnType(1, column, _))) if column == "path")
+                && matches!(recording.as_ref(), DaemonError::State(StateError::Sqlite(error)) if error.to_string() == "fixture rejected Project lookup failure observation")
+        );
+        let checks = [
+            (
+                "initial real reconciliation verifies Beta",
+                beta_before
+                    .as_ref()
+                    .is_some_and(|observed| observed.status == ProjectEnvObservedStatus::Rendered),
+            ),
+            ("lookup and recording errors are both typed", exact_error),
+            (
+                "actual reconciliation job fails with the returned error",
+                job.kind == "reconcile"
+                    && job.scope == "resource:mailpit:1.0"
+                    && job.status == JobStatus::Failed
+                    && job.error == error_message,
+            ),
+            (
+                "fatal job records no successful coverage",
+                coverage.is_empty(),
+            ),
+            (
+                "unrecordable Project keeps its prior observation",
+                database.project_env_observed_state(&projects[1].id)? == beta_before,
+            ),
+            (
+                "unrecordable Project keeps its env",
+                state::fs::read_to_string(&projects[1].path.join(".env"))? == beta_env,
+            ),
+            (
+                "earlier Project completes its env work",
+                state::fs::read_to_string(&projects[0].path.join(".env"))?
+                    == "USER_VALUE=kept\n# >>> PV MANAGED\nMAIL_HOST=127.0.0.1\n# <<< PV MANAGED\n",
+            ),
+        ];
+        assert!(
+            checks.iter().all(|(_, passed)| *passed),
+            "result={result:#?}, job={job:#?}, coverage={coverage:#?}, checks={checks:#?}"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn targeted_resource_scope_refuses_unready_sibling_dependencies() -> anyhow::Result<()> {
         let mut checks = Vec::new();
         for with_mappings in [true, false] {
@@ -2681,11 +2823,13 @@ mod tests {
             );
             let previous_env =
                 "USER_VALUE=kept\n# >>> PV MANAGED\nMAIL_HOST=previous\n# <<< PV MANAGED\n";
-            for status in [
-                None,
-                Some(RuntimeObservedStatus::Failed),
-                Some(RuntimeObservedStatus::Degraded),
-                Some(RuntimeObservedStatus::Running),
+            for (status, status_name) in [
+                (None, "missing"),
+                (Some(RuntimeObservedStatus::Failed), "failed"),
+                (Some(RuntimeObservedStatus::Degraded), "degraded"),
+                (Some(RuntimeObservedStatus::Stopped), "stopped"),
+                (Some(RuntimeObservedStatus::Pending), "pending"),
+                (Some(RuntimeObservedStatus::Running), "running"),
             ] {
                 if status == Some(RuntimeObservedStatus::Failed) {
                     database.mark_resource_allocation_ready(
@@ -2708,13 +2852,28 @@ mod tests {
                 }
                 let resource_observations = database.runtime_observed_states()?;
                 state::fs::write_sensitive_file(&project_path.join(".env"), previous_env)?;
+                let (prior_status, prior_message) = if status.is_none() {
+                    (
+                        ProjectEnvObservedStatus::Rendered,
+                        "previously verified env",
+                    )
+                } else {
+                    (
+                        ProjectEnvObservedStatus::Failed,
+                        "previous dependency failure",
+                    )
+                };
                 database.record_project_env_observed_snapshot(
                     &project.id,
-                    ProjectEnvObservedStatus::Failed,
-                    Some("previous dependency failure"),
+                    prior_status,
+                    Some(prior_message),
                     &[],
                 )?;
-                let result = reconcile_project_env_from_persisted_state(&paths, &project.id);
+                let result = reconcile_project_env_from_persisted_state(
+                    &paths,
+                    &mut Database::open(&paths)?,
+                    &project.id,
+                );
                 let completion = complete_managed_resource_reconciliation_with_progress(
                     &paths,
                     name,
@@ -2735,13 +2894,13 @@ mod tests {
                     ) => resource == "mysql" && allocation == "app",
                     (
                         Err(DaemonError::ProjectEnvDependenciesNotApplied { project_id, .. }),
-                        Some(RuntimeObservedStatus::Failed | RuntimeObservedStatus::Degraded),
+                        Some(
+                            RuntimeObservedStatus::Failed
+                            | RuntimeObservedStatus::Degraded
+                            | RuntimeObservedStatus::Stopped
+                            | RuntimeObservedStatus::Pending,
+                        ),
                     ) => {
-                        let status_name = if status == Some(RuntimeObservedStatus::Failed) {
-                            "failed"
-                        } else {
-                            "degraded"
-                        };
                         project_id == &project.id
                             && result.as_ref().err().map(ToString::to_string)
                                 == Some(format!(
@@ -2782,6 +2941,15 @@ mod tests {
                             },
                         state::fs::read_to_string(&project_path.join(".env"))? == expected_env,
                         database.runtime_observed_states()? == resource_observations,
+                        status.is_some()
+                            || observed.message
+                                == Some(
+                                    DaemonError::Config(ConfigError::MissingAllocationEnvContext {
+                                        resource: "mysql".to_owned(),
+                                        allocation: "app".to_owned(),
+                                    })
+                                    .to_string(),
+                                ),
                     ],
                 ));
             }

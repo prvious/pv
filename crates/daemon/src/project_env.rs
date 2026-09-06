@@ -3,8 +3,8 @@ use std::io;
 
 use camino::Utf8PathBuf;
 use config::{
-    AllocationEnvContext, ProjectConfig, ProjectConfigFile, ProjectEnvContext, ProjectEnvWarning,
-    ResourceEnvContext,
+    AllocationEnvContext, ConfigError, ProjectConfig, ProjectConfigFile, ProjectEnvContext,
+    ProjectEnvWarning, ResourceEnvContext,
 };
 use resources::{
     ArtifactManifestCache, ConcreteTrackName, ResourceName, TrackSelector,
@@ -191,22 +191,38 @@ pub(crate) async fn reconcile_project_env_with_runtime_catalog_and_progress(
 
 pub(crate) fn reconcile_project_env_from_persisted_state(
     paths: &PvPaths,
+    database: &mut Database,
     project_id: &str,
 ) -> Result<&'static str, DaemonError> {
-    let mut database = Database::open(paths)?;
-    let project =
-        database
-            .project_by_id(project_id)?
-            .ok_or_else(|| StateError::ProjectNotFound {
-                target: project_id.to_owned(),
-            })?;
+    let mut preserve_existing_failure = false;
     let result: Result<&'static str, DaemonError> = (|| {
+        let project =
+            database
+                .project_by_id(project_id)?
+                .ok_or_else(|| StateError::ProjectNotFound {
+                    target: project_id.to_owned(),
+                })?;
         let config_file = ProjectConfigFile::read_from_root(&project.path)?;
-        validate_persisted_project_env_dependencies(paths, &database, &project, &config_file)?;
+        if let Err(error) =
+            validate_persisted_project_env_dependencies(paths, database, &project, &config_file)
+        {
+            if matches!(
+                &error,
+                DaemonError::Config(ConfigError::MissingAllocationEnvContext { .. })
+            ) {
+                preserve_existing_failure = database
+                    .project_env_observed_state(project_id)?
+                    .is_some_and(|observed| {
+                        observed.status == ProjectEnvObservedStatus::Failed
+                            && observed.message.is_some()
+                    });
+            }
+            return Err(error);
+        }
         let context = config_file
             .config
             .has_env_mappings()
-            .then(|| persisted_project_env_context(paths, &database, &project))
+            .then(|| persisted_project_env_context(paths, database, &project))
             .transpose()?;
         let runtime_warnings =
             ignored_php_extension_warnings(&project.php_runtime.ignored_extensions);
@@ -225,10 +241,11 @@ pub(crate) fn reconcile_project_env_from_persisted_state(
         Ok(summary) => Ok(summary),
         Err(reconciliation) => {
             let message = reconciliation.to_string();
-            if let Err(recording) = record_project_env_failure(&mut database, &project.id, &message)
+            if !preserve_existing_failure
+                && let Err(recording) = record_project_env_failure(database, project_id, &message)
             {
                 return Err(DaemonError::ProjectEnvFailureRecordingFailed {
-                    project_id: project.id,
+                    project_id: project_id.to_owned(),
                     reconciliation: Box::new(reconciliation),
                     recording: Box::new(recording),
                 });
@@ -1246,7 +1263,9 @@ fn validate_persisted_project_env_dependencies(
             let status = match observed.status {
                 RuntimeObservedStatus::Failed => "failed",
                 RuntimeObservedStatus::Degraded => "degraded",
-                _ => continue,
+                RuntimeObservedStatus::Stopped => "stopped",
+                RuntimeObservedStatus::Pending => "pending",
+                RuntimeObservedStatus::Running => continue,
             };
             return Err(DaemonError::ProjectEnvDependenciesNotApplied {
                 project_id: project.id.clone(),

@@ -384,7 +384,8 @@ pub(crate) async fn reconcile_persisted_resource_track_with_progress(
         return Ok((projects, BTreeMap::new()));
     }
 
-    let result: Result<_, DaemonError> = async {
+    let mut project_failures = BTreeMap::new();
+    let result: Result<(), DaemonError> = async {
         let resource = state::ProjectManagedResourceInput {
             resource_name: resource_name.to_owned(),
             track: track.to_owned(),
@@ -406,7 +407,6 @@ pub(crate) async fn reconcile_persisted_resource_track_with_progress(
 
         reconcile_resource_track(paths, &mut database, &mut context, &resource, &[]).await?;
 
-        let mut project_failures = BTreeMap::new();
         if let Some(adapter) = catalog.adapter(resource_name) {
             let runtime_context =
                 persisted_resource_runtime_context(paths, &mut database, adapter, &resource)?;
@@ -445,15 +445,26 @@ pub(crate) async fn reconcile_persisted_resource_track_with_progress(
             }
         }
 
-        Ok(project_failures)
+        Ok(())
     }
     .await;
 
     match result {
-        Ok(project_failures) => Ok((projects, project_failures)),
+        Ok(()) => Ok((projects, project_failures)),
         Err(reconciliation) => {
-            let message = reconciliation.to_string();
             for project in &projects {
+                let message = if let Some(error) = project_failures.get(&project.id) {
+                    error.to_string()
+                } else {
+                    if let DaemonError::ProjectAllocationFailureRecordingFailed {
+                        project_id, ..
+                    } = &reconciliation
+                        && project_id != &project.id
+                    {
+                        continue;
+                    }
+                    reconciliation.to_string()
+                };
                 if let Err(recording) =
                     record_project_env_failure(&mut database, &project.id, &message)
                 {

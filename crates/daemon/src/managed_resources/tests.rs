@@ -1528,7 +1528,11 @@ async fn targeted_resource_reconciliation_isolates_project_allocation_failures()
     .await?;
     for project in &projects {
         if !failures.contains_key(&project.id) {
-            crate::project_env::reconcile_project_env_from_persisted_state(&paths, &project.id)?;
+            crate::project_env::reconcile_project_env_from_persisted_state(
+                &paths,
+                &mut Database::open(&paths)?,
+                &project.id,
+            )?;
         }
     }
     let database = Database::open(&paths)?;
@@ -3207,6 +3211,16 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
             "healthy.test",
             "serve: false\nmailpit:\n  version: '1.0'\n  env:\n    MAIL_HOST: '${smtp_host}'\nrustfs:\n  version: '1.0'\n  env:\n    ENDPOINT: '${endpoint}'\n",
         )?;
+        let already_failing = if mode == "recording" {
+            Some(link_project(
+                &paths,
+                &tempdir.path().join("already-failing"),
+                "already-failing.test",
+                config,
+            )?)
+        } else {
+            None
+        };
         seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
         seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
         reserve_available_rustfs_ports(&paths)?;
@@ -3264,17 +3278,24 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
             write_project_config(&broken, config)?;
             crate::project_env::reconcile_project_env_with_catalog(&paths, &mut database, &broken.id, &catalog).await?;
             crate::project_env::reconcile_project_env_with_catalog(&paths, &mut database, &healthy.id, &catalog).await?;
+            if let Some(project) = &already_failing {
+                crate::project_env::reconcile_project_env_with_catalog(&paths, &mut database, &project.id, &catalog).await?;
+            }
+            let already_failing_initial = already_failing.as_ref().map(|project| -> Result<_> {
+                Ok((database.resource_allocations(&project.id, "rustfs")?, read_dotenv(project)?, database.project_env_observed_state(&project.id)?))
+            }).transpose()?;
+            let healthy_env = read_dotenv(&healthy)?;
             let initial = capture()?;
             let bucket = initial.0.iter().find(|allocation| allocation.allocation_name == "uploads")
                 .ok_or_else(|| anyhow!("missing uploads allocation"))?.generated_name.clone();
             stop_recorded_rustfs_runtime(&paths).await?;
             seed_auth_rejecting_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
             if mode == "recording" {
-                state::testing::transaction(&mut database, |transaction| transaction.execute_batch(
+                state::testing::transaction(&mut database, |transaction| transaction.execute_batch(&format!(
                     "CREATE TRIGGER reject_readiness_invalidation BEFORE UPDATE OF status ON resource_allocations
-                     WHEN OLD.status = 'ready' AND NEW.status = 'desired'
-                     BEGIN SELECT RAISE(FAIL, 'fixture rejected allocation readiness invalidation'); END;"
-                ))?;
+                     WHEN OLD.project_id = '{}' AND OLD.status = 'ready' AND NEW.status = 'desired'
+                     BEGIN SELECT RAISE(FAIL, 'fixture rejected allocation readiness invalidation'); END;", broken.id
+                )))?;
             }
             let before_ids = database.recent_jobs()?.into_iter().map(|job| job.id).collect();
             let result = if mode == "project" {
@@ -3329,6 +3350,26 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
                 }
             }
             if mode == "recording" {
+                let (Some(project), Some((initial_allocations, initial_env, initial_observed))) = (&already_failing, &already_failing_initial) else {
+                    bail!("expected earlier allocation failure fixture");
+                };
+                let [initial_allocation] = initial_allocations.as_slice() else {
+                    bail!("expected one earlier Ready allocation");
+                };
+                let allocations = database.resource_allocations(&project.id, "rustfs")?;
+                let observed = database.project_env_observed_state(&project.id)?;
+                let mut expected_allocations = initial_allocations.clone();
+                for (expected, actual) in expected_allocations.iter_mut().zip(&allocations) {
+                    expected.status = ResourceAllocationStatus::Desired;
+                    expected.updated_at.clone_from(&actual.updated_at);
+                }
+                phase_checks.extend([
+                    ("earlier Project initially verified its allocation", initial_allocation.status == ResourceAllocationStatus::Ready && !initial_allocation.env.is_empty() && initial_observed.as_ref().is_some_and(|state| state.status == ProjectEnvObservedStatus::Rendered)),
+                    ("earlier ordinary failure invalidates its own readiness", allocations == expected_allocations),
+                    ("earlier ordinary failure retains its own cause", observed.as_ref().is_some_and(|state| state.status == ProjectEnvObservedStatus::Failed && state.message == Some(format!("daemon protocol error: RustFS admin error: failed to create bucket `{}`; service error", initial_allocation.generated_name)))),
+                    ("earlier ordinary failure preserves its env", read_dotenv(project)? == *initial_env),
+                    ("scoped fatal preserves healthy observation and env", failure.3 == initial.3 && read_dotenv(&healthy)? == healthy_env),
+                ]);
                 return Ok(phase_checks);
             }
             if mode == "project" {
@@ -3344,7 +3385,7 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
             let mailpit = capture()?;
             let mailpit_job = capture_job(&before_ids, "resource:mailpit:1.0")?;
             phase_checks.extend([
-                ("unrelated refresh preserves failed Project and last valid env", mailpit.1 == initial.1 && mailpit.2.as_ref().is_some_and(|state| state.status == ProjectEnvObservedStatus::Failed)),
+                ("unrelated refresh preserves failed Project and last valid env", mailpit.1 == initial.1 && mailpit.2 == before_mailpit.2),
                 ("unrelated refresh leaves allocations untouched", mailpit.0 == before_mailpit.0),
                 ("unrelated refresh covers only verified subjects", mailpit_job.0 == JobStatus::Succeeded && mailpit_job.2 == BTreeSet::from([
                     ("resource".to_owned(), "mailpit:1.0".to_owned()), ("project".to_owned(), healthy.id.clone()),
