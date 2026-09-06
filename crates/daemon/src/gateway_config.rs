@@ -275,6 +275,7 @@ impl PromotedConfigTree {
         let mut fragments = if self.fragments.active_existed {
             fs::read_dir_paths(&self.fragments.backup_dir)?
                 .into_iter()
+                .filter(|path| path.as_str().ends_with(".Caddyfile"))
                 .map(|path| {
                     let file_name = path.file_name().ok_or_else(|| {
                         DaemonError::UnexpectedProtocolResponse {

@@ -9,11 +9,13 @@ use daemon::gateway::{
 use daemon::{CaddyAdminError, CaddyAdminOperation, DaemonError, ProcessSupervisor};
 use insta::{Settings, assert_debug_snapshot};
 use rcgen::generate_simple_self_signed;
+use resources::{PHP_TRACK_DEFAULT_INI, php_track_defaults};
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
 use serde_json::{Value, json};
 use state::{
     Database, GatewayPort, LinkProjectInput, PortOwner, PortRequest, ProjectMode, PvPaths,
-    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, fs,
+    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, RuntimeObservedStatus, RuntimeSubject,
+    StateError, fs,
 };
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -633,12 +635,22 @@ document_root: public
     fs::write_sensitive_file(&paths.worker_root_config("8.4"), edited_worker_root)?;
     fs::write_sensitive_file(&gateway_fragment_path, edited_gateway_fragment)?;
     fs::write_sensitive_file(&worker_fragment_path, edited_worker_fragment)?;
+    let defaults = php_track_defaults(&paths, "8.4")?;
+    fs::remove_file(defaults.php_ini())?;
+    fs::delete_dir_all(defaults.conf_dir())?;
 
     reconcile_gateway_runtimes(&paths).await?;
     let third_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
         .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
     let third_worker_pid = runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?
         .ok_or_else(|| anyhow::anyhow!("expected worker runtime metadata"))?;
+
+    let restored_php_ini = fs::read_to_string(defaults.php_ini());
+    let restored_conf_dir = fs::path_is_directory(defaults.conf_dir());
+    fs::remove_file_if_exists(defaults.php_ini())?;
+    fs::ensure_user_dir(defaults.php_ini())?;
+    let invalid_defaults_result = reconcile_gateway_runtimes(&paths).await;
+    let runtime_states = Database::open(&paths)?.runtime_observed_states()?;
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
@@ -677,6 +689,18 @@ document_root: public
     assert!(worker_metadata["applied_config_fingerprint"].is_string());
     assert_ne!(gateway_metadata["replacement_required"], true);
     assert_ne!(worker_metadata["replacement_required"], true);
+    assert_eq!(restored_php_ini?, PHP_TRACK_DEFAULT_INI);
+    assert!(restored_conf_dir?);
+    let Err(DaemonError::State(StateError::Filesystem { path, .. })) = invalid_defaults_result
+    else {
+        bail!("expected invalid PHP defaults path, got {invalid_defaults_result:?}");
+    };
+    assert_eq!(path, defaults.php_ini());
+    let worker_status = runtime_states
+        .iter()
+        .find(|record| matches!(&record.subject, RuntimeSubject::PhpWorker { php_track } if php_track == "8.4"))
+        .map(|record| record.status);
+    assert_eq!(worker_status, Some(RuntimeObservedStatus::Failed));
 
     Ok(())
 }
@@ -2058,6 +2082,12 @@ document_root: public
         .worker_projects_config_dir("8.4")
         .join(format!("{}.Caddyfile", project.id));
     let previous_fragment = fs::read_to_string(&previous_fragment_path)?;
+    let previous_metadata: Value =
+        serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata("8.4"))?)?;
+    fs::write_sensitive_file(
+        &paths.worker_projects_config_dir("8.4").join("notes.txt"),
+        "This file is not imported by the worker config.\n",
+    )?;
 
     let mut database = Database::open(&paths)?;
     database.release_port(PortOwner::PhpWorker {
@@ -2080,11 +2110,22 @@ document_root: public
     let root_after = read_test_bytes(paths.worker_root_config("8.4"))?;
     let load_bodies = fake_admin_load_bodies(&paths.worker_root_config("8.4"))?;
     let requests = fake_admin_requests(&paths.worker_root_config("8.4"))?;
+    let restored_metadata: Value =
+        serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata("8.4"))?)?;
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
 
-    assert!(matches!(result, Err(DaemonError::ReadinessTimedOut { .. })));
+    assert!(
+        matches!(&result, Err(DaemonError::ReadinessTimedOut { .. })),
+        "{result:?}"
+    );
+    assert!(previous_metadata["applied_config_fingerprint"].is_string());
+    assert_eq!(
+        restored_metadata["applied_config_fingerprint"],
+        previous_metadata["applied_config_fingerprint"]
+    );
+    assert_ne!(restored_metadata["replacement_required"], true);
     assert_eq!(first_worker_pid, second_worker_pid);
     assert_eq!(root_after, previous_root);
     assert_eq!(
