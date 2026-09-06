@@ -549,6 +549,47 @@ pub(crate) async fn install_missing_resource_demands_with_catalog_and_progress(
     .await
 }
 
+pub(crate) fn verify_system_resource_installations(
+    paths: &PvPaths,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    mut demanded_tracks: BTreeSet<DemandedResourceTrack>,
+) -> Result<(), DaemonError> {
+    let production_catalog;
+    let catalog = if let Some(catalog) = runtime_catalog {
+        catalog
+    } else {
+        production_catalog = ManagedResourceRuntimeCatalog::production()?;
+        &production_catalog
+    };
+    let database = Database::open(paths)?;
+    demanded_tracks.insert(DemandedResourceTrack::new("caddy", "2"));
+    let plan =
+        missing_desired_resource_installs_with_demands(&database, catalog, &demanded_tracks)?;
+    if !plan.is_empty() {
+        let failures = plan
+            .installs
+            .iter()
+            .map(|install| format!("{}: installation is still pending", install.label()))
+            .chain(
+                plan.failures
+                    .iter()
+                    .map(DesiredResourceInstallFailure::message),
+            )
+            .collect();
+        return Err(DaemonError::ManagedResourceDefaultInstallFailures { failures });
+    }
+
+    let commands = ManagedResourceCommands::new(
+        paths.clone(),
+        catalog.install_options.manifest_url.clone(),
+        catalog.install_options.target_platform,
+    );
+    for installed in commands.list(None)? {
+        commands.validate_installed_track(&installed)?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn stop_undemanded_system_resource_runtimes(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,

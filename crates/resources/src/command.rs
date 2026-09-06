@@ -1523,7 +1523,8 @@ impl ManagedResourceCommands {
         Ok(current_artifact.is_some_and(|artifact| artifact.revocation_state().is_revoked()))
     }
 
-    fn validate_installed_track(
+    /// Validates that a [`ManagedResourceTrack`] has its recorded release and active pointer.
+    pub fn validate_installed_track(
         &self,
         installed: &ManagedResourceTrack,
     ) -> ManagedResourceCommandResult<()> {
