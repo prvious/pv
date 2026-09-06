@@ -553,6 +553,7 @@ pub(crate) fn verify_system_resource_installations(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     mut demanded_tracks: BTreeSet<DemandedResourceTrack>,
+    progress: &DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     let production_catalog;
     let catalog = if let Some(catalog) = runtime_catalog {
@@ -569,7 +570,13 @@ pub(crate) fn verify_system_resource_installations(
         let failures = plan
             .installs
             .iter()
-            .map(|install| format!("{}: installation is still pending", install.label()))
+            .map(|install| {
+                let label = install.label();
+                let cause = progress
+                    .install_failure(&label)
+                    .unwrap_or_else(|| "installation is still pending".to_owned());
+                format!("{label}: {cause}")
+            })
             .chain(
                 plan.failures
                     .iter()
@@ -859,10 +866,18 @@ fn install_missing_desired_resource_tracks_blocking(
     if installs.is_empty() {
         return finish_desired_resource_install_failures(failures);
     }
+    for install in &installs {
+        progress.set_install_failure(install.label(), None);
+    }
     let manifest_snapshot = match progress.manifest_snapshot(&commands, client) {
         Ok(snapshot) => snapshot,
-        Err(error) if failures.is_empty() => return Err(error),
         Err(error) => {
+            for install in &installs {
+                progress.set_install_failure(install.label(), Some(error.to_string()));
+            }
+            if failures.is_empty() {
+                return Err(error);
+            }
             failures.push(DesiredResourceInstallFailure::new(
                 failures.len(),
                 "artifact manifest".to_owned(),
@@ -883,7 +898,10 @@ fn install_missing_desired_resource_tracks_blocking(
                 label,
                 install,
             }),
-            Err(error) => failures.push(DesiredResourceInstallFailure::new(order, label, error)),
+            Err(error) => {
+                progress.set_install_failure(label.clone(), Some(error.to_string()));
+                failures.push(DesiredResourceInstallFailure::new(order, label, error));
+            }
         }
     }
     let artifacts = unique_resolved_artifacts(&resolved_installs);
@@ -893,6 +911,18 @@ fn install_missing_desired_resource_tracks_blocking(
         let download_failures =
             resolved_download_failures(&downloads, &resolved.install, resolved.label.as_str());
         if !download_failures.is_empty() {
+            let cause = download_failures
+                .iter()
+                .map(|(label, error)| {
+                    if label == &resolved.label {
+                        error.to_string()
+                    } else {
+                        format!("{label}: {error}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            progress.set_install_failure(resolved.label.clone(), Some(cause));
             failures.extend(download_failures.into_iter().map(|(label, error)| {
                 DesiredResourceInstallFailure::new(resolved.order, label, error)
             }));
@@ -901,6 +931,7 @@ fn install_missing_desired_resource_tracks_blocking(
         if let Err(error) =
             install_resolved_desired_resource(&commands, &downloads, &progress, &resolved.install)
         {
+            progress.set_install_failure(resolved.label.clone(), Some(error.to_string()));
             failures.push(DesiredResourceInstallFailure::new(
                 resolved.order,
                 resolved.label,

@@ -1933,6 +1933,8 @@ fn setup_default_download_failures_follow_original_plan_order() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let fixtures = [
         setup_default_fixture("caddy")?,
+        setup_default_fixture("php")?,
+        setup_default_fixture("frankenphp")?,
         setup_default_fixture("mysql")?,
         setup_default_fixture("redis")?,
     ];
@@ -1942,6 +1944,8 @@ fn setup_default_download_failures_follow_original_plan_order() -> Result<()> {
         &mut database,
         &[
             ("caddy", SETUP_DEFAULT_CADDY_TRACK),
+            ("php", SETUP_DEFAULT_PHP_TRACK),
+            ("frankenphp", SETUP_DEFAULT_PHP_TRACK),
             ("mysql", SETUP_DEFAULT_MYSQL_TRACK),
             ("redis", SETUP_DEFAULT_REDIS_TRACK),
         ],
@@ -1957,12 +1961,13 @@ fn setup_default_download_failures_follow_original_plan_order() -> Result<()> {
             manifest_requests: Arc::new(AtomicUsize::new(0)),
         });
 
+    let progress = DaemonDownloadProgress::disabled();
     let result = super::install_missing_desired_resource_tracks_blocking(
-        paths,
-        catalog.install_options,
+        paths.clone(),
+        catalog.install_options.clone(),
         Some(client),
         installs,
-        crate::jobs::DaemonDownloadProgress::disabled(),
+        progress.clone(),
     );
     let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
         bail!("expected setup default download failures");
@@ -1971,11 +1976,30 @@ fn setup_default_download_failures_follow_original_plan_order() -> Result<()> {
     assert_debug_snapshot!(failures, @r###"
     [
         "caddy 2: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/caddy-2.11.4-pv1-any.tar.gz`",
+        "php 8.5: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`",
+        "frankenphp 8.5: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/frankenphp-8.5.0-pv1-any.tar.gz`",
         "mysql 8.4: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/mysql-8.4.0-pv1-any.tar.gz`",
         "redis 8.8: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/redis-8.8.0-pv1-any.tar.gz`",
     ]
     "###);
 
+    let verification = super::verify_system_resource_installations(
+        &paths,
+        Some(&catalog),
+        BTreeSet::new(),
+        &progress,
+    );
+    let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = verification else {
+        bail!("expected current installation failures: {verification:?}");
+    };
+    assert_debug_snapshot!(failures, @r#"
+    [
+        "caddy 2: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/caddy-2.11.4-pv1-any.tar.gz`",
+        "php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`; frankenphp 8.5: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/frankenphp-8.5.0-pv1-any.tar.gz`",
+        "mysql 8.4: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/mysql-8.4.0-pv1-any.tar.gz`",
+        "redis 8.8: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/redis-8.8.0-pv1-any.tar.gz`",
+    ]
+    "#);
     Ok(())
 }
 
@@ -2113,7 +2137,11 @@ async fn system_reconciliation_job_records_missing_gateway_when_caddy_install_fa
     let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
         bail!("expected missing Caddy installation to fail system reconciliation job: {result:#?}");
     };
-    assert_eq!(failures, ["caddy 2: installation is still pending"]);
+    assert_debug_snapshot!(failures, @r#"
+    [
+        "caddy 2: Managed Resource command failed: artifact manifest does not include Managed Resource `caddy`",
+    ]
+    "#);
     let error_message = DaemonError::ManagedResourceDefaultInstallFailures { failures }.to_string();
 
     let database = Database::open(&paths)?;
@@ -2283,7 +2311,11 @@ async fn system_reconciliation_job_fails_unsupported_manifest_track_without_part
     else {
         bail!("expected the pending MySQL track before the Gateway failure: {failures:#?}");
     };
-    assert_eq!(pending, &["mysql 9.9: installation is still pending"]);
+    assert_debug_snapshot!(pending, @r#"
+    [
+        "mysql 9.9: Managed Resource command failed: artifact manifest resource `mysql` has no track `9.9`",
+    ]
+    "#);
     let error_message = DaemonError::SystemReconciliationFailures { failures }.to_string();
 
     let database = Database::open(&paths)?;

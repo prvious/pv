@@ -80,6 +80,7 @@ pub(crate) struct DaemonDownloadProgress {
     phase_log: Option<Arc<Mutex<ReconciliationPhaseLog>>>,
     manifest_snapshot:
         Arc<OnceLock<Result<Arc<resources::ArtifactManifestRefresh>, resources::ResourcesError>>>,
+    install_failures: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 impl DaemonDownloadProgress {
@@ -88,6 +89,7 @@ impl DaemonDownloadProgress {
             sender: Some(sender),
             phase_log: None,
             manifest_snapshot: Arc::new(OnceLock::new()),
+            install_failures: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -96,12 +98,33 @@ impl DaemonDownloadProgress {
             sender: None,
             phase_log: None,
             manifest_snapshot: Arc::new(OnceLock::new()),
+            install_failures: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
     fn with_phase_log(mut self, phase_log: ReconciliationPhaseLog) -> Self {
         self.phase_log = Some(Arc::new(Mutex::new(phase_log)));
         self
+    }
+
+    pub(crate) fn set_install_failure(&self, label: String, failure: Option<String>) {
+        let mut failures = match self.install_failures.lock() {
+            Ok(failures) => failures,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(failure) = failure {
+            failures.insert(label, failure);
+        } else {
+            failures.remove(&label);
+        }
+    }
+
+    pub(crate) fn install_failure(&self, label: &str) -> Option<String> {
+        let failures = match self.install_failures.lock() {
+            Ok(failures) => failures,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        failures.get(label).cloned()
     }
 
     fn send_download_progress(
@@ -1279,6 +1302,7 @@ async fn complete_system_reconciliation_with_progress(
             paths,
             runtime_catalog,
             project_result.as_ref().ok(),
+            &progress,
         );
     }
     let gateway_result = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await;
@@ -1501,13 +1525,15 @@ async fn reconcile_system_projects_with_progress(
         total: projects.len(),
         ..SystemProjectReconciliationReport::default()
     };
+    // Projects linked after discovery still need prerequisite installation.
+    let empty_demand = ProjectDemand::default();
 
     for project in projects {
         match reconcile_project_env_with_runtime_catalog_and_progress(
             paths,
             &project.id,
             runtime_catalog,
-            project_demands.get(&project.id),
+            Some(project_demands.get(&project.id).unwrap_or(&empty_demand)),
             demanded_tracks,
             progress.clone(),
         )
@@ -1555,6 +1581,7 @@ async fn reconcile_system_projects_and_resources_with_progress(
             paths,
             runtime_catalog,
             project_result.as_ref().ok(),
+            &progress,
         );
     }
 
@@ -1579,6 +1606,7 @@ fn verify_system_resources_after_project_application(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     project_report: Option<&SystemProjectReconciliationReport>,
+    progress: &DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     let database = Database::open(paths)?;
     let mut demanded_tracks = BTreeSet::new();
@@ -1591,7 +1619,7 @@ fn verify_system_resources_after_project_application(
         demanded_tracks
             .extend(discover_project_demand(paths, &database, &project)?.resource_tracks);
     }
-    verify_system_resource_installations(paths, runtime_catalog, demanded_tracks)
+    verify_system_resource_installations(paths, runtime_catalog, demanded_tracks, progress)
 }
 
 fn combined_system_reconciliation_error(mut failures: Vec<DaemonError>) -> DaemonError {
@@ -2087,6 +2115,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn system_reconciliation_installs_php_for_project_linked_after_discovery()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        seed_cached_php_pair(&paths, tempdir.path())?;
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(
+            &config_path,
+            "serve: false\nphp: \"8.5\"\nenv:\n  APP_NAME: late\n",
+        )?;
+        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+            OFFLINE_TEST_MANIFEST_URL,
+            LinkingProjectArtifactClient {
+                inner: MultiArtifactClient {
+                    manifest: state::fs::read_to_string(&paths.downloads().join("manifest.json"))?,
+                    archives: BTreeMap::new(),
+                },
+                paths: paths.clone(),
+                project: LinkProjectInput {
+                    path: project_path.clone(), original_path: project_path.clone(),
+                    primary_hostname: "late.test".to_owned(), config_path,
+                    desired_php_track: None, additional_hostnames: Vec::new(),
+                },
+            },
+        )?;
+        assert!(Database::open(&paths)?.projects()?.is_empty());
+
+        let report = reconcile_system_projects_and_resources_with_progress(
+            &paths,
+            Some(&catalog),
+            super::DaemonDownloadProgress::disabled(),
+        )
+        .await?;
+
+        assert_eq!((report.total, report.succeeded), (1, 1));
+        assert!(report.failures.is_empty());
+        let database = Database::open(&paths)?;
+        for resource in ["php", "frankenphp"] {
+            assert!(
+                database
+                    .managed_resource_track(resource, PHP_TEST_TRACK)?
+                    .current_artifact_path
+                    .is_some(),
+                "late Project must install {resource}"
+            );
+        }
+        let project = database
+            .projects()?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("expected late Project"))?;
+        assert_eq!(
+            database
+                .project_env_observed_state(&project.id)?
+                .map(|state| state.status),
+            Some(ProjectEnvObservedStatus::Rendered)
+        );
+        assert_snapshot!(state::fs::read_to_string(&project_path.join(".env"))?, @r"
+        # >>> PV MANAGED
+        APP_NAME=late
+        # <<< PV MANAGED
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn system_reconciliation_pins_discovered_php_track_across_manifest_refresh()
     -> anyhow::Result<()> {
         for (version, initially_served) in [
@@ -2304,11 +2399,14 @@ mod tests {
         )
         .await;
 
-        assert!(matches!(
-            result,
-            Err(DaemonError::ManagedResourceDefaultInstallFailures { failures })
-                if failures == ["mailpit 1.0: installation is still pending"]
-        ));
+        let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
+            anyhow::bail!("expected current installation failure: {:?}", result.err());
+        };
+        assert_debug_snapshot!(failures, @r#"
+        [
+            "mailpit 1.0: Managed Resource command failed: artifact manifest does not include Managed Resource `mailpit`",
+        ]
+        "#);
         let database = Database::open(&paths)?;
         for (project, expected_status) in projects.iter().zip([
             ProjectEnvObservedStatus::Rendered,
@@ -2487,11 +2585,14 @@ mod tests {
         Database::open(&paths)?.replace_project_managed_resources(&linked.project.id, &[])?;
         stop_undemanded_system_resource_runtimes(&paths, Some(&catalog)).await?;
         let (result, snapshot) = verification?;
-        assert!(matches!(
-            result,
-            Err(DaemonError::ManagedResourceDefaultInstallFailures { failures })
-                if failures == ["mailpit 1.1: installation is still pending"]
-        ));
+        let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
+            anyhow::bail!("expected current installation failure: {:?}", result.err());
+        };
+        assert_debug_snapshot!(failures, @r#"
+        [
+            "mailpit 1.1: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/mailpit-1.1.0-pv1-any.tar.gz`: missing scripted archive",
+        ]
+        "#);
         assert_debug_snapshot!(snapshot, @r##"
         (
             [
@@ -2588,10 +2689,17 @@ mod tests {
             assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
             let database = Database::open(&paths)?;
             if download_failures == 2 {
-                assert!(
-                    matches!(result, Err(DaemonError::ManagedResourceDefaultInstallFailures { failures })
-                    if failures == ["php/frankenphp 8.5: installation is still pending"])
-                );
+                let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result
+                else {
+                    anyhow::bail!("expected current installation failure: {:?}", result.err());
+                };
+                allow_duplicates! {
+                    assert_debug_snapshot!(failures, @r#"
+                    [
+                        "php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP status 410 for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`",
+                    ]
+                    "#);
+                }
                 assert!(database.managed_resource_tracks()?.iter().all(|track| {
                     track.resource_name != "php" || track.current_artifact_path.is_none()
                 }));
@@ -2626,6 +2734,44 @@ mod tests {
             ");
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn system_reconciliation_retains_artifact_layout_failure() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let (client, _) = scripted_artifact_client(
+            tempdir.path(),
+            "caddy",
+            CADDY_TEST_TRACK,
+            CADDY_TEST_ARTIFACT_VERSION,
+            CADDY_TEST_ARCHIVE_FILE_NAME,
+            "bin/not-caddy",
+        )?;
+        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(OFFLINE_TEST_MANIFEST_URL, client)?;
+
+        let result = reconcile_system_projects_and_resources_with_progress(
+            &paths,
+            Some(&catalog),
+            super::DaemonDownloadProgress::disabled(),
+        )
+        .await;
+
+        let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
+            anyhow::bail!("expected invalid Caddy layout: {result:?}");
+        };
+        assert_debug_snapshot!(failures, @r#"
+        [
+            "caddy 2: Managed Resource command failed: invalid artifact layout for `caddy`: missing executable `bin/caddy`",
+        ]
+        "#);
+        assert!(
+            Database::open(&paths)?
+                .managed_resource_track("caddy", CADDY_TEST_TRACK)?
+                .current_artifact_path
+                .is_none()
+        );
         Ok(())
     }
 
@@ -2711,10 +2857,15 @@ mod tests {
                 track.resource_name != "mailpit" || track.current_artifact_path.is_none()
             }));
             if replacement {
-                assert!(
-                    matches!(result, Err(DaemonError::ManagedResourceDefaultInstallFailures { failures })
-                    if failures == ["mailpit 1.1: installation is still pending"])
-                );
+                let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result
+                else {
+                    anyhow::bail!("expected current installation failure: {:?}", result.err());
+                };
+                assert_debug_snapshot!(failures, @r#"
+                [
+                    "mailpit 1.1: Managed Resource command failed: artifact manifest resource `mailpit` has no track `1.1`",
+                ]
+                "#);
                 assert_eq!(
                     database
                         .project_env_observed_state(&linked.project.id)?
@@ -2751,8 +2902,12 @@ mod tests {
         state::fs::remove_file(&paths.resources().join("caddy/2/current"))?;
         let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters()?;
 
-        let result =
-            super::verify_system_resources_after_project_application(&paths, Some(&catalog), None);
+        let result = super::verify_system_resources_after_project_application(
+            &paths,
+            Some(&catalog),
+            None,
+            &super::DaemonDownloadProgress::disabled(),
+        );
 
         assert!(
             matches!(result, Err(DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(ResourcesError::InvalidArtifactLayout { resource, .. }))) if resource == "caddy")
@@ -3702,6 +3857,12 @@ mod tests {
             .find(|job| job.id == job_id)
             .ok_or_else(|| anyhow::anyhow!("missing job {job_id}"))?;
         assert_eq!(job.status, JobStatus::Failed);
+        let failed_event = events
+            .iter()
+            .find(|event| event["type"] == "job_failed")
+            .ok_or_else(|| anyhow::anyhow!("expected streamed failure"))?;
+        assert_eq!(failed_event["error"].as_str(), job.error.as_deref());
+        assert_snapshot!(job.error.as_deref().ok_or_else(|| anyhow::anyhow!("expected persisted failure"))?, @r"Managed Resource default installs failed: caddy 2: Managed Resource command failed: invalid artifact manifest: expected ident at line 1 column 2; composer 2: Managed Resource command failed: invalid artifact manifest: expected ident at line 1 column 2");
         let phases = reconciliation_phase_events(&paths, &job_id)?;
         for (phase, expected_count) in [("manifest", 1), ("resources", 1), ("finalization", 1)] {
             let matching = phases
@@ -5048,10 +5209,11 @@ mod tests {
         }
 
         fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
-            if self.download_attempts.fetch_add(1, Ordering::SeqCst) < self.download_failures {
+            let attempt = self.download_attempts.fetch_add(1, Ordering::SeqCst);
+            if attempt < self.download_failures {
                 return Err(ResourcesError::HttpStatusFailed {
                     url: url.to_owned(),
-                    status_code: 404,
+                    status_code: if attempt == 0 { 404 } else { 410 },
                 });
             }
             self.inner.download(url, writer)
@@ -5079,6 +5241,28 @@ mod tests {
     struct MultiArtifactClient {
         manifest: String,
         archives: BTreeMap<String, Vec<u8>>,
+    }
+
+    struct LinkingProjectArtifactClient {
+        inner: MultiArtifactClient,
+        paths: PvPaths,
+        project: LinkProjectInput,
+    }
+
+    impl ResourceHttpClient for LinkingProjectArtifactClient {
+        fn get_text(&self, url: &str) -> resources::Result<String> {
+            Database::open(&self.paths)
+                .and_then(|mut database| database.link_project(self.project.clone()))
+                .map_err(|error| ResourcesError::Filesystem {
+                    path: self.paths.db().to_string(),
+                    reason: error.to_string(),
+                })?;
+            self.inner.get_text(url)
+        }
+
+        fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
+            self.inner.download(url, writer)
+        }
     }
 
     struct ReconfiguringProjectArtifactClient {
