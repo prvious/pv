@@ -57,14 +57,22 @@ struct ProjectResourceTrackDemand {
 pub(crate) struct ProjectPhpTrackDemand {
     php_configured: bool,
     version_selector: Option<String>,
+    global_version_selector: Option<String>,
     serves_http: bool,
     track: String,
 }
 
 impl ProjectPhpTrackDemand {
-    fn matches(&self, php: Option<&config::PhpConfig>, serves_http: bool) -> bool {
+    fn matches(
+        &self,
+        php: Option<&config::PhpConfig>,
+        serves_http: bool,
+        global_version_selector: Option<&str>,
+    ) -> bool {
         self.php_configured == php.is_some()
             && self.version_selector.as_deref() == php.and_then(config::PhpConfig::version_selector)
+            && (self.version_selector.is_some()
+                || self.global_version_selector.as_deref() == global_version_selector)
             && (self.php_configured || self.serves_http == serves_http)
     }
 }
@@ -218,9 +226,10 @@ pub(crate) fn discover_project_demand(
             &config_file,
             None,
         )?;
+        let global_version_selector = database.global_php_default_track()?;
         let php_track = maybe_resolve_project_php_track(
             paths,
-            database,
+            global_version_selector.as_deref(),
             &candidate_project,
             config_file.config.php.as_ref(),
             candidate_project.mode == ProjectMode::Served,
@@ -232,6 +241,7 @@ pub(crate) fn discover_project_demand(
             &config_file.config,
             candidate_project.mode == ProjectMode::Served,
             php_track,
+            global_version_selector,
         ))
     })();
 
@@ -248,6 +258,7 @@ fn project_demand_from_plan(
     config: &ProjectConfig,
     serves_http: bool,
     php_track: Option<String>,
+    global_version_selector: Option<String>,
 ) -> ProjectDemand {
     let php = config.php.as_ref();
     let resource_selections = plan
@@ -286,6 +297,7 @@ fn project_demand_from_plan(
             version_selector: php
                 .and_then(config::PhpConfig::version_selector)
                 .map(str::to_owned),
+            global_version_selector,
             serves_http,
             track,
         }),
@@ -341,9 +353,10 @@ async fn reconcile_loaded_project(
             &config_file,
             discovered_demand,
         )?;
+        let global_version_selector = database.global_php_default_track()?;
         let php_track = maybe_resolve_project_php_track(
             paths,
-            database,
+            global_version_selector.as_deref(),
             &candidate_project,
             config_file.config.php.as_ref(),
             serves_http,
@@ -663,7 +676,7 @@ async fn install_project_resources(
 
 fn maybe_resolve_project_php_track(
     paths: &PvPaths,
-    database: &Database,
+    global_version_selector: Option<&str>,
     project: &ProjectRecord,
     php: Option<&config::PhpConfig>,
     serves_http: bool,
@@ -674,7 +687,7 @@ fn maybe_resolve_project_php_track(
     }
 
     if let Some(discovered_php_track) = discovered_php_track
-        && discovered_php_track.matches(php, serves_http)
+        && discovered_php_track.matches(php, serves_http, global_version_selector)
     {
         // Keep `latest` stable when the resource pass refreshes the manifest between phases.
         return Ok(Some(discovered_php_track.track.clone()));
@@ -683,12 +696,12 @@ fn maybe_resolve_project_php_track(
     if php.is_none()
         && project.desired_php_track.is_none()
         && !paths.downloads().join("manifest.json").exists()
-        && database.global_php_default_track()?.is_none()
+        && global_version_selector.is_none()
     {
         return Ok(None);
     }
 
-    selected_project_php_track(paths, database, project, php).map(Some)
+    selected_project_php_track(paths, global_version_selector, project, php).map(Some)
 }
 
 pub(crate) fn resolve_project_php_runtime(
@@ -697,27 +710,28 @@ pub(crate) fn resolve_project_php_runtime(
     project: &ProjectRecord,
     php: Option<&config::PhpConfig>,
 ) -> Result<ResolvedPhpRuntime, DaemonError> {
-    let track = selected_project_php_track(paths, database, project, php)?;
+    let global_version_selector = database.global_php_default_track()?;
+    let track =
+        selected_project_php_track(paths, global_version_selector.as_deref(), project, php)?;
 
     resolve_project_php_runtime_for_track(database, php, track)
 }
 
 fn selected_project_php_track(
     paths: &PvPaths,
-    database: &Database,
+    global_version_selector: Option<&str>,
     project: &ProjectRecord,
     php: Option<&config::PhpConfig>,
 ) -> Result<String, DaemonError> {
     let selector = php.and_then(config::PhpConfig::version_selector);
-    let global_selector = database.global_php_default_track()?;
     let stored_selector = if selector.is_some()
-        || (!paths.downloads().join("manifest.json").exists() && global_selector.is_none())
+        || (!paths.downloads().join("manifest.json").exists() && global_version_selector.is_none())
     {
         project.desired_php_track.as_deref()
     } else {
         None
     };
-    resolve_project_php_track(paths, selector, stored_selector, global_selector.as_deref())
+    resolve_project_php_track(paths, selector, stored_selector, global_version_selector)
 }
 
 fn resolve_project_php_runtime_for_track(

@@ -1297,7 +1297,11 @@ async fn complete_system_reconciliation_with_progress(
     .await;
     finish_project_phase(project_timer, &project_result);
     let cleanup_result = stop_undemanded_system_resource_runtimes(paths, runtime_catalog).await;
-    if resources_result.is_err() {
+    if resources_result.is_err()
+        || project_result
+            .as_ref()
+            .is_ok_and(|report| !report.failures.is_empty())
+    {
         resources_result = verify_system_resources_after_project_application(
             paths,
             runtime_catalog,
@@ -1576,7 +1580,11 @@ async fn reconcile_system_projects_and_resources_with_progress(
     )
     .await;
     let cleanup_result = stop_undemanded_system_resource_runtimes(paths, runtime_catalog).await;
-    if resources_result.is_err() {
+    if resources_result.is_err()
+        || project_result
+            .as_ref()
+            .is_ok_and(|report| !report.failures.is_empty())
+    {
         resources_result = verify_system_resources_after_project_application(
             paths,
             runtime_catalog,
@@ -2020,7 +2028,7 @@ mod tests {
         reconcile_system_resources_with_runtime_catalog_and_progress,
         record_background_reconciliation_error, run_background_reconciliation_job,
         start_reconciliation_job, start_update_job, stop_undemanded_system_resource_runtimes,
-        stream_started_reconciliation_job, stream_started_update_job,
+        stream_started_reconciliation_job, stream_started_update_job, system_project_summary,
         write_coalesced_update_response,
     };
     use crate::reconciliation::{
@@ -2115,33 +2123,176 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_reconciliation_installs_php_for_project_linked_after_discovery()
+    async fn system_reconciliation_verifies_php_for_project_linked_after_discovery()
     -> anyhow::Result<()> {
+        for (update_path, fail_install) in [(true, false), (true, true), (false, true)] {
+            let tempdir = tempdir()?;
+            let paths = PvPaths::for_home(tempdir.path().join("home"));
+            seed_cached_php_pair(&paths, tempdir.path())?;
+            let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+            if !update_path {
+                seed_gateway_ports(&mut Database::open(&paths)?)?;
+                let certified_key =
+                    generate_simple_self_signed(vec!["pv-gateway.localhost".to_owned()])?;
+                state::fs::write_sensitive_file(
+                    &paths.ca_certificate(),
+                    &certified_key.cert.pem(),
+                )?;
+                state::fs::write_sensitive_file(
+                    &paths.ca_private_key(),
+                    &certified_key.signing_key.serialize_pem(),
+                )?;
+            }
+            if fail_install {
+                let sha256 = sha256_file(&tempdir.path().join(PHP_TEST_ARCHIVE_FILE_NAME))?;
+                state::fs::remove_file(
+                    &paths
+                        .downloads()
+                        .join(format!("{sha256}-{PHP_TEST_ARCHIVE_FILE_NAME}")),
+                )?;
+            }
+            let project_path = tempdir.path().join("project");
+            let config_path = project_path.join("pv.yml");
+            state::fs::write_sensitive_file(
+                &config_path,
+                "serve: false\nphp: \"8.5\"\nenv:\n  APP_NAME: late\n",
+            )?;
+            let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+                OFFLINE_TEST_MANIFEST_URL,
+                LinkingProjectArtifactClient {
+                    inner: MultiArtifactClient {
+                        manifest: state::fs::read_to_string(&paths.downloads().join("manifest.json"))?,
+                        archives: BTreeMap::new(),
+                    },
+                    paths: paths.clone(),
+                    project: LinkProjectInput {
+                        path: project_path.clone(), original_path: project_path.clone(),
+                        primary_hostname: "late.test".to_owned(), config_path,
+                        desired_php_track: None, additional_hostnames: Vec::new(),
+                    },
+                },
+            )?;
+            assert!(Database::open(&paths)?.projects()?.is_empty());
+
+            let job_id = "system-late-project-test";
+            let phase_log =
+                crate::structured_log::ReconciliationPhaseLog::new(&paths, job_id, "system");
+            let progress = super::DaemonDownloadProgress::disabled();
+            let result = if update_path {
+                reconcile_system_projects_and_resources_with_progress(
+                    &paths,
+                    Some(&catalog),
+                    progress,
+                )
+                .await
+                .map(|report| {
+                    if !fail_install {
+                        assert_eq!((report.total, report.succeeded), (1, 1));
+                        assert!(report.failures.is_empty());
+                    }
+                })
+            } else {
+                complete_system_reconciliation_with_progress(
+                    &paths,
+                    Some(&catalog),
+                    progress,
+                    &phase_log,
+                )
+                .await
+                .map(|_| ())
+            };
+            let database = Database::open(&paths)?;
+            assert!(
+                database
+                    .managed_resource_track("caddy", CADDY_TEST_TRACK)?
+                    .current_artifact_path
+                    .is_some()
+            );
+            let project = database
+                .projects()?
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("expected late Project"))?;
+            if fail_install {
+                let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result
+                else {
+                    anyhow::bail!("expected late PHP installation failure: {:?}", result.err());
+                };
+                allow_duplicates! {
+                    assert_debug_snapshot!(failures, @r#"
+                    [
+                        "php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`: missing scripted archive",
+                    ]
+                    "#);
+                }
+                assert!(database.managed_resource_tracks()?.iter().all(|track| {
+                    track.resource_name != "php" || track.current_artifact_path.is_none()
+                }));
+                assert_eq!(
+                    database
+                        .project_env_observed_state(&project.id)?
+                        .map(|state| state.status),
+                    Some(ProjectEnvObservedStatus::Failed)
+                );
+                assert!(!state::fs::path_exists(&project_path.join(".env")));
+                if !update_path {
+                    let phases = reconciliation_phase_events(&paths, job_id)?;
+                    assert!(
+                        phases.iter().any(|phase| phase["phase"] == "resources"
+                            && phase["outcome"] == "succeeded")
+                    );
+                    assert!(
+                        phases.iter().any(|phase| phase["phase"] == "project_apply"
+                            && phase["outcome"] == "failed")
+                    );
+                }
+                continue;
+            }
+            result?;
+            for resource in ["php", "frankenphp"] {
+                assert!(
+                    database
+                        .managed_resource_track(resource, PHP_TEST_TRACK)?
+                        .current_artifact_path
+                        .is_some(),
+                    "late Project must install {resource}"
+                );
+            }
+            assert_eq!(
+                database
+                    .project_env_observed_state(&project.id)?
+                    .map(|state| state.status),
+                Some(ProjectEnvObservedStatus::Rendered)
+            );
+            assert_snapshot!(state::fs::read_to_string(&project_path.join(".env"))?, @r"
+            # >>> PV MANAGED
+            APP_NAME=late
+            # <<< PV MANAGED
+            ");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn system_reconciliation_retains_partial_project_env_failure() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
-        seed_cached_php_pair(&paths, tempdir.path())?;
+        seed_installed_caddy(&paths)?;
         let project_path = tempdir.path().join("project");
         let config_path = project_path.join("pv.yml");
-        state::fs::write_sensitive_file(
-            &config_path,
-            "serve: false\nphp: \"8.5\"\nenv:\n  APP_NAME: late\n",
-        )?;
-        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
-            OFFLINE_TEST_MANIFEST_URL,
-            LinkingProjectArtifactClient {
-                inner: MultiArtifactClient {
-                    manifest: state::fs::read_to_string(&paths.downloads().join("manifest.json"))?,
-                    archives: BTreeMap::new(),
-                },
-                paths: paths.clone(),
-                project: LinkProjectInput {
-                    path: project_path.clone(), original_path: project_path.clone(),
-                    primary_hostname: "late.test".to_owned(), config_path,
-                    desired_php_track: None, additional_hostnames: Vec::new(),
-                },
-            },
-        )?;
-        assert!(Database::open(&paths)?.projects()?.is_empty());
+        state::fs::write_sensitive_file(&config_path, "serve: false\nenv:\n  APP_NAME: project\n")?;
+        let env_path = project_path.join(".env");
+        let env_before = "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_NAME=old\n";
+        state::fs::write_sensitive_file(&env_path, env_before)?;
+        let linked = Database::open(&paths)?.link_project(LinkProjectInput {
+            path: project_path.clone(),
+            original_path: project_path,
+            primary_hostname: "project.test".to_owned(),
+            config_path,
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?;
+        let catalog = crate::managed_resources::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
 
         let report = reconcile_system_projects_and_resources_with_progress(
             &paths,
@@ -2150,34 +2301,19 @@ mod tests {
         )
         .await?;
 
-        assert_eq!((report.total, report.succeeded), (1, 1));
-        assert!(report.failures.is_empty());
-        let database = Database::open(&paths)?;
-        for resource in ["php", "frankenphp"] {
-            assert!(
-                database
-                    .managed_resource_track(resource, PHP_TEST_TRACK)?
-                    .current_artifact_path
-                    .is_some(),
-                "late Project must install {resource}"
-            );
-        }
-        let project = database
-            .projects()?
-            .into_iter()
-            .next()
-            .ok_or_else(|| anyhow::anyhow!("expected late Project"))?;
+        assert_eq!((report.total, report.succeeded), (1, 0));
+        assert_debug_snapshot!(system_project_summary(&report), @r#"
+        Some(
+            "Project env reconciled for 0 of 1 Projects; failures: project.test: Project config error: malformed PV-managed .env block: start marker without end marker",
+        )
+        "#);
+        assert_eq!(state::fs::read_to_string(&env_path)?, env_before);
         assert_eq!(
-            database
-                .project_env_observed_state(&project.id)?
+            Database::open(&paths)?
+                .project_env_observed_state(&linked.project.id)?
                 .map(|state| state.status),
-            Some(ProjectEnvObservedStatus::Rendered)
+            Some(ProjectEnvObservedStatus::Failed)
         );
-        assert_snapshot!(state::fs::read_to_string(&project_path.join(".env"))?, @r"
-        # >>> PV MANAGED
-        APP_NAME=late
-        # <<< PV MANAGED
-        ");
         Ok(())
     }
 
@@ -3225,6 +3361,130 @@ mod tests {
                 })
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn project_application_rereads_global_php_after_discovery() -> anyhow::Result<()> {
+        let mut applied_tracks = Vec::new();
+        for (name, config, global_track) in [
+            ("served", "document_root: .\n", Some("8.5")),
+            (
+                "mapping",
+                "serve: false\nphp:\n  extensions: []\n",
+                Some("8.5"),
+            ),
+            ("new-global", "document_root: .\n", None),
+            ("latest", "serve: false\nphp: latest\n", Some("8.5")),
+        ] {
+            let tempdir = tempdir()?;
+            let paths = PvPaths::for_home(tempdir.path().join("home"));
+            seed_cached_php_pair(&paths, tempdir.path())?;
+            for (track, artifact_version) in [("8.5", "8.5.0-pv1"), ("8.4", "8.4.0-pv1")] {
+                for resource in ["php", "frankenphp"] {
+                    seed_installed_artifact(
+                        &paths,
+                        resource,
+                        track,
+                        artifact_version,
+                        &format!("bin/{resource}"),
+                    )?;
+                }
+            }
+            let project_path = tempdir.path().join("project");
+            let config_path = project_path.join("pv.yml");
+            state::fs::write_sensitive_file(&config_path, config)?;
+            let mut database = Database::open(&paths)?;
+            let linked = database.link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path,
+                primary_hostname: "project.test".to_owned(),
+                config_path,
+                desired_php_track: None,
+                additional_hostnames: Vec::new(),
+            })?;
+            if let Some(global_track) = global_track {
+                database.record_global_php_default_track(global_track)?;
+            }
+            let demand = discover_system_project_demand(&paths)?;
+            assert_eq!(
+                demand.resource_tracks,
+                BTreeSet::from([
+                    super::DemandedResourceTrack::new("php", "8.5"),
+                    super::DemandedResourceTrack::new("frankenphp", "8.5"),
+                ])
+            );
+
+            database.record_global_php_default_track("8.4")?;
+            if name == "latest" {
+                let manifest_path = paths.downloads().join("manifest.json");
+                let manifest = state::fs::read_to_string(&manifest_path)?;
+                state::fs::write_sensitive_file(
+                    &manifest_path,
+                    &manifest.replace("\"8.5\"", "\"8.4\""),
+                )?;
+            }
+            drop(database);
+            let catalog =
+                crate::managed_resources::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
+            let report = reconcile_system_projects_with_progress(
+                &paths,
+                Some(&catalog),
+                &demand.resource_tracks,
+                &demand.project_demands,
+                &super::DaemonDownloadProgress::disabled(),
+            )
+            .await?;
+
+            assert_eq!((report.total, report.succeeded), (1, 1));
+            assert!(report.failures.is_empty());
+            let database = Database::open(&paths)?;
+            assert_eq!(database.global_php_default_track()?.as_deref(), Some("8.4"));
+            let project = database
+                .project_by_id(&linked.project.id)?
+                .ok_or_else(|| anyhow::anyhow!("expected linked Project"))?;
+            applied_tracks.push((name, project.desired_php_track, project.php_runtime.track));
+        }
+        assert_debug_snapshot!(applied_tracks, @r#"
+        [
+            (
+                "served",
+                Some(
+                    "8.4",
+                ),
+                Some(
+                    "8.4",
+                ),
+            ),
+            (
+                "mapping",
+                Some(
+                    "8.4",
+                ),
+                Some(
+                    "8.4",
+                ),
+            ),
+            (
+                "new-global",
+                Some(
+                    "8.4",
+                ),
+                Some(
+                    "8.4",
+                ),
+            ),
+            (
+                "latest",
+                Some(
+                    "8.5",
+                ),
+                Some(
+                    "8.5",
+                ),
+            ),
+        ]
+        "#);
         Ok(())
     }
 
