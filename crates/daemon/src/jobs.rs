@@ -1680,7 +1680,17 @@ async fn complete_project_reconciliation_with_progress(
         PhaseOutcome::from_succeeded(project_result.is_ok()),
         &[("project_count", 1)],
     );
-    let project_env_summary = project_result?;
+    let project_env_summary = match project_result {
+        Ok(summary) => summary,
+        Err(project_error) => {
+            let gateway_result = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await;
+            return Err(combined_system_reconciliation_error(
+                std::iter::once(project_error)
+                    .chain(gateway_result.err())
+                    .collect(),
+            ));
+        }
+    };
     let gateway_outcome = reconcile_project_gateway_runtimes_with_phase_log(
         paths,
         id.as_str(),
@@ -2366,6 +2376,9 @@ mod tests {
     use tokio::sync::{mpsc::channel, oneshot};
     use tokio::time::{Duration, timeout};
 
+    use crate::gateway::{
+        GatewayPfRoutingState, reconcile_gateway_runtimes_with_pf_state_for_test,
+    };
     use crate::project_env::reconcile_project_env_from_persisted_state;
 
     use super::{
@@ -2422,6 +2435,150 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/test-fixtures/gateway/fake-caddy-server.py"
     ));
+
+    #[tokio::test]
+    async fn invalid_project_config_does_not_block_crashed_worker_recovery() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        seed_installed_caddy(&paths)?;
+        let certified_key = generate_simple_self_signed(vec![
+            "project.test".to_owned(),
+            "pv-gateway.localhost".to_owned(),
+        ])?;
+        state::fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;
+        state::fs::write_sensitive_file(
+            &paths.ca_private_key(),
+            &certified_key.signing_key.serialize_pem(),
+        )?;
+        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let release = tempdir.path().join("frankenphp-release");
+        let executable = release.join("bin/frankenphp");
+        state::fs::write_sensitive_file(
+            &executable,
+            include_str!("../test-fixtures/gateway/fake-stateful-frankenphp.sh"),
+        )?;
+        state::fs::write_sensitive_file(
+            &Utf8PathBuf::from(format!("{executable}.server.py")),
+            include_str!("../test-fixtures/gateway/fake-stateful-runtime-server.py"),
+        )?;
+        set_executable(&executable)?;
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(&config_path, "php: \"8.4\"\n")?;
+        let mut database = Database::open(&paths)?;
+        let project = database
+            .link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path,
+                primary_hostname: "project.test".to_owned(),
+                config_path: config_path.clone(),
+                desired_php_track: Some("8.4".to_owned()),
+                additional_hostnames: Vec::new(),
+            })?
+            .project;
+        database.record_managed_resource_track_installed(
+            "frankenphp",
+            "8.4",
+            "fake-frankenphp-pv1",
+            &release,
+        )?;
+        drop(database);
+        reconcile_gateway_runtimes_with_pf_state_for_test(
+            &paths,
+            Duration::from_secs(5),
+            GatewayPfRoutingState::Inactive,
+        )
+        .await?;
+        let supervisor = ProcessSupervisor::new(paths.clone());
+        let worker = supervisor
+            .adopt_recorded(
+                &paths.worker_pid("8.4"),
+                &paths.worker_runtime_metadata("8.4"),
+            )?
+            .ok_or_else(|| anyhow::anyhow!("worker not running after setup"))?;
+        worker.stop(Duration::from_secs(1)).await?;
+        state::fs::write_sensitive_file(&config_path, "php: [\n")?;
+        let scope = ReconciliationScope::project(project.id.clone())?;
+        let result = run_background_reconciliation_job(
+            paths.clone(),
+            ReconciliationQueue::new(),
+            scope,
+            None,
+        )
+        .await;
+        let recovered = supervisor.adopt_recorded(
+            &paths.worker_pid("8.4"),
+            &paths.worker_runtime_metadata("8.4"),
+        )?;
+        let worker_recovered = recovered.is_some();
+        if let Some(worker) = recovered {
+            worker.stop(Duration::from_secs(1)).await?;
+        }
+        let database = Database::open(&paths)?;
+        let job_statuses = database
+            .recent_jobs()?
+            .into_iter()
+            .map(|job| job.status)
+            .collect::<Vec<_>>();
+        let project_status = database
+            .project_env_observed_state(&project.id)?
+            .map(|state| state.status);
+        assert!(
+            matches!(result, Err(DaemonError::Config(ConfigError::Parse { .. }))),
+            "unexpected Project failure: {result:?}"
+        );
+        assert_debug_snapshot!((worker_recovered, project_status, job_statuses), @r"
+        (
+            true,
+            Some(
+                Failed,
+            ),
+            [
+                Failed,
+            ],
+        )
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn project_and_gateway_recovery_failures_are_both_reported() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        seed_installed_caddy(&paths)?;
+        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(&config_path, "php: [\n")?;
+        let project = Database::open(&paths)?
+            .link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path,
+                primary_hostname: "project.test".to_owned(),
+                config_path,
+                desired_php_track: Some("8.4".to_owned()),
+                additional_hostnames: Vec::new(),
+            })?
+            .project;
+        let result = run_background_reconciliation_job(
+            paths.clone(),
+            ReconciliationQueue::new(),
+            ReconciliationScope::project(project.id)?,
+            None,
+        )
+        .await;
+        let Err(DaemonError::SystemReconciliationFailures { failures }) = result else {
+            anyhow::bail!("expected Project and Gateway failures, got {result:?}");
+        };
+        assert!(
+            matches!(failures.as_slice(), [
+            DaemonError::Config(ConfigError::Parse { .. }),
+            DaemonError::UnexpectedProtocolResponse { reason },
+        ] if reason == "FrankenPHP is not installed for PHP track `8.4`"),
+            "unexpected failures: {failures:?}"
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn resource_only_project_without_active_route_excludes_gateway_coverage()
