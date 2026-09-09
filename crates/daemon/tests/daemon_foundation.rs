@@ -17,7 +17,8 @@ use state::{
 use std::io::{self, ErrorKind, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
 use std::str::FromStr;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UdpSocket, UnixListener, UnixStream};
@@ -394,10 +395,10 @@ async fn daemon_shutdown_cancels_startup_reconciliation_waiting_for_jobs_lock() 
 }
 
 #[tokio::test]
-async fn daemon_shutdown_cancels_active_startup_reconciliation() -> Result<()> {
+async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let [validation_started, _release_validation] = seed_barrier_foundation_caddy(&paths)?;
+    let [validation_started, release_validation] = seed_barrier_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
 
     let result = async {
@@ -415,19 +416,118 @@ async fn daemon_shutdown_cancels_active_startup_reconciliation() -> Result<()> {
         .await??;
         wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
 
-        timeout(Duration::from_secs(1), gateway_guard.shutdown_daemon()).await??;
+        let shutdown_was_pending = {
+            let mut shutdown = Box::pin(gateway_guard.shutdown_daemon());
+            let early_shutdown = timeout(Duration::from_millis(100), &mut shutdown).await;
+            state::fs::write_sensitive_file(&release_validation, "release\n")?;
+            match early_shutdown {
+                Ok(result) => {
+                    result?;
+                    false
+                }
+                Err(_) => {
+                    timeout(Duration::from_secs(5), shutdown).await??;
+                    true
+                }
+            }
+        };
 
-        let job = wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
-        assert_eq!(
-            job.error.as_deref(),
-            Some("reconciliation was abandoned before completion")
-        );
+        let job = wait_for_succeeded_job_scope(&paths, "system").await?;
+        assert!(shutdown_was_pending);
+        assert_eq!(job.status, JobStatus::Succeeded);
+        assert_eq!(job.error, None);
 
         Ok::<(), anyhow::Error>(())
     }
     .await;
     let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
     propagate_after_cleanup(result, cleanup_result)
+}
+
+struct BlockedStartupDownloadClient {
+    started: Arc<AtomicBool>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl resources::ResourceHttpClient for BlockedStartupDownloadClient {
+    fn get_text(&self, _url: &str) -> resources::Result<String> {
+        Ok(CADDY_ARTIFACT_MANIFEST.to_owned())
+    }
+
+    fn download(&self, url: &str, _writer: &mut dyn io::Write) -> resources::Result<()> {
+        self.started.store(true, Ordering::SeqCst);
+        self.release
+            .lock()
+            .map_err(|error| error.to_string())
+            .and_then(|receiver| {
+                receiver
+                    .recv_timeout(Duration::from_secs(10))
+                    .map_err(|error| error.to_string())
+            })
+            .map_err(|reason| resources::ResourcesError::HttpRequestFailed {
+                url: url.to_owned(),
+                reason,
+            })?;
+        Err(resources::ResourcesError::HttpStatusFailed {
+            url: url.to_owned(),
+            status_code: 404,
+        })
+    }
+}
+
+#[tokio::test]
+async fn daemon_shutdown_keeps_jobs_lock_until_blocking_install_finishes() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let started = Arc::new(AtomicBool::new(false));
+    let (release, blocked) = mpsc::channel();
+    let client = BlockedStartupDownloadClient {
+        started: Arc::clone(&started),
+        release: Mutex::new(blocked),
+    };
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
+            paths.clone(),
+            TEST_ARTIFACT_MANIFEST_URL,
+            client,
+        )
+        .await?;
+    timeout(Duration::from_secs(5), async {
+        while !started.load(Ordering::SeqCst) {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    let mut shutdown = Box::pin(daemon.shutdown());
+    let early_shutdown = timeout(Duration::from_millis(100), &mut shutdown).await;
+    let jobs_lock_held = matches!(
+        JobsLock::acquire(&paths),
+        Err(state::StateError::CoordinationLockHeld { .. })
+    );
+    release.send(())?;
+    let shutdown_was_pending = match early_shutdown {
+        Ok(result) => {
+            result?;
+            false
+        }
+        Err(_) => {
+            timeout(Duration::from_secs(5), shutdown).await??;
+            true
+        }
+    };
+    let job = wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
+    let _jobs_lock = JobsLock::acquire(&paths)?;
+    assert_debug_snapshot!((shutdown_was_pending, jobs_lock_held, job.status, job.error), @r#"
+    (
+        true,
+        true,
+        Failed,
+        Some(
+            "Managed Resource default installs failed: caddy 2: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/caddy-2.11.4-pv1-any.tar.gz`",
+        ),
+    )
+    "#);
+    Ok(())
 }
 
 #[tokio::test]
