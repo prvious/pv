@@ -6824,6 +6824,8 @@ mod tests {
                 "download",
                 "install",
                 "project_apply",
+                "workers",
+                "gateway",
                 "finalization",
             ]
         );
