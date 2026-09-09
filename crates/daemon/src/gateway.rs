@@ -321,7 +321,10 @@ async fn reconcile_project_gateway_runtimes(
         &targeted,
         &target_active_impact,
         project_id,
-    )? {
+        readiness_timeout,
+    )
+    .await?
+    {
         return Ok(skipped_project_gateway_outcome(phase_log));
     }
     if !complete_targeted_runtime_plan(paths, project_id, &mut targeted)? {
@@ -1541,11 +1544,12 @@ fn resource_only_project_has_no_runtime_fragments(
     Ok(true)
 }
 
-fn target_project_gateway_impact_is_unchanged(
+async fn target_project_gateway_impact_is_unchanged(
     paths: &PvPaths,
     targeted: &TargetedRuntimePlan,
     active_impact: &ActiveProjectGatewayImpact,
     project_id: &str,
+    readiness_timeout: Duration,
 ) -> Result<bool, DaemonError> {
     let Some(current_runtime_key) = targeted.current_runtime_key.as_deref() else {
         return Ok(!active_impact.served && active_impact.runtime_keys.is_empty());
@@ -1597,7 +1601,21 @@ fn target_project_gateway_impact_is_unchanged(
         .get(current_runtime_key)
         .and_then(|fragments| fragments.get(&file_name))
         == Some(&expected_worker_fragment);
-    Ok(gateway_unchanged && worker_unchanged)
+    if !gateway_unchanged || !worker_unchanged {
+        return Ok(false);
+    }
+
+    Ok(matches!(
+        timeout(
+            readiness_timeout.min(OWNED_READINESS_PROBE_TIMEOUT),
+            probe_readiness_once(&ReadinessCheck::Tcp {
+                host: "127.0.0.1".to_owned(),
+                port: worker.port,
+            }),
+        )
+        .await,
+        Ok(Ok(()))
+    ))
 }
 
 fn skipped_project_gateway_outcome(
