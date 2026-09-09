@@ -23,6 +23,7 @@ use std::io::ErrorKind;
 use std::net::TcpListener;
 use std::process::Output;
 use std::time::{Duration, Instant};
+use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
 
 const GATEWAY_RECONCILIATION_SUMMARY: &str = "Gateway runtime reconciled";
@@ -5289,4 +5290,118 @@ fn assert_process_spec_snapshot(
     settings.bind(|| {
         assert_debug_snapshot!("caddy_cli_command_and_process_specs_are_stable", snapshot);
     });
+}
+
+#[tokio::test]
+async fn targeted_reconciliation_reports_alive_unready_worker() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = create_project_with_config(tempdir.path(), "acme", "php: \"8.4\"\n")?;
+    let caddy_release = tempdir.path().join("fake-caddy-release");
+    let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
+    write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
+    write_stateful_fake_frankenphp(&frankenphp_release.join("bin/frankenphp"))?;
+    let mut database = Database::open(&paths)?;
+    let project = database
+        .link_project(LinkProjectInput {
+            path: project_root.clone(),
+            original_path: project_root.clone(),
+            primary_hostname: "acme.test".to_owned(),
+            config_path: project_root.join("pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-pv1",
+        &frankenphp_release,
+    )?;
+    let ports = available_loopback_ports(3)?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
+    drop(database);
+    reconcile_gateway_runtimes(&paths).await?;
+    let plan = build_runtime_plan(&paths)?;
+    let worker = plan.workers.first().context("expected worker")?;
+    let command = CaddyCliCommand::frankenphp(frankenphp_release.join("bin/frankenphp"));
+    let spec = worker_process_spec(&paths, worker, &command, &frankenphp_release)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let original_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?;
+    write_fake_admin_control(
+        &paths.worker_root_config("8.4"),
+        json!({"stop_service": true}),
+    )?;
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if TcpStream::connect(("127.0.0.1", ports[2])).await.is_err() {
+                return;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .context("worker listener stayed up")?;
+    assert!(supervisor.verify_ownership(&spec)?.is_some());
+    let result = reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &project.id,
+        Duration::from_millis(250),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await;
+    let still_owned = supervisor.verify_ownership(&spec)?.is_some();
+    let still_unready = TcpStream::connect(("127.0.0.1", ports[2])).await.is_err();
+    let final_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?;
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    let worker_status = Database::open(&paths)?
+        .runtime_observed_states()?
+        .into_iter()
+        .find(|record| matches!(&record.subject, RuntimeSubject::PhpWorker { php_track } if php_track == "8.4"))
+        .map(|record| record.status);
+    let Err(DaemonError::CaddyAdmin(CaddyAdminError::RestoredConfigReloadFailed {
+        original_error,
+        restored_error,
+    })) = result
+    else {
+        bail!("expected readiness and rollback failure, got {result:?}");
+    };
+    assert!(matches!(
+        original_error.as_ref(),
+        CaddyAdminError::TaskFailed {
+            operation: CaddyAdminOperation::Readiness,
+            ..
+        }
+    ));
+    assert!(matches!(
+        restored_error.as_ref(),
+        CaddyAdminError::TaskFailed {
+            operation: CaddyAdminOperation::Rollback,
+            ..
+        }
+    ));
+    assert_debug_snapshot!((still_owned, still_unready, original_pid == final_pid, worker_status), @r"
+    (
+        true,
+        true,
+        true,
+        Some(
+            Failed,
+        ),
+    )
+    ");
+    Ok(())
 }
