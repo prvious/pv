@@ -273,7 +273,7 @@ The daemon watches linked Project config files and automatically reconciles when
 
 On startup, the daemon detects privileged system drift such as stale DNS resolver ports or stale `pf` redirects, but it does not prompt for admin privileges or mutate system configuration from the background. It records repair-required observed status instead.
 
-If a linked Project config becomes invalid, the daemon keeps the last valid served or resource-only desired state, records the config error in observed status, stops updating the configured env file from the invalid config, and surfaces the error in `pv list` and `pv status`. PV does not tear down working routes or resources because of a transient invalid edit.
+If a linked Project config becomes invalid, the daemon keeps the last valid served or resource-only desired state, records the config error in observed status, stops updating the configured env file from the invalid config, and surfaces the error in `pv list` and `pv status`. PV does not tear down working routes or resources because of a transient invalid edit. Project reconciliation still attempts Gateway and worker recovery after a Project config or resource failure, preserving the Project error and any runtime recovery error.
 
 Project config changes update only affected runtime processes. Config-only changes load the affected Caddy gateway or FrankenPHP worker through its admin API; PHP version or routing changes may replace or reassign FrankenPHP serving for the affected Project. Env-only changes update the configured env file without restarting the Gateway.
 
