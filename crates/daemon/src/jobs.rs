@@ -327,11 +327,7 @@ pub(crate) async fn run_startup_reconciliation_job(
         }
     };
 
-    tokio::select! {
-        biased;
-        _ = &mut shutdown => Ok(()),
-        result = complete_background_reconciliation_job(&paths, result, runtime_catalog) => result,
-    }
+    complete_background_reconciliation_job(&paths, result, runtime_catalog).await
 }
 
 async fn complete_background_reconciliation_job(
