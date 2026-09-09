@@ -74,6 +74,16 @@ expression: snapshot
         },
         Object {
             "job_id": String("job_000004"),
+            "message": String("workers"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000004"),
+            "message": String("gateway"),
+            "type": String("progress"),
+        },
+        Object {
+            "job_id": String("job_000004"),
             "message": String("finalization"),
             "type": String("progress"),
         },
