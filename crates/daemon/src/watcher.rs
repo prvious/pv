@@ -138,7 +138,9 @@ mod tests {
         let (release_sender, release_receiver) = mpsc::channel();
         let snapshot = tokio::spawn(spawn_project_config_snapshot(move || {
             let _result = started_sender.send(());
-            release_receiver.recv().map_err(std::io::Error::other)?;
+            release_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(std::io::Error::other)?;
 
             Ok(BTreeMap::new())
         }));

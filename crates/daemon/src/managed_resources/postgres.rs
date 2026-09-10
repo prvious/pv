@@ -402,6 +402,7 @@ fn delete_optional_file(path: &camino::Utf8Path) -> Result<(), DaemonError> {
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
+    use std::time::Duration;
 
     use anyhow::Result;
 
@@ -413,7 +414,9 @@ mod tests {
         let (release_sender, release_receiver) = mpsc::channel();
         let preparation = tokio::spawn(spawn_postgres_preparation(move || {
             let _result = started_sender.send(());
-            release_receiver.recv().map_err(std::io::Error::other)?;
+            release_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(std::io::Error::other)?;
 
             Ok(())
         }));
