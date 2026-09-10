@@ -2291,7 +2291,12 @@ mod tests {
             state::fs::path_entry_exists(&projects[2].path.join(".env"))?,
         );
 
-        state::fs::write_sensitive_file(&projects[1].config_path, project_config)?;
+        state::fs::write_sensitive_file(
+            &projects[1].config_path,
+            &format!(
+                "php:\n  version: \"8.5\"\n  extensions: [unsupported_fixture]\n{project_config}"
+            ),
+        )?;
         reconcile_project_env_from_persisted_state(
             &paths,
             &mut Database::open(&paths)?,
@@ -2748,6 +2753,126 @@ mod tests {
             checks.iter().all(|(_, passed)| *passed),
             "result={result:#?}, job={job:#?}, coverage={coverage:#?}, checks={checks:#?}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn targeted_resource_scope_refuses_unapplied_php_identity() -> anyhow::Result<()> {
+        for (php_config, applied) in [
+            ("php: \"8.5\"\n", true),
+            ("php: latest\n", true),
+            ("php: \"8.4\"\n", false),
+            ("php:\n  version: \"8.5\"\n  extensions: [redis]\n", false),
+            ("", false),
+        ] {
+            let tempdir = tempdir()?;
+            let paths = PvPaths::for_home(tempdir.path().join("home"));
+            let project_path = tempdir.path().join("project");
+            let config_path = project_path.join("pv.yml");
+            state::fs::write_sensitive_file(
+                &config_path,
+                &format!(
+                    "serve: false\n{php_config}mailpit:\n  version: \"1.0\"\n  env:\n    MAIL_HOST: \"${{smtp_host}}\"\n"
+                ),
+            )?;
+            let mut database = Database::open(&paths)?;
+            let project = database
+                .link_project_with_mode(
+                    LinkProjectInput {
+                        path: project_path.clone(),
+                        original_path: project_path,
+                        primary_hostname: "project.test".to_owned(),
+                        config_path,
+                        desired_php_track: Some("8.5".to_owned()),
+                        additional_hostnames: Vec::new(),
+                    },
+                    ProjectMode::ResourceOnly,
+                )?
+                .project;
+            database.replace_project_managed_resources(
+                &project.id,
+                &[ProjectManagedResourceInput {
+                    resource_name: "mailpit".to_owned(),
+                    track: "1.0".to_owned(),
+                }],
+            )?;
+            database.record_managed_resource_track_env_context(
+                "mailpit",
+                "1.0",
+                &BTreeMap::from([("smtp_host".to_owned(), "127.0.0.1".to_owned())]),
+            )?;
+            database.record_project_env_observed_snapshot(
+                &project.id,
+                ProjectEnvObservedStatus::Failed,
+                Some("previous PHP application failed"),
+                &[],
+            )?;
+            let previous_env = "USER_VALUE=kept\n";
+            state::fs::write_sensitive_file(&project.path.join(".env"), previous_env)?;
+            let result =
+                reconcile_project_env_from_persisted_state(&paths, &mut database, &project.id);
+            if applied {
+                assert!(result.is_ok(), "{result:?}");
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(DaemonError::ProjectEnvDependenciesNotApplied { .. })
+                    ),
+                    "{result:?}"
+                );
+            }
+            let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_url(OFFLINE_TEST_MANIFEST_URL)?;
+            let scope = ReconciliationScope::resource("mailpit", "1.0")?;
+            let ReconciliationScope::Resource { name, track } = &scope else {
+                return Err(anyhow::anyhow!("expected resource scope"));
+            };
+            let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
+                &paths,
+                "php-dependency",
+                &scope.to_string(),
+            );
+            let completion = complete_managed_resource_reconciliation_with_progress(
+                &paths,
+                name,
+                track,
+                Some(&catalog),
+                super::DaemonDownloadProgress::disabled(),
+                &phase_log,
+            )
+            .await?;
+            assert_eq!(
+                completion
+                    .coverage
+                    .contains(&JobDiagnosticSubject::Project {
+                        id: project.id.clone()
+                    }),
+                applied
+            );
+            let observed = database
+                .project_env_observed_state(&project.id)?
+                .ok_or_else(|| anyhow::anyhow!("expected Project observation"))?;
+            assert_eq!(
+                observed.status,
+                if applied {
+                    ProjectEnvObservedStatus::Rendered
+                } else {
+                    ProjectEnvObservedStatus::Failed
+                }
+            );
+            assert_eq!(
+                database
+                    .project_by_id(&project.id)?
+                    .map(|project| project.php_runtime),
+                Some(project.php_runtime)
+            );
+            if !applied {
+                assert_eq!(
+                    state::fs::read_to_string(&project.path.join(".env"))?,
+                    previous_env
+                );
+            }
+        }
         Ok(())
     }
 
