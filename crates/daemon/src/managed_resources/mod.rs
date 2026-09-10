@@ -11,7 +11,7 @@ pub(crate) mod sql;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::io;
 use std::net::TcpListener;
@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
+use futures_util::StreamExt;
 use protocol::{
     ManagedResourceUpdateCheck as ProtocolUpdateCheck,
     ManagedResourceUpdateCheckTrack as ProtocolUpdateCheckTrack,
@@ -36,7 +37,7 @@ use tokio::time::{sleep, timeout};
 use crate::jobs::DaemonDownloadProgress;
 use crate::project_env::{DemandedResourceTrack, record_project_env_failure};
 use crate::supervisor::{
-    ManagedProcess, runtime_exited_before_readiness_error, wait_for_bounded_runtime_readiness,
+    ManagedProcess, bounded_runtime_readiness, runtime_exited_before_readiness_error,
     wait_for_started_runtime_readiness,
 };
 use crate::{
@@ -1457,14 +1458,30 @@ async fn reconcile_resource_tracks(
         }
     }
 
-    let mut completed =
-        wait_for_bounded_runtime_readiness(prepared, |runtime| runtime.wait()).await;
-    completed.sort_by_key(CompletedResourceRuntime::key);
-    for runtime in completed {
+    let completed = bounded_runtime_readiness(prepared, |runtime| runtime.wait());
+    tokio::pin!(completed);
+    let mut ready = VecDeque::new();
+    loop {
+        let runtime = if let Some(runtime) = ready.pop_front() {
+            runtime
+        } else if let Some(runtime) = completed.next().await {
+            runtime
+        } else {
+            break;
+        };
         let key = runtime.key();
-        if let Err(error) =
-            finish_resource_track(paths, database, reconciliation.catalog, runtime).await
-        {
+        let result = {
+            let finalization =
+                finish_resource_track(paths, database, reconciliation.catalog, runtime);
+            tokio::pin!(finalization);
+            loop {
+                tokio::select! {
+                    result = &mut finalization => break result,
+                    Some(runtime) = completed.next() => ready.push_back(runtime),
+                }
+            }
+        };
+        if let Err(error) = result {
             let resource = state::ProjectManagedResourceInput {
                 resource_name: key.0.clone(),
                 track: key.1.clone(),

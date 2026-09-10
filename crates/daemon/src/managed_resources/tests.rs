@@ -16,7 +16,7 @@ use crate::{
     },
     reconciliation::{ReconciliationQueue, ReconciliationScope},
 };
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
@@ -4301,19 +4301,38 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
             }
         })
         .await??;
+        cancelled_gate.proceed.add_permits(1);
+        cancelled_gate.finish.add_permits(1);
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if cloned_hook_events(&allocation_events)?.len() == 1 {
+                    return Ok(());
+                }
+                tokio::select! {
+                    result = &mut reconciliation => {
+                        return Err(anyhow!("resource reconciliation finished with a sibling pending: {result:#?}"));
+                    }
+                    () = tokio::task::yield_now() => {}
+                }
+            }
+        }).await??;
     }
-    assert!(cloned_hook_events(&allocation_events)?.is_empty());
+    let committed_events = cloned_hook_events(&allocation_events)?;
+    assert_eq!(committed_events.len(), 1);
     let cancelled_runtime_states = database.runtime_observed_states()?;
     let mut cancelled_pids = BTreeMap::new();
     for track in ready_tracks {
         assert!(paths.resource_pid("mysql", track).exists());
         assert!(paths.resource_runtime_metadata("mysql", track).exists());
-        assert!(!runtime_has_status_for_resource(
-            &cancelled_runtime_states,
-            "mysql",
-            track,
-            RuntimeObservedStatus::Running,
-        ));
+        assert_eq!(
+            runtime_has_status_for_resource(
+                &cancelled_runtime_states,
+                "mysql",
+                track,
+                RuntimeObservedStatus::Running,
+            ),
+            committed_events.contains(&format!("allocation:{track}"))
+        );
         let pid = resource_runtime_metadata_pid(&paths, "mysql", track)?;
         let adopted = supervisor
             .adopt_recorded(
@@ -4326,12 +4345,16 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
     }
 
     let gate = Arc::new(ReadinessWaveGate::new());
+    let allocation_gate = Arc::new(Semaphore::new(0));
+    let mut adapter =
+        GatedSqlRuntimeAdapter::new(Arc::clone(&gate), Arc::clone(&allocation_events))?;
+    adapter.allocation_gate = Some(Arc::clone(&allocation_gate));
     let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
         super::ManagedResourceInstallOptions {
             manifest_url: resources::default_artifact_manifest_url().to_owned(),
             target_platform: resources::TargetPlatform::current()?,
         },
-        GatedSqlRuntimeAdapter::new(Arc::clone(&gate), Arc::clone(&allocation_events))?,
+        adapter,
     );
     let mut prefetched_installs = BTreeMap::new();
     let mut context = super::ResourceTrackReconciliationContext {
@@ -4380,14 +4403,39 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
             }
         })
         .await??;
-        assert!(cloned_hook_events(&allocation_events)?.is_empty());
+        assert_eq!(cloned_hook_events(&allocation_events)?, committed_events);
 
         drop(write_lock);
-        gate.finish.add_permits(ready_tracks.len());
+        gate.finish.add_permits(1);
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if cloned_hook_events(&allocation_events)?.len() == committed_events.len() + 1 {
+                    return Ok(());
+                }
+                tokio::select! {
+                    result = &mut reconciliation => return Err(anyhow!("resource allocation was not gated: {result:#?}")),
+                    () = tokio::task::yield_now() => {}
+                }
+            }
+        }).await??;
+        assert_eq!(gate.active.load(Ordering::SeqCst), 1);
+        gate.finish.add_permits(1);
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if gate.active.load(Ordering::SeqCst) == 0 {
+                    return Ok(());
+                }
+                tokio::select! {
+                    result = &mut reconciliation => return Err(anyhow!("resource allocation finished before release: {result:#?}")),
+                    () = tokio::task::yield_now() => {}
+                }
+            }
+        }).await.context("sibling readiness stopped during allocation")??;
+        allocation_gate.add_permits(ready_tracks.len());
         timeout(Duration::from_secs(5), &mut reconciliation).await?
     };
     let runtime_states = database.runtime_observed_states()?;
-    let allocation_events = cloned_hook_events(&allocation_events)?;
+    let mut allocation_events = cloned_hook_events(&allocation_events)?;
 
     for track in ready_tracks {
         assert_eq!(
@@ -4409,10 +4457,11 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
         Err(DaemonError::UnsupportedManagedResourceRuntime { resource })
             if resource == "unsupported"
     ));
-    assert_eq!(
-        allocation_events,
-        vec!["allocation:8.0".to_owned(), "allocation:8.1".to_owned()]
-    );
+    let mut expected_events = committed_events;
+    expected_events.extend(["allocation:8.0".to_owned(), "allocation:8.1".to_owned()]);
+    allocation_events.sort();
+    expected_events.sort();
+    assert_eq!(allocation_events, expected_events);
     for track in ready_tracks {
         assert_runtime_status_for_resource(
             &runtime_states,
@@ -6665,7 +6714,7 @@ fn postgres_fixture_manifest(sha256: &str, size: u64) -> String {
 }
 
 fn fake_sql_script() -> &'static str {
-    r#"#!/bin/sh
+    r#"#!/bin/bash
 set -eu
 
 stop() {
@@ -6869,6 +6918,7 @@ struct GatedSqlRuntimeAdapter {
     artifact_adapter: RuntimeArtifactAdapter,
     gate: Arc<ReadinessWaveGate>,
     allocation_events: Arc<Mutex<Vec<String>>>,
+    allocation_gate: Option<Arc<Semaphore>>,
 }
 
 impl GatedSqlRuntimeAdapter {
@@ -6883,6 +6933,7 @@ impl GatedSqlRuntimeAdapter {
             ),
             gate,
             allocation_events,
+            allocation_gate: None,
         })
     }
 }
@@ -6977,7 +7028,11 @@ impl super::ManagedResourceRuntimeAdapter for GatedSqlRuntimeAdapter {
             push_hook_event(
                 &self.allocation_events,
                 &format!("allocation:{}", context.track),
-            )
+            )?;
+            if let Some(gate) = &self.allocation_gate {
+                acquire_test_gate(Arc::clone(gate)).await?;
+            }
+            Ok(())
         })
     }
 }

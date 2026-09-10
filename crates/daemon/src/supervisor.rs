@@ -5,7 +5,7 @@ use std::time::Duration;
 use std::{fmt, future::Future, io};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use futures_util::{StreamExt, stream};
+use futures_util::{Stream, StreamExt, stream};
 use platform::PlatformCapability;
 #[cfg(target_os = "macos")]
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
@@ -467,10 +467,10 @@ where
     }
 }
 
-pub(crate) async fn wait_for_bounded_runtime_readiness<Item, Output, Wait, Readiness>(
+pub(crate) fn bounded_runtime_readiness<Item, Output, Wait, Readiness>(
     items: impl IntoIterator<Item = Item>,
     wait: Wait,
-) -> Vec<Output>
+) -> impl Stream<Item = Output>
 where
     Wait: FnMut(Item) -> Readiness,
     Readiness: Future<Output = Output>,
@@ -478,8 +478,6 @@ where
     stream::iter(items)
         .map(wait)
         .buffer_unordered(RUNTIME_READINESS_CONCURRENCY_LIMIT)
-        .collect()
-        .await
 }
 
 pub(crate) fn runtime_exited_before_readiness_error(runtime_name: &str) -> DaemonError {
@@ -1238,7 +1236,8 @@ mod bounded_readiness_tests {
     use tokio::sync::Semaphore;
     use tokio::time::timeout;
 
-    use super::wait_for_bounded_runtime_readiness;
+    use super::bounded_runtime_readiness;
+    use futures_util::StreamExt;
 
     #[tokio::test]
     async fn readiness_waits_overlap_at_the_fixed_bound() -> Result<()> {
@@ -1246,33 +1245,36 @@ mod bounded_readiness_tests {
         let active = Arc::new(AtomicUsize::new(0));
         let maximum_active = Arc::new(AtomicUsize::new(0));
         let gate = Arc::new(Semaphore::new(0));
-        let task = tokio::spawn(wait_for_bounded_runtime_readiness(0..8, {
-            let started = Arc::clone(&started);
-            let active = Arc::clone(&active);
-            let maximum_active = Arc::clone(&maximum_active);
-            let gate = Arc::clone(&gate);
-
-            move |item| {
+        let task = tokio::spawn(
+            bounded_runtime_readiness(0..8, {
                 let started = Arc::clone(&started);
                 let active = Arc::clone(&active);
                 let maximum_active = Arc::clone(&maximum_active);
                 let gate = Arc::clone(&gate);
 
-                async move {
-                    started.fetch_add(1, Ordering::SeqCst);
-                    let active_now = active.fetch_add(1, Ordering::SeqCst) + 1;
-                    maximum_active.fetch_max(active_now, Ordering::SeqCst);
-                    let permit = gate
-                        .acquire_owned()
-                        .await
-                        .map_err(|error| anyhow!("readiness gate closed: {error}"))?;
-                    permit.forget();
-                    active.fetch_sub(1, Ordering::SeqCst);
+                move |item| {
+                    let started = Arc::clone(&started);
+                    let active = Arc::clone(&active);
+                    let maximum_active = Arc::clone(&maximum_active);
+                    let gate = Arc::clone(&gate);
 
-                    Ok::<_, anyhow::Error>(item)
+                    async move {
+                        started.fetch_add(1, Ordering::SeqCst);
+                        let active_now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        maximum_active.fetch_max(active_now, Ordering::SeqCst);
+                        let permit = gate
+                            .acquire_owned()
+                            .await
+                            .map_err(|error| anyhow!("readiness gate closed: {error}"))?;
+                        permit.forget();
+                        active.fetch_sub(1, Ordering::SeqCst);
+
+                        Ok::<_, anyhow::Error>(item)
+                    }
                 }
-            }
-        }));
+            })
+            .collect::<Vec<_>>(),
+        );
 
         timeout(Duration::from_secs(1), async {
             while started.load(Ordering::SeqCst) < 4 {
