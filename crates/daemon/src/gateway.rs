@@ -241,7 +241,19 @@ async fn reconcile_gateway_runtimes_with_pf_state(
     pf_routing_state: Option<GatewayPfRoutingState>,
     phase_log: Option<&structured_log::ReconciliationPhaseLog>,
 ) -> Result<String, DaemonError> {
-    let Some(gateway_command) = first_installed_caddy_command(paths)? else {
+    let lookup_started_at = Instant::now();
+    let gateway_command = first_installed_caddy_command(paths).inspect_err(|_| {
+        if let Some(phase_log) = phase_log {
+            phase_log.completed(
+                structured_log::ReconciliationPhase::Gateway,
+                "gateway",
+                structured_log::PhaseOutcome::Failed,
+                lookup_started_at.elapsed(),
+                &[],
+            );
+        }
+    })?;
+    let Some(gateway_command) = gateway_command else {
         record_runtime_observed(
             paths,
             RuntimeSubject::Gateway,
