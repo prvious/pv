@@ -1866,16 +1866,24 @@ fn missing_project_install_requests(
             Ok(None) => {}
             Err(error) => {
                 requests.push(ProjectInstallRequest::Failed { key, error });
-                break;
+                continue;
             }
         }
         let Some(adapter) = catalog.adapter(&resource.resource_name) else {
             match unsupported_resource_has_seeded_env_context(database, resource) {
                 Ok(true) => continue,
-                Ok(false) => break,
+                Ok(false) => {
+                    requests.push(ProjectInstallRequest::Failed {
+                        key,
+                        error: DaemonError::UnsupportedManagedResourceRuntime {
+                            resource: resource.resource_name.clone(),
+                        },
+                    });
+                    continue;
+                }
                 Err(error) => {
                     requests.push(ProjectInstallRequest::Failed { key, error });
-                    break;
+                    continue;
                 }
             }
         };
@@ -1883,7 +1891,7 @@ fn missing_project_install_requests(
             Ok(adapter) => requests.push(ProjectInstallRequest::Resolve { key, adapter }),
             Err(error) => {
                 requests.push(ProjectInstallRequest::Failed { key, error });
-                break;
+                continue;
             }
         }
     }
