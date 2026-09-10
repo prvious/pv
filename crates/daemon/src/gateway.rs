@@ -3769,9 +3769,11 @@ mod tests {
     async fn pf_inspection_does_not_block_the_async_executor() -> Result<()> {
         let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
         let (release_sender, release_receiver) = mpsc::channel();
+        let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
         let inspection = tokio::spawn(spawn_gateway_pf_inspection(move || {
             let _result = started_sender.send(());
-            let _result = release_receiver.recv();
+            let result = release_receiver.recv_timeout(Duration::from_secs(5));
+            let _result = result_sender.send(result);
 
             GatewayPfRoutingState::Inactive
         }));
@@ -3781,6 +3783,7 @@ mod tests {
         release_sender.send(())?;
 
         assert_eq!(inspection.await??, GatewayPfRoutingState::Inactive);
+        result_receiver.await??;
 
         Ok(())
     }
