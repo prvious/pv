@@ -279,9 +279,6 @@ async fn reconcile_project_gateway_runtimes(
     pf_routing_state: Option<GatewayPfRoutingState>,
     phase_log: &structured_log::ReconciliationPhaseLog,
 ) -> Result<ProjectGatewayReconciliationOutcome, DaemonError> {
-    if resource_only_project_has_no_runtime_fragments(paths, project_id)? {
-        return Ok(skipped_project_gateway_outcome(phase_log));
-    }
     let Some(gateway_command) = first_installed_caddy_command(paths)? else {
         let summary = reconcile_gateway_runtimes_with_pf_state(
             paths,
@@ -316,14 +313,9 @@ async fn reconcile_project_gateway_runtimes(
         Some(active_impact) => active_impact,
         None => return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem),
     };
-    if target_project_gateway_impact_is_unchanged(
-        paths,
-        &targeted,
-        &target_active_impact,
-        project_id,
-        readiness_timeout,
-    )
-    .await?
+    if targeted.current_runtime_key.is_none()
+        && !target_active_impact.served
+        && target_active_impact.runtime_keys.is_empty()
     {
         return Ok(skipped_project_gateway_outcome(phase_log));
     }
@@ -1512,112 +1504,6 @@ fn complete_targeted_runtime_plan(
     Ok(true)
 }
 
-fn resource_only_project_has_no_runtime_fragments(
-    paths: &PvPaths,
-    project_id: &str,
-) -> Result<bool, DaemonError> {
-    let database = Database::open(paths)?;
-    let project =
-        database
-            .project_by_id(project_id)?
-            .ok_or_else(|| StateError::ProjectNotFound {
-                target: project_id.to_owned(),
-            })?;
-    if project.mode == ProjectMode::Served {
-        return Ok(false);
-    }
-
-    let file_name = project_config_file_name(project_id);
-    if fs::path_entry_exists(&paths.gateway_projects_config_dir().join(&file_name))? {
-        return Ok(false);
-    }
-    for runtime_key in runtime_worker_tracks(paths)? {
-        if fs::path_entry_exists(
-            &paths
-                .worker_projects_config_dir(&runtime_key)
-                .join(&file_name),
-        )? {
-            return Ok(false);
-        }
-    }
-
-    Ok(true)
-}
-
-async fn target_project_gateway_impact_is_unchanged(
-    paths: &PvPaths,
-    targeted: &TargetedRuntimePlan,
-    active_impact: &ActiveProjectGatewayImpact,
-    project_id: &str,
-    readiness_timeout: Duration,
-) -> Result<bool, DaemonError> {
-    let Some(current_runtime_key) = targeted.current_runtime_key.as_deref() else {
-        return Ok(!active_impact.served && active_impact.runtime_keys.is_empty());
-    };
-    if !active_impact.served
-        || active_impact.runtime_keys.len() != 1
-        || !active_impact.runtime_keys.contains(current_runtime_key)
-    {
-        return Ok(false);
-    }
-    let Some(worker) = targeted
-        .plan
-        .workers
-        .iter()
-        .find(|worker| worker.runtime_key == current_runtime_key)
-    else {
-        return Ok(false);
-    };
-    let Some(project) = worker
-        .projects
-        .iter()
-        .find(|project| project.id == project_id)
-    else {
-        return Ok(false);
-    };
-    let file_name = project_config_file_name(project_id);
-    let expected_gateway_fragment = render_gateway_project_config(&GatewayProjectRoute {
-        id: project.id.clone(),
-        render_config: true,
-        primary_hostname: project.primary_hostname.clone(),
-        hostnames: project.hostnames.clone(),
-        worker_port: worker.port,
-        access_log_path: paths.gateway_access_log(),
-    })?;
-    let expected_worker_fragment = render_php_worker_project_config(
-        &PhpWorkerProject {
-            primary_hostname: project.primary_hostname.clone(),
-            hostnames: project.hostnames.clone(),
-            project_root: project.project_root.clone(),
-            document_root: project.document_root.clone(),
-        },
-        worker.port,
-    )?;
-
-    let gateway_unchanged =
-        active_impact.gateway_fragments.get(&file_name) == Some(&expected_gateway_fragment);
-    let worker_unchanged = active_impact
-        .worker_fragments
-        .get(current_runtime_key)
-        .and_then(|fragments| fragments.get(&file_name))
-        == Some(&expected_worker_fragment);
-    if !gateway_unchanged || !worker_unchanged {
-        return Ok(false);
-    }
-
-    Ok(matches!(
-        timeout(
-            readiness_timeout.min(OWNED_READINESS_PROBE_TIMEOUT),
-            probe_readiness_once(&ReadinessCheck::Tcp {
-                host: "127.0.0.1".to_owned(),
-                port: worker.port,
-            }),
-        )
-        .await,
-        Ok(Ok(()))
-    ))
-}
-
 fn skipped_project_gateway_outcome(
     phase_log: &structured_log::ReconciliationPhaseLog,
 ) -> ProjectGatewayReconciliationOutcome {
@@ -1650,39 +1536,21 @@ fn verified_active_project_gateway_impact(
     project_id: &str,
 ) -> Result<Option<ActiveProjectGatewayImpact>, DaemonError> {
     let file_name = project_config_file_name(project_id);
-    let gateway_fragment_exists =
-        fs::path_entry_exists(&paths.gateway_projects_config_dir().join(&file_name))?;
-    let preserves_gateway_fragments = targeted
-        .plan
-        .workers
-        .iter()
-        .flat_map(|worker| &worker.projects)
-        .any(|project| !project.render_config);
-    let gateway_fragments = if gateway_fragment_exists || preserves_gateway_fragments {
-        let Some(snapshot) = verified_active_runtime_config(
-            supervisor,
-            &gateway_process_spec(paths, gateway_command),
-            &paths.gateway_root_config(),
-            &paths.gateway_projects_config_dir(),
-        )?
-        else {
-            return Ok(None);
-        };
-        snapshot.fragments
-    } else {
-        BTreeMap::new()
+    let Some(snapshot) = verified_active_runtime_config(
+        supervisor,
+        &gateway_process_spec(paths, gateway_command),
+        &paths.gateway_root_config(),
+        &paths.gateway_projects_config_dir(),
+    )?
+    else {
+        return Ok(None);
     };
+    let gateway_fragments = snapshot.fragments;
+    let served = gateway_fragments.contains_key(&file_name);
 
     let mut runtime_keys = BTreeSet::new();
     let mut worker_fragments = BTreeMap::new();
     for runtime_key in runtime_worker_tracks(paths)? {
-        if !fs::path_entry_exists(
-            &paths
-                .worker_projects_config_dir(&runtime_key)
-                .join(&file_name),
-        )? {
-            continue;
-        }
         let worker = if let Some(worker) = targeted
             .plan
             .workers
@@ -1699,11 +1567,13 @@ fn verified_active_project_gateway_impact(
         let Some(snapshot) = verified_active_worker_config(paths, supervisor, &worker)? else {
             return Ok(None);
         };
-        worker_fragments.insert(runtime_key.clone(), snapshot.fragments);
-        runtime_keys.insert(runtime_key);
+        if snapshot.fragments.contains_key(&file_name) {
+            worker_fragments.insert(runtime_key.clone(), snapshot.fragments);
+            runtime_keys.insert(runtime_key);
+        }
     }
 
-    if gateway_fragment_exists && runtime_keys.is_empty() {
+    if served && runtime_keys.is_empty() {
         return Ok(None);
     }
 
@@ -1731,7 +1601,7 @@ fn verified_active_project_gateway_impact(
     }
 
     Ok(Some(ActiveProjectGatewayImpact {
-        served: gateway_fragment_exists,
+        served,
         runtime_keys,
         gateway_fragments,
         worker_fragments,
