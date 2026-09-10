@@ -2183,6 +2183,16 @@ mod tests {
                 ProjectMode::ResourceOnly,
             )?
             .project;
+        drop(database);
+        seed_installed_caddy(&paths)?;
+        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        crate::gateway::reconcile_gateway_runtimes_with_pf_state_for_test(
+            &paths,
+            Duration::from_secs(5),
+            crate::gateway::GatewayPfRoutingState::Inactive,
+        )
+        .await?;
+        let mut database = Database::open(&paths)?;
         let uncertain = database
             .link_project(LinkProjectInput {
                 path: uncertain_path.clone(),
@@ -2194,8 +2204,6 @@ mod tests {
             })?
             .project;
         drop(database);
-        seed_installed_caddy(&paths)?;
-        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
         let scope = ReconciliationScope::project(project.id.clone())?;
         let ReconciliationScope::Project { id } = &scope else {
             return Err(anyhow::anyhow!("expected Project scope"));
@@ -2219,7 +2227,7 @@ mod tests {
             completed.coverage,
             [JobDiagnosticSubject::Project { id: project.id }]
         );
-        assert!(!paths.gateway_pid().exists());
+        assert!(paths.gateway_pid().exists());
         assert_eq!(
             Database::open(&paths)?
                 .project_by_id(&uncertain.id)?
