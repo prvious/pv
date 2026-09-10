@@ -1417,7 +1417,9 @@ async fn reconcile_resource_track(
     allocations: &[ResourceAllocationRecord],
 ) -> Result<(), DaemonError> {
     let Some(prepared) =
-        prepare_resource_track(paths, database, reconciliation, resource, allocations).await?
+        prepare_resource_track(paths, database, reconciliation, resource, allocations)
+            .await
+            .map_err(|error| record_resource_runtime_failure(database, resource, error))?
     else {
         return Ok(());
     };
