@@ -1924,7 +1924,7 @@ fn project_scope_missing_installs_share_one_manifest_snapshot() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let fixtures = [
-        setup_default_fixture("caddy")?,
+        setup_default_fixture("mailpit")?,
         setup_default_fixture("redis")?,
     ];
     let (manifest, archives) = remote_setup_default_fixtures(tempdir.path(), &fixtures)?;
@@ -1943,34 +1943,48 @@ fn project_scope_missing_installs_share_one_manifest_snapshot() -> Result<()> {
     };
     let progress = crate::jobs::DaemonDownloadProgress::disabled();
 
-    let requests = [
-        (
-            "caddy",
-            SETUP_DEFAULT_CADDY_TRACK,
-            resources::caddy_adapter()?,
-        ),
-        (
-            "redis",
-            SETUP_DEFAULT_REDIS_TRACK,
-            resources::redis_adapter()?,
-        ),
-    ]
-    .into_iter()
-    .map(
-        |(resource_name, track, adapter)| super::ProjectInstallRequest::Resolve {
-            key: (resource_name.to_owned(), track.to_owned()),
-            adapter,
-        },
-    )
-    .collect();
+    let mut database = Database::open(&paths)?;
+    let removed =
+        database.record_managed_resource_track_removal_intent("mysql", "8.0", false, true)?;
+    let catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    let plan = crate::project_env::ProjectResourcePlan {
+        resources: [
+            ("mysql", "8.0"),
+            ("mailpit", SETUP_DEFAULT_MAILPIT_TRACK),
+            ("unsupported", "1"),
+            ("redis", SETUP_DEFAULT_REDIS_TRACK),
+        ]
+        .into_iter()
+        .map(|(resource_name, track)| ProjectManagedResourceInput {
+            resource_name: resource_name.to_owned(),
+            track: track.to_owned(),
+        })
+        .collect(),
+        allocations: BTreeMap::new(),
+    };
+    let requests = super::missing_project_install_requests(&database, &plan, &catalog);
+    drop(database);
     let http_client: Arc<dyn resources::ResourceHttpClient + Send + Sync> = client;
-    let prefetched = super::prefetch_missing_project_installs_blocking(
+    let mut prefetched = super::prefetch_missing_project_installs_blocking(
         paths.clone(),
         install_options,
         Some(http_client),
         requests,
         progress.clone(),
     )?;
+    assert_eq!(prefetched.len(), 4);
+    assert!(matches!(
+        prefetched.remove(&("mysql".to_owned(), "8.0".to_owned())),
+        Some(super::PrefetchedProjectInstall::Failed(
+            DaemonError::ManagedResourceTrackRemoved { resource, track }
+        )) if resource == "mysql" && track == "8.0"
+    ));
+    assert!(matches!(
+        prefetched.remove(&("unsupported".to_owned(), "1".to_owned())),
+        Some(super::PrefetchedProjectInstall::Failed(
+            DaemonError::UnsupportedManagedResourceRuntime { resource }
+        )) if resource == "unsupported"
+    ));
     for (_key, install) in prefetched {
         let super::PrefetchedProjectInstall::Ready {
             adapter,
@@ -1991,6 +2005,13 @@ fn project_scope_missing_installs_share_one_manifest_snapshot() -> Result<()> {
 
     assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
     let database = Database::open(&paths)?;
+    assert_eq!(database.managed_resource_track("mysql", "8.0")?, removed);
+    assert!(
+        database
+            .managed_resource_track("mailpit", SETUP_DEFAULT_MAILPIT_TRACK)?
+            .installed_version
+            .is_some()
+    );
     assert!(
         database
             .managed_resource_track("redis", SETUP_DEFAULT_REDIS_TRACK)?
