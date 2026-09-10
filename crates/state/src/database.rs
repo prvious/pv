@@ -3161,19 +3161,16 @@ fn upsert_managed_resource_track_desired_in_transaction(
         ON CONFLICT(resource_name, track) DO UPDATE SET
             desired_state = CASE
                 WHEN managed_resource_tracks.desired_state = 'removed'
-                    AND managed_resource_tracks.current_artifact_path IS NOT NULL
                 THEN managed_resource_tracks.desired_state
                 ELSE excluded.desired_state
             END,
             removal_prune = CASE
                 WHEN managed_resource_tracks.desired_state = 'removed'
-                    AND managed_resource_tracks.current_artifact_path IS NOT NULL
                 THEN managed_resource_tracks.removal_prune
                 ELSE 0
             END,
             removal_force = CASE
                 WHEN managed_resource_tracks.desired_state = 'removed'
-                    AND managed_resource_tracks.current_artifact_path IS NOT NULL
                 THEN managed_resource_tracks.removal_force
                 ELSE 0
             END,

@@ -3165,6 +3165,103 @@ async fn demanded_resource_cleans_runtime_files_when_process_exits_after_readine
 }
 
 #[tokio::test]
+async fn system_reconciliation_preserves_removed_demanded_tracks() -> Result<()> {
+    for (resource_name, demanded_resource) in [
+        ("mailpit", "mailpit"),
+        ("php", "frankenphp"),
+        ("frankenphp", "php"),
+    ] {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let caddy_fixture = setup_default_fixture("caddy")?;
+        seed_setup_default_cached_fixture(&paths, tempdir.path(), &[caddy_fixture])?;
+        let mut database = Database::open(&paths)?;
+        let before = database.record_managed_resource_track_removal_intent(
+            resource_name,
+            "1.0",
+            false,
+            true,
+        )?;
+        let catalog = super::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
+        let demands = BTreeSet::from([DemandedResourceTrack::new(demanded_resource, "1.0")]);
+
+        let result = super::reconcile_system_resources_with_catalog_and_progress(
+            &paths,
+            &mut database,
+            &catalog,
+            &demands,
+            DaemonDownloadProgress::disabled(),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(DaemonError::ManagedResourceTrackRemoved { resource, track })
+                if resource == resource_name && track == "1.0"
+        ));
+        assert_eq!(
+            database.managed_resource_track(resource_name, "1.0")?,
+            before
+        );
+        assert!(database.assigned_ports()?.is_empty());
+        assert!(database.runtime_observed_states()?.is_empty());
+        let caddy = database.managed_resource_track("caddy", "2")?;
+        assert!(caddy.installed_version.is_some());
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_reconciliation_rejects_removed_track_without_artifact() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    seed_fake_mailpit_cached_fixture(&paths, tempdir.path())?;
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "project.test",
+        "serve: false\nmailpit:\n  version: \"1.0\"\n",
+    )?;
+    let mut database = Database::open(&paths)?;
+    let before = database.record_managed_resource_track_removal_intent(
+        "mailpit",
+        FAKE_MAILPIT_TRACK,
+        false,
+        true,
+    )?;
+
+    let result = reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
+        &paths,
+        &project.id,
+        OFFLINE_TEST_MANIFEST_URL,
+    )
+    .await;
+
+    let Err(error) = result else {
+        write_project_config(&project, "serve: false\n")?;
+        reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
+        bail!("removed track unexpectedly reconciled");
+    };
+    assert!(
+        matches!(
+            error.downcast_ref::<DaemonError>(),
+            Some(DaemonError::ManagedResourceTrackRemoved { resource, track })
+                if resource == "mailpit" && track == FAKE_MAILPIT_TRACK
+        ),
+        "unexpected reconciliation error: {error:#?}"
+    );
+    let after = database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?;
+    assert_eq!(after.desired_state, before.desired_state);
+    assert_eq!((after.removal_prune, after.removal_force), (false, true));
+    assert!(after.current_artifact_path.is_none());
+    assert!(after.installed_version.is_none());
+    assert!(!project.path.join(".env").exists());
+    assert_failed_mailpit_runtime(&database.runtime_observed_states()?);
+    Ok(())
+}
+
+#[tokio::test]
 async fn demanded_removed_track_fails_without_starting_runtime() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

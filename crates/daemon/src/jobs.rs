@@ -3669,6 +3669,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn project_php_demand_preserves_removed_pair_members() -> anyhow::Result<()> {
+        for removed_resource in ["php", "frankenphp"] {
+            let tempdir = tempdir()?;
+            let paths = PvPaths::for_home(tempdir.path().join("home"));
+            seed_cached_php_pair(&paths, tempdir.path())?;
+            for resource in ["php", "frankenphp"] {
+                seed_installed_artifact(
+                    &paths,
+                    resource,
+                    "8.5",
+                    "8.5.0-pv1",
+                    &format!("bin/{resource}"),
+                )?;
+            }
+            let project_path = tempdir.path().join("project");
+            let config_path = project_path.join("pv.yml");
+            state::fs::write_sensitive_file(&config_path, "serve: false\nphp: \"8.5\"\n")?;
+            let mut database = Database::open(&paths)?;
+            let linked = database.link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path,
+                primary_hostname: "project.test".to_owned(),
+                config_path,
+                desired_php_track: None,
+                additional_hostnames: Vec::new(),
+            })?;
+            let before = database.record_managed_resource_track_removal_intent(
+                removed_resource,
+                "8.5",
+                false,
+                true,
+            )?;
+            let catalog =
+                crate::managed_resources::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
+            let result = crate::project_env::reconcile_project_env_with_catalog(
+                &paths,
+                &mut database,
+                &linked.project.id,
+                &catalog,
+            )
+            .await;
+
+            assert!(
+                matches!(result, Err(DaemonError::ManagedResourceTrackRemoved { resource, track })
+                if resource == removed_resource && track == "8.5")
+            );
+            assert_eq!(
+                database.managed_resource_track(removed_resource, "8.5")?,
+                before
+            );
+            assert_eq!(
+                database
+                    .project_env_observed_state(&linked.project.id)?
+                    .map(|state| state.status),
+                Some(ProjectEnvObservedStatus::Failed)
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn project_application_rereads_global_php_after_discovery() -> anyhow::Result<()> {
         let mut applied_tracks = Vec::new();
         for (name, config, global_track) in [

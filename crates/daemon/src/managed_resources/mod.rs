@@ -760,6 +760,29 @@ fn missing_resource_installs(
             resource_name,
             track,
         } = demanded_track;
+        if let Some(removed) = records.iter().find(|record| {
+            record.track == track
+                && record.desired_state == ManagedResourceDesiredState::Removed
+                && (record.resource_name == resource_name
+                    || (matches!(resource_name.as_str(), "php" | "frankenphp")
+                        && matches!(record.resource_name.as_str(), "php" | "frankenphp")))
+        }) {
+            let label = format!("{} {track}", removed.resource_name);
+            if !failures
+                .iter()
+                .any(|failure: &DesiredResourceInstallFailure| failure.label == label)
+            {
+                failures.push(DesiredResourceInstallFailure::new(
+                    failures.len(),
+                    label,
+                    DaemonError::ManagedResourceTrackRemoved {
+                        resource: removed.resource_name.clone(),
+                        track,
+                    },
+                ));
+            }
+            continue;
+        }
         match resource_name.as_str() {
             "caddy" => {
                 caddy_tracks.insert(track);
@@ -1683,14 +1706,14 @@ fn installed_track(
         return Ok(None);
     };
 
-    if record.current_artifact_path.is_none() {
-        return Ok(None);
-    }
     if record.desired_state == ManagedResourceDesiredState::Removed {
         return Err(DaemonError::ManagedResourceTrackRemoved {
             resource: resource_name.to_string(),
             track: track.to_string(),
         });
+    }
+    if record.current_artifact_path.is_none() {
+        return Ok(None);
     }
 
     Ok(Some(record))

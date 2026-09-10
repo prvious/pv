@@ -796,6 +796,20 @@ fn record_project_php_runtime_resource_requirements(
     database: &mut Database,
     runtime: &ResolvedPhpRuntime,
 ) -> Result<(), DaemonError> {
+    if let Some(removed) = database
+        .managed_resource_tracks()?
+        .into_iter()
+        .find(|record| {
+            record.track == runtime.track
+                && matches!(record.resource_name.as_str(), "php" | "frankenphp")
+                && record.desired_state == ManagedResourceDesiredState::Removed
+        })
+    {
+        return Err(DaemonError::ManagedResourceTrackRemoved {
+            resource: removed.resource_name,
+            track: removed.track,
+        });
+    }
     database.record_managed_resource_track_desired(
         "php",
         &runtime.track,
