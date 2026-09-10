@@ -1195,7 +1195,7 @@ fn render_project_env(
 }
 
 // Use current env mappings with persisted Project/resource values. Full Project reconciliation
-// applies changes to the serving mode, resource tracks, and allocation identities checked here.
+// applies changes to the serving mode, PHP identity, resource tracks, and allocation identities.
 fn validate_persisted_project_env_dependencies(
     paths: &PvPaths,
     database: &Database,
@@ -1242,6 +1242,35 @@ fn validate_persisted_project_env_dependencies(
         return Err(DaemonError::ProjectEnvDependenciesNotApplied {
             project_id: project.id.clone(),
             reason: "serving mode, resource tracks, or allocation identities differ from their last applied state".to_owned(),
+        });
+    }
+    let global_version_selector = database.global_php_default_track()?;
+    let php_track = maybe_resolve_project_php_track(
+        paths,
+        global_version_selector.as_deref(),
+        project,
+        config_file.config.php.as_ref(),
+        project.mode == ProjectMode::Served,
+        None,
+    )?;
+    let php_matches = match php_track {
+        Some(track) => {
+            let runtime = resolve_project_php_runtime_for_track(
+                database,
+                config_file.config.php.as_ref(),
+                track,
+            )?;
+            project.php_runtime.track.as_deref() == Some(runtime.track.as_str())
+                && project.php_runtime.requested_extensions == runtime.requested_extensions
+                && project.php_runtime.loaded_extensions == runtime.loaded_extensions
+                && project.php_runtime.ignored_extensions == runtime.ignored_extensions
+        }
+        None => project.php_runtime == Default::default(),
+    };
+    if !php_matches {
+        return Err(DaemonError::ProjectEnvDependenciesNotApplied {
+            project_id: project.id.clone(),
+            reason: "PHP track or extensions differ from their last applied state".to_owned(),
         });
     }
     for resource in &plan.resources {
