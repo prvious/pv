@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use config::{ProjectConfig, ProjectConfigFile};
+use futures_util::StreamExt;
 use resources::{ResourceAdapter, caddy_adapter, frankenphp_adapter};
 #[cfg(target_os = "macos")]
 use rustix::process::{Pid, Signal, kill_process_group};
@@ -33,8 +34,8 @@ use crate::project_env::{
 };
 use crate::structured_log;
 use crate::supervisor::{
-    ManagedProcess, probe_readiness_once, runtime_exited_before_readiness_error,
-    wait_for_bounded_runtime_readiness, wait_for_started_runtime_readiness,
+    ManagedProcess, bounded_runtime_readiness, probe_readiness_once,
+    runtime_exited_before_readiness_error, wait_for_started_runtime_readiness,
 };
 use crate::{
     CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, CaddyAdminVerifier,
@@ -583,34 +584,29 @@ async fn reconcile_gateway_runtimes_with_pf_state(
 
     for worker in &plan.workers {
         match required_installed_worker_runtime(paths, worker) {
-            Ok(worker_runtime) => worker_commands.push((worker, worker_runtime)),
+            Ok(worker_runtime) => worker_commands.push((worker.clone(), worker_runtime)),
             Err(error) => worker_failures.push((worker.runtime_key.clone(), error)),
         }
     }
 
-    let mut pending_workers = Vec::new();
-    for (worker, worker_runtime) in worker_commands {
-        match prepare_planned_worker(
-            paths,
-            &supervisor,
-            worker,
-            &worker_runtime,
-            readiness_timeout,
-            None,
-        )
-        .await
-        {
-            Ok(PreparedWorkerReconciliation::Complete) => {}
-            Ok(PreparedWorkerReconciliation::Pending(worker)) => pending_workers.push(worker),
-            Err(error) => worker_failures.push((worker.runtime_key.clone(), error)),
+    let workers = bounded_runtime_readiness(worker_commands, |(worker, worker_runtime)| {
+        let supervisor = &supervisor;
+        async move {
+            let result = reconcile_planned_worker(
+                paths,
+                supervisor,
+                &worker,
+                &worker_runtime,
+                readiness_timeout,
+                None,
+            )
+            .await;
+            (worker.runtime_key.clone(), result)
         }
-    }
-    let mut completed_workers =
-        wait_for_bounded_runtime_readiness(pending_workers, |worker| (*worker).wait()).await;
-    completed_workers.sort_by(|left, right| left.runtime_key.cmp(&right.runtime_key));
-    for worker in completed_workers {
-        let runtime_key = worker.runtime_key.clone();
-        if let Err(error) = finish_planned_worker(paths, worker).await {
+    });
+    tokio::pin!(workers);
+    while let Some((runtime_key, result)) = workers.next().await {
+        if let Err(error) = result {
             worker_failures.push((runtime_key, error));
         }
     }
@@ -757,26 +753,7 @@ async fn reconcile_planned_worker(
 
 enum PreparedWorkerReconciliation {
     Complete,
-    Pending(Box<PendingWorkerReconciliation>),
-}
-
-struct PendingWorkerReconciliation {
-    runtime_key: String,
-    runtime: PendingPromotedRuntime,
-}
-
-struct CompletedWorkerReconciliation {
-    runtime_key: String,
-    runtime: CompletedPromotedRuntime,
-}
-
-impl PendingWorkerReconciliation {
-    async fn wait(self) -> CompletedWorkerReconciliation {
-        CompletedWorkerReconciliation {
-            runtime_key: self.runtime_key,
-            runtime: self.runtime.wait().await,
-        }
-    }
+    Pending(Box<PendingPromotedRuntime>),
 }
 
 async fn prepare_planned_worker(
@@ -865,20 +842,15 @@ async fn prepare_planned_worker(
     )
     .await?;
 
-    Ok(PreparedWorkerReconciliation::Pending(Box::new(
-        PendingWorkerReconciliation {
-            runtime_key: worker.runtime_key.clone(),
-            runtime,
-        },
-    )))
+    Ok(PreparedWorkerReconciliation::Pending(Box::new(runtime)))
 }
 
 async fn finish_planned_worker(
     paths: &PvPaths,
-    completed: CompletedWorkerReconciliation,
+    completed: CompletedPromotedRuntime,
 ) -> Result<(), DaemonError> {
-    let subject = completed.runtime.subject.clone();
-    finish_promoted_runtime(completed.runtime).await?;
+    let subject = completed.subject.clone();
+    finish_promoted_runtime(completed).await?;
     record_runtime_observed(
         paths,
         subject,

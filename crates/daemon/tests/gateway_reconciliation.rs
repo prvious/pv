@@ -501,24 +501,35 @@ async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled(
     }
 
     assert!(
-        runtime_keys
+        runtime_keys[..4]
             .iter()
             .all(|runtime_key| paths.worker_pid(runtime_key).exists())
     );
+    assert!(!paths.worker_pid(&runtime_keys[4]).exists());
     assert!(!probes[4].exists());
     assert!(!paths.gateway_pid().exists());
+    fs::remove_file(&gates[0])?;
+    tokio::select! {
+        result = &mut reconciliation => {
+            bail!("worker reconciliation finished with siblings still gated: {result:#?}");
+        }
+        result = wait_for_existing_path_count(&probes, 5) => result?,
+    }
     let worker_pids = runtime_keys
         .iter()
         .map(|runtime_key| {
             required_runtime_metadata_pid(&paths.worker_runtime_metadata(runtime_key))
         })
         .collect::<Result<Vec<_>>>()?;
-    for runtime_key in &runtime_keys {
+    for (index, runtime_key) in runtime_keys.iter().enumerate() {
         let metadata: Value = serde_json::from_str(&fs::read_to_string(
             &paths.worker_runtime_metadata(runtime_key),
         )?)?;
-        assert!(metadata["replacement_required"].is_null());
-        assert!(metadata["applied_config_fingerprint"].is_null());
+        assert_ne!(metadata["replacement_required"], true);
+        assert_eq!(
+            metadata["applied_config_fingerprint"].is_string(),
+            index == 0
+        );
     }
 
     reconciliation.abort();
@@ -527,7 +538,7 @@ async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled(
         Err(error) => error,
     };
     assert!(cancellation.is_cancelled());
-    for gate in &gates {
+    for gate in gates.iter().skip(1) {
         fs::remove_file(gate)?;
     }
     assert!(!paths.gateway_pid().exists());
@@ -743,8 +754,43 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
     ));
     fs::write_sensitive_file(&redis_failure_marker, "fail\n")?;
 
-    let result =
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(5)).await;
+    let xdebug_gate = Utf8PathBuf::from(format!(
+        "{}.readiness-gate",
+        paths.worker_root_config(&xdebug_runtime_key)
+    ));
+    let xdebug_probe = Utf8PathBuf::from(format!(
+        "{}.readiness-probed",
+        paths.worker_root_config(&xdebug_runtime_key)
+    ));
+    fs::write_sensitive_file(&xdebug_gate, "wait\n")?;
+    let release_sibling_after_failure = async {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                let redis_failed = Database::open(&paths)?
+                    .runtime_observed_states()?
+                    .iter()
+                    .any(|record| {
+                        record.subject
+                            == RuntimeSubject::PhpRuntimeWorker {
+                                php_runtime_key: redis_runtime_key.clone(),
+                            }
+                            && record.status == RuntimeObservedStatus::Failed
+                    });
+                if redis_failed && xdebug_probe.exists() {
+                    fs::remove_file(&xdebug_gate)?;
+                    return Ok::<(), Error>(());
+                }
+                sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .context("failing sibling did not finish while xdebug was gated")?
+    };
+    let (result, release_result) = tokio::join!(
+        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(5)),
+        release_sibling_after_failure,
+    );
+    release_result?;
     let xdebug_worker_pid =
         required_runtime_metadata_pid(&paths.worker_runtime_metadata(&xdebug_runtime_key))?;
     let gateway_still_running = process_is_alive(gateway_pid)?;
