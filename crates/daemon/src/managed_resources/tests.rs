@@ -1435,6 +1435,67 @@ async fn targeted_resource_reconciliation_preserves_other_tracks_and_stops_final
 }
 
 #[tokio::test]
+async fn targeted_resource_preparation_failure_replaces_running_observation() -> Result<()> {
+    for (name, catalog) in [
+        ("unsupported", empty_runtime_catalog()?),
+        ("port-assignment", invalid_default_port_runtime_catalog()?),
+    ] {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project = link_project(&paths, &tempdir.path().join("project"), "acme.test", "")?;
+        seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+        let mut database = Database::open(&paths)?;
+        database.replace_project_managed_resources(
+            &project.id,
+            &[ProjectManagedResourceInput {
+                resource_name: "mailpit".to_owned(),
+                track: FAKE_MAILPIT_TRACK.to_owned(),
+            }],
+        )?;
+        let subject = RuntimeSubject::Resource {
+            name: "mailpit".to_owned(),
+            track: FAKE_MAILPIT_TRACK.to_owned(),
+        };
+        database.record_runtime_observed_snapshot(
+            subject.clone(),
+            RuntimeObservedStatus::Running,
+            None,
+        )?;
+        drop(database);
+
+        let result = super::reconcile_persisted_resource_track_with_progress(
+            &paths,
+            "mailpit",
+            FAKE_MAILPIT_TRACK,
+            Some(&catalog),
+            DaemonDownloadProgress::disabled(),
+        )
+        .await;
+        let Err(error) = result else {
+            bail!("expected preparation failure: {result:?}");
+        };
+        match name {
+            "unsupported" => assert!(
+                matches!(&error, DaemonError::UnsupportedManagedResourceRuntime { resource } if resource == "mailpit")
+            ),
+            _ => assert!(
+                matches!(&error, DaemonError::ManagedResourcePortNameReserved { resource, track, port }
+                if resource == "mailpit" && track == FAKE_MAILPIT_TRACK && port == "default"),
+                "{error:?}"
+            ),
+        }
+        let observed = Database::open(&paths)?
+            .runtime_observed_states()?
+            .into_iter()
+            .find(|record| record.subject == subject)
+            .ok_or_else(|| anyhow!("missing resource observation"))?;
+        assert_eq!(observed.status, RuntimeObservedStatus::Failed);
+        assert_eq!(observed.message, Some(error.to_string()));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn targeted_resource_reconciliation_isolates_project_allocation_failures() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
