@@ -49,7 +49,7 @@ type RuntimeProcessCommand = tokio::process::Command;
 
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
-const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
+const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
 const PF_PUBLIC_READINESS_TIMEOUT: Duration = Duration::from_secs(2);
 const FOREIGN_LISTENER_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
 const OWNED_READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
