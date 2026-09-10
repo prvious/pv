@@ -1212,6 +1212,7 @@ async fn complete_reconciliation_job_with_progress(
     );
     let progress = progress.with_phase_log(phase_log.clone());
     let effective_scope = scope.effective();
+    let mut failure_subject = None;
     let result = match &effective_scope {
         ReconciliationScope::System => {
             complete_system_reconciliation_with_progress(
@@ -1243,6 +1244,7 @@ async fn complete_reconciliation_job_with_progress(
                 runtime_catalog,
                 progress,
                 &phase_log,
+                &mut failure_subject,
             )
             .await
         }
@@ -1277,14 +1279,20 @@ async fn complete_reconciliation_job_with_progress(
                     Ok(completed.summary)
                 }
                 Err(error) => {
-                    fail_reconciliation_job(paths, job_id, &scope_text, &error)?;
+                    fail_reconciliation_job(
+                        paths,
+                        job_id,
+                        &scope_text,
+                        &error,
+                        failure_subject.as_ref(),
+                    )?;
 
                     Err(error)
                 }
             }
         }
         Err(error) => {
-            fail_reconciliation_job(paths, job_id, &scope_text, &error)?;
+            fail_reconciliation_job(paths, job_id, &scope_text, &error, failure_subject.as_ref())?;
 
             Err(error)
         }
@@ -1308,10 +1316,15 @@ fn fail_reconciliation_job(
     job_id: &str,
     scope: &str,
     error: &DaemonError,
+    subject: Option<&JobDiagnosticSubject>,
 ) -> Result<(), DaemonError> {
     let error_message = error.to_string();
     let mut database = Database::open(paths)?;
-    database.fail_job(job_id, &error_message)?;
+    if let Some(subject) = subject {
+        database.fail_job_with_subject(job_id, &error_message, subject)?;
+    } else {
+        database.fail_job(job_id, &error_message)?;
+    }
     structured_log::job_failed(paths, job_id, "reconcile", scope, &error_message);
 
     Ok(())
@@ -1410,6 +1423,7 @@ async fn complete_project_reconciliation_with_progress(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
+    failure_subject: &mut Option<JobDiagnosticSubject>,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
     let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, id.as_str());
     let project_result = reconcile_project_env_and_missing_resources_with_progress(
@@ -1432,6 +1446,7 @@ async fn complete_project_reconciliation_with_progress(
             gateway_evaluated,
         } => (summary, gateway_evaluated),
         ProjectGatewayReconciliationOutcome::PromoteSystem => {
+            *failure_subject = Some(JobDiagnosticSubject::SystemReconciliation);
             return complete_system_reconciliation_with_progress(
                 paths,
                 runtime_catalog,
@@ -2220,6 +2235,7 @@ mod tests {
             None,
             super::DaemonDownloadProgress::disabled(),
             &phase_log,
+            &mut None,
         )
         .await?;
 
@@ -2309,6 +2325,7 @@ mod tests {
             None,
             super::DaemonDownloadProgress::disabled(),
             &phase_log,
+            &mut None,
         )
         .await?;
         let database = Database::open(&paths)?;
@@ -2336,6 +2353,123 @@ mod tests {
             2
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn promoted_project_failure_retains_system_diagnostic_subject() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut database = Database::open(&paths)?;
+        let mut projects = Vec::new();
+        for name in ["target", "peer"] {
+            let project_path = tempdir.path().join(name);
+            let config_path = project_path.join("pv.yml");
+            state::fs::write_sensitive_file(&config_path, "serve: [\n")?;
+            projects.push(
+                database
+                    .link_project_with_mode(
+                        LinkProjectInput {
+                            path: project_path.clone(),
+                            original_path: project_path,
+                            primary_hostname: format!("{name}.test"),
+                            config_path,
+                            desired_php_track: None,
+                            additional_hostnames: Vec::new(),
+                        },
+                        ProjectMode::ResourceOnly,
+                    )?
+                    .project,
+            );
+        }
+        database.record_managed_resource_track_removal_intent("mailpit", "1.0", false, true)?;
+        state::fs::write_sensitive_file(
+            &projects[1].config_path,
+            "serve: false\nmailpit:\n  version: \"1.0\"\n",
+        )?;
+        drop(database);
+        seed_installed_caddy(&paths)?;
+        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let target = &projects[0];
+        let scope = ReconciliationScope::project(target.id.clone())?;
+        let project_failure = start_reconciliation_job(&paths, &scope.to_string())?;
+        let result = super::complete_reconciliation_job(
+            &paths,
+            &project_failure,
+            &scope,
+            None,
+            ReconciliationJobTiming::immediate(),
+        )
+        .await;
+        assert!(matches!(result, Err(DaemonError::Config(_))));
+        let unresolved = Database::open(&paths)?.unresolved_job_failures()?;
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(
+            unresolved[0].subject,
+            JobDiagnosticSubject::Project {
+                id: target.id.clone()
+            }
+        );
+
+        state::fs::write_sensitive_file(&target.config_path, "serve: false\n")?;
+        let stale_fragment = paths.gateway_projects_config_dir().join("stale.Caddyfile");
+        state::fs::write_sensitive_file(&stale_fragment, "# unverified routing snapshot\n")?;
+        let promoted_failure = start_reconciliation_job(&paths, &scope.to_string())?;
+        let result = super::complete_reconciliation_job(
+            &paths,
+            &promoted_failure,
+            &scope,
+            None,
+            ReconciliationJobTiming::immediate(),
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(DaemonError::SystemReconciliationFailures { .. })
+            ),
+            "{result:?}"
+        );
+        let unresolved = Database::open(&paths)?.unresolved_job_failures()?;
+        let promoted = unresolved
+            .iter()
+            .find(|failure| failure.job.id == promoted_failure)
+            .ok_or_else(|| anyhow::anyhow!("missing promoted failure"))?;
+        assert_eq!(promoted.subject, JobDiagnosticSubject::SystemReconciliation);
+
+        state::fs::remove_file_if_exists(&stale_fragment)?;
+        let project_success = start_reconciliation_job(&paths, &scope.to_string())?;
+        super::complete_reconciliation_job(
+            &paths,
+            &project_success,
+            &scope,
+            None,
+            ReconciliationJobTiming::immediate(),
+        )
+        .await?;
+        let unresolved = Database::open(&paths)?.unresolved_job_failures()?;
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(unresolved[0].job.id, promoted_failure);
+        assert_eq!(
+            unresolved[0].subject,
+            JobDiagnosticSubject::SystemReconciliation
+        );
+
+        state::fs::write_sensitive_file(&projects[1].config_path, "serve: false\n")?;
+        let system_success = start_reconciliation_job(&paths, "system")?;
+        super::complete_reconciliation_job(
+            &paths,
+            &system_success,
+            &ReconciliationScope::System,
+            None,
+            ReconciliationJobTiming::immediate(),
+        )
+        .await?;
+        assert!(
+            Database::open(&paths)?
+                .unresolved_job_failures()?
+                .is_empty()
+        );
         Ok(())
     }
 
