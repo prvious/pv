@@ -750,6 +750,19 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
     let gateway_still_running = process_is_alive(gateway_pid)?;
     let base_worker_still_running = process_is_alive(base_worker_pid)?;
     let xdebug_worker_running = process_is_alive(xdebug_worker_pid)?;
+    let xdebug_metadata: Value = serde_json::from_str(&fs::read_to_string(
+        &paths.worker_runtime_metadata(&xdebug_runtime_key),
+    )?)?;
+    let xdebug_status = Database::open(&paths)?
+        .runtime_observed_states()?
+        .into_iter()
+        .find(|record| {
+            record.subject
+                == RuntimeSubject::PhpRuntimeWorker {
+                    php_runtime_key: xdebug_runtime_key.clone(),
+                }
+        })
+        .map(|record| record.status);
     let gateway_pid_after = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
     let gateway_root_after = read_test_bytes(paths.gateway_root_config())?;
     let gateway_load_count_after = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
@@ -771,6 +784,9 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
     assert!(gateway_still_running);
     assert!(base_worker_still_running);
     assert!(xdebug_worker_running);
+    assert!(xdebug_metadata["applied_config_fingerprint"].is_string());
+    assert_ne!(xdebug_metadata["replacement_required"], true);
+    assert_eq!(xdebug_status, Some(RuntimeObservedStatus::Running));
     assert_eq!(gateway_pid_after, gateway_pid);
     assert_eq!(gateway_root_after, gateway_root);
     assert_eq!(gateway_load_count_after, gateway_load_count);
