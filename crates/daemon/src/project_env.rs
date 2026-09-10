@@ -69,10 +69,17 @@ impl ProjectPhpTrackDemand {
         serves_http: bool,
         global_version_selector: Option<&str>,
     ) -> bool {
+        let discovered_selector = self
+            .version_selector
+            .as_deref()
+            .or(self.global_version_selector.as_deref())
+            .unwrap_or("latest");
+        let current_selector = php
+            .and_then(config::PhpConfig::version_selector)
+            .or(global_version_selector)
+            .unwrap_or("latest");
         self.php_configured == php.is_some()
-            && self.version_selector.as_deref() == php.and_then(config::PhpConfig::version_selector)
-            && (self.version_selector.is_some()
-                || self.global_version_selector.as_deref() == global_version_selector)
+            && discovered_selector == current_selector
             && (self.php_configured || self.serves_http == serves_http)
     }
 }
