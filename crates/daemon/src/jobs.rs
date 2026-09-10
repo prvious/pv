@@ -2515,10 +2515,12 @@ mod tests {
     #[tokio::test]
     async fn system_reconciliation_pins_discovered_php_track_across_manifest_refresh()
     -> anyhow::Result<()> {
-        for (version, initially_served) in [
-            ("  version: latest\n", false),
-            ("  version: latest\n", true),
-            ("", true),
+        for (version, applied_version, initially_served) in [
+            ("  version: latest\n", "  version: latest\n", false),
+            ("  version: latest\n", "  version: latest\n", true),
+            ("", "", true),
+            ("", "  version: latest\n", true),
+            ("  version: latest\n", "", true),
         ] {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -2609,7 +2611,7 @@ mod tests {
                     archives: BTreeMap::new(),
                 },
                 config_path,
-                config: format!("serve: false\nphp:\n{version}  extensions: [redis]\nenv:\n  APP_NAME: project\n"),
+                config: format!("serve: false\nphp:\n{applied_version}  extensions: [redis]\nenv:\n  APP_NAME: project\n"),
             },
         )?;
 
@@ -3741,6 +3743,16 @@ mod tests {
             ),
             ("new-global", "document_root: .\n", None),
             ("latest", "serve: false\nphp: latest\n", Some("8.5")),
+            (
+                "latest-to-global",
+                "serve: false\nphp: latest\n",
+                Some("8.5"),
+            ),
+            (
+                "global-to-latest",
+                "serve: false\nphp:\n  extensions: []\n",
+                Some("8.5"),
+            ),
         ] {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -3764,7 +3776,7 @@ mod tests {
                 path: project_path.clone(),
                 original_path: project_path,
                 primary_hostname: "project.test".to_owned(),
-                config_path,
+                config_path: config_path.clone(),
                 desired_php_track: None,
                 additional_hostnames: Vec::new(),
             })?;
@@ -3781,7 +3793,15 @@ mod tests {
             );
 
             database.record_global_php_default_track("8.4")?;
-            if name == "latest" {
+            if name == "latest-to-global" {
+                state::fs::write_sensitive_file(
+                    &config_path,
+                    "serve: false\nphp:\n  extensions: []\n",
+                )?;
+            } else if name == "global-to-latest" {
+                state::fs::write_sensitive_file(&config_path, "serve: false\nphp: latest\n")?;
+            }
+            if matches!(name, "latest" | "global-to-latest") {
                 let manifest_path = paths.downloads().join("manifest.json");
                 let manifest = state::fs::read_to_string(&manifest_path)?;
                 state::fs::write_sensitive_file(
@@ -3846,6 +3866,24 @@ mod tests {
                 ),
                 Some(
                     "8.5",
+                ),
+            ),
+            (
+                "latest-to-global",
+                Some(
+                    "8.4",
+                ),
+                Some(
+                    "8.4",
+                ),
+            ),
+            (
+                "global-to-latest",
+                Some(
+                    "8.4",
+                ),
+                Some(
+                    "8.4",
                 ),
             ),
         ]
