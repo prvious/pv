@@ -9,7 +9,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use daemon::gateway::{GatewayPfRoutingState, persisted_gateway_is_ready_with_pf_state_for_test};
 use daemon::{
-    ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_custom_readiness, wait_for_readiness,
+    DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_custom_readiness,
+    wait_for_readiness,
 };
 use insta::{Settings, assert_debug_snapshot};
 use rustix::process::{Pid, test_kill_process};
@@ -294,6 +295,67 @@ async fn inactive_pf_does_not_make_gateway_identity_readiness_unhealthy() -> Res
     );
     http_server.await??;
     https_server.await??;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_identity_readiness_preserves_probe_error() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let http_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let http_port = http_listener.local_addr()?.port();
+    let https_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let https_port = https_listener.local_addr()?.port();
+    let http_server = tokio::spawn(async move {
+        let (mut stream, _address) = http_listener.accept().await?;
+        write_gateway_identity_response(&mut stream, "wrong identity").await
+    });
+
+    let result = persisted_gateway_is_ready_with_pf_state_for_test(
+        &paths,
+        http_port,
+        https_port,
+        GatewayPfRoutingState::Inactive,
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(DaemonError::Io(error))
+            if error.to_string() == "Gateway identity readiness returned an unexpected response"
+    ));
+    http_server.await??;
+    drop(https_listener);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_identity_readiness_preserves_timeout_diagnostic() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let http_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let http_port = http_listener.local_addr()?.port();
+    let https_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let https_port = https_listener.local_addr()?.port();
+
+    let result = persisted_gateway_is_ready_with_pf_state_for_test(
+        &paths,
+        http_port,
+        https_port,
+        GatewayPfRoutingState::Inactive,
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(DaemonError::ReadinessTimedOut {
+            timeout_ms: 1_000,
+            last_error: Some(error),
+            ..
+        }) if error == "deadline has elapsed"
+    ));
 
     Ok(())
 }
