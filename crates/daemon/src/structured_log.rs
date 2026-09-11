@@ -132,7 +132,7 @@ impl ReconciliationPhaseLog {
         }
     }
 
-    fn report_progress(&self, phase: ReconciliationPhase) {
+    pub(crate) fn report_progress(&self, phase: ReconciliationPhase) {
         if phase == ReconciliationPhase::Queue {
             return;
         }
