@@ -857,6 +857,7 @@ When `pv daemon:restart` interrupts active jobs, PV marks those jobs abandoned o
 PV keeps a fixed recent daemon job history in `pv.db`, such as the last 100 jobs. Detailed history belongs in logs.
 
 Filesystem watcher events are briefly debounced. Queued reconciliation requests are coalesced by scope where possible, and each job reconciles from current `pv.db` and Project config rather than stale event payloads.
+Background Project reconciliation verifies that the Project remains linked before admission and again after waiting in the queue. A request for a Project removed before admission is discarded. An admitted job whose Project was removed while queued completes successfully as skipped with no diagnostic coverage. An explicit foreground request for a missing Project remains an error.
 
 Reconciliation scopes are `system`, `project:<id>`, and `resource:<name>:<track>`. Whole-system setup/update uses `system`; Project config changes use `project:<id>`; explicit Managed Resource install/update work uses `resource:<name>:<track>`. If dependencies overlap in a way that is hard to isolate safely, the daemon may promote work to `system` scope.
 
