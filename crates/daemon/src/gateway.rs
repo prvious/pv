@@ -1376,13 +1376,29 @@ async fn gateway_pf_routing_state_for_ports(
     .await
 }
 
-/// Returns true only when the Gateway is ready and its PF integration needs no reconciliation.
-pub(crate) async fn persisted_gateway_is_healthy(
+/// Returns whether the persisted Gateway runtime passes its state-selected readiness probe.
+pub(crate) async fn persisted_gateway_is_ready(
     paths: &PvPaths,
     http_port: u16,
     https_port: u16,
 ) -> Result<bool, DaemonError> {
     let pf_routing_state = gateway_pf_routing_state_for_ports(paths, http_port, https_port).await?;
+
+    persisted_gateway_is_ready_with_pf_state_for_test(
+        paths,
+        http_port,
+        https_port,
+        pf_routing_state,
+    )
+    .await
+}
+
+pub async fn persisted_gateway_is_ready_with_pf_state_for_test(
+    paths: &PvPaths,
+    http_port: u16,
+    https_port: u16,
+    pf_routing_state: GatewayPfRoutingState,
+) -> Result<bool, DaemonError> {
     let probe_ports = if pf_routing_state == GatewayPfRoutingState::Inactive {
         GatewayReadinessPorts {
             http: http_port,
@@ -1402,16 +1418,10 @@ pub(crate) async fn persisted_gateway_is_healthy(
         &paths.ca_certificate(),
     );
 
-    let ready = matches!(
+    Ok(matches!(
         timeout(OWNED_READINESS_PROBE_TIMEOUT, probe_readiness_once(&check)).await,
         Ok(Ok(()))
-    );
-
-    Ok(ready
-        && !matches!(
-            pf_routing_state,
-            GatewayPfRoutingState::Inactive | GatewayPfRoutingState::Drifted
-        ))
+    ))
 }
 
 async fn spawn_gateway_pf_inspection<Inspect>(
