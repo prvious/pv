@@ -254,12 +254,24 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         }
     })?;
     let Some(gateway_command) = gateway_command else {
+        let observation_started_at = Instant::now();
         record_runtime_observed(
             paths,
             RuntimeSubject::Gateway,
             RuntimeObservedStatus::Stopped,
             Some(CADDY_NOT_INSTALLED),
-        )?;
+        )
+        .inspect_err(|_| {
+            if let Some(phase_log) = phase_log {
+                phase_log.completed(
+                    structured_log::ReconciliationPhase::Gateway,
+                    "gateway",
+                    structured_log::PhaseOutcome::Failed,
+                    observation_started_at.elapsed(),
+                    &[],
+                );
+            }
+        })?;
         if let Some(phase_log) = phase_log {
             phase_log.completed(
                 structured_log::ReconciliationPhase::Workers,
