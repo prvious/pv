@@ -12,7 +12,7 @@ use state::{
 use tokio::time::{Instant, timeout};
 
 use crate::DaemonError;
-use crate::gateway::persisted_gateway_is_healthy;
+use crate::gateway::persisted_gateway_is_ready;
 use crate::managed_resources::{ManagedResourceReadiness, ManagedResourceRuntimeCatalog};
 use crate::project_env::{project_tls_artifact_exists, project_tls_files_are_current};
 use crate::reconciliation::ReconciliationScope;
@@ -465,7 +465,7 @@ async fn inspect_runtime_probe(
             Some(RuntimeReadinessProbe::Gateway {
                 http_port,
                 https_port,
-            }) => match persisted_gateway_is_healthy(&paths, http_port, https_port).await {
+            }) => match persisted_gateway_is_ready(&paths, http_port, https_port).await {
                 Ok(healthy) => (healthy, probe.error),
                 Err(error) => (false, Some(error.to_string())),
             },
