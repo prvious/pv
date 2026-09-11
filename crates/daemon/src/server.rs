@@ -12,12 +12,13 @@ use tokio::time::{MissedTickBehavior, sleep, timeout};
 use crate::DaemonError;
 use crate::ipc::{LocalListener, LocalStream};
 use crate::jobs::{
-    record_background_reconciliation_error, run_background_reconciliation_job, run_job,
-    run_startup_reconciliation_job,
+    BackgroundReconciliationError, record_background_reconciliation_error,
+    run_background_reconciliation_job_with_origin, run_job, run_startup_reconciliation_job,
 };
 use crate::managed_resources::ManagedResourceRuntimeCatalog;
 use crate::project_env::{project_tls_artifact_exists, project_tls_files_are_current};
 use crate::reconciliation::{ReconciliationQueue, ReconciliationScope};
+use crate::structured_log;
 use crate::watcher::ProjectConfigWatcher;
 use protocol::{
     DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION, write_line,
@@ -62,17 +63,14 @@ pub(crate) async fn serve(
             let runtime_catalog = background_runtime_catalog.clone();
             let _task = tokio::spawn(async move {
                 let scope_text = scope.to_string();
-                if let Err(error) = run_background_reconciliation_job(
+                let result = run_background_reconciliation_job_with_origin(
                     paths.clone(),
                     queue,
                     scope,
                     runtime_catalog.as_deref(),
                 )
-                .await
-                {
-                    let _result =
-                        record_background_reconciliation_error(&paths, &scope_text, &error);
-                }
+                .await;
+                let _result = handle_background_reconciliation_result(&paths, &scope_text, result);
             });
         },
     );
@@ -196,19 +194,50 @@ pub(crate) async fn serve(
 
 fn handle_startup_task_result(
     paths: &PvPaths,
-    result: Result<Result<(), DaemonError>, tokio::task::JoinError>,
+    result: Result<Result<(), BackgroundReconciliationError>, tokio::task::JoinError>,
 ) -> Result<(), DaemonError> {
     match result {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => record_background_reconciliation_error(paths, "system", &error),
+        Ok(result) => handle_background_reconciliation_result(paths, "system", result),
         Err(error) => Err(error.into()),
+    }
+}
+
+fn handle_background_reconciliation_result(
+    paths: &PvPaths,
+    scope: &str,
+    result: Result<(), BackgroundReconciliationError>,
+) -> Result<(), DaemonError> {
+    match result {
+        Ok(()) => Ok(()),
+        Err(BackgroundReconciliationError::Execution {
+            recording_error: None,
+            ..
+        }) => Ok(()),
+        Err(BackgroundReconciliationError::Execution {
+            job_id,
+            error,
+            recording_error: Some(recording_error),
+        }) => {
+            structured_log::job_failure_recording_failed(
+                paths,
+                &job_id,
+                "reconcile",
+                scope,
+                &error.to_string(),
+                &recording_error.to_string(),
+            );
+            Err(*recording_error)
+        }
+        Err(BackgroundReconciliationError::Admission(error)) => {
+            record_background_reconciliation_error(paths, scope, &error)
+        }
     }
 }
 
 async fn stop_startup_task(
     paths: &PvPaths,
     shutdown: Option<oneshot::Sender<()>>,
-    task: Option<JoinHandle<Result<(), DaemonError>>>,
+    task: Option<JoinHandle<Result<(), BackgroundReconciliationError>>>,
 ) -> Result<(), DaemonError> {
     if let Some(shutdown) = shutdown {
         let _send_result = shutdown.send(());
@@ -346,12 +375,21 @@ mod tests {
         CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose,
         PKCS_ECDSA_P256_SHA256,
     };
-    use state::{Database, LinkProjectInput, ProjectRecord, PvPaths};
+    use rusqlite::Connection;
+    use state::{
+        Database, JobDiagnosticSubject, JobStatus, LinkProjectInput, ProjectRecord, PvPaths,
+    };
     use time::{Duration as CertificateDuration, OffsetDateTime};
     use tokio::io::duplex;
 
-    use super::{collect_project_tls_health_scopes, read_request_line};
-    use crate::reconciliation::ReconciliationScope;
+    use super::{
+        collect_project_tls_health_scopes, handle_background_reconciliation_result,
+        handle_startup_task_result, read_request_line,
+    };
+    use crate::jobs::{
+        BackgroundReconciliationError, run_background_reconciliation_job_with_origin,
+    };
+    use crate::reconciliation::{ReconciliationQueue, ReconciliationScope};
     use protocol::transport;
 
     #[tokio::test]
@@ -362,6 +400,102 @@ mod tests {
         let line = read_request_line(&mut transport, Duration::from_millis(10)).await?;
 
         assert!(line.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn completed_startup_failure_is_not_reinserted_after_later_success() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let error = crate::DaemonError::Io(std::io::Error::other("startup failed"));
+        let mut database = Database::open(&paths)?;
+        let failed = database.start_job("reconcile", "system")?;
+        database.fail_job(&failed.id, &error.to_string())?;
+        let repaired = database.start_job("reconcile", "system")?;
+        database.complete_job_with_coverage(
+            &repaired.id,
+            "System reconciled",
+            &[JobDiagnosticSubject::SystemReconciliation],
+        )?;
+        drop(database);
+
+        handle_startup_task_result(
+            &paths,
+            Ok(Err(BackgroundReconciliationError::Execution {
+                job_id: failed.id.clone(),
+                error: Box::new(error),
+                recording_error: None,
+            })),
+        )?;
+
+        let database = Database::open(&paths)?;
+        let jobs = database.recent_jobs()?;
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs.iter().any(|job| {
+            job.id == failed.id
+                && job.status == JobStatus::Failed
+                && job.error.as_deref() == Some("I/O error: startup failed")
+        }));
+        assert!(jobs.iter().any(|job| {
+            job.id == repaired.id && job.status == JobStatus::Succeeded && job.error.is_none()
+        }));
+        assert!(database.unresolved_job_failures()?.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unrecorded_background_failure_is_logged_against_originating_job() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        Database::open(&paths)?;
+        Connection::open(paths.db().as_std_path())?.execute_batch(
+            "CREATE TRIGGER reject_job_failure BEFORE UPDATE OF status ON jobs
+             WHEN NEW.status = 'failed'
+             BEGIN SELECT RAISE(FAIL, 'fixture rejected job failure'); END;",
+        )?;
+        let scope = ReconciliationScope::project("missing")?;
+        let scope_text = scope.to_string();
+
+        let result = run_background_reconciliation_job_with_origin(
+            paths.clone(),
+            ReconciliationQueue::new(),
+            scope,
+            None,
+        )
+        .await;
+        let job_id = match &result {
+            Err(BackgroundReconciliationError::Execution {
+                job_id,
+                recording_error: Some(_),
+                ..
+            }) => job_id.clone(),
+            _ => return Err(anyhow!("expected an unrecorded execution failure")),
+        };
+
+        let result = handle_background_reconciliation_result(&paths, &scope_text, result);
+        assert!(matches!(
+            result,
+            Err(crate::DaemonError::State(state::StateError::Sqlite(error)))
+                if error.to_string() == "fixture rejected job failure"
+        ));
+        let jobs = Database::open(&paths)?.recent_jobs()?;
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].id, job_id);
+        assert_eq!(jobs[0].status, JobStatus::Running);
+        let events = state::fs::read_to_string(&paths.daemon_log())?
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<Result<Vec<_>, _>>()?;
+        assert!(events.iter().any(|event| {
+            event["event"] == "job_failure_recording_failed"
+                && event["job_id"] == job_id
+                && event["scope"] == scope_text
+                && event["error"] == "state error: Project `missing` was not found"
+                && event["recording_error"]
+                    == "state error: SQLite error: fixture rejected job failure"
+        }));
 
         Ok(())
     }
