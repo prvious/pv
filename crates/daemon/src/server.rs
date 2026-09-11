@@ -143,7 +143,7 @@ pub(crate) async fn serve(
                                     &scan,
                                     &scope,
                                 ) {
-                                    Ok(EnqueueResult::Queued(queued)) => {
+                                    Ok(Some(EnqueueResult::Queued(queued))) => {
                                         let completion_paths = paths.clone();
                                         let completion_runtime_catalog = runtime_catalog.clone();
                                         let _task = tokio::spawn(async move {
@@ -160,7 +160,7 @@ pub(crate) async fn serve(
                                             );
                                         });
                                     }
-                                    Ok(EnqueueResult::Coalesced(_job)) => {}
+                                    Ok(Some(EnqueueResult::Coalesced(_)) | None) => {}
                                     Err(error) => {
                                         let _result = handle_background_reconciliation_result(
                                             &paths,
@@ -286,9 +286,9 @@ fn enqueue_runtime_recovery_job(
     now: Instant,
     scan: &RuntimeHealthScan,
     scope: &ReconciliationScope,
-) -> Result<EnqueueResult, BackgroundReconciliationError> {
+) -> Result<Option<EnqueueResult>, BackgroundReconciliationError> {
     let result = enqueue_background_reconciliation_job(paths, queue, scope.clone())?;
-    if matches!(&result, EnqueueResult::Queued(_)) {
+    if matches!(&result, Some(EnqueueResult::Queued(_))) {
         recovery_backoff.record_accepted_recovery(now, scan, scope);
     }
 
@@ -495,15 +495,16 @@ mod tests {
         state::fs::write_sensitive_file(&config_path, "php: \"8.4\"\n")?;
         state::fs::write_sensitive_file(&paths.ca_certificate(), "unused certificate")?;
         state::fs::write_sensitive_file(&paths.ca_private_key(), "unused private key")?;
-        let mut database = Database::open(&paths)?;
-        database.link_project(LinkProjectInput {
+        let project_input = LinkProjectInput {
             path: project_path.clone(),
             original_path: project_path,
             primary_hostname: "health-queue.test".to_owned(),
             config_path,
             desired_php_track: Some("8.4".to_owned()),
             additional_hostnames: Vec::new(),
-        })?;
+        };
+        let mut database = Database::open(&paths)?;
+        let project = database.link_project(project_input)?.project;
         drop(database);
 
         let scan = scan_runtime_health(
@@ -531,7 +532,7 @@ mod tests {
             &scope,
         )
         .map_err(BackgroundReconciliationError::into_error)?;
-        let EnqueueResult::Queued(first_queued) = first_result else {
+        let Some(EnqueueResult::Queued(first_queued)) = first_result else {
             return Err(anyhow!("expected the first recovery to be queued"));
         };
         assert_eq!(
@@ -550,7 +551,7 @@ mod tests {
                 &scope,
             )
             .map_err(BackgroundReconciliationError::into_error)?,
-            EnqueueResult::Coalesced(_)
+            Some(EnqueueResult::Coalesced(_))
         ));
         assert_eq!(
             backoff.next_scan_at(coalesced_at),
@@ -574,11 +575,28 @@ mod tests {
         assert!(matches!(
             enqueue_runtime_recovery_job(&paths, &queue, &mut backoff, accepted_at, &scan, &scope,)
                 .map_err(BackgroundReconciliationError::into_error)?,
-            EnqueueResult::Queued(_)
+            Some(EnqueueResult::Queued(_))
         ));
         assert_eq!(
             backoff.next_scan_at(accepted_at),
             accepted_at + Duration::from_secs(15)
+        );
+
+        let jobs_before_obsolete_scope = Database::open(&paths)?.recent_jobs()?.len();
+        Database::open(&paths)?.unlink_project(&project.id)?;
+        let obsolete_at = accepted_at + Duration::from_secs(15);
+        assert!(
+            enqueue_runtime_recovery_job(&paths, &queue, &mut backoff, obsolete_at, &scan, &scope,)
+                .map_err(BackgroundReconciliationError::into_error)?
+                .is_none()
+        );
+        assert_eq!(
+            Database::open(&paths)?.recent_jobs()?.len(),
+            jobs_before_obsolete_scope
+        );
+        assert_eq!(
+            backoff.next_scan_at(obsolete_at),
+            obsolete_at + Duration::from_secs(1)
         );
 
         Ok(())
@@ -668,13 +686,25 @@ mod tests {
     async fn unrecorded_background_failure_is_logged_against_originating_job() -> Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
-        Database::open(&paths)?;
+        let project_path = tempdir.path().join("invalid-project");
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(&config_path, "php: [\n")?;
+        let project = Database::open(&paths)?
+            .link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path,
+                primary_hostname: "invalid-project.test".to_owned(),
+                config_path,
+                desired_php_track: None,
+                additional_hostnames: Vec::new(),
+            })?
+            .project;
         Connection::open(paths.db().as_std_path())?.execute_batch(
             "CREATE TRIGGER reject_job_failure BEFORE UPDATE OF status ON jobs
              WHEN NEW.status = 'failed'
              BEGIN SELECT RAISE(FAIL, 'fixture rejected job failure'); END;",
         )?;
-        let scope = ReconciliationScope::project("missing")?;
+        let scope = ReconciliationScope::project(project.id)?;
         let scope_text = scope.to_string();
 
         let result = run_background_reconciliation_job_with_origin(
@@ -684,12 +714,12 @@ mod tests {
             None,
         )
         .await;
-        let job_id = match &result {
+        let (job_id, execution_error) = match &result {
             Err(BackgroundReconciliationError::Execution {
                 job_id,
+                error,
                 recording_error: Some(_),
-                ..
-            }) => job_id.clone(),
+            }) => (job_id.clone(), error.to_string()),
             _ => return Err(anyhow!("expected an unrecorded execution failure")),
         };
 
@@ -711,7 +741,7 @@ mod tests {
             event["event"] == "job_failure_recording_failed"
                 && event["job_id"] == job_id
                 && event["scope"] == scope_text
-                && event["error"] == "state error: Project `missing` was not found"
+                && event["error"] == execution_error
                 && event["recording_error"]
                     == "state error: SQLite error: fixture rejected job failure"
         }));
