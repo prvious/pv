@@ -243,6 +243,7 @@ If a PV-managed child process crashes repeatedly, the daemon applies restart bac
 
 Crash restart backoff retries a desired child process up to 3 times with increasing delays, such as 1 second, 5 seconds, and 15 seconds. After that, PV marks the process failed or degraded until a later health tick or explicit `pv restart` retries it.
 A health-scan error preserves future recovery deadlines and delays overdue deadlines by 1 second when scheduling the next scan, without consuming a runtime-recovery attempt.
+A runtime-recovery attempt is counted only after the existing reconciliation queue accepts a new job. Coalesced or rejected requests do not advance the backoff.
 
 PV resets a child process crash counter after the process stays healthy for 60 seconds.
 

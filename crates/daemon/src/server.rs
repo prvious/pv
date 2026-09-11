@@ -12,11 +12,12 @@ use crate::DaemonError;
 use crate::health::{RuntimeHealthScan, RuntimeRecoveryBackoff, scan_runtime_health};
 use crate::ipc::{LocalListener, LocalStream};
 use crate::jobs::{
-    BackgroundReconciliationError, record_background_reconciliation_error,
+    BackgroundReconciliationError, complete_queued_background_reconciliation_job,
+    enqueue_background_reconciliation_job, record_background_reconciliation_error,
     run_background_reconciliation_job_with_origin, run_job, run_startup_reconciliation_job,
 };
 use crate::managed_resources::ManagedResourceRuntimeCatalog;
-use crate::reconciliation::{ReconciliationQueue, ReconciliationScope};
+use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use crate::structured_log;
 use crate::watcher::ProjectConfigWatcher;
 use protocol::{
@@ -131,21 +132,57 @@ pub(crate) async fn serve(
                                     &error.error,
                                 );
                             }
-                            let mut scopes = recovery_backoff.scopes_to_reconcile(now, &scan);
-                            scopes.extend(scan.maintenance_scopes);
-                            for scope in scopes {
+                            let runtime_scopes = recovery_backoff.scopes_due(now, &scan);
+                            for scope in runtime_scopes {
+                                let scope_text = scope.to_string();
+                                match enqueue_runtime_recovery_job(
+                                    &paths,
+                                    &queue,
+                                    &mut recovery_backoff,
+                                    now,
+                                    &scan,
+                                    &scope,
+                                ) {
+                                    Ok(EnqueueResult::Queued(queued)) => {
+                                        let completion_paths = paths.clone();
+                                        let completion_runtime_catalog = runtime_catalog.clone();
+                                        let _task = tokio::spawn(async move {
+                                            let result = complete_queued_background_reconciliation_job(
+                                                &completion_paths,
+                                                queued,
+                                                completion_runtime_catalog.as_deref(),
+                                            )
+                                            .await;
+                                            let _result = handle_background_reconciliation_result(
+                                                &completion_paths,
+                                                &scope_text,
+                                                result,
+                                            );
+                                        });
+                                    }
+                                    Ok(EnqueueResult::Coalesced(_job)) => {}
+                                    Err(error) => {
+                                        let _result = handle_background_reconciliation_result(
+                                            &paths,
+                                            &scope_text,
+                                            Err(error),
+                                        );
+                                    }
+                                }
+                            }
+                            for scope in scan.maintenance_scopes {
                                 debouncer.request(scope).await;
                             }
                             next_health_scan = Some(recovery_backoff.next_scan_at(now));
                         }
                         Ok(Err(error)) => {
                             structured_log::runtime_health_scan_failed(&paths, &error.to_string());
-                            next_health_scan = Some(recovery_backoff.next_scan_after_error(now));
+                            next_health_scan = Some(recovery_backoff.next_scan_at(now));
                         }
                         Err(error) if error.is_panic() => break Err(error.into()),
                         Err(error) => {
                             structured_log::runtime_health_scan_failed(&paths, &error.to_string());
-                            next_health_scan = Some(recovery_backoff.next_scan_after_error(now));
+                            next_health_scan = Some(recovery_backoff.next_scan_at(now));
                         }
                     }
                 }
@@ -240,6 +277,22 @@ async fn run_debounced_reconciliation_job(
             result => return result,
         }
     }
+}
+
+fn enqueue_runtime_recovery_job(
+    paths: &PvPaths,
+    queue: &ReconciliationQueue,
+    recovery_backoff: &mut RuntimeRecoveryBackoff,
+    now: Instant,
+    scan: &RuntimeHealthScan,
+    scope: &ReconciliationScope,
+) -> Result<EnqueueResult, BackgroundReconciliationError> {
+    let result = enqueue_background_reconciliation_job(paths, queue, scope.clone())?;
+    if matches!(&result, EnqueueResult::Queued(_)) {
+        recovery_backoff.record_accepted_recovery(now, scan, scope);
+    }
+
+    Ok(result)
 }
 
 fn handle_startup_task_result(
@@ -391,6 +444,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
     use anyhow::{Result, anyhow};
@@ -407,18 +461,119 @@ mod tests {
     };
     use time::{Duration as CertificateDuration, OffsetDateTime};
     use tokio::io::duplex;
-    use tokio::time::{sleep, timeout};
+    use tokio::time::{Instant, sleep, timeout};
 
     use super::{
-        handle_background_reconciliation_result, handle_startup_task_result, read_request_line,
-        run_debounced_reconciliation_job,
+        enqueue_runtime_recovery_job, handle_background_reconciliation_result,
+        handle_startup_task_result, read_request_line, run_debounced_reconciliation_job,
     };
-    use crate::health::collect_project_tls_health_scopes;
+    use crate::health::{
+        RuntimeRecoveryBackoff, collect_project_tls_health_scopes, scan_runtime_health,
+    };
     use crate::jobs::{
         BackgroundReconciliationError, run_background_reconciliation_job_with_origin,
     };
-    use crate::reconciliation::{ReconciliationQueue, ReconciliationScope};
+    use crate::managed_resources::ManagedResourceRuntimeCatalog;
+    use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
     use protocol::transport;
+
+    #[tokio::test]
+    async fn runtime_recovery_backoff_counts_only_new_queue_jobs() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(&config_path, "php: \"8.4\"\n")?;
+        state::fs::write_sensitive_file(&paths.ca_certificate(), "unused certificate")?;
+        state::fs::write_sensitive_file(&paths.ca_private_key(), "unused private key")?;
+        let mut database = Database::open(&paths)?;
+        database.link_project(LinkProjectInput {
+            path: project_path.clone(),
+            original_path: project_path,
+            primary_hostname: "health-queue.test".to_owned(),
+            config_path,
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?;
+        drop(database);
+
+        let scan = scan_runtime_health(
+            paths.clone(),
+            Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+        )
+        .await?;
+        let queue = ReconciliationQueue::new();
+        let mut backoff = RuntimeRecoveryBackoff::default();
+        let detected_at = Instant::now();
+        assert!(backoff.scopes_due(detected_at, &scan).is_empty());
+
+        let first_attempt_at = detected_at + Duration::from_secs(1);
+        let scope = backoff
+            .scopes_due(first_attempt_at, &scan)
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("expected a due runtime recovery scope"))?;
+        let first_result = enqueue_runtime_recovery_job(
+            &paths,
+            &queue,
+            &mut backoff,
+            first_attempt_at,
+            &scan,
+            &scope,
+        )
+        .map_err(BackgroundReconciliationError::into_error)?;
+        let EnqueueResult::Queued(first_queued) = first_result else {
+            return Err(anyhow!("expected the first recovery to be queued"));
+        };
+        assert_eq!(
+            backoff.next_scan_at(first_attempt_at),
+            first_attempt_at + Duration::from_secs(5)
+        );
+
+        let coalesced_at = first_attempt_at + Duration::from_secs(5);
+        assert!(matches!(
+            enqueue_runtime_recovery_job(
+                &paths,
+                &queue,
+                &mut backoff,
+                coalesced_at,
+                &scan,
+                &scope,
+            )
+            .map_err(BackgroundReconciliationError::into_error)?,
+            EnqueueResult::Coalesced(_)
+        ));
+        assert_eq!(
+            backoff.next_scan_at(coalesced_at),
+            coalesced_at + Duration::from_secs(1)
+        );
+        drop(first_queued);
+
+        let jobs_lock = JobsLock::acquire(&paths)?;
+        let rejected_at = coalesced_at + Duration::from_secs(1);
+        assert!(matches!(
+            enqueue_runtime_recovery_job(&paths, &queue, &mut backoff, rejected_at, &scan, &scope,),
+            Err(BackgroundReconciliationError::Admission(_))
+        ));
+        assert_eq!(
+            backoff.next_scan_at(rejected_at),
+            rejected_at + Duration::from_secs(1)
+        );
+        drop(jobs_lock);
+
+        let accepted_at = rejected_at + Duration::from_secs(1);
+        assert!(matches!(
+            enqueue_runtime_recovery_job(&paths, &queue, &mut backoff, accepted_at, &scan, &scope,)
+                .map_err(BackgroundReconciliationError::into_error)?,
+            EnqueueResult::Queued(_)
+        ));
+        assert_eq!(
+            backoff.next_scan_at(accepted_at),
+            accepted_at + Duration::from_secs(15)
+        );
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn request_line_read_times_out_for_idle_connection() -> Result<(), crate::DaemonError> {
