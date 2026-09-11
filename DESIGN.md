@@ -1486,6 +1486,8 @@ An `update system` job that finds no installed updates or no changed artifacts v
 
 Failure deduplication applies only within one continuous unresolved episode. A repeated background error for the same subject and equivalent error may be coalesced while no newer success exists. Once newer successful coverage or a matching healthy observation resolves the episode, the same error recurring later starts a new current failure and is recorded again. Searching retained history for any matching error string is never sufficient deduplication.
 
+A background reconciliation failure before a job is admitted is recorded as a synthetic failed job. After a job starts, its execution failure is finalized on the originating job and is not inserted again by delayed background-task completion handling. If that finalization fails, the server logs the failure against the originating job ID.
+
 `pv status` and `pv doctor` select repair advice from the current failure's typed subject and condition. They prefer the narrowest command that can repair and then verify that subject, such as `pv daemon:restart`, `pv dns:install`, `pv ports:install`, `pv ca:trust`, or an applicable Managed Resource command. They use broader `pv restart` or `pv setup` guidance only when no focused command covers the failure. Historical failures remain visible through `pv jobs` but do not make aggregate status fail after their subjects have newer successful verification.
 
 `pv status` shows the log directory and a summary of the most recent daemon or reconciliation errors without dumping full logs by default.

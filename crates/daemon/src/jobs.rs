@@ -283,13 +283,44 @@ pub(crate) async fn run_job(
     run_started_job(paths, transport, kind, scope).await
 }
 
+#[cfg(test)]
 pub(crate) async fn run_background_reconciliation_job(
     paths: PvPaths,
     queue: ReconciliationQueue,
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), DaemonError> {
-    let result = enqueue_reconciliation_job(&paths, &queue, scope)?;
+    run_background_reconciliation_job_with_origin(paths, queue, scope, runtime_catalog)
+        .await
+        .map_err(BackgroundReconciliationError::into_error)
+}
+
+pub(crate) enum BackgroundReconciliationError {
+    Admission(Box<DaemonError>),
+    Execution {
+        job_id: String,
+        error: Box<DaemonError>,
+        recording_error: Option<Box<DaemonError>>,
+    },
+}
+
+#[cfg(test)]
+impl BackgroundReconciliationError {
+    pub(crate) fn into_error(self) -> DaemonError {
+        match self {
+            Self::Admission(error) | Self::Execution { error, .. } => *error,
+        }
+    }
+}
+
+pub(crate) async fn run_background_reconciliation_job_with_origin(
+    paths: PvPaths,
+    queue: ReconciliationQueue,
+    scope: ReconciliationScope,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<(), BackgroundReconciliationError> {
+    let result = enqueue_reconciliation_job(&paths, &queue, scope)
+        .map_err(|error| BackgroundReconciliationError::Admission(Box::new(error)))?;
 
     complete_background_reconciliation_job(&paths, result, runtime_catalog).await
 }
@@ -299,7 +330,7 @@ pub(crate) async fn run_startup_reconciliation_job(
     queue: ReconciliationQueue,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     mut shutdown: oneshot::Receiver<()>,
-) -> Result<(), DaemonError> {
+) -> Result<(), BackgroundReconciliationError> {
     let result = loop {
         let enqueue_paths = paths.clone();
         let enqueue_queue = queue.clone();
@@ -307,9 +338,14 @@ pub(crate) async fn run_startup_reconciliation_job(
             enqueue_startup_reconciliation_job(&enqueue_paths, &enqueue_queue)
         });
         let result = tokio::select! {
-            result = &mut enqueue_task => result?,
+            result = &mut enqueue_task => result
+                .map_err(DaemonError::from)
+                .map_err(|error| BackgroundReconciliationError::Admission(Box::new(error)))?,
             _ = &mut shutdown => {
-                let _enqueue_result = enqueue_task.await?;
+                let _enqueue_result = enqueue_task
+                    .await
+                    .map_err(DaemonError::from)
+                    .map_err(|error| BackgroundReconciliationError::Admission(Box::new(error)))?;
                 return Ok(());
             }
         };
@@ -324,7 +360,9 @@ pub(crate) async fn run_startup_reconciliation_job(
                     _ = &mut shutdown => return Ok(()),
                 }
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                return Err(BackgroundReconciliationError::Admission(Box::new(error)));
+            }
         }
     };
 
@@ -353,7 +391,7 @@ async fn complete_background_reconciliation_job(
     paths: &PvPaths,
     result: EnqueueResult,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-) -> Result<(), DaemonError> {
+) -> Result<(), BackgroundReconciliationError> {
     let EnqueueResult::Queued(queued) = result else {
         return Ok(());
     };
@@ -366,23 +404,33 @@ async fn complete_running_background_reconciliation_job(
     paths: &PvPaths,
     running: RunningReconciliation,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-) -> Result<(), DaemonError> {
+) -> Result<(), BackgroundReconciliationError> {
     let job_id = running.job_id().to_string();
     let scope = running.scope().clone();
-    let result = complete_reconciliation_job(
+    let completion = complete_reconciliation_job_with_progress_outcome(
         paths,
         &job_id,
         &scope,
         runtime_catalog,
+        DaemonDownloadProgress::disabled(),
         running.timing(),
         None,
     )
-    .await
-    .map(|_summary| ());
+    .await;
 
     running.finish();
 
-    result
+    match completion {
+        ReconciliationJobCompletion::Succeeded(_summary) => Ok(()),
+        ReconciliationJobCompletion::Failed {
+            error,
+            recording_error,
+        } => Err(BackgroundReconciliationError::Execution {
+            job_id,
+            error,
+            recording_error,
+        }),
+    }
 }
 
 async fn run_reconciliation_job(
@@ -1324,6 +1372,52 @@ async fn complete_reconciliation_job_with_progress(
     timing: ReconciliationJobTiming,
     pf_routing_state: Option<GatewayPfRoutingState>,
 ) -> Result<String, DaemonError> {
+    complete_reconciliation_job_with_progress_outcome(
+        paths,
+        job_id,
+        scope,
+        runtime_catalog,
+        progress,
+        timing,
+        pf_routing_state,
+    )
+    .await
+    .into_result()
+}
+
+enum ReconciliationJobCompletion {
+    Succeeded(String),
+    Failed {
+        error: Box<DaemonError>,
+        recording_error: Option<Box<DaemonError>>,
+    },
+}
+
+impl ReconciliationJobCompletion {
+    fn into_result(self) -> Result<String, DaemonError> {
+        match self {
+            Self::Succeeded(summary) => Ok(summary),
+            Self::Failed {
+                error,
+                recording_error,
+            } => Err(*recording_error.unwrap_or(error)),
+        }
+    }
+
+    fn is_succeeded(&self) -> bool {
+        matches!(self, Self::Succeeded(_))
+    }
+}
+
+async fn complete_reconciliation_job_with_progress_outcome(
+    paths: &PvPaths,
+    job_id: &str,
+    scope: &ReconciliationScope,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: DaemonDownloadProgress,
+    timing: ReconciliationJobTiming,
+    pf_routing_state: Option<GatewayPfRoutingState>,
+) -> ReconciliationJobCompletion {
     let scope_text = scope.to_string();
     let phase_log = ReconciliationPhaseLog::new(paths, job_id, &scope_text);
     phase_log.completed(
@@ -1400,29 +1494,27 @@ async fn complete_reconciliation_job_with_progress(
                         &completed.summary,
                     );
 
-                    Ok(completed.summary)
+                    ReconciliationJobCompletion::Succeeded(completed.summary)
                 }
-                Err(error) => {
-                    fail_reconciliation_job(
-                        paths,
-                        job_id,
-                        &scope_text,
-                        &error,
-                        failure_subject.as_ref(),
-                    )?;
-
-                    Err(error)
-                }
+                Err(error) => finish_failed_reconciliation_job(
+                    paths,
+                    job_id,
+                    &scope_text,
+                    error,
+                    failure_subject.as_ref(),
+                ),
             }
         }
-        Err(error) => {
-            fail_reconciliation_job(paths, job_id, &scope_text, &error, failure_subject.as_ref())?;
-
-            Err(error)
-        }
+        Err(error) => finish_failed_reconciliation_job(
+            paths,
+            job_id,
+            &scope_text,
+            error,
+            failure_subject.as_ref(),
+        ),
     };
     finalization_timer.finish(
-        PhaseOutcome::from_succeeded(final_result.is_ok()),
+        PhaseOutcome::from_succeeded(final_result.is_succeeded()),
         &[
             (
                 "total_execution_ms",
@@ -1433,6 +1525,23 @@ async fn complete_reconciliation_job_with_progress(
     );
 
     final_result
+}
+
+fn finish_failed_reconciliation_job(
+    paths: &PvPaths,
+    job_id: &str,
+    scope: &str,
+    error: DaemonError,
+    subject: Option<&JobDiagnosticSubject>,
+) -> ReconciliationJobCompletion {
+    let recording_error = fail_reconciliation_job(paths, job_id, scope, &error, subject)
+        .err()
+        .map(Box::new);
+
+    ReconciliationJobCompletion::Failed {
+        error: Box::new(error),
+        recording_error,
+    }
 }
 
 fn fail_reconciliation_job(
