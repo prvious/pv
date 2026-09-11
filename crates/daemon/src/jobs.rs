@@ -2614,7 +2614,7 @@ mod tests {
         RuntimeSubject, StateError, UpdateLock,
     };
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, duplex};
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     use tokio::net::UnixStream;
     use tokio::sync::{mpsc::channel, oneshot, watch};
     use tokio::time::{Duration, timeout};
@@ -2624,6 +2624,8 @@ mod tests {
     };
     use crate::project_env::reconcile_project_env_from_persisted_state;
 
+    #[cfg(target_os = "macos")]
+    use super::run_reconciliation_job;
     use super::{
         FOREGROUND_JOB_PROGRESS_BUFFER, FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent,
         SystemProjectReconciliationReport, abandon_reconciliation_job,
@@ -2641,11 +2643,10 @@ mod tests {
         reconcile_system_projects_with_progress,
         reconcile_system_resources_with_runtime_catalog_and_progress,
         record_background_reconciliation_error, run_background_reconciliation_job,
-        run_reconciliation_job, run_startup_reconciliation_job, start_reconciliation_job,
-        start_update_job, stop_undemanded_system_resource_runtimes,
-        stream_started_reconciliation_job, stream_started_update_job, system_project_summary,
-        wait_for_foreground_turn, wait_for_startup_reconciliation_turn,
-        write_coalesced_update_response,
+        run_startup_reconciliation_job, start_reconciliation_job, start_update_job,
+        stop_undemanded_system_resource_runtimes, stream_started_reconciliation_job,
+        stream_started_update_job, system_project_summary, wait_for_foreground_turn,
+        wait_for_startup_reconciliation_turn, write_coalesced_update_response,
     };
     use crate::reconciliation::{
         EnqueueResult, ReconciliationJobTiming, ReconciliationQueue, ReconciliationScope,
@@ -8118,7 +8119,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn queued_foreground_reconciliation_streams_only_after_its_turn() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
