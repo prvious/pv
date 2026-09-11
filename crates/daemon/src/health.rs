@@ -74,7 +74,7 @@ struct RuntimeRecoveryEntry {
 }
 
 impl RuntimeRecoveryBackoff {
-    pub(crate) fn scopes_to_reconcile(
+    pub(crate) fn scopes_due(
         &mut self,
         now: Instant,
         scan: &RuntimeHealthScan,
@@ -122,10 +122,6 @@ impl RuntimeRecoveryBackoff {
             }
 
             scopes.extend(observation.scopes.iter().cloned());
-            entry.attempts += 1;
-            entry.next_attempt = RUNTIME_RETRY_DELAYS
-                .get(entry.attempts)
-                .map(|delay| now + *delay);
         }
         for subject in reset_subjects {
             self.entries.remove(&subject);
@@ -134,17 +130,30 @@ impl RuntimeRecoveryBackoff {
         scopes
     }
 
-    pub(crate) fn next_scan_at(&self, now: Instant) -> Instant {
-        let periodic = now + RUNTIME_HEALTH_INTERVAL;
-        self.entries.values().fold(periodic, |next, entry| {
-            let entry_next = entry.next_attempt.or(entry
-                .healthy_since
-                .map(|healthy| healthy + HEALTHY_RESET_INTERVAL));
-            entry_next.map_or(next, |entry_next| next.min(entry_next))
-        })
+    pub(crate) fn record_accepted_recovery(
+        &mut self,
+        now: Instant,
+        scan: &RuntimeHealthScan,
+        scope: &ReconciliationScope,
+    ) {
+        for observation in &scan.observations {
+            if observation.healthy || !observation.scopes.contains(scope) {
+                continue;
+            }
+            if let Some(entry) = self.entries.get_mut(&observation.subject)
+                && entry
+                    .next_attempt
+                    .is_some_and(|next_attempt| next_attempt <= now)
+            {
+                entry.attempts += 1;
+                entry.next_attempt = RUNTIME_RETRY_DELAYS
+                    .get(entry.attempts)
+                    .map(|delay| now + *delay);
+            }
+        }
     }
 
-    pub(crate) fn next_scan_after_error(&self, now: Instant) -> Instant {
+    pub(crate) fn next_scan_at(&self, now: Instant) -> Instant {
         let periodic = now + RUNTIME_HEALTH_INTERVAL;
         let overdue_retry = now + RUNTIME_HEALTH_SCAN_ERROR_RETRY_DELAY;
         self.entries.values().fold(periodic, |next, entry| {
@@ -512,6 +521,7 @@ fn php_runtime_subject(runtime_key: &str) -> RuntimeSubject {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::fs;
     use std::net::TcpListener as StdTcpListener;
     use std::os::unix::fs::PermissionsExt;
@@ -550,27 +560,40 @@ mod tests {
         })
     }
 
+    fn accept_due(
+        backoff: &mut RuntimeRecoveryBackoff,
+        now: Instant,
+        scan: &RuntimeHealthScan,
+    ) -> BTreeSet<ReconciliationScope> {
+        let scopes = backoff.scopes_due(now, scan);
+        for scope in &scopes {
+            backoff.record_accepted_recovery(now, scan, scope);
+        }
+
+        scopes
+    }
+
     #[tokio::test(start_paused = true)]
     async fn backoff_retries_at_one_five_and_fifteen_seconds_then_waits_for_later_tick()
     -> anyhow::Result<()> {
         let mut backoff = RuntimeRecoveryBackoff::default();
         let mut now = Instant::now();
-        assert!(backoff.scopes_to_reconcile(now, &scan(false)?).is_empty());
+        assert!(backoff.scopes_due(now, &scan(false)?).is_empty());
         assert_eq!(backoff.next_scan_at(now), now + Duration::from_secs(1));
 
         for delay in [1, 5, 15] {
             advance(Duration::from_secs(delay) - Duration::from_millis(1)).await;
             now = Instant::now();
-            assert!(backoff.scopes_to_reconcile(now, &scan(false)?).is_empty());
+            assert!(backoff.scopes_due(now, &scan(false)?).is_empty());
             advance(Duration::from_millis(1)).await;
             now = Instant::now();
-            assert_eq!(backoff.scopes_to_reconcile(now, &scan(false)?).len(), 1);
+            assert_eq!(accept_due(&mut backoff, now, &scan(false)?).len(), 1);
         }
         assert_eq!(backoff.next_scan_at(now), now + RUNTIME_HEALTH_INTERVAL);
 
         advance(RUNTIME_HEALTH_INTERVAL).await;
         now = Instant::now();
-        assert!(backoff.scopes_to_reconcile(now, &scan(false)?).is_empty());
+        assert!(backoff.scopes_due(now, &scan(false)?).is_empty());
         assert_eq!(backoff.next_scan_at(now), now + Duration::from_secs(1));
 
         Ok(())
@@ -580,16 +603,16 @@ mod tests {
     async fn backoff_resets_after_sixty_continuously_healthy_seconds() -> anyhow::Result<()> {
         let mut backoff = RuntimeRecoveryBackoff::default();
         let mut now = Instant::now();
-        backoff.scopes_to_reconcile(now, &scan(false)?);
+        accept_due(&mut backoff, now, &scan(false)?);
         advance(Duration::from_secs(1)).await;
         now = Instant::now();
-        backoff.scopes_to_reconcile(now, &scan(false)?);
-        backoff.scopes_to_reconcile(now, &scan(true)?);
+        accept_due(&mut backoff, now, &scan(false)?);
+        backoff.scopes_due(now, &scan(true)?);
 
         advance(HEALTHY_RESET_INTERVAL).await;
         now = Instant::now();
-        backoff.scopes_to_reconcile(now, &scan(true)?);
-        assert!(backoff.scopes_to_reconcile(now, &scan(false)?).is_empty());
+        backoff.scopes_due(now, &scan(true)?);
+        assert!(backoff.scopes_due(now, &scan(false)?).is_empty());
         assert_eq!(backoff.next_scan_at(now), now + Duration::from_secs(1));
 
         Ok(())
@@ -599,15 +622,15 @@ mod tests {
     async fn brief_healthy_period_preserves_the_retry_attempt() -> anyhow::Result<()> {
         let mut backoff = RuntimeRecoveryBackoff::default();
         let mut now = Instant::now();
-        backoff.scopes_to_reconcile(now, &scan(false)?);
+        accept_due(&mut backoff, now, &scan(false)?);
         advance(Duration::from_secs(1)).await;
         now = Instant::now();
-        backoff.scopes_to_reconcile(now, &scan(false)?);
-        backoff.scopes_to_reconcile(now, &scan(true)?);
+        accept_due(&mut backoff, now, &scan(false)?);
+        backoff.scopes_due(now, &scan(true)?);
 
         advance(HEALTHY_RESET_INTERVAL - Duration::from_secs(1)).await;
         now = Instant::now();
-        assert!(backoff.scopes_to_reconcile(now, &scan(false)?).is_empty());
+        assert!(backoff.scopes_due(now, &scan(false)?).is_empty());
         assert_eq!(backoff.next_scan_at(now), now + Duration::from_secs(5));
 
         Ok(())
@@ -618,32 +641,60 @@ mod tests {
     {
         let mut backoff = RuntimeRecoveryBackoff::default();
         let detected_at = Instant::now();
-        backoff.scopes_to_reconcile(detected_at, &scan(false)?);
+        backoff.scopes_due(detected_at, &scan(false)?);
 
         let before_deadline = detected_at + Duration::from_millis(500);
         assert_eq!(
-            backoff.next_scan_after_error(before_deadline),
+            backoff.next_scan_at(before_deadline),
             detected_at + Duration::from_secs(1)
         );
 
         let after_deadline = detected_at + Duration::from_secs(2);
         let retry_at = after_deadline + Duration::from_secs(1);
-        assert_eq!(backoff.next_scan_after_error(after_deadline), retry_at);
+        assert_eq!(backoff.next_scan_at(after_deadline), retry_at);
         backoff.entries.insert(
             RuntimeSubject::Gateway,
             RuntimeRecoveryEntry::after_failure(after_deadline - Duration::from_millis(500), 0),
         );
         assert_eq!(
-            backoff.next_scan_after_error(after_deadline),
+            backoff.next_scan_at(after_deadline),
             after_deadline + Duration::from_millis(500)
         );
-        assert_eq!(
-            backoff.scopes_to_reconcile(retry_at, &scan(false)?).len(),
-            1
-        );
+        assert_eq!(accept_due(&mut backoff, retry_at, &scan(false)?).len(), 1);
         assert_eq!(
             backoff.next_scan_at(retry_at),
             retry_at + Duration::from_secs(5)
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn retry_attempt_advances_only_after_accepted_dispatch() -> anyhow::Result<()> {
+        let mut backoff = RuntimeRecoveryBackoff::default();
+        let scan = scan(false)?;
+        let detected_at = Instant::now();
+        assert!(backoff.scopes_due(detected_at, &scan).is_empty());
+
+        let due_at = detected_at + Duration::from_secs(1);
+        let due_scopes = backoff.scopes_due(due_at, &scan);
+        assert_eq!(due_scopes.len(), 1);
+        assert_eq!(backoff.scopes_due(due_at, &scan), due_scopes);
+        assert_eq!(
+            backoff.next_scan_at(due_at),
+            due_at + Duration::from_secs(1)
+        );
+
+        let accepted_at = due_at + Duration::from_secs(1);
+        let accepted_scopes = backoff.scopes_due(accepted_at, &scan);
+        assert_eq!(accepted_scopes, due_scopes);
+        for scope in &accepted_scopes {
+            backoff.record_accepted_recovery(accepted_at, &scan, scope);
+        }
+        assert!(backoff.scopes_due(accepted_at, &scan).is_empty());
+        assert_eq!(
+            backoff.next_scan_at(accepted_at),
+            accepted_at + Duration::from_secs(5)
         );
 
         Ok(())
@@ -790,8 +841,8 @@ mod tests {
         cleanup_result?;
         let mut backoff = RuntimeRecoveryBackoff::default();
         let detected_at = Instant::now();
-        assert!(backoff.scopes_to_reconcile(detected_at, &scan).is_empty());
-        let scopes = backoff.scopes_to_reconcile(detected_at + Duration::from_secs(1), &scan);
+        assert!(backoff.scopes_due(detected_at, &scan).is_empty());
+        let scopes = backoff.scopes_due(detected_at + Duration::from_secs(1), &scan);
 
         assert_eq!(
             scopes,

@@ -319,10 +319,21 @@ pub(crate) async fn run_background_reconciliation_job_with_origin(
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), BackgroundReconciliationError> {
-    let result = enqueue_reconciliation_job(&paths, &queue, scope)
-        .map_err(|error| BackgroundReconciliationError::Admission(Box::new(error)))?;
+    let result = enqueue_background_reconciliation_job(&paths, &queue, scope)?;
+    let EnqueueResult::Queued(queued) = result else {
+        return Ok(());
+    };
 
-    complete_background_reconciliation_job(&paths, result, runtime_catalog).await
+    complete_queued_background_reconciliation_job(&paths, queued, runtime_catalog).await
+}
+
+pub(crate) fn enqueue_background_reconciliation_job(
+    paths: &PvPaths,
+    queue: &ReconciliationQueue,
+    scope: ReconciliationScope,
+) -> Result<EnqueueResult, BackgroundReconciliationError> {
+    enqueue_reconciliation_job(paths, queue, scope)
+        .map_err(|error| BackgroundReconciliationError::Admission(Box::new(error)))
 }
 
 pub(crate) async fn run_startup_reconciliation_job(
@@ -396,14 +407,11 @@ async fn wait_for_startup_reconciliation_turn(
     }
 }
 
-async fn complete_background_reconciliation_job(
+pub(crate) async fn complete_queued_background_reconciliation_job(
     paths: &PvPaths,
-    result: EnqueueResult,
+    queued: QueuedReconciliation,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), BackgroundReconciliationError> {
-    let EnqueueResult::Queued(queued) = result else {
-        return Ok(());
-    };
     let running = queued.wait_for_turn().await;
 
     complete_running_background_reconciliation_job(paths, running, runtime_catalog).await
