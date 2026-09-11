@@ -9,9 +9,7 @@ use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant, sleep, sleep_until, timeout};
 
 use crate::DaemonError;
-use crate::health::{
-    RUNTIME_HEALTH_INTERVAL, RuntimeHealthScan, RuntimeRecoveryBackoff, scan_runtime_health,
-};
+use crate::health::{RuntimeHealthScan, RuntimeRecoveryBackoff, scan_runtime_health};
 use crate::ipc::{LocalListener, LocalStream};
 use crate::jobs::{
     BackgroundReconciliationError, record_background_reconciliation_error,
@@ -142,12 +140,12 @@ pub(crate) async fn serve(
                         }
                         Ok(Err(error)) => {
                             structured_log::runtime_health_scan_failed(&paths, &error.to_string());
-                            next_health_scan = Some(now + RUNTIME_HEALTH_INTERVAL);
+                            next_health_scan = Some(recovery_backoff.next_scan_after_error(now));
                         }
                         Err(error) if error.is_panic() => break Err(error.into()),
                         Err(error) => {
                             structured_log::runtime_health_scan_failed(&paths, &error.to_string());
-                            next_health_scan = Some(now + RUNTIME_HEALTH_INTERVAL);
+                            next_health_scan = Some(recovery_backoff.next_scan_after_error(now));
                         }
                     }
                 }

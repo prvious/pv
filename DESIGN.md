@@ -242,6 +242,7 @@ The daemon restarts crashed desired child processes through reconciliation. Comm
 If a PV-managed child process crashes repeatedly, the daemon applies restart backoff instead of restarting it forever in a tight loop. If the process keeps crashing, PV marks the affected runtime as failed or degraded in observed state. The periodic health tick may retry later, and `pv restart` gives users an explicit manual recovery path.
 
 Crash restart backoff retries a desired child process up to 3 times with increasing delays, such as 1 second, 5 seconds, and 15 seconds. After that, PV marks the process failed or degraded until a later health tick or explicit `pv restart` retries it.
+A health-scan error preserves future recovery deadlines and delays overdue deadlines by 1 second when scheduling the next scan, without consuming a runtime-recovery attempt.
 
 PV resets a child process crash counter after the process stays healthy for 60 seconds.
 

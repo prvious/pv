@@ -21,6 +21,7 @@ use crate::supervisor::{ProcessSupervisor, ReadinessCheck, probe_readiness_once}
 pub(crate) const RUNTIME_HEALTH_INTERVAL: Duration = Duration::from_secs(30);
 const HEALTHY_RESET_INTERVAL: Duration = Duration::from_secs(60);
 const RUNTIME_HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const RUNTIME_HEALTH_SCAN_ERROR_RETRY_DELAY: Duration = Duration::from_secs(1);
 const RUNTIME_HEALTH_PROBE_CONCURRENCY: usize = 4;
 const RUNTIME_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(1),
@@ -140,6 +141,23 @@ impl RuntimeRecoveryBackoff {
                 .healthy_since
                 .map(|healthy| healthy + HEALTHY_RESET_INTERVAL));
             entry_next.map_or(next, |entry_next| next.min(entry_next))
+        })
+    }
+
+    pub(crate) fn next_scan_after_error(&self, now: Instant) -> Instant {
+        let periodic = now + RUNTIME_HEALTH_INTERVAL;
+        let overdue_retry = now + RUNTIME_HEALTH_SCAN_ERROR_RETRY_DELAY;
+        self.entries.values().fold(periodic, |next, entry| {
+            let entry_next = entry.next_attempt.or(entry
+                .healthy_since
+                .map(|healthy| healthy + HEALTHY_RESET_INTERVAL));
+            entry_next.map_or(next, |entry_next| {
+                next.min(if entry_next <= now {
+                    overdue_retry
+                } else {
+                    entry_next
+                })
+            })
         })
     }
 }
@@ -510,7 +528,7 @@ mod tests {
 
     use super::{
         HEALTHY_RESET_INTERVAL, RUNTIME_HEALTH_INTERVAL, RuntimeHealthObservation,
-        RuntimeHealthScan, RuntimeRecoveryBackoff, scan_runtime_health,
+        RuntimeHealthScan, RuntimeRecoveryBackoff, RuntimeRecoveryEntry, scan_runtime_health,
     };
     use crate::managed_resources::ManagedResourceRuntimeCatalog;
     use crate::{ProcessSpec, ProcessSupervisor, ReconciliationScope};
@@ -591,6 +609,42 @@ mod tests {
         now = Instant::now();
         assert!(backoff.scopes_to_reconcile(now, &scan(false)?).is_empty());
         assert_eq!(backoff.next_scan_at(now), now + Duration::from_secs(5));
+
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scan_errors_preserve_retry_deadlines_without_consuming_attempts() -> anyhow::Result<()>
+    {
+        let mut backoff = RuntimeRecoveryBackoff::default();
+        let detected_at = Instant::now();
+        backoff.scopes_to_reconcile(detected_at, &scan(false)?);
+
+        let before_deadline = detected_at + Duration::from_millis(500);
+        assert_eq!(
+            backoff.next_scan_after_error(before_deadline),
+            detected_at + Duration::from_secs(1)
+        );
+
+        let after_deadline = detected_at + Duration::from_secs(2);
+        let retry_at = after_deadline + Duration::from_secs(1);
+        assert_eq!(backoff.next_scan_after_error(after_deadline), retry_at);
+        backoff.entries.insert(
+            RuntimeSubject::Gateway,
+            RuntimeRecoveryEntry::after_failure(after_deadline - Duration::from_millis(500), 0),
+        );
+        assert_eq!(
+            backoff.next_scan_after_error(after_deadline),
+            after_deadline + Duration::from_millis(500)
+        );
+        assert_eq!(
+            backoff.scopes_to_reconcile(retry_at, &scan(false)?).len(),
+            1
+        );
+        assert_eq!(
+            backoff.next_scan_at(retry_at),
+            retry_at + Duration::from_secs(5)
+        );
 
         Ok(())
     }
