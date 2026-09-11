@@ -34,7 +34,7 @@ use crate::project_env::{
 };
 use crate::structured_log;
 use crate::supervisor::{
-    ManagedProcess, bounded_runtime_readiness, probe_readiness_once,
+    ManagedProcess, RecordedConfigFingerprint, bounded_runtime_readiness, probe_readiness_once,
     runtime_exited_before_readiness_error, wait_for_started_runtime_readiness,
 };
 use crate::{
@@ -388,6 +388,7 @@ async fn reconcile_project_gateway_runtimes(
             &worker_runtime,
             readiness_timeout,
             active_impact.worker_fragments.get(runtime_key),
+            None,
         )
         .await?;
         reconciled_worker_count += 1;
@@ -440,6 +441,7 @@ async fn reconcile_project_gateway_runtimes(
                 &worker_runtime,
                 readiness_timeout,
                 active_impact.worker_fragments.get(previous_runtime_key),
+                None,
             )
             .await?;
             reconciled_worker_count += 1;
@@ -571,26 +573,132 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         phase_log.start(structured_log::ReconciliationPhase::Workers, "php_workers")
     });
     let supervisor = ProcessSupervisor::new(paths.clone());
+    let previous_gateway = match verified_recorded_applied_runtime_config(
+        &supervisor,
+        &gateway_process_spec(paths, &gateway_command),
+        &paths.gateway_root_config(),
+        &paths.gateway_projects_config_dir(),
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let mut failures = Vec::new();
+            if let Err(recording) = record_runtime_error(paths, RuntimeSubject::Gateway, &error) {
+                failures.push(("gateway".to_owned(), recording));
+            }
+            failures.push(("gateway".to_owned(), error));
+            return Err(combined_runtime_reconciliation_error(failures));
+        }
+    };
     let plan = match build_runtime_plan(paths) {
         Ok(plan) => plan,
         Err(error) => {
-            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
+            let recording = record_runtime_error(paths, RuntimeSubject::Gateway, &error).err();
+            let recovery = recover_previous_gateway(
+                paths,
+                &supervisor,
+                &gateway_command,
+                previous_gateway.as_ref(),
+                pf_routing_state,
+                readiness_timeout,
+            )
+            .await
+            .err();
+            let mut failures = vec![("gateway".to_owned(), error)];
+            if let Some(recording) = recording {
+                failures.push(("gateway".to_owned(), recording));
+            }
+            if let Some(recovery) = recovery {
+                failures.push(("gateway".to_owned(), recovery));
+            }
 
-            return Err(error);
+            return Err(combined_runtime_reconciliation_error(failures));
         }
     };
     let mut worker_commands = Vec::new();
     let mut worker_failures = Vec::new();
+    let mut retained_worker_fragments = BTreeMap::new();
 
     for worker in &plan.workers {
         match required_installed_worker_runtime(paths, worker) {
-            Ok(worker_runtime) => worker_commands.push((worker.clone(), worker_runtime)),
+            Ok(worker_runtime) => {
+                let snapshot = worker_process_spec(
+                    paths,
+                    worker,
+                    &worker_runtime.command,
+                    &worker_runtime.artifact_root,
+                )
+                .and_then(|spec| {
+                    verified_recorded_runtime_config(
+                        &supervisor,
+                        &spec,
+                        &paths.worker_root_config(&worker.runtime_key),
+                        &paths.worker_projects_config_dir(&worker.runtime_key),
+                    )
+                });
+                let snapshot = match snapshot {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        if let Err(recording) =
+                            record_runtime_error(paths, worker_runtime_subject(worker), &error)
+                        {
+                            worker_failures.push((worker.runtime_key.clone(), recording));
+                        }
+                        worker_failures.push((worker.runtime_key.clone(), error));
+                        continue;
+                    }
+                };
+                if snapshot.is_none()
+                    && previous_gateway.as_ref().is_some_and(|gateway| {
+                        gateway.fragments.iter().any(|(file_name, fragment)| {
+                            gateway_fragment_targets_worker(fragment, worker.port)
+                                && !worker.projects.iter().any(|project| {
+                                    project_config_file_name(&project.id) == *file_name
+                                })
+                        })
+                    })
+                {
+                    let error = DaemonError::UnexpectedProtocolResponse {
+                        reason: format!(
+                            "cannot verify source routes for PHP worker `{}` before Gateway commit",
+                            worker.runtime_key
+                        ),
+                    };
+                    if let Err(recording) =
+                        record_runtime_error(paths, worker_runtime_subject(worker), &error)
+                    {
+                        worker_failures.push((worker.runtime_key.clone(), recording));
+                    }
+                    worker_failures.push((worker.runtime_key.clone(), error));
+                    continue;
+                }
+                if let Some(snapshot) = snapshot {
+                    let fragments =
+                        snapshot
+                            .fragments
+                            .into_iter()
+                            .filter(|(file_name, _)| {
+                                !worker.projects.iter().any(|project| {
+                                    project_config_file_name(&project.id) == *file_name
+                                }) && previous_gateway.as_ref().is_none_or(|gateway| {
+                                    gateway.fragments.get(file_name).is_some_and(|fragment| {
+                                        gateway_fragment_targets_worker(fragment, worker.port)
+                                    })
+                                })
+                            })
+                            .collect::<BTreeMap<_, _>>();
+                    if !fragments.is_empty() {
+                        retained_worker_fragments.insert(worker.runtime_key.clone(), fragments);
+                    }
+                }
+                worker_commands.push((worker.clone(), worker_runtime));
+            }
             Err(error) => worker_failures.push((worker.runtime_key.clone(), error)),
         }
     }
 
     let workers = bounded_runtime_readiness(worker_commands, |(worker, worker_runtime)| {
         let supervisor = &supervisor;
+        let retained_fragments = retained_worker_fragments.get(&worker.runtime_key);
         async move {
             let result = reconcile_planned_worker(
                 paths,
@@ -599,6 +707,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
                 &worker_runtime,
                 readiness_timeout,
                 None,
+                retained_fragments,
             )
             .await;
             (worker.runtime_key.clone(), result)
@@ -611,6 +720,18 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         }
     }
     if !worker_failures.is_empty() {
+        if let Err(error) = recover_previous_gateway(
+            paths,
+            &supervisor,
+            &gateway_command,
+            previous_gateway.as_ref(),
+            pf_routing_state,
+            readiness_timeout,
+        )
+        .await
+        {
+            worker_failures.push(("gateway".to_owned(), error));
+        }
         return Err(combined_runtime_reconciliation_error(worker_failures));
     }
     let worker_count = plan.workers.len();
@@ -654,12 +775,83 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             "stale_workers",
         )
     });
+    for worker in &plan.workers {
+        if retained_worker_fragments.contains_key(&worker.runtime_key) {
+            let worker_runtime = required_installed_worker_runtime(paths, worker)?;
+            reconcile_planned_worker(
+                paths,
+                &supervisor,
+                worker,
+                &worker_runtime,
+                readiness_timeout,
+                None,
+                None,
+            )
+            .await?;
+        }
+    }
     stop_stale_worker_runtimes(paths, &supervisor, &plan).await?;
     if let Some(cleanup_timer) = cleanup_timer {
         cleanup_timer.finish(structured_log::PhaseOutcome::Succeeded, &[]);
     }
 
     Ok(GATEWAY_RUNTIME_RECONCILED.to_owned())
+}
+
+async fn recover_previous_gateway(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    gateway_command: &CaddyCliCommand,
+    snapshot: Option<&ActiveRuntimeConfigSnapshot>,
+    pf_routing_state: Option<GatewayPfRoutingState>,
+    readiness_timeout: Duration,
+) -> Result<(), DaemonError> {
+    let Some(snapshot) = snapshot else {
+        return Ok(());
+    };
+    let active_dir = paths.gateway_projects_config_dir();
+    let candidate_dir = candidate_config_dir_for(&active_dir);
+    let fragments = snapshot
+        .fragments
+        .iter()
+        .map(|(file_name, content)| preserved_project_config_fragment(file_name, content))
+        .collect::<Vec<_>>();
+    let plan = RuntimePlan {
+        gateway: GatewayRuntimePlan {
+            http_port: optional_config_port(&snapshot.root, "http_port ")?
+                .ok_or_else(missing_previous_service_port)?,
+            https_port: optional_config_port(&snapshot.root, "https_port ")?
+                .ok_or_else(missing_previous_service_port)?,
+            admin_socket_path: paths.gateway_admin_socket(),
+            ca_certificate_path: paths.ca_certificate(),
+            ca_private_key_path: paths.ca_private_key(),
+            storage_path: gateway_storage_path(paths)?,
+        },
+        workers: Vec::new(),
+    };
+    let desired = DesiredGatewayConfig {
+        readiness_hostname: gateway_readiness_hostname(&fragments),
+        tree: DesiredRuntimeConfigTree {
+            candidate_content: snapshot
+                .root
+                .replace(active_dir.as_str(), candidate_dir.as_str()),
+            fingerprint: desired_runtime_config_fingerprint(&snapshot.root, &fragments),
+            active_content: snapshot.root.clone(),
+            active_dir,
+            candidate_dir,
+            fragments,
+        },
+    };
+    reconcile_gateway_config(
+        paths,
+        supervisor,
+        &plan,
+        gateway_command,
+        pf_routing_state,
+        readiness_timeout,
+        desired,
+    )
+    .await
 }
 
 async fn reconcile_planned_gateway(
@@ -679,6 +871,27 @@ async fn reconcile_planned_gateway(
             return Err(error);
         }
     };
+    reconcile_gateway_config(
+        paths,
+        supervisor,
+        plan,
+        gateway_command,
+        pf_routing_state,
+        readiness_timeout,
+        desired_gateway_config,
+    )
+    .await
+}
+
+async fn reconcile_gateway_config(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    plan: &RuntimePlan,
+    gateway_command: &CaddyCliCommand,
+    pf_routing_state: Option<GatewayPfRoutingState>,
+    readiness_timeout: Duration,
+    desired_gateway_config: DesiredGatewayConfig,
+) -> Result<(), DaemonError> {
     let pf_routing_state = match pf_routing_state {
         Some(pf_routing_state) => pf_routing_state,
         None => gateway_pf_routing_state(paths, plan).await?,
@@ -733,6 +946,7 @@ async fn reconcile_planned_worker(
     worker_runtime: &InstalledFrankenphpRuntime,
     readiness_timeout: Duration,
     preserved_fragments: Option<&BTreeMap<String, String>>,
+    retained_fragments: Option<&BTreeMap<String, String>>,
 ) -> Result<(), DaemonError> {
     let prepared = prepare_planned_worker(
         paths,
@@ -741,6 +955,7 @@ async fn reconcile_planned_worker(
         worker_runtime,
         readiness_timeout,
         preserved_fragments,
+        retained_fragments,
     )
     .await?;
     match prepared {
@@ -763,6 +978,7 @@ async fn prepare_planned_worker(
     worker_runtime: &InstalledFrankenphpRuntime,
     readiness_timeout: Duration,
     preserved_fragments: Option<&BTreeMap<String, String>>,
+    retained_fragments: Option<&BTreeMap<String, String>>,
 ) -> Result<PreparedWorkerReconciliation, DaemonError> {
     let subject = worker_runtime_subject(worker);
     let process_spec = match worker_process_spec(
@@ -778,14 +994,15 @@ async fn prepare_planned_worker(
             return Err(error);
         }
     };
-    let desired_config = match desired_worker_config(paths, worker, preserved_fragments) {
-        Ok(desired_config) => desired_config,
-        Err(error) => {
-            record_runtime_error(paths, subject.clone(), &error)?;
+    let desired_config =
+        match desired_worker_config(paths, worker, preserved_fragments, retained_fragments) {
+            Ok(desired_config) => desired_config,
+            Err(error) => {
+                record_runtime_error(paths, subject.clone(), &error)?;
 
-            return Err(error);
-        }
-    };
+                return Err(error);
+            }
+        };
     let readiness = RuntimeReadinessPlan {
         check: ReadinessCheck::Tcp {
             host: "127.0.0.1".to_owned(),
@@ -794,6 +1011,7 @@ async fn prepare_planned_worker(
         failure_policy: ReadinessFailurePolicy::FailRuntime,
         timeout: readiness_timeout,
         admin_endpoint: CaddyAdminEndpoint::new(worker.admin_socket_path.clone()),
+        preserve_staged_config: retained_fragments.is_some_and(|fragments| !fragments.is_empty()),
     };
     let private_environment =
         match worker_config_private_environment(paths, worker, &worker_runtime.artifact_root) {
@@ -938,6 +1156,7 @@ fn gateway_readiness_plan(
         failure_policy,
         timeout,
         admin_endpoint: CaddyAdminEndpoint::new(plan.gateway.admin_socket_path.clone()),
+        preserve_staged_config: false,
     }
 }
 
@@ -947,6 +1166,7 @@ struct RuntimeReadinessPlan {
     failure_policy: ReadinessFailurePolicy,
     timeout: Duration,
     admin_endpoint: CaddyAdminEndpoint,
+    preserve_staged_config: bool,
 }
 
 fn previous_runtime_readiness(
@@ -1855,6 +2075,47 @@ fn verified_active_runtime_config(
     let Some(recorded_fingerprint) = runtime.applied_config_fingerprint() else {
         return Ok(None);
     };
+    if runtime.replacement_required() {
+        return Ok(None);
+    }
+    verified_runtime_config_snapshot(root_path, fragments_directory, recorded_fingerprint)
+}
+
+fn verified_recorded_applied_runtime_config(
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    root_path: &Utf8Path,
+    fragments_directory: &Utf8Path,
+) -> Result<Option<ActiveRuntimeConfigSnapshot>, DaemonError> {
+    let Some(RecordedConfigFingerprint::Applied(recorded_fingerprint)) =
+        supervisor.recorded_config_fingerprint(spec)?
+    else {
+        return Ok(None);
+    };
+    verified_runtime_config_snapshot(root_path, fragments_directory, &recorded_fingerprint)
+}
+
+fn verified_recorded_runtime_config(
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    root_path: &Utf8Path,
+    fragments_directory: &Utf8Path,
+) -> Result<Option<ActiveRuntimeConfigSnapshot>, DaemonError> {
+    let Some(recorded_fingerprint) = supervisor.recorded_config_fingerprint(spec)? else {
+        return Ok(None);
+    };
+    let recorded_fingerprint = match recorded_fingerprint {
+        RecordedConfigFingerprint::Applied(fingerprint)
+        | RecordedConfigFingerprint::Staged(fingerprint) => fingerprint,
+    };
+    verified_runtime_config_snapshot(root_path, fragments_directory, &recorded_fingerprint)
+}
+
+fn verified_runtime_config_snapshot(
+    root_path: &Utf8Path,
+    fragments_directory: &Utf8Path,
+    recorded_fingerprint: &str,
+) -> Result<Option<ActiveRuntimeConfigSnapshot>, DaemonError> {
     let Some(snapshot) = active_runtime_config_snapshot(root_path, fragments_directory)? else {
         return Ok(None);
     };
@@ -1863,10 +2124,9 @@ fn verified_active_runtime_config(
         snapshot
             .fragments
             .iter()
-            .map(|(file_name, content)| (file_name.as_str(), content.as_str())),
+            .map(|(name, content)| (name.as_str(), content.as_str())),
     );
-
-    if runtime.replacement_required() || active_fingerprint != recorded_fingerprint {
+    if active_fingerprint != recorded_fingerprint {
         return Ok(None);
     }
 
@@ -2323,10 +2583,21 @@ fn desired_worker_config(
     paths: &PvPaths,
     worker: &PhpWorkerRuntimePlan,
     preserved_fragments: Option<&BTreeMap<String, String>>,
+    retained_fragments: Option<&BTreeMap<String, String>>,
 ) -> Result<DesiredRuntimeConfigTree, DaemonError> {
     let active_dir = paths.worker_projects_config_dir(&worker.runtime_key);
     let candidate_dir = candidate_config_dir_for(&active_dir);
-    let fragments = worker_project_config_fragments(paths, worker, preserved_fragments)?;
+    let mut fragments = worker_project_config_fragments(paths, worker, preserved_fragments)?;
+    if let Some(retained_fragments) = retained_fragments {
+        for (file_name, content) in retained_fragments {
+            if !fragments
+                .iter()
+                .any(|fragment| fragment.file_name == *file_name)
+            {
+                fragments.push(preserved_project_config_fragment(file_name, content));
+            }
+        }
+    }
     let fragment_project_ids = fragments
         .iter()
         .map(|fragment| fragment.project_id.as_str())
@@ -2598,26 +2869,32 @@ async fn prepare_promoted_runtime(
     } else {
         readiness.clone()
     };
-    let started =
-        match begin_runtime_transaction(paths, supervisor, &spec, &readiness, matching_runtime)
-            .await
-        {
-            Ok(started) => started,
-            Err(error) => {
-                return Err(recover_promoted_runtime(
-                    PromotedRuntimeRecovery {
-                        paths: paths.clone(),
-                        promoted_config,
-                        spec,
-                        subject,
-                        previous_fingerprint,
-                        restoration_readiness,
-                    },
-                    error,
-                )
-                .await);
-            }
-        };
+    let started = match begin_runtime_transaction(
+        paths,
+        supervisor,
+        &spec,
+        &readiness,
+        desired_fingerprint,
+        matching_runtime,
+    )
+    .await
+    {
+        Ok(started) => started,
+        Err(error) => {
+            return Err(recover_promoted_runtime(
+                PromotedRuntimeRecovery {
+                    paths: paths.clone(),
+                    promoted_config,
+                    spec,
+                    subject,
+                    previous_fingerprint,
+                    restoration_readiness,
+                },
+                error,
+            )
+            .await);
+        }
+    };
 
     Ok(PendingPromotedRuntime {
         paths: paths.clone(),
@@ -2690,17 +2967,34 @@ async fn recover_promoted_runtime(
             Ok(()) => error,
             Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
         },
-        RuntimeRecovery::RollbackPending => match promoted_config.rollback() {
-            Ok(()) => match supervisor.clear_replacement_required(&spec) {
-                Ok(true) => error,
-                Ok(false) => compound_runtime_restore_error(
-                    error,
-                    CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
-                ),
-                Err(clear_error) => compound_runtime_restore_error(error, clear_error),
-            },
-            Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
-        },
+        RuntimeRecovery::RollbackPending => {
+            let verified_previous_fingerprint = previous_fingerprint
+                .as_deref()
+                .map(|fingerprint| {
+                    verified_previous_config_fingerprint(&promoted_config, Some(fingerprint))
+                })
+                .transpose();
+            match promoted_config.rollback() {
+                Ok(()) => {
+                    let recording = verified_previous_fingerprint.and_then(|fingerprint| {
+                        if let Some(fingerprint) = fingerprint {
+                            supervisor.record_applied_config(&spec, &fingerprint)
+                        } else {
+                            supervisor.clear_replacement_required(&spec)
+                        }
+                    });
+                    match recording {
+                        Ok(true) => error,
+                        Ok(false) => compound_runtime_restore_error(
+                            error,
+                            CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
+                        ),
+                        Err(recording) => compound_runtime_restore_error(error, recording),
+                    }
+                }
+                Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
+            }
+        }
         RuntimeRecovery::RollbackAndRestore => {
             let verified_previous_fingerprint = verified_previous_config_fingerprint(
                 &promoted_config,
@@ -2785,11 +3079,12 @@ async fn load_runtime_config(
     paths: &PvPaths,
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
+    staged_config_fingerprint: &str,
     client: CaddyAdminClient,
     admin_endpoint: &CaddyAdminEndpoint,
     content: Vec<u8>,
 ) -> Result<(), RuntimeTransactionError> {
-    match supervisor.mark_replacement_required(spec) {
+    match supervisor.mark_replacement_required(spec, staged_config_fingerprint) {
         Ok(true) => {}
         Ok(false) => {
             return Err(RuntimeTransactionError::new(
@@ -2828,6 +3123,7 @@ async fn begin_runtime_transaction(
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
     readiness: &RuntimeReadinessPlan,
+    desired_fingerprint: &str,
     matching_runtime: bool,
 ) -> Result<StartedRuntimeTransaction, RuntimeTransactionError> {
     if matching_runtime {
@@ -2843,6 +3139,7 @@ async fn begin_runtime_transaction(
             paths,
             supervisor,
             spec,
+            desired_fingerprint,
             client,
             &readiness.admin_endpoint,
             active_content,
@@ -2868,6 +3165,22 @@ async fn begin_runtime_transaction(
 
     delete_optional_file(readiness.admin_endpoint.path()).map_err(RuntimeTransactionError::new)?;
     let process = supervisor.start(spec.clone()).await?;
+    let staging_error = match supervisor.mark_replacement_required(spec, desired_fingerprint) {
+        Ok(true) => None,
+        Ok(false) => Some(CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into()),
+        Err(error) => Some(error),
+    };
+    if let Some(error) = staging_error {
+        return Err(cleanup_fresh_runtime(
+            supervisor,
+            spec,
+            process,
+            desired_fingerprint,
+            false,
+            error,
+        )
+        .await);
+    }
 
     Ok(StartedRuntimeTransaction::Fresh(Box::new(process)))
 }
@@ -2885,7 +3198,9 @@ async fn finish_runtime_transaction(
         failure_policy,
         timeout: readiness_timeout,
         admin_endpoint,
+        preserve_staged_config,
     } = readiness;
+    let preserve_staged_config = *preserve_staged_config;
     let StartedRuntimeTransaction::Fresh(process) = started else {
         let client = CaddyAdminClient::new().with_timeout(*readiness_timeout);
         if let Err(error) = wait_for_owned_readiness(check.clone(), *readiness_timeout, || {
@@ -2940,19 +3255,16 @@ async fn finish_runtime_transaction(
     .await
     {
         record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
-        return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+        return Err(cleanup_fresh_runtime(
+            supervisor,
+            spec,
+            process,
+            desired_fingerprint,
+            preserve_staged_config,
+            error,
+        )
+        .await);
     }
-    match supervisor.mark_replacement_required(spec) {
-        Ok(true) => {}
-        Ok(false) => {
-            let error = CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into();
-            return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
-        }
-        Err(error) => {
-            return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
-        }
-    }
-
     let service_readiness = wait_for_owned_readiness(check.clone(), *readiness_timeout, || {
         verify_runtime_ownership(supervisor, spec)
     });
@@ -2969,7 +3281,15 @@ async fn finish_runtime_transaction(
             let process_exited = match process.has_exited() {
                 Ok(process_exited) => process_exited,
                 Err(error) => {
-                    return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+                    return Err(cleanup_fresh_runtime(
+                        supervisor,
+                        spec,
+                        process,
+                        desired_fingerprint,
+                        preserve_staged_config,
+                        error,
+                    )
+                    .await);
                 }
             };
             if !process_exited {
@@ -2980,23 +3300,55 @@ async fn finish_runtime_transaction(
                     }
                     Ok(None) => {}
                     Err(error) => {
-                        return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+                        return Err(cleanup_fresh_runtime(
+                            supervisor,
+                            spec,
+                            process,
+                            desired_fingerprint,
+                            preserve_staged_config,
+                            error,
+                        )
+                        .await);
                     }
                 }
             }
         }
-        return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+        return Err(cleanup_fresh_runtime(
+            supervisor,
+            spec,
+            process,
+            desired_fingerprint,
+            preserve_staged_config,
+            error,
+        )
+        .await);
     }
 
     let process_exited = match process.has_exited() {
         Ok(process_exited) => process_exited,
         Err(error) => {
-            return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+            return Err(cleanup_fresh_runtime(
+                supervisor,
+                spec,
+                process,
+                desired_fingerprint,
+                preserve_staged_config,
+                error,
+            )
+            .await);
         }
     };
     if process_exited {
         let error = runtime_exited_before_readiness_error(&spec.name);
-        return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+        return Err(cleanup_fresh_runtime(
+            supervisor,
+            spec,
+            process,
+            desired_fingerprint,
+            preserve_staged_config,
+            error,
+        )
+        .await);
     }
     record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
 
@@ -3021,10 +3373,12 @@ async fn cleanup_fresh_runtime(
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
     process: ManagedProcess,
+    staged_config_fingerprint: &str,
+    preserve_staged_config: bool,
     readiness_error: DaemonError,
 ) -> RuntimeTransactionError {
     if let Err(cleanup_error) = process.stop(Duration::from_secs(1)).await {
-        match supervisor.mark_replacement_required(spec) {
+        match supervisor.mark_replacement_required(spec, staged_config_fingerprint) {
             Ok(true) => {
                 // Keep the promoted config and marked runtime metadata when the process may still
                 // be alive. The next reconciliation replaces it without a disk/runtime split.
@@ -3042,6 +3396,26 @@ async fn cleanup_fresh_runtime(
                     runtime_cleanup_failed_error(&spec.name, cleanup_error, replacement_error),
                 ));
             }
+        }
+    }
+
+    if preserve_staged_config {
+        // The previous Gateway may still reference these source routes. Keep exact staged bytes
+        // and their metadata so a retry can verify them after the failed process has stopped.
+        match supervisor.recorded_config_fingerprint(spec) {
+            Ok(Some(RecordedConfigFingerprint::Staged(fingerprint)))
+                if fingerprint == staged_config_fingerprint =>
+            {
+                return RuntimeTransactionError::pending_preserve(readiness_error);
+            }
+            Err(proof_error) => {
+                return RuntimeTransactionError::pending_preserve(runtime_cleanup_failed_error(
+                    &spec.name,
+                    readiness_error,
+                    proof_error,
+                ));
+            }
+            Ok(_) => {}
         }
     }
 
@@ -3142,6 +3516,7 @@ async fn restore_runtime_after_failed_load(
         paths,
         supervisor,
         spec,
+        previous_fingerprint,
         client,
         &readiness.admin_endpoint,
         restored_content,
@@ -3357,6 +3732,20 @@ struct ProjectConfigFragment {
     file_name: String,
     primary_hostname: String,
     content: String,
+}
+
+fn preserved_project_config_fragment(file_name: &str, content: &str) -> ProjectConfigFragment {
+    ProjectConfigFragment {
+        project_id: file_name.trim_end_matches(".Caddyfile").to_owned(),
+        file_name: file_name.to_owned(),
+        primary_hostname: content
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(',')
+            .to_owned(),
+        content: content.to_owned(),
+    }
 }
 
 fn desired_runtime_config_fingerprint(root: &str, fragments: &[ProjectConfigFragment]) -> String {
