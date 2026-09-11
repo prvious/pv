@@ -22,7 +22,8 @@ use crate::project_env::{
     reconcile_project_env_with_runtime_catalog_and_progress, record_project_env_failure,
 };
 use crate::reconciliation::{
-    EnqueueResult, ReconciliationJobTiming, ReconciliationQueue, ReconciliationScope,
+    EnqueueResult, QueuedReconciliation, ReconciliationJobTiming, ReconciliationQueue,
+    ReconciliationScope, RunningReconciliation,
 };
 use crate::structured_log::{self, PhaseOutcome, ReconciliationPhase, ReconciliationPhaseLog};
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
@@ -327,7 +328,25 @@ pub(crate) async fn run_startup_reconciliation_job(
         }
     };
 
-    complete_background_reconciliation_job(&paths, result, runtime_catalog).await
+    let EnqueueResult::Queued(queued) = result else {
+        return Ok(());
+    };
+    let Some(running) = wait_for_startup_reconciliation_turn(queued, &mut shutdown).await else {
+        return Ok(());
+    };
+
+    complete_running_background_reconciliation_job(&paths, running, runtime_catalog).await
+}
+
+async fn wait_for_startup_reconciliation_turn(
+    queued: QueuedReconciliation,
+    shutdown: &mut oneshot::Receiver<()>,
+) -> Option<RunningReconciliation> {
+    tokio::select! {
+        biased;
+        _ = shutdown => None,
+        running = queued.wait_for_turn() => Some(running),
+    }
 }
 
 async fn complete_background_reconciliation_job(
@@ -339,6 +358,15 @@ async fn complete_background_reconciliation_job(
         return Ok(());
     };
     let running = queued.wait_for_turn().await;
+
+    complete_running_background_reconciliation_job(paths, running, runtime_catalog).await
+}
+
+async fn complete_running_background_reconciliation_job(
+    paths: &PvPaths,
+    running: RunningReconciliation,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<(), DaemonError> {
     let job_id = running.job_id().to_string();
     let scope = running.scope().clone();
     let result = complete_reconciliation_job(
@@ -2230,7 +2258,8 @@ mod tests {
         complete_streamed_job_with_heartbeat, complete_streamed_job_with_heartbeat_and_events,
         complete_system_reconciliation_with_progress, complete_update_job,
         completed_system_reconciliation_coverage, discover_system_project_demand,
-        enqueue_reconciliation_job, foreground_reconciliation_result,
+        enqueue_reconciliation_job, enqueue_startup_reconciliation_job,
+        foreground_reconciliation_result,
         managed_resource_reconciliation_summary, reconcile_persisted_project_envs,
         reconcile_project_env_and_missing_resources,
         reconcile_project_env_with_runtime_catalog_and_progress,
@@ -2240,7 +2269,7 @@ mod tests {
         record_background_reconciliation_error, run_background_reconciliation_job,
         start_reconciliation_job, start_update_job, stop_undemanded_system_resource_runtimes,
         stream_started_reconciliation_job, stream_started_update_job, system_project_summary,
-        write_coalesced_update_response,
+        wait_for_startup_reconciliation_turn, write_coalesced_update_response,
     };
     use crate::reconciliation::{
         EnqueueResult, ReconciliationJobTiming, ReconciliationQueue, ReconciliationScope,
@@ -6874,6 +6903,46 @@ mod tests {
 
         let database = Database::open(&paths)?;
         assert!(database.recent_jobs()?.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn startup_shutdown_wins_ready_queue_handoff() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let queue = ReconciliationQueue::new();
+        let blocker = queued(enqueue_reconciliation_job(
+            &paths,
+            &queue,
+            ReconciliationScope::project("blocker")?,
+        )?)?;
+        let running = blocker.wait_for_turn().await;
+        let startup = queued(enqueue_startup_reconciliation_job(&paths, &queue)?)?;
+        let startup_job_id = startup.job_id().to_string();
+        let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+
+        shutdown_sender
+            .send(())
+            .map_err(|()| anyhow::anyhow!("startup shutdown receiver was dropped"))?;
+        running.finish();
+        assert!(
+            wait_for_startup_reconciliation_turn(startup, &mut shutdown_receiver)
+                .await
+                .is_none()
+        );
+
+        let database = Database::open(&paths)?;
+        let startup = database
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.id == startup_job_id)
+            .ok_or_else(|| anyhow::anyhow!("missing startup reconciliation job"))?;
+        assert_eq!(startup.status, JobStatus::Failed);
+        assert_eq!(
+            startup.error.as_deref(),
+            Some("reconciliation was abandoned before completion")
+        );
 
         Ok(())
     }
