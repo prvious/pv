@@ -998,6 +998,7 @@ mod tests {
                 == RuntimeSubject::PhpWorker {
                     php_track: "8.4".to_owned(),
                 }
+                && observation.healthy
         }));
         assert_eq!(scan.errors.len(), 1);
         assert_eq!(
