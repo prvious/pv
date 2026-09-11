@@ -2359,13 +2359,43 @@ fn managed_resource_commands_install_reports_cached_manifest_fallback() -> Resul
     assert_eq!(
         progress.operations(),
         [
+            "manifest started",
             "manifest succeeded",
+            "install redis:7.2:7.2.5-pv1 started",
+            "install redis:7.2:7.2.5-pv1 skipped",
+            "download redis:7.2:7.2.5-pv1 started",
             "download redis:7.2:7.2.5-pv1 succeeded",
+            "install redis:7.2:7.2.5-pv1 started",
             "install redis:7.2:7.2.5-pv1 succeeded",
+            "manifest started",
             "manifest fallback: HTTP request failed for `https://artifacts.example.test/manifest.json`: offline",
+            "install redis:7.2:7.2.5-pv1 started",
             "install redis:7.2:7.2.5-pv1 succeeded",
         ]
     );
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_operations_are_announced_before_execution() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands = ManagedResourceCommands::new(paths, MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let artifact = fixture_artifact("7.2.5-pv1", "first")?;
+    let progress = RecordingDownloadProgress::default();
+    let adapter = OperationCheckingAdapter {
+        inner: FakeAdapter::new("redis", &["bin/pv-fake-resource"])?,
+        operations: &progress.operations,
+    };
+    let client = OperationCheckingClient {
+        inner: ScriptedClient::new()
+            .with_text(&manifest_with_artifacts(&[&artifact]))
+            .with_bytes(artifact.bytes()),
+        operations: &progress.operations,
+    };
+
+    commands.install_with_progress(&adapter, TrackSelector::Latest, &client, &progress)?;
 
     Ok(())
 }
@@ -2534,6 +2564,49 @@ fn scripted_client_reports_destination_write_failures_separately() -> Result<()>
     assert_eq!(reason, "disk full");
 
     Ok(())
+}
+
+struct OperationCheckingAdapter<'progress> {
+    inner: FakeAdapter,
+    operations: &'progress RefCell<Vec<String>>,
+}
+
+impl ResourceAdapter for OperationCheckingAdapter<'_> {
+    fn resource_name(&self) -> &ResourceName {
+        self.inner.resource_name()
+    }
+
+    fn validate_installation(&self, root: &Utf8Path) -> resources::Result<()> {
+        assert_operation_started(self.operations, "install redis:7.2:7.2.5-pv1 started");
+
+        self.inner.validate_installation(root)
+    }
+}
+
+struct OperationCheckingClient<'progress> {
+    inner: ScriptedClient,
+    operations: &'progress RefCell<Vec<String>>,
+}
+
+impl ResourceHttpClient for OperationCheckingClient<'_> {
+    fn get_text(&self, url: &str) -> resources::Result<String> {
+        assert_operation_started(self.operations, "manifest started");
+
+        self.inner.get_text(url)
+    }
+
+    fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
+        assert_operation_started(self.operations, "download redis:7.2:7.2.5-pv1 started");
+
+        self.inner.download(url, writer)
+    }
+}
+
+fn assert_operation_started(operations: &RefCell<Vec<String>>, expected: &str) {
+    assert_eq!(
+        operations.borrow().last().map(String::as_str),
+        Some(expected)
+    );
 }
 
 struct FakeAdapter {
@@ -3074,30 +3147,41 @@ impl DownloadProgress for RecordingDownloadProgress {
         });
     }
 
+    fn operation_started(&self, operation: ResourceOperation<'_>) {
+        self.operations
+            .borrow_mut()
+            .push(format!("{} started", resource_operation_name(operation)));
+    }
+
     fn operation_finished(&self, event: ResourceOperationEvent<'_, '_>) {
-        let operation = match event.operation {
-            ResourceOperation::Manifest => "manifest".to_owned(),
-            ResourceOperation::Download(artifact) => format!(
-                "download {}:{}:{}",
-                artifact.resource_name(),
-                artifact.track(),
-                artifact.artifact_version()
-            ),
-            ResourceOperation::Install(artifact) => format!(
-                "install {}:{}:{}",
-                artifact.resource_name(),
-                artifact.track(),
-                artifact.artifact_version()
-            ),
-        };
+        let operation = resource_operation_name(event.operation);
         let outcome = match event.outcome {
             ResourceOperationOutcome::Succeeded => "succeeded".to_owned(),
             ResourceOperationOutcome::Failed => "failed".to_owned(),
+            ResourceOperationOutcome::Skipped => "skipped".to_owned(),
             ResourceOperationOutcome::Fallback { reason } => format!("fallback: {reason}"),
         };
         self.operations
             .borrow_mut()
             .push(format!("{operation} {outcome}"));
+    }
+}
+
+fn resource_operation_name(operation: ResourceOperation<'_>) -> String {
+    match operation {
+        ResourceOperation::Manifest => "manifest".to_owned(),
+        ResourceOperation::Download(artifact) => format!(
+            "download {}:{}:{}",
+            artifact.resource_name(),
+            artifact.track(),
+            artifact.artifact_version()
+        ),
+        ResourceOperation::Install(artifact) => format!(
+            "install {}:{}:{}",
+            artifact.resource_name(),
+            artifact.track(),
+            artifact.artifact_version()
+        ),
     }
 }
 

@@ -294,7 +294,7 @@ impl ManagedResourceCommands {
         progress: &impl DownloadProgress,
         latest_only: bool,
     ) -> crate::Result<ArtifactManifestRefresh> {
-        let started_at = Instant::now();
+        let started_at = start_resource_operation(progress, ResourceOperation::Manifest);
         let cache = ArtifactManifestCache::new(self.paths.downloads());
         let result = if latest_only {
             cache.refresh_latest(&self.manifest_url, client)
@@ -588,7 +588,8 @@ impl ManagedResourceCommands {
         Progress: DownloadProgress,
     {
         let installer = ArtifactInstaller::new(self.paths.resources());
-        let existing_started_at = Instant::now();
+        let existing_started_at =
+            start_resource_operation(context.progress, ResourceOperation::Install(&artifact));
         let existing_install = installer.install_existing_release(adapter, &track, &artifact);
         let (install, downloaded_from_cache) = match existing_install {
             Ok(Some(existing_install)) => {
@@ -601,9 +602,18 @@ impl ManagedResourceCommands {
                 (existing_install, false)
             }
             Ok(None) => {
+                report_resource_operation(
+                    context.progress,
+                    ResourceOperation::Install(&artifact),
+                    existing_started_at,
+                    ResourceOperationOutcome::Skipped,
+                );
                 let download = ArtifactDownloader::new(self.paths.downloads())
                     .download_with_progress(&artifact, context.client, context.progress)?;
-                let install_started_at = Instant::now();
+                let install_started_at = start_resource_operation(
+                    context.progress,
+                    ResourceOperation::Install(&artifact),
+                );
                 let install =
                     installer.install(adapter, &track, &artifact, download.install_path());
                 report_resource_operation(
@@ -655,19 +665,20 @@ impl ManagedResourceCommands {
             ..
         } = resolved;
         let track = artifact.track().clone();
-        let started_at = Instant::now();
+        let started_at = start_resource_operation(progress, ResourceOperation::Install(&artifact));
         let installer = ArtifactInstaller::new(self.paths.resources());
         let install = match installer.install_existing_release(adapter, &track, &artifact) {
             Ok(Some(install)) => Ok((install, false)),
-            Ok(None) => {
-                let download = download.ok_or_else(|| ResourcesError::MissingArtifactDownload {
+            Ok(None) => download
+                .ok_or_else(|| ResourcesError::MissingArtifactDownload {
                     resource: artifact.resource_name().as_str().to_string(),
                     artifact_version: artifact.artifact_version().as_str().to_string(),
-                })?;
-                installer
-                    .install(adapter, &track, &artifact, download.install_path())
-                    .map(|install| (install, download.is_from_cache()))
-            }
+                })
+                .and_then(|download| {
+                    installer
+                        .install(adapter, &track, &artifact, download.install_path())
+                        .map(|install| (install, download.is_from_cache()))
+                }),
             Err(error) => Err(error),
         };
         report_resource_operation(
@@ -1668,6 +1679,15 @@ impl ManagedResourceCommands {
 
         Ok(filtered)
     }
+}
+
+fn start_resource_operation(
+    progress: &(impl DownloadProgress + ?Sized),
+    operation: ResourceOperation<'_>,
+) -> Instant {
+    progress.operation_started(operation);
+
+    Instant::now()
 }
 
 fn report_resource_operation(

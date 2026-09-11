@@ -214,27 +214,34 @@ impl resources::DownloadProgress for DaemonDownloadProgress {
         }
     }
 
+    fn operation_started(&self, operation: resources::ResourceOperation<'_>) {
+        let Some(phase_log) = &self.phase_log else {
+            return;
+        };
+        let phase_log = match phase_log.lock() {
+            Ok(phase_log) => phase_log,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        phase_log.report_progress(resource_operation_phase(operation));
+    }
+
     fn operation_finished(&self, event: resources::ResourceOperationEvent<'_, '_>) {
         let Some(phase_log) = &self.phase_log else {
             return;
         };
         let manifest_operation = matches!(event.operation, resources::ResourceOperation::Manifest);
-        let (phase, subject, counts) = match event.operation {
-            resources::ResourceOperation::Manifest => (
-                ReconciliationPhase::Manifest,
-                "artifact_manifest".to_owned(),
-                vec![("manifest_count", 1)],
-            ),
+        let phase = resource_operation_phase(event.operation);
+        let (subject, counts) = match event.operation {
+            resources::ResourceOperation::Manifest => {
+                ("artifact_manifest".to_owned(), vec![("manifest_count", 1)])
+            }
             resources::ResourceOperation::Download(artifact) => (
-                ReconciliationPhase::Download,
                 artifact_subject(artifact),
                 vec![("artifact_count", 1), ("artifact_bytes", artifact.size())],
             ),
-            resources::ResourceOperation::Install(artifact) => (
-                ReconciliationPhase::Install,
-                artifact_subject(artifact),
-                vec![("artifact_count", 1)],
-            ),
+            resources::ResourceOperation::Install(artifact) => {
+                (artifact_subject(artifact), vec![("artifact_count", 1)])
+            }
         };
         let (outcome, fields) = match event.outcome {
             resources::ResourceOperationOutcome::Succeeded if manifest_operation => {
@@ -242,6 +249,7 @@ impl resources::DownloadProgress for DaemonDownloadProgress {
             }
             resources::ResourceOperationOutcome::Succeeded => (PhaseOutcome::Succeeded, Vec::new()),
             resources::ResourceOperationOutcome::Failed => (PhaseOutcome::Failed, Vec::new()),
+            resources::ResourceOperationOutcome::Skipped => (PhaseOutcome::Skipped, Vec::new()),
             resources::ResourceOperationOutcome::Fallback { reason } => (
                 PhaseOutcome::Fallback,
                 vec![("manifest_source", "cached"), ("fallback_reason", reason)],
@@ -252,6 +260,14 @@ impl resources::DownloadProgress for DaemonDownloadProgress {
             Err(poisoned) => poisoned.into_inner(),
         };
         phase_log.completed_with_fields(phase, &subject, outcome, event.elapsed, &counts, &fields);
+    }
+}
+
+fn resource_operation_phase(operation: resources::ResourceOperation<'_>) -> ReconciliationPhase {
+    match operation {
+        resources::ResourceOperation::Manifest => ReconciliationPhase::Manifest,
+        resources::ResourceOperation::Download(_artifact) => ReconciliationPhase::Download,
+        resources::ResourceOperation::Install(_artifact) => ReconciliationPhase::Install,
     }
 }
 
@@ -2593,7 +2609,7 @@ mod tests {
     use std::pin::Pin;
     use std::process;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, mpsc};
     use std::task::{Context, Poll};
     use std::time::Instant;
 
@@ -6678,6 +6694,92 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn foreground_reconciliation_streams_manifest_before_held_fetch_finishes()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let (resource_client, _total_bytes) = scripted_artifact_client(
+            tempdir.path(),
+            "composer",
+            COMPOSER_TEST_TRACK,
+            COMPOSER_TEST_ARTIFACT_VERSION,
+            COMPOSER_TEST_ARCHIVE_FILE_NAME,
+            "bin/composer",
+        )?;
+        let (release_sender, release_receiver) = mpsc::channel();
+        let held_client = HeldManifestArtifactClient {
+            inner: resource_client,
+            release_receiver: Mutex::new(release_receiver),
+        };
+        let mut database = Database::open(&paths)?;
+        database.record_managed_resource_track_desired(
+            "composer",
+            COMPOSER_TEST_TRACK,
+            ManagedResourceDesiredState::Installed,
+        )?;
+        drop(database);
+        let job_id = start_reconciliation_job(&paths, "system")?;
+        let catalog = Arc::new(
+            crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+                OFFLINE_TEST_MANIFEST_URL,
+                held_client,
+            )?,
+        );
+        let (client, daemon) = duplex(64 * 1024);
+        let task_paths = paths.clone();
+        let task_job_id = job_id.clone();
+        let task_catalog = Arc::clone(&catalog);
+        let mut task = tokio::spawn(async move {
+            stream_started_reconciliation_job(
+                task_paths,
+                protocol::transport(daemon),
+                true,
+                &task_job_id,
+                ReconciliationScope::System,
+                Some(task_catalog.as_ref()),
+                ReconciliationJobTiming::immediate(),
+            )
+            .await
+        });
+        let mut reader = protocol::transport(client);
+        let phase_result = timeout(Duration::from_secs(1), async {
+            while let Some(line) = reader.next().await {
+                let event = serde_json::from_str::<serde_json::Value>(&line?)?;
+                if event["type"] == "progress" && event["message"] == "manifest" {
+                    return Ok::<serde_json::Value, anyhow::Error>(event);
+                }
+            }
+
+            Err(anyhow::anyhow!(
+                "job stream ended before the manifest phase"
+            ))
+        })
+        .await;
+        let operation_was_held = !task.is_finished();
+        let release_result = release_sender
+            .send(())
+            .map_err(|_error| anyhow::anyhow!("held manifest request dropped"));
+        let completion_result = timeout(Duration::from_secs(10), &mut task).await;
+
+        release_result?;
+        let phase = phase_result
+            .map_err(|_error| anyhow::anyhow!("manifest phase arrived only after held work"))??;
+        assert!(operation_was_held);
+        assert_eq!(
+            phase,
+            json!({
+                "type": "progress",
+                "job_id": job_id,
+                "message": "manifest",
+            })
+        );
+        completion_result
+            .map_err(|_error| anyhow::anyhow!("held reconciliation did not finish"))???;
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn failed_system_reconciliation_streams_and_persists_failure_phases() -> anyhow::Result<()>
     {
         let tempdir = tempdir()?;
@@ -8758,6 +8860,33 @@ mod tests {
                     reason: error.to_string(),
                 }
             })
+        }
+    }
+
+    #[derive(Debug)]
+    struct HeldManifestArtifactClient {
+        inner: ScriptedArtifactClient,
+        release_receiver: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl resources::ResourceHttpClient for HeldManifestArtifactClient {
+        fn get_text(&self, url: &str) -> resources::Result<String> {
+            let release_receiver = match self.release_receiver.lock() {
+                Ok(release_receiver) => release_receiver,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            release_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| resources::ResourcesError::HttpRequestFailed {
+                    url: url.to_owned(),
+                    reason: format!("held manifest request was not released: {error}"),
+                })?;
+
+            self.inner.get_text(url)
+        }
+
+        fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
+            self.inner.download(url, writer)
         }
     }
 
