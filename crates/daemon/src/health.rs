@@ -522,26 +522,40 @@ fn php_runtime_subject(runtime_key: &str) -> RuntimeSubject {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    #[cfg(target_os = "macos")]
     use std::fs;
+    #[cfg(target_os = "macos")]
     use std::net::TcpListener as StdTcpListener;
+    #[cfg(target_os = "macos")]
     use std::os::unix::fs::PermissionsExt;
+    #[cfg(target_os = "macos")]
     use std::sync::Arc;
 
+    #[cfg(target_os = "macos")]
     use anyhow::anyhow;
+    #[cfg(target_os = "macos")]
     use camino::{Utf8Path, Utf8PathBuf};
+    #[cfg(target_os = "macos")]
     use camino_tempfile::tempdir;
+    use state::RuntimeSubject;
+    #[cfg(target_os = "macos")]
     use state::{
         Database, LinkProjectInput, ManagedResourceDesiredState, PortRequest,
-        ProjectManagedResourceInput, PvPaths, RuntimeSubject,
+        ProjectManagedResourceInput, PvPaths,
     };
     use tokio::time::{Duration, Instant, advance};
 
+    #[cfg(target_os = "macos")]
+    use super::scan_runtime_health;
     use super::{
         HEALTHY_RESET_INTERVAL, RUNTIME_HEALTH_INTERVAL, RuntimeHealthObservation,
-        RuntimeHealthScan, RuntimeRecoveryBackoff, RuntimeRecoveryEntry, scan_runtime_health,
+        RuntimeHealthScan, RuntimeRecoveryBackoff, RuntimeRecoveryEntry,
     };
+    use crate::ReconciliationScope;
+    #[cfg(target_os = "macos")]
     use crate::managed_resources::ManagedResourceRuntimeCatalog;
-    use crate::{ProcessSpec, ProcessSupervisor, ReconciliationScope};
+    #[cfg(target_os = "macos")]
+    use crate::{ProcessSpec, ProcessSupervisor};
 
     fn scan(healthy: bool) -> anyhow::Result<RuntimeHealthScan> {
         Ok(RuntimeHealthScan {
@@ -709,6 +723,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn scanner_excludes_incomplete_caddy_installations() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
@@ -730,6 +745,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn scanner_uses_persisted_runtime_state_without_writing_or_assigning_ports()
     -> anyhow::Result<()> {
@@ -787,6 +803,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn killed_worker_selects_all_and_only_its_project_scopes() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
@@ -858,6 +875,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn scanner_rejects_replacement_required_and_stale_worker_artifacts() -> anyhow::Result<()>
     {
@@ -919,6 +937,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn one_metadata_error_does_not_discard_other_runtime_observations() -> anyhow::Result<()>
     {
@@ -989,6 +1008,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn managed_resource_scan_does_not_prepare_or_write_runtime_files() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
@@ -1049,6 +1069,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "macos")]
     fn link_runtime_project(
         database: &mut Database,
         root: &Utf8Path,
@@ -1073,10 +1094,12 @@ mod tests {
         Ok(project.id)
     }
 
+    #[cfg(target_os = "macos")]
     fn loopback_port_available(port: u16) -> bool {
         StdTcpListener::bind(("127.0.0.1", port)).is_ok()
     }
 
+    #[cfg(target_os = "macos")]
     fn assign_php_worker_listener(
         database: &mut Database,
         php_track: &str,
@@ -1090,6 +1113,7 @@ mod tests {
         listener.ok_or_else(|| anyhow!("assigned PHP worker port was not reserved"))
     }
 
+    #[cfg(target_os = "macos")]
     fn prepare_worker_artifact(
         database: &mut Database,
         root: &Utf8Path,
@@ -1109,6 +1133,7 @@ mod tests {
         Ok(runtime)
     }
 
+    #[cfg(target_os = "macos")]
     #[expect(
         clippy::disallowed_methods,
         reason = "runtime health tests set fixture executable bits directly"
@@ -1121,6 +1146,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(target_os = "macos")]
     fn worker_process_spec(paths: &PvPaths, runtime: &Utf8Path, php_track: &str) -> ProcessSpec {
         ProcessSpec {
             name: format!("php-worker-{php_track}"),
