@@ -215,6 +215,8 @@ fn collect_runtime_health_probes(
     if let Some(caddy) = tracks.iter().find(|track| {
         track.resource_name == "caddy"
             && track.desired_state == ManagedResourceDesiredState::Installed
+            && track.installed_version.is_some()
+            && track.current_artifact_path.is_some()
     }) {
         let http_port = assignments.iter().find_map(|assignment| {
             matches!(&assignment.owner, PortOwner::Gateway(GatewayPort::Http))
@@ -501,8 +503,8 @@ mod tests {
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
     use state::{
-        Database, LinkProjectInput, PortRequest, ProjectManagedResourceInput, PvPaths,
-        RuntimeSubject,
+        Database, LinkProjectInput, ManagedResourceDesiredState, PortRequest,
+        ProjectManagedResourceInput, PvPaths, RuntimeSubject,
     };
     use tokio::time::{Duration, Instant, advance};
 
@@ -600,6 +602,27 @@ mod tests {
             RuntimeRecoveryBackoff::default().next_scan_at(now),
             now + RUNTIME_HEALTH_INTERVAL
         );
+    }
+
+    #[tokio::test]
+    async fn scanner_excludes_incomplete_caddy_installations() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        Database::open(&paths)?.record_managed_resource_track_desired(
+            "caddy",
+            "2",
+            ManagedResourceDesiredState::Installed,
+        )?;
+
+        let scan = scan_runtime_health(
+            paths,
+            Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+        )
+        .await?;
+
+        assert!(scan.observations.is_empty());
+
+        Ok(())
     }
 
     #[tokio::test]
