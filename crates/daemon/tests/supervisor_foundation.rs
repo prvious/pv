@@ -576,10 +576,25 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
         applied.applied_config_fingerprint(),
         Some("sha256:v1:applied")
     );
-    assert!(supervisor.mark_replacement_required(&spec)?);
+    let mut invalid_metadata = runtime_metadata(process.metadata_path())?;
+    invalid_metadata["staged_config_fingerprint"] = json!("sha256:v1:staged");
+    state::fs::write_sensitive_file(
+        process.metadata_path(),
+        &serde_json::to_string(&invalid_metadata)?,
+    )?;
+    let invalid = supervisor
+        .verify_ownership(&spec)?
+        .ok_or_else(|| anyhow!("runtime with invalid config state lost ownership"))?;
+    assert!(invalid.applied_config_fingerprint().is_none());
+    assert!(supervisor.record_applied_config(&spec, "sha256:v1:applied")?);
+    assert!(supervisor.mark_replacement_required(&spec, "sha256:v1:staged")?);
     let pending_metadata = runtime_metadata(process.metadata_path())?;
     assert_eq!(pending_metadata["replacement_required"], true);
     assert!(pending_metadata["applied_config_fingerprint"].is_null());
+    assert_eq!(
+        pending_metadata["staged_config_fingerprint"],
+        "sha256:v1:staged"
+    );
     let replacement = supervisor
         .verify_ownership(&spec)?
         .ok_or_else(|| anyhow!("replacement-required runtime lost ownership"))?;
@@ -590,6 +605,8 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
         .ok_or_else(|| anyhow!("replacement-required runtime was not adoptable by its record"))?;
     assert_eq!(replacement.pid(), process.pid());
     assert!(supervisor.clear_replacement_required(&spec)?);
+    let cleared_metadata = runtime_metadata(process.metadata_path())?;
+    assert!(cleared_metadata["staged_config_fingerprint"].is_null());
     assert!(
         !supervisor
             .verify_ownership(&spec)?
