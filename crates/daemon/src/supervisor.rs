@@ -107,6 +107,15 @@ pub struct ManagedProcess {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RecordedConfigFingerprint {
+    /// Bytes committed as applied; service readiness may remain unverified under the preserve policy.
+    Applied(String),
+    /// Exact promoted bytes prepared for a transaction; this proves neither application nor
+    /// readiness and can remain useful after the process exits.
+    Staged(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedRuntime {
     pid: u32,
     command: Utf8PathBuf,
@@ -177,6 +186,8 @@ struct RuntimeMetadata {
     replacement_required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     applied_config_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    staged_config_fingerprint: Option<String>,
     log_path: String,
     started_at: String,
     #[serde(default)]
@@ -272,7 +283,10 @@ impl ProcessSupervisor {
                 command: spec.command.clone(),
                 arguments: spec.arguments.clone(),
                 replacement_required: metadata.replacement_required,
-                applied_config_fingerprint: metadata.applied_config_fingerprint,
+                applied_config_fingerprint: match metadata.recorded_config_fingerprint() {
+                    Some(RecordedConfigFingerprint::Applied(fingerprint)) => Some(fingerprint),
+                    Some(RecordedConfigFingerprint::Staged(_)) | None => None,
+                },
                 process_start_identity,
                 process_executable_identity: metadata.process_executable_identity,
             }));
@@ -281,12 +295,34 @@ impl ProcessSupervisor {
         Ok(None)
     }
 
-    pub fn mark_replacement_required(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
-        self.set_config_application_state(spec, true, None)
+    /// Returns recorded config identity without proving that a process is alive.
+    pub(crate) fn recorded_config_fingerprint(
+        &self,
+        spec: &ProcessSpec,
+    ) -> Result<Option<RecordedConfigFingerprint>, DaemonError> {
+        let Some(pid) = read_pid_file(&spec.pid_path)? else {
+            return Ok(None);
+        };
+        let Some(metadata) = read_runtime_metadata(&spec.metadata_path)? else {
+            return Ok(None);
+        };
+        if !metadata.matches(spec, pid) || metadata.process_start_identity.is_none() {
+            return Ok(None);
+        }
+
+        Ok(metadata.recorded_config_fingerprint())
+    }
+
+    pub fn mark_replacement_required(
+        &self,
+        spec: &ProcessSpec,
+        staged_config_fingerprint: &str,
+    ) -> Result<bool, DaemonError> {
+        self.set_config_application_state(spec, true, None, Some(staged_config_fingerprint))
     }
 
     pub fn clear_replacement_required(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
-        self.set_config_application_state(spec, false, None)
+        self.set_config_application_state(spec, false, None, None)
     }
 
     pub fn record_applied_config(
@@ -294,7 +330,7 @@ impl ProcessSupervisor {
         spec: &ProcessSpec,
         fingerprint: &str,
     ) -> Result<bool, DaemonError> {
-        self.set_config_application_state(spec, false, Some(fingerprint))
+        self.set_config_application_state(spec, false, Some(fingerprint), None)
     }
 
     fn set_config_application_state(
@@ -302,6 +338,7 @@ impl ProcessSupervisor {
         spec: &ProcessSpec,
         replacement_required: bool,
         applied_config_fingerprint: Option<&str>,
+        staged_config_fingerprint: Option<&str>,
     ) -> Result<bool, DaemonError> {
         require_process_containment()?;
         let Some(pid) = read_pid_file(&spec.pid_path)? else {
@@ -328,6 +365,7 @@ impl ProcessSupervisor {
 
         metadata.replacement_required = replacement_required;
         metadata.applied_config_fingerprint = applied_config_fingerprint.map(str::to_owned);
+        metadata.staged_config_fingerprint = staged_config_fingerprint.map(str::to_owned);
         let encoded = serde_json::to_string(&metadata)?;
         fs::write_sensitive_file(&spec.metadata_path, &encoded)?;
 
@@ -374,7 +412,10 @@ impl ProcessSupervisor {
                     command: spec.command,
                     arguments: spec.arguments,
                     replacement_required: metadata.replacement_required,
-                    applied_config_fingerprint: metadata.applied_config_fingerprint,
+                    applied_config_fingerprint: match metadata.recorded_config_fingerprint() {
+                        Some(RecordedConfigFingerprint::Applied(fingerprint)) => Some(fingerprint),
+                        Some(RecordedConfigFingerprint::Staged(_)) | None => None,
+                    },
                     process_start_identity,
                     process_executable_identity: metadata.process_executable_identity,
                 },
@@ -1081,6 +1122,7 @@ fn write_runtime_metadata(
         track: spec.track.clone(),
         replacement_required: false,
         applied_config_fingerprint: None,
+        staged_config_fingerprint: None,
         log_path: spec.log_path.to_string(),
         started_at,
         process_start_identity: Some(process_start_identity),
@@ -1214,6 +1256,22 @@ fn process_not_found(error: &io::Error) -> bool {
 }
 
 impl RuntimeMetadata {
+    fn recorded_config_fingerprint(&self) -> Option<RecordedConfigFingerprint> {
+        match (
+            self.replacement_required,
+            self.applied_config_fingerprint.as_deref(),
+            self.staged_config_fingerprint.as_deref(),
+        ) {
+            (false, Some(fingerprint), None) => {
+                Some(RecordedConfigFingerprint::Applied(fingerprint.to_owned()))
+            }
+            (true, None, Some(fingerprint)) => {
+                Some(RecordedConfigFingerprint::Staged(fingerprint.to_owned()))
+            }
+            _ => None,
+        }
+    }
+
     fn process_spec(&self, pid_path: Utf8PathBuf, metadata_path: Utf8PathBuf) -> ProcessSpec {
         ProcessSpec {
             name: self.name.clone(),
