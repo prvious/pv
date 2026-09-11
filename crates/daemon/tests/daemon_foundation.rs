@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::rdata::{A, AAAA};
@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use state::{
     AppReleaseLayout, DNS_PREFERRED_PORT, Database, GatewayPort, JobRecord, JobStatus, JobsLock,
     LinkProjectInput, PortOwner, PortRequest, PvPaths, RUNTIME_PORT_FALLBACK_END,
-    RUNTIME_PORT_FALLBACK_START, UpdateLock,
+    RUNTIME_PORT_FALLBACK_START, RuntimeObservedStatus, RuntimeSubject, UpdateLock,
 };
 use std::io::{self, ErrorKind, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
@@ -985,6 +985,98 @@ fn seed_foundation_caddy(paths: &PvPaths) -> Result<()> {
     Ok(())
 }
 
+fn seed_foundation_php_project(
+    paths: &PvPaths,
+    project_path: &Utf8Path,
+    config: &str,
+) -> Result<(String, StdTcpListener)> {
+    seed_foundation_caddy(paths)?;
+    let certified_key = generate_simple_self_signed(vec![
+        "project.test".to_owned(),
+        "pv-gateway.localhost".to_owned(),
+    ])?;
+    state::fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;
+    state::fs::write_sensitive_file(
+        &paths.ca_private_key(),
+        &certified_key.signing_key.serialize_pem(),
+    )?;
+    let manifest_cache = resources::ArtifactManifestCache::new(paths.downloads());
+    let php_track = "8.4";
+    let php_release = paths.home().join("8.4-php-release");
+    state::fs::write_sensitive_file(&php_release.join("bin/php"), "#!/bin/sh\n")?;
+    state::fs::write_sensitive_file(&php_release.join("share/pv/php-extensions.json"), "[]")?;
+
+    let frankenphp_release = paths.home().join("8.4-frankenphp-release");
+    let frankenphp_source = paths.home().join("fake-frankenphp-source");
+    state::fs::write_sensitive_file(
+        &frankenphp_source,
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test-fixtures/gateway/fake-frankenphp.sh"
+        )),
+    )?;
+    state::fs::write_sensitive_file(
+        &frankenphp_release.join("bin/frankenphp.server.py"),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test-fixtures/gateway/fake-frankenphp-server.py"
+        )),
+    )?;
+    let frankenphp_install =
+        AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.0", &frankenphp_source)?;
+    state::fs::rename(
+        frankenphp_install.binary_path(),
+        &frankenphp_release.join("bin/frankenphp"),
+    )?;
+    state::fs::write_sensitive_file(
+        &frankenphp_release.join("share/pv/php-extensions.json"),
+        "[]",
+    )?;
+    state::fs::write_sensitive_file(manifest_cache.path(), CADDY_ARTIFACT_MANIFEST)?;
+
+    let mut database = Database::open(paths)?;
+    database.record_managed_resource_track_installed(
+        "php",
+        php_track,
+        "8.4.8-pv1",
+        &php_release,
+    )?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        php_track,
+        "8.4.8-pv1",
+        &frankenphp_release,
+    )?;
+    let mut worker_port_reservations = reserve_foundation_ports(1, 40_000, 44_999)?;
+    let worker_port_reservation = worker_port_reservations
+        .pop()
+        .ok_or_else(|| anyhow!("expected one reserved worker port"))?;
+    let worker_service_port = worker_port_reservation.local_addr()?.port();
+    database.assign_port(
+        PortRequest::php_worker(
+            php_track,
+            worker_service_port,
+            worker_service_port,
+            worker_service_port,
+        ),
+        |_port| true,
+    )?;
+    let config_path = project_path.join("pv.yml");
+    state::fs::write_sensitive_file(&config_path, config)?;
+    let project = database
+        .link_project(LinkProjectInput {
+            path: project_path.to_owned(),
+            original_path: project_path.to_owned(),
+            primary_hostname: "project.test".to_owned(),
+            config_path,
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+
+    Ok((project.id, worker_port_reservation))
+}
+
 fn seed_barrier_foundation_caddy(paths: &PvPaths) -> Result<[Utf8PathBuf; 2]> {
     seed_foundation_caddy(paths)?;
     let executable = paths.home().join("fake-caddy-release/bin/caddy");
@@ -1370,91 +1462,20 @@ async fn blocking_client_checks_managed_resource_updates() -> Result<()> {
 async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    seed_foundation_caddy(&paths)?;
-    let manifest_cache = resources::ArtifactManifestCache::new(paths.downloads());
-    let php_track = "8.4";
-    let php_release = paths.home().join("8.4-php-release");
-    state::fs::write_sensitive_file(&php_release.join("bin/php"), "#!/bin/sh\n")?;
-    state::fs::write_sensitive_file(&php_release.join("share/pv/php-extensions.json"), "[]")?;
-
-    let frankenphp_release = paths.home().join("8.4-frankenphp-release");
-    let frankenphp_source = paths.home().join("fake-frankenphp-source");
-    state::fs::write_sensitive_file(
-        &frankenphp_source,
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/test-fixtures/gateway/fake-frankenphp.sh"
-        )),
-    )?;
-    state::fs::write_sensitive_file(
-        &frankenphp_release.join("bin/frankenphp.server.py"),
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/test-fixtures/gateway/fake-frankenphp-server.py"
-        )),
-    )?;
-    let frankenphp_install =
-        AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.0", &frankenphp_source)?;
-    state::fs::rename(
-        frankenphp_install.binary_path(),
-        &frankenphp_release.join("bin/frankenphp"),
-    )?;
-    state::fs::write_sensitive_file(
-        &frankenphp_release.join("share/pv/php-extensions.json"),
-        "[]",
-    )?;
-
-    state::fs::write_sensitive_file(manifest_cache.path(), CADDY_ARTIFACT_MANIFEST)?;
-
-    let mut database = Database::open(&paths)?;
-    database.record_managed_resource_track_installed(
-        "php",
-        php_track,
-        "8.4.8-pv1",
-        &php_release,
-    )?;
-    database.record_managed_resource_track_installed(
-        "frankenphp",
-        php_track,
-        "8.4.8-pv1",
-        &frankenphp_release,
-    )?;
-    let worker_port_reservations = reserve_foundation_ports(1, 40_000, 44_999)?;
-    let worker_service_port = worker_port_reservations[0].local_addr()?.port();
-    database.assign_port(
-        PortRequest::php_worker(
-            php_track,
-            worker_service_port,
-            worker_service_port,
-            worker_service_port,
-        ),
-        |_port| true,
-    )?;
-    drop(database);
-
-    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     let project_path = tempdir.path().join("project");
-    let config_path = project_path.join("pv.yml");
-    state::fs::write_sensitive_file(
-        &config_path,
+    let (_project_id, worker_port_reservation) = seed_foundation_php_project(
+        &paths,
+        &project_path,
         "php: \"8.4\"\nenv:\n  APP_URL: \"${project_url}\"\n  APP_NAME: setup\n",
     )?;
-    let mut database = Database::open(&paths)?;
-    database.link_project(LinkProjectInput {
-        path: project_path.clone(),
-        original_path: project_path.clone(),
-        primary_hostname: "project.test".to_owned(),
-        config_path,
-        desired_php_track: None,
-        additional_hostnames: Vec::new(),
-    })?;
-    drop(database);
+    let php_track = "8.4";
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
 
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
     gateway_guard.attach_worker(php_track);
-    drop(worker_port_reservations);
+    drop(worker_port_reservation);
     let client_paths = paths.clone();
     let completed_result = tokio::task::spawn_blocking(move || {
         daemon::run_job_blocking(client_paths, "reconcile", "system")
@@ -1488,6 +1509,103 @@ async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
     assert!(database.project_env_observed_state(&project.id)?.is_some());
 
     Ok(())
+}
+
+#[tokio::test]
+async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project_config()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    let config_path = project_path.join("pv.yml");
+    let (project_id, worker_port_reservation) =
+        seed_foundation_php_project(&paths, &project_path, "php: \"8.4\"\n")?;
+    let worker_service_port = worker_port_reservation.local_addr()?.port();
+    drop(worker_port_reservation);
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    gateway_guard.attach_worker("8.4");
+
+    let initial_daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    wait_for_succeeded_job_scope(&paths, "system").await?;
+    initial_daemon.shutdown().await?;
+    let supervisor = daemon::ProcessSupervisor::new(paths.clone());
+    let initial_worker = supervisor
+        .adopt_recorded(
+            &paths.worker_pid("8.4"),
+            &paths.worker_runtime_metadata("8.4"),
+        )?
+        .ok_or_else(|| anyhow!("worker was not running before health recovery"))?;
+    let initial_worker_pid = initial_worker.pid();
+    state::fs::write_sensitive_file(&config_path, "php: [\n")?;
+
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    let operation_result = async {
+        wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
+        initial_worker.stop(Duration::from_secs(1)).await?;
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(30)).await;
+        tokio::task::yield_now().await;
+        tokio::time::resume();
+        let job =
+            wait_for_job_scope_status(&paths, &format!("project:{project_id}"), JobStatus::Failed)
+                .await?;
+
+        let recovered_worker = supervisor
+            .adopt_recorded(
+                &paths.worker_pid("8.4"),
+                &paths.worker_runtime_metadata("8.4"),
+            )?
+            .ok_or_else(|| anyhow!("health recovery did not restart the worker"))?;
+        daemon::wait_for_readiness(
+            daemon::ReadinessCheck::Tcp {
+                host: "127.0.0.1".to_owned(),
+                port: worker_service_port,
+            },
+            Duration::from_secs(1),
+        )
+        .await?;
+
+        let database = Database::open(&paths)?;
+        let assignments = database.assigned_ports()?;
+        let http_port = assignments
+            .iter()
+            .find_map(|assignment| {
+                (assignment.owner == PortOwner::Gateway(GatewayPort::Http))
+                    .then_some(assignment.port)
+            })
+            .ok_or_else(|| anyhow!("Gateway HTTP port was not assigned"))?;
+        daemon::wait_for_readiness(
+            daemon::ReadinessCheck::Http {
+                host: "127.0.0.1".to_owned(),
+                port: http_port,
+                path: "/__pv/health".to_owned(),
+            },
+            Duration::from_secs(5),
+        )
+        .await?;
+        let runtime_states = database.runtime_observed_states()?;
+
+        assert_ne!(recovered_worker.pid(), initial_worker_pid);
+        assert_eq!(job.status, JobStatus::Failed);
+        assert_eq!(state::fs::read_to_string(&config_path)?, "php: [\n");
+        assert!(runtime_states.iter().any(|state| {
+            state.subject
+                == RuntimeSubject::PhpWorker {
+                    php_track: "8.4".to_owned(),
+                }
+                && state.status == RuntimeObservedStatus::Running
+        }));
+
+        Ok(())
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+
+    propagate_after_cleanup(operation_result, cleanup_result)
 }
 
 #[tokio::test]
