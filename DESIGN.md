@@ -727,7 +727,7 @@ The daemon writes a minimal startup failure marker at `~/.pv/run/daemon-startup-
 
 `pv update` does not create an extra `pv.db` backup before every PV application self-update. The embedded migration system creates a timestamped backup only when migrations are about to run.
 
-PV application self-update restarts the daemon/control plane but does not stop currently running Gateway, Project-serving workers, or backing Managed Resource processes before swapping the PV binary. The updated daemon adopts existing PV-owned child processes where ownership verification passes and then reconciles or updates resources as needed when a later command requests that work.
+PV application self-update restarts the daemon/control plane but does not stop currently running Gateway, Project-serving workers, or backing Managed Resource processes before swapping the PV binary. The updated daemon automatically schedules startup System reconciliation to apply current desired state, adopting existing PV-owned child processes where ownership verification passes.
 
 App rollback is attempted after activation was attempted. Helper rollback is also attempted when helper replacement itself fails, before any incompatible app can be activated. If daemon startup, daemon health, or migration health fails after activation and rollback succeeds, stdout reports `PV application: update failed; rolled back to <previous-version>` and stderr reports the original failure. A generic daemon health failure is reported as `daemon did not become healthy after update`; migration failure is reported as `database migration failed after update: <message>`.
 
