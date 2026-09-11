@@ -83,7 +83,7 @@ pub(crate) async fn serve(
     let mut watcher_task_finished = false;
     let mut runtime_health_task: Option<JoinHandle<Result<RuntimeHealthScan, DaemonError>>> = None;
     let mut recovery_backoff = RuntimeRecoveryBackoff::default();
-    let mut next_health_scan = recovery_backoff.next_scan_at(Instant::now());
+    let mut next_health_scan = None;
 
     let result = loop {
         tokio::select! {
@@ -112,6 +112,7 @@ pub(crate) async fn serve(
                 {
                     break Err(error);
                 }
+                next_health_scan = Some(recovery_backoff.next_scan_at(Instant::now()));
             }
             runtime_health_result = async {
                 match runtime_health_task.as_mut() {
@@ -137,21 +138,25 @@ pub(crate) async fn serve(
                             for scope in scopes {
                                 debouncer.request(scope).await;
                             }
-                            next_health_scan = recovery_backoff.next_scan_at(now);
+                            next_health_scan = Some(recovery_backoff.next_scan_at(now));
                         }
                         Ok(Err(error)) => {
                             structured_log::runtime_health_scan_failed(&paths, &error.to_string());
-                            next_health_scan = now + RUNTIME_HEALTH_INTERVAL;
+                            next_health_scan = Some(now + RUNTIME_HEALTH_INTERVAL);
                         }
                         Err(error) if error.is_panic() => break Err(error.into()),
                         Err(error) => {
                             structured_log::runtime_health_scan_failed(&paths, &error.to_string());
-                            next_health_scan = now + RUNTIME_HEALTH_INTERVAL;
+                            next_health_scan = Some(now + RUNTIME_HEALTH_INTERVAL);
                         }
                     }
                 }
             }
-            _ = sleep_until(next_health_scan), if runtime_health_task.is_none() => {
+            _ = async {
+                if let Some(next_health_scan) = next_health_scan {
+                    sleep_until(next_health_scan).await;
+                }
+            }, if next_health_scan.is_some() && runtime_health_task.is_none() => {
                 let health_paths = paths.clone();
                 let health_runtime_catalog = runtime_catalog.clone();
                 runtime_health_task = Some(tokio::spawn(scan_runtime_health(

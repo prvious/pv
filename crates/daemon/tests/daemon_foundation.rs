@@ -444,6 +444,98 @@ async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
     propagate_after_cleanup(result, cleanup_result)
 }
 
+#[tokio::test]
+async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    seed_foundation_caddy(&paths)?;
+    let jobs_lock = JobsLock::acquire(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    let health_lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "health",
+        }),
+    )
+    .await?;
+    assert_eq!(health_lines[0]["status"], json!("ok"));
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(30)).await;
+    tokio::task::yield_now().await;
+    tokio::time::resume();
+    sleep(Duration::from_millis(1500)).await;
+    let jobs_during_startup = Database::open(&paths)?.recent_jobs()?;
+    drop(jobs_lock);
+
+    let operation_result = async {
+        wait_for_succeeded_job_scope(&paths, "system").await?;
+        sleep(Duration::from_millis(100)).await;
+        let supervisor = daemon::ProcessSupervisor::new(paths.clone());
+        let gateway = supervisor
+            .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+            .ok_or_else(|| anyhow!("Gateway was not running after startup"))?;
+        let gateway_pid = gateway.pid();
+        gateway.stop(Duration::from_secs(1)).await?;
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(29)).await;
+        tokio::task::yield_now().await;
+        tokio::time::resume();
+        sleep(Duration::from_millis(200)).await;
+        let jobs_before_first_scan = Database::open(&paths)?.recent_jobs()?;
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        tokio::time::resume();
+        wait_for_succeeded_job_scope(&paths, "resource:caddy:2").await?;
+        let recovered_gateway = supervisor
+            .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+            .ok_or_else(|| anyhow!("health recovery did not restart the Gateway"))?;
+        let database = Database::open(&paths)?;
+        let http_port = database
+            .assigned_ports()?
+            .into_iter()
+            .find_map(|assignment| {
+                (assignment.owner == PortOwner::Gateway(GatewayPort::Http))
+                    .then_some(assignment.port)
+            })
+            .ok_or_else(|| anyhow!("Gateway HTTP port was not assigned"))?;
+        daemon::wait_for_readiness(
+            daemon::ReadinessCheck::Http {
+                host: "127.0.0.1".to_owned(),
+                port: http_port,
+                path: "/__pv/health".to_owned(),
+            },
+            Duration::from_secs(5),
+        )
+        .await?;
+
+        Ok::<_, anyhow::Error>((
+            jobs_during_startup,
+            jobs_before_first_scan,
+            gateway_pid,
+            recovered_gateway.pid(),
+        ))
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    let (jobs_during_startup, jobs_before_first_scan, gateway_pid, recovered_gateway_pid) =
+        propagate_after_cleanup(operation_result, cleanup_result)?;
+
+    assert!(jobs_during_startup.is_empty());
+    assert_eq!(jobs_before_first_scan.len(), 1);
+    assert_eq!(jobs_before_first_scan[0].scope, "system");
+    assert_ne!(recovered_gateway_pid, gateway_pid);
+
+    Ok(())
+}
+
 struct BlockedStartupDownloadClient {
     started: Arc<AtomicBool>,
     release: Mutex<mpsc::Receiver<()>>,
