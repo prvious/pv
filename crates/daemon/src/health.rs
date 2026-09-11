@@ -469,18 +469,12 @@ async fn inspect_runtime_probe(
                 Ok(healthy) => (healthy, probe.error),
                 Err(error) => (false, Some(error.to_string())),
             },
-            Some(RuntimeReadinessProbe::Worker(check)) => (
-                matches!(
-                    timeout(RUNTIME_HEALTH_PROBE_TIMEOUT, probe_readiness_once(&check)).await,
-                    Ok(Ok(()))
-                ),
+            Some(RuntimeReadinessProbe::Worker(check)) => readiness_probe_outcome(
+                timeout(RUNTIME_HEALTH_PROBE_TIMEOUT, probe_readiness_once(&check)).await,
                 probe.error,
             ),
-            Some(RuntimeReadinessProbe::Resource(readiness)) => (
-                matches!(
-                    timeout(RUNTIME_HEALTH_PROBE_TIMEOUT, readiness.probe_once()).await,
-                    Ok(Ok(()))
-                ),
+            Some(RuntimeReadinessProbe::Resource(readiness)) => readiness_probe_outcome(
+                timeout(RUNTIME_HEALTH_PROBE_TIMEOUT, readiness.probe_once()).await,
                 probe.error,
             ),
             None => (false, probe.error),
@@ -507,6 +501,17 @@ async fn inspect_runtime_probe(
     )
 }
 
+fn readiness_probe_outcome(
+    result: Result<Result<(), DaemonError>, tokio::time::error::Elapsed>,
+    existing_error: Option<String>,
+) -> (bool, Option<String>) {
+    match result {
+        Ok(Ok(())) => (true, existing_error),
+        Ok(Err(error)) => (false, Some(error.to_string())),
+        Err(error) => (false, Some(error.to_string())),
+    }
+}
+
 fn php_runtime_subject(runtime_key: &str) -> RuntimeSubject {
     if runtime_key.contains('+') {
         RuntimeSubject::PhpRuntimeWorker {
@@ -524,6 +529,7 @@ mod tests {
     use std::collections::BTreeSet;
     #[cfg(target_os = "macos")]
     use std::fs;
+    use std::io;
     #[cfg(target_os = "macos")]
     use std::net::TcpListener as StdTcpListener;
     #[cfg(target_os = "macos")]
@@ -537,21 +543,23 @@ mod tests {
     use camino::{Utf8Path, Utf8PathBuf};
     #[cfg(target_os = "macos")]
     use camino_tempfile::tempdir;
-    use state::RuntimeSubject;
     #[cfg(target_os = "macos")]
     use state::{
         Database, LinkProjectInput, ManagedResourceDesiredState, PortRequest,
-        ProjectManagedResourceInput, PvPaths,
+        ProjectManagedResourceInput,
     };
+    use state::{PvPaths, RuntimeSubject};
     use tokio::time::{Duration, Instant, advance};
 
     #[cfg(target_os = "macos")]
     use super::scan_runtime_health;
     use super::{
-        HEALTHY_RESET_INTERVAL, RUNTIME_HEALTH_INTERVAL, RuntimeHealthObservation,
-        RuntimeHealthScan, RuntimeRecoveryBackoff, RuntimeRecoveryEntry,
+        DesiredRuntimeProbe, HEALTHY_RESET_INTERVAL, RUNTIME_HEALTH_INTERVAL,
+        RuntimeHealthObservation, RuntimeHealthScan, RuntimeReadinessProbe, RuntimeRecoveryBackoff,
+        RuntimeRecoveryEntry, inspect_runtime_probe,
     };
     use crate::ReconciliationScope;
+    use crate::managed_resources::ManagedResourceReadiness;
     #[cfg(target_os = "macos")]
     use crate::managed_resources::ManagedResourceRuntimeCatalog;
     #[cfg(target_os = "macos")]
@@ -709,6 +717,62 @@ mod tests {
         assert_eq!(
             backoff.next_scan_at(accepted_at),
             accepted_at + Duration::from_secs(5)
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn runtime_probe_preserves_readiness_errors_and_timeouts() -> anyhow::Result<()> {
+        let failed_readiness = ManagedResourceReadiness::async_check("failure", || {
+            Box::pin(async {
+                Err(crate::DaemonError::Io(io::Error::other(
+                    "readiness probe failed",
+                )))
+            })
+        });
+        let (_observation, failure) = inspect_runtime_probe(
+            PvPaths::for_home("/unused"),
+            DesiredRuntimeProbe {
+                subject: RuntimeSubject::Resource {
+                    name: "redis".to_owned(),
+                    track: "8.2".to_owned(),
+                },
+                scopes: [ReconciliationScope::resource("redis", "8.2")?]
+                    .into_iter()
+                    .collect(),
+                current: true,
+                error: None,
+                readiness: Some(RuntimeReadinessProbe::Resource(Box::new(failed_readiness))),
+            },
+        )
+        .await;
+        assert_eq!(
+            failure.map(|failure| failure.error),
+            Some("I/O error: readiness probe failed".to_owned())
+        );
+
+        let stalled_readiness =
+            ManagedResourceReadiness::async_check("stalled", || Box::pin(std::future::pending()));
+        let (_observation, timeout) = inspect_runtime_probe(
+            PvPaths::for_home("/unused"),
+            DesiredRuntimeProbe {
+                subject: RuntimeSubject::Resource {
+                    name: "postgres".to_owned(),
+                    track: "18".to_owned(),
+                },
+                scopes: [ReconciliationScope::resource("postgres", "18")?]
+                    .into_iter()
+                    .collect(),
+                current: true,
+                error: None,
+                readiness: Some(RuntimeReadinessProbe::Resource(Box::new(stalled_readiness))),
+            },
+        )
+        .await;
+        assert_eq!(
+            timeout.map(|timeout| timeout.error),
+            Some("deadline has elapsed".to_owned())
         );
 
         Ok(())
