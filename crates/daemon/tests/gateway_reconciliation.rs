@@ -558,7 +558,8 @@ async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() 
 }
 
 #[tokio::test]
-async fn gateway_reconciliation_preserves_running_runtimes_on_second_reconcile() -> Result<()> {
+async fn gateway_reconciliation_restores_generated_files_without_restarting_runtimes() -> Result<()>
+{
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_root = tempdir.path().join("acme");
@@ -669,19 +670,19 @@ document_root: public
     );
     assert!(fake_admin_load_bodies(&paths.gateway_root_config())?.is_empty());
     assert!(fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.is_empty());
-    assert_eq!(
+    assert_ne!(
         fs::read_to_string(&paths.gateway_root_config())?,
         edited_gateway_root
     );
-    assert_eq!(
+    assert_ne!(
         fs::read_to_string(&paths.worker_root_config("8.4"))?,
         edited_worker_root
     );
-    assert_eq!(
+    assert_ne!(
         fs::read_to_string(&gateway_fragment_path)?,
         edited_gateway_fragment
     );
-    assert_eq!(
+    assert_ne!(
         fs::read_to_string(&worker_fragment_path)?,
         edited_worker_fragment
     );

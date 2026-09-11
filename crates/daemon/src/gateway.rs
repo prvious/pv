@@ -375,8 +375,9 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         if reconcile_unchanged_runtime(
             &supervisor,
             &process_spec,
+            &paths.worker_root_config(&worker.runtime_key),
             &readiness,
-            &desired_config.fingerprint,
+            &desired_config,
         )
         .await
         .is_some()
@@ -453,8 +454,9 @@ async fn reconcile_gateway_runtimes_with_pf_state(
     let readiness_outcome = if let Some(outcome) = reconcile_unchanged_runtime(
         &supervisor,
         &gateway_spec,
+        &paths.gateway_root_config(),
         &gateway_readiness,
-        &desired_gateway_config.tree.fingerprint,
+        &desired_gateway_config.tree,
     )
     .await
     {
@@ -1449,14 +1451,15 @@ async fn promote_runtime_config_tree(
 async fn reconcile_unchanged_runtime(
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
+    config_path: &Utf8Path,
     readiness: &RuntimeReadinessPlan,
-    desired_fingerprint: &str,
+    desired: &DesiredRuntimeConfigTree,
 ) -> Option<RuntimeReadinessOutcome> {
     let Ok(Some(runtime)) = supervisor.verify_ownership(spec) else {
         return None;
     };
     if runtime.replacement_required()
-        || runtime.applied_config_fingerprint() != Some(desired_fingerprint)
+        || runtime.applied_config_fingerprint() != Some(desired.fingerprint.as_str())
     {
         return None;
     }
@@ -1469,11 +1472,19 @@ async fn reconcile_unchanged_runtime(
         return None;
     }
 
+    if !matches!(
+        active_runtime_config_matches(config_path, desired),
+        Ok(true)
+    ) && restore_generated_runtime_config(config_path, desired).is_err()
+    {
+        return None;
+    }
+
     let Ok(Some(runtime)) = supervisor.verify_ownership(spec) else {
         return None;
     };
     if runtime.replacement_required()
-        || runtime.applied_config_fingerprint() != Some(desired_fingerprint)
+        || runtime.applied_config_fingerprint() != Some(desired.fingerprint.as_str())
     {
         return None;
     }
@@ -2304,6 +2315,46 @@ fn worker_project_config_fragments(
     }
 
     Ok(fragments)
+}
+
+fn active_runtime_config_matches(
+    config_path: &Utf8Path,
+    desired: &DesiredRuntimeConfigTree,
+) -> Result<bool, DaemonError> {
+    let root = fs::read_to_string(config_path)?;
+    let fragments = fs::read_dir_paths(&desired.active_dir)?
+        .into_iter()
+        .filter(|path| path.as_str().ends_with(".Caddyfile"))
+        .map(|path| {
+            let file_name =
+                path.file_name()
+                    .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                        reason: format!("config fragment path `{path}` has no file name"),
+                    })?;
+            let content = fs::read_to_string(&path)?;
+
+            Ok((file_name.to_owned(), content))
+        })
+        .collect::<Result<Vec<_>, DaemonError>>()?;
+    let fingerprint = runtime_config_fingerprint(
+        &root,
+        fragments
+            .iter()
+            .map(|(file_name, content)| (file_name.as_str(), content.as_str())),
+    );
+
+    Ok(fingerprint == desired.fingerprint)
+}
+
+fn restore_generated_runtime_config(
+    config_path: &Utf8Path,
+    desired: &DesiredRuntimeConfigTree,
+) -> Result<(), DaemonError> {
+    delete_optional_dir(&desired.active_dir)?;
+    write_project_config_fragments(&desired.active_dir, &desired.fragments)?;
+    fs::write_sensitive_file(config_path, &desired.active_content)?;
+
+    Ok(())
 }
 
 fn write_project_config_fragments(
