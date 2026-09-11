@@ -1418,10 +1418,15 @@ pub async fn persisted_gateway_is_ready_with_pf_state_for_test(
         &paths.ca_certificate(),
     );
 
-    Ok(matches!(
-        timeout(OWNED_READINESS_PROBE_TIMEOUT, probe_readiness_once(&check)).await,
-        Ok(Ok(()))
-    ))
+    match timeout(OWNED_READINESS_PROBE_TIMEOUT, probe_readiness_once(&check)).await {
+        Ok(Ok(())) => Ok(true),
+        Ok(Err(error)) => Err(error),
+        Err(error) => Err(DaemonError::ReadinessTimedOut {
+            check: format!("{check:?}"),
+            timeout_ms: OWNED_READINESS_PROBE_TIMEOUT.as_millis(),
+            last_error: Some(error.to_string()),
+        }),
+    }
 }
 
 async fn spawn_gateway_pf_inspection<Inspect>(
