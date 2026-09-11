@@ -243,7 +243,7 @@ fn require_no_update_in_progress(
     }
 
     let paths = pv_paths(environment)?;
-    state::UpdateLock::require_no_update_in_progress(&paths).map_err(update_lock_error)
+    state::UpdateLock::require_no_update_in_progress(&paths).map_err(coordination_lock_error)
 }
 
 fn command_blocked_during_update(command: &Command) -> bool {
@@ -300,7 +300,11 @@ fn command_blocked_during_update(command: &Command) -> bool {
     }
 }
 
-fn update_lock_error(error: StateError) -> ExecuteError {
+fn acquire_jobs_lock(paths: &PvPaths) -> Result<state::JobsLock, ExecuteError> {
+    state::JobsLock::acquire(paths).map_err(coordination_lock_error)
+}
+
+fn coordination_lock_error(error: StateError) -> ExecuteError {
     match error {
         StateError::CoordinationLockHeld { path } => CliError::CoordinationLockHeld {
             path: path.to_string(),
