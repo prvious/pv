@@ -324,8 +324,10 @@ async fn reconcile_project_gateway_runtimes(
         && !target_active_impact.served
         && target_active_impact.runtime_keys.is_empty()
     {
-        let pf_routing_state =
-            pf_routing_state.unwrap_or_else(|| gateway_pf_routing_state(paths, &targeted.plan));
+        let pf_routing_state = match pf_routing_state {
+            Some(pf_routing_state) => pf_routing_state,
+            None => gateway_pf_routing_state(paths, &targeted.plan).await?,
+        };
         let readiness_hostname = active_gateway_readiness_hostname(
             paths,
             target_active_impact.gateway_fragments.keys(),
