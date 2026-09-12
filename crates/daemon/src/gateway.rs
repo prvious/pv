@@ -574,6 +574,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             }
         })?;
         if let Some(phase_log) = phase_log {
+            phase_log.report_progress(structured_log::ReconciliationPhase::Workers);
             phase_log.completed(
                 structured_log::ReconciliationPhase::Workers,
                 "php_workers",
@@ -581,6 +582,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
                 Duration::ZERO,
                 &[("worker_count", 0), ("project_count", 0)],
             );
+            phase_log.report_progress(structured_log::ReconciliationPhase::Gateway);
             phase_log.completed(
                 structured_log::ReconciliationPhase::Gateway,
                 "gateway",
@@ -2006,6 +2008,7 @@ fn complete_targeted_runtime_plan(
 fn skipped_project_gateway_outcome(
     phase_log: &structured_log::ReconciliationPhaseLog,
 ) -> ProjectGatewayReconciliationOutcome {
+    phase_log.report_progress(structured_log::ReconciliationPhase::Workers);
     phase_log.completed(
         structured_log::ReconciliationPhase::Workers,
         "target_project",
@@ -2013,6 +2016,7 @@ fn skipped_project_gateway_outcome(
         Duration::ZERO,
         &[("worker_count", 0), ("project_count", 0)],
     );
+    phase_log.report_progress(structured_log::ReconciliationPhase::Gateway);
     phase_log.completed(
         structured_log::ReconciliationPhase::Gateway,
         "target_project",
