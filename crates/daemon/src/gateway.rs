@@ -226,13 +226,14 @@ pub(crate) async fn reconcile_gateway_runtimes_with_phase_log(
 pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
     paths: &PvPaths,
     project_id: &str,
+    pf_routing_state: Option<GatewayPfRoutingState>,
     phase_log: &structured_log::ReconciliationPhaseLog,
 ) -> Result<ProjectGatewayReconciliationOutcome, DaemonError> {
     reconcile_project_gateway_runtimes(
         paths,
         project_id,
         RUNTIME_READINESS_TIMEOUT,
-        None,
+        pf_routing_state,
         phase_log,
     )
     .await

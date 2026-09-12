@@ -5,8 +5,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::DaemonError;
 use crate::gateway::{
-    CADDY_NOT_INSTALLED, ProjectGatewayReconciliationOutcome, reconcile_gateway_runtimes,
-    reconcile_gateway_runtimes_with_phase_log, reconcile_project_gateway_runtimes_with_phase_log,
+    CADDY_NOT_INSTALLED, GatewayPfRoutingState, ProjectGatewayReconciliationOutcome,
+    reconcile_gateway_runtimes, reconcile_gateway_runtimes_with_phase_log,
+    reconcile_project_gateway_runtimes_with_phase_log,
 };
 use crate::ipc::LocalStream;
 use crate::managed_resources::{
@@ -292,10 +293,16 @@ pub(crate) async fn run_background_reconciliation_job(
     let running = queued.wait_for_turn().await;
     let job_id = running.job_id().to_string();
     let scope = running.scope().clone();
-    let result =
-        complete_reconciliation_job(&paths, &job_id, &scope, runtime_catalog, running.timing())
-            .await
-            .map(|_summary| ());
+    let result = complete_reconciliation_job(
+        &paths,
+        &job_id,
+        &scope,
+        runtime_catalog,
+        running.timing(),
+        None,
+    )
+    .await
+    .map(|_summary| ());
 
     running.finish();
 
@@ -610,6 +617,7 @@ where
                     runtime_catalog,
                     progress,
                     timing,
+                    None,
                 ),
                 event_receiver,
             )
@@ -618,7 +626,8 @@ where
             (completion.result, completion.transport_is_open)
         } else {
             (
-                complete_reconciliation_job(&paths, job_id, &scope, runtime_catalog, timing).await,
+                complete_reconciliation_job(&paths, job_id, &scope, runtime_catalog, timing, None)
+                    .await,
                 false,
             )
         };
@@ -1181,6 +1190,7 @@ async fn complete_reconciliation_job(
     scope: &ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     timing: ReconciliationJobTiming,
+    pf_routing_state: Option<GatewayPfRoutingState>,
 ) -> Result<String, DaemonError> {
     complete_reconciliation_job_with_progress(
         paths,
@@ -1189,6 +1199,7 @@ async fn complete_reconciliation_job(
         runtime_catalog,
         DaemonDownloadProgress::disabled(),
         timing,
+        pf_routing_state,
     )
     .await
 }
@@ -1200,6 +1211,7 @@ async fn complete_reconciliation_job_with_progress(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
     timing: ReconciliationJobTiming,
+    pf_routing_state: Option<GatewayPfRoutingState>,
 ) -> Result<String, DaemonError> {
     let scope_text = scope.to_string();
     let phase_log = ReconciliationPhaseLog::new(paths, job_id, &scope_text);
@@ -1244,6 +1256,7 @@ async fn complete_reconciliation_job_with_progress(
                 runtime_catalog,
                 progress,
                 &phase_log,
+                pf_routing_state,
                 &mut failure_subject,
             )
             .await
@@ -1423,6 +1436,7 @@ async fn complete_project_reconciliation_with_progress(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
+    pf_routing_state: Option<GatewayPfRoutingState>,
     failure_subject: &mut Option<JobDiagnosticSubject>,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
     let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, id.as_str());
@@ -1438,8 +1452,13 @@ async fn complete_project_reconciliation_with_progress(
         &[("project_count", 1)],
     );
     let project_env_summary = project_result?;
-    let gateway_outcome =
-        reconcile_project_gateway_runtimes_with_phase_log(paths, id.as_str(), phase_log).await?;
+    let gateway_outcome = reconcile_project_gateway_runtimes_with_phase_log(
+        paths,
+        id.as_str(),
+        pf_routing_state,
+        phase_log,
+    )
+    .await?;
     let (gateway_summary, gateway_evaluated) = match gateway_outcome {
         ProjectGatewayReconciliationOutcome::Reconciled {
             summary,
@@ -2235,6 +2254,7 @@ mod tests {
             None,
             super::DaemonDownloadProgress::disabled(),
             &phase_log,
+            Some(crate::gateway::GatewayPfRoutingState::Inactive),
             &mut None,
         )
         .await?;
@@ -2325,6 +2345,7 @@ mod tests {
             None,
             super::DaemonDownloadProgress::disabled(),
             &phase_log,
+            None,
             &mut None,
         )
         .await?;
@@ -2399,6 +2420,7 @@ mod tests {
             &scope,
             None,
             ReconciliationJobTiming::immediate(),
+            Some(crate::gateway::GatewayPfRoutingState::Inactive),
         )
         .await;
         assert!(matches!(result, Err(DaemonError::Config(_))));
@@ -2421,6 +2443,7 @@ mod tests {
             &scope,
             None,
             ReconciliationJobTiming::immediate(),
+            Some(crate::gateway::GatewayPfRoutingState::Inactive),
         )
         .await;
         assert!(
@@ -2445,6 +2468,7 @@ mod tests {
             &scope,
             None,
             ReconciliationJobTiming::immediate(),
+            Some(crate::gateway::GatewayPfRoutingState::Inactive),
         )
         .await?;
         let unresolved = Database::open(&paths)?.unresolved_job_failures()?;
@@ -2463,6 +2487,7 @@ mod tests {
             &ReconciliationScope::System,
             None,
             ReconciliationJobTiming::immediate(),
+            None,
         )
         .await?;
         assert!(
