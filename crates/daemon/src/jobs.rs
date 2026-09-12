@@ -445,8 +445,10 @@ async fn complete_running_background_reconciliation_job(
         runtime_catalog,
         DaemonDownloadProgress::disabled(),
         running.timing(),
-        true,
-        None,
+        ReconciliationJobOptions {
+            discard_obsolete_project: true,
+            ..ReconciliationJobOptions::default()
+        },
     )
     .await;
 
@@ -1443,8 +1445,10 @@ async fn complete_reconciliation_job_with_progress(
         runtime_catalog,
         progress,
         timing,
-        false,
-        pf_routing_state,
+        ReconciliationJobOptions {
+            pf_routing_state,
+            ..ReconciliationJobOptions::default()
+        },
     )
     .await
     .into_result()
@@ -1474,6 +1478,12 @@ impl ReconciliationJobCompletion {
     }
 }
 
+#[derive(Default)]
+struct ReconciliationJobOptions {
+    discard_obsolete_project: bool,
+    pf_routing_state: Option<GatewayPfRoutingState>,
+}
+
 async fn complete_reconciliation_job_with_progress_outcome(
     paths: &PvPaths,
     job_id: &str,
@@ -1481,8 +1491,7 @@ async fn complete_reconciliation_job_with_progress_outcome(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
     timing: ReconciliationJobTiming,
-    discard_obsolete_project: bool,
-    pf_routing_state: Option<GatewayPfRoutingState>,
+    options: ReconciliationJobOptions,
 ) -> ReconciliationJobCompletion {
     let scope_text = scope.to_string();
     let phase_log = ReconciliationPhaseLog::new(paths, job_id, &scope_text);
@@ -1493,7 +1502,7 @@ async fn complete_reconciliation_job_with_progress_outcome(
         timing.queue_wait(),
         &[],
     );
-    let obsolete_project = match (discard_obsolete_project, scope) {
+    let obsolete_project = match (options.discard_obsolete_project, scope) {
         (true, ReconciliationScope::Project { id }) => {
             project_exists(paths, id.as_str()).map(|exists| !exists)
         }
@@ -1552,7 +1561,7 @@ async fn complete_reconciliation_job_with_progress_outcome(
                     runtime_catalog,
                     progress,
                     &phase_log,
-                    pf_routing_state,
+                    options.pf_routing_state,
                     &mut failure_subject,
                 )
                 .await
