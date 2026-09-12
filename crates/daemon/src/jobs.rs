@@ -2183,6 +2183,14 @@ mod tests {
             MAILPIT_TEST_TRACK,
             &BTreeMap::from([("smtp_host".to_owned(), "127.0.0.1".to_owned())]),
         )?;
+        database.record_runtime_observed_snapshot(
+            RuntimeSubject::Resource {
+                name: "mailpit".to_owned(),
+                track: MAILPIT_TEST_TRACK.to_owned(),
+            },
+            RuntimeObservedStatus::Running,
+            Some("fixture mailpit readiness diagnostic"),
+        )?;
         database.replace_project_php_runtime(
             &projects[1].id,
             Some(&ProjectPhpRuntimeInput {
@@ -2644,6 +2652,14 @@ mod tests {
             MAILPIT_TEST_TRACK,
             &BTreeMap::from([("smtp_host".to_owned(), "127.0.0.1".to_owned())]),
         )?;
+        database.record_runtime_observed_snapshot(
+            RuntimeSubject::Resource {
+                name: "mailpit".to_owned(),
+                track: MAILPIT_TEST_TRACK.to_owned(),
+            },
+            RuntimeObservedStatus::Running,
+            Some("fixture mailpit readiness diagnostic"),
+        )?;
         let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_url(OFFLINE_TEST_MANIFEST_URL)?;
         let scope = ReconciliationScope::resource("mailpit", MAILPIT_TEST_TRACK)?;
         run_background_reconciliation_job(
@@ -2789,6 +2805,14 @@ mod tests {
                 "mailpit",
                 "1.0",
                 &BTreeMap::from([("smtp_host".to_owned(), "127.0.0.1".to_owned())]),
+            )?;
+            database.record_runtime_observed_snapshot(
+                RuntimeSubject::Resource {
+                    name: "mailpit".to_owned(),
+                    track: "1.0".to_owned(),
+                },
+                RuntimeObservedStatus::Running,
+                Some("fixture mailpit readiness diagnostic"),
             )?;
             database.record_project_env_observed_snapshot(
                 &project.id,
