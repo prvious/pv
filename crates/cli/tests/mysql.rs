@@ -1,5 +1,7 @@
 #[cfg(target_os = "macos")]
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Write, copy, sink};
+#[cfg(target_os = "macos")]
+use std::net::Shutdown;
 #[cfg(target_os = "macos")]
 use std::os::unix::net::UnixListener;
 use std::process::ExitCode;
@@ -105,6 +107,7 @@ fn artifact_mutation_releases_jobs_lock_before_daemon_submission() -> anyhow::Re
                 Err(error) => return Err(error.into()),
             }
         };
+        stream.set_nonblocking(false)?;
         stream.set_read_timeout(Some(Duration::from_secs(3)))?;
         let mut request = String::new();
         BufReader::new(stream.try_clone()?).read_line(&mut request)?;
@@ -115,6 +118,8 @@ fn artifact_mutation_releases_jobs_lock_before_daemon_submission() -> anyhow::Re
         );
         response.push('\n');
         stream.write_all(response.as_bytes())?;
+        stream.shutdown(Shutdown::Write)?;
+        copy(&mut stream, &mut sink())?;
 
         Ok(serde_json::from_str(request.trim_end())?)
     });
