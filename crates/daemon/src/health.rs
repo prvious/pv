@@ -613,14 +613,13 @@ mod tests {
     use state::{PvPaths, RuntimeSubject};
     use tokio::time::{Duration, Instant, advance};
 
-    #[cfg(target_os = "macos")]
-    use super::scan_runtime_health;
     use super::{
-        DesiredRuntimeProbe, HEALTHY_RESET_INTERVAL, RUNTIME_HEALTH_INTERVAL,
-        RUNTIME_RECOVERY_EXHAUSTED, RUNTIME_RETRY_DELAYS, RuntimeHealthObservation,
-        RuntimeHealthScan, RuntimeReadinessProbe, RuntimeRecoveryBackoff, RuntimeRecoveryEntry,
-        gateway_readiness_probe_outcome, inspect_runtime_probe,
+        DesiredRuntimeProbe, HEALTHY_RESET_INTERVAL, RUNTIME_HEALTH_INTERVAL, RUNTIME_RETRY_DELAYS,
+        RuntimeHealthObservation, RuntimeHealthScan, RuntimeReadinessProbe, RuntimeRecoveryBackoff,
+        RuntimeRecoveryEntry, gateway_readiness_probe_outcome, inspect_runtime_probe,
     };
+    #[cfg(target_os = "macos")]
+    use super::{RUNTIME_RECOVERY_EXHAUSTED, scan_runtime_health};
     use crate::ReconciliationScope;
     use crate::managed_resources::ManagedResourceReadiness;
     #[cfg(target_os = "macos")]

@@ -626,10 +626,15 @@ mod tests {
     async fn watcher_reconciliation_retries_after_jobs_lock_contention() -> Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
-        Database::open(&paths)?;
+        let project = link_health_project(
+            &paths,
+            &tempdir.path().join("invalid-project"),
+            "invalid-project.test",
+            "php: [\n",
+        )?;
         let jobs_lock = JobsLock::acquire(&paths)?;
         let task_paths = paths.clone();
-        let scope = ReconciliationScope::project("missing")?;
+        let scope = ReconciliationScope::project(project.id)?;
         let task = tokio::spawn(async move {
             run_debounced_reconciliation_job(task_paths, ReconciliationQueue::new(), scope, None)
                 .await
