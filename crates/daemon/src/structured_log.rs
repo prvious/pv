@@ -100,7 +100,6 @@ impl ReconciliationPhaseLog {
         counts: &[(&str, u64)],
         fields: &[(&str, &str)],
     ) {
-        self.report_progress(phase);
         if let Err(error) = append_phase(self, phase, subject, outcome, elapsed, counts, fields) {
             let mut standard_error = io::stderr().lock();
             let _fallback_result = writeln!(

@@ -656,6 +656,7 @@ async fn run_update_job(
                 stream_is_open,
                 running.job_id(),
                 runtime_catalog,
+                running.timing(),
             )
             .await;
 
@@ -707,6 +708,7 @@ async fn stream_started_update_job<Stream>(
     stream_is_open: bool,
     job_id: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    timing: ReconciliationJobTiming,
 ) -> Result<(), DaemonError>
 where
     Stream: AsyncWrite + Unpin,
@@ -747,7 +749,7 @@ where
             job_id,
             "Managed Resource update still running",
             FOREGROUND_JOB_HEARTBEAT_INTERVAL,
-            complete_update_job_with_progress(&paths, job_id, runtime_catalog, progress),
+            complete_update_job_with_progress(&paths, job_id, runtime_catalog, progress, timing),
             event_receiver,
             phase_receiver,
         )
@@ -756,7 +758,14 @@ where
         (completion.result, completion.transport_is_open)
     } else {
         (
-            complete_update_job(&paths, job_id, runtime_catalog).await,
+            complete_update_job_with_progress(
+                &paths,
+                job_id,
+                runtime_catalog,
+                DaemonDownloadProgress::disabled(),
+                timing,
+            )
+            .await,
             false,
         )
     };
@@ -1087,15 +1096,13 @@ where
     Stream: AsyncWrite + Unpin,
 {
     let has_pending_phase = phases.borrow().len() > *next_phase;
-    let transport_is_open = if has_pending_phase {
-        write_pending_phases(transport, job_id, phases, next_phase).await
-    } else {
-        true
-    };
+    if has_pending_phase {
+        write_pending_phases(transport, job_id, phases, next_phase).await;
+    }
 
     StreamedJobCompletion {
         result,
-        transport_is_open,
+        transport_is_open: true,
     }
 }
 
@@ -1242,6 +1249,7 @@ fn abandon_job(
     result
 }
 
+#[cfg(test)]
 async fn complete_update_job(
     paths: &PvPaths,
     job_id: &str,
@@ -1252,6 +1260,7 @@ async fn complete_update_job(
         job_id,
         runtime_catalog,
         DaemonDownloadProgress::disabled(),
+        ReconciliationJobTiming::immediate(),
     )
     .await
 }
@@ -1261,9 +1270,17 @@ async fn complete_update_job_with_progress(
     job_id: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
+    timing: ReconciliationJobTiming,
 ) -> Result<String, DaemonError> {
     let phase_log = ReconciliationPhaseLog::new(paths, job_id, "update", "system")
         .with_progress(progress.phase_sender.clone());
+    phase_log.completed(
+        ReconciliationPhase::Queue,
+        "job",
+        PhaseOutcome::Succeeded,
+        timing.queue_wait(),
+        &[],
+    );
     let progress = progress.with_phase_log(phase_log.clone());
     let result = complete_update_job_inner(paths, runtime_catalog, progress, &phase_log).await;
     let finalization_timer = phase_log.start(ReconciliationPhase::Finalization, "job");
@@ -1679,6 +1696,7 @@ async fn complete_reconciliation_job_with_progress_outcome(
         Err(error) => Err(error),
         Ok(true) => {
             if let ReconciliationScope::Project { id } = scope {
+                phase_log.report_progress(ReconciliationPhase::ProjectApply);
                 phase_log.completed(
                     ReconciliationPhase::ProjectApply,
                     id.as_str(),
@@ -6172,6 +6190,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn foreground_update_records_actual_queue_wait() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        Database::open(&paths)?;
+        let queue = ReconciliationQueue::new();
+        let blocker = queued(enqueue_reconciliation_job(
+            &paths,
+            &queue,
+            ReconciliationScope::System,
+        )?)?;
+        let blocker = blocker.wait_for_turn().await;
+        let update = queued(enqueue_update_job(&paths, &queue)?)?;
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        blocker.finish();
+        let running = timeout(Duration::from_secs(1), update.wait_for_turn()).await?;
+        let job_id = running.job_id().to_owned();
+        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+            OFFLINE_TEST_MANIFEST_URL,
+            ScriptedArtifactClient {
+                manifest: serde_json::to_string(&json!({
+                    "schema_version": 1,
+                    "minimum_pv_version": "0.1.0",
+                    "resources": [],
+                }))?,
+                archive: Vec::new(),
+            },
+        )?;
+        let (_client, daemon) = duplex(64);
+
+        stream_started_update_job(
+            paths.clone(),
+            protocol::transport(daemon),
+            false,
+            &job_id,
+            Some(&catalog),
+            running.timing(),
+        )
+        .await?;
+        running.finish();
+
+        let phases = reconciliation_phase_events(&paths, &job_id)?;
+        let queue_phase = phases
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("missing update queue phase"))?;
+        assert_eq!(queue_phase["phase"], "queue");
+        assert!(
+            queue_phase["elapsed_ms"]
+                .as_u64()
+                .is_some_and(|elapsed| elapsed >= 10)
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn no_op_update_preserves_prior_reconciliation_failure_coverage() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -6682,7 +6756,6 @@ mod tests {
                 "manifest",
                 "download",
                 "install",
-                "resources",
                 "project_apply",
                 "workers",
                 "gateway",
@@ -6829,7 +6902,6 @@ mod tests {
                 "demand_discovery",
                 "resources",
                 "manifest",
-                "resources",
                 "project_apply",
                 "workers",
                 "gateway",
@@ -6926,7 +6998,6 @@ mod tests {
                 "manifest",
                 "download",
                 "install",
-                "project_apply",
                 "workers",
                 "gateway",
                 "finalization",
@@ -7077,7 +7148,6 @@ mod tests {
                 "resources",
                 "download",
                 "install",
-                "resources",
                 "project_apply",
                 "workers",
                 "gateway",
@@ -7502,7 +7572,7 @@ mod tests {
         let completion = outcome??;
 
         assert_eq!(completion.result?, "job done");
-        assert!(!completion.transport_is_open);
+        assert!(completion.transport_is_open);
 
         Ok(())
     }
@@ -8500,6 +8570,7 @@ mod tests {
             true,
             job_id,
             Some(catalog),
+            ReconciliationJobTiming::immediate(),
         )
         .await?;
 
