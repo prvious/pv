@@ -676,10 +676,15 @@ mod tests {
     async fn watcher_reconciliation_retries_after_jobs_lock_contention() -> Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
-        Database::open(&paths)?;
+        let project = link_health_project(
+            &paths,
+            &tempdir.path().join("invalid-project"),
+            "invalid-project.test",
+            "php: [\n",
+        )?;
         let jobs_lock = JobsLock::acquire(&paths)?;
         let task_paths = paths.clone();
-        let scope = ReconciliationScope::project("missing")?;
+        let scope = ReconciliationScope::project(project.id)?;
         let (_shutdown_sender, shutdown_receiver) = watch::channel(false);
         let task = tokio::spawn(async move {
             run_debounced_reconciliation_job(
@@ -710,10 +715,15 @@ mod tests {
     async fn watcher_reconciliation_stops_retrying_when_shutdown_is_requested() -> Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
-        Database::open(&paths)?;
+        let project = link_health_project(
+            &paths,
+            &tempdir.path().join("invalid-project"),
+            "invalid-project.test",
+            "php: [\n",
+        )?;
         let jobs_lock = JobsLock::acquire(&paths)?;
         let task_paths = paths.clone();
-        let scope = ReconciliationScope::project("missing")?;
+        let scope = ReconciliationScope::project(project.id)?;
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
         let task = tokio::spawn(async move {
             run_debounced_reconciliation_job(
