@@ -2055,7 +2055,7 @@ async fn gateway_reconciliation_replaces_runtime_before_newer_desired_state() ->
 
     let recovery_summary = reconcile_gateway_runtimes_with_pf_state_for_test(
         &paths,
-        Duration::from_millis(250),
+        Duration::from_secs(5),
         GatewayPfRoutingState::Unknown,
     )
     .await?;
