@@ -338,15 +338,24 @@ pub(crate) async fn run_startup_reconciliation_job(
             enqueue_startup_reconciliation_job(&enqueue_paths, &enqueue_queue)
         });
         let result = tokio::select! {
+            biased;
             result = &mut enqueue_task => result
                 .map_err(DaemonError::from)
                 .map_err(|error| BackgroundReconciliationError::Admission(Box::new(error)))?,
             _ = &mut shutdown => {
-                let _enqueue_result = enqueue_task
+                let enqueue_result = enqueue_task
                     .await
                     .map_err(DaemonError::from)
                     .map_err(|error| BackgroundReconciliationError::Admission(Box::new(error)))?;
-                return Ok(());
+                return match enqueue_result {
+                    Ok(_result) => Ok(()),
+                    Err(DaemonError::State(StateError::CoordinationLockHeld { path }))
+                        if path == paths.jobs_lock() =>
+                    {
+                        Ok(())
+                    }
+                    Err(error) => Err(BackgroundReconciliationError::Admission(Box::new(error))),
+                };
             }
         };
 
@@ -2368,17 +2377,17 @@ mod tests {
         complete_system_reconciliation_with_progress, complete_update_job,
         completed_system_reconciliation_coverage, discover_system_project_demand,
         enqueue_reconciliation_job, enqueue_startup_reconciliation_job,
-        foreground_reconciliation_result,
-        managed_resource_reconciliation_summary, reconcile_persisted_project_envs,
-        reconcile_project_env_and_missing_resources,
+        foreground_reconciliation_result, managed_resource_reconciliation_summary,
+        reconcile_persisted_project_envs, reconcile_project_env_and_missing_resources,
         reconcile_project_env_with_runtime_catalog_and_progress,
         reconcile_system_projects_and_resources_with_progress,
         reconcile_system_projects_with_progress,
         reconcile_system_resources_with_runtime_catalog_and_progress,
         record_background_reconciliation_error, run_background_reconciliation_job,
-        start_reconciliation_job, start_update_job, stop_undemanded_system_resource_runtimes,
-        stream_started_reconciliation_job, stream_started_update_job, system_project_summary,
-        wait_for_startup_reconciliation_turn, write_coalesced_update_response,
+        run_startup_reconciliation_job, start_reconciliation_job, start_update_job,
+        stop_undemanded_system_resource_runtimes, stream_started_reconciliation_job,
+        stream_started_update_job, system_project_summary, wait_for_startup_reconciliation_turn,
+        write_coalesced_update_response,
     };
     use crate::reconciliation::{
         EnqueueResult, ReconciliationJobTiming, ReconciliationQueue, ReconciliationScope,
@@ -7012,6 +7021,33 @@ mod tests {
 
         let database = Database::open(&paths)?;
         assert!(database.recent_jobs()?.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn startup_shutdown_preserves_enqueue_failure() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::write_sensitive_file(paths.db(), "not a database")?;
+        let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+        shutdown_sender
+            .send(())
+            .map_err(|()| anyhow::anyhow!("startup shutdown receiver was dropped"))?;
+
+        let result = run_startup_reconciliation_job(
+            paths,
+            ReconciliationQueue::new(),
+            None,
+            shutdown_receiver,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(super::BackgroundReconciliationError::Admission(error))
+                if matches!(*error, DaemonError::State(StateError::Sqlite(_)))
+        ));
 
         Ok(())
     }

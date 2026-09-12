@@ -739,7 +739,7 @@ PV uses two OS-level advisory filesystem locks. `~/.pv/run/update.lock` protects
 
 Contention errors describe the active coordination lock and its backing path. Persistent lock files are not themselves evidence of contention: they may remain after the owning process exits, and unlocked stale files do not block work. Active OS locks are released automatically when their owning file handles close.
 
-While `update.lock` is held, commands that require stable CLI/daemon compatibility fail clearly instead of waiting. While `pv update` owns `jobs.lock`, the daemon rejects direct mutation requests rather than queueing them behind the foreground update. Simple local read-only commands that do not require daemon protocol compatibility, such as `pv env`, may still run.
+While `update.lock` is held, mutating commands that perform the update preflight fail clearly instead of waiting. While `pv update` owns `jobs.lock`, the daemon rejects direct mutation requests rather than queueing them behind the foreground update. Read-only commands may still run against the previous daemon during the pre-activation update phase.
 
 After a successful PV application self-update, PV keeps the current app release plus one previous app release under `~/.pv/bin/releases/`. Older app releases are pruned. Pruning never removes the active release or the previous rollback release. If pruning fails after a successful app update and healthy daemon restart, `pv update` exits zero and reports the cleanup failure as a warning on stderr.
 
@@ -840,7 +840,7 @@ The daemon accepts multiple reconciliation requests but runs reconciliation jobs
 
 Daemon reconciliation job metadata and final status are persisted in `pv.db`. Live progress streaming is kept in memory. Every successful daemon startup schedules one System reconciliation through the mutation queue after listener and DNS health are available. If the previous daemon was interrupted mid-job, startup first marks those jobs failed or abandoned. Startup waits asynchronously for `jobs.lock` without blocking daemon health or recording a failed job for lock contention. Startup, ordinary System reconciliation, and System update jobs have distinct queue identities; repeated ordinary `reconcile system` requests received while startup is queued or running coalesce into at most one trailing ordinary reconciliation that rereads current desired state.
 
-After self-update restarts the daemon, the startup System reconciliation may begin after `jobs.lock` is released before or alongside the foreground Managed Resource continuation. Both requests serialize through `jobs.lock` and reconcile current state, so their order does not lose requested work.
+After self-update restarts the daemon, the startup System reconciliation may begin after `jobs.lock` is released before or alongside the foreground Managed Resource continuation. Both requests serialize through `jobs.lock`. Startup reconciles current state; the update continuation reconciles current state only when Managed Resource artifacts changed, because a no-op update needs no second reconciliation.
 
 Once the daemon accepts a long-running job, the job continues even if the initiating CLI process disconnects. The CLI socket stream is a progress subscriber, not the owner of the work.
 

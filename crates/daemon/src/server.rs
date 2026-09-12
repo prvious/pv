@@ -63,7 +63,7 @@ pub(crate) async fn serve(
             let runtime_catalog = background_runtime_catalog.clone();
             let _task = tokio::spawn(async move {
                 let scope_text = scope.to_string();
-                let result = run_background_reconciliation_job_with_origin(
+                let result = run_watcher_reconciliation_job(
                     paths.clone(),
                     queue,
                     scope,
@@ -190,6 +190,36 @@ pub(crate) async fn serve(
 
     result?;
     startup_result
+}
+
+async fn run_watcher_reconciliation_job(
+    paths: PvPaths,
+    queue: ReconciliationQueue,
+    scope: ReconciliationScope,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<(), BackgroundReconciliationError> {
+    loop {
+        let result = run_background_reconciliation_job_with_origin(
+            paths.clone(),
+            queue.clone(),
+            scope.clone(),
+            runtime_catalog,
+        )
+        .await;
+
+        match result {
+            Err(BackgroundReconciliationError::Admission(error))
+                if matches!(
+                    error.as_ref(),
+                    DaemonError::State(state::StateError::CoordinationLockHeld { path })
+                        if path == &paths.jobs_lock()
+                ) =>
+            {
+                sleep(PROJECT_CONFIG_DEBOUNCE).await;
+            }
+            result => return result,
+        }
+    }
 }
 
 fn handle_startup_task_result(
@@ -377,14 +407,16 @@ mod tests {
     };
     use rusqlite::Connection;
     use state::{
-        Database, JobDiagnosticSubject, JobStatus, LinkProjectInput, ProjectRecord, PvPaths,
+        Database, JobDiagnosticSubject, JobStatus, JobsLock, LinkProjectInput, ProjectRecord,
+        PvPaths,
     };
     use time::{Duration as CertificateDuration, OffsetDateTime};
     use tokio::io::duplex;
+    use tokio::time::{sleep, timeout};
 
     use super::{
         collect_project_tls_health_scopes, handle_background_reconciliation_result,
-        handle_startup_task_result, read_request_line,
+        handle_startup_task_result, read_request_line, run_watcher_reconciliation_job,
     };
     use crate::jobs::{
         BackgroundReconciliationError, run_background_reconciliation_job_with_origin,
@@ -400,6 +432,33 @@ mod tests {
         let line = read_request_line(&mut transport, Duration::from_millis(10)).await?;
 
         assert!(line.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn watcher_reconciliation_retries_after_jobs_lock_contention() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        Database::open(&paths)?;
+        let jobs_lock = JobsLock::acquire(&paths)?;
+        let task_paths = paths.clone();
+        let scope = ReconciliationScope::project("missing")?;
+        let task = tokio::spawn(async move {
+            run_watcher_reconciliation_job(task_paths, ReconciliationQueue::new(), scope, None)
+                .await
+        });
+
+        sleep(Duration::from_millis(100)).await;
+        assert!(Database::open(&paths)?.recent_jobs()?.is_empty());
+        drop(jobs_lock);
+
+        let result = timeout(Duration::from_secs(1), task).await??;
+        assert!(matches!(
+            result,
+            Err(BackgroundReconciliationError::Execution { .. })
+        ));
+        assert_eq!(Database::open(&paths)?.recent_jobs()?.len(), 1);
 
         Ok(())
     }
