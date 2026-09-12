@@ -672,20 +672,37 @@ async fn reconcile_gateway_runtimes_with_pf_state(
                     continue;
                 }
                 if let Some(snapshot) = snapshot {
-                    let fragments =
-                        snapshot
-                            .fragments
+                    let desired_fragments = match worker_project_config_fragments(
+                        paths,
+                        worker,
+                        Some(&snapshot.fragments),
+                    ) {
+                        Ok(fragments) => fragments
                             .into_iter()
-                            .filter(|(file_name, _)| {
-                                !worker.projects.iter().any(|project| {
-                                    project_config_file_name(&project.id) == *file_name
-                                }) && previous_gateway.as_ref().is_none_or(|gateway| {
+                            .map(|fragment| (fragment.file_name, fragment.content))
+                            .collect::<BTreeMap<_, _>>(),
+                        Err(error) => {
+                            if let Err(recording) =
+                                record_runtime_error(paths, worker_runtime_subject(worker), &error)
+                            {
+                                worker_failures.push((worker.runtime_key.clone(), recording));
+                            }
+                            worker_failures.push((worker.runtime_key.clone(), error));
+                            continue;
+                        }
+                    };
+                    let fragments = snapshot
+                        .fragments
+                        .into_iter()
+                        .filter(|(file_name, content)| {
+                            desired_fragments.get(file_name) != Some(content)
+                                && previous_gateway.as_ref().is_none_or(|gateway| {
                                     gateway.fragments.get(file_name).is_some_and(|fragment| {
                                         gateway_fragment_targets_worker(fragment, worker.port)
                                     })
                                 })
-                            })
-                            .collect::<BTreeMap<_, _>>();
+                        })
+                        .collect::<BTreeMap<_, _>>();
                     if !fragments.is_empty() {
                         retained_worker_fragments.insert(worker.runtime_key.clone(), fragments);
                     }
@@ -2590,10 +2607,12 @@ fn desired_worker_config(
     let mut fragments = worker_project_config_fragments(paths, worker, preserved_fragments)?;
     if let Some(retained_fragments) = retained_fragments {
         for (file_name, content) in retained_fragments {
-            if !fragments
-                .iter()
-                .any(|fragment| fragment.file_name == *file_name)
+            if let Some(fragment) = fragments
+                .iter_mut()
+                .find(|fragment| fragment.file_name == *file_name)
             {
+                fragment.content = merge_worker_fragment_sites(&fragment.content, content)?;
+            } else {
                 fragments.push(preserved_project_config_fragment(file_name, content));
             }
         }
@@ -2633,6 +2652,30 @@ fn desired_worker_config(
         fragments,
         fingerprint,
     })
+}
+
+fn merge_worker_fragment_sites(desired: &str, previous: &str) -> Result<String, DaemonError> {
+    let (desired_sites, desired_body) =
+        desired
+            .split_once(" {\n")
+            .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                reason: "desired PHP worker fragment is missing a site block".to_owned(),
+            })?;
+    let (previous_sites, _previous_body) =
+        previous
+            .split_once(" {\n")
+            .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                reason: "previous PHP worker fragment is missing a site block".to_owned(),
+            })?;
+    let sites = desired_sites
+        .split(", ")
+        .chain(previous_sites.split(", "))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    Ok(format!("{sites} {{\n{desired_body}"))
 }
 
 async fn promote_runtime_config_tree(

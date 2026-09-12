@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
-use futures_util::StreamExt;
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use protocol::{
     ManagedResourceUpdateCheck as ProtocolUpdateCheck,
     ManagedResourceUpdateCheckTrack as ProtocolUpdateCheckTrack,
@@ -37,7 +37,7 @@ use tokio::time::{sleep, timeout};
 use crate::jobs::DaemonDownloadProgress;
 use crate::project_env::{DemandedResourceTrack, record_project_env_failure};
 use crate::supervisor::{
-    ManagedProcess, bounded_runtime_readiness, runtime_exited_before_readiness_error,
+    ManagedProcess, RUNTIME_READINESS_CONCURRENCY_LIMIT, runtime_exited_before_readiness_error,
     wait_for_started_runtime_readiness,
 };
 use crate::{
@@ -1438,18 +1438,33 @@ async fn reconcile_resource_tracks(
     project: &ProjectRecord,
     plan: &crate::project_env::ProjectResourcePlan,
 ) -> Result<(), DaemonError> {
-    let mut prepared = Vec::new();
+    let mut pending = FuturesUnordered::new();
+    let mut ready = VecDeque::new();
     let mut failures = Vec::new();
     for resource in &plan.resources {
+        if pending.len() == RUNTIME_READINESS_CONCURRENCY_LIMIT
+            && let Some(runtime) = pending.next().await
+        {
+            ready.push_back(runtime);
+        }
         let result = match desired_allocations(database, project, plan, resource) {
             Ok(allocations) => {
-                prepare_resource_track(paths, database, reconciliation, resource, &allocations)
-                    .await
+                let preparation =
+                    prepare_resource_track(paths, database, reconciliation, resource, &allocations);
+                tokio::pin!(preparation);
+                loop {
+                    tokio::select! {
+                        result = &mut preparation => break result,
+                        Some(runtime) = pending.next(), if !pending.is_empty() => {
+                            ready.push_back(runtime);
+                        }
+                    }
+                }
             }
             Err(error) => Err(error),
         };
         match result {
-            Ok(Some(runtime)) => prepared.push(runtime),
+            Ok(Some(runtime)) => pending.push(runtime.wait()),
             Ok(None) => {}
             Err(error) => {
                 let error = record_resource_runtime_failure(database, resource, error);
@@ -1458,13 +1473,10 @@ async fn reconcile_resource_tracks(
         }
     }
 
-    let completed = bounded_runtime_readiness(prepared, |runtime| runtime.wait());
-    tokio::pin!(completed);
-    let mut ready = VecDeque::new();
     loop {
         let runtime = if let Some(runtime) = ready.pop_front() {
             runtime
-        } else if let Some(runtime) = completed.next().await {
+        } else if let Some(runtime) = pending.next().await {
             runtime
         } else {
             break;
@@ -1477,7 +1489,7 @@ async fn reconcile_resource_tracks(
             loop {
                 tokio::select! {
                     result = &mut finalization => break result,
-                    Some(runtime) = completed.next() => ready.push_back(runtime),
+                    Some(runtime) = pending.next() => ready.push_back(runtime),
                 }
             }
         };

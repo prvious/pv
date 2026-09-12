@@ -4243,6 +4243,119 @@ async fn demanded_resource_uses_async_readiness_and_allocation_hooks() -> Result
 }
 
 #[tokio::test]
+async fn resource_readiness_slots_include_start_and_poll_during_preparation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "env:\n  APP_URL: \"${project_url}\"\n",
+    )?;
+    let tracks = ["8.0", "8.1", "8.2", "8.3", "8.4"];
+    let mut port_guards = Vec::new();
+    for track in tracks {
+        seed_fake_sql_artifact(&paths, "mysql", track)?;
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        Database::open(&paths)?.assign_port(
+            PortRequest::resource_port("mysql", track, "mysql", port, port, port),
+            |candidate| candidate == port,
+        )?;
+        port_guards.push(listener);
+    }
+    drop(port_guards);
+    let gate = Arc::new(ReadinessWaveGate::with_gated_preparation("8.4"));
+    let allocation_events = Arc::new(Mutex::new(Vec::new()));
+    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: resources::default_artifact_manifest_url().to_owned(),
+            target_platform: resources::TargetPlatform::current()?,
+        },
+        GatedSqlRuntimeAdapter::new(Arc::clone(&gate), Arc::clone(&allocation_events))?,
+    );
+    let plan = crate::project_env::ProjectResourcePlan {
+        resources: tracks
+            .into_iter()
+            .map(|track| ProjectManagedResourceInput {
+                resource_name: "mysql".to_owned(),
+                track: track.to_owned(),
+            })
+            .collect(),
+        allocations: BTreeMap::new(),
+    };
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let progress = crate::jobs::DaemonDownloadProgress::disabled();
+    let mut database = Database::open(&paths)?;
+    let mut prefetched_installs = BTreeMap::new();
+    let mut context = super::ResourceTrackReconciliationContext {
+        catalog: &catalog,
+        supervisor: &supervisor,
+        progress: &progress,
+        prefetched_installs: &mut prefetched_installs,
+    };
+    let reconciliation =
+        super::reconcile_resource_tracks(&paths, &mut database, &mut context, &project, &plan);
+    tokio::pin!(reconciliation);
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if gate.started.load(Ordering::SeqCst) == 4 {
+                return Ok(());
+            }
+            tokio::select! {
+                result = &mut reconciliation => return Err(anyhow!("resource reconciliation finished before filling readiness slots: {result:#?}")),
+                () = tokio::task::yield_now() => {}
+            }
+        }
+    })
+    .await??;
+    assert_eq!(gate.preparation_started.load(Ordering::SeqCst), 0);
+    assert_eq!(gate.maximum_active.load(Ordering::SeqCst), 4);
+
+    gate.proceed.add_permits(1);
+    gate.finish.add_permits(1);
+    timeout(Duration::from_secs(5), async {
+        while gate.preparation_started.load(Ordering::SeqCst) == 0 {
+            tokio::select! {
+                result = &mut reconciliation => return Err(anyhow!("resource reconciliation finished before later preparation: {result:#?}")),
+                () = tokio::task::yield_now() => {}
+            }
+        }
+        Ok(())
+    })
+    .await??;
+    assert_eq!(gate.started.load(Ordering::SeqCst), 4);
+
+    gate.preparation.add_permits(1);
+    timeout(Duration::from_secs(5), async {
+        while gate.started.load(Ordering::SeqCst) < tracks.len() {
+            tokio::select! {
+                result = &mut reconciliation => return Err(anyhow!("resource reconciliation finished before final readiness start: {result:#?}")),
+                () = tokio::task::yield_now() => {}
+            }
+        }
+        Ok(())
+    })
+    .await??;
+    gate.proceed.add_permits(tracks.len() - 1);
+    gate.finish.add_permits(tracks.len() - 1);
+    timeout(Duration::from_secs(5), &mut reconciliation).await??;
+
+    assert_eq!(cloned_hook_events(&allocation_events)?.len(), tracks.len());
+    for track in tracks {
+        if let Some(adopted) = supervisor.adopt_recorded(
+            &paths.resource_pid("mysql", track),
+            &paths.resource_runtime_metadata("mysql", track),
+        )? {
+            adopted.stop(Duration::from_secs(1)).await?;
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -6919,6 +7032,9 @@ struct ReadinessWaveGate {
     ready_to_return: AtomicUsize,
     proceed: Arc<Semaphore>,
     finish: Arc<Semaphore>,
+    preparation_track: Option<String>,
+    preparation_started: AtomicUsize,
+    preparation: Arc<Semaphore>,
 }
 
 impl ReadinessWaveGate {
@@ -6930,6 +7046,16 @@ impl ReadinessWaveGate {
             ready_to_return: AtomicUsize::new(0),
             proceed: Arc::new(Semaphore::new(0)),
             finish: Arc::new(Semaphore::new(0)),
+            preparation_track: None,
+            preparation_started: AtomicUsize::new(0),
+            preparation: Arc::new(Semaphore::new(0)),
+        }
+    }
+
+    fn with_gated_preparation(track: &str) -> Self {
+        Self {
+            preparation_track: Some(track.to_owned()),
+            ..Self::new()
         }
     }
 }
@@ -6973,6 +7099,21 @@ impl super::ManagedResourceRuntimeAdapter for GatedSqlRuntimeAdapter {
             name: "mysql",
             preferred_port: 3306,
         }]
+    }
+
+    fn prepare_runtime<'a>(
+        &'a self,
+        _paths: &'a PvPaths,
+        context: &'a super::ManagedResourceRuntimeContext,
+    ) -> super::ManagedResourcePreparationFuture<'a> {
+        Box::pin(async move {
+            if self.gate.preparation_track.as_deref() == Some(context.track.as_str()) {
+                self.gate.preparation_started.fetch_add(1, Ordering::SeqCst);
+                acquire_test_gate(Arc::clone(&self.gate.preparation)).await?;
+            }
+
+            Ok(())
+        })
     }
 
     fn build_process_spec(

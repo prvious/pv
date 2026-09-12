@@ -1,8 +1,9 @@
 use std::future::Future;
+use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use state::fs;
+use state::{StateError, fs};
 use thiserror::Error;
 
 use crate::{CaddyAdminError, CaddyAdminOperation, DaemonError};
@@ -208,10 +209,17 @@ where
     Promote: FnOnce() -> Result<PromotedConfigDir, DaemonError>,
 {
     let candidate_path = candidate_path_for(path);
-    let previous_root_content = if path.exists() {
-        Some(fs::read_to_string(path)?)
-    } else {
-        None
+    let previous_root_content = match fs::read_to_string(path) {
+        Ok(content) => Some(content),
+        Err(StateError::Filesystem { source, .. })
+            if matches!(
+                source.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::InvalidData
+            ) =>
+        {
+            None
+        }
+        Err(error) => return Err(error.into()),
     };
     write_candidate_config(&candidate_path, candidate_content)?;
 
@@ -259,7 +267,11 @@ pub(crate) type ConfigTreeContents = (String, Vec<(String, String)>);
 
 impl PromotedConfigTree {
     pub(crate) fn previous_root_content(&self) -> Option<&str> {
-        self.previous_root_content.as_deref()
+        if self.fragments.previous_contents_readable {
+            self.previous_root_content.as_deref()
+        } else {
+            None
+        }
     }
 
     pub(crate) fn previous_fragment_contents(&self) -> &[String] {
@@ -384,6 +396,7 @@ pub(crate) struct PromotedConfigDir {
     backup_dir: Utf8PathBuf,
     active_existed: bool,
     previous_contents: Vec<String>,
+    previous_contents_readable: bool,
 }
 
 impl PromotedConfigDir {
@@ -556,14 +569,21 @@ pub(crate) fn promote_config_dir(
 ) -> Result<PromotedConfigDir, DaemonError> {
     let backup_dir = backup_path_for(active_dir);
     let active_existed = active_dir.exists();
-    let previous_contents = if active_existed {
-        fs::read_dir_paths(active_dir)?
-            .into_iter()
-            .map(|path| fs::read_to_string(&path).map_err(DaemonError::from))
-            .collect::<Result<Vec<_>, _>>()?
-    } else {
-        Vec::new()
-    };
+    let mut previous_contents = Vec::new();
+    let mut previous_contents_readable = true;
+    if active_existed {
+        for path in fs::read_dir_paths(active_dir)? {
+            match fs::read_to_string(&path) {
+                Ok(content) => previous_contents.push(content),
+                Err(StateError::Filesystem { source, .. })
+                    if source.kind() == io::ErrorKind::InvalidData =>
+                {
+                    previous_contents_readable = false;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
     delete_optional_dir(&backup_dir)?;
     if active_existed {
         rename_config_dir(active_dir, &backup_dir)?;
@@ -582,6 +602,7 @@ pub(crate) fn promote_config_dir(
         backup_dir,
         active_existed,
         previous_contents,
+        previous_contents_readable,
     })
 }
 
