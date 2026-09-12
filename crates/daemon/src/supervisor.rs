@@ -29,7 +29,7 @@ const SCRIPT_IDENTITY_STABILIZATION: Duration = Duration::from_millis(250);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
-const RUNTIME_READINESS_CONCURRENCY_LIMIT: usize = 4;
+pub(crate) const RUNTIME_READINESS_CONCURRENCY_LIMIT: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProcessSignal {

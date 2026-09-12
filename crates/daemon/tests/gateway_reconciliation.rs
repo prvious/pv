@@ -1018,7 +1018,11 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
     let track = "8.4";
     let base_project =
         create_project_with_config(tempdir.path(), "base", "php:\n  version: \"8.4\"\n")?;
-    let peer_project = create_project_with_config(tempdir.path(), "peer", "php: \"8.4\"\n")?;
+    let peer_project = create_project_with_config(
+        tempdir.path(),
+        "peer",
+        "php: \"8.4\"\nhostnames: [old.acme.test]\n",
+    )?;
     let redis_project = create_project_with_config(
         tempdir.path(),
         "redis",
@@ -1036,6 +1040,11 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
         .into_iter()
         .find(|project| project.path == base_project)
         .ok_or_else(|| anyhow::anyhow!("missing base Project"))?;
+    let peer_record = Database::open(&paths)?
+        .projects()?
+        .into_iter()
+        .find(|project| project.path == peer_project)
+        .ok_or_else(|| anyhow::anyhow!("missing peer Project"))?;
 
     let release_path = seed_installed_php_with_extensions(&paths, track, &["redis", "xdebug"])?;
     seed_installed_frankenphp_with_extensions(&paths, track, &release_path, &["redis", "xdebug"])?;
@@ -1070,10 +1079,17 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
     let source_fragment = paths
         .worker_projects_config_dir(&base_runtime_key)
         .join(format!("{}.Caddyfile", base_record.id));
+    let peer_fragment = paths
+        .worker_projects_config_dir(&base_runtime_key)
+        .join(format!("{}.Caddyfile", peer_record.id));
     let old_source_content = fs::read_to_string(&source_fragment)?;
     fs::write_sensitive_file(
         &base_record.config_path,
         "php:\n  version: \"8.4\"\n  extensions: [xdebug]\n",
+    )?;
+    fs::write_sensitive_file(
+        &peer_project.join("pv.yml"),
+        "php: \"8.4\"\nhostnames: [new.acme.test]\n",
     )?;
     link_project_record(&paths, &redis_project, "api.acme.test", Some(track))?;
     link_project_record(&paths, &xdebug_project, "other.test", Some(track))?;
@@ -1149,6 +1165,7 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
     } else {
         None
     };
+    let peer_content_after_failure = fs::read_to_string(&peer_fragment)?;
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     let verified_gateway_root = fs::read_to_string(&paths.gateway_root_config())?;
     fs::write_sensitive_file(
@@ -1198,6 +1215,7 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
     fs::remove_file(&redis_failure_marker)?;
     reconcile_gateway_runtimes(&paths).await?;
     assert!(!source_fragment.exists());
+    let committed_peer_content = fs::read_to_string(&peer_fragment)?;
     assert!(process_is_alive(base_worker_pid)?);
     assert_eq!(
         required_runtime_metadata_pid(&paths.worker_runtime_metadata(&xdebug_runtime_key))?,
@@ -1230,6 +1248,10 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
         source_content_after_failure.as_deref(),
         Some(old_source_content.as_str())
     );
+    assert!(peer_content_after_failure.contains("old.acme.test"));
+    assert!(peer_content_after_failure.contains("new.acme.test"));
+    assert!(!committed_peer_content.contains("old.acme.test"));
+    assert!(committed_peer_content.contains("new.acme.test"));
 
     Ok(())
 }
@@ -6451,7 +6473,7 @@ fn assert_process_spec_snapshot(
 }
 
 #[tokio::test]
-async fn resource_only_target_reports_alive_unready_gateway() -> Result<()> {
+async fn resource_only_target_recovers_alive_unready_gateway_with_invalid_config() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_root = create_project_with_config(tempdir.path(), "acme", "serve: false\n")?;
@@ -6482,6 +6504,7 @@ async fn resource_only_target_reports_alive_unready_gateway() -> Result<()> {
     drop(database);
 
     reconcile_gateway_runtimes(&paths).await?;
+    let initial_gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
     write_fake_admin_control(&paths.gateway_root_config(), json!({"stop_service": true}))?;
     timeout(Duration::from_secs(5), async {
         loop {
@@ -6493,14 +6516,20 @@ async fn resource_only_target_reports_alive_unready_gateway() -> Result<()> {
     })
     .await
     .context("Gateway listener stayed up")?;
+    write_test_bytes(&paths.gateway_root_config(), &[0xff])?;
+    let invalid_fragment = paths
+        .gateway_projects_config_dir()
+        .join("invalid.Caddyfile");
+    write_test_bytes(&invalid_fragment, &[0xff])?;
 
-    let result = reconcile_project_gateway_runtimes_for_test(
+    reconcile_project_gateway_runtimes_for_test(
         &paths,
         &project.id,
-        Duration::from_millis(250),
+        Duration::from_secs(5),
         GatewayPfRoutingState::Inactive,
     )
-    .await;
+    .await?;
+    let recovered_gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
     let gateway_status = Database::open(&paths)?
         .runtime_observed_states()?
         .into_iter()
@@ -6509,8 +6538,10 @@ async fn resource_only_target_reports_alive_unready_gateway() -> Result<()> {
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
 
-    assert!(result.is_err(), "unexpected reconciliation success");
-    assert_eq!(gateway_status, Some(RuntimeObservedStatus::Failed));
+    assert_ne!(recovered_gateway_pid, initial_gateway_pid);
+    assert!(fs::read_to_string(&paths.gateway_root_config())?.contains("PV Gateway is running"));
+    assert!(!invalid_fragment.exists());
+    assert_eq!(gateway_status, Some(RuntimeObservedStatus::Degraded));
 
     Ok(())
 }
