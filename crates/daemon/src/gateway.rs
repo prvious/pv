@@ -313,10 +313,33 @@ async fn reconcile_project_gateway_runtimes(
         Some(active_impact) => active_impact,
         None => return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem),
     };
+    if failed_worker_outside_target(paths, &targeted, &target_active_impact)? {
+        return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem);
+    }
     if targeted.current_runtime_key.is_none()
         && !target_active_impact.served
         && target_active_impact.runtime_keys.is_empty()
     {
+        let pf_routing_state =
+            pf_routing_state.unwrap_or_else(|| gateway_pf_routing_state(paths, &targeted.plan));
+        let readiness_hostname = active_gateway_readiness_hostname(
+            paths,
+            target_active_impact.gateway_fragments.keys(),
+        )?;
+        let readiness = gateway_readiness_plan(
+            &targeted.plan,
+            readiness_hostname,
+            pf_routing_state,
+            readiness_timeout,
+        );
+        let probe_timeout = readiness.timeout.min(OWNED_READINESS_PROBE_TIMEOUT);
+        if !matches!(
+            timeout(probe_timeout, probe_readiness_once(&readiness.check)).await,
+            Ok(Ok(()))
+        ) {
+            return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem);
+        }
+
         return Ok(skipped_project_gateway_outcome(phase_log));
     }
     if !complete_targeted_runtime_plan(paths, project_id, &mut targeted)? {
@@ -413,7 +436,13 @@ async fn reconcile_project_gateway_runtimes(
             .await?;
             reconciled_worker_count += 1;
         } else {
-            stop_worker_if_undemanded(paths, &supervisor, previous_runtime_key).await?;
+            if let Err(error) =
+                stop_worker_if_undemanded(paths, &supervisor, previous_runtime_key).await
+            {
+                record_runtime_error(paths, php_runtime_subject(previous_runtime_key), &error)?;
+
+                return Err(error);
+            }
         }
     }
     worker_timer.finish(
@@ -1608,6 +1637,56 @@ fn verified_active_project_gateway_impact(
     }))
 }
 
+fn failed_worker_outside_target(
+    paths: &PvPaths,
+    targeted: &TargetedRuntimePlan,
+    active_impact: &ActiveProjectGatewayImpact,
+) -> Result<bool, DaemonError> {
+    let database = Database::open(paths)?;
+    let tracked_workers = runtime_worker_tracks(paths)?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+
+    Ok(database
+        .runtime_observed_states()?
+        .into_iter()
+        .any(|state| {
+            if state.status != RuntimeObservedStatus::Failed {
+                return false;
+            }
+            let runtime_key = match state.subject {
+                RuntimeSubject::PhpWorker { php_track } => php_track,
+                RuntimeSubject::PhpRuntimeWorker { php_runtime_key } => php_runtime_key,
+                RuntimeSubject::Gateway | RuntimeSubject::Resource { .. } => return false,
+            };
+
+            tracked_workers.contains(&runtime_key)
+                && Some(runtime_key.as_str()) != targeted.current_runtime_key.as_deref()
+                && !active_impact.runtime_keys.contains(&runtime_key)
+        }))
+}
+
+fn active_gateway_readiness_hostname<'a>(
+    paths: &PvPaths,
+    fragment_file_names: impl IntoIterator<Item = &'a String>,
+) -> Result<Option<String>, DaemonError> {
+    let database = Database::open(paths)?;
+
+    for file_name in fragment_file_names {
+        let Some(project_id) = file_name.strip_suffix(".Caddyfile") else {
+            continue;
+        };
+        if let Some(hostname) = database
+            .project_by_id(project_id)?
+            .and_then(|project| project.primary_hostname)
+        {
+            return Ok(Some(hostname));
+        }
+    }
+
+    Ok(None)
+}
+
 fn active_worker_plan(
     paths: &PvPaths,
     runtime_key: &str,
@@ -1704,7 +1783,12 @@ fn active_runtime_config_snapshot(
 ) -> Result<Option<ActiveRuntimeConfigSnapshot>, DaemonError> {
     let root = match fs::read_to_string(root_path) {
         Ok(root) => root,
-        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+        Err(StateError::Filesystem { source, .. })
+            if matches!(
+                source.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::InvalidData
+            ) =>
+        {
             return Ok(None);
         }
         Err(error) => return Err(error.into()),
@@ -1717,7 +1801,16 @@ fn active_runtime_config_snapshot(
         let Some(file_name) = path.file_name() else {
             continue;
         };
-        fragments.insert(file_name.to_owned(), fs::read_to_string(&path)?);
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(StateError::Filesystem { source, .. })
+                if source.kind() == io::ErrorKind::InvalidData =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        fragments.insert(file_name.to_owned(), content);
     }
 
     Ok(Some(ActiveRuntimeConfigSnapshot { root, fragments }))
@@ -3300,7 +3393,7 @@ fn candidate_config_dir_for(directory: &Utf8Path) -> Utf8PathBuf {
 }
 
 fn runtime_worker_tracks(paths: &PvPaths) -> Result<Vec<String>, DaemonError> {
-    let mut tracks = Vec::new();
+    let mut tracks = BTreeSet::new();
 
     for path in read_directory_files(&paths.run().join("workers"))? {
         let Some(file_name) = path.file_name() else {
@@ -3313,17 +3406,36 @@ fn runtime_worker_tracks(paths: &PvPaths) -> Result<Vec<String>, DaemonError> {
             continue;
         };
 
-        tracks.push(track.to_string());
+        tracks.insert(track.to_owned());
     }
 
-    Ok(tracks)
+    for path in read_directory_directories(&paths.config().join("workers"))? {
+        let Some(track) = path.file_name().and_then(|name| name.strip_prefix("php-")) else {
+            continue;
+        };
+
+        tracks.insert(track.to_owned());
+    }
+
+    Ok(tracks.into_iter().collect())
+}
+
+fn read_directory_files(directory: &Utf8Path) -> Result<Vec<Utf8PathBuf>, DaemonError> {
+    read_directory_paths(directory, false)
+}
+
+fn read_directory_directories(directory: &Utf8Path) -> Result<Vec<Utf8PathBuf>, DaemonError> {
+    read_directory_paths(directory, true)
 }
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "daemon Gateway reconciliation prunes generated Caddyfile fragments"
+    reason = "daemon Gateway reconciliation inspects generated runtime paths"
 )]
-fn read_directory_files(directory: &Utf8Path) -> Result<Vec<Utf8PathBuf>, DaemonError> {
+fn read_directory_paths(
+    directory: &Utf8Path,
+    directories: bool,
+) -> Result<Vec<Utf8PathBuf>, DaemonError> {
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -3334,7 +3446,7 @@ fn read_directory_files(directory: &Utf8Path) -> Result<Vec<Utf8PathBuf>, Daemon
     for entry in entries {
         let entry = entry?;
         let file_type = entry.file_type()?;
-        if !file_type.is_file() {
+        if (directories && !file_type.is_dir()) || (!directories && !file_type.is_file()) {
             continue;
         }
         let path = Utf8PathBuf::from_path_buf(entry.path()).map_err(|path| {

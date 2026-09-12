@@ -1117,6 +1117,34 @@ env:
         assert!(worker_fragment.exists());
     }
 
+    let mut database = Database::open(&paths)?;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::PhpWorker {
+            php_track: "8.3".to_owned(),
+        },
+        RuntimeObservedStatus::Failed,
+        Some("stale worker cleanup failed"),
+    )?;
+    drop(database);
+    reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &acme.id,
+        Duration::from_secs(5),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await?;
+    let worker_83_status = Database::open(&paths)?
+        .runtime_observed_states()?
+        .into_iter()
+        .find(|state| {
+            state.subject
+                == RuntimeSubject::PhpWorker {
+                    php_track: "8.3".to_owned(),
+                }
+        })
+        .map(|state| state.status);
+    assert_eq!(worker_83_status, Some(RuntimeObservedStatus::Running));
+
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     for track in ["8.3", "8.4", "8.5"] {
         stop_runtime_from_pid_file(&paths.worker_pid(track)).await?;
@@ -1188,8 +1216,29 @@ async fn targeted_project_reconciliation_does_not_activate_tampered_unrelated_fr
         .worker_projects_config_dir("8.4")
         .join(format!("{}.Caddyfile", peer.id));
     let gateway_fragment = fs::read_to_string(&gateway_fragment_path)?;
+    let worker_fragment = fs::read_to_string(&worker_fragment_path)?;
+    let gateway_root = read_test_bytes(paths.gateway_root_config())?;
     let gateway_loads = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
     let worker_loads = fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len();
+
+    write_test_bytes(&paths.gateway_root_config(), &[0xff])?;
+    reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &target.id,
+        Duration::from_secs(5),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await?;
+
+    assert_eq!(read_test_bytes(paths.gateway_root_config())?, gateway_root);
+    assert_eq!(
+        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
+        gateway_loads
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
+        worker_loads
+    );
 
     fs::write_sensitive_file(&gateway_fragment_path, "# tampered Gateway fragment\n")?;
     reconcile_project_gateway_runtimes_for_test(
@@ -1202,7 +1251,7 @@ async fn targeted_project_reconciliation_does_not_activate_tampered_unrelated_fr
 
     assert_eq!(
         fs::read_to_string(&gateway_fragment_path)?,
-        "# tampered Gateway fragment\n"
+        gateway_fragment
     );
     assert_eq!(
         fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
@@ -1223,10 +1272,7 @@ async fn targeted_project_reconciliation_does_not_activate_tampered_unrelated_fr
     )
     .await?;
 
-    assert_eq!(
-        fs::read_to_string(&worker_fragment_path)?,
-        "# tampered worker fragment\n"
-    );
+    assert_eq!(fs::read_to_string(&worker_fragment_path)?, worker_fragment);
     assert_eq!(
         fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
         gateway_loads
@@ -1446,6 +1492,7 @@ async fn targeted_project_reconciliation_uses_verified_fragment_snapshot() -> Re
     let peer_gateway_fragment_path = paths
         .gateway_projects_config_dir()
         .join(format!("{}.Caddyfile", peer.id));
+    let peer_gateway_fragment = fs::read_to_string(&peer_gateway_fragment_path)?;
     write_fake_admin_control(
         &paths.worker_root_config("8.4"),
         json!({"load_delay_ms": 500}),
@@ -1493,7 +1540,7 @@ async fn targeted_project_reconciliation_uses_verified_fragment_snapshot() -> Re
     );
     assert_eq!(
         fs::read_to_string(&peer_gateway_fragment_path)?,
-        "# raced Gateway fragment\n"
+        peer_gateway_fragment
     );
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
@@ -2765,7 +2812,7 @@ fn gateway_runtime_plan_fails_when_persisted_extension_runtime_cannot_be_reconst
 }
 
 #[test]
-fn gateway_runtime_plan_rejects_route_without_matching_worker_fragment() -> Result<()> {
+fn gateway_runtime_plan_recovers_preserved_worker_tree_without_metadata() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_root = tempdir.path().join("acme");
@@ -2797,16 +2844,26 @@ fn gateway_runtime_plan_rejects_route_without_matching_worker_fragment() -> Resu
             .join(format!("{}.Caddyfile", project.id)),
         &format!("    reverse_proxy 127.0.0.1:{} {{\n", ports[2]),
     )?;
-    fs::write_sensitive_file(&paths.worker_runtime_metadata("8.4"), "{}")?;
+    fs::write_sensitive_file(
+        &paths
+            .worker_projects_config_dir("8.4")
+            .join(format!("{}.Caddyfile", project.id)),
+        "# preserved worker fragment\n",
+    )?;
 
-    let result = build_runtime_plan(&paths);
+    let plan = build_runtime_plan(&paths)?;
+    let worker = plan
+        .workers
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("expected preserved PHP worker"))?;
+    let planned_project = worker
+        .projects
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("expected preserved Project"))?;
 
-    assert!(matches!(
-        result,
-        Err(DaemonError::UnexpectedProtocolResponse { reason })
-            if reason.contains(&project.id)
-                && reason.contains("does not match a preserved PHP worker")
-    ));
+    assert_eq!(worker.runtime_key, "8.4");
+    assert_eq!(planned_project.id, project.id);
+    assert!(!planned_project.render_config);
 
     Ok(())
 }
@@ -4900,6 +4957,16 @@ fn read_test_bytes(path: Utf8PathBuf) -> Result<Vec<u8>> {
     Ok(std::fs::read(path)?)
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "runtime recovery tests must write generated config bytes that are not UTF-8"
+)]
+fn write_test_bytes(path: &Utf8Path, content: &[u8]) -> Result<()> {
+    std::fs::write(path, content)?;
+
+    Ok(())
+}
+
 fn write_fake_caddy_without_admin(path: &Utf8Path) -> Result<()> {
     write_fake_caddy_fixture(
         path,
@@ -5394,6 +5461,71 @@ fn assert_process_spec_snapshot(
     settings.bind(|| {
         assert_debug_snapshot!("caddy_cli_command_and_process_specs_are_stable", snapshot);
     });
+}
+
+#[tokio::test]
+async fn resource_only_target_reports_alive_unready_gateway() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = create_project_with_config(tempdir.path(), "acme", "serve: false\n")?;
+    let caddy_release = tempdir.path().join("fake-caddy-release");
+    write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
+    let mut database = Database::open(&paths)?;
+    let project = database
+        .link_project_with_mode(
+            LinkProjectInput {
+                path: project_root.clone(),
+                original_path: project_root.clone(),
+                primary_hostname: "ignored.test".to_owned(),
+                config_path: project_root.join("pv.yml"),
+                desired_php_track: None,
+                additional_hostnames: Vec::new(),
+            },
+            ProjectMode::ResourceOnly,
+        )?
+        .project;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    let ports = available_loopback_ports(2)?;
+    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+    write_fake_admin_control(&paths.gateway_root_config(), json!({"stop_service": true}))?;
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if TcpStream::connect(("127.0.0.1", ports[0])).await.is_err() {
+                return;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .context("Gateway listener stayed up")?;
+
+    let result = reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &project.id,
+        Duration::from_millis(250),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await;
+    let gateway_status = Database::open(&paths)?
+        .runtime_observed_states()?
+        .into_iter()
+        .find(|state| state.subject == RuntimeSubject::Gateway)
+        .map(|state| state.status);
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+
+    assert!(result.is_err(), "unexpected reconciliation success");
+    assert_eq!(gateway_status, Some(RuntimeObservedStatus::Failed));
+
+    Ok(())
 }
 
 #[tokio::test]
