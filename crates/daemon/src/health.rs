@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,7 +8,7 @@ use config::ProjectConfigFile;
 use futures_util::{StreamExt, stream};
 use state::{
     Database, GatewayPort, ManagedResourceDesiredState, PortOwner, ProjectMode, PvPaths,
-    RuntimeSubject,
+    RuntimeObservedStatus, RuntimeSubject,
 };
 use tokio::time::{Instant, timeout};
 
@@ -23,6 +24,8 @@ const HEALTHY_RESET_INTERVAL: Duration = Duration::from_secs(60);
 const RUNTIME_HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const RUNTIME_HEALTH_SCAN_ERROR_RETRY_DELAY: Duration = Duration::from_secs(1);
 const RUNTIME_HEALTH_PROBE_CONCURRENCY: usize = 4;
+const RUNTIME_RECOVERY_EXHAUSTED: &str =
+    "Runtime recovery exhausted after 3 attempts; waiting for a later health scan";
 const RUNTIME_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(1),
     Duration::from_secs(5),
@@ -69,7 +72,7 @@ pub(crate) struct RuntimeRecoveryBackoff {
 
 struct RuntimeRecoveryEntry {
     attempts: usize,
-    next_attempt: Option<Instant>,
+    next_attempt: Instant,
     healthy_since: Option<Instant>,
 }
 
@@ -93,7 +96,6 @@ impl RuntimeRecoveryBackoff {
             if observation.healthy {
                 if let Some(entry) = self.entries.get_mut(&observation.subject) {
                     let healthy_since = entry.healthy_since.get_or_insert(now);
-                    entry.next_attempt = None;
                     if now.duration_since(*healthy_since) >= HEALTHY_RESET_INTERVAL {
                         reset_subjects.push(observation.subject.clone());
                     }
@@ -106,22 +108,15 @@ impl RuntimeRecoveryBackoff {
                 .entry(observation.subject.clone())
                 .or_insert_with(|| RuntimeRecoveryEntry::after_failure(now, 0));
             if entry.healthy_since.take().is_some() {
-                let attempts = if entry.attempts >= RUNTIME_RETRY_DELAYS.len() {
-                    0
-                } else {
-                    entry.attempts
-                };
-                *entry = RuntimeRecoveryEntry::after_failure(now, attempts);
+                entry.next_attempt = now + runtime_retry_delay(entry.attempts);
             }
-            let Some(next_attempt) = entry.next_attempt else {
-                *entry = RuntimeRecoveryEntry::after_failure(now, 0);
-                continue;
-            };
-            if now < next_attempt {
+            if now < entry.next_attempt {
                 continue;
             }
 
-            scopes.extend(observation.scopes.iter().cloned());
+            if let Some(scope) = observation.scopes.iter().next() {
+                scopes.insert(scope.clone());
+            }
         }
         for subject in reset_subjects {
             self.entries.remove(&subject);
@@ -141,31 +136,68 @@ impl RuntimeRecoveryBackoff {
                 continue;
             }
             if let Some(entry) = self.entries.get_mut(&observation.subject)
-                && entry
-                    .next_attempt
-                    .is_some_and(|next_attempt| next_attempt <= now)
+                && entry.next_attempt <= now
             {
-                entry.attempts += 1;
-                entry.next_attempt = RUNTIME_RETRY_DELAYS
-                    .get(entry.attempts)
-                    .map(|delay| now + *delay);
+                entry.attempts = entry
+                    .attempts
+                    .saturating_add(1)
+                    .min(RUNTIME_RETRY_DELAYS.len());
+                entry.next_attempt = now + runtime_retry_delay(entry.attempts);
             }
         }
+    }
+
+    pub(crate) fn record_exhausted_failures(
+        &self,
+        paths: &PvPaths,
+        scan: &RuntimeHealthScan,
+    ) -> Result<(), DaemonError> {
+        let subjects = scan
+            .observations
+            .iter()
+            .filter(|observation| !observation.healthy)
+            .filter_map(|observation| {
+                self.entries
+                    .get(&observation.subject)
+                    .filter(|entry| entry.attempts >= RUNTIME_RETRY_DELAYS.len())
+                    .map(|_entry| observation.subject.clone())
+            })
+            .collect::<Vec<_>>();
+        if subjects.is_empty() {
+            return Ok(());
+        }
+
+        let mut database = Database::open(paths)?;
+        let observed_states = database.runtime_observed_states()?;
+        for subject in subjects {
+            if observed_states.iter().any(|observed| {
+                observed.subject == subject
+                    && observed.status == RuntimeObservedStatus::Failed
+                    && observed.message.as_deref() == Some(RUNTIME_RECOVERY_EXHAUSTED)
+            }) {
+                continue;
+            }
+            database.record_runtime_observed_snapshot(
+                subject,
+                RuntimeObservedStatus::Failed,
+                Some(RUNTIME_RECOVERY_EXHAUSTED),
+            )?;
+        }
+
+        Ok(())
     }
 
     pub(crate) fn next_scan_at(&self, now: Instant) -> Instant {
         let periodic = now + RUNTIME_HEALTH_INTERVAL;
         let overdue_retry = now + RUNTIME_HEALTH_SCAN_ERROR_RETRY_DELAY;
         self.entries.values().fold(periodic, |next, entry| {
-            let entry_next = entry.next_attempt.or(entry
-                .healthy_since
-                .map(|healthy| healthy + HEALTHY_RESET_INTERVAL));
-            entry_next.map_or(next, |entry_next| {
-                next.min(if entry_next <= now {
-                    overdue_retry
-                } else {
-                    entry_next
-                })
+            let entry_next = entry.healthy_since.map_or(entry.next_attempt, |healthy| {
+                healthy + HEALTHY_RESET_INTERVAL
+            });
+            next.min(if entry_next <= now {
+                overdue_retry
+            } else {
+                entry_next
             })
         })
     }
@@ -175,10 +207,17 @@ impl RuntimeRecoveryEntry {
     fn after_failure(now: Instant, attempts: usize) -> Self {
         Self {
             attempts,
-            next_attempt: RUNTIME_RETRY_DELAYS.get(attempts).map(|delay| now + *delay),
+            next_attempt: now + runtime_retry_delay(attempts),
             healthy_since: None,
         }
     }
+}
+
+fn runtime_retry_delay(attempts: usize) -> Duration {
+    RUNTIME_RETRY_DELAYS
+        .get(attempts)
+        .copied()
+        .unwrap_or(RUNTIME_HEALTH_INTERVAL)
 }
 
 pub(crate) async fn scan_runtime_health(
@@ -241,6 +280,7 @@ fn collect_runtime_health_probes(
 
     if let Some(caddy) = tracks.iter().find(|track| {
         track.resource_name == "caddy"
+            && track.track == "2"
             && track.desired_state == ManagedResourceDesiredState::Installed
             && track.installed_version.is_some()
             && track.current_artifact_path.is_some()
@@ -259,12 +299,13 @@ fn collect_runtime_health_probes(
                 https_port,
             }
         });
-        let scope = ReconciliationScope::resource("caddy", caddy.track.clone())?;
+        let scope = ReconciliationScope::resource("caddy", "2")?;
         let (current, error) = recorded_runtime_is_current(
             &supervisor,
             &paths.gateway_pid(),
             &paths.gateway_runtime_metadata(),
             caddy.current_artifact_path.as_deref(),
+            true,
         );
         probes.push(DesiredRuntimeProbe {
             subject: RuntimeSubject::Gateway,
@@ -311,6 +352,7 @@ fn collect_runtime_health_probes(
             &paths.worker_pid(&runtime_key),
             &paths.worker_runtime_metadata(&runtime_key),
             artifact_root,
+            true,
         );
         probes.push(DesiredRuntimeProbe {
             subject: php_runtime_subject(&runtime_key),
@@ -348,6 +390,7 @@ fn collect_runtime_health_probes(
             &paths.resource_pid(&track.resource_name, &track.track),
             &paths.resource_runtime_metadata(&track.resource_name, &track.track),
             track.current_artifact_path.as_deref(),
+            false,
         );
         let scope = ReconciliationScope::resource(&track.resource_name, &track.track)?;
         probes.push(DesiredRuntimeProbe {
@@ -443,12 +486,17 @@ fn recorded_runtime_is_current(
     pid_path: &Utf8Path,
     metadata_path: &Utf8Path,
     artifact_root: Option<&Utf8Path>,
+    requires_applied_config: bool,
 ) -> (bool, Option<String>) {
     let Some(artifact_root) = artifact_root else {
         return (false, None);
     };
     match supervisor.adopt_recorded(pid_path, metadata_path) {
-        Ok(Some(runtime)) => (runtime.uses_current_artifact(artifact_root), None),
+        Ok(Some(runtime)) => (
+            runtime.uses_current_artifact(artifact_root)
+                && (!requires_applied_config || runtime.has_applied_desired_config()),
+            None,
+        ),
         Ok(None) => (false, None),
         Err(error) => (false, Some(error.to_string())),
     }
@@ -465,10 +513,13 @@ async fn inspect_runtime_probe(
             Some(RuntimeReadinessProbe::Gateway {
                 http_port,
                 https_port,
-            }) => match persisted_gateway_is_ready(&paths, http_port, https_port).await {
-                Ok(healthy) => (healthy, probe.error),
-                Err(error) => (false, Some(error.to_string())),
-            },
+            }) => {
+                gateway_readiness_probe_outcome(
+                    persisted_gateway_is_ready(&paths, http_port, https_port),
+                    probe.error,
+                )
+                .await
+            }
             Some(RuntimeReadinessProbe::Worker(check)) => readiness_probe_outcome(
                 timeout(RUNTIME_HEALTH_PROBE_TIMEOUT, probe_readiness_once(&check)).await,
                 probe.error,
@@ -507,6 +558,17 @@ fn readiness_probe_outcome(
 ) -> (bool, Option<String>) {
     match result {
         Ok(Ok(())) => (true, existing_error),
+        Ok(Err(error)) => (false, Some(error.to_string())),
+        Err(error) => (false, Some(error.to_string())),
+    }
+}
+
+async fn gateway_readiness_probe_outcome(
+    probe: impl Future<Output = Result<bool, DaemonError>>,
+    existing_error: Option<String>,
+) -> (bool, Option<String>) {
+    match timeout(RUNTIME_HEALTH_PROBE_TIMEOUT, probe).await {
+        Ok(Ok(healthy)) => (healthy, existing_error),
         Ok(Err(error)) => (false, Some(error.to_string())),
         Err(error) => (false, Some(error.to_string())),
     }
@@ -555,8 +617,9 @@ mod tests {
     use super::scan_runtime_health;
     use super::{
         DesiredRuntimeProbe, HEALTHY_RESET_INTERVAL, RUNTIME_HEALTH_INTERVAL,
-        RuntimeHealthObservation, RuntimeHealthScan, RuntimeReadinessProbe, RuntimeRecoveryBackoff,
-        RuntimeRecoveryEntry, inspect_runtime_probe,
+        RUNTIME_RECOVERY_EXHAUSTED, RUNTIME_RETRY_DELAYS, RuntimeHealthObservation,
+        RuntimeHealthScan, RuntimeReadinessProbe, RuntimeRecoveryBackoff, RuntimeRecoveryEntry,
+        gateway_readiness_probe_outcome, inspect_runtime_probe,
     };
     use crate::ReconciliationScope;
     use crate::managed_resources::ManagedResourceReadiness;
@@ -615,8 +678,8 @@ mod tests {
 
         advance(RUNTIME_HEALTH_INTERVAL).await;
         now = Instant::now();
-        assert!(backoff.scopes_due(now, &scan(false)?).is_empty());
-        assert_eq!(backoff.next_scan_at(now), now + Duration::from_secs(1));
+        assert_eq!(accept_due(&mut backoff, now, &scan(false)?).len(), 1);
+        assert_eq!(backoff.next_scan_at(now), now + RUNTIME_HEALTH_INTERVAL);
 
         Ok(())
     }
@@ -654,6 +717,109 @@ mod tests {
         now = Instant::now();
         assert!(backoff.scopes_due(now, &scan(false)?).is_empty());
         assert_eq!(backoff.next_scan_at(now), now + Duration::from_secs(5));
+
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn exhausted_backoff_survives_a_brief_healthy_period() -> anyhow::Result<()> {
+        let mut backoff = RuntimeRecoveryBackoff::default();
+        let mut now = Instant::now();
+        for delay in [1, 5, 15] {
+            backoff.scopes_due(now, &scan(false)?);
+            advance(Duration::from_secs(delay)).await;
+            now = Instant::now();
+            accept_due(&mut backoff, now, &scan(false)?);
+        }
+        backoff.scopes_due(now, &scan(true)?);
+
+        advance(RUNTIME_HEALTH_INTERVAL).await;
+        now = Instant::now();
+        assert!(backoff.scopes_due(now, &scan(false)?).is_empty());
+        assert_eq!(backoff.next_scan_at(now), now + RUNTIME_HEALTH_INTERVAL);
+
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn another_runtime_retry_does_not_rearm_exhausted_backoff() -> anyhow::Result<()> {
+        let redis_subject = RuntimeSubject::Resource {
+            name: "redis".to_owned(),
+            track: "8.2".to_owned(),
+        };
+        let mut scan = scan(false)?;
+        scan.observations.push(RuntimeHealthObservation {
+            subject: RuntimeSubject::Gateway,
+            scopes: [ReconciliationScope::resource("caddy", "2")?]
+                .into_iter()
+                .collect(),
+            healthy: false,
+        });
+        let mut backoff = RuntimeRecoveryBackoff::default();
+        let detected_at = Instant::now();
+        backoff.entries.insert(
+            redis_subject.clone(),
+            RuntimeRecoveryEntry::after_failure(detected_at, RUNTIME_RETRY_DELAYS.len()),
+        );
+        backoff.entries.insert(
+            RuntimeSubject::Gateway,
+            RuntimeRecoveryEntry::after_failure(detected_at, 0),
+        );
+
+        advance(Duration::from_secs(1)).await;
+        let now = Instant::now();
+        let scopes = accept_due(&mut backoff, now, &scan);
+
+        assert_eq!(
+            scopes,
+            [ReconciliationScope::resource("caddy", "2")?]
+                .into_iter()
+                .collect()
+        );
+        let exhausted = &backoff.entries[&redis_subject];
+        assert_eq!(exhausted.attempts, RUNTIME_RETRY_DELAYS.len());
+        assert_eq!(
+            exhausted.next_attempt,
+            detected_at + RUNTIME_HEALTH_INTERVAL
+        );
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn exhausted_recovery_records_runtime_failure() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        Database::open(&paths)?;
+        let scan = scan(false)?;
+        let subject = scan.observations[0].subject.clone();
+        let mut database = Database::open(&paths)?;
+        database.record_runtime_observed_snapshot(
+            subject.clone(),
+            state::RuntimeObservedStatus::Running,
+            Some("runtime was ready"),
+        )?;
+        drop(database);
+        let mut backoff = RuntimeRecoveryBackoff::default();
+        backoff.entries.insert(
+            subject.clone(),
+            RuntimeRecoveryEntry::after_failure(Instant::now(), RUNTIME_RETRY_DELAYS.len()),
+        );
+
+        backoff.record_exhausted_failures(&paths, &scan)?;
+        backoff.record_exhausted_failures(&paths, &scan)?;
+
+        let observed = Database::open(&paths)?
+            .runtime_observed_states()?
+            .into_iter()
+            .find(|observed| observed.subject == subject)
+            .ok_or_else(|| anyhow!("missing exhausted runtime observation"))?;
+        assert_eq!(observed.status, state::RuntimeObservedStatus::Failed);
+        assert_eq!(
+            observed.message.as_deref(),
+            Some(RUNTIME_RECOVERY_EXHAUSTED)
+        );
 
         Ok(())
     }
@@ -754,7 +920,7 @@ mod tests {
 
         let stalled_readiness =
             ManagedResourceReadiness::async_check("stalled", || Box::pin(std::future::pending()));
-        let (_observation, timeout) = inspect_runtime_probe(
+        let (_observation, timeout_error) = inspect_runtime_probe(
             PvPaths::for_home("/unused"),
             DesiredRuntimeProbe {
                 subject: RuntimeSubject::Resource {
@@ -771,9 +937,17 @@ mod tests {
         )
         .await;
         assert_eq!(
-            timeout.map(|timeout| timeout.error),
+            timeout_error.map(|timeout_error| timeout_error.error),
             Some("deadline has elapsed".to_owned())
         );
+
+        let (healthy, error) = gateway_readiness_probe_outcome(
+            std::future::pending::<Result<bool, crate::DaemonError>>(),
+            None,
+        )
+        .await;
+        assert!(!healthy);
+        assert_eq!(error, Some("deadline has elapsed".to_owned()));
 
         Ok(())
     }
@@ -805,6 +979,45 @@ mod tests {
         .await?;
 
         assert!(scan.observations.is_empty());
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn scanner_selects_only_gateway_caddy_track_two() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut database = Database::open(&paths)?;
+        for track in ["1", "2"] {
+            database.record_managed_resource_track_desired(
+                "caddy",
+                track,
+                ManagedResourceDesiredState::Installed,
+            )?;
+            database.record_managed_resource_track_installed(
+                "caddy",
+                track,
+                &format!("{track}.0.0-pv1"),
+                &paths.resources().join(format!("caddy/{track}")),
+            )?;
+        }
+        drop(database);
+
+        let scan = scan_runtime_health(
+            paths,
+            Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+        )
+        .await?;
+
+        assert_eq!(scan.observations.len(), 1);
+        assert_eq!(scan.observations[0].subject, RuntimeSubject::Gateway);
+        assert_eq!(
+            scan.observations[0].scopes,
+            [ReconciliationScope::resource("caddy", "2")?]
+                .into_iter()
+                .collect()
+        );
 
         Ok(())
     }
@@ -869,7 +1082,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
-    async fn killed_worker_selects_all_and_only_its_project_scopes() -> anyhow::Result<()> {
+    async fn killed_shared_worker_selects_one_project_scope() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         state::fs::write_sensitive_file(&paths.ca_certificate(), "unused certificate")?;
@@ -904,12 +1117,12 @@ mod tests {
         let _healthy_listener = assign_php_worker_listener(&mut database, "8.4")?;
         drop(database);
         let supervisor = ProcessSupervisor::new(paths.clone());
-        let killed_process = supervisor
-            .start(worker_process_spec(&paths, &killed_runtime, "8.3"))
-            .await?;
-        let healthy_process = supervisor
-            .start(worker_process_spec(&paths, &healthy_runtime, "8.4"))
-            .await?;
+        let killed_spec = worker_process_spec(&paths, &killed_runtime, "8.3");
+        let healthy_spec = worker_process_spec(&paths, &healthy_runtime, "8.4");
+        let killed_process = supervisor.start(killed_spec.clone()).await?;
+        let healthy_process = supervisor.start(healthy_spec.clone()).await?;
+        supervisor.record_applied_config(&killed_spec, "sha256:v1:killed")?;
+        supervisor.record_applied_config(&healthy_spec, "sha256:v1:healthy")?;
         killed_process.stop(Duration::from_secs(1)).await?;
 
         let scan_result = scan_runtime_health(
@@ -925,14 +1138,10 @@ mod tests {
         assert!(backoff.scopes_due(detected_at, &scan).is_empty());
         let scopes = backoff.scopes_due(detected_at + Duration::from_secs(1), &scan);
 
-        assert_eq!(
-            scopes,
-            [
-                ReconciliationScope::project(killed_project_id)?,
-                ReconciliationScope::project(shared_project_id)?,
-            ]
-            .into_iter()
-            .collect()
+        assert_eq!(scopes.len(), 1);
+        assert!(
+            scopes.contains(&ReconciliationScope::project(killed_project_id)?)
+                || scopes.contains(&ReconciliationScope::project(shared_project_id)?)
         );
         assert!(!scopes.contains(&ReconciliationScope::project(healthy_project_id)?));
 
@@ -961,6 +1170,12 @@ mod tests {
         let supervisor = ProcessSupervisor::new(paths.clone());
         let spec = worker_process_spec(&paths, &runtime, "8.4");
         let process = supervisor.start(spec.clone()).await?;
+        let unrecorded_scan = scan_runtime_health(
+            paths.clone(),
+            Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+        )
+        .await?;
+        supervisor.record_applied_config(&spec, "sha256:v1:applied")?;
         supervisor.mark_replacement_required(&spec, "sha256:v1:staged")?;
 
         let replacement_scan = scan_runtime_health(
@@ -968,7 +1183,13 @@ mod tests {
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
         )
         .await?;
-        supervisor.clear_replacement_required(&spec)?;
+        supervisor.record_restored_config(&spec, "sha256:v1:applied")?;
+        let unapplied_scan = scan_runtime_health(
+            paths.clone(),
+            Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+        )
+        .await?;
+        supervisor.record_applied_config(&spec, "sha256:v1:staged")?;
         let mut database = Database::open(&paths)?;
         let new_artifact_root = tempdir.path().join("frankenphp-8.4-new");
         database.record_managed_resource_track_installed(
@@ -987,7 +1208,12 @@ mod tests {
         let stale_scan = stale_scan_result?;
         cleanup_result?;
 
-        for scan in [replacement_scan, stale_scan] {
+        for scan in [
+            unrecorded_scan,
+            replacement_scan,
+            unapplied_scan,
+            stale_scan,
+        ] {
             assert_eq!(scan.observations.len(), 1);
             assert_eq!(
                 scan.observations[0].subject,
@@ -1030,12 +1256,11 @@ mod tests {
         let _healthy_listener = assign_php_worker_listener(&mut database, "8.4")?;
         drop(database);
         let supervisor = ProcessSupervisor::new(paths.clone());
-        let broken_process = supervisor
-            .start(worker_process_spec(&paths, &broken_runtime, "8.3"))
-            .await?;
-        let healthy_process = supervisor
-            .start(worker_process_spec(&paths, &healthy_runtime, "8.4"))
-            .await?;
+        let broken_spec = worker_process_spec(&paths, &broken_runtime, "8.3");
+        let healthy_spec = worker_process_spec(&paths, &healthy_runtime, "8.4");
+        let broken_process = supervisor.start(broken_spec).await?;
+        let healthy_process = supervisor.start(healthy_spec.clone()).await?;
+        supervisor.record_applied_config(&healthy_spec, "sha256:v1:healthy")?;
         state::fs::write_sensitive_file(&paths.worker_runtime_metadata("8.3"), "{")?;
 
         let scan_result = scan_runtime_health(

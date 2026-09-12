@@ -121,6 +121,7 @@ pub struct OwnedRuntime {
     arguments: Vec<String>,
     replacement_required: bool,
     applied_config_fingerprint: Option<String>,
+    desired_config_fingerprint: Option<String>,
     process_start_identity: platform::ProcessStartIdentity,
     process_executable_identity: Option<ProcessExecutableIdentity>,
 }
@@ -185,6 +186,8 @@ struct RuntimeMetadata {
     replacement_required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     applied_config_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    desired_config_fingerprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     staged_config_fingerprint: Option<String>,
     log_path: String,
@@ -283,6 +286,7 @@ impl ProcessSupervisor {
                     Some(RecordedConfigFingerprint::Applied(fingerprint)) => Some(fingerprint),
                     Some(RecordedConfigFingerprint::Staged(_)) | None => None,
                 },
+                desired_config_fingerprint: metadata.desired_config_fingerprint,
                 process_start_identity,
                 process_executable_identity: metadata.process_executable_identity,
             }));
@@ -314,11 +318,25 @@ impl ProcessSupervisor {
         spec: &ProcessSpec,
         staged_config_fingerprint: &str,
     ) -> Result<bool, DaemonError> {
-        self.set_config_application_state(spec, true, None, Some(staged_config_fingerprint))
+        self.set_config_application_state(
+            spec,
+            true,
+            None,
+            Some(staged_config_fingerprint),
+            Some(staged_config_fingerprint),
+        )
+    }
+
+    pub(crate) fn mark_restoration_required(
+        &self,
+        spec: &ProcessSpec,
+        staged_config_fingerprint: &str,
+    ) -> Result<bool, DaemonError> {
+        self.set_config_application_state(spec, true, None, Some(staged_config_fingerprint), None)
     }
 
     pub fn clear_replacement_required(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
-        self.set_config_application_state(spec, false, None, None)
+        self.set_config_application_state(spec, false, None, None, None)
     }
 
     pub fn record_applied_config(
@@ -326,7 +344,15 @@ impl ProcessSupervisor {
         spec: &ProcessSpec,
         fingerprint: &str,
     ) -> Result<bool, DaemonError> {
-        self.set_config_application_state(spec, false, Some(fingerprint), None)
+        self.set_config_application_state(spec, false, Some(fingerprint), None, Some(fingerprint))
+    }
+
+    pub(crate) fn record_restored_config(
+        &self,
+        spec: &ProcessSpec,
+        fingerprint: &str,
+    ) -> Result<bool, DaemonError> {
+        self.set_config_application_state(spec, false, Some(fingerprint), None, None)
     }
 
     fn set_config_application_state(
@@ -335,6 +361,7 @@ impl ProcessSupervisor {
         replacement_required: bool,
         applied_config_fingerprint: Option<&str>,
         staged_config_fingerprint: Option<&str>,
+        desired_config_fingerprint: Option<&str>,
     ) -> Result<bool, DaemonError> {
         require_process_containment()?;
         let Some(pid) = read_pid_file(&spec.pid_path)? else {
@@ -362,6 +389,13 @@ impl ProcessSupervisor {
         metadata.replacement_required = replacement_required;
         metadata.applied_config_fingerprint = applied_config_fingerprint.map(str::to_owned);
         metadata.staged_config_fingerprint = staged_config_fingerprint.map(str::to_owned);
+        if let Some(desired_config_fingerprint) = desired_config_fingerprint {
+            metadata.desired_config_fingerprint = Some(desired_config_fingerprint.to_owned());
+        } else if metadata.desired_config_fingerprint.is_none()
+            && let Some(applied_config_fingerprint) = applied_config_fingerprint
+        {
+            metadata.desired_config_fingerprint = Some(applied_config_fingerprint.to_owned());
+        }
         let encoded = serde_json::to_string(&metadata)?;
         fs::write_sensitive_file(&spec.metadata_path, &encoded)?;
 
@@ -412,6 +446,7 @@ impl ProcessSupervisor {
                         Some(RecordedConfigFingerprint::Applied(fingerprint)) => Some(fingerprint),
                         Some(RecordedConfigFingerprint::Staged(_)) | None => None,
                     },
+                    desired_config_fingerprint: metadata.desired_config_fingerprint,
                     process_start_identity,
                     process_executable_identity: metadata.process_executable_identity,
                 },
@@ -540,6 +575,12 @@ impl OwnedRuntime {
         self.applied_config_fingerprint.as_deref()
     }
 
+    pub(crate) fn has_applied_desired_config(&self) -> bool {
+        self.desired_config_fingerprint
+            .as_ref()
+            .is_some_and(|desired| self.applied_config_fingerprint.as_ref() == Some(desired))
+    }
+
     fn matches_live(&self) -> Result<bool, DaemonError> {
         live_process_matches(
             self.pid,
@@ -558,6 +599,10 @@ impl AdoptedProcess {
 
     pub(crate) fn uses_current_artifact(&self, artifact_root: &Utf8Path) -> bool {
         !self.owned.replacement_required() && self.owned.command.starts_with(artifact_root)
+    }
+
+    pub(crate) fn has_applied_desired_config(&self) -> bool {
+        self.owned.has_applied_desired_config()
     }
 
     pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
@@ -1071,6 +1116,7 @@ fn write_runtime_metadata(
         track: spec.track.clone(),
         replacement_required: false,
         applied_config_fingerprint: None,
+        desired_config_fingerprint: None,
         staged_config_fingerprint: None,
         log_path: spec.log_path.to_string(),
         started_at,

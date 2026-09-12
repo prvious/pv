@@ -663,6 +663,10 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
         pending_metadata["staged_config_fingerprint"],
         "sha256:v1:staged"
     );
+    assert_eq!(
+        pending_metadata["desired_config_fingerprint"],
+        "sha256:v1:staged"
+    );
     let replacement = supervisor
         .verify_ownership(&spec)?
         .ok_or_else(|| anyhow!("replacement-required runtime lost ownership"))?;
@@ -675,6 +679,10 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
     assert!(supervisor.clear_replacement_required(&spec)?);
     let cleared_metadata = runtime_metadata(process.metadata_path())?;
     assert!(cleared_metadata["staged_config_fingerprint"].is_null());
+    assert_eq!(
+        cleared_metadata["desired_config_fingerprint"],
+        "sha256:v1:staged"
+    );
     assert!(
         !supervisor
             .verify_ownership(&spec)?
