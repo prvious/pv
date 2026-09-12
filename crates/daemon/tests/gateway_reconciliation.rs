@@ -6516,6 +6516,7 @@ async fn resource_only_target_recovers_alive_unready_gateway_with_invalid_config
     })
     .await
     .context("Gateway listener stayed up")?;
+    write_fake_admin_control(&paths.gateway_root_config(), json!({}))?;
     write_test_bytes(&paths.gateway_root_config(), &[0xff])?;
     let invalid_fragment = paths
         .gateway_projects_config_dir()
