@@ -1210,7 +1210,7 @@ async fn complete_reconciliation_job_with_progress(
         &[],
     );
     let progress = progress.with_phase_log(phase_log.clone());
-    let effective_scope = effective_reconciliation_scope(scope);
+    let effective_scope = scope.effective();
     let result = match &effective_scope {
         ReconciliationScope::System => {
             complete_system_reconciliation_with_progress(
@@ -1300,17 +1300,6 @@ async fn complete_reconciliation_job_with_progress(
     );
 
     final_result
-}
-
-fn effective_reconciliation_scope(scope: &ReconciliationScope) -> ReconciliationScope {
-    match scope {
-        ReconciliationScope::Resource { name, .. }
-            if matches!(name.as_str(), "php" | "frankenphp") =>
-        {
-            ReconciliationScope::System
-        }
-        scope => scope.clone(),
-    }
 }
 
 fn fail_reconciliation_job(
@@ -1861,7 +1850,7 @@ fn reconciliation_progress_message(scope: &ReconciliationScope, summary: &str) -
 }
 
 fn reconciliation_started_message(scope: &ReconciliationScope) -> &'static str {
-    let effective_scope = effective_reconciliation_scope(scope);
+    let effective_scope = scope.effective();
     match &effective_scope {
         ReconciliationScope::Project { .. } => "Project env reconciliation started",
         ReconciliationScope::System => "System reconciliation started",
@@ -2107,9 +2096,9 @@ mod tests {
         complete_streamed_job_with_heartbeat_and_events,
         complete_system_reconciliation_with_progress, complete_update_job,
         completed_system_reconciliation_coverage, discover_system_project_demand,
-        effective_reconciliation_scope, enqueue_reconciliation_job,
-        foreground_reconciliation_result, managed_resource_reconciliation_summary,
-        reconcile_persisted_project_envs, reconcile_project_env_and_missing_resources,
+        enqueue_reconciliation_job, foreground_reconciliation_result,
+        managed_resource_reconciliation_summary, reconcile_persisted_project_envs,
+        reconcile_project_env_and_missing_resources,
         reconcile_project_env_with_runtime_catalog_and_progress,
         reconcile_system_projects_and_resources_with_progress,
         reconcile_system_projects_with_progress,
@@ -2889,10 +2878,15 @@ mod tests {
             } else {
                 ""
             };
+            let allocations = if with_mappings {
+                "  allocations:\n    app: {}\n"
+            } else {
+                ""
+            };
             state::fs::write_sensitive_file(
                 &config_path,
                 &format!(
-                    "mailpit:\n  version: \"1.0\"\n{mappings}mysql:\n  version: \"8.0\"\n  allocations:\n    app: {{}}\n"
+                    "mailpit:\n  version: \"1.0\"\n{mappings}mysql:\n  version: \"8.0\"\n{allocations}"
                 ),
             )?;
             let mut database = Database::open(&paths)?;
@@ -2926,16 +2920,27 @@ mod tests {
                     &BTreeMap::from([("smtp_host".to_owned(), "127.0.0.1".to_owned())]),
                 )?;
             }
-            let generated = resources::generated_allocation_name("mysql", &project.slug, "app")?;
-            database.replace_project_resource_allocations(
-                &project.id,
-                "mysql",
-                "8.0",
-                &[ResourceAllocationInput {
-                    allocation_name: "app".to_owned(),
-                    generated_name: generated.generated_name().to_owned(),
-                }],
+            database.record_runtime_observed_snapshot(
+                RuntimeSubject::Resource {
+                    name: "mailpit".to_owned(),
+                    track: "1.0".to_owned(),
+                },
+                RuntimeObservedStatus::Running,
+                Some("fixture mailpit readiness diagnostic"),
             )?;
+            if with_mappings {
+                let generated =
+                    resources::generated_allocation_name("mysql", &project.slug, "app")?;
+                database.replace_project_resource_allocations(
+                    &project.id,
+                    "mysql",
+                    "8.0",
+                    &[ResourceAllocationInput {
+                        allocation_name: "app".to_owned(),
+                        generated_name: generated.generated_name().to_owned(),
+                    }],
+                )?;
+            }
             let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_url(OFFLINE_TEST_MANIFEST_URL)?;
             let scope = ReconciliationScope::resource("mailpit", "1.0")?;
             let ReconciliationScope::Resource { name, track } = &scope else {
@@ -2956,7 +2961,7 @@ mod tests {
                 (Some(RuntimeObservedStatus::Pending), "pending"),
                 (Some(RuntimeObservedStatus::Running), "running"),
             ] {
-                if status == Some(RuntimeObservedStatus::Failed) {
+                if with_mappings && status == Some(RuntimeObservedStatus::Failed) {
                     database.mark_resource_allocation_ready(
                         &project.id,
                         "mysql",
@@ -2979,8 +2984,8 @@ mod tests {
                 state::fs::write_sensitive_file(&project_path.join(".env"), previous_env)?;
                 let (prior_status, prior_message) = if status.is_none() {
                     (
-                        ProjectEnvObservedStatus::Rendered,
-                        "previously verified env",
+                        ProjectEnvObservedStatus::Failed,
+                        "Project config error: previous config failure",
                     )
                 } else {
                     (
@@ -3016,7 +3021,14 @@ mod tests {
                             allocation,
                         })),
                         None,
-                    ) => resource == "mysql" && allocation == "app",
+                    ) if with_mappings => resource == "mysql" && allocation == "app",
+                    (
+                        Err(DaemonError::ProjectEnvDependenciesNotApplied { project_id, reason }),
+                        None,
+                    ) => {
+                        project_id == &project.id
+                            && reason == "required resource mysql track 8.0 has no observed state"
+                    }
                     (
                         Err(DaemonError::ProjectEnvDependenciesNotApplied { project_id, .. }),
                         Some(
@@ -3068,13 +3080,22 @@ mod tests {
                         database.runtime_observed_states()? == resource_observations,
                         status.is_some()
                             || observed.message
-                                == Some(
-                                    DaemonError::Config(ConfigError::MissingAllocationEnvContext {
-                                        resource: "mysql".to_owned(),
-                                        allocation: "app".to_owned(),
-                                    })
-                                    .to_string(),
-                                ),
+                                == Some(if with_mappings {
+                                    DaemonError::Config(
+                                        ConfigError::MissingAllocationEnvContext {
+                                            resource: "mysql".to_owned(),
+                                            allocation: "app".to_owned(),
+                                        },
+                                    )
+                                    .to_string()
+                                } else {
+                                    DaemonError::ProjectEnvDependenciesNotApplied {
+                                        project_id: project.id.clone(),
+                                        reason: "required resource mysql track 8.0 has no observed state"
+                                            .to_owned(),
+                                    }
+                                    .to_string()
+                                }),
                     ],
                 ));
             }
@@ -3089,6 +3110,85 @@ mod tests {
     }
 
     #[test]
+    fn targeted_resource_scope_requires_applied_hostnames_and_tls_artifacts() -> anyhow::Result<()>
+    {
+        for check_tls in [false, true] {
+            let tempdir = tempdir()?;
+            let paths = PvPaths::for_home(tempdir.path().join("home"));
+            let project_path = tempdir.path().join("project");
+            let config_path = project_path.join("pv.yml");
+            let dependency = if check_tls {
+                "env:\n  CERTIFICATE: \"${tls_cert}\"\n"
+            } else {
+                "hostnames:\n  - api.project.test\n"
+            };
+            state::fs::write_sensitive_file(
+                &config_path,
+                &format!(
+                    "{dependency}mailpit:\n  version: \"1.0\"\n  env:\n    MAIL_HOST: \"${{smtp_host}}\"\n"
+                ),
+            )?;
+            let mut database = Database::open(&paths)?;
+            let project = database
+                .link_project(LinkProjectInput {
+                    path: project_path.clone(),
+                    original_path: project_path.clone(),
+                    primary_hostname: "project.test".to_owned(),
+                    config_path,
+                    desired_php_track: None,
+                    additional_hostnames: Vec::new(),
+                })?
+                .project;
+            database.replace_project_managed_resources(
+                &project.id,
+                &[ProjectManagedResourceInput {
+                    resource_name: "mailpit".to_owned(),
+                    track: "1.0".to_owned(),
+                }],
+            )?;
+            database.record_managed_resource_track_env_context(
+                "mailpit",
+                "1.0",
+                &BTreeMap::from([("smtp_host".to_owned(), "127.0.0.1".to_owned())]),
+            )?;
+            database.record_runtime_observed_snapshot(
+                RuntimeSubject::Resource {
+                    name: "mailpit".to_owned(),
+                    track: "1.0".to_owned(),
+                },
+                RuntimeObservedStatus::Running,
+                Some("fixture mailpit is ready"),
+            )?;
+
+            let result =
+                reconcile_project_env_from_persisted_state(&paths, &mut database, &project.id);
+
+            if check_tls {
+                assert!(matches!(
+                    result,
+                    Err(DaemonError::State(StateError::Filesystem { ref path, .. }))
+                        if path == &paths.ca_certificate()
+                ));
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(DaemonError::ProjectEnvDependenciesNotApplied { ref reason, .. })
+                        if reason.contains("hostnames")
+                ));
+            }
+            assert_eq!(
+                database
+                    .project_env_observed_state(&project.id)?
+                    .map(|observed| observed.status),
+                Some(ProjectEnvObservedStatus::Failed)
+            );
+            assert!(!state::fs::path_entry_exists(&project.path.join(".env"))?);
+        }
+
+        Ok(())
+    }
+
+    #[test]
     fn unsafe_resource_scopes_are_promoted_exactly() -> anyhow::Result<()> {
         let scopes = [
             ReconciliationScope::resource("php", "8.4")?,
@@ -3098,7 +3198,7 @@ mod tests {
         ];
         let effective_scopes = scopes
             .iter()
-            .map(|scope| (scope.clone(), effective_reconciliation_scope(scope)))
+            .map(|scope| (scope.clone(), scope.effective()))
             .collect::<Vec<_>>();
 
         assert_debug_snapshot!(effective_scopes);
