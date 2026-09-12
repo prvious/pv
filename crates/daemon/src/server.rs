@@ -132,6 +132,14 @@ pub(crate) async fn serve(
                                     &error.error,
                                 );
                             }
+                            if let Err(error) =
+                                recovery_backoff.record_exhausted_failures(&paths, &scan)
+                            {
+                                structured_log::runtime_health_scan_failed(
+                                    &paths,
+                                    &error.to_string(),
+                                );
+                            }
                             let runtime_scopes = recovery_backoff.scopes_due(now, &scan);
                             for scope in runtime_scopes {
                                 let scope_text = scope.to_string();

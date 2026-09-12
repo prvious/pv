@@ -4292,6 +4292,10 @@ document_root: public
         restored_metadata["applied_config_fingerprint"],
         previous_metadata["applied_config_fingerprint"]
     );
+    assert_ne!(
+        restored_metadata["desired_config_fingerprint"],
+        restored_metadata["applied_config_fingerprint"]
+    );
     assert_ne!(restored_metadata["replacement_required"], true);
     assert_eq!(first_worker_pid, second_worker_pid);
     assert_eq!(root_after, previous_root);
@@ -4364,8 +4368,6 @@ async fn gateway_reconciliation_rejection_keeps_old_runtime_and_disk_state() -> 
     let metadata: Value =
         serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-
     let Err(error) = result else {
         bail!("expected rejection, got success");
     };
@@ -4383,6 +4385,10 @@ async fn gateway_reconciliation_rejection_keeps_old_runtime_and_disk_state() -> 
         metadata["applied_config_fingerprint"],
         previous_metadata["applied_config_fingerprint"]
     );
+    assert_ne!(
+        metadata["desired_config_fingerprint"],
+        metadata["applied_config_fingerprint"]
+    );
     assert_eq!(load_bodies.len(), 1);
     assert_eq!(
         requests
@@ -4391,6 +4397,58 @@ async fn gateway_reconciliation_rejection_keeps_old_runtime_and_disk_state() -> 
             .map(|request| request["status"].as_u64())
             .collect::<Vec<_>>(),
         vec![Some(422)]
+    );
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_reconciliation_confirms_reverted_desired_config_without_reload() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let caddy_release = tempdir.path().join("fake-caddy-release");
+    write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
+
+    let ports = available_loopback_ports(2)?;
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let initial_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
+    let mut metadata: Value =
+        serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
+    metadata["desired_config_fingerprint"] = json!("sha256:v1:unapplied");
+    fs::write_sensitive_file(
+        &paths.gateway_runtime_metadata(),
+        &serde_json::to_string(&metadata)?,
+    )?;
+    let initial_loads = fake_admin_load_bodies(&paths.gateway_root_config())?;
+
+    let result = reconcile_gateway_runtimes(&paths).await;
+    let final_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
+    let final_metadata: Value =
+        serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
+    let final_loads = fake_admin_load_bodies(&paths.gateway_root_config())?;
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    result?;
+
+    assert_eq!(final_gateway_pid, initial_gateway_pid);
+    assert_eq!(final_loads, initial_loads);
+    assert_eq!(
+        final_metadata["desired_config_fingerprint"],
+        final_metadata["applied_config_fingerprint"]
     );
 
     Ok(())

@@ -2824,6 +2824,15 @@ async fn reconcile_unchanged_runtime(
         return None;
     }
 
+    if !runtime.has_applied_desired_config()
+        && !matches!(
+            supervisor.record_applied_config(spec, &desired.fingerprint),
+            Ok(true)
+        )
+    {
+        return None;
+    }
+
     Some(RuntimeReadinessOutcome::Verified)
 }
 
@@ -3082,7 +3091,7 @@ async fn recover_promoted_runtime(
                 Ok(()) => {
                     let recording = verified_previous_fingerprint.and_then(|fingerprint| {
                         if let Some(fingerprint) = fingerprint {
-                            supervisor.record_applied_config(&spec, &fingerprint)
+                            supervisor.record_restored_config(&spec, &fingerprint)
                         } else {
                             supervisor.clear_replacement_required(&spec)
                         }
@@ -3181,23 +3190,11 @@ fn verified_previous_config_fingerprint(
 
 async fn load_runtime_config(
     paths: &PvPaths,
-    supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
-    staged_config_fingerprint: &str,
     client: CaddyAdminClient,
     admin_endpoint: &CaddyAdminEndpoint,
     content: Vec<u8>,
 ) -> Result<(), RuntimeTransactionError> {
-    match supervisor.mark_replacement_required(spec, staged_config_fingerprint) {
-        Ok(true) => {}
-        Ok(false) => {
-            return Err(RuntimeTransactionError::new(
-                CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
-            ));
-        }
-        Err(error) => return Err(RuntimeTransactionError::new(error)),
-    }
-
     match client
         .load_caddyfile_with(
             admin_endpoint,
@@ -3215,6 +3212,30 @@ async fn load_runtime_config(
         ) => Err(RuntimeTransactionError::pending_preserve(error.into())),
         Err(error) => Err(RuntimeTransactionError::pending(error.into())),
     }
+}
+
+fn mark_runtime_config_pending(
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    staged_config_fingerprint: &str,
+    restoring_previous: bool,
+) -> Result<(), RuntimeTransactionError> {
+    let marking_result = if restoring_previous {
+        supervisor.mark_restoration_required(spec, staged_config_fingerprint)
+    } else {
+        supervisor.mark_replacement_required(spec, staged_config_fingerprint)
+    };
+    match marking_result {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(RuntimeTransactionError::new(
+                CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
+            ));
+        }
+        Err(error) => return Err(RuntimeTransactionError::new(error)),
+    }
+
+    Ok(())
 }
 
 enum StartedRuntimeTransaction {
@@ -3239,11 +3260,10 @@ async fn begin_runtime_transaction(
 
         let active_content = read_config_bytes(&spec.config_path)?;
         let client = CaddyAdminClient::new().with_timeout(readiness.timeout);
+        mark_runtime_config_pending(supervisor, spec, desired_fingerprint, false)?;
         load_runtime_config(
             paths,
-            supervisor,
             spec,
-            desired_fingerprint,
             client,
             &readiness.admin_endpoint,
             active_content,
@@ -3616,11 +3636,12 @@ async fn restore_runtime_after_failed_load(
         Err(error) => return compound_runtime_restore_error(original_error, error),
     };
     let client = CaddyAdminClient::new().with_timeout(readiness.timeout);
+    if let Err(error) = mark_runtime_config_pending(supervisor, spec, previous_fingerprint, true) {
+        return compound_runtime_restore_error(original_error, *error.error);
+    }
     if let Err(error) = load_runtime_config(
         paths,
-        supervisor,
         spec,
-        previous_fingerprint,
         client,
         &readiness.admin_endpoint,
         restored_content,
@@ -3649,7 +3670,7 @@ async fn restore_runtime_after_failed_load(
     {
         return compound_runtime_restore_error(original_error, error);
     }
-    match supervisor.record_applied_config(spec, previous_fingerprint) {
+    match supervisor.record_restored_config(spec, previous_fingerprint) {
         Ok(true) => {}
         Ok(false) => {
             return compound_runtime_restore_error(
