@@ -214,7 +214,9 @@ pub(crate) fn reconcile_project_env_from_persisted_state(
                     .project_env_observed_state(project_id)?
                     .is_some_and(|observed| {
                         observed.status == ProjectEnvObservedStatus::Failed
-                            && observed.message.is_some()
+                            && observed.message.is_some_and(|message| {
+                                !message.starts_with("Project config error:")
+                            })
                     });
             }
             return Err(error);
@@ -1214,6 +1216,9 @@ fn validate_persisted_project_env_dependencies(
         })
         .collect::<Vec<_>>();
     let resources_match = plan.resources == persisted_resources;
+    let configured_hostnames = config_file.config.hostnames.iter().collect::<BTreeSet<_>>();
+    let persisted_hostnames = project.additional_hostnames.iter().collect::<BTreeSet<_>>();
+    let hostnames_match = configured_hostnames == persisted_hostnames;
     let mut allocations_match = true;
     for resource in &plan.resources {
         let planned = plan
@@ -1238,10 +1243,14 @@ fn validate_persisted_project_env_dependencies(
                     })
                     .collect::<Vec<_>>();
     }
-    if candidate_project.mode != project.mode || !resources_match || !allocations_match {
+    if candidate_project.mode != project.mode
+        || !hostnames_match
+        || !resources_match
+        || !allocations_match
+    {
         return Err(DaemonError::ProjectEnvDependenciesNotApplied {
             project_id: project.id.clone(),
-            reason: "serving mode, resource tracks, or allocation identities differ from their last applied state".to_owned(),
+            reason: "serving mode, hostnames, resource tracks, or allocation identities differ from their last applied state".to_owned(),
         });
     }
     let global_version_selector = database.global_php_default_track()?;
@@ -1282,31 +1291,46 @@ fn validate_persisted_project_env_dependencies(
             plan.allocations.get(&resource.resource_name),
         )?;
     }
-    for observed in database.runtime_observed_states()? {
-        if let RuntimeSubject::Resource { name, track } = &observed.subject
-            && plan
-                .resources
-                .iter()
-                .any(|resource| resource.resource_name == *name && resource.track == *track)
-        {
-            let status = match observed.status {
-                RuntimeObservedStatus::Failed => "failed",
-                RuntimeObservedStatus::Degraded => "degraded",
-                RuntimeObservedStatus::Stopped => "stopped",
-                RuntimeObservedStatus::Pending => "pending",
-                RuntimeObservedStatus::Running => continue,
-            };
+    let observations = database.runtime_observed_states()?;
+    for resource in &plan.resources {
+        let observed = observations.iter().find(|observed| {
+            matches!(
+                &observed.subject,
+                RuntimeSubject::Resource { name, track }
+                    if name == &resource.resource_name && track == &resource.track
+            )
+        });
+        let Some(observed) = observed else {
             return Err(DaemonError::ProjectEnvDependenciesNotApplied {
                 project_id: project.id.clone(),
                 reason: format!(
-                    "required resource {name} track {track} is {status}: {}",
-                    observed
-                        .message
-                        .as_deref()
-                        .unwrap_or("no diagnostic recorded")
+                    "required resource {} track {} has no observed state",
+                    resource.resource_name, resource.track
                 ),
             });
-        }
+        };
+        let status = match observed.status {
+            RuntimeObservedStatus::Failed => "failed",
+            RuntimeObservedStatus::Degraded => "degraded",
+            RuntimeObservedStatus::Stopped => "stopped",
+            RuntimeObservedStatus::Pending => "pending",
+            RuntimeObservedStatus::Running => continue,
+        };
+        return Err(DaemonError::ProjectEnvDependenciesNotApplied {
+            project_id: project.id.clone(),
+            reason: format!(
+                "required resource {} track {} is {status}: {}",
+                resource.resource_name,
+                resource.track,
+                observed
+                    .message
+                    .as_deref()
+                    .unwrap_or("no diagnostic recorded")
+            ),
+        });
+    }
+    if candidate_project.mode == ProjectMode::Served && config_file.config.uses_tls_placeholders() {
+        ensure_project_tls_files(paths, project)?;
     }
 
     Ok(())
