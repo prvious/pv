@@ -611,7 +611,9 @@ mod tests {
         ProjectManagedResourceInput,
     };
     use state::{PvPaths, RuntimeSubject};
-    use tokio::time::{Duration, Instant, advance, sleep};
+    #[cfg(target_os = "macos")]
+    use tokio::time::sleep;
+    use tokio::time::{Duration, Instant, advance};
 
     use super::{
         DesiredRuntimeProbe, HEALTHY_RESET_INTERVAL, RUNTIME_HEALTH_INTERVAL, RUNTIME_RETRY_DELAYS,
@@ -1431,7 +1433,7 @@ mod tests {
     ) -> anyhow::Result<Utf8PathBuf> {
         let artifact_root = root.join(format!("frankenphp-{php_track}"));
         let runtime = artifact_root.join("bin/frankenphp");
-        state::fs::write_sensitive_file(&runtime, "#!/bin/sh\nwhile true; do sleep 1; done\n")?;
+        state::fs::copy_file_atomically(Utf8Path::new("/bin/sleep"), &runtime)?;
         set_executable(&runtime)?;
         database.record_managed_resource_track_installed(
             "frankenphp",
@@ -1461,7 +1463,7 @@ mod tests {
         ProcessSpec {
             name: format!("php-worker-{php_track}"),
             command: Utf8PathBuf::from(runtime),
-            arguments: Vec::new(),
+            arguments: vec!["300".to_owned()],
             private_environment: Default::default(),
             config_path: paths.worker_root_config(php_track),
             config_fingerprint: None,
