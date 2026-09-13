@@ -1,6 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::io::{Error, ErrorKind, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -9,14 +10,14 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use insta::assert_debug_snapshot;
 use resources::{
-    ArtifactManifestSource, DownloadProgress, DownloadProgressEvent, ManagedResourceCommandError,
-    ManagedResourceCommands, ManagedResourceInstall, ManagedResourceRemovalIntent,
-    ManagedResourceTrack, ManagedResourceUninstallOptions, ManagedResourceUpdate,
-    ManagedResourceUpdateCheck, ManagedResourceUpdateCheckTrack, PHP_TRACK_DEFAULT_INI,
-    ResourceAdapter, ResourceHttpClient, ResourceName, ResourceOperation, ResourceOperationEvent,
-    ResourceOperationOutcome, ResourcesError, TargetPlatform, TrackName, TrackSelector,
-    caddy_adapter, composer_adapter, frankenphp_adapter, mailpit_adapter, php_adapter,
-    php_track_defaults, redis_adapter,
+    ArtifactDownloader, ArtifactManifestSource, DownloadProgress, DownloadProgressEvent,
+    ManagedResourceCommandError, ManagedResourceCommands, ManagedResourceInstall,
+    ManagedResourceRemovalIntent, ManagedResourceTrack, ManagedResourceUninstallOptions,
+    ManagedResourceUpdate, ManagedResourceUpdateCheck, ManagedResourceUpdateCheckTrack,
+    NoDownloadProgress, PHP_TRACK_DEFAULT_INI, ResourceAdapter, ResourceHttpClient, ResourceName,
+    ResourceOperation, ResourceOperationEvent, ResourceOperationOutcome, ResourcesError,
+    TargetPlatform, TrackName, TrackSelector, caddy_adapter, composer_adapter, frankenphp_adapter,
+    mailpit_adapter, php_adapter, php_track_defaults, redis_adapter,
 };
 use sha2::{Digest, Sha256};
 use state::{Database, ManagedResourceTrackRecord, PvPaths, fs};
@@ -78,6 +79,136 @@ fn managed_resource_commands_install_reports_download_progress() -> Result<()> {
     commands.install_with_progress(&adapter, TrackSelector::Latest, &client, &progress)?;
 
     assert_debug_snapshot!(progress.events());
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_install_uses_prefetched_cached_download_without_rehashing()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let artifact = fixture_artifact("7.2.5-pv1", "original")?;
+    let replacement = fixture_artifact("7.2.5-pv1", "replacement")?;
+    let manifest = manifest_with_artifacts(&[&artifact]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(artifact.bytes());
+    let snapshot = commands.manifest_snapshot_with_progress(&client, &NoDownloadProgress)?;
+    let resolved =
+        commands.resolve_install_artifact(&adapter, TrackName::new("7.2")?, &snapshot)?;
+    let downloader = ArtifactDownloader::new(paths.downloads());
+    downloader.download(resolved.artifact(), &client)?;
+    let cached_download = downloader.download(resolved.artifact(), &client)?;
+    assert!(cached_download.is_from_cache());
+    write_fixture_bytes(cached_download.path(), replacement.bytes())?;
+
+    let install = commands.install_resolved_artifact_with_progress(
+        &adapter,
+        resolved,
+        Some(&cached_download),
+        &NoDownloadProgress,
+    )?;
+    let installed_content =
+        fs::read_to_string(&install.current_artifact_path().join("bin/pv-fake-resource"))?;
+
+    assert_eq!(installed_content, "fake resource original");
+    assert!(install.downloaded_from_cache());
+    assert_eq!(client.byte_request_count(), 1);
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_install_uses_prefetched_fresh_download_snapshot() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let artifact = fixture_artifact("7.2.5-pv1", "original")?;
+    let replacement = fixture_artifact("7.2.5-pv1", "replacement")?;
+    let manifest = manifest_with_artifacts(&[&artifact]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(artifact.bytes());
+    let snapshot = commands.manifest_snapshot_with_progress(&client, &NoDownloadProgress)?;
+    let resolved =
+        commands.resolve_install_artifact(&adapter, TrackName::new("7.2")?, &snapshot)?;
+    let download =
+        ArtifactDownloader::new(paths.downloads()).download(resolved.artifact(), &client)?;
+    assert!(!download.is_from_cache());
+    write_fixture_bytes(download.path(), replacement.bytes())?;
+
+    let install = commands.install_resolved_artifact_with_progress(
+        &adapter,
+        resolved,
+        Some(&download),
+        &NoDownloadProgress,
+    )?;
+    let installed_content =
+        fs::read_to_string(&install.current_artifact_path().join("bin/pv-fake-resource"))?;
+
+    assert_eq!(installed_content, "fake resource original");
+    assert!(!install.downloaded_from_cache());
+    assert_eq!(client.byte_request_count(), 1);
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_rejects_download_for_different_artifact() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let first_artifact = fixture_artifact("7.2.5-pv1", "first")?;
+    let second_artifact = fixture_artifact("8.0.1-pv1", "second")?;
+    let manifest =
+        manifest_with_tracks(&[("7.2", &[&first_artifact]), ("8.0", &[&second_artifact])]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(first_artifact.bytes());
+    let snapshot = commands.manifest_snapshot_with_progress(&client, &NoDownloadProgress)?;
+    let first = commands.resolve_install_artifact(&adapter, TrackName::new("7.2")?, &snapshot)?;
+    let second = commands.resolve_install_artifact(&adapter, TrackName::new("8.0")?, &snapshot)?;
+    let first_download =
+        ArtifactDownloader::new(paths.downloads()).download(first.artifact(), &client)?;
+
+    let result = commands.install_resolved_artifact_with_progress(
+        &adapter,
+        second,
+        Some(&first_download),
+        &NoDownloadProgress,
+    );
+    let Err(ManagedResourceCommandError::Resources(ResourcesError::InvalidArtifactLayout {
+        resource,
+        reason,
+    })) = result
+    else {
+        bail!("expected mismatched prefetched download to be rejected");
+    };
+    let expected_reason = format!(
+        "prefetched download belongs to redis artifact {} checksum {}, not redis artifact {} checksum {}",
+        first_artifact.version,
+        first_artifact.sha256,
+        second_artifact.version,
+        second_artifact.sha256,
+    );
+
+    assert_eq!(resource, "redis");
+    assert_eq!(reason, expected_reason);
+    assert!(!path_exists(&release_path(
+        &paths,
+        "redis",
+        "8.0",
+        &second_artifact.version,
+    ))?);
+    assert!(raw_track_records_summary(&paths, tempdir.path())?.is_empty());
 
     Ok(())
 }
@@ -248,8 +379,17 @@ fn managed_resource_commands_report_revoked_latest_fallback() -> Result<()> {
     let client = ScriptedClient::new()
         .with_text(&manifest)
         .with_bytes(fallback_artifact.bytes());
-
-    let installed = commands.install(&adapter, TrackSelector::Latest, &client)?;
+    let snapshot = commands.manifest_snapshot_with_progress(&client, &NoDownloadProgress)?;
+    let resolved =
+        commands.resolve_install_artifact(&adapter, TrackName::new("7.2")?, &snapshot)?;
+    let download =
+        ArtifactDownloader::new(paths.downloads()).download(resolved.artifact(), &client)?;
+    let installed = commands.install_resolved_artifact_with_progress(
+        &adapter,
+        resolved,
+        Some(&download),
+        &NoDownloadProgress,
+    )?;
 
     assert_debug_snapshot!(install_summary(&installed, tempdir.path())?);
 
@@ -299,6 +439,264 @@ fn managed_resource_commands_update_all_installed_tracks_from_one_manifest_refre
         track_records_summary(&listed_after_update, tempdir.path())?,
         manifest_request_count,
     ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_prefetched_update_deduplicates_shared_artifacts_across_tracks()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let first_72_artifact = fixture_artifact("7.2.5-pv1", "7.2 first")?;
+    let first_80_artifact = fixture_artifact("8.0.1-pv1", "8.0 first")?;
+    let shared_artifact = fixture_artifact("7.2.6-pv1", "shared")?;
+    let initial_manifest = manifest_with_tracks(&[
+        ("7.2", &[&first_72_artifact]),
+        ("8.0", &[&first_80_artifact]),
+    ]);
+    let install_client = ScriptedClient::new()
+        .with_text(&initial_manifest)
+        .with_bytes(first_72_artifact.bytes())
+        .with_text(&initial_manifest)
+        .with_bytes(first_80_artifact.bytes());
+    commands.install(&adapter, TrackSelector::Latest, &install_client)?;
+    commands.install(
+        &adapter,
+        TrackSelector::Track(TrackName::new("8.0")?),
+        &install_client,
+    )?;
+
+    let updated_manifest = manifest_with_tracks(&[
+        ("7.2", &[&first_72_artifact, &shared_artifact]),
+        ("8.0", &[&first_80_artifact, &shared_artifact]),
+    ]);
+    let manifest_client = ScriptedClient::new().with_text(&updated_manifest);
+    let snapshot =
+        commands.manifest_snapshot_with_progress(&manifest_client, &NoDownloadProgress)?;
+    let download_client = CountingBytesClient::new(shared_artifact.bytes());
+    let updated = commands.update_all_installed_from_manifest_prefetched_with_progress(
+        &[&adapter],
+        &snapshot,
+        &download_client,
+        &NoDownloadProgress,
+    )?;
+    let installed_tracks = updated
+        .installs()
+        .iter()
+        .map(|install| install.track().as_str())
+        .collect::<Vec<_>>();
+
+    assert_debug_snapshot!((installed_tracks, download_client.request_count()), @r###"
+    (
+        [
+            "7.2",
+            "8.0",
+        ],
+        1,
+    )
+    "###);
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_prefetched_update_aggregates_download_and_planning_failures()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let mailpit = FakeAdapter::new("mailpit", &["bin/pv-fake-resource"])?;
+    let redis = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let rustfs = FakeAdapter::new("rustfs", &["bin/pv-fake-resource"])?;
+    let first_mailpit = runtime_fixture_artifact(
+        "mailpit",
+        "1.0.0-pv1",
+        "bin/pv-fake-resource",
+        "mailpit first",
+    )?;
+    let second_mailpit = runtime_fixture_artifact(
+        "mailpit",
+        "1.0.1-pv1",
+        "bin/pv-fake-resource",
+        "mailpit second",
+    )?;
+    let first_72_artifact = fixture_artifact("7.2.5-pv1", "7.2 first")?;
+    let first_80_artifact = fixture_artifact("8.0.1-pv1", "8.0 first")?;
+    let shared_artifact = fixture_artifact("7.2.6-pv1", "shared")?;
+    let rustfs_artifact = runtime_fixture_artifact(
+        "rustfs",
+        "1.0.0-pv1",
+        "bin/pv-fake-resource",
+        "rustfs first",
+    )?;
+    let initial_manifest = manifest_with_resources(&[
+        manifest_resource(
+            "mailpit",
+            "1.0",
+            vec![manifest_track("1.0", vec![&first_mailpit])],
+        ),
+        manifest_resource(
+            "redis",
+            "7.2",
+            vec![
+                manifest_track("7.2", vec![&first_72_artifact]),
+                manifest_track("8.0", vec![&first_80_artifact]),
+            ],
+        ),
+        manifest_resource(
+            "rustfs",
+            "1.0",
+            vec![manifest_track("1.0", vec![&rustfs_artifact])],
+        ),
+    ]);
+    let install_client = ScriptedClient::new()
+        .with_text(&initial_manifest)
+        .with_bytes(first_mailpit.bytes())
+        .with_text(&initial_manifest)
+        .with_bytes(first_72_artifact.bytes())
+        .with_text(&initial_manifest)
+        .with_bytes(first_80_artifact.bytes())
+        .with_text(&initial_manifest)
+        .with_bytes(rustfs_artifact.bytes());
+    commands.install(&mailpit, TrackSelector::Latest, &install_client)?;
+    commands.install(
+        &redis,
+        TrackSelector::Track(TrackName::new("7.2")?),
+        &install_client,
+    )?;
+    commands.install(
+        &redis,
+        TrackSelector::Track(TrackName::new("8.0")?),
+        &install_client,
+    )?;
+    commands.install(&rustfs, TrackSelector::Latest, &install_client)?;
+
+    let updated_manifest = manifest_with_resources(&[
+        manifest_resource(
+            "mailpit",
+            "1.0",
+            vec![manifest_track("1.0", vec![&first_mailpit, &second_mailpit])],
+        ),
+        manifest_resource(
+            "redis",
+            "7.2",
+            vec![
+                manifest_track("7.2", vec![&first_72_artifact, &shared_artifact]),
+                manifest_track("8.0", vec![&first_80_artifact, &shared_artifact]),
+            ],
+        ),
+    ]);
+    let manifest_client = ScriptedClient::new().with_text(&updated_manifest);
+    let snapshot =
+        commands.manifest_snapshot_with_progress(&manifest_client, &NoDownloadProgress)?;
+    let download_client = CountingBytesClient::new(second_mailpit.bytes());
+    let result = commands.update_all_installed_from_manifest_prefetched_with_progress(
+        &[&mailpit, &redis, &rustfs],
+        &snapshot,
+        &download_client,
+        &NoDownloadProgress,
+    );
+    let Err(ManagedResourceCommandError::PartialUpdate { source, update }) = result else {
+        bail!("expected a partial update with failed shared Redis download");
+    };
+    let ManagedResourceCommandError::UpdateFailures { failures } = *source else {
+        bail!("expected aggregated update failures");
+    };
+    let failure_summary = failures
+        .iter()
+        .map(|failure| {
+            let (kind, subject) = match failure.error() {
+                ManagedResourceCommandError::Resources(
+                    ResourcesError::ArtifactChecksumMismatch { url, .. },
+                ) => ("checksum mismatch", url.to_owned()),
+                ManagedResourceCommandError::Resources(ResourcesError::ResourceNotInManifest {
+                    resource,
+                }) => ("missing resource", resource.to_owned()),
+                error => bail!("unexpected error for {}: {error}", failure.label()),
+            };
+
+            Ok((failure.label().to_owned(), kind, subject))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let completed = update
+        .installs()
+        .iter()
+        .map(|install| {
+            (
+                install.resource_name().as_str(),
+                install.track().as_str(),
+                install.artifact_version().as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    let installed = commands
+        .list(None)?
+        .into_iter()
+        .map(|track| {
+            (
+                track.resource_name().as_str().to_owned(),
+                track.track().as_str().to_owned(),
+                track.installed_version().as_str().to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_debug_snapshot!((completed, failure_summary, download_client.request_count(), installed), @r###"
+    (
+        [
+            (
+                "mailpit",
+                "1.0",
+                "1.0.1-pv1",
+            ),
+        ],
+        [
+            (
+                "redis 7.2",
+                "checksum mismatch",
+                "https://artifacts.example.test/redis-7.2.6-pv1-darwin-arm64.tar.gz",
+            ),
+            (
+                "redis 8.0",
+                "checksum mismatch",
+                "https://artifacts.example.test/redis-7.2.6-pv1-darwin-arm64.tar.gz",
+            ),
+            (
+                "rustfs 1.0",
+                "missing resource",
+                "rustfs",
+            ),
+        ],
+        2,
+        [
+            (
+                "mailpit",
+                "1.0",
+                "1.0.1-pv1",
+            ),
+            (
+                "redis",
+                "7.2",
+                "7.2.5-pv1",
+            ),
+            (
+                "redis",
+                "8.0",
+                "8.0.1-pv1",
+            ),
+            (
+                "rustfs",
+                "1.0",
+                "1.0.0-pv1",
+            ),
+        ],
+    )
+    "###);
 
     Ok(())
 }
@@ -524,6 +922,69 @@ fn managed_resource_commands_install_php_pair_seeds_track_defaults() -> Result<(
             .strip_prefix(tempdir.path())?
             .to_string(),
     ));
+
+    Ok(())
+}
+
+#[test]
+fn managed_resource_commands_prefetched_php_pair_rolls_back_first_install() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/not-frankenphp",
+        "invalid frankenphp 8.4",
+    )?;
+    let manifest = manifest_with_resources(&[
+        manifest_resource(
+            "php",
+            "8.4",
+            vec![manifest_track("8.4", vec![&php_artifact])],
+        ),
+        manifest_resource(
+            "frankenphp",
+            "8.4",
+            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
+        ),
+    ]);
+    let client = ScriptedClient::new()
+        .with_text(&manifest)
+        .with_bytes(php_artifact.bytes())
+        .with_bytes(frankenphp_artifact.bytes());
+    let snapshot = commands.manifest_snapshot_with_progress(&client, &NoDownloadProgress)?;
+    let track = TrackName::new("8.4")?;
+    let php = commands.resolve_install_artifact(&php_adapter()?, track.clone(), &snapshot)?;
+    let frankenphp = commands.resolve_install_artifact(&frankenphp_adapter()?, track, &snapshot)?;
+    let downloader = ArtifactDownloader::new(paths.downloads());
+    let php_download = downloader.download(php.artifact(), &client)?;
+    let frankenphp_download = downloader.download(frankenphp.artifact(), &client)?;
+
+    let result = commands.install_resolved_php_pair_with_progress(
+        php,
+        Some(&php_download),
+        frankenphp,
+        Some(&frankenphp_download),
+        &NoDownloadProgress,
+    );
+
+    assert!(matches!(
+        result,
+        Err(ManagedResourceCommandError::Resources(
+            ResourcesError::InvalidArtifactLayout { .. }
+        ))
+    ));
+    assert!(!path_exists(&release_path(
+        &paths,
+        "php",
+        "8.4",
+        php_artifact.version.as_str(),
+    ))?);
+    assert!(!path_exists(&current_path(&paths, "php", "8.4"))?);
+    assert!(raw_track_records_summary(&paths, tempdir.path())?.is_empty());
 
     Ok(())
 }
@@ -2345,6 +2806,44 @@ struct ScriptedClient {
     byte_request_count: Cell<usize>,
 }
 
+#[derive(Debug)]
+struct CountingBytesClient {
+    bytes: Vec<u8>,
+    request_count: AtomicUsize,
+}
+
+impl CountingBytesClient {
+    fn new(bytes: &[u8]) -> Self {
+        Self {
+            bytes: bytes.to_vec(),
+            request_count: AtomicUsize::new(0),
+        }
+    }
+
+    fn request_count(&self) -> usize {
+        self.request_count.load(Ordering::SeqCst)
+    }
+}
+
+impl ResourceHttpClient for CountingBytesClient {
+    fn get_text(&self, url: &str) -> resources::Result<String> {
+        Err(ResourcesError::HttpRequestFailed {
+            url: url.to_string(),
+            reason: "counting byte client does not serve manifests".to_string(),
+        })
+    }
+
+    fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
+        self.request_count.fetch_add(1, Ordering::SeqCst);
+        writer
+            .write_all(&self.bytes)
+            .map_err(|source| ResourcesError::DownloadWriteFailed {
+                url: url.to_string(),
+                reason: source.to_string(),
+            })
+    }
+}
+
 enum ScriptedByteResponse {
     Bytes(Vec<u8>),
     Error(ResourcesError),
@@ -2806,6 +3305,16 @@ fn published_at_for(version: &str) -> &'static str {
 }
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test replaces a prefetched archive to prove install does not hash it again"
+)]
+fn write_fixture_bytes(path: &Utf8Path, bytes: &[u8]) -> Result<()> {
+    std::fs::write(path, bytes)?;
+
+    Ok(())
+}
 
 #[expect(
     clippy::disallowed_methods,

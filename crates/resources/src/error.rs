@@ -15,7 +15,7 @@ impl std::fmt::Display for ResourceHostCapability {
     }
 }
 
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum ResourcesError {
     #[error("unknown Managed Resource `{name}`")]
     UnknownResource { name: String },
@@ -129,6 +129,12 @@ pub enum ResourcesError {
 
     #[error("invalid artifact archive `{path}`: {reason}")]
     InvalidArtifactArchive { path: String, reason: String },
+
+    #[error("no prefetched download is available for {resource} artifact {artifact_version}")]
+    MissingArtifactDownload {
+        resource: String,
+        artifact_version: String,
+    },
 
     #[error("invalid artifact layout for `{resource}`: {reason}")]
     InvalidArtifactLayout { resource: String, reason: String },

@@ -149,6 +149,24 @@ impl ArtifactInstaller {
         )))
     }
 
+    pub fn has_valid_existing_release(
+        &self,
+        adapter: &(impl ResourceAdapter + ?Sized),
+        track: &TrackName,
+        artifact: &ManifestArtifact,
+    ) -> Result<bool> {
+        require_symbolic_links()?;
+        validate_artifact_matches_request(adapter.resource_name(), track, artifact)?;
+        let release_path = self
+            .resources_dir
+            .join(adapter.resource_name().as_str())
+            .join(track.as_str())
+            .join("releases")
+            .join(artifact.artifact_version().as_str());
+
+        Ok(fs::path_exists(&release_path) && adapter.validate_installation(&release_path).is_ok())
+    }
+
     pub fn rollback(&self, install: &ArtifactInstall) -> Result<()> {
         self.switch_to_previous_release(install)?;
 
@@ -229,7 +247,7 @@ impl ArtifactInstaller {
     }
 }
 
-fn validate_artifact_matches_request(
+pub(crate) fn validate_artifact_matches_request(
     resource_name: &ResourceName,
     track: &TrackName,
     artifact: &ManifestArtifact,

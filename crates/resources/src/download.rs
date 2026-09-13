@@ -1,21 +1,38 @@
-use std::io::{Read, Write};
+use std::io::Write;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
+use camino_tempfile::Utf8TempDir;
 use sha2::{Digest, Sha256};
 
 use crate::fs;
 use crate::http::ResourceHttpClient;
-use crate::{ManifestArtifact, ResourcesError, Result};
+use crate::{
+    ArtifactVersion, ManifestArtifact, ResourceName, ResourcesError, Result, Sha256Digest,
+};
 
 const DOWNLOAD_ATTEMPTS: usize = 2;
 const DOWNLOAD_RETRY_BACKOFF: Duration = Duration::from_millis(300);
+pub const MAX_PARALLEL_ARTIFACT_DOWNLOADS: usize = 4;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct ArtifactDownload {
     path: Utf8PathBuf,
     from_cache: bool,
+    verified_file: Arc<VerifiedArtifactFile>,
+    resource_name: ResourceName,
+    artifact_version: ArtifactVersion,
+    sha256: Sha256Digest,
+}
+
+#[derive(Debug)]
+struct VerifiedArtifactFile {
+    path: Utf8PathBuf,
+    _directory: Utf8TempDir,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -107,12 +124,11 @@ impl ArtifactDownloader {
                 return Ok(cached);
             }
 
-            self.download_with_retry(artifact, client, &path, progress)?;
+            let verified_file = VerifiedArtifactFile::new_for(&path)?;
+            self.download_with_retry(artifact, client, &verified_file.path, progress)?;
+            copy_file_atomically(&verified_file.path, &path)?;
 
-            Ok(ArtifactDownload {
-                path,
-                from_cache: false,
-            })
+            Ok(ArtifactDownload::new(path, false, verified_file, artifact))
         })();
         progress.operation_finished(ResourceOperationEvent {
             operation: ResourceOperation::Download(artifact),
@@ -121,6 +137,41 @@ impl ArtifactDownloader {
         });
 
         result
+    }
+
+    pub fn download_many_with_progress(
+        &self,
+        artifacts: &[ManifestArtifact],
+        client: &(impl ResourceHttpClient + Sync + ?Sized),
+        progress: &(impl DownloadProgress + Sync + ?Sized),
+    ) -> Vec<Result<ArtifactDownload>> {
+        let next_artifact = AtomicUsize::new(0);
+        let (result_sender, result_receiver) = mpsc::channel();
+        let worker_count = artifacts.len().min(MAX_PARALLEL_ARTIFACT_DOWNLOADS);
+
+        thread::scope(|scope| {
+            for _worker in 0..worker_count {
+                let result_sender = result_sender.clone();
+                let next_artifact = &next_artifact;
+                scope.spawn(move || {
+                    loop {
+                        let index = next_artifact.fetch_add(1, Ordering::Relaxed);
+                        let Some(artifact) = artifacts.get(index) else {
+                            break;
+                        };
+                        let result = self.download_with_progress(artifact, client, progress);
+                        if result_sender.send((index, result)).is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+            drop(result_sender);
+
+            let mut results = result_receiver.into_iter().collect::<Vec<_>>();
+            results.sort_by_key(|(index, _result)| *index);
+            results.into_iter().map(|(_index, result)| result).collect()
+        })
     }
 
     fn cached_download(
@@ -132,11 +183,14 @@ impl ArtifactDownloader {
             return Ok(None);
         }
 
-        if hash_cached_file(path)? == artifact.sha256().as_str() {
-            return Ok(Some(ArtifactDownload {
-                path: path.to_path_buf(),
-                from_cache: true,
-            }));
+        let (verified_file, actual) = VerifiedArtifactFile::copy_and_hash(path)?;
+        if actual == artifact.sha256().as_str() {
+            return Ok(Some(ArtifactDownload::new(
+                path.to_path_buf(),
+                true,
+                verified_file,
+                artifact,
+            )));
         }
 
         fs::remove_file_if_exists(path)?;
@@ -191,13 +245,116 @@ fn is_retriable_download_error(error: &ResourcesError) -> bool {
 }
 
 impl ArtifactDownload {
+    fn new(
+        path: Utf8PathBuf,
+        from_cache: bool,
+        verified_file: Arc<VerifiedArtifactFile>,
+        artifact: &ManifestArtifact,
+    ) -> Self {
+        Self {
+            path,
+            from_cache,
+            verified_file,
+            resource_name: artifact.resource_name().clone(),
+            artifact_version: artifact.artifact_version().clone(),
+            sha256: artifact.sha256().clone(),
+        }
+    }
+
+    pub(crate) fn validate_for(&self, artifact: &ManifestArtifact) -> Result<()> {
+        if self.resource_name == *artifact.resource_name()
+            && self.artifact_version == *artifact.artifact_version()
+            && self.sha256 == *artifact.sha256()
+        {
+            return Ok(());
+        }
+
+        Err(ResourcesError::InvalidArtifactLayout {
+            resource: artifact.resource_name().as_str().to_string(),
+            reason: format!(
+                "prefetched download belongs to {} artifact {} checksum {}, not {} artifact {} checksum {}",
+                self.resource_name,
+                self.artifact_version,
+                self.sha256.as_str(),
+                artifact.resource_name(),
+                artifact.artifact_version(),
+                artifact.sha256().as_str()
+            ),
+        })
+    }
+
     pub fn path(&self) -> &Utf8Path {
         &self.path
+    }
+
+    pub(crate) fn install_path(&self) -> &Utf8Path {
+        &self.verified_file.path
     }
 
     pub fn is_from_cache(&self) -> bool {
         self.from_cache
     }
+}
+
+impl VerifiedArtifactFile {
+    fn new_for(cache_path: &Utf8Path) -> Result<Arc<Self>> {
+        let directory = Utf8TempDir::new().map_err(|error| ResourcesError::Filesystem {
+            path: cache_path.to_string(),
+            reason: format!("could not create verified artifact temporary directory: {error}"),
+        })?;
+        let path = directory.path().join("artifact.tar.gz");
+
+        Ok(Arc::new(Self {
+            path,
+            _directory: directory,
+        }))
+    }
+
+    fn copy_and_hash(source_path: &Utf8Path) -> Result<(Arc<Self>, String)> {
+        let verified_file = Self::new_for(source_path)?;
+        let path = &verified_file.path;
+        let mut hasher = Sha256::new();
+        fs::write_atomically_with(path, |writer| {
+            fs::read_with(source_path, |reader| {
+                let mut buffer = [0_u8; 8192];
+                loop {
+                    let read =
+                        reader
+                            .read(&mut buffer)
+                            .map_err(|source| ResourcesError::Filesystem {
+                                path: source_path.to_string(),
+                                reason: source.to_string(),
+                            })?;
+                    if read == 0 {
+                        return Ok(());
+                    }
+                    writer.write_all(&buffer[..read]).map_err(|source| {
+                        ResourcesError::Filesystem {
+                            path: path.to_string(),
+                            reason: source.to_string(),
+                        }
+                    })?;
+                    hasher.update(&buffer[..read]);
+                }
+            })
+        })?;
+        let actual = sha256_digest_hex(hasher.finalize());
+
+        Ok((verified_file, actual))
+    }
+}
+
+fn copy_file_atomically(source_path: &Utf8Path, destination_path: &Utf8Path) -> Result<()> {
+    fs::write_atomically_with(destination_path, |writer| {
+        fs::read_with(source_path, |reader| {
+            std::io::copy(reader, writer)
+                .map(|_copied| ())
+                .map_err(|source| ResourcesError::Filesystem {
+                    path: destination_path.to_string(),
+                    reason: source.to_string(),
+                })
+        })
+    })
 }
 
 fn artifact_file_name(url: &str) -> Result<&str> {
@@ -260,29 +417,6 @@ fn verify_checksum(artifact: &ManifestArtifact, actual: &str) -> Result<()> {
         expected: artifact.sha256().as_str().to_string(),
         actual: actual.to_string(),
     })
-}
-
-fn hash_cached_file(path: &Utf8Path) -> Result<String> {
-    fs::read_with(path, |reader| sha256_reader(path, reader))
-}
-
-fn sha256_reader(path: &Utf8Path, reader: &mut dyn Read) -> Result<String> {
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 8192];
-
-    loop {
-        let read = reader
-            .read(&mut buffer)
-            .map_err(|source| ResourcesError::Filesystem {
-                path: path.to_string(),
-                reason: source.to_string(),
-            })?;
-        if read == 0 {
-            return Ok(sha256_digest_hex(hasher.finalize()));
-        }
-
-        hasher.update(&buffer[..read]);
-    }
 }
 
 fn sha256_digest_hex(digest: impl IntoIterator<Item = u8>) -> String {
