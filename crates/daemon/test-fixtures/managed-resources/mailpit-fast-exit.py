@@ -7,11 +7,12 @@ import sys
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"ready")
-        self.wfile.flush()
-        os._exit(0)
+        try:
+            self.send_response(200)
+            self.end_headers()
+        finally:
+            # Exit even if the readiness client disconnects after reading the status.
+            os._exit(0)
 
     def log_message(self, _format, *_args):
         pass

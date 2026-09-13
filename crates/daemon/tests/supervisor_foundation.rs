@@ -1083,49 +1083,29 @@ async fn supervisor_rejects_reordered_missing_and_duplicated_arguments() -> Resu
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let command = "while true; do sleep 1; done".to_string();
     let actual = supervisor
         .start(process_spec(
             &paths,
             "ordered-argument-runtime",
-            "/bin/sh",
-            vec![
-                "-c".to_string(),
-                command.clone(),
-                "alpha".to_string(),
-                "beta".to_string(),
-            ],
+            "/usr/bin/tail",
+            vec!["-f".to_string(), "/dev/null".to_string()],
         ))
         .await?;
     let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
     let forged_arguments = [
         (
             "reordered-argument-runtime",
-            vec![
-                "-c".to_string(),
-                command.clone(),
-                "beta".to_string(),
-                "alpha".to_string(),
-            ],
+            vec!["/dev/null".to_string(), "-f".to_string()],
         ),
-        (
-            "missing-argument-runtime",
-            vec!["-c".to_string(), command.clone(), "alpha".to_string()],
-        ),
+        ("missing-argument-runtime", vec!["-f".to_string()]),
         (
             "duplicated-argument-runtime",
-            vec![
-                "-c".to_string(),
-                command,
-                "alpha".to_string(),
-                "alpha".to_string(),
-                "beta".to_string(),
-            ],
+            vec!["-f".to_string(), "-f".to_string(), "/dev/null".to_string()],
         ),
     ];
 
     for (name, arguments) in forged_arguments {
-        let forged = process_spec(&paths, name, "/bin/sh", arguments);
+        let forged = process_spec(&paths, name, "/usr/bin/tail", arguments);
         write_forged_runtime_files(&forged, actual.pid(), process_start_identity.clone())?;
 
         assert!(supervisor.verify_ownership(&forged)?.is_none());

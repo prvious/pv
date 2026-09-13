@@ -1,5 +1,4 @@
 use std::io::{Read, Write};
-use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt as _;
 use std::sync::Arc;
@@ -514,7 +513,6 @@ fn spawn_response_server(
             let (mut stream, _) = listener.accept()?;
             let request = read_request(&mut stream)?;
             stream.write_all(&response)?;
-            stream.shutdown(Shutdown::Both)?;
             requests.push(request);
         }
 

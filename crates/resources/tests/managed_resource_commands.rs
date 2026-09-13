@@ -13,9 +13,10 @@ use resources::{
     ManagedResourceCommands, ManagedResourceInstall, ManagedResourceRemovalIntent,
     ManagedResourceTrack, ManagedResourceUninstallOptions, ManagedResourceUpdate,
     ManagedResourceUpdateCheck, ManagedResourceUpdateCheckTrack, PHP_TRACK_DEFAULT_INI,
-    ResourceAdapter, ResourceHttpClient, ResourceName, ResourcesError, TargetPlatform, TrackName,
-    TrackSelector, caddy_adapter, composer_adapter, frankenphp_adapter, mailpit_adapter,
-    php_adapter, php_track_defaults, redis_adapter,
+    ResourceAdapter, ResourceHttpClient, ResourceName, ResourceOperation, ResourceOperationEvent,
+    ResourceOperationOutcome, ResourcesError, TargetPlatform, TrackName, TrackSelector,
+    caddy_adapter, composer_adapter, frankenphp_adapter, mailpit_adapter, php_adapter,
+    php_track_defaults, redis_adapter,
 };
 use sha2::{Digest, Sha256};
 use state::{Database, ManagedResourceTrackRecord, PvPaths, fs};
@@ -1853,10 +1854,22 @@ fn managed_resource_commands_install_reports_cached_manifest_fallback() -> Resul
             reason: "offline".to_string(),
         });
 
-    commands.install(&adapter, TrackSelector::Latest, &client)?;
-    let reinstalled = commands.install(&adapter, TrackSelector::Latest, &client)?;
+    let progress = RecordingDownloadProgress::default();
+    commands.install_with_progress(&adapter, TrackSelector::Latest, &client, &progress)?;
+    let reinstalled =
+        commands.install_with_progress(&adapter, TrackSelector::Latest, &client, &progress)?;
 
     assert_debug_snapshot!(install_summary(&reinstalled, tempdir.path())?);
+    assert_eq!(
+        progress.operations(),
+        [
+            "manifest succeeded",
+            "download redis:7.2:7.2.5-pv1 succeeded",
+            "install redis:7.2:7.2.5-pv1 succeeded",
+            "manifest fallback: HTTP request failed for `https://artifacts.example.test/manifest.json`: offline",
+            "install redis:7.2:7.2.5-pv1 succeeded",
+        ]
+    );
 
     Ok(())
 }
@@ -2473,11 +2486,16 @@ impl Write for FailingWriter {
 #[derive(Default)]
 struct RecordingDownloadProgress {
     events: RefCell<Vec<String>>,
+    operations: RefCell<Vec<String>>,
 }
 
 impl RecordingDownloadProgress {
     fn events(&self) -> Vec<String> {
         self.events.borrow().clone()
+    }
+
+    fn operations(&self) -> Vec<String> {
+        self.operations.borrow().clone()
     }
 }
 
@@ -2520,6 +2538,32 @@ impl DownloadProgress for RecordingDownloadProgress {
                 )
             }
         });
+    }
+
+    fn operation_finished(&self, event: ResourceOperationEvent<'_, '_>) {
+        let operation = match event.operation {
+            ResourceOperation::Manifest => "manifest".to_owned(),
+            ResourceOperation::Download(artifact) => format!(
+                "download {}:{}:{}",
+                artifact.resource_name(),
+                artifact.track(),
+                artifact.artifact_version()
+            ),
+            ResourceOperation::Install(artifact) => format!(
+                "install {}:{}:{}",
+                artifact.resource_name(),
+                artifact.track(),
+                artifact.artifact_version()
+            ),
+        };
+        let outcome = match event.outcome {
+            ResourceOperationOutcome::Succeeded => "succeeded".to_owned(),
+            ResourceOperationOutcome::Failed => "failed".to_owned(),
+            ResourceOperationOutcome::Fallback { reason } => format!("fallback: {reason}"),
+        };
+        self.operations
+            .borrow_mut()
+            .push(format!("{operation} {outcome}"));
     }
 }
 
