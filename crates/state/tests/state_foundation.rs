@@ -14,7 +14,8 @@ use state::{
     ManagedResourceTrackRemovalInput, PortOwner, PortRequest, PostgresPreloadLibrary,
     ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
     ProjectMode, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
-    ResourceAllocationInput, RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
+    ResourceAllocationInput, ResourceAllocationStatus, RuntimeObservedStatus, RuntimeSubject,
+    StateError, UpdateLock,
 };
 
 #[test]
@@ -1415,6 +1416,53 @@ fn project_managed_resources_recalculate_usage_counts() -> Result<()> {
 }
 
 #[test]
+fn projects_demanding_managed_resource_track_are_selected_exactly() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let acme = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+    let beta = link_test_project(&mut database, tempdir.path(), "beta", "beta.test")?;
+    let other = link_test_project(&mut database, tempdir.path(), "other", "other.test")?;
+
+    database.replace_project_managed_resources(
+        &acme.id,
+        &[ProjectManagedResourceInput {
+            resource_name: "mysql".to_owned(),
+            track: "8.4".to_owned(),
+        }],
+    )?;
+    database.replace_project_managed_resources(
+        &beta.id,
+        &[ProjectManagedResourceInput {
+            resource_name: "mysql".to_owned(),
+            track: "8.4".to_owned(),
+        }],
+    )?;
+    database.replace_project_managed_resources(
+        &other.id,
+        &[
+            ProjectManagedResourceInput {
+                resource_name: "mysql".to_owned(),
+                track: "8.0".to_owned(),
+            },
+            ProjectManagedResourceInput {
+                resource_name: "redis".to_owned(),
+                track: "8.4".to_owned(),
+            },
+        ],
+    )?;
+
+    let projects = database.projects_demanding_managed_resource_track("mysql", "8.4")?;
+    let selected_projects = projects
+        .into_iter()
+        .map(|project| (project.slug, project.primary_hostname))
+        .collect::<Vec<_>>();
+    assert_debug_snapshot!(selected_projects);
+
+    Ok(())
+}
+
+#[test]
 fn resource_allocations_preserve_generated_names_and_env_context() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1670,6 +1718,124 @@ fn resource_allocation_ready_requires_desired_track() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     })?;
 
+    Ok(())
+}
+
+#[test]
+fn allocation_readiness_invalidation_is_scoped_and_rolls_back_failed_writes() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+    let other = link_test_project(&mut database, tempdir.path(), "other", "other.test")?;
+    let allocations =
+        ["first", "second", "pending", "retired"].map(|name| ResourceAllocationInput {
+            allocation_name: name.to_owned(),
+            generated_name: format!("acme_{name}"),
+        });
+    database.replace_project_resource_allocations(&project.id, "mysql", "8.0", &allocations)?;
+    for allocation in &allocations {
+        database.mark_resource_allocation_ready(
+            &project.id,
+            "mysql",
+            "8.0",
+            &allocation.allocation_name,
+            &env_context(&[("database", &allocation.generated_name)]),
+        )?;
+    }
+    database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        "8.0",
+        &allocations[..2],
+    )?;
+    database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        "8.0",
+        &allocations[..3],
+    )?;
+    for (project_id, resource, track) in
+        [(&other.id, "mysql", "8.0"), (&project.id, "postgres", "16")]
+    {
+        database.replace_project_resource_allocations(
+            project_id,
+            resource,
+            track,
+            &[ResourceAllocationInput {
+                allocation_name: "app".to_owned(),
+                generated_name: "other_app".to_owned(),
+            }],
+        )?;
+        database.mark_resource_allocation_ready(
+            project_id,
+            resource,
+            track,
+            "app",
+            &env_context(&[("database", "other_app")]),
+        )?;
+    }
+    let capture = |database: &Database| -> Result<_> {
+        Ok((
+            database.resource_allocations(&project.id, "mysql")?,
+            database.resource_allocations(&other.id, "mysql")?,
+            database.resource_allocations(&project.id, "postgres")?,
+        ))
+    };
+    let before = capture(&database)?;
+    assert_eq!(
+        before
+            .0
+            .iter()
+            .map(|allocation| (allocation.allocation_name.as_str(), allocation.status))
+            .collect::<BTreeMap<_, _>>(),
+        BTreeMap::from([
+            ("first", ResourceAllocationStatus::Ready),
+            ("second", ResourceAllocationStatus::Ready),
+            ("pending", ResourceAllocationStatus::Desired),
+            ("retired", ResourceAllocationStatus::Inactive),
+        ])
+    );
+    assert!(before.0.iter().all(|allocation| !allocation.env.is_empty()));
+
+    database.invalidate_project_resource_allocation_readiness(&project.id, "mysql", "8.4")?;
+    assert_eq!(capture(&database)?, before);
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch(
+        "CREATE TRIGGER reject_readiness_invalidation AFTER UPDATE OF status ON resource_allocations
+         WHEN OLD.status = 'ready' AND NEW.status = 'desired'
+         BEGIN SELECT RAISE(FAIL, 'fixture rejected allocation readiness invalidation'); END;"
+    )
+    })?;
+    let error =
+        database.invalidate_project_resource_allocation_readiness(&project.id, "mysql", "8.0");
+    assert!(
+        matches!(error, Err(StateError::Sqlite(error)) if error.to_string() == "fixture rejected allocation readiness invalidation")
+    );
+    assert_eq!(
+        capture(&database)?,
+        before,
+        "AFTER UPDATE failure must roll back the changed row"
+    );
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch("DROP TRIGGER reject_readiness_invalidation")
+    })?;
+    database.invalidate_project_resource_allocation_readiness(&project.id, "mysql", "8.0")?;
+    let after = capture(&database)?;
+    let mut expected = before;
+    for (expected, actual) in expected.0.iter_mut().zip(&after.0) {
+        if expected.status == ResourceAllocationStatus::Ready {
+            expected.status = ResourceAllocationStatus::Desired;
+            expected.updated_at.clone_from(&actual.updated_at);
+        }
+    }
+    assert_eq!(after, expected);
+    database.invalidate_project_resource_allocation_readiness(&project.id, "mysql", "8.0")?;
+    assert_eq!(
+        capture(&database)?,
+        after,
+        "already invalidated groups are no-ops"
+    );
     Ok(())
 }
 
@@ -3608,7 +3774,7 @@ fn update_assessment_coverage_does_not_hide_gateway_failure() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
-    let failure = database.start_job("reconcile", "resource:php:8.4")?;
+    let failure = database.start_job("reconcile", "resource:caddy:2")?;
     database.fail_job(&failure.id, "Gateway failed")?;
     let update = database.start_job("update", "system")?;
     database.complete_job_with_coverage(
@@ -3639,6 +3805,59 @@ fn caddy_resource_failure_resolves_as_gateway_diagnostic() -> Result<()> {
     assert_eq!(unresolved.len(), 1);
     assert_eq!(unresolved[0].subject, JobDiagnosticSubject::GatewayRuntime);
 
+    Ok(())
+}
+
+#[test]
+fn promoted_php_resource_failure_requires_system_coverage() -> Result<()> {
+    for resource in ["php", "frankenphp"] {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut database = Database::open(&paths)?;
+        let scope = format!("resource:{resource}:8.4");
+        let failure = database.start_job("reconcile", &scope)?;
+        database.fail_job(&failure.id, "System resource installation failed")?;
+        let unresolved = database.unresolved_job_failures()?;
+        assert_eq!(unresolved.len(), 1);
+        assert_eq!(
+            unresolved[0].subject,
+            JobDiagnosticSubject::SystemReconciliation
+        );
+        assert_eq!(unresolved[0].job.scope, scope);
+
+        state::testing::transaction(&mut database, |transaction| {
+            transaction.execute(
+                "UPDATE jobs SET finished_at = ?1 WHERE id = ?2",
+                params!["2026-01-01T00:00:00Z", failure.id.as_str()],
+            )?;
+            Ok(())
+        })?;
+        database.record_runtime_observed_snapshot(
+            RuntimeSubject::Gateway,
+            RuntimeObservedStatus::Running,
+            Some("Gateway ready"),
+        )?;
+        assert_eq!(database.unresolved_job_failures()?.len(), 1);
+
+        let gateway_repair = database.start_job("reconcile", "resource:caddy:2")?;
+        database.complete_job_with_coverage(
+            &gateway_repair.id,
+            "Gateway ready",
+            &[JobDiagnosticSubject::GatewayRuntime],
+        )?;
+        assert_eq!(database.unresolved_job_failures()?.len(), 1);
+
+        let system_repair = database.start_job("reconcile", "system")?;
+        database.complete_job_with_coverage(
+            &system_repair.id,
+            "System reconciled",
+            &[JobDiagnosticSubject::SystemReconciliation],
+        )?;
+        assert!(database.unresolved_job_failures()?.is_empty());
+        assert!(database.recent_jobs()?.iter().any(|job| {
+            job.id == failure.id && job.status == JobStatus::Failed && job.scope == scope
+        }));
+    }
     Ok(())
 }
 
@@ -3744,7 +3963,7 @@ fn matching_healthy_observation_resolves_only_its_job_subject() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
-    let gateway_failure = database.start_job("reconcile", "resource:php:8.4")?;
+    let gateway_failure = database.start_job("reconcile", "resource:caddy:2")?;
     database.fail_job(&gateway_failure.id, "Gateway failed")?;
     let system_failure = database.start_job("reconcile", "system")?;
     database.fail_job(&system_failure.id, "System config failed")?;
@@ -3783,7 +4002,7 @@ fn equal_timestamp_healthy_observation_does_not_resolve_failure() -> Result<()> 
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
-    let gateway_failure = database.start_job("reconcile", "resource:php:8.4")?;
+    let gateway_failure = database.start_job("reconcile", "resource:caddy:2")?;
     database.fail_job(&gateway_failure.id, "Gateway failed")?;
     database.record_runtime_observed_snapshot(
         RuntimeSubject::Gateway,
