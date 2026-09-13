@@ -11,7 +11,7 @@ pub(crate) mod sql;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::io;
 use std::net::TcpListener;
@@ -20,6 +20,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use protocol::{
     ManagedResourceUpdateCheck as ProtocolUpdateCheck,
     ManagedResourceUpdateCheckTrack as ProtocolUpdateCheckTrack,
@@ -36,7 +37,8 @@ use tokio::time::{sleep, timeout};
 use crate::jobs::DaemonDownloadProgress;
 use crate::project_env::{DemandedResourceTrack, record_project_env_failure};
 use crate::supervisor::{
-    runtime_exited_before_readiness_error, wait_for_started_runtime_readiness,
+    ManagedProcess, RUNTIME_READINESS_CONCURRENCY_LIMIT, runtime_exited_before_readiness_error,
+    wait_for_started_runtime_readiness,
 };
 use crate::{
     DaemonError, ManagedResourceProjectFailure, ProcessSpec, ProcessSupervisor, ReadinessCheck,
@@ -325,27 +327,7 @@ pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
         prefetched_installs: &mut prefetched_installs,
     };
 
-    for (index, resource) in plan.resources.iter().enumerate() {
-        let allocations = desired_allocations(database, project, plan, resource)?;
-        if let Err(error) =
-            reconcile_resource_track(paths, database, &mut context, resource, &allocations).await
-        {
-            let mut failures = vec![ManagedResourceProjectFailure::new(
-                resource.resource_name.clone(),
-                resource.track.clone(),
-                error,
-            )];
-            failures.extend(take_project_prefetch_failures(
-                database,
-                &plan.resources[index + 1..],
-                context.prefetched_installs,
-            )?);
-
-            return Err(combined_project_resource_error(failures));
-        }
-    }
-
-    Ok(())
+    reconcile_resource_tracks(paths, database, &mut context, project, plan).await
 }
 
 pub(crate) async fn reconcile_persisted_resource_track_with_progress(
@@ -1435,158 +1417,313 @@ async fn reconcile_resource_track(
     resource: &state::ProjectManagedResourceInput,
     allocations: &[ResourceAllocationRecord],
 ) -> Result<(), DaemonError> {
-    let subject = RuntimeSubject::Resource {
-        name: resource.resource_name.clone(),
-        track: resource.track.clone(),
+    let Some(prepared) =
+        prepare_resource_track(paths, database, reconciliation, resource, allocations)
+            .await
+            .map_err(|error| record_resource_runtime_failure(database, resource, error))?
+    else {
+        return Ok(());
     };
+    let completed = prepared.wait().await;
+    match finish_resource_track(paths, database, reconciliation.catalog, completed).await {
+        Ok(()) => Ok(()),
+        Err(error) => Err(record_resource_runtime_failure(database, resource, error)),
+    }
+}
+
+async fn reconcile_resource_tracks(
+    paths: &PvPaths,
+    database: &mut Database,
+    reconciliation: &mut ResourceTrackReconciliationContext<'_>,
+    project: &ProjectRecord,
+    plan: &crate::project_env::ProjectResourcePlan,
+) -> Result<(), DaemonError> {
+    let mut pending = FuturesUnordered::new();
+    let mut ready = VecDeque::new();
+    let mut failures = Vec::new();
+    for resource in &plan.resources {
+        if pending.len() == RUNTIME_READINESS_CONCURRENCY_LIMIT
+            && let Some(runtime) = pending.next().await
+        {
+            ready.push_back(runtime);
+        }
+        let result = match desired_allocations(database, project, plan, resource) {
+            Ok(allocations) => {
+                let preparation =
+                    prepare_resource_track(paths, database, reconciliation, resource, &allocations);
+                tokio::pin!(preparation);
+                loop {
+                    tokio::select! {
+                        result = &mut preparation => break result,
+                        Some(runtime) = pending.next(), if !pending.is_empty() => {
+                            ready.push_back(runtime);
+                        }
+                    }
+                }
+            }
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(Some(runtime)) => pending.push(runtime.wait()),
+            Ok(None) => {}
+            Err(error) => {
+                let error = record_resource_runtime_failure(database, resource, error);
+                failures.push((resource_key(resource), error));
+            }
+        }
+    }
+
+    loop {
+        let runtime = if let Some(runtime) = ready.pop_front() {
+            runtime
+        } else if let Some(runtime) = pending.next().await {
+            runtime
+        } else {
+            break;
+        };
+        let key = runtime.key();
+        let result = {
+            let finalization =
+                finish_resource_track(paths, database, reconciliation.catalog, runtime);
+            tokio::pin!(finalization);
+            loop {
+                tokio::select! {
+                    result = &mut finalization => break result,
+                    Some(runtime) = pending.next() => ready.push_back(runtime),
+                }
+            }
+        };
+        if let Err(error) = result {
+            let resource = state::ProjectManagedResourceInput {
+                resource_name: key.0.clone(),
+                track: key.1.clone(),
+            };
+            let error = record_resource_runtime_failure(database, &resource, error);
+            failures.push((key, error));
+        }
+    }
+
+    failures.sort_by(|left, right| left.0.cmp(&right.0));
+    if failures.is_empty() {
+        return Ok(());
+    }
+
+    Err(combined_project_resource_error(
+        failures
+            .into_iter()
+            .map(|((resource_name, track), error)| {
+                ManagedResourceProjectFailure::new(resource_name, track, error)
+            })
+            .collect(),
+    ))
+}
+
+struct PreparedResourceRuntime {
+    context: ManagedResourceRuntimeContext,
+    allocations: Vec<ResourceAllocationRecord>,
+    readiness: PendingManagedResourceReadiness,
+}
+
+struct CompletedResourceRuntime {
+    context: ManagedResourceRuntimeContext,
+    allocations: Vec<ResourceAllocationRecord>,
+    readiness: Result<(), DaemonError>,
+}
+
+impl PreparedResourceRuntime {
+    async fn wait(self) -> CompletedResourceRuntime {
+        let Self {
+            context,
+            allocations,
+            readiness,
+        } = self;
+        let readiness = readiness.wait().await;
+
+        CompletedResourceRuntime {
+            context,
+            allocations,
+            readiness,
+        }
+    }
+}
+
+impl CompletedResourceRuntime {
+    fn key(&self) -> ProjectTrackKey {
+        (
+            self.context.resource_name.clone(),
+            self.context.track.clone(),
+        )
+    }
+}
+
+async fn prepare_resource_track(
+    paths: &PvPaths,
+    database: &mut Database,
+    reconciliation: &mut ResourceTrackReconciliationContext<'_>,
+    resource: &state::ProjectManagedResourceInput,
+    allocations: &[ResourceAllocationRecord],
+) -> Result<Option<PreparedResourceRuntime>, DaemonError> {
     let Some(adapter) = reconciliation.catalog.adapter(&resource.resource_name) else {
         if unsupported_resource_has_seeded_env_context(database, resource)? {
-            return Ok(());
+            return Ok(None);
         }
 
-        let error = DaemonError::UnsupportedManagedResourceRuntime {
+        return Err(DaemonError::UnsupportedManagedResourceRuntime {
             resource: resource.resource_name.clone(),
-        };
-        database.record_runtime_observed_snapshot(
-            subject,
-            RuntimeObservedStatus::Failed,
-            Some(&error.to_string()),
-        )?;
-
-        return Err(error);
+        });
     };
-    let result = async {
-        let track_record = ensure_track_artifact(
+    let track_record = ensure_track_artifact(
+        paths,
+        database,
+        resource,
+        reconciliation.progress,
+        reconciliation.prefetched_installs,
+    )
+    .await?;
+    let Some(artifact_path) = track_record.current_artifact_path else {
+        return Err(DaemonError::ManagedResourceArtifactMissing {
+            resource: resource.resource_name.clone(),
+            track: resource.track.clone(),
+        });
+    };
+    let mut attempt = 0;
+
+    loop {
+        attempt += 1;
+        let ports =
+            assign_named_ports(database, adapter, &resource.resource_name, &resource.track)?;
+        if ports_occupied_without_recorded_runtime(
+            paths,
+            reconciliation.supervisor,
+            resource,
+            &ports,
+        )? && attempt < RESOURCE_START_ATTEMPTS
+        {
+            cleanup_resource_runtime_files(paths, resource)?;
+            release_resource_track_ports(database, &resource.resource_name, &resource.track)?;
+
+            continue;
+        }
+        let context = ManagedResourceRuntimeContext {
+            resource_name: resource.resource_name.clone(),
+            track: resource.track.clone(),
+            artifact_path: artifact_path.clone(),
+            data_dir: paths.resource_data_dir(&resource.resource_name, &resource.track),
+            ports,
+            env: track_record.env.clone(),
+            postgres_preload_libraries: if resource.resource_name == "postgres" {
+                database.postgres_track_preload_libraries(&resource.track)?
+            } else {
+                Vec::new()
+            },
+        };
+        let env = adapter.resource_env(&context)?;
+        let context = ManagedResourceRuntimeContext { env, ..context };
+        database.record_managed_resource_track_env_context(
+            &resource.resource_name,
+            &resource.track,
+            &context.env,
+        )?;
+        let spec = adapter.build_process_spec(paths, &context)?;
+        adapter.prepare_runtime(paths, &context).await?;
+        let readiness = adapter.readiness(&context)?;
+        let readiness_timeout = adapter_readiness_timeout(adapter);
+        match start_or_adopt_runtime(
+            reconciliation.supervisor,
+            spec,
+            readiness,
+            readiness_timeout,
+        )
+        .await
+        {
+            Ok(readiness) => {
+                return Ok(Some(PreparedResourceRuntime {
+                    context,
+                    allocations: allocations.to_vec(),
+                    readiness,
+                }));
+            }
+            Err(DaemonError::NonPvManagedResourceRuntimeListener { .. })
+                if attempt < RESOURCE_START_ATTEMPTS =>
+            {
+                cleanup_resource_runtime_files(paths, resource)?;
+                release_resource_track_ports(database, &resource.resource_name, &resource.track)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+async fn finish_resource_track(
+    paths: &PvPaths,
+    database: &mut Database,
+    catalog: &ManagedResourceRuntimeCatalog,
+    completed: CompletedResourceRuntime,
+) -> Result<(), DaemonError> {
+    completed.readiness?;
+    let Some(adapter) = catalog.adapter(&completed.context.resource_name) else {
+        return Err(DaemonError::UnsupportedManagedResourceRuntime {
+            resource: completed.context.resource_name,
+        });
+    };
+    if let Err(error) = adapter
+        .reconcile_allocations(
             paths,
             database,
-            resource,
-            reconciliation.progress,
-            reconciliation.prefetched_installs,
+            &completed.context,
+            &completed.context.env,
+            &completed.allocations,
         )
-        .await?;
-        let Some(artifact_path) = track_record.current_artifact_path else {
-            return Err(DaemonError::ManagedResourceArtifactMissing {
-                resource: resource.resource_name.clone(),
-                track: resource.track.clone(),
-            });
-        };
-        let mut attempt = 0;
-
-        loop {
-            attempt += 1;
-            let ports =
-                assign_named_ports(database, adapter, &resource.resource_name, &resource.track)?;
-            if ports_occupied_without_recorded_runtime(
-                paths,
-                reconciliation.supervisor,
-                resource,
-                &ports,
-            )? && attempt < RESOURCE_START_ATTEMPTS
-            {
-                cleanup_resource_runtime_files(paths, resource)?;
-                release_resource_track_ports(database, &resource.resource_name, &resource.track)?;
-
-                continue;
-            }
-            let context = ManagedResourceRuntimeContext {
-                resource_name: resource.resource_name.clone(),
-                track: resource.track.clone(),
-                artifact_path: artifact_path.clone(),
-                data_dir: paths.resource_data_dir(&resource.resource_name, &resource.track),
-                ports,
-                env: track_record.env.clone(),
-                postgres_preload_libraries: if resource.resource_name == "postgres" {
-                    database.postgres_track_preload_libraries(&resource.track)?
-                } else {
-                    Vec::new()
-                },
-            };
-            let mut runtime_attempt = ResourceRuntimeAttempt {
-                paths,
-                database,
-                adapter,
-                supervisor: reconciliation.supervisor,
-                resource,
-                subject: &subject,
-                allocations,
-            };
-            let result = runtime_attempt.run(&context).await;
-
-            if matches!(
-                result,
-                Err(DaemonError::NonPvManagedResourceRuntimeListener { .. })
-            ) && attempt < RESOURCE_START_ATTEMPTS
-            {
-                cleanup_resource_runtime_files(paths, resource)?;
-                release_resource_track_ports(database, &resource.resource_name, &resource.track)?;
-
-                continue;
-            }
-
-            break result;
-        }
+        .await
+    {
+        return Err(record_allocation_reconciliation_failure(
+            database,
+            &completed.allocations,
+            error,
+        ));
     }
-    .await;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::Resource {
+            name: completed.context.resource_name,
+            track: completed.context.track,
+        },
+        RuntimeObservedStatus::Running,
+        Some("Managed Resource runtime is ready"),
+    )?;
 
-    if let Err(error) = &result {
-        database.record_runtime_observed_snapshot(
-            subject,
-            RuntimeObservedStatus::Failed,
-            Some(&error.to_string()),
-        )?;
-    }
-
-    result
+    Ok(())
 }
 
-struct ResourceRuntimeAttempt<'a> {
-    paths: &'a PvPaths,
-    database: &'a mut Database,
-    adapter: &'a dyn ManagedResourceRuntimeAdapter,
-    supervisor: &'a ProcessSupervisor,
-    resource: &'a state::ProjectManagedResourceInput,
-    subject: &'a RuntimeSubject,
-    allocations: &'a [ResourceAllocationRecord],
+fn record_resource_runtime_failure(
+    database: &mut Database,
+    resource: &state::ProjectManagedResourceInput,
+    reconciliation: DaemonError,
+) -> DaemonError {
+    let message = reconciliation.to_string();
+    match database.record_runtime_observed_snapshot(
+        runtime_subject(resource),
+        RuntimeObservedStatus::Failed,
+        Some(&message),
+    ) {
+        Ok(_observed) => reconciliation,
+        Err(recording) => DaemonError::ManagedResourceRuntimeFailureRecordingFailed {
+            resource_name: resource.resource_name.clone(),
+            track: resource.track.clone(),
+            reconciliation: Box::new(reconciliation),
+            recording: Box::new(recording.into()),
+        },
+    }
 }
 
-impl ResourceRuntimeAttempt<'_> {
-    async fn run(&mut self, context: &ManagedResourceRuntimeContext) -> Result<(), DaemonError> {
-        let env = self.adapter.resource_env(context)?;
-        let context = ManagedResourceRuntimeContext {
-            env: env.clone(),
-            ..context.clone()
-        };
-        self.database.record_managed_resource_track_env_context(
-            &self.resource.resource_name,
-            &self.resource.track,
-            &env,
-        )?;
-        let spec = self.adapter.build_process_spec(self.paths, &context)?;
-        self.adapter.prepare_runtime(self.paths, &context).await?;
-        let readiness = self.adapter.readiness(&context)?;
-        let readiness_timeout = adapter_readiness_timeout(self.adapter);
-
-        start_or_adopt_runtime(self.supervisor, spec, &readiness, readiness_timeout).await?;
-
-        if let Err(error) = self
-            .adapter
-            .reconcile_allocations(self.paths, self.database, &context, &env, self.allocations)
-            .await
-        {
-            return Err(record_allocation_reconciliation_failure(
-                self.database,
-                self.allocations,
-                error,
-            ));
-        }
-        self.database.record_runtime_observed_snapshot(
-            self.subject.clone(),
-            RuntimeObservedStatus::Running,
-            Some("Managed Resource runtime is ready"),
-        )?;
-
-        Ok(())
+fn runtime_subject(resource: &state::ProjectManagedResourceInput) -> RuntimeSubject {
+    RuntimeSubject::Resource {
+        name: resource.resource_name.clone(),
+        track: resource.track.clone(),
     }
+}
+
+fn resource_key(resource: &state::ProjectManagedResourceInput) -> ProjectTrackKey {
+    (resource.resource_name.clone(), resource.track.clone())
 }
 
 fn unsupported_resource_has_seeded_env_context(
@@ -1618,16 +1755,24 @@ fn missing_project_install_requests(
             Ok(None) => {}
             Err(error) => {
                 requests.push(ProjectInstallRequest::Failed { key, error });
-                break;
+                continue;
             }
         }
         let Some(adapter) = catalog.adapter(&resource.resource_name) else {
             match unsupported_resource_has_seeded_env_context(database, resource) {
                 Ok(true) => continue,
-                Ok(false) => break,
+                Ok(false) => {
+                    requests.push(ProjectInstallRequest::Failed {
+                        key,
+                        error: DaemonError::UnsupportedManagedResourceRuntime {
+                            resource: resource.resource_name.clone(),
+                        },
+                    });
+                    continue;
+                }
                 Err(error) => {
                     requests.push(ProjectInstallRequest::Failed { key, error });
-                    break;
+                    continue;
                 }
             }
         };
@@ -1635,47 +1780,12 @@ fn missing_project_install_requests(
             Ok(adapter) => requests.push(ProjectInstallRequest::Resolve { key, adapter }),
             Err(error) => {
                 requests.push(ProjectInstallRequest::Failed { key, error });
-                break;
+                continue;
             }
         }
     }
 
     requests
-}
-
-fn take_project_prefetch_failures(
-    database: &mut Database,
-    resources: &[state::ProjectManagedResourceInput],
-    prefetched_installs: &mut BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>,
-) -> Result<Vec<ManagedResourceProjectFailure>, DaemonError> {
-    let mut failures = Vec::new();
-    for resource in resources {
-        let key = (resource.resource_name.clone(), resource.track.clone());
-        if !matches!(
-            prefetched_installs.get(&key),
-            Some(PrefetchedProjectInstall::Failed(_))
-        ) {
-            continue;
-        }
-        let Some(PrefetchedProjectInstall::Failed(error)) = prefetched_installs.remove(&key) else {
-            continue;
-        };
-        database.record_runtime_observed_snapshot(
-            RuntimeSubject::Resource {
-                name: resource.resource_name.clone(),
-                track: resource.track.clone(),
-            },
-            RuntimeObservedStatus::Failed,
-            Some(&error.to_string()),
-        )?;
-        failures.push(ManagedResourceProjectFailure::new(
-            resource.resource_name.clone(),
-            resource.track.clone(),
-            error,
-        ));
-    }
-
-    Ok(failures)
 }
 
 fn combined_project_resource_error(
@@ -1744,18 +1854,15 @@ fn prefetch_missing_project_installs_blocking(
     if resolve_requests.is_empty() {
         return Ok(prefetched);
     }
-    let manifest_snapshot = match progress.manifest_snapshot(&commands, client) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            if let Some((key, _adapter)) = resolve_requests.into_iter().next() {
-                prefetched.insert(key, PrefetchedProjectInstall::Failed(error));
-            }
-
-            return Ok(prefetched);
-        }
-    };
     let mut resolved_installs = Vec::new();
     for (key, adapter) in resolve_requests {
+        let manifest_snapshot = match progress.manifest_snapshot(&commands, client) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                prefetched.insert(key, PrefetchedProjectInstall::Failed(error));
+                continue;
+            }
+        };
         let (resource_name, track) = (&key.0, &key.1);
         if adapter.resource_name().as_str() != resource_name {
             let reason = format!(
@@ -2007,47 +2114,73 @@ fn ports_occupied_without_recorded_runtime(
 async fn start_or_adopt_runtime(
     supervisor: &ProcessSupervisor,
     spec: ProcessSpec,
-    readiness: &ManagedResourceReadiness,
+    readiness: ManagedResourceReadiness,
     readiness_timeout: Duration,
-) -> Result<(), DaemonError> {
+) -> Result<PendingManagedResourceReadiness, DaemonError> {
     if supervisor.adopt(&spec)?.is_some() {
-        wait_for_managed_resource_readiness(readiness, readiness_timeout).await?;
-
-        return Ok(());
+        return Ok(PendingManagedResourceReadiness {
+            spec,
+            readiness,
+            readiness_timeout,
+            process: None,
+        });
     }
     if let Some(adopted) = supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)? {
         adopted.stop(RESOURCE_STOP_GRACE_PERIOD).await?;
         delete_optional_file(&spec.pid_path)?;
         delete_optional_file(&spec.metadata_path)?;
-    } else if let ManagedResourceReadiness::TcpHttp(check) = readiness
+    } else if let ManagedResourceReadiness::TcpHttp(check) = &readiness
         && crate::supervisor::probe_readiness_once(check).await.is_ok()
     {
         return Err(DaemonError::NonPvManagedResourceRuntimeListener { name: spec.name });
     }
 
-    let mut process = supervisor.start(spec.clone()).await?;
-    let readiness_wait = wait_for_managed_resource_readiness(readiness, readiness_timeout);
-    if let Err(error) = wait_for_started_runtime_readiness(
-        &mut process,
-        &spec.name,
-        readiness_wait,
-        RESOURCE_PROCESS_EXIT_POLL_INTERVAL,
-    )
-    .await
-    {
-        process.stop(RESOURCE_STOP_GRACE_PERIOD).await?;
-        cleanup_started_runtime_files(&spec)?;
+    let process = supervisor.start(spec.clone()).await?;
 
-        return Err(error);
+    Ok(PendingManagedResourceReadiness {
+        spec,
+        readiness,
+        readiness_timeout,
+        process: Some(process),
+    })
+}
+
+struct PendingManagedResourceReadiness {
+    spec: ProcessSpec,
+    readiness: ManagedResourceReadiness,
+    readiness_timeout: Duration,
+    process: Option<ManagedProcess>,
+}
+
+impl PendingManagedResourceReadiness {
+    async fn wait(mut self) -> Result<(), DaemonError> {
+        let readiness_wait =
+            wait_for_managed_resource_readiness(&self.readiness, self.readiness_timeout);
+        let Some(mut process) = self.process.take() else {
+            return readiness_wait.await;
+        };
+        if let Err(error) = wait_for_started_runtime_readiness(
+            &mut process,
+            &self.spec.name,
+            readiness_wait,
+            RESOURCE_PROCESS_EXIT_POLL_INTERVAL,
+        )
+        .await
+        {
+            process.stop(RESOURCE_STOP_GRACE_PERIOD).await?;
+            cleanup_started_runtime_files(&self.spec)?;
+
+            return Err(error);
+        }
+        tokio::time::sleep(RESOURCE_PROCESS_EXIT_POLL_INTERVAL).await;
+        if process.has_exited()? {
+            cleanup_started_runtime_files(&self.spec)?;
+
+            return Err(runtime_exited_before_readiness_error(&self.spec.name));
+        }
+
+        Ok(())
     }
-    tokio::time::sleep(RESOURCE_PROCESS_EXIT_POLL_INTERVAL).await;
-    if process.has_exited()? {
-        cleanup_started_runtime_files(&spec)?;
-
-        return Err(runtime_exited_before_readiness_error(&spec.name));
-    }
-
-    Ok(())
 }
 
 async fn wait_for_managed_resource_readiness(
