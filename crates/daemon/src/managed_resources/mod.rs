@@ -34,6 +34,7 @@ use state::{
 use tokio::time::{sleep, timeout};
 
 use crate::jobs::DaemonDownloadProgress;
+use crate::project_env::DemandedResourceTrack;
 use crate::{
     DaemonError, ManagedResourceProjectFailure, ProcessSpec, ProcessSupervisor, ReadinessCheck,
     wait_for_readiness,
@@ -276,12 +277,19 @@ pub(crate) async fn reconcile_project_resources_with_progress(
     database: &mut Database,
     project: &ProjectRecord,
     plan: &crate::project_env::ProjectResourcePlan,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     let catalog = ManagedResourceRuntimeCatalog::production()?;
 
     reconcile_project_resources_with_catalog_and_progress(
-        paths, database, project, plan, &catalog, progress,
+        paths,
+        database,
+        project,
+        plan,
+        &catalog,
+        demanded_tracks,
+        progress,
     )
     .await
 }
@@ -292,14 +300,14 @@ pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
     project: &ProjectRecord,
     plan: &crate::project_env::ProjectResourcePlan,
     catalog: &ManagedResourceRuntimeCatalog,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let demanded_tracks = plan
-        .resources
-        .iter()
-        .map(|resource| (resource.resource_name.clone(), resource.track.clone()))
-        .collect::<BTreeSet<_>>();
+    let mut demanded_tracks = demanded_tracks.clone();
+    demanded_tracks.extend(plan.resources.iter().map(|resource| {
+        DemandedResourceTrack::new(resource.resource_name.clone(), resource.track.clone())
+    }));
 
     stop_undemanded_catalog_runtimes(paths, database, catalog, &supervisor, &demanded_tracks)
         .await?;
@@ -338,13 +346,20 @@ pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
 
 pub(crate) async fn reconcile_system_resources_with_progress(
     paths: &PvPaths,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     let catalog = ManagedResourceRuntimeCatalog::production()?;
     let mut database = Database::open(paths)?;
 
-    reconcile_system_resources_with_catalog_and_progress(paths, &mut database, &catalog, progress)
-        .await
+    reconcile_system_resources_with_catalog_and_progress(
+        paths,
+        &mut database,
+        &catalog,
+        demanded_tracks,
+        progress,
+    )
+    .await
 }
 
 pub(crate) fn update_check(
@@ -478,6 +493,7 @@ pub(crate) async fn reconcile_system_resources_with_catalog(
         paths,
         database,
         catalog,
+        &BTreeSet::new(),
         DaemonDownloadProgress::disabled(),
     )
     .await
@@ -487,6 +503,7 @@ pub(crate) async fn reconcile_system_resources_with_catalog_and_progress(
     paths: &PvPaths,
     database: &mut Database,
     catalog: &ManagedResourceRuntimeCatalog,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     database.record_managed_resource_track_desired(
@@ -495,11 +512,32 @@ pub(crate) async fn reconcile_system_resources_with_catalog_and_progress(
         ManagedResourceDesiredState::Installed,
     )?;
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let demanded_tracks = BTreeSet::new();
 
-    stop_undemanded_catalog_runtimes(paths, database, catalog, &supervisor, &demanded_tracks)
+    stop_undemanded_catalog_runtimes(paths, database, catalog, &supervisor, demanded_tracks)
         .await?;
-    let installs = missing_desired_resource_installs(database, catalog)?;
+
+    let installs =
+        missing_desired_resource_installs_with_demands(database, catalog, demanded_tracks)?;
+    install_missing_desired_resource_tracks(
+        paths,
+        catalog.install_options.clone(),
+        catalog.http_client.clone(),
+        installs,
+        progress,
+    )
+    .await
+}
+
+pub(crate) async fn install_missing_resource_demands_with_catalog_and_progress(
+    paths: &PvPaths,
+    catalog: &ManagedResourceRuntimeCatalog,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
+    progress: DaemonDownloadProgress,
+) -> Result<(), DaemonError> {
+    let installs = {
+        let database = Database::open(paths)?;
+        missing_resource_installs(&database, catalog, demanded_tracks)?
+    };
 
     install_missing_desired_resource_tracks(
         paths,
@@ -509,6 +547,74 @@ pub(crate) async fn reconcile_system_resources_with_catalog_and_progress(
         progress,
     )
     .await
+}
+
+pub(crate) fn verify_system_resource_installations(
+    paths: &PvPaths,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    mut demanded_tracks: BTreeSet<DemandedResourceTrack>,
+    progress: &DaemonDownloadProgress,
+) -> Result<(), DaemonError> {
+    let production_catalog;
+    let catalog = if let Some(catalog) = runtime_catalog {
+        catalog
+    } else {
+        production_catalog = ManagedResourceRuntimeCatalog::production()?;
+        &production_catalog
+    };
+    let database = Database::open(paths)?;
+    demanded_tracks.insert(DemandedResourceTrack::new("caddy", "2"));
+    let plan =
+        missing_desired_resource_installs_with_demands(&database, catalog, &demanded_tracks)?;
+    if !plan.is_empty() {
+        let failures = plan
+            .installs
+            .iter()
+            .map(|install| {
+                let label = install.label();
+                let cause = progress
+                    .install_failure(&label)
+                    .unwrap_or_else(|| "installation is still pending".to_owned());
+                format!("{label}: {cause}")
+            })
+            .chain(
+                plan.failures
+                    .iter()
+                    .map(DesiredResourceInstallFailure::message),
+            )
+            .collect();
+        return Err(DaemonError::ManagedResourceDefaultInstallFailures { failures });
+    }
+
+    let commands = ManagedResourceCommands::new(
+        paths.clone(),
+        catalog.install_options.manifest_url.clone(),
+        catalog.install_options.target_platform,
+    );
+    for installed in commands.list(None)? {
+        commands.validate_installed_track(&installed)?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn stop_undemanded_system_resource_runtimes(
+    paths: &PvPaths,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<(), DaemonError> {
+    // Post-apply usage supersedes conservative discovery demand while Projects with invalid config
+    // retain their last-valid usage protection.
+    let production_catalog;
+    let catalog = if let Some(catalog) = runtime_catalog {
+        catalog
+    } else {
+        production_catalog = ManagedResourceRuntimeCatalog::production()?;
+        &production_catalog
+    };
+    let mut database = Database::open(paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+
+    stop_undemanded_catalog_runtimes(paths, &mut database, catalog, &supervisor, &BTreeSet::new())
+        .await
 }
 
 async fn install_missing_desired_resource_tracks(
@@ -600,9 +706,35 @@ impl DesiredResourceInstall {
     }
 }
 
+#[cfg(test)]
 fn missing_desired_resource_installs(
     database: &Database,
     catalog: &ManagedResourceRuntimeCatalog,
+) -> Result<DesiredResourceInstallPlan, DaemonError> {
+    missing_desired_resource_installs_with_demands(database, catalog, &BTreeSet::new())
+}
+
+fn missing_desired_resource_installs_with_demands(
+    database: &Database,
+    catalog: &ManagedResourceRuntimeCatalog,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
+) -> Result<DesiredResourceInstallPlan, DaemonError> {
+    let mut demanded_tracks = demanded_tracks.clone();
+    demanded_tracks.extend(
+        database
+            .managed_resource_tracks()?
+            .into_iter()
+            .filter(|record| record.desired_state == ManagedResourceDesiredState::Installed)
+            .map(|record| DemandedResourceTrack::new(record.resource_name, record.track)),
+    );
+
+    missing_resource_installs(database, catalog, &demanded_tracks)
+}
+
+fn missing_resource_installs(
+    database: &Database,
+    catalog: &ManagedResourceRuntimeCatalog,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
 ) -> Result<DesiredResourceInstallPlan, DaemonError> {
     let mut php_pair_tracks = BTreeSet::new();
     let mut caddy_tracks = BTreeSet::new();
@@ -610,45 +742,79 @@ fn missing_desired_resource_installs(
     let mut runtime_installs = Vec::new();
     let mut failures = Vec::new();
 
-    for record in database.managed_resource_tracks()? {
-        if record.desired_state != ManagedResourceDesiredState::Installed
-            || record.current_artifact_path.is_some()
-        {
+    let records = database.managed_resource_tracks()?;
+    let installed_tracks = records
+        .iter()
+        .filter(|record| {
+            record.desired_state == ManagedResourceDesiredState::Installed
+                && record.current_artifact_path.is_some()
+        })
+        .map(|record| {
+            DemandedResourceTrack::new(record.resource_name.clone(), record.track.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    let missing_tracks = demanded_tracks.difference(&installed_tracks).cloned();
+
+    for demanded_track in missing_tracks {
+        let DemandedResourceTrack {
+            resource_name,
+            track,
+        } = demanded_track;
+        if let Some(removed) = records.iter().find(|record| {
+            record.track == track
+                && record.desired_state == ManagedResourceDesiredState::Removed
+                && (record.resource_name == resource_name
+                    || (matches!(resource_name.as_str(), "php" | "frankenphp")
+                        && matches!(record.resource_name.as_str(), "php" | "frankenphp")))
+        }) {
+            let label = format!("{} {track}", removed.resource_name);
+            if !failures
+                .iter()
+                .any(|failure: &DesiredResourceInstallFailure| failure.label == label)
+            {
+                failures.push(DesiredResourceInstallFailure::new(
+                    failures.len(),
+                    label,
+                    DaemonError::ManagedResourceTrackRemoved {
+                        resource: removed.resource_name.clone(),
+                        track,
+                    },
+                ));
+            }
             continue;
         }
-
-        match record.resource_name.as_str() {
+        match resource_name.as_str() {
             "caddy" => {
-                caddy_tracks.insert(record.track);
+                caddy_tracks.insert(track);
             }
             "php" | "frankenphp" => {
-                php_pair_tracks.insert(record.track);
+                php_pair_tracks.insert(track);
             }
             "composer" => {
-                if record.track != "2" {
+                if track != "2" {
                     let error = DaemonError::UnexpectedProtocolResponse {
                         reason: format!(
                             "Composer setup default expected track `2`, got `{}`",
-                            record.track
+                            track
                         ),
                     };
                     failures.push(DesiredResourceInstallFailure::new(
                         failures.len(),
-                        format!("composer {}", record.track),
+                        format!("composer {track}"),
                         error,
                     ));
                     continue;
                 }
                 composer_missing = true;
             }
-            resource_name => {
-                let Some(adapter) = catalog.adapter(resource_name) else {
+            _ => {
+                let Some(adapter) = catalog.adapter(&resource_name) else {
                     let error = DaemonError::UnsupportedManagedResourceRuntime {
-                        resource: resource_name.to_string(),
+                        resource: resource_name.clone(),
                     };
                     failures.push(DesiredResourceInstallFailure::new(
                         failures.len(),
-                        format!("{} {}", record.resource_name, record.track),
+                        format!("{resource_name} {track}"),
                         error,
                     ));
                     continue;
@@ -658,7 +824,7 @@ fn missing_desired_resource_installs(
                     Err(error) => {
                         failures.push(DesiredResourceInstallFailure::new(
                             failures.len(),
-                            format!("{} {}", record.resource_name, record.track),
+                            format!("{resource_name} {track}"),
                             error,
                         ));
                         continue;
@@ -666,8 +832,8 @@ fn missing_desired_resource_installs(
                 };
                 runtime_installs.push(DesiredResourceInstall::Runtime {
                     adapter: artifact_adapter,
-                    resource_name: record.resource_name,
-                    track: record.track,
+                    resource_name,
+                    track,
                 });
             }
         }
@@ -723,10 +889,18 @@ fn install_missing_desired_resource_tracks_blocking(
     if installs.is_empty() {
         return finish_desired_resource_install_failures(failures);
     }
+    for install in &installs {
+        progress.set_install_failure(install.label(), None);
+    }
     let manifest_snapshot = match progress.manifest_snapshot(&commands, client) {
         Ok(snapshot) => snapshot,
-        Err(error) if failures.is_empty() => return Err(error),
         Err(error) => {
+            for install in &installs {
+                progress.set_install_failure(install.label(), Some(error.to_string()));
+            }
+            if failures.is_empty() {
+                return Err(error);
+            }
             failures.push(DesiredResourceInstallFailure::new(
                 failures.len(),
                 "artifact manifest".to_owned(),
@@ -747,7 +921,10 @@ fn install_missing_desired_resource_tracks_blocking(
                 label,
                 install,
             }),
-            Err(error) => failures.push(DesiredResourceInstallFailure::new(order, label, error)),
+            Err(error) => {
+                progress.set_install_failure(label.clone(), Some(error.to_string()));
+                failures.push(DesiredResourceInstallFailure::new(order, label, error));
+            }
         }
     }
     let artifacts = unique_resolved_artifacts(&resolved_installs);
@@ -757,6 +934,18 @@ fn install_missing_desired_resource_tracks_blocking(
         let download_failures =
             resolved_download_failures(&downloads, &resolved.install, resolved.label.as_str());
         if !download_failures.is_empty() {
+            let cause = download_failures
+                .iter()
+                .map(|(label, error)| {
+                    if label == &resolved.label {
+                        error.to_string()
+                    } else {
+                        format!("{label}: {error}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            progress.set_install_failure(resolved.label.clone(), Some(cause));
             failures.extend(download_failures.into_iter().map(|(label, error)| {
                 DesiredResourceInstallFailure::new(resolved.order, label, error)
             }));
@@ -765,6 +954,7 @@ fn install_missing_desired_resource_tracks_blocking(
         if let Err(error) =
             install_resolved_desired_resource(&commands, &downloads, &progress, &resolved.install)
         {
+            progress.set_install_failure(resolved.label.clone(), Some(error.to_string()));
             failures.push(DesiredResourceInstallFailure::new(
                 resolved.order,
                 resolved.label,
@@ -1516,14 +1706,14 @@ fn installed_track(
         return Ok(None);
     };
 
-    if record.current_artifact_path.is_none() {
-        return Ok(None);
-    }
     if record.desired_state == ManagedResourceDesiredState::Removed {
         return Err(DaemonError::ManagedResourceTrackRemoved {
             resource: resource_name.to_string(),
             track: track.to_string(),
         });
+    }
+    if record.current_artifact_path.is_none() {
+        return Ok(None);
     }
 
     Ok(Some(record))
@@ -1796,7 +1986,7 @@ async fn stop_undemanded_catalog_runtimes(
     database: &mut Database,
     catalog: &ManagedResourceRuntimeCatalog,
     supervisor: &ProcessSupervisor,
-    demanded_tracks: &BTreeSet<(String, String)>,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
 ) -> Result<(), DaemonError> {
     let tracks = database.managed_resource_tracks()?;
 
@@ -1805,7 +1995,10 @@ async fn stop_undemanded_catalog_runtimes(
             continue;
         };
         if track.usage_count > 0
-            || demanded_tracks.contains(&(track.resource_name.clone(), track.track.clone()))
+            || demanded_tracks.contains(&DemandedResourceTrack::new(
+                track.resource_name.clone(),
+                track.track.clone(),
+            ))
         {
             continue;
         }

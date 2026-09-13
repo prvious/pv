@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Debug;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
@@ -8,7 +8,12 @@ use std::time::Duration;
 
 use crate::{
     DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck,
+    jobs::DaemonDownloadProgress,
     managed_resources::{ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext},
+    project_env::{
+        DemandedResourceTrack, discover_project_demand,
+        reconcile_project_env_with_runtime_catalog_and_progress,
+    },
     reconciliation::{ReconciliationQueue, ReconciliationScope},
 };
 use anyhow::{Result, anyhow, bail};
@@ -24,6 +29,7 @@ use resources::{
     RuntimeArtifactAdapter,
 };
 use serde::Deserialize;
+use serde_json::{Value, json};
 use state::{
     Database, EnvContextValues, JobDiagnosticSubject, JobStatus, LinkProjectInput, PortOwner,
     PortRequest, PostgresPreloadLibrary, ProjectEnvObservedStatus, ProjectManagedResourceInput,
@@ -1304,6 +1310,36 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
 
     drop(mailpit_port_guards);
     reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
+    let first_project = link_project(
+        &paths,
+        &tempdir.path().join("first-project"),
+        "first.test",
+        "serve: false\n",
+    )?;
+    let demanded_tracks =
+        BTreeSet::from([DemandedResourceTrack::new("mailpit", FAKE_MAILPIT_TRACK)]);
+    let mut database = Database::open(&paths)?;
+    database.replace_project_managed_resources(&project.id, &[])?;
+    drop(database);
+    let catalog = super::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
+    let pid_before_apply =
+        state::fs::read_to_string(&paths.resource_pid("mailpit", FAKE_MAILPIT_TRACK))?;
+
+    reconcile_project_env_with_runtime_catalog_and_progress(
+        &paths,
+        &first_project.id,
+        Some(&catalog),
+        None,
+        &demanded_tracks,
+        DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+
+    assert_eq!(
+        state::fs::read_to_string(&paths.resource_pid("mailpit", FAKE_MAILPIT_TRACK))?,
+        pid_before_apply,
+        "applying an earlier Project should preserve a later Project's discovered runtime"
+    );
     let stale_port_guard = seed_mailpit_runtime_port(&paths, FAKE_MAILPIT_TRACK, "obsolete")?;
     drop(stale_port_guard);
     let caddy_fixture = setup_default_fixture("caddy")?;
@@ -1312,8 +1348,24 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
     let cleanup_snapshot = {
         let mut database = Database::open(&paths)?;
         database.unlink_project(&project.id)?;
-        let mut catalog = super::fake_runtime_catalog(resources::default_artifact_manifest_url())?;
-        catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
+
+        super::reconcile_system_resources_with_catalog_and_progress(
+            &paths,
+            &mut database,
+            &catalog,
+            &demanded_tracks,
+            DaemonDownloadProgress::disabled(),
+        )
+        .await?;
+        assert_eq!(
+            runtime_files_exist(&paths, FAKE_MAILPIT_TRACK)?,
+            RuntimeFilePresence {
+                pid: true,
+                metadata: true,
+                config: true,
+            },
+            "discovered demand should preserve the running runtime"
+        );
 
         super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await?;
 
@@ -1636,6 +1688,7 @@ async fn project_download_failures_follow_original_plan_order() -> Result<()> {
         &project,
         &plan,
         &catalog,
+        &BTreeSet::new(),
         crate::jobs::DaemonDownloadProgress::disabled(),
     )
     .await;
@@ -1727,6 +1780,7 @@ async fn project_manifest_failure_preserves_earlier_installed_resource_work() ->
         &project,
         &plan,
         &catalog,
+        &BTreeSet::new(),
         crate::jobs::DaemonDownloadProgress::disabled(),
     )
     .await;
@@ -1741,6 +1795,7 @@ async fn project_manifest_failure_preserves_earlier_installed_resource_work() ->
         &project,
         &empty_plan,
         &catalog,
+        &BTreeSet::new(),
         crate::jobs::DaemonDownloadProgress::disabled(),
     )
     .await?;
@@ -1762,12 +1817,124 @@ async fn project_manifest_failure_preserves_earlier_installed_resource_work() ->
     Ok(())
 }
 
+#[tokio::test]
+async fn project_application_pins_resource_track_until_selector_changes() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    seed_fake_mailpit_cached_fixture(&paths, tempdir.path())?;
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "serve: false\nmailpit: {}\n",
+    )?;
+    let mut refreshed: Value = serde_json::from_str(&state::fs::read_to_string(
+        &paths.downloads().join("manifest.json"),
+    )?)?;
+    let resource = &mut refreshed["resources"][0];
+    let mut next_track = resource["tracks"][0].clone();
+    next_track["name"] = json!(FAKE_MAILPIT_NEXT_TRACK);
+    resource["tracks"]
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("expected fixture tracks"))?
+        .push(next_track);
+    resource["default_track"] = json!(FAKE_MAILPIT_NEXT_TRACK);
+    let manifest_requests = Arc::new(AtomicUsize::new(0));
+    let catalog = super::fake_runtime_catalog_with_manifest_client(
+        TEST_ARTIFACT_MANIFEST_URL,
+        SequencedManifestArtifactClient {
+            manifests: Mutex::new(VecDeque::from([serde_json::to_string(&refreshed)?])),
+            archives: BTreeMap::new(),
+            manifest_requests: Arc::clone(&manifest_requests),
+        },
+    )?;
+    let database = Database::open(&paths)?;
+    let demand = discover_project_demand(&paths, &database, &project)?;
+    drop(database);
+    let progress = DaemonDownloadProgress::disabled();
+    super::install_missing_resource_demands_with_catalog_and_progress(
+        &paths,
+        &catalog,
+        &demand.resource_tracks,
+        progress.clone(),
+    )
+    .await?;
+    drop(seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?);
+    drop(seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_NEXT_TRACK)?);
+    state::fs::write_sensitive_file(
+        &project.config_path,
+        "serve: false\nmailpit:\n  version: latest\n",
+    )?;
+
+    let first_result = reconcile_project_env_with_runtime_catalog_and_progress(
+        &paths,
+        &project.id,
+        Some(&catalog),
+        Some(&demand),
+        &demand.resource_tracks,
+        progress.clone(),
+    )
+    .await;
+    let database = Database::open(&paths)?;
+    let initial_resources = database
+        .project_managed_resources(&project.id)?
+        .into_iter()
+        .map(|resource| (resource.resource_name, resource.track))
+        .collect::<Vec<_>>();
+    let initial_installs = database
+        .managed_resource_tracks()?
+        .into_iter()
+        .filter(|track| track.current_artifact_path.is_some())
+        .map(|track| (track.resource_name, track.track))
+        .collect::<Vec<_>>();
+    drop(database);
+    state::fs::write_sensitive_file(
+        &project.config_path,
+        "serve: false\nmailpit:\n  version: \"1.1\"\n",
+    )?;
+    let changed_result = reconcile_project_env_with_runtime_catalog_and_progress(
+        &paths,
+        &project.id,
+        Some(&catalog),
+        Some(&demand),
+        &demand.resource_tracks,
+        progress,
+    )
+    .await;
+    let mut database = Database::open(&paths)?;
+    let changed_resources = database
+        .project_managed_resources(&project.id)?
+        .into_iter()
+        .map(|resource| (resource.resource_name, resource.track))
+        .collect::<Vec<_>>();
+    database.replace_project_managed_resources(&project.id, &[])?;
+    drop(database);
+    super::stop_undemanded_system_resource_runtimes(&paths, Some(&catalog)).await?;
+
+    first_result?;
+    changed_result?;
+    assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        initial_installs,
+        [("mailpit".to_owned(), FAKE_MAILPIT_TRACK.to_owned())]
+    );
+    assert_eq!(initial_resources, initial_installs);
+    assert_eq!(
+        changed_resources,
+        [("mailpit".to_owned(), FAKE_MAILPIT_NEXT_TRACK.to_owned())]
+    );
+
+    Ok(())
+}
+
 #[test]
 fn setup_default_download_failures_follow_original_plan_order() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let fixtures = [
         setup_default_fixture("caddy")?,
+        setup_default_fixture("php")?,
+        setup_default_fixture("frankenphp")?,
         setup_default_fixture("mysql")?,
         setup_default_fixture("redis")?,
     ];
@@ -1777,6 +1944,8 @@ fn setup_default_download_failures_follow_original_plan_order() -> Result<()> {
         &mut database,
         &[
             ("caddy", SETUP_DEFAULT_CADDY_TRACK),
+            ("php", SETUP_DEFAULT_PHP_TRACK),
+            ("frankenphp", SETUP_DEFAULT_PHP_TRACK),
             ("mysql", SETUP_DEFAULT_MYSQL_TRACK),
             ("redis", SETUP_DEFAULT_REDIS_TRACK),
         ],
@@ -1792,12 +1961,13 @@ fn setup_default_download_failures_follow_original_plan_order() -> Result<()> {
             manifest_requests: Arc::new(AtomicUsize::new(0)),
         });
 
+    let progress = DaemonDownloadProgress::disabled();
     let result = super::install_missing_desired_resource_tracks_blocking(
-        paths,
-        catalog.install_options,
+        paths.clone(),
+        catalog.install_options.clone(),
         Some(client),
         installs,
-        crate::jobs::DaemonDownloadProgress::disabled(),
+        progress.clone(),
     );
     let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
         bail!("expected setup default download failures");
@@ -1806,11 +1976,30 @@ fn setup_default_download_failures_follow_original_plan_order() -> Result<()> {
     assert_debug_snapshot!(failures, @r###"
     [
         "caddy 2: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/caddy-2.11.4-pv1-any.tar.gz`",
+        "php 8.5: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`",
+        "frankenphp 8.5: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/frankenphp-8.5.0-pv1-any.tar.gz`",
         "mysql 8.4: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/mysql-8.4.0-pv1-any.tar.gz`",
         "redis 8.8: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/redis-8.8.0-pv1-any.tar.gz`",
     ]
     "###);
 
+    let verification = super::verify_system_resource_installations(
+        &paths,
+        Some(&catalog),
+        BTreeSet::new(),
+        &progress,
+    );
+    let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = verification else {
+        bail!("expected current installation failures: {verification:?}");
+    };
+    assert_debug_snapshot!(failures, @r#"
+    [
+        "caddy 2: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/caddy-2.11.4-pv1-any.tar.gz`",
+        "php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`; frankenphp 8.5: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/frankenphp-8.5.0-pv1-any.tar.gz`",
+        "mysql 8.4: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/mysql-8.4.0-pv1-any.tar.gz`",
+        "redis 8.8: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/redis-8.8.0-pv1-any.tar.gz`",
+    ]
+    "#);
     Ok(())
 }
 
@@ -1929,7 +2118,8 @@ async fn system_reconciliation_upserts_and_installs_caddy_for_existing_state() -
 }
 
 #[tokio::test]
-async fn system_reconciliation_job_stops_before_gateway_when_caddy_install_fails() -> Result<()> {
+async fn system_reconciliation_job_records_missing_gateway_when_caddy_install_fails() -> Result<()>
+{
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
 
@@ -1944,14 +2134,15 @@ async fn system_reconciliation_job_stops_before_gateway_when_caddy_install_fails
         Some(&catalog),
     )
     .await;
-    let Err(DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
-        ResourcesError::ResourceNotInManifest { resource },
-    ))) = result
-    else {
-        bail!("expected missing Caddy manifest entry to fail system reconciliation job");
+    let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
+        bail!("expected missing Caddy installation to fail system reconciliation job: {result:#?}");
     };
-
-    assert_eq!(resource, "caddy");
+    assert_debug_snapshot!(failures, @r#"
+    [
+        "caddy 2: Managed Resource command failed: artifact manifest does not include Managed Resource `caddy`",
+    ]
+    "#);
+    let error_message = DaemonError::ManagedResourceDefaultInstallFailures { failures }.to_string();
 
     let database = Database::open(&paths)?;
     let job = database
@@ -1960,12 +2151,7 @@ async fn system_reconciliation_job_stops_before_gateway_when_caddy_install_fails
         .find(|job| job.scope == "system")
         .ok_or_else(|| anyhow::anyhow!("missing system reconciliation job"))?;
     assert_eq!(job.status, JobStatus::Failed);
-    assert_eq!(
-        job.error.as_deref(),
-        Some(
-            "Managed Resource command failed: artifact manifest does not include Managed Resource `caddy`"
-        )
-    );
+    assert_eq!(job.error.as_deref(), Some(error_message.as_str()));
 
     let caddy_record = database.managed_resource_track("caddy", SETUP_DEFAULT_CADDY_TRACK)?;
     assert_eq!(
@@ -1974,7 +2160,13 @@ async fn system_reconciliation_job_stops_before_gateway_when_caddy_install_fails
     );
     assert!(caddy_record.installed_version.is_none());
     assert!(caddy_record.current_artifact_path.is_none());
-    assert!(database.runtime_observed_states()?.is_empty());
+    let states = database.runtime_observed_states()?;
+    assert!(
+        states
+            .iter()
+            .any(|state| state.subject == RuntimeSubject::Gateway
+                && state.status == RuntimeObservedStatus::Stopped)
+    );
     assert!(!state::fs::path_entry_exists(&paths.gateway_pid())?);
     assert_eq!(
         database.unresolved_job_failures()?,
@@ -2109,15 +2301,22 @@ async fn system_reconciliation_job_fails_unsupported_manifest_track_without_part
         Some(&catalog),
     )
     .await;
-    let Err(DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
-        ResourcesError::TrackNotFound { resource, track },
-    ))) = result
-    else {
-        bail!("expected unsupported mysql manifest track to fail system reconciliation job");
+    let Err(DaemonError::SystemReconciliationFailures { failures }) = result else {
+        bail!("expected install and Gateway fixture failures: {result:#?}");
     };
-
-    assert_eq!(resource, "mysql");
-    assert_eq!(track, unsupported_track);
+    let [
+        DaemonError::ManagedResourceDefaultInstallFailures { failures: pending },
+        _gateway_failure,
+    ] = failures.as_slice()
+    else {
+        bail!("expected the pending MySQL track before the Gateway failure: {failures:#?}");
+    };
+    assert_debug_snapshot!(pending, @r#"
+    [
+        "mysql 9.9: Managed Resource command failed: artifact manifest resource `mysql` has no track `9.9`",
+    ]
+    "#);
+    let error_message = DaemonError::SystemReconciliationFailures { failures }.to_string();
 
     let database = Database::open(&paths)?;
     let job = database
@@ -2127,12 +2326,7 @@ async fn system_reconciliation_job_fails_unsupported_manifest_track_without_part
         .ok_or_else(|| anyhow::anyhow!("missing system reconciliation job"))?;
 
     assert_eq!(job.status, JobStatus::Failed);
-    assert_eq!(
-        job.error.as_deref(),
-        Some(
-            "Managed Resource command failed: artifact manifest resource `mysql` has no track `9.9`"
-        )
-    );
+    assert_eq!(job.error.as_deref(), Some(error_message.as_str()));
     let tracks = database.managed_resource_tracks()?;
     let record = find_managed_resource_track(&tracks, "mysql", unsupported_track)?;
 
@@ -2967,6 +3161,103 @@ async fn demanded_resource_cleans_runtime_files_when_process_exits_after_readine
         failure_snapshot,
     )?;
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn system_reconciliation_preserves_removed_demanded_tracks() -> Result<()> {
+    for (resource_name, demanded_resource) in [
+        ("mailpit", "mailpit"),
+        ("php", "frankenphp"),
+        ("frankenphp", "php"),
+    ] {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let caddy_fixture = setup_default_fixture("caddy")?;
+        seed_setup_default_cached_fixture(&paths, tempdir.path(), &[caddy_fixture])?;
+        let mut database = Database::open(&paths)?;
+        let before = database.record_managed_resource_track_removal_intent(
+            resource_name,
+            "1.0",
+            false,
+            true,
+        )?;
+        let catalog = super::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
+        let demands = BTreeSet::from([DemandedResourceTrack::new(demanded_resource, "1.0")]);
+
+        let result = super::reconcile_system_resources_with_catalog_and_progress(
+            &paths,
+            &mut database,
+            &catalog,
+            &demands,
+            DaemonDownloadProgress::disabled(),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(DaemonError::ManagedResourceTrackRemoved { resource, track })
+                if resource == resource_name && track == "1.0"
+        ));
+        assert_eq!(
+            database.managed_resource_track(resource_name, "1.0")?,
+            before
+        );
+        assert!(database.assigned_ports()?.is_empty());
+        assert!(database.runtime_observed_states()?.is_empty());
+        let caddy = database.managed_resource_track("caddy", "2")?;
+        assert!(caddy.installed_version.is_some());
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_reconciliation_rejects_removed_track_without_artifact() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    seed_fake_mailpit_cached_fixture(&paths, tempdir.path())?;
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "project.test",
+        "serve: false\nmailpit:\n  version: \"1.0\"\n",
+    )?;
+    let mut database = Database::open(&paths)?;
+    let before = database.record_managed_resource_track_removal_intent(
+        "mailpit",
+        FAKE_MAILPIT_TRACK,
+        false,
+        true,
+    )?;
+
+    let result = reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
+        &paths,
+        &project.id,
+        OFFLINE_TEST_MANIFEST_URL,
+    )
+    .await;
+
+    let Err(error) = result else {
+        write_project_config(&project, "serve: false\n")?;
+        reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
+        bail!("removed track unexpectedly reconciled");
+    };
+    assert!(
+        matches!(
+            error.downcast_ref::<DaemonError>(),
+            Some(DaemonError::ManagedResourceTrackRemoved { resource, track })
+                if resource == "mailpit" && track == FAKE_MAILPIT_TRACK
+        ),
+        "unexpected reconciliation error: {error:#?}"
+    );
+    let after = database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?;
+    assert_eq!(after.desired_state, before.desired_state);
+    assert_eq!((after.removal_prune, after.removal_force), (false, true));
+    assert!(after.current_artifact_path.is_none());
+    assert!(after.installed_version.is_none());
+    assert!(!project.path.join(".env").exists());
+    assert_failed_mailpit_runtime(&database.runtime_observed_states()?);
     Ok(())
 }
 

@@ -757,7 +757,7 @@ Project config, command namespaces, filesystem paths, and internal state use can
 
 Managed Resource uninstall commands remove installed binaries and runtime metadata by default. They delete Managed Resource data only when `--prune` is provided. `--prune` requires interactive confirmation unless `--force` is also provided.
 
-PV refuses to uninstall a Managed Resource track currently needed by a linked Project unless `--force` is provided. Forced uninstall marks affected Projects failed or pending; reconciliation may reinstall the track if Project config still declares it.
+PV refuses to uninstall a Managed Resource track currently needed by a linked Project unless `--force` is provided. Forced uninstall marks affected Projects failed or pending. Reconciliation preserves explicit removal intent and reports a removed-track error while Project config still demands the track.
 
 `pv uninstall` is safe by default. It stops and unregisters the LaunchAgent, removes `/etc/resolver/test`, removes PV's `pf` redirect rules, removes PV local CA trust, deregisters and removes the root helper, removes the PV-managed `PV ENV` shell profile block when present, stops PV-managed processes, and removes PV app binaries, shims, runtime metadata, sockets, generated configs, and installed Managed Resource binaries. Helper removal cleans the exclusively PV-owned system support directory, including interrupted work files. macOS may request administrator authentication when helper artifacts exist; an installation created with `--no-setup` does not prompt merely to remove an absent helper. Before editing a shell profile during uninstall, PV creates a backup.
 
