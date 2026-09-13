@@ -319,10 +319,35 @@ pub(crate) async fn run_background_reconciliation_job_with_origin(
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), BackgroundReconciliationError> {
-    let result = enqueue_reconciliation_job(&paths, &queue, scope)
-        .map_err(|error| BackgroundReconciliationError::Admission(Box::new(error)))?;
+    let Some(result) = enqueue_background_reconciliation_job(&paths, &queue, scope)? else {
+        return Ok(());
+    };
+    let EnqueueResult::Queued(queued) = result else {
+        return Ok(());
+    };
 
-    complete_background_reconciliation_job(&paths, result, runtime_catalog).await
+    complete_queued_background_reconciliation_job(&paths, queued, runtime_catalog).await
+}
+
+pub(crate) fn enqueue_background_reconciliation_job(
+    paths: &PvPaths,
+    queue: &ReconciliationQueue,
+    scope: ReconciliationScope,
+) -> Result<Option<EnqueueResult>, BackgroundReconciliationError> {
+    if let ReconciliationScope::Project { id } = &scope
+        && !project_exists(paths, id.as_str())
+            .map_err(|error| BackgroundReconciliationError::Admission(Box::new(error)))?
+    {
+        return Ok(None);
+    }
+
+    enqueue_reconciliation_job(paths, queue, scope)
+        .map(Some)
+        .map_err(|error| BackgroundReconciliationError::Admission(Box::new(error)))
+}
+
+fn project_exists(paths: &PvPaths, project_id: &str) -> Result<bool, DaemonError> {
+    Ok(Database::open(paths)?.project_by_id(project_id)?.is_some())
 }
 
 pub(crate) async fn run_startup_reconciliation_job(
@@ -396,14 +421,11 @@ async fn wait_for_startup_reconciliation_turn(
     }
 }
 
-async fn complete_background_reconciliation_job(
+pub(crate) async fn complete_queued_background_reconciliation_job(
     paths: &PvPaths,
-    result: EnqueueResult,
+    queued: QueuedReconciliation,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), BackgroundReconciliationError> {
-    let EnqueueResult::Queued(queued) = result else {
-        return Ok(());
-    };
     let running = queued.wait_for_turn().await;
 
     complete_running_background_reconciliation_job(paths, running, runtime_catalog).await
@@ -423,7 +445,10 @@ async fn complete_running_background_reconciliation_job(
         runtime_catalog,
         DaemonDownloadProgress::disabled(),
         running.timing(),
-        None,
+        ReconciliationJobOptions {
+            discard_obsolete_project: true,
+            ..ReconciliationJobOptions::default()
+        },
     )
     .await;
 
@@ -449,9 +474,11 @@ async fn run_reconciliation_job(
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), DaemonError> {
-    let result = match enqueue_reconciliation_job(&paths, &queue, scope) {
+    let result = match enqueue_foreground_reconciliation_job(&paths, &queue, scope) {
         Ok(result) => result,
-        Err(DaemonError::State(error @ StateError::CoordinationLockHeld { .. })) => {
+        Err(DaemonError::State(
+            error @ (StateError::CoordinationLockHeld { .. } | StateError::ProjectNotFound { .. }),
+        )) => {
             write_line(&mut transport, &DaemonResponse::error(error.to_string())).await?;
 
             return Ok(());
@@ -496,6 +523,36 @@ async fn run_reconciliation_job(
             Ok(())
         }
     }
+}
+
+fn enqueue_foreground_reconciliation_job(
+    paths: &PvPaths,
+    queue: &ReconciliationQueue,
+    scope: ReconciliationScope,
+) -> Result<EnqueueResult, DaemonError> {
+    require_project_scope_exists(paths, &scope)?;
+    let result = enqueue_reconciliation_job(paths, queue, scope.clone())?;
+    if matches!(&result, EnqueueResult::Coalesced(_)) {
+        require_project_scope_exists(paths, &scope)?;
+    }
+
+    Ok(result)
+}
+
+fn require_project_scope_exists(
+    paths: &PvPaths,
+    scope: &ReconciliationScope,
+) -> Result<(), DaemonError> {
+    if let ReconciliationScope::Project { id } = scope
+        && !project_exists(paths, id.as_str())?
+    {
+        return Err(StateError::ProjectNotFound {
+            target: id.to_string(),
+        }
+        .into());
+    }
+
+    Ok(())
 }
 
 fn enqueue_reconciliation_job(
@@ -1388,7 +1445,10 @@ async fn complete_reconciliation_job_with_progress(
         runtime_catalog,
         progress,
         timing,
-        pf_routing_state,
+        ReconciliationJobOptions {
+            pf_routing_state,
+            ..ReconciliationJobOptions::default()
+        },
     )
     .await
     .into_result()
@@ -1418,6 +1478,12 @@ impl ReconciliationJobCompletion {
     }
 }
 
+#[derive(Default)]
+struct ReconciliationJobOptions {
+    discard_obsolete_project: bool,
+    pf_routing_state: Option<GatewayPfRoutingState>,
+}
+
 async fn complete_reconciliation_job_with_progress_outcome(
     paths: &PvPaths,
     job_id: &str,
@@ -1425,7 +1491,7 @@ async fn complete_reconciliation_job_with_progress_outcome(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
     timing: ReconciliationJobTiming,
-    pf_routing_state: Option<GatewayPfRoutingState>,
+    options: ReconciliationJobOptions,
 ) -> ReconciliationJobCompletion {
     let scope_text = scope.to_string();
     let phase_log = ReconciliationPhaseLog::new(paths, job_id, &scope_text);
@@ -1436,45 +1502,71 @@ async fn complete_reconciliation_job_with_progress_outcome(
         timing.queue_wait(),
         &[],
     );
+    let obsolete_project = match (options.discard_obsolete_project, scope) {
+        (true, ReconciliationScope::Project { id }) => {
+            project_exists(paths, id.as_str()).map(|exists| !exists)
+        }
+        _ => Ok(false),
+    };
     let progress = progress.with_phase_log(phase_log.clone());
     let effective_scope = scope.effective();
     let mut failure_subject = None;
-    let result = match &effective_scope {
-        ReconciliationScope::System => {
-            complete_system_reconciliation_with_progress(
-                paths,
-                runtime_catalog,
-                progress,
-                &phase_log,
-            )
-            .await
+    let result = match obsolete_project {
+        Err(error) => Err(error),
+        Ok(true) => {
+            if let ReconciliationScope::Project { id } = scope {
+                phase_log.completed(
+                    ReconciliationPhase::ProjectApply,
+                    id.as_str(),
+                    PhaseOutcome::Skipped,
+                    Duration::ZERO,
+                    &[],
+                );
+            }
+            Ok(CompletedReconciliationJob {
+                summary: "Project was removed before background reconciliation; skipped".to_owned(),
+                coverage: Vec::new(),
+            })
         }
-        ReconciliationScope::Resource { name, .. } if gateway_runtime_resource(name.as_str()) => {
-            complete_gateway_reconciliation(paths, &phase_log).await
-        }
-        ReconciliationScope::Resource { name, track } => {
-            complete_managed_resource_reconciliation_with_progress(
-                paths,
-                name,
-                track,
-                runtime_catalog,
-                progress,
-                &phase_log,
-            )
-            .await
-        }
-        ReconciliationScope::Project { id } => {
-            complete_project_reconciliation_with_progress(
-                paths,
-                id,
-                runtime_catalog,
-                progress,
-                &phase_log,
-                pf_routing_state,
-                &mut failure_subject,
-            )
-            .await
-        }
+        Ok(false) => match &effective_scope {
+            ReconciliationScope::System => {
+                complete_system_reconciliation_with_progress(
+                    paths,
+                    runtime_catalog,
+                    progress,
+                    &phase_log,
+                )
+                .await
+            }
+            ReconciliationScope::Resource { name, .. }
+                if gateway_runtime_resource(name.as_str()) =>
+            {
+                complete_gateway_reconciliation(paths, &phase_log).await
+            }
+            ReconciliationScope::Resource { name, track } => {
+                complete_managed_resource_reconciliation_with_progress(
+                    paths,
+                    name,
+                    track,
+                    runtime_catalog,
+                    progress,
+                    &phase_log,
+                )
+                .await
+            }
+            ReconciliationScope::Project { id } => {
+                complete_project_reconciliation_with_progress(
+                    paths,
+                    id,
+                    runtime_catalog,
+                    progress,
+                    &phase_log,
+                    options.pf_routing_state,
+                    &mut failure_subject,
+                )
+                .await
+            }
+        },
     };
 
     let coverage_count = result
@@ -1680,7 +1772,17 @@ async fn complete_project_reconciliation_with_progress(
         PhaseOutcome::from_succeeded(project_result.is_ok()),
         &[("project_count", 1)],
     );
-    let project_env_summary = project_result?;
+    let project_env_summary = match project_result {
+        Ok(summary) => summary,
+        Err(project_error) => {
+            let gateway_result = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await;
+            return Err(combined_system_reconciliation_error(
+                std::iter::once(project_error)
+                    .chain(gateway_result.err())
+                    .collect(),
+            ));
+        }
+    };
     let gateway_outcome = reconcile_project_gateway_runtimes_with_phase_log(
         paths,
         id.as_str(),
@@ -2366,6 +2468,9 @@ mod tests {
     use tokio::sync::{mpsc::channel, oneshot};
     use tokio::time::{Duration, timeout};
 
+    use crate::gateway::{
+        GatewayPfRoutingState, reconcile_gateway_runtimes_with_pf_state_for_test,
+    };
     use crate::project_env::reconcile_project_env_from_persisted_state;
 
     use super::{
@@ -2376,9 +2481,10 @@ mod tests {
         complete_streamed_job_with_heartbeat, complete_streamed_job_with_heartbeat_and_events,
         complete_system_reconciliation_with_progress, complete_update_job,
         completed_system_reconciliation_coverage, discover_system_project_demand,
-        enqueue_reconciliation_job, enqueue_startup_reconciliation_job,
-        foreground_reconciliation_result, managed_resource_reconciliation_summary,
-        reconcile_persisted_project_envs, reconcile_project_env_and_missing_resources,
+        enqueue_foreground_reconciliation_job, enqueue_reconciliation_job,
+        enqueue_startup_reconciliation_job, foreground_reconciliation_result,
+        managed_resource_reconciliation_summary, reconcile_persisted_project_envs,
+        reconcile_project_env_and_missing_resources,
         reconcile_project_env_with_runtime_catalog_and_progress,
         reconcile_system_projects_and_resources_with_progress,
         reconcile_system_projects_with_progress,
@@ -2422,6 +2528,150 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/test-fixtures/gateway/fake-caddy-server.py"
     ));
+
+    #[tokio::test]
+    async fn invalid_project_config_does_not_block_crashed_worker_recovery() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        seed_installed_caddy(&paths)?;
+        let certified_key = generate_simple_self_signed(vec![
+            "project.test".to_owned(),
+            "pv-gateway.localhost".to_owned(),
+        ])?;
+        state::fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;
+        state::fs::write_sensitive_file(
+            &paths.ca_private_key(),
+            &certified_key.signing_key.serialize_pem(),
+        )?;
+        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let release = tempdir.path().join("frankenphp-release");
+        let executable = release.join("bin/frankenphp");
+        state::fs::write_sensitive_file(
+            &executable,
+            include_str!("../test-fixtures/gateway/fake-stateful-frankenphp.sh"),
+        )?;
+        state::fs::write_sensitive_file(
+            &Utf8PathBuf::from(format!("{executable}.server.py")),
+            include_str!("../test-fixtures/gateway/fake-stateful-runtime-server.py"),
+        )?;
+        set_executable(&executable)?;
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(&config_path, "php: \"8.4\"\n")?;
+        let mut database = Database::open(&paths)?;
+        let project = database
+            .link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path,
+                primary_hostname: "project.test".to_owned(),
+                config_path: config_path.clone(),
+                desired_php_track: Some("8.4".to_owned()),
+                additional_hostnames: Vec::new(),
+            })?
+            .project;
+        database.record_managed_resource_track_installed(
+            "frankenphp",
+            "8.4",
+            "fake-frankenphp-pv1",
+            &release,
+        )?;
+        drop(database);
+        reconcile_gateway_runtimes_with_pf_state_for_test(
+            &paths,
+            Duration::from_secs(5),
+            GatewayPfRoutingState::Inactive,
+        )
+        .await?;
+        let supervisor = ProcessSupervisor::new(paths.clone());
+        let worker = supervisor
+            .adopt_recorded(
+                &paths.worker_pid("8.4"),
+                &paths.worker_runtime_metadata("8.4"),
+            )?
+            .ok_or_else(|| anyhow::anyhow!("worker not running after setup"))?;
+        worker.stop(Duration::from_secs(1)).await?;
+        state::fs::write_sensitive_file(&config_path, "php: [\n")?;
+        let scope = ReconciliationScope::project(project.id.clone())?;
+        let result = run_background_reconciliation_job(
+            paths.clone(),
+            ReconciliationQueue::new(),
+            scope,
+            None,
+        )
+        .await;
+        let recovered = supervisor.adopt_recorded(
+            &paths.worker_pid("8.4"),
+            &paths.worker_runtime_metadata("8.4"),
+        )?;
+        let worker_recovered = recovered.is_some();
+        if let Some(worker) = recovered {
+            worker.stop(Duration::from_secs(1)).await?;
+        }
+        let database = Database::open(&paths)?;
+        let job_statuses = database
+            .recent_jobs()?
+            .into_iter()
+            .map(|job| job.status)
+            .collect::<Vec<_>>();
+        let project_status = database
+            .project_env_observed_state(&project.id)?
+            .map(|state| state.status);
+        assert!(
+            matches!(result, Err(DaemonError::Config(ConfigError::Parse { .. }))),
+            "unexpected Project failure: {result:?}"
+        );
+        assert_debug_snapshot!((worker_recovered, project_status, job_statuses), @r"
+        (
+            true,
+            Some(
+                Failed,
+            ),
+            [
+                Failed,
+            ],
+        )
+        ");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn project_and_gateway_recovery_failures_are_both_reported() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        seed_installed_caddy(&paths)?;
+        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(&config_path, "php: [\n")?;
+        let project = Database::open(&paths)?
+            .link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path,
+                primary_hostname: "project.test".to_owned(),
+                config_path,
+                desired_php_track: Some("8.4".to_owned()),
+                additional_hostnames: Vec::new(),
+            })?
+            .project;
+        let result = run_background_reconciliation_job(
+            paths.clone(),
+            ReconciliationQueue::new(),
+            ReconciliationScope::project(project.id)?,
+            None,
+        )
+        .await;
+        let Err(DaemonError::SystemReconciliationFailures { failures }) = result else {
+            anyhow::bail!("expected Project and Gateway failures, got {result:?}");
+        };
+        assert!(
+            matches!(failures.as_slice(), [
+            DaemonError::Config(ConfigError::Parse { .. }),
+            DaemonError::UnexpectedProtocolResponse { reason },
+        ] if reason == "FrankenPHP is not installed for PHP track `8.4`"),
+            "unexpected failures: {failures:?}"
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     async fn resource_only_project_without_active_route_excludes_gateway_coverage()
@@ -7053,6 +7303,98 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn background_reconciliation_discards_removed_project_scopes() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        Database::open(&paths)?;
+
+        run_background_reconciliation_job(
+            paths.clone(),
+            ReconciliationQueue::new(),
+            ReconciliationScope::project("removed-before-admission")?,
+            None,
+        )
+        .await?;
+        assert!(Database::open(&paths)?.recent_jobs()?.is_empty());
+
+        let project_id = link_background_test_project(
+            &paths,
+            &tempdir.path().join("queued-project"),
+            "queued-project.test",
+        )?;
+
+        let queue = ReconciliationQueue::new();
+        let blocker = queued(enqueue_reconciliation_job(
+            &paths,
+            &queue,
+            ReconciliationScope::System,
+        )?)?;
+        let running = blocker.wait_for_turn().await;
+        let scope = ReconciliationScope::project(project_id.clone())?;
+        let scope_text = scope.to_string();
+        let queued_paths = paths.clone();
+        let queued_queue = queue.clone();
+        let queued_task = tokio::spawn(async move {
+            run_background_reconciliation_job(queued_paths, queued_queue, scope, None).await
+        });
+        wait_for_job_scope(&paths, &scope_text).await?;
+        Database::open(&paths)?.unlink_project(&project_id)?;
+        let foreground_result = enqueue_foreground_reconciliation_job(
+            &paths,
+            &queue,
+            ReconciliationScope::project(project_id.clone())?,
+        );
+        assert!(matches!(
+            foreground_result,
+            Err(DaemonError::State(StateError::ProjectNotFound { target }))
+                if target == project_id
+        ));
+        running.finish();
+
+        queued_task.await??;
+        let database = Database::open(&paths)?;
+        let job = database
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.scope == scope_text)
+            .ok_or_else(|| anyhow::anyhow!("missing removed Project job"))?;
+        assert_eq!(job.status, JobStatus::Succeeded);
+        assert_eq!(
+            job.summary.as_deref(),
+            Some("Project was removed before background reconciliation; skipped")
+        );
+        let coverage_count = Connection::open(paths.db().as_std_path())?.query_row(
+            "SELECT COUNT(*) FROM job_diagnostic_outcomes WHERE job_id = ?1",
+            [&job.id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        assert_eq!(coverage_count, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn foreground_reconciliation_still_rejects_missing_project() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        Database::open(&paths)?;
+
+        let result = enqueue_foreground_reconciliation_job(
+            &paths,
+            &ReconciliationQueue::new(),
+            ReconciliationScope::project("missing")?,
+        );
+
+        assert!(matches!(
+            result,
+            Err(DaemonError::State(StateError::ProjectNotFound { target })) if target == "missing"
+        ));
+        assert!(Database::open(&paths)?.recent_jobs()?.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn startup_shutdown_wins_ready_queue_handoff() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -7103,14 +7445,19 @@ mod tests {
             ReconciliationScope::System,
         )?)?;
         let running = first.wait_for_turn().await;
+        let project_id = link_background_test_project(
+            &paths,
+            &tempdir.path().join("queued-project"),
+            "queued-project.test",
+        )?;
         let queued_paths = paths.clone();
         let queued_queue = queue.clone();
-        let queued_scope = ReconciliationScope::project("project_1")?;
+        let queued_scope = ReconciliationScope::project(project_id.clone())?;
         let queued_task = tokio::spawn(async move {
             run_background_reconciliation_job(queued_paths, queued_queue, queued_scope, None).await
         });
 
-        wait_for_job_scope(&paths, "project:project_1").await?;
+        wait_for_job_scope(&paths, &format!("project:{project_id}")).await?;
         let update_lock = UpdateLock::acquire(&paths)?;
         let jobs_lock = JobsLock::acquire(&paths);
 
@@ -7139,7 +7486,12 @@ mod tests {
             ReconciliationScope::System,
         )?)?;
         let running = first.wait_for_turn().await;
-        let scope = ReconciliationScope::project("project_1")?;
+        let project_id = link_background_test_project(
+            &paths,
+            &tempdir.path().join("coalesced-project"),
+            "coalesced-project.test",
+        )?;
+        let scope = ReconciliationScope::project(project_id.clone())?;
         let queued_paths = paths.clone();
         let queued_queue = queue.clone();
         let queued_scope = scope.clone();
@@ -7147,7 +7499,7 @@ mod tests {
             run_background_reconciliation_job(queued_paths, queued_queue, queued_scope, None).await
         });
 
-        wait_for_job_scope(&paths, "project:project_1").await?;
+        wait_for_job_scope(&paths, &format!("project:{project_id}")).await?;
         run_background_reconciliation_job(paths.clone(), queue.clone(), scope, None).await?;
 
         queued_task.abort();
@@ -7222,6 +7574,27 @@ mod tests {
         running.finish();
 
         Ok(())
+    }
+
+    fn link_background_test_project(
+        paths: &PvPaths,
+        project_path: &Utf8Path,
+        primary_hostname: &str,
+    ) -> anyhow::Result<String> {
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(&config_path, "php: \"8.4\"\n")?;
+        let project = Database::open(paths)?
+            .link_project(LinkProjectInput {
+                path: project_path.to_path_buf(),
+                original_path: project_path.to_path_buf(),
+                primary_hostname: primary_hostname.to_owned(),
+                config_path,
+                desired_php_track: Some("8.4".to_owned()),
+                additional_hostnames: Vec::new(),
+            })?
+            .project;
+
+        Ok(project.id)
     }
 
     fn queued(result: EnqueueResult) -> anyhow::Result<crate::QueuedReconciliation> {

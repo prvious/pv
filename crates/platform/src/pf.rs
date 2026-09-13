@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::io;
 use std::net::IpAddr;
+use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
 #[cfg(any(target_os = "macos", test))]
@@ -11,6 +12,7 @@ use crate::PlatformError;
 #[cfg(target_os = "macos")]
 use crate::command::run_system_command;
 use crate::command::run_system_command_output;
+use crate::command::run_system_command_output_with_timeout;
 
 pub const SYSTEM_PF_ANCHOR_PATH: &str = "/etc/pf.anchors/com.prvious.pv";
 pub const SYSTEM_PF_CONF_PATH: &str = "/etc/pf.conf";
@@ -23,6 +25,7 @@ const PF_RDR_ANCHOR_DIRECTIVE: &str = "rdr-anchor \"com.prvious.pv\"";
 const LEGACY_PF_ANCHOR_DIRECTIVE: &str = "anchor \"com.prvious.pv\"";
 const PF_LOAD_ANCHOR_DIRECTIVE: &str =
     "load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"";
+const PFCTL_INSPECTION_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PfRedirectConfig {
@@ -278,7 +281,9 @@ fn pfctl_permission_denied(error: &PlatformError) -> bool {
 
 pub fn inspect_active_pf_redirects_unprivileged()
 -> Result<ActivePfRedirectInspection, PlatformError> {
-    inspect_active_pf_redirects_unprivileged_with_runner(&mut run_system_command_output)
+    inspect_active_pf_redirects_unprivileged_with_runner(&mut |program, args| {
+        run_system_command_output_with_timeout(program, args, PFCTL_INSPECTION_TIMEOUT)
+    })
 }
 
 fn active_pf_redirect_config_unprivileged_with_runner(
