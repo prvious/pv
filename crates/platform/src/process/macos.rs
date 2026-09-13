@@ -114,16 +114,17 @@ fn process_start_identity(
 fn process_arguments(
     pid: libc::pid_t,
 ) -> Result<Option<(Utf8PathBuf, String, Vec<String>)>, InspectionError> {
-    for _attempt in 1..=MAX_SNAPSHOT_ATTEMPTS {
+    for attempt in 1..=MAX_SNAPSHOT_ATTEMPTS {
         let capacity = match query_process_arguments(pid, None) {
             Ok(capacity) => capacity,
-            Err(source) if process_not_found(&source) || argument_query_is_unavailable(&source) => {
+            Err(source) if process_not_found(&source) => {
                 return Ok(None);
             }
-            Err(source) if argument_query_is_transient(&source) => {
+            Err(source) if argument_query_is_retryable(&source, attempt) => {
                 thread::sleep(SNAPSHOT_RETRY_DELAY);
                 continue;
             }
+            Err(source) if argument_query_is_unavailable(&source) => return Ok(None),
             Err(source) => return Err(InspectionError::ArgumentSize { pid, source }),
         };
         let mut buffer = vec![0; capacity];
@@ -136,12 +137,13 @@ fn process_arguments(
             Ok(actual) => {
                 return Err(InspectionError::InvalidArgumentSize { capacity, actual });
             }
-            Err(source) if process_not_found(&source) || argument_query_is_unavailable(&source) => {
+            Err(source) if process_not_found(&source) => {
                 return Ok(None);
             }
-            Err(source) if argument_query_is_transient(&source) => {
+            Err(source) if argument_query_is_retryable(&source, attempt) => {
                 thread::sleep(SNAPSHOT_RETRY_DELAY);
             }
+            Err(source) if argument_query_is_unavailable(&source) => return Ok(None),
             Err(source) => return Err(InspectionError::ArgumentRead { pid, source }),
         }
     }
@@ -240,7 +242,7 @@ fn process_not_found(error: &io::Error) -> bool {
 }
 
 fn argument_query_is_unavailable(error: &io::Error) -> bool {
-    // KERN_PROCARGS2 reports EINVAL when the target vanished or has no user stack.
+    // KERN_PROCARGS2 can transiently report EINVAL while a live process changes state.
     error.raw_os_error() == Some(libc::EINVAL)
 }
 
@@ -248,17 +250,26 @@ fn argument_query_is_transient(error: &io::Error) -> bool {
     matches!(error.raw_os_error(), Some(libc::EIO) | Some(libc::ENOMEM))
 }
 
+fn argument_query_is_retryable(error: &io::Error, attempt: usize) -> bool {
+    argument_query_is_transient(error)
+        || (argument_query_is_unavailable(error) && attempt < MAX_SNAPSHOT_ATTEMPTS)
+}
+
 #[cfg(test)]
 mod tests {
     use std::io;
 
-    use super::argument_query_is_unavailable;
+    use super::{
+        MAX_SNAPSHOT_ATTEMPTS, argument_query_is_retryable, argument_query_is_unavailable,
+    };
 
     #[test]
-    fn argument_query_einval_means_process_identity_is_unavailable() {
-        assert!(argument_query_is_unavailable(
-            &io::Error::from_raw_os_error(libc::EINVAL)
-        ));
+    fn argument_query_einval_is_retried_before_identity_becomes_unavailable() {
+        let error = io::Error::from_raw_os_error(libc::EINVAL);
+
+        assert!(argument_query_is_retryable(&error, 1));
+        assert!(!argument_query_is_retryable(&error, MAX_SNAPSHOT_ATTEMPTS));
+        assert!(argument_query_is_unavailable(&error));
         assert!(!argument_query_is_unavailable(
             &io::Error::from_raw_os_error(libc::EACCES)
         ));
