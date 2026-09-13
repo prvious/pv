@@ -24,6 +24,8 @@ struct DatabaseAuxiliaryHardeningTestHook {
 #[cfg(any(test, feature = "test-support"))]
 static DATABASE_AUXILIARY_HARDENING_TEST_HOOK: Mutex<Option<DatabaseAuxiliaryHardeningTestHook>> =
     Mutex::new(None);
+#[cfg(any(test, feature = "test-support"))]
+static SENSITIVE_WRITE_FAILURE_TEST_HOOK: Mutex<Option<Utf8PathBuf>> = Mutex::new(None);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LayoutInspection {
@@ -81,9 +83,45 @@ pub fn remove_daemon_socket(paths: &PvPaths) -> Result<(), StateError> {
 }
 
 pub fn write_sensitive_file(path: &Utf8Path, content: &str) -> Result<(), StateError> {
+    #[cfg(any(test, feature = "test-support"))]
+    fail_sensitive_write_for_test(path)?;
+
     ensure_parent_dir(path)?;
     write_atomically(path, content)?;
     secure_sensitive_file(path)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn fail_next_sensitive_write(path: Utf8PathBuf) {
+    let mut hook = match SENSITIVE_WRITE_FAILURE_TEST_HOOK.lock() {
+        Ok(hook) => hook,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *hook = Some(path);
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn fail_sensitive_write_for_test(path: &Utf8Path) -> Result<(), StateError> {
+    let should_fail = {
+        let mut hook = match SENSITIVE_WRITE_FAILURE_TEST_HOOK.lock() {
+            Ok(hook) => hook,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if hook.as_deref() == Some(path) {
+            hook.take();
+            true
+        } else {
+            false
+        }
+    };
+    if should_fail {
+        return Err(StateError::filesystem(
+            path.to_path_buf(),
+            io::Error::other("injected sensitive write failure"),
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn copy_file_atomically(source: &Utf8Path, target: &Utf8Path) -> Result<(), StateError> {
