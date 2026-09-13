@@ -611,7 +611,7 @@ mod tests {
         ProjectManagedResourceInput,
     };
     use state::{PvPaths, RuntimeSubject};
-    use tokio::time::{Duration, Instant, advance};
+    use tokio::time::{Duration, Instant, advance, sleep};
 
     use super::{
         DesiredRuntimeProbe, HEALTHY_RESET_INTERVAL, RUNTIME_HEALTH_INTERVAL, RUNTIME_RETRY_DELAYS,
@@ -1120,8 +1120,8 @@ mod tests {
         let healthy_spec = worker_process_spec(&paths, &healthy_runtime, "8.4");
         let killed_process = supervisor.start(killed_spec.clone()).await?;
         let healthy_process = supervisor.start(healthy_spec.clone()).await?;
-        supervisor.record_applied_config(&killed_spec, "sha256:v1:killed")?;
-        supervisor.record_applied_config(&healthy_spec, "sha256:v1:healthy")?;
+        record_applied_fixture_config(&supervisor, &killed_spec, "sha256:v1:killed").await?;
+        record_applied_fixture_config(&supervisor, &healthy_spec, "sha256:v1:healthy").await?;
         killed_process.stop(Duration::from_secs(1)).await?;
 
         let scan_result = scan_runtime_health(
@@ -1174,7 +1174,7 @@ mod tests {
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
         )
         .await?;
-        supervisor.record_applied_config(&spec, "sha256:v1:applied")?;
+        record_applied_fixture_config(&supervisor, &spec, "sha256:v1:applied").await?;
         supervisor.mark_replacement_required(&spec, "sha256:v1:staged")?;
 
         let replacement_scan = scan_runtime_health(
@@ -1188,7 +1188,7 @@ mod tests {
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
         )
         .await?;
-        supervisor.record_applied_config(&spec, "sha256:v1:staged")?;
+        record_applied_fixture_config(&supervisor, &spec, "sha256:v1:staged").await?;
         let mut database = Database::open(&paths)?;
         let new_artifact_root = tempdir.path().join("frankenphp-8.4-new");
         database.record_managed_resource_track_installed(
@@ -1259,7 +1259,7 @@ mod tests {
         let healthy_spec = worker_process_spec(&paths, &healthy_runtime, "8.4");
         let broken_process = supervisor.start(broken_spec).await?;
         let healthy_process = supervisor.start(healthy_spec.clone()).await?;
-        supervisor.record_applied_config(&healthy_spec, "sha256:v1:healthy")?;
+        record_applied_fixture_config(&supervisor, &healthy_spec, "sha256:v1:healthy").await?;
         state::fs::write_sensitive_file(&paths.worker_runtime_metadata("8.3"), "{")?;
 
         let scan_result = scan_runtime_health(
@@ -1400,6 +1400,27 @@ mod tests {
         })?;
 
         listener.ok_or_else(|| anyhow!("assigned PHP worker port was not reserved"))
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn record_applied_fixture_config(
+        supervisor: &ProcessSupervisor,
+        spec: &ProcessSpec,
+        fingerprint: &str,
+    ) -> anyhow::Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if supervisor.record_applied_config(spec, fingerprint)? {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(anyhow!(
+                    "runtime {} did not remain owned while recording applied config",
+                    spec.name
+                ));
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
     }
 
     #[cfg(target_os = "macos")]
