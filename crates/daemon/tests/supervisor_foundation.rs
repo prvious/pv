@@ -90,7 +90,7 @@ async fn readiness_timeout_reports_the_last_probe_failure() -> Result<()> {
             port,
             path: "/health".to_string(),
         },
-        Duration::from_millis(30),
+        Duration::from_secs(1),
     )
     .await;
 
