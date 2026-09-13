@@ -22,7 +22,8 @@ use crate::project_env::{
     reconcile_project_env_with_runtime_catalog_and_progress, record_project_env_failure,
 };
 use crate::reconciliation::{
-    EnqueueResult, ReconciliationJobTiming, ReconciliationQueue, ReconciliationScope,
+    EnqueueResult, QueuedReconciliation, ReconciliationJobTiming, ReconciliationQueue,
+    ReconciliationScope, RunningReconciliation,
 };
 use crate::structured_log::{self, PhaseOutcome, ReconciliationPhase, ReconciliationPhaseLog};
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
@@ -31,11 +32,13 @@ use state::{
 };
 use tokio::io::AsyncWrite;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
+use tokio::sync::oneshot;
 use tokio::time::{Duration, Instant, MissedTickBehavior, interval_at, timeout};
 
 const FOREGROUND_JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 const FOREGROUND_JOB_STREAM_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
 const FOREGROUND_JOB_PROGRESS_BUFFER: usize = 16;
+const STARTUP_JOBS_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Debug)]
 enum ForegroundJobEvent {
@@ -280,33 +283,163 @@ pub(crate) async fn run_job(
     run_started_job(paths, transport, kind, scope).await
 }
 
+#[cfg(test)]
 pub(crate) async fn run_background_reconciliation_job(
     paths: PvPaths,
     queue: ReconciliationQueue,
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), DaemonError> {
-    let result = enqueue_reconciliation_job(&paths, &queue, scope)?;
+    run_background_reconciliation_job_with_origin(paths, queue, scope, runtime_catalog)
+        .await
+        .map_err(BackgroundReconciliationError::into_error)
+}
+
+pub(crate) enum BackgroundReconciliationError {
+    Admission(Box<DaemonError>),
+    Execution {
+        job_id: String,
+        error: Box<DaemonError>,
+        recording_error: Option<Box<DaemonError>>,
+    },
+}
+
+#[cfg(test)]
+impl BackgroundReconciliationError {
+    pub(crate) fn into_error(self) -> DaemonError {
+        match self {
+            Self::Admission(error) | Self::Execution { error, .. } => *error,
+        }
+    }
+}
+
+pub(crate) async fn run_background_reconciliation_job_with_origin(
+    paths: PvPaths,
+    queue: ReconciliationQueue,
+    scope: ReconciliationScope,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<(), BackgroundReconciliationError> {
+    let result = enqueue_reconciliation_job(&paths, &queue, scope)
+        .map_err(|error| BackgroundReconciliationError::Admission(Box::new(error)))?;
+
+    complete_background_reconciliation_job(&paths, result, runtime_catalog).await
+}
+
+pub(crate) async fn run_startup_reconciliation_job(
+    paths: PvPaths,
+    queue: ReconciliationQueue,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    mut shutdown: oneshot::Receiver<()>,
+) -> Result<(), BackgroundReconciliationError> {
+    let result = loop {
+        let enqueue_paths = paths.clone();
+        let enqueue_queue = queue.clone();
+        let mut enqueue_task = tokio::task::spawn_blocking(move || {
+            enqueue_startup_reconciliation_job(&enqueue_paths, &enqueue_queue)
+        });
+        let result = tokio::select! {
+            biased;
+            result = &mut enqueue_task => result
+                .map_err(DaemonError::from)
+                .map_err(|error| BackgroundReconciliationError::Admission(Box::new(error)))?,
+            _ = &mut shutdown => {
+                let enqueue_result = enqueue_task
+                    .await
+                    .map_err(DaemonError::from)
+                    .map_err(|error| BackgroundReconciliationError::Admission(Box::new(error)))?;
+                return match enqueue_result {
+                    Ok(_result) => Ok(()),
+                    Err(DaemonError::State(StateError::CoordinationLockHeld { path }))
+                        if path == paths.jobs_lock() =>
+                    {
+                        Ok(())
+                    }
+                    Err(error) => Err(BackgroundReconciliationError::Admission(Box::new(error))),
+                };
+            }
+        };
+
+        match result {
+            Ok(result) => break result,
+            Err(DaemonError::State(StateError::CoordinationLockHeld { path }))
+                if path == paths.jobs_lock() =>
+            {
+                tokio::select! {
+                    _ = tokio::time::sleep(STARTUP_JOBS_LOCK_RETRY_INTERVAL) => {}
+                    _ = &mut shutdown => return Ok(()),
+                }
+            }
+            Err(error) => {
+                return Err(BackgroundReconciliationError::Admission(Box::new(error)));
+            }
+        }
+    };
+
+    let EnqueueResult::Queued(queued) = result else {
+        return Ok(());
+    };
+    let Some(running) = wait_for_startup_reconciliation_turn(queued, &mut shutdown).await else {
+        return Ok(());
+    };
+
+    complete_running_background_reconciliation_job(&paths, running, runtime_catalog).await
+}
+
+async fn wait_for_startup_reconciliation_turn(
+    queued: QueuedReconciliation,
+    shutdown: &mut oneshot::Receiver<()>,
+) -> Option<RunningReconciliation> {
+    tokio::select! {
+        biased;
+        _ = shutdown => None,
+        running = queued.wait_for_turn() => Some(running),
+    }
+}
+
+async fn complete_background_reconciliation_job(
+    paths: &PvPaths,
+    result: EnqueueResult,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<(), BackgroundReconciliationError> {
     let EnqueueResult::Queued(queued) = result else {
         return Ok(());
     };
     let running = queued.wait_for_turn().await;
+
+    complete_running_background_reconciliation_job(paths, running, runtime_catalog).await
+}
+
+async fn complete_running_background_reconciliation_job(
+    paths: &PvPaths,
+    running: RunningReconciliation,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<(), BackgroundReconciliationError> {
     let job_id = running.job_id().to_string();
     let scope = running.scope().clone();
-    let result = complete_reconciliation_job(
-        &paths,
+    let completion = complete_reconciliation_job_with_progress_outcome(
+        paths,
         &job_id,
         &scope,
         runtime_catalog,
+        DaemonDownloadProgress::disabled(),
         running.timing(),
         None,
     )
-    .await
-    .map(|_summary| ());
+    .await;
 
     running.finish();
 
-    result
+    match completion {
+        ReconciliationJobCompletion::Succeeded(_summary) => Ok(()),
+        ReconciliationJobCompletion::Failed {
+            error,
+            recording_error,
+        } => Err(BackgroundReconciliationError::Execution {
+            job_id,
+            error,
+            recording_error,
+        }),
+    }
 }
 
 async fn run_reconciliation_job(
@@ -377,6 +510,21 @@ fn enqueue_reconciliation_job(
         paths,
         scope,
         || start_reconciliation_job(paths, &scope_text),
+        move |job_id| {
+            let _result = abandon_reconciliation_job(&abandon_paths, job_id);
+        },
+    )
+}
+
+fn enqueue_startup_reconciliation_job(
+    paths: &PvPaths,
+    queue: &ReconciliationQueue,
+) -> Result<EnqueueResult, DaemonError> {
+    let abandon_paths = paths.clone();
+
+    queue.enqueue_startup_with_abandon(
+        paths,
+        || start_reconciliation_job(paths, "system"),
         move |job_id| {
             let _result = abandon_reconciliation_job(&abandon_paths, job_id);
         },
@@ -854,20 +1002,40 @@ fn start_update_job(paths: &PvPaths) -> Result<String, DaemonError> {
 }
 
 fn abandon_reconciliation_job(paths: &PvPaths, job_id: &str) -> Result<(), DaemonError> {
-    let mut database = Database::open(paths)?;
-    database.fail_job(job_id, "reconciliation was abandoned before completion")?;
-
-    Ok(())
+    abandon_job(
+        paths,
+        job_id,
+        "reconcile",
+        "reconciliation was abandoned before completion",
+    )
 }
 
 fn abandon_update_job(paths: &PvPaths, job_id: &str) -> Result<(), DaemonError> {
-    let mut database = Database::open(paths)?;
-    database.fail_job(
+    abandon_job(
+        paths,
         job_id,
+        "update",
         "Managed Resource update was abandoned before completion",
-    )?;
+    )
+}
 
-    Ok(())
+fn abandon_job(
+    paths: &PvPaths,
+    job_id: &str,
+    kind: &str,
+    message: &str,
+) -> Result<(), DaemonError> {
+    let result: Result<(), DaemonError> = (|| {
+        let mut database = Database::open(paths)?;
+        database.fail_job(job_id, message)?;
+
+        Ok(())
+    })();
+    if let Err(error) = &result {
+        structured_log::job_abandonment_failed(paths, job_id, kind, &error.to_string());
+    }
+
+    result
 }
 
 async fn complete_update_job(
@@ -1213,6 +1381,52 @@ async fn complete_reconciliation_job_with_progress(
     timing: ReconciliationJobTiming,
     pf_routing_state: Option<GatewayPfRoutingState>,
 ) -> Result<String, DaemonError> {
+    complete_reconciliation_job_with_progress_outcome(
+        paths,
+        job_id,
+        scope,
+        runtime_catalog,
+        progress,
+        timing,
+        pf_routing_state,
+    )
+    .await
+    .into_result()
+}
+
+enum ReconciliationJobCompletion {
+    Succeeded(String),
+    Failed {
+        error: Box<DaemonError>,
+        recording_error: Option<Box<DaemonError>>,
+    },
+}
+
+impl ReconciliationJobCompletion {
+    fn into_result(self) -> Result<String, DaemonError> {
+        match self {
+            Self::Succeeded(summary) => Ok(summary),
+            Self::Failed {
+                error,
+                recording_error,
+            } => Err(*recording_error.unwrap_or(error)),
+        }
+    }
+
+    fn is_succeeded(&self) -> bool {
+        matches!(self, Self::Succeeded(_))
+    }
+}
+
+async fn complete_reconciliation_job_with_progress_outcome(
+    paths: &PvPaths,
+    job_id: &str,
+    scope: &ReconciliationScope,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: DaemonDownloadProgress,
+    timing: ReconciliationJobTiming,
+    pf_routing_state: Option<GatewayPfRoutingState>,
+) -> ReconciliationJobCompletion {
     let scope_text = scope.to_string();
     let phase_log = ReconciliationPhaseLog::new(paths, job_id, &scope_text);
     phase_log.completed(
@@ -1289,29 +1503,27 @@ async fn complete_reconciliation_job_with_progress(
                         &completed.summary,
                     );
 
-                    Ok(completed.summary)
+                    ReconciliationJobCompletion::Succeeded(completed.summary)
                 }
-                Err(error) => {
-                    fail_reconciliation_job(
-                        paths,
-                        job_id,
-                        &scope_text,
-                        &error,
-                        failure_subject.as_ref(),
-                    )?;
-
-                    Err(error)
-                }
+                Err(error) => finish_failed_reconciliation_job(
+                    paths,
+                    job_id,
+                    &scope_text,
+                    error,
+                    failure_subject.as_ref(),
+                ),
             }
         }
-        Err(error) => {
-            fail_reconciliation_job(paths, job_id, &scope_text, &error, failure_subject.as_ref())?;
-
-            Err(error)
-        }
+        Err(error) => finish_failed_reconciliation_job(
+            paths,
+            job_id,
+            &scope_text,
+            error,
+            failure_subject.as_ref(),
+        ),
     };
     finalization_timer.finish(
-        PhaseOutcome::from_succeeded(final_result.is_ok()),
+        PhaseOutcome::from_succeeded(final_result.is_succeeded()),
         &[
             (
                 "total_execution_ms",
@@ -1322,6 +1534,23 @@ async fn complete_reconciliation_job_with_progress(
     );
 
     final_result
+}
+
+fn finish_failed_reconciliation_job(
+    paths: &PvPaths,
+    job_id: &str,
+    scope: &str,
+    error: DaemonError,
+    subject: Option<&JobDiagnosticSubject>,
+) -> ReconciliationJobCompletion {
+    let recording_error = fail_reconciliation_job(paths, job_id, scope, &error, subject)
+        .err()
+        .map(Box::new);
+
+    ReconciliationJobCompletion::Failed {
+        error: Box::new(error),
+        recording_error,
+    }
 }
 
 fn fail_reconciliation_job(
@@ -2127,7 +2356,7 @@ mod tests {
     use rusqlite::{Connection, Error as SqliteError};
     use serde_json::json;
     use state::{
-        Database, GatewayPort, JobDiagnosticSubject, JobStatus, LinkProjectInput,
+        Database, GatewayPort, JobDiagnosticSubject, JobStatus, JobsLock, LinkProjectInput,
         ManagedResourceDesiredState, PortRequest, ProjectEnvObservedStatus,
         ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectMode,
         ProjectPhpRuntimeInput, PvPaths, ResourceAllocationInput, RuntimeObservedStatus,
@@ -2141,21 +2370,23 @@ mod tests {
 
     use super::{
         FOREGROUND_JOB_PROGRESS_BUFFER, FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent,
-        SystemProjectReconciliationReport, complete_managed_resource_reconciliation_with_progress,
+        SystemProjectReconciliationReport, abandon_reconciliation_job,
+        complete_managed_resource_reconciliation_with_progress,
         complete_or_fail_background_reconciliation, complete_project_reconciliation_with_progress,
         complete_streamed_job_with_heartbeat, complete_streamed_job_with_heartbeat_and_events,
         complete_system_reconciliation_with_progress, complete_update_job,
         completed_system_reconciliation_coverage, discover_system_project_demand,
-        enqueue_reconciliation_job, foreground_reconciliation_result,
-        managed_resource_reconciliation_summary, reconcile_persisted_project_envs,
-        reconcile_project_env_and_missing_resources,
+        enqueue_reconciliation_job, enqueue_startup_reconciliation_job,
+        foreground_reconciliation_result, managed_resource_reconciliation_summary,
+        reconcile_persisted_project_envs, reconcile_project_env_and_missing_resources,
         reconcile_project_env_with_runtime_catalog_and_progress,
         reconcile_system_projects_and_resources_with_progress,
         reconcile_system_projects_with_progress,
         reconcile_system_resources_with_runtime_catalog_and_progress,
         record_background_reconciliation_error, run_background_reconciliation_job,
-        start_reconciliation_job, start_update_job, stop_undemanded_system_resource_runtimes,
-        stream_started_reconciliation_job, stream_started_update_job, system_project_summary,
+        run_startup_reconciliation_job, start_reconciliation_job, start_update_job,
+        stop_undemanded_system_resource_runtimes, stream_started_reconciliation_job,
+        stream_started_update_job, system_project_summary, wait_for_startup_reconciliation_turn,
         write_coalesced_update_response,
     };
     use crate::reconciliation::{
@@ -6742,11 +6973,37 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test]
-    async fn background_reconciliation_rejects_update_lock_without_job() -> anyhow::Result<()> {
+    #[test]
+    fn abandonment_failure_writes_structured_daemon_log() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let update_lock = UpdateLock::acquire(&paths)?;
+        Database::open(&paths)?;
+
+        let result = abandon_reconciliation_job(&paths, "job_missing");
+
+        assert!(matches!(
+            result,
+            Err(DaemonError::State(StateError::JobNotFound { id })) if id == "job_missing"
+        ));
+        let content = state::fs::read_to_string(&paths.daemon_log())?;
+        let events = content
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<Result<Vec<_>, _>>()?;
+        assert!(events.iter().any(|event| {
+            event["event"] == "job_abandonment_failed"
+                && event["job_id"] == "job_missing"
+                && event["kind"] == "reconcile"
+        }));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn background_reconciliation_rejects_jobs_lock_without_job() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let jobs_lock = JobsLock::acquire(&paths)?;
         let result = run_background_reconciliation_job(
             paths.clone(),
             ReconciliationQueue::new(),
@@ -6758,9 +7015,9 @@ mod tests {
         assert!(matches!(
             result,
             Err(crate::DaemonError::State(StateError::CoordinationLockHeld { path }))
-                if path == paths.update_lock()
+                if path == paths.jobs_lock()
         ));
-        drop(update_lock);
+        drop(jobs_lock);
 
         let database = Database::open(&paths)?;
         assert!(database.recent_jobs()?.is_empty());
@@ -6769,7 +7026,74 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn queued_background_reconciliation_reserves_update_lock() -> anyhow::Result<()> {
+    async fn startup_shutdown_preserves_enqueue_failure() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::write_sensitive_file(paths.db(), "not a database")?;
+        let (shutdown_sender, shutdown_receiver) = oneshot::channel();
+        shutdown_sender
+            .send(())
+            .map_err(|()| anyhow::anyhow!("startup shutdown receiver was dropped"))?;
+
+        let result = run_startup_reconciliation_job(
+            paths,
+            ReconciliationQueue::new(),
+            None,
+            shutdown_receiver,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(super::BackgroundReconciliationError::Admission(error))
+                if matches!(*error, DaemonError::State(StateError::Sqlite(_)))
+        ));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn startup_shutdown_wins_ready_queue_handoff() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let queue = ReconciliationQueue::new();
+        let blocker = queued(enqueue_reconciliation_job(
+            &paths,
+            &queue,
+            ReconciliationScope::project("blocker")?,
+        )?)?;
+        let running = blocker.wait_for_turn().await;
+        let startup = queued(enqueue_startup_reconciliation_job(&paths, &queue)?)?;
+        let startup_job_id = startup.job_id().to_string();
+        let (shutdown_sender, mut shutdown_receiver) = oneshot::channel();
+
+        shutdown_sender
+            .send(())
+            .map_err(|()| anyhow::anyhow!("startup shutdown receiver was dropped"))?;
+        running.finish();
+        assert!(
+            wait_for_startup_reconciliation_turn(startup, &mut shutdown_receiver)
+                .await
+                .is_none()
+        );
+
+        let database = Database::open(&paths)?;
+        let startup = database
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.id == startup_job_id)
+            .ok_or_else(|| anyhow::anyhow!("missing startup reconciliation job"))?;
+        assert_eq!(startup.status, JobStatus::Failed);
+        assert_eq!(
+            startup.error.as_deref(),
+            Some("reconciliation was abandoned before completion")
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn queued_background_reconciliation_reserves_only_jobs_lock() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let queue = ReconciliationQueue::new();
@@ -6787,22 +7111,25 @@ mod tests {
         });
 
         wait_for_job_scope(&paths, "project:project_1").await?;
-        let update_lock = UpdateLock::acquire(&paths);
+        let update_lock = UpdateLock::acquire(&paths)?;
+        let jobs_lock = JobsLock::acquire(&paths);
 
         assert!(matches!(
-            update_lock,
-            Err(StateError::CoordinationLockHeld { path }) if path == paths.update_lock()
+            jobs_lock,
+            Err(StateError::CoordinationLockHeld { path }) if path == paths.jobs_lock()
         ));
+        drop(update_lock);
 
         queued_task.abort();
         let _join_result = queued_task.await;
         running.finish();
+        let _jobs_lock = JobsLock::acquire(&paths)?;
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn background_reconciliation_coalesces_under_daemon_update_lock() -> anyhow::Result<()> {
+    async fn background_reconciliation_coalesces_under_daemon_jobs_lock() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let queue = ReconciliationQueue::new();

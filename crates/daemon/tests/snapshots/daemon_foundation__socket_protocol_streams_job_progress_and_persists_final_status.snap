@@ -5,35 +5,49 @@ expression: snapshot
 (
     [
         Object {
-            "job_id": String("job_000001"),
+            "job_id": String("job_000002"),
             "message": String("job accepted"),
             "protocol_version": Number(3),
             "status": String("accepted"),
             "type": String("response"),
         },
         Object {
-            "job_id": String("job_000001"),
+            "job_id": String("job_000002"),
             "kind": String("reconcile"),
             "scope": String("system"),
             "type": String("job_started"),
         },
         Object {
-            "job_id": String("job_000001"),
+            "job_id": String("job_000002"),
             "message": String("System reconciliation started"),
             "type": String("log"),
         },
         Object {
-            "job_id": String("job_000001"),
+            "job_id": String("job_000002"),
             "message": String("Gateway runtime reconciled"),
             "type": String("progress"),
         },
         Object {
-            "job_id": String("job_000001"),
+            "job_id": String("job_000002"),
             "summary": String("Gateway runtime reconciled"),
             "type": String("job_completed"),
         },
     ],
     [
+        JobRecord {
+            id: "job_000002",
+            kind: "reconcile",
+            scope: "system",
+            status: Succeeded,
+            started_at: "<timestamp>",
+            finished_at: Some(
+                "<timestamp>",
+            ),
+            summary: Some(
+                "Gateway runtime reconciled",
+            ),
+            error: None,
+        },
         JobRecord {
             id: "job_000001",
             kind: "reconcile",

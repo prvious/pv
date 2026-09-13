@@ -228,6 +228,55 @@ pub(crate) fn job_failed(paths: &PvPaths, job_id: &str, kind: &str, scope: &str,
     );
 }
 
+pub(crate) fn job_failure_recording_failed(
+    paths: &PvPaths,
+    job_id: &str,
+    kind: &str,
+    scope: &str,
+    error: &str,
+    recording_error: &str,
+) {
+    let result = append(
+        paths,
+        "error",
+        "reconciliation",
+        "job_failure_recording_failed",
+        "failed to persist job failure",
+        &[
+            ("job_id", job_id),
+            ("kind", kind),
+            ("scope", scope),
+            ("error", error),
+            ("recording_error", recording_error),
+        ],
+    );
+    if let Err(log_error) = result {
+        let mut standard_error = io::stderr().lock();
+        let _fallback_result = writeln!(
+            standard_error,
+            "PV {kind} job {job_id} failed with {error}; additionally failed to persist the failure with {recording_error} and to write the daemon log with {log_error}"
+        );
+    }
+}
+
+pub(crate) fn job_abandonment_failed(paths: &PvPaths, job_id: &str, kind: &str, error: &str) {
+    let result = append(
+        paths,
+        "error",
+        "reconciliation",
+        "job_abandonment_failed",
+        "failed to persist abandoned job status",
+        &[("job_id", job_id), ("kind", kind), ("error", error)],
+    );
+    if let Err(log_error) = result {
+        let mut standard_error = io::stderr().lock();
+        let _fallback_result = writeln!(
+            standard_error,
+            "PV failed to persist abandoned {kind} job {job_id}: {error}; additionally failed to write the daemon log: {log_error}"
+        );
+    }
+}
+
 pub(crate) fn runtime_readiness_diagnostics(
     paths: &PvPaths,
     runtime: &str,
