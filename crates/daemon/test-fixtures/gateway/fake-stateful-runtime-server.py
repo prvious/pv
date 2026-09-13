@@ -246,5 +246,13 @@ for server in [admin_server, *servers[1:]]:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
+def stop_service_when_requested():
+    while not state.control().get("stop_service", False):
+        time.sleep(0.01)
+    servers[0].shutdown()
+    servers[0].server_close()
+
+threading.Thread(target=stop_service_when_requested, daemon=True).start()
 with servers[0] as server:
     server.serve_forever()
+threading.Event().wait()
