@@ -184,6 +184,7 @@ async fn gateway_lookup_failure_records_failed_gateway_phase() -> Result<()> {
     )?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
     let response = request_lines(
         &paths,
         json!({
