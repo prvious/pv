@@ -8,6 +8,6 @@ RunOutput {
             0,
         ),
     ),
-    stdout: "PV update\nPV application: current 0.2.4\nPrivileged helper: current 1.0.0 (protocol 1)\nManaged Resources: current\n",
+    stdout: "PV update\nPV application: current 0.2.4\nPrivileged helper: current 1.0.0 (protocol 1)\nWaiting for the reconciliation slot (elapsed: 0s)\nManaged Resources: current\n",
     stderr: "",
 }

@@ -66,6 +66,7 @@ pub enum ResourceOperation<'artifact> {
 pub enum ResourceOperationOutcome<'reason> {
     Succeeded,
     Failed,
+    Skipped,
     Fallback { reason: &'reason str },
 }
 
@@ -83,8 +84,12 @@ pub trait DownloadProgress {
     /// new [`DownloadProgressEvent::Started`] event for each attempt.
     fn report(&self, event: DownloadProgressEvent<'_>);
 
-    /// Receives one synchronous completion event for each overall manifest, download, or install
-    /// operation, including cache hits and after all download retries.
+    /// Receives a synchronous event immediately before each overall manifest, download, or install
+    /// operation.
+    fn operation_started(&self, _operation: ResourceOperation<'_>) {}
+
+    /// Receives one synchronous completion event for each started operation, including cache hits,
+    /// skipped existing-release attempts, and after all download retries.
     fn operation_finished(&self, _event: ResourceOperationEvent<'_, '_>) {}
 }
 
@@ -116,6 +121,7 @@ impl ArtifactDownloader {
         client: &(impl ResourceHttpClient + ?Sized),
         progress: &(impl DownloadProgress + ?Sized),
     ) -> Result<ArtifactDownload> {
+        progress.operation_started(ResourceOperation::Download(artifact));
         let started_at = Instant::now();
         let result = (|| {
             let path = self.cache_path(artifact)?;

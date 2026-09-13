@@ -103,7 +103,8 @@ fn run_managed_resource_update_phase(
     environment: &impl Environment,
     stdout: &mut impl Write,
 ) -> Result<ExitCode, ExecuteError> {
-    let mut progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
+    let mut progress =
+        DownloadProgressRenderer::with_output(environment.stdout_is_terminal(), stdout);
     let job = daemon::run_job_with_events_blocking(paths, "update", "system", &mut progress)
         .map_err(managed_resource_update_daemon_error)?;
     drop(progress);
@@ -223,7 +224,7 @@ fn download_app_asset(
     paths: &PvPaths,
     version: &str,
     asset: &AppUpdateAsset,
-    progress: &DownloadProgressRenderer,
+    progress: &DownloadProgressRenderer<'_>,
     stderr: &mut impl Write,
 ) -> Result<Utf8PathBuf, ExecuteError> {
     download_verified_asset(
@@ -243,7 +244,7 @@ fn download_helper_asset(
     environment: &impl Environment,
     paths: &PvPaths,
     asset: &PrivilegedHelperUpdateAsset,
-    progress: &DownloadProgressRenderer,
+    progress: &DownloadProgressRenderer<'_>,
     stderr: &mut impl Write,
 ) -> Result<Utf8PathBuf, ExecuteError> {
     download_verified_asset(
@@ -271,7 +272,7 @@ fn download_verified_asset(
     url: &str,
     expected_sha256: &str,
     expected_size: u64,
-    progress: &DownloadProgressRenderer,
+    progress: &DownloadProgressRenderer<'_>,
     stderr: &mut impl Write,
 ) -> Result<Utf8PathBuf, ExecuteError> {
     state::fs::ensure_user_dir(paths.downloads())?;
@@ -453,17 +454,17 @@ impl Write for CountingSha256Writer {
     }
 }
 
-struct AppDownloadProgressWriter<'progress> {
+struct AppDownloadProgressWriter<'progress, 'output> {
     inner: CountingSha256Writer,
-    progress: &'progress DownloadProgressRenderer,
+    progress: &'progress DownloadProgressRenderer<'output>,
     version: &'progress str,
     total_size: u64,
 }
 
-impl<'progress> AppDownloadProgressWriter<'progress> {
+impl<'progress, 'output> AppDownloadProgressWriter<'progress, 'output> {
     fn new(
         inner: CountingSha256Writer,
-        progress: &'progress DownloadProgressRenderer,
+        progress: &'progress DownloadProgressRenderer<'output>,
         version: &'progress str,
         total_size: u64,
     ) -> Self {
@@ -482,7 +483,7 @@ impl<'progress> AppDownloadProgressWriter<'progress> {
     }
 }
 
-impl Write for AppDownloadProgressWriter<'_> {
+impl Write for AppDownloadProgressWriter<'_, '_> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
         let written = self.inner.write(buffer)?;
         self.progress
