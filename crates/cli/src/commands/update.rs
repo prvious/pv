@@ -523,6 +523,7 @@ fn run_app_update_phase(
     output.line("PV update")?;
 
     let _update_lock = state::UpdateLock::acquire(&paths).map_err(update_state_error)?;
+    let _jobs_lock = state::JobsLock::acquire(&paths).map_err(update_state_error)?;
     state::fs::ensure_layout(&paths)?;
 
     let layout = state::AppReleaseLayout::new(paths.clone());

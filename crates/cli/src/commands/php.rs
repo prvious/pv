@@ -33,6 +33,7 @@ pub(crate) fn use_track(
     let requested_track = args.track;
     let selector = TrackSelector::parse(requested_track.as_str())?;
     let commands = resource_commands(&paths, environment)?;
+    let jobs_lock = super::acquire_jobs_lock(&paths)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
 
     if args.global {
@@ -44,6 +45,7 @@ pub(crate) fn use_track(
         let track = installed.php().track().as_str().to_string();
         let mut database = Database::open(&paths)?;
         database.record_global_php_default_track(&track)?;
+        drop(jobs_lock);
 
         output.line(&format!("Set global PHP track to {track}"))?;
         write_install_lines(&installed, &mut output)?;
@@ -63,6 +65,7 @@ pub(crate) fn use_track(
     let track = installed.php().track().as_str().to_string();
     let config_file = config::write_project_php_track(&project.path, &requested_track)?;
     let project = database.replace_project_desired_php_track(&project.id, Some(&track))?;
+    drop(jobs_lock);
 
     output.line(&format!(
         "Set {} PHP track to {track}",
@@ -86,11 +89,13 @@ pub(crate) fn install(
         None => TrackSelector::Latest,
     };
     let commands = resource_commands(&paths, environment)?;
+    let jobs_lock = super::acquire_jobs_lock(&paths)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
     let installed = with_resource_http_client(environment, |client| {
         commands.install_php_pair_with_progress(selector, client, &progress)
     })?;
     drop(progress);
+    drop(jobs_lock);
     let mut output = Output::new(stdout, OutputMode::plain());
 
     write_install_lines(&installed, &mut output)?;
@@ -105,11 +110,13 @@ pub(crate) fn update(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let commands = resource_commands(&paths, environment)?;
+    let jobs_lock = super::acquire_jobs_lock(&paths)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
     let updated = with_resource_http_client(environment, |client| {
         commands.update_php_pairs_with_progress(client, &progress)
     })?;
     drop(progress);
+    drop(jobs_lock);
     let mut output = Output::new(stdout, OutputMode::plain());
 
     super::write_revoked_latest_warnings(updated.installs(), &mut output)?;
