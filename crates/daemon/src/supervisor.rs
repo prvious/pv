@@ -5,6 +5,7 @@ use std::time::Duration;
 use std::{fmt, future::Future, io};
 
 use camino::{Utf8Path, Utf8PathBuf};
+use futures_util::{Stream, StreamExt, stream};
 use platform::PlatformCapability;
 #[cfg(target_os = "macos")]
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
@@ -28,6 +29,7 @@ const SCRIPT_IDENTITY_STABILIZATION: Duration = Duration::from_millis(250);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
+pub(crate) const RUNTIME_READINESS_CONCURRENCY_LIMIT: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProcessSignal {
@@ -104,6 +106,15 @@ pub struct ManagedProcess {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RecordedConfigFingerprint {
+    /// Bytes committed as applied; service readiness may remain unverified under the preserve policy.
+    Applied(String),
+    /// Exact promoted bytes prepared for a transaction; this proves neither application nor
+    /// readiness and can remain useful after the process exits.
+    Staged(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedRuntime {
     pid: u32,
     command: Utf8PathBuf,
@@ -174,6 +185,8 @@ struct RuntimeMetadata {
     replacement_required: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     applied_config_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    staged_config_fingerprint: Option<String>,
     log_path: String,
     started_at: String,
     #[serde(default)]
@@ -266,7 +279,10 @@ impl ProcessSupervisor {
                 command: spec.command.clone(),
                 arguments: spec.arguments.clone(),
                 replacement_required: metadata.replacement_required,
-                applied_config_fingerprint: metadata.applied_config_fingerprint,
+                applied_config_fingerprint: match metadata.recorded_config_fingerprint() {
+                    Some(RecordedConfigFingerprint::Applied(fingerprint)) => Some(fingerprint),
+                    Some(RecordedConfigFingerprint::Staged(_)) | None => None,
+                },
                 process_start_identity,
                 process_executable_identity: metadata.process_executable_identity,
             }));
@@ -275,12 +291,34 @@ impl ProcessSupervisor {
         Ok(None)
     }
 
-    pub fn mark_replacement_required(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
-        self.set_config_application_state(spec, true, None)
+    /// Returns recorded config identity without proving that a process is alive.
+    pub(crate) fn recorded_config_fingerprint(
+        &self,
+        spec: &ProcessSpec,
+    ) -> Result<Option<RecordedConfigFingerprint>, DaemonError> {
+        let Some(pid) = read_pid_file(&spec.pid_path)? else {
+            return Ok(None);
+        };
+        let Some(metadata) = read_runtime_metadata(&spec.metadata_path)? else {
+            return Ok(None);
+        };
+        if !metadata.matches(spec, pid) || metadata.process_start_identity.is_none() {
+            return Ok(None);
+        }
+
+        Ok(metadata.recorded_config_fingerprint())
+    }
+
+    pub fn mark_replacement_required(
+        &self,
+        spec: &ProcessSpec,
+        staged_config_fingerprint: &str,
+    ) -> Result<bool, DaemonError> {
+        self.set_config_application_state(spec, true, None, Some(staged_config_fingerprint))
     }
 
     pub fn clear_replacement_required(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
-        self.set_config_application_state(spec, false, None)
+        self.set_config_application_state(spec, false, None, None)
     }
 
     pub fn record_applied_config(
@@ -288,7 +326,7 @@ impl ProcessSupervisor {
         spec: &ProcessSpec,
         fingerprint: &str,
     ) -> Result<bool, DaemonError> {
-        self.set_config_application_state(spec, false, Some(fingerprint))
+        self.set_config_application_state(spec, false, Some(fingerprint), None)
     }
 
     fn set_config_application_state(
@@ -296,6 +334,7 @@ impl ProcessSupervisor {
         spec: &ProcessSpec,
         replacement_required: bool,
         applied_config_fingerprint: Option<&str>,
+        staged_config_fingerprint: Option<&str>,
     ) -> Result<bool, DaemonError> {
         require_process_containment()?;
         let Some(pid) = read_pid_file(&spec.pid_path)? else {
@@ -322,6 +361,7 @@ impl ProcessSupervisor {
 
         metadata.replacement_required = replacement_required;
         metadata.applied_config_fingerprint = applied_config_fingerprint.map(str::to_owned);
+        metadata.staged_config_fingerprint = staged_config_fingerprint.map(str::to_owned);
         let encoded = serde_json::to_string(&metadata)?;
         fs::write_sensitive_file(&spec.metadata_path, &encoded)?;
 
@@ -368,7 +408,10 @@ impl ProcessSupervisor {
                     command: spec.command,
                     arguments: spec.arguments,
                     replacement_required: metadata.replacement_required,
-                    applied_config_fingerprint: metadata.applied_config_fingerprint,
+                    applied_config_fingerprint: match metadata.recorded_config_fingerprint() {
+                        Some(RecordedConfigFingerprint::Applied(fingerprint)) => Some(fingerprint),
+                        Some(RecordedConfigFingerprint::Staged(_)) | None => None,
+                    },
                     process_start_identity,
                     process_executable_identity: metadata.process_executable_identity,
                 },
@@ -463,6 +506,19 @@ where
             }
         }
     }
+}
+
+pub(crate) fn bounded_runtime_readiness<Item, Output, Wait, Readiness>(
+    items: impl IntoIterator<Item = Item>,
+    wait: Wait,
+) -> impl Stream<Item = Output>
+where
+    Wait: FnMut(Item) -> Readiness,
+    Readiness: Future<Output = Output>,
+{
+    stream::iter(items)
+        .map(wait)
+        .buffer_unordered(RUNTIME_READINESS_CONCURRENCY_LIMIT)
 }
 
 pub(crate) fn runtime_exited_before_readiness_error(runtime_name: &str) -> DaemonError {
@@ -1011,6 +1067,7 @@ fn write_runtime_metadata(
         track: spec.track.clone(),
         replacement_required: false,
         applied_config_fingerprint: None,
+        staged_config_fingerprint: None,
         log_path: spec.log_path.to_string(),
         started_at,
         process_start_identity: Some(process_start_identity),
@@ -1144,6 +1201,22 @@ fn process_not_found(error: &io::Error) -> bool {
 }
 
 impl RuntimeMetadata {
+    fn recorded_config_fingerprint(&self) -> Option<RecordedConfigFingerprint> {
+        match (
+            self.replacement_required,
+            self.applied_config_fingerprint.as_deref(),
+            self.staged_config_fingerprint.as_deref(),
+        ) {
+            (false, Some(fingerprint), None) => {
+                Some(RecordedConfigFingerprint::Applied(fingerprint.to_owned()))
+            }
+            (true, None, Some(fingerprint)) => {
+                Some(RecordedConfigFingerprint::Staged(fingerprint.to_owned()))
+            }
+            _ => None,
+        }
+    }
+
     fn process_spec(&self, pid_path: Utf8PathBuf, metadata_path: Utf8PathBuf) -> ProcessSpec {
         ProcessSpec {
             name: self.name.clone(),
@@ -1207,6 +1280,84 @@ fn timestamp() -> Result<String, DaemonError> {
         time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
 
     Ok(time::OffsetDateTime::now_utc().format(format)?)
+}
+
+#[cfg(test)]
+mod bounded_readiness_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::time::Duration;
+
+    use anyhow::{Result, anyhow};
+    use tokio::sync::Semaphore;
+    use tokio::time::timeout;
+
+    use super::bounded_runtime_readiness;
+    use futures_util::StreamExt;
+
+    #[tokio::test]
+    async fn readiness_waits_overlap_at_the_fixed_bound() -> Result<()> {
+        let started = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum_active = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Semaphore::new(0));
+        let task = tokio::spawn(
+            bounded_runtime_readiness(0..8, {
+                let started = Arc::clone(&started);
+                let active = Arc::clone(&active);
+                let maximum_active = Arc::clone(&maximum_active);
+                let gate = Arc::clone(&gate);
+
+                move |item| {
+                    let started = Arc::clone(&started);
+                    let active = Arc::clone(&active);
+                    let maximum_active = Arc::clone(&maximum_active);
+                    let gate = Arc::clone(&gate);
+
+                    async move {
+                        started.fetch_add(1, Ordering::SeqCst);
+                        let active_now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        maximum_active.fetch_max(active_now, Ordering::SeqCst);
+                        let permit = gate
+                            .acquire_owned()
+                            .await
+                            .map_err(|error| anyhow!("readiness gate closed: {error}"))?;
+                        permit.forget();
+                        active.fetch_sub(1, Ordering::SeqCst);
+
+                        Ok::<_, anyhow::Error>(item)
+                    }
+                }
+            })
+            .collect::<Vec<_>>(),
+        );
+
+        timeout(Duration::from_secs(1), async {
+            while started.load(Ordering::SeqCst) < 4 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        for _attempt in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(started.load(Ordering::SeqCst), 4);
+        assert_eq!(active.load(Ordering::SeqCst), 4);
+        assert_eq!(maximum_active.load(Ordering::SeqCst), 4);
+
+        gate.add_permits(8);
+        let outcomes = timeout(Duration::from_secs(1), task)
+            .await??
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+
+        assert_eq!(outcomes.len(), 8);
+        assert_eq!(maximum_active.load(Ordering::SeqCst), 4);
+
+        Ok(())
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
