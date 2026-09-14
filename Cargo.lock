@@ -2444,6 +2444,7 @@ dependencies = [
  "state",
  "thiserror",
  "time",
+ "wait-timeout",
  "x509-parser",
 ]
 
