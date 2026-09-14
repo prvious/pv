@@ -24,6 +24,7 @@ pub(crate) enum PhaseOutcome {
 #[derive(Clone, Copy)]
 pub(crate) enum ReconciliationPhase {
     Queue,
+    DemandDiscovery,
     Manifest,
     Download,
     Install,
@@ -120,6 +121,7 @@ impl ReconciliationPhase {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Queue => "queue",
+            Self::DemandDiscovery => "demand_discovery",
             Self::Manifest => "manifest",
             Self::Download => "download",
             Self::Install => "install",
