@@ -22,15 +22,16 @@ pub use allocation::{
 pub use cache::{ArtifactManifestCache, ArtifactManifestRefresh, ArtifactManifestSource};
 pub use command::{
     ManagedResourceCommandError, ManagedResourceCommandResult, ManagedResourceCommands,
-    ManagedResourceInstall, ManagedResourceRemovalIntent, ManagedResourceRevokedLatest,
-    ManagedResourceTrack, ManagedResourceUninstallOptions, ManagedResourceUpdate,
-    ManagedResourceUpdateBlocker, ManagedResourceUpdateCheck, ManagedResourceUpdateCheckTrack,
-    ManagedResourceUpdateRevocation, ManagedResourceUpdateStatus, PhpPairInstall,
-    PhpPairRemovalIntent, PhpPairUpdate,
+    ManagedResourceInstall, ManagedResourceInstallArtifact, ManagedResourceRemovalIntent,
+    ManagedResourceRevokedLatest, ManagedResourceTrack, ManagedResourceUninstallOptions,
+    ManagedResourceUpdate, ManagedResourceUpdateBlocker, ManagedResourceUpdateCheck,
+    ManagedResourceUpdateCheckTrack, ManagedResourceUpdateFailure, ManagedResourceUpdateRevocation,
+    ManagedResourceUpdateStatus, PhpPairInstall, PhpPairRemovalIntent, PhpPairUpdate,
 };
 pub use download::{
     ArtifactDownload, ArtifactDownloader, DownloadProgress, DownloadProgressEvent,
-    NoDownloadProgress, ResourceOperation, ResourceOperationEvent, ResourceOperationOutcome,
+    MAX_PARALLEL_ARTIFACT_DOWNLOADS, NoDownloadProgress, ResourceOperation, ResourceOperationEvent,
+    ResourceOperationOutcome,
 };
 pub use endpoint::{
     ARTIFACT_MANIFEST_URL_BUILD_ENV, STABLE_ARTIFACT_MANIFEST_URL, default_artifact_manifest_url,
