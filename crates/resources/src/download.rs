@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use sha2::{Digest, Sha256};
@@ -38,12 +38,37 @@ pub enum DownloadProgressEvent<'artifact> {
     },
 }
 
+#[derive(Clone, Copy, Debug)]
+pub enum ResourceOperation<'artifact> {
+    Manifest,
+    Download(&'artifact ManifestArtifact),
+    Install(&'artifact ManifestArtifact),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResourceOperationOutcome<'reason> {
+    Succeeded,
+    Failed,
+    Fallback { reason: &'reason str },
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct ResourceOperationEvent<'artifact, 'reason> {
+    pub operation: ResourceOperation<'artifact>,
+    pub elapsed: Duration,
+    pub outcome: ResourceOperationOutcome<'reason>,
+}
+
 pub trait DownloadProgress {
     /// Receives synchronous download updates on the calling thread.
     ///
-    /// Cache hits emit no events. Retried downloads emit a new [`DownloadProgressEvent::Started`]
-    /// event for each attempt.
+    /// Cache hits emit no [`DownloadProgressEvent`] through this callback. Retried downloads emit a
+    /// new [`DownloadProgressEvent::Started`] event for each attempt.
     fn report(&self, event: DownloadProgressEvent<'_>);
+
+    /// Receives one synchronous completion event for each overall manifest, download, or install
+    /// operation, including cache hits and after all download retries.
+    fn operation_finished(&self, _event: ResourceOperationEvent<'_, '_>) {}
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -74,18 +99,28 @@ impl ArtifactDownloader {
         client: &(impl ResourceHttpClient + ?Sized),
         progress: &(impl DownloadProgress + ?Sized),
     ) -> Result<ArtifactDownload> {
-        let path = self.cache_path(artifact)?;
+        let started_at = Instant::now();
+        let result = (|| {
+            let path = self.cache_path(artifact)?;
 
-        if let Some(cached) = self.cached_download(artifact, &path)? {
-            return Ok(cached);
-        }
+            if let Some(cached) = self.cached_download(artifact, &path)? {
+                return Ok(cached);
+            }
 
-        self.download_with_retry(artifact, client, &path, progress)?;
+            self.download_with_retry(artifact, client, &path, progress)?;
 
-        Ok(ArtifactDownload {
-            path,
-            from_cache: false,
-        })
+            Ok(ArtifactDownload {
+                path,
+                from_cache: false,
+            })
+        })();
+        progress.operation_finished(ResourceOperationEvent {
+            operation: ResourceOperation::Download(artifact),
+            elapsed: started_at.elapsed(),
+            outcome: ResourceOperationOutcome::from_succeeded(result.is_ok()),
+        });
+
+        result
     }
 
     fn cached_download(
@@ -132,6 +167,16 @@ impl ArtifactDownloader {
         let cached_file_name = format!("{}-{file_name}", artifact.sha256().as_str());
 
         Ok(self.downloads_dir.join(cached_file_name))
+    }
+}
+
+impl ResourceOperationOutcome<'_> {
+    pub fn from_succeeded(succeeded: bool) -> Self {
+        if succeeded {
+            Self::Succeeded
+        } else {
+            Self::Failed
+        }
     }
 }
 

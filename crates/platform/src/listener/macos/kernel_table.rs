@@ -3,11 +3,14 @@ use std::ffi::CStr;
 use std::io;
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::ptr;
+use std::thread;
+use std::time::Duration;
 
 use thiserror::Error;
 
 const TCP_PCBLIST_NAME: &CStr = c"net.inet.tcp.pcblist_n";
-const MAX_ATTEMPTS: usize = 3;
+const MAX_ATTEMPTS: usize = 10;
+const SNAPSHOT_RETRY_DELAY: Duration = Duration::from_millis(1);
 
 // These offsets follow Apple's private `xinpcb_n`, `xtcpcb_n`, and `xinpgen`
 // layouts. They are unchanged in the published XNU sources for macOS 13, 14,
@@ -131,11 +134,14 @@ struct InternetPcb {
 }
 
 pub(super) fn loopback_tcp_listener_ports() -> Result<BTreeSet<u16>, KernelTableError> {
-    for _attempt in 1..=MAX_ATTEMPTS {
+    for attempt in 1..=MAX_ATTEMPTS {
         let table = fetch_tcp_table()?;
 
         match parse_tcp_table(&table) {
             Ok(ports) => return Ok(ports),
+            Err(ParseError::SnapshotChanged { .. }) if attempt < MAX_ATTEMPTS => {
+                thread::sleep(SNAPSHOT_RETRY_DELAY);
+            }
             Err(ParseError::SnapshotChanged { .. }) => {}
             Err(error) => return Err(error.into()),
         }

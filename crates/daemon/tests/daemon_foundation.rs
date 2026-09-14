@@ -129,11 +129,104 @@ async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Res
     let lines = propagate_after_cleanup(lines_result, cleanup_result)?;
 
     let database = Database::open(&paths)?;
+    let jobs = database.recent_jobs()?;
+    let job_id = jobs
+        .iter()
+        .find(|job| job.kind == "reconcile" && job.scope == "system")
+        .map(|job| job.id.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing system reconciliation job"))?;
+    let log = state::fs::read_to_string(&paths.daemon_log())?;
+    let mut phase_events = log
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|event| {
+            event["event"] == "reconciliation_phase_completed" && event["job_id"] == job_id
+        })
+        .collect::<Vec<_>>();
+    for event in &mut phase_events {
+        assert!(event["elapsed_ms"].as_u64().is_some());
+        if event["phase"] == "finalization" {
+            assert!(event["total_execution_ms"].as_u64().is_some());
+        }
+        if let Some(record) = event.as_object_mut() {
+            for field in ["timestamp", "job_id", "elapsed_ms", "total_execution_ms"] {
+                record.remove(field);
+            }
+        }
+    }
+    assert_debug_snapshot!("system_reconciliation_phases", phase_events);
 
     assert_with_normalized_timestamps(
         "socket_protocol_streams_job_progress_and_persists_final_status",
-        (lines, database.recent_jobs()?),
+        (lines, jobs),
     )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_lookup_failure_records_failed_gateway_phase() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "2.11.4-pv1",
+        &paths.resources().join("caddy/2/releases/missing"),
+    )?;
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    let response = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "reconcile",
+            "scope": "resource:caddy:2",
+        }),
+    )
+    .await;
+    daemon.shutdown().await?;
+    response?;
+
+    let job = database
+        .recent_jobs()?
+        .into_iter()
+        .find(|job| job.scope == "resource:caddy:2")
+        .ok_or_else(|| anyhow!("missing Gateway reconciliation job"))?;
+    assert_eq!(job.status, JobStatus::Failed);
+    let log = state::fs::read_to_string(&paths.daemon_log())?;
+    let phases = log
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|event| {
+            event["event"] == "reconciliation_phase_completed"
+                && event["job_id"] == job.id
+                && event["phase"] == "gateway"
+        })
+        .map(|event| {
+            assert!(event["elapsed_ms"].as_u64().is_some());
+            (
+                event["phase"].clone(),
+                event["subject"].clone(),
+                event["outcome"].clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_debug_snapshot!(phases, @r#"
+    [
+        (
+            String("gateway"),
+            String("gateway"),
+            String("failed"),
+        ),
+    ]
+    "#);
 
     Ok(())
 }

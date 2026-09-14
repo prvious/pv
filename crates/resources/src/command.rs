@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::time::Instant;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use state::{
@@ -12,8 +13,9 @@ use crate::registry;
 use crate::runtime::{composer_adapter, frankenphp_adapter, php_adapter};
 use crate::{
     ArtifactDownloader, ArtifactInstall, ArtifactInstaller, ArtifactManifest,
-    ArtifactManifestCache, ArtifactManifestSource, ArtifactVersion, DownloadProgress,
-    ManifestArtifact, NoDownloadProgress, ResourceAdapter, ResourceName, ResourcesError,
+    ArtifactManifestCache, ArtifactManifestRefresh, ArtifactManifestSource, ArtifactVersion,
+    DownloadProgress, ManifestArtifact, NoDownloadProgress, ResourceAdapter, ResourceName,
+    ResourceOperation, ResourceOperationEvent, ResourceOperationOutcome, ResourcesError,
     TargetPlatform, TrackName, TrackSelector,
 };
 
@@ -211,6 +213,33 @@ impl ManagedResourceCommands {
         }
     }
 
+    fn refresh_manifest(
+        &self,
+        client: &(impl ResourceHttpClient + ?Sized),
+        progress: &impl DownloadProgress,
+        latest_only: bool,
+    ) -> ManagedResourceCommandResult<ArtifactManifestRefresh> {
+        let started_at = Instant::now();
+        let cache = ArtifactManifestCache::new(self.paths.downloads());
+        let result = if latest_only {
+            cache.refresh_latest(&self.manifest_url, client)
+        } else {
+            cache.refresh(&self.manifest_url, client)
+        };
+        let outcome = match &result {
+            Ok(refresh) => match refresh.source() {
+                ArtifactManifestSource::Latest => ResourceOperationOutcome::Succeeded,
+                ArtifactManifestSource::Cached { reason } => {
+                    ResourceOperationOutcome::Fallback { reason }
+                }
+            },
+            Err(_error) => ResourceOperationOutcome::Failed,
+        };
+        report_resource_operation(progress, ResourceOperation::Manifest, started_at, outcome);
+
+        result.map_err(Into::into)
+    }
+
     pub fn install(
         &self,
         adapter: &(impl ResourceAdapter + ?Sized),
@@ -229,8 +258,7 @@ impl ManagedResourceCommands {
     ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
         registry::resolve_canonical(adapter.resource_name().as_str())?;
 
-        let refresh = ArtifactManifestCache::new(self.paths.downloads())
-            .refresh(&self.manifest_url, client)?;
+        let refresh = self.refresh_manifest(client, progress, false)?;
         let manifest = refresh.manifest();
         let track = manifest
             .resolve_track(adapter.resource_name(), selector)?
@@ -258,8 +286,7 @@ impl ManagedResourceCommands {
         registry::resolve_canonical(php.resource_name().as_str())?;
         registry::resolve_canonical(frankenphp.resource_name().as_str())?;
 
-        let refresh = ArtifactManifestCache::new(self.paths.downloads())
-            .refresh(&self.manifest_url, client)?;
+        let refresh = self.refresh_manifest(client, progress, false)?;
         let manifest = refresh.manifest();
         let track = manifest
             .resolve_track(php.resource_name(), selector)?
@@ -375,19 +402,43 @@ impl ManagedResourceCommands {
         Progress: DownloadProgress,
     {
         let installer = ArtifactInstaller::new(self.paths.resources());
-        let (install, downloaded_from_cache) =
-            if let Some(existing_install) =
-                installer.install_existing_release(adapter, &track, &artifact)?
-            {
+        let existing_started_at = Instant::now();
+        let existing_install = installer.install_existing_release(adapter, &track, &artifact);
+        let (install, downloaded_from_cache) = match existing_install {
+            Ok(Some(existing_install)) => {
+                report_resource_operation(
+                    context.progress,
+                    ResourceOperation::Install(&artifact),
+                    existing_started_at,
+                    ResourceOperationOutcome::Succeeded,
+                );
                 (existing_install, false)
-            } else {
+            }
+            Ok(None) => {
                 let download = ArtifactDownloader::new(self.paths.downloads())
                     .download_with_progress(&artifact, context.client, context.progress)?;
-                (
-                    installer.install(adapter, &track, &artifact, download.path())?,
-                    download.is_from_cache(),
-                )
-            };
+                let install_started_at = Instant::now();
+                let install = installer.install(adapter, &track, &artifact, download.path());
+                report_resource_operation(
+                    context.progress,
+                    ResourceOperation::Install(&artifact),
+                    install_started_at,
+                    ResourceOperationOutcome::from_succeeded(install.is_ok()),
+                );
+
+                (install?, download.is_from_cache())
+            }
+            Err(error) => {
+                report_resource_operation(
+                    context.progress,
+                    ResourceOperation::Install(&artifact),
+                    existing_started_at,
+                    ResourceOperationOutcome::Failed,
+                );
+
+                return Err(error.into());
+            }
+        };
 
         let current_artifact_path = install.release_path().to_path_buf();
 
@@ -592,8 +643,7 @@ impl ManagedResourceCommands {
             self.validate_installed_track(record)?;
         }
 
-        let refresh = ArtifactManifestCache::new(self.paths.downloads())
-            .refresh_latest(&self.manifest_url, client)?;
+        let refresh = self.refresh_manifest(client, progress, true)?;
 
         for record in installed_tracks {
             installs.push(self.install_track(
@@ -639,8 +689,7 @@ impl ManagedResourceCommands {
             return Ok(PhpPairUpdate { installs });
         }
 
-        let refresh = ArtifactManifestCache::new(self.paths.downloads())
-            .refresh_latest(&self.manifest_url, client)?;
+        let refresh = self.refresh_manifest(client, progress, true)?;
 
         for track in &tracks {
             self.validate_install_selection(&php, track, refresh.manifest())?;
@@ -716,8 +765,7 @@ impl ManagedResourceCommands {
         registry::resolve_canonical(frankenphp.resource_name().as_str())?;
         registry::resolve_canonical(composer.resource_name().as_str())?;
 
-        let refresh = ArtifactManifestCache::new(self.paths.downloads())
-            .refresh(&self.manifest_url, client)?;
+        let refresh = self.refresh_manifest(client, progress, false)?;
         let manifest = refresh.manifest();
         let php_track = manifest
             .resolve_track(php.resource_name(), php_selector)?
@@ -783,8 +831,7 @@ impl ManagedResourceCommands {
         };
         self.validate_installed_track(installed)?;
 
-        let refresh = ArtifactManifestCache::new(self.paths.downloads())
-            .refresh_latest(&self.manifest_url, client)?;
+        let refresh = self.refresh_manifest(client, progress, true)?;
         installs.push(self.install_track(
             &composer,
             track,
@@ -815,8 +862,7 @@ impl ManagedResourceCommands {
             registry::resolve_canonical(adapter.resource_name().as_str())?;
         }
 
-        let refresh = ArtifactManifestCache::new(self.paths.downloads())
-            .refresh_latest(&self.manifest_url, client)?;
+        let refresh = self.refresh_manifest(client, progress, true)?;
         let manifest = refresh.manifest();
         let installed_tracks = self.list(None)?;
         let mut installs = Vec::new();
@@ -1150,6 +1196,19 @@ impl ManagedResourceCommands {
 
         Ok(filtered)
     }
+}
+
+fn report_resource_operation(
+    progress: &(impl DownloadProgress + ?Sized),
+    operation: ResourceOperation<'_>,
+    started_at: Instant,
+    outcome: ResourceOperationOutcome<'_>,
+) {
+    progress.operation_finished(ResourceOperationEvent {
+        operation,
+        elapsed: started_at.elapsed(),
+        outcome,
+    });
 }
 
 impl ManagedResourceInstall {
