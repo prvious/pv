@@ -8,6 +8,6 @@ RunOutput {
             0,
         ),
     ),
-    stdout: "Managed Resources: updated 2 artifact(s)\nManaged Resources reconciled: Gateway runtime skipped\n",
+    stdout: "Waiting for the reconciliation slot (elapsed: 0s)\nManaged Resources: updated 2 artifact(s)\nManaged Resources reconciled: Gateway runtime skipped\n",
     stderr: "",
 }
