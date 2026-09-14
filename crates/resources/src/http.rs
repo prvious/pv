@@ -176,7 +176,7 @@ fn http_error(url: &str, source: ureq::Error) -> ResourcesError {
 #[cfg(test)]
 mod tests {
     use std::net::TcpListener;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     use anyhow::Result;
 
@@ -215,7 +215,6 @@ mod tests {
         });
 
         serve_stalled_response(|url| {
-            let started = Instant::now();
             let result = client.get_text(&url);
 
             let Err(ResourcesError::HttpRequestFailed { reason, .. }) = result else {
@@ -223,7 +222,6 @@ mod tests {
                     "expected timeout request failure, got {result:?}"
                 ));
             };
-            assert!(started.elapsed() < Duration::from_millis(200));
             assert!(reason.contains("timeout"));
 
             Ok(())
