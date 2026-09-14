@@ -3,8 +3,8 @@ use std::io;
 
 use camino::Utf8PathBuf;
 use config::{
-    AllocationEnvContext, ProjectConfig, ProjectConfigFile, ProjectEnvContext, ProjectEnvWarning,
-    ResourceEnvContext,
+    AllocationEnvContext, ConfigError, ProjectConfig, ProjectConfigFile, ProjectEnvContext,
+    ProjectEnvWarning, ResourceEnvContext,
 };
 use resources::{
     ArtifactManifestCache, ConcreteTrackName, ResourceName, TrackSelector,
@@ -14,7 +14,8 @@ use state::{
     Database, LinkProjectInput, ManagedResourceDesiredState, ProjectEnvObservedStatus,
     ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectMode,
     ProjectPhpRuntimeInput, ProjectReconciliationStateInput, ProjectRecord, PvPaths,
-    ResourceAllocationInput, ResourceAllocationRecord, ResourceAllocationStatus, StateError,
+    ResourceAllocationInput, ResourceAllocationRecord, ResourceAllocationStatus,
+    RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 
 use crate::DaemonError;
@@ -26,6 +27,22 @@ use crate::structured_log;
 pub(crate) struct ProjectEnvReconciliationSummary {
     message: &'static str,
     requested_php_extensions: bool,
+}
+
+struct ProjectEnvRender {
+    message: &'static str,
+    warnings: Vec<ProjectEnvObservedWarningInput>,
+    summary: &'static str,
+}
+
+impl ProjectEnvRender {
+    fn status(&self) -> ProjectEnvObservedStatus {
+        if self.warnings.is_empty() {
+            ProjectEnvObservedStatus::Rendered
+        } else {
+            ProjectEnvObservedStatus::Warning
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -168,6 +185,75 @@ pub(crate) async fn reconcile_project_env_with_runtime_catalog_and_progress(
             record_project_env_failure(&mut database, &project.id, &message)?;
 
             Err(error)
+        }
+    }
+}
+
+pub(crate) fn reconcile_project_env_from_persisted_state(
+    paths: &PvPaths,
+    database: &mut Database,
+    project_id: &str,
+) -> Result<&'static str, DaemonError> {
+    let mut preserve_existing_failure = false;
+    let result: Result<&'static str, DaemonError> = (|| {
+        let project =
+            database
+                .project_by_id(project_id)?
+                .ok_or_else(|| StateError::ProjectNotFound {
+                    target: project_id.to_owned(),
+                })?;
+        let config_file = ProjectConfigFile::read_from_root(&project.path)?;
+        if let Err(error) =
+            validate_persisted_project_env_dependencies(paths, database, &project, &config_file)
+        {
+            if matches!(
+                &error,
+                DaemonError::Config(ConfigError::MissingAllocationEnvContext { .. })
+            ) {
+                preserve_existing_failure = database
+                    .project_env_observed_state(project_id)?
+                    .is_some_and(|observed| {
+                        observed.status == ProjectEnvObservedStatus::Failed
+                            && observed.message.is_some_and(|message| {
+                                !message.starts_with("Project config error:")
+                            })
+                    });
+            }
+            return Err(error);
+        }
+        let context = config_file
+            .config
+            .has_env_mappings()
+            .then(|| persisted_project_env_context(paths, database, &project))
+            .transpose()?;
+        let runtime_warnings =
+            ignored_php_extension_warnings(&project.php_runtime.ignored_extensions);
+        let rendered =
+            render_project_env(&project, &config_file, context.as_ref(), runtime_warnings)?;
+        database.record_project_env_observed_snapshot(
+            &project.id,
+            rendered.status(),
+            Some(rendered.message),
+            &rendered.warnings,
+        )?;
+        Ok(rendered.summary)
+    })();
+
+    match result {
+        Ok(summary) => Ok(summary),
+        Err(reconciliation) => {
+            let message = reconciliation.to_string();
+            if !preserve_existing_failure
+                && let Err(recording) = record_project_env_failure(database, project_id, &message)
+            {
+                return Err(DaemonError::ProjectEnvFailureRecordingFailed {
+                    project_id: project_id.to_owned(),
+                    reconciliation: Box::new(reconciliation),
+                    recording: Box::new(recording),
+                });
+            }
+
+            Err(reconciliation)
         }
     }
 }
@@ -456,7 +542,7 @@ async fn reconcile_loaded_project(
 
         let runtime_warnings = resolved_php_runtime
             .as_ref()
-            .map(ignored_php_extension_warnings)
+            .map(|runtime| ignored_php_extension_warnings(&runtime.ignored_extensions))
             .unwrap_or_default();
         let requested_php_extensions = config_file
             .config
@@ -485,89 +571,37 @@ async fn reconcile_loaded_project(
         return Err(error);
     }
 
-    if !has_env_mappings {
-        let status = if runtime_warnings.is_empty() {
-            ProjectEnvObservedStatus::Rendered
-        } else {
-            ProjectEnvObservedStatus::Warning
-        };
-        let message = if runtime_warnings.is_empty() {
-            "no Project env mappings configured"
-        } else {
-            "Project runtime has warnings"
-        };
-        finalize_project_reconciliation_state(
-            database,
-            project,
-            &config_file,
-            resolved_php_runtime.as_ref(),
-            status,
-            message,
-            &runtime_warnings,
-        )?;
-
-        let summary = if runtime_warnings.is_empty() {
-            ProjectEnvReconciliationSummary {
-                message: "Project env unchanged; no mappings configured",
-                requested_php_extensions,
-            }
-        } else {
-            ProjectEnvReconciliationSummary {
-                message: "Project env unchanged with warnings",
-                requested_php_extensions,
-            }
-        };
-
-        return Ok(summary);
-    }
-
-    let context = project_env_context_for_plan(
-        paths,
-        database,
+    let context = has_env_mappings
+        .then(|| {
+            project_env_context_for_plan(
+                paths,
+                database,
+                &candidate_project,
+                &config_file.config,
+                &plan,
+            )
+        })
+        .transpose()?;
+    let rendered = render_project_env(
         &candidate_project,
-        &config_file.config,
-        &plan,
+        &config_file,
+        context.as_ref(),
+        runtime_warnings,
     )?;
-    let rendered = config::render_project_env(&config_file.config, &context)?;
-    let env_file_path =
-        config::resolve_project_env_file_path(&candidate_project.path, &config_file.config)?;
-    let transform = config::write_project_env_file(&env_file_path, &rendered)?;
-    let mut warnings = observed_warnings(&transform.warnings);
-    warnings.extend(runtime_warnings);
-    let status = if warnings.is_empty() {
-        ProjectEnvObservedStatus::Rendered
-    } else {
-        ProjectEnvObservedStatus::Warning
-    };
-    let message = if warnings.is_empty() {
-        "rendered Project env"
-    } else {
-        "rendered Project env with warnings"
-    };
-
     finalize_project_reconciliation_state(
         database,
         project,
         &config_file,
         resolved_php_runtime.as_ref(),
-        status,
-        message,
-        &warnings,
+        rendered.status(),
+        rendered.message,
+        &rendered.warnings,
     )?;
 
-    let summary = if warnings.is_empty() {
-        ProjectEnvReconciliationSummary {
-            message: "Project env rendered",
-            requested_php_extensions,
-        }
-    } else {
-        ProjectEnvReconciliationSummary {
-            message: "Project env rendered with warnings",
-            requested_php_extensions,
-        }
-    };
-
-    Ok(summary)
+    Ok(ProjectEnvReconciliationSummary {
+        message: rendered.summary,
+        requested_php_extensions,
+    })
 }
 
 fn maintain_existing_project_tls_after_config_error(
@@ -1110,6 +1144,261 @@ fn apply_project_resource_plan(
     Ok(())
 }
 
+fn render_project_env(
+    project: &ProjectRecord,
+    config_file: &ProjectConfigFile,
+    context: Option<&ProjectEnvContext>,
+    mut warnings: Vec<ProjectEnvObservedWarningInput>,
+) -> Result<ProjectEnvRender, DaemonError> {
+    if !config_file.config.has_env_mappings() {
+        let (message, summary) = if warnings.is_empty() {
+            (
+                "no Project env mappings configured",
+                "Project env unchanged; no mappings configured",
+            )
+        } else {
+            (
+                "Project runtime has warnings",
+                "Project env unchanged with warnings",
+            )
+        };
+
+        return Ok(ProjectEnvRender {
+            message,
+            warnings,
+            summary,
+        });
+    }
+
+    let context = context.ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+        reason: format!(
+            "missing env context while rendering Project `{}`",
+            project.id
+        ),
+    })?;
+    let rendered = config::render_project_env(&config_file.config, context)?;
+    let env_file_path = config::resolve_project_env_file_path(&project.path, &config_file.config)?;
+    let transform = config::write_project_env_file(&env_file_path, &rendered)?;
+    warnings.splice(0..0, observed_warnings(&transform.warnings));
+    let (message, summary) = if warnings.is_empty() {
+        ("rendered Project env", "Project env rendered")
+    } else {
+        (
+            "rendered Project env with warnings",
+            "Project env rendered with warnings",
+        )
+    };
+
+    Ok(ProjectEnvRender {
+        message,
+        warnings,
+        summary,
+    })
+}
+
+// Use current env mappings with persisted Project/resource values. Full Project reconciliation
+// applies changes to the serving mode, PHP identity, resource tracks, and allocation identities.
+fn validate_persisted_project_env_dependencies(
+    paths: &PvPaths,
+    database: &Database,
+    project: &ProjectRecord,
+    config_file: &ProjectConfigFile,
+) -> Result<(), DaemonError> {
+    let candidate_project = project_with_config_mode(project, &config_file.config);
+    let plan =
+        validate_project_config_and_plan(paths, database, &candidate_project, config_file, None)?;
+    let persisted_resources = database
+        .project_managed_resources(&project.id)?
+        .into_iter()
+        .map(|resource| ProjectManagedResourceInput {
+            resource_name: resource.resource_name,
+            track: resource.track,
+        })
+        .collect::<Vec<_>>();
+    let resources_match = plan.resources == persisted_resources;
+    let configured_hostnames = config_file.config.hostnames.iter().collect::<BTreeSet<_>>();
+    let persisted_hostnames = project.additional_hostnames.iter().collect::<BTreeSet<_>>();
+    let hostnames_match = configured_hostnames == persisted_hostnames;
+    let mut allocations_match = true;
+    for resource in &plan.resources {
+        let planned = plan
+            .allocations
+            .get(&resource.resource_name)
+            .map(|plan| plan.allocations.as_slice())
+            .unwrap_or_default();
+        let persisted = database
+            .resource_allocations(&project.id, &resource.resource_name)?
+            .into_iter()
+            .filter(|allocation| allocation.status != ResourceAllocationStatus::Inactive)
+            .collect::<Vec<_>>();
+        allocations_match &= persisted
+            .iter()
+            .all(|allocation| allocation.track == resource.track)
+            && planned
+                == persisted
+                    .into_iter()
+                    .map(|allocation| ResourceAllocationInput {
+                        allocation_name: allocation.allocation_name,
+                        generated_name: allocation.generated_name,
+                    })
+                    .collect::<Vec<_>>();
+    }
+    if candidate_project.mode != project.mode
+        || !hostnames_match
+        || !resources_match
+        || !allocations_match
+    {
+        return Err(DaemonError::ProjectEnvDependenciesNotApplied {
+            project_id: project.id.clone(),
+            reason: "serving mode, hostnames, resource tracks, or allocation identities differ from their last applied state".to_owned(),
+        });
+    }
+    let global_version_selector = database.global_php_default_track()?;
+    let php_track = maybe_resolve_project_php_track(
+        paths,
+        global_version_selector.as_deref(),
+        project,
+        config_file.config.php.as_ref(),
+        project.mode == ProjectMode::Served,
+        None,
+    )?;
+    let php_matches = match php_track {
+        Some(track) => {
+            let runtime = resolve_project_php_runtime_for_track(
+                database,
+                config_file.config.php.as_ref(),
+                track,
+            )?;
+            project.php_runtime.track.as_deref() == Some(runtime.track.as_str())
+                && project.php_runtime.requested_extensions == runtime.requested_extensions
+                && project.php_runtime.loaded_extensions == runtime.loaded_extensions
+                && project.php_runtime.ignored_extensions == runtime.ignored_extensions
+        }
+        None => project.php_runtime == Default::default(),
+    };
+    if !php_matches {
+        return Err(DaemonError::ProjectEnvDependenciesNotApplied {
+            project_id: project.id.clone(),
+            reason: "PHP track or extensions differ from their last applied state".to_owned(),
+        });
+    }
+    for resource in &plan.resources {
+        planned_allocation_contexts(
+            database,
+            &project.id,
+            &resource.resource_name,
+            &resource.track,
+            plan.allocations.get(&resource.resource_name),
+        )?;
+    }
+    let observations = database.runtime_observed_states()?;
+    for resource in &plan.resources {
+        let observed = observations.iter().find(|observed| {
+            matches!(
+                &observed.subject,
+                RuntimeSubject::Resource { name, track }
+                    if name == &resource.resource_name && track == &resource.track
+            )
+        });
+        let Some(observed) = observed else {
+            return Err(DaemonError::ProjectEnvDependenciesNotApplied {
+                project_id: project.id.clone(),
+                reason: format!(
+                    "required resource {} track {} has no observed state",
+                    resource.resource_name, resource.track
+                ),
+            });
+        };
+        let status = match observed.status {
+            RuntimeObservedStatus::Failed => "failed",
+            RuntimeObservedStatus::Degraded => "degraded",
+            RuntimeObservedStatus::Stopped => "stopped",
+            RuntimeObservedStatus::Pending => "pending",
+            RuntimeObservedStatus::Running => continue,
+        };
+        return Err(DaemonError::ProjectEnvDependenciesNotApplied {
+            project_id: project.id.clone(),
+            reason: format!(
+                "required resource {} track {} is {status}: {}",
+                resource.resource_name,
+                resource.track,
+                observed
+                    .message
+                    .as_deref()
+                    .unwrap_or("no diagnostic recorded")
+            ),
+        });
+    }
+    if candidate_project.mode == ProjectMode::Served && config_file.config.uses_tls_placeholders() {
+        ensure_project_tls_files(paths, project)?;
+    }
+
+    Ok(())
+}
+
+fn persisted_project_env_context(
+    paths: &PvPaths,
+    database: &Database,
+    project: &ProjectRecord,
+) -> Result<ProjectEnvContext, DaemonError> {
+    let persisted = database.project_env_context(&project.id)?;
+    let mut resources = BTreeMap::new();
+    for (resource_name, resource) in persisted.resources {
+        if resource.values.is_empty() {
+            return Err(config::ConfigError::MissingResourceEnvContext {
+                resource: resource_name,
+            }
+            .into());
+        }
+        let allocations = resource
+            .allocations
+            .into_iter()
+            .map(|(allocation_name, allocation)| {
+                (
+                    allocation_name,
+                    AllocationEnvContext {
+                        generated_name: allocation.generated_name,
+                        values: allocation.values,
+                    },
+                )
+            })
+            .collect();
+        resources.insert(
+            resource_name,
+            ResourceEnvContext {
+                track: resource.track,
+                values: resource.values,
+                allocations,
+            },
+        );
+    }
+
+    let serves_http = project.mode == ProjectMode::Served;
+    Ok(ProjectEnvContext {
+        primary_hostname: if serves_http {
+            served_project_hostname(project)?.to_owned()
+        } else {
+            String::new()
+        },
+        tls_ca_path: if serves_http {
+            paths.ca_certificate().to_string()
+        } else {
+            String::new()
+        },
+        tls_cert_path: if serves_http {
+            paths.project_tls_certificate(&project.id).to_string()
+        } else {
+            String::new()
+        },
+        tls_key_path: if serves_http {
+            paths.project_tls_private_key(&project.id).to_string()
+        } else {
+            String::new()
+        },
+        resources,
+    })
+}
+
 fn project_env_context_for_plan(
     paths: &PvPaths,
     database: &Database,
@@ -1254,10 +1543,9 @@ fn observed_warnings(warnings: &[ProjectEnvWarning]) -> Vec<ProjectEnvObservedWa
 }
 
 fn ignored_php_extension_warnings(
-    runtime: &ResolvedPhpRuntime,
+    ignored_extensions: &[String],
 ) -> Vec<ProjectEnvObservedWarningInput> {
-    runtime
-        .ignored_extensions
+    ignored_extensions
         .iter()
         .map(|extension| ProjectEnvObservedWarningInput {
             kind: "ignored_php_extension".to_string(),
@@ -1266,7 +1554,7 @@ fn ignored_php_extension_warnings(
         .collect()
 }
 
-fn record_project_env_failure(
+pub(crate) fn record_project_env_failure(
     database: &mut Database,
     project_id: &str,
     message: &str,
