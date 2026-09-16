@@ -15,6 +15,7 @@ use state::{PvPaths, StateError, fs};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::process::Child;
+use tokio::runtime::Handle;
 use tokio::time::{Instant, sleep, timeout};
 use tokio_rustls::TlsConnector;
 
@@ -215,25 +216,28 @@ impl ProcessSupervisor {
         command.stdout(Stdio::from(stdout));
         command.stderr(Stdio::from(stderr));
 
-        let mut child = command.spawn()?;
+        let child = command.spawn()?;
         let Some(pid) = child.id() else {
             return Err(DaemonError::MissingProcessId { name: spec.name });
         };
+        let mut spawned = SpawnedProcessGroup::armed(pid, child);
         post_spawn(pid).await;
 
-        if let Err(error) = persist_runtime_files(&spec, pid, &mut child).await {
-            terminate_spawned_child(pid, &mut child).await;
+        match spawned.commit(&spec).await {
+            Ok(Some(child)) => Ok(ManagedProcess {
+                pid,
+                child,
+                log_path: spec.log_path,
+                pid_path: spec.pid_path,
+                metadata_path: spec.metadata_path,
+            }),
+            Ok(None) => Err(DaemonError::MissingProcessId { name: spec.name }),
+            Err(error) => {
+                spawned.terminate().await;
 
-            return Err(error);
+                Err(error)
+            }
         }
-
-        Ok(ManagedProcess {
-            pid,
-            child,
-            log_path: spec.log_path,
-            pid_path: spec.pid_path,
-            metadata_path: spec.metadata_path,
-        })
     }
 
     pub fn verify_ownership(
@@ -783,6 +787,57 @@ fn signal_process_group(_pid: u32, _signal: ProcessSignal) -> Result<(), DaemonE
     require_process_containment()
 }
 
+/// Owns a freshly spawned process group until its runtime files are durably committed.
+///
+/// Every release path runs [`terminate_spawned_child`], so a failed or cancelled
+/// [`ProcessSupervisor::start`] cannot orphan the leader or its descendants.
+struct SpawnedProcessGroup {
+    pid: u32,
+    child: Option<Child>,
+    runtime: Handle,
+}
+
+impl SpawnedProcessGroup {
+    /// Arming captures the current runtime, so cancellation still reaps the group no matter
+    /// which thread or context finally drops the guard.
+    fn armed(pid: u32, child: Child) -> Self {
+        Self {
+            pid,
+            child: Some(child),
+            runtime: Handle::current(),
+        }
+    }
+
+    /// Commits the PID and runtime metadata, releasing the child only once both are durable.
+    /// Nothing is awaited between a successful commit and taking ownership back.
+    async fn commit(&mut self, spec: &ProcessSpec) -> Result<Option<Child>, DaemonError> {
+        let Some(child) = self.child.as_mut() else {
+            return Ok(None);
+        };
+        persist_runtime_files(spec, self.pid, child).await?;
+
+        Ok(self.child.take())
+    }
+
+    async fn terminate(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            terminate_spawned_child(self.pid, &mut child).await;
+        }
+    }
+}
+
+impl Drop for SpawnedProcessGroup {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let pid = self.pid;
+
+        self.runtime
+            .spawn(async move { terminate_spawned_child(pid, &mut child).await });
+    }
+}
+
 async fn terminate_spawned_child(pid: u32, child: &mut Child) {
     #[cfg(target_os = "macos")]
     let _group_kill_result = signal_process_group(pid, ProcessSignal::Kill);
@@ -1176,15 +1231,23 @@ fn timestamp() -> Result<String, DaemonError> {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    use std::future::pending;
+    use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
     use anyhow::{Result, anyhow};
+    use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
     use rustix::process::{Pid, Signal, kill_process, test_kill_process};
+    use tokio::sync::oneshot;
     use tokio::time::sleep;
 
     use super::{ProcessSpec, ProcessSupervisor};
     use state::PvPaths;
+
+    /// Shorter than the script identity stabilization window, so cancellation lands while
+    /// the runtime files are still uncommitted.
+    const IDENTITY_CANCEL_DELAY: Duration = Duration::from_millis(150);
 
     #[tokio::test]
     async fn startup_persistence_failure_terminates_process_group_descendants() -> Result<()> {
@@ -1240,7 +1303,172 @@ mod tests {
         Ok(())
     }
 
-    async fn wait_for_test_path(path: &camino::Utf8Path) {
+    #[tokio::test]
+    async fn canceled_spawn_reaps_uncommitted_process_group() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::ensure_layout(&paths)?;
+        let supervisor = ProcessSupervisor::new(paths.clone());
+
+        let hook_descendant_pid_path = paths.run().join("hook-cancel-descendant.pid");
+        let hook_observed_pid_path = hook_descendant_pid_path.clone();
+        let (hook_pid_sender, hook_pid_receiver) = oneshot::channel();
+        let mut hook_start = Box::pin(supervisor.start_inner(
+            descendant_spec(
+                &paths,
+                "hook-cancel",
+                "/bin/sh".into(),
+                shell_arguments(&hook_descendant_pid_path),
+            ),
+            move |pid| async move {
+                wait_for_test_path(&hook_observed_pid_path).await;
+                let _delivered = hook_pid_sender.send(pid);
+                pending::<()>().await;
+            },
+        ));
+        let hook_leader_pid = tokio::select! {
+            _result = &mut hook_start => {
+                return Err(anyhow!(
+                    "start_inner returned while the post-spawn hook was parked"
+                ));
+            }
+            pid = hook_pid_receiver => pid?,
+        };
+        drop(hook_start);
+
+        assert_process_group_reaped(hook_leader_pid, &hook_descendant_pid_path).await?;
+
+        let identity_descendant_pid_path = paths.run().join("identity-cancel-descendant.pid");
+        let identity_command = paths.run().join("identity-cancel.sh");
+        write_descendant_script(&identity_command, &identity_descendant_pid_path)?;
+        let identity_observed_pid_path = identity_descendant_pid_path.clone();
+        let (identity_pid_sender, identity_pid_receiver) = oneshot::channel();
+        let mut identity_start = Box::pin(supervisor.start_inner(
+            descendant_spec(&paths, "identity-cancel", identity_command, Vec::new()),
+            move |pid| async move {
+                wait_for_test_path(&identity_observed_pid_path).await;
+                let _delivered = identity_pid_sender.send(pid);
+            },
+        ));
+        let identity_leader_pid = tokio::select! {
+            _result = &mut identity_start => {
+                return Err(anyhow!(
+                    "start_inner returned before the spawned process was observed"
+                ));
+            }
+            pid = identity_pid_receiver => pid?,
+        };
+        tokio::select! {
+            _result = &mut identity_start => {
+                return Err(anyhow!(
+                    "start_inner committed runtime files before cancellation"
+                ));
+            }
+            () = sleep(IDENTITY_CANCEL_DELAY) => {}
+        }
+        drop(identity_start);
+
+        assert_process_group_reaped(identity_leader_pid, &identity_descendant_pid_path).await?;
+
+        let committed_descendant_pid_path = paths.run().join("committed-descendant.pid");
+        let committed = ProcessSupervisor::new(paths.clone())
+            .start(descendant_spec(
+                &paths,
+                "committed",
+                "/bin/sh".into(),
+                shell_arguments(&committed_descendant_pid_path),
+            ))
+            .await?;
+        let committed_pid = committed.pid();
+        wait_for_test_path(&committed_descendant_pid_path).await;
+
+        assert!(
+            test_kill_process(test_pid(committed_pid)?).is_ok(),
+            "committed runtime {committed_pid} was reaped despite durable runtime files"
+        );
+
+        committed.stop(Duration::from_secs(5)).await?;
+
+        Ok(())
+    }
+
+    fn descendant_spec(
+        paths: &PvPaths,
+        name: &str,
+        command: Utf8PathBuf,
+        arguments: Vec<String>,
+    ) -> ProcessSpec {
+        ProcessSpec {
+            name: name.to_string(),
+            command,
+            arguments,
+            private_environment: Default::default(),
+            config_path: paths.config().join(format!("{name}.json")),
+            config_fingerprint: None,
+            log_path: paths.logs().join(format!("{name}.log")),
+            pid_path: paths.run().join(format!("{name}.pid")),
+            metadata_path: paths.run().join(format!("{name}-metadata.json")),
+            resource_name: name.to_string(),
+            track: "test".to_string(),
+        }
+    }
+
+    fn shell_arguments(descendant_pid_path: &Utf8Path) -> Vec<String> {
+        vec!["-c".to_string(), descendant_shell_body(descendant_pid_path)]
+    }
+
+    fn descendant_shell_body(descendant_pid_path: &Utf8Path) -> String {
+        format!(
+            "sh -c 'while true; do sleep 1; done' & echo $! > \"{descendant_pid_path}\"; while true; do sleep 1; done"
+        )
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "supervisor cancellation test sets its fixture executable bit directly"
+    )]
+    fn write_descendant_script(path: &Utf8Path, descendant_pid_path: &Utf8Path) -> Result<()> {
+        let body = descendant_shell_body(descendant_pid_path);
+        state::fs::write_sensitive_file(path, &format!("#!/bin/sh\n{body}\n"))?;
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions)?;
+
+        Ok(())
+    }
+
+    async fn assert_process_group_reaped(
+        leader_pid: u32,
+        descendant_pid_path: &Utf8Path,
+    ) -> Result<()> {
+        let descendant_pid = state::fs::read_to_string(descendant_pid_path)?
+            .trim()
+            .parse::<u32>()?;
+        let leader_exited = wait_for_test_process_exit(leader_pid).await?;
+        let descendant_exited = wait_for_test_process_exit(descendant_pid).await?;
+        for (pid, exited) in [
+            (leader_pid, leader_exited),
+            (descendant_pid, descendant_exited),
+        ] {
+            if !exited {
+                kill_test_process(pid)?;
+                let _cleanup_complete = wait_for_test_process_exit(pid).await?;
+            }
+        }
+
+        assert!(
+            leader_exited,
+            "canceled spawn left leader process {leader_pid} unreaped"
+        );
+        assert!(
+            descendant_exited,
+            "canceled spawn left descendant process {descendant_pid} unreaped"
+        );
+
+        Ok(())
+    }
+
+    async fn wait_for_test_path(path: &Utf8Path) {
         for _attempt in 0..50 {
             if path.exists() {
                 return;
