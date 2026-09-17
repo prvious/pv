@@ -149,7 +149,8 @@ pub(crate) fn setup(
         return Ok(ExitCode::FAILURE);
     }
 
-    let mut progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
+    let mut progress =
+        DownloadProgressRenderer::with_output(environment.stdout_is_terminal(), stdout);
     let completed =
         ::daemon::run_job_with_events_blocking(paths, "reconcile", "system", &mut progress)?;
     drop(progress);

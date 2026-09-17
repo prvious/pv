@@ -136,6 +136,14 @@ jobs:
           cargo test --locked -p platform --test unsupported_listener
           cargo test --locked -p daemon --test platform_preflight
 
+      - name: Compile daemon tests on Linux
+        if: matrix.target == 'linux'
+        run: cargo test --locked -p daemon --all-features --tests --no-run
+
+      - name: Test portable runtime health on Linux
+        if: matrix.target == 'linux'
+        run: cargo test --locked -p daemon --all-features --lib health::tests
+
       - name: Smoke portable commands
         shell: bash
         run: |
