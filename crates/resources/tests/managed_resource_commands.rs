@@ -160,6 +160,41 @@ fn managed_resource_commands_install_uses_prefetched_fresh_download_snapshot() -
 }
 
 #[test]
+fn failed_prefetched_install_does_not_record_desired_state() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/missing"])?;
+    let artifact = fixture_artifact("7.2.5-pv1", "invalid")?;
+    let client = ScriptedClient::new()
+        .with_text(&manifest_with_artifacts(&[&artifact]))
+        .with_bytes(artifact.bytes());
+    let snapshot = commands.manifest_snapshot_with_progress(&client, &NoDownloadProgress)?;
+    let resolved =
+        commands.resolve_install_artifact(&adapter, TrackName::new("7.2")?, &snapshot)?;
+    let download =
+        ArtifactDownloader::new(paths.downloads()).download(resolved.artifact(), &client)?;
+
+    let result = commands.install_resolved_artifact_with_progress(
+        &adapter,
+        resolved,
+        Some(&download),
+        &NoDownloadProgress,
+    );
+
+    assert!(matches!(
+        result,
+        Err(ManagedResourceCommandError::Resources(
+            ResourcesError::InvalidArtifactLayout { .. }
+        ))
+    ));
+    assert!(raw_track_records_summary(&paths, tempdir.path())?.is_empty());
+
+    Ok(())
+}
+
+#[test]
 fn managed_resource_commands_rejects_download_for_different_artifact() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
