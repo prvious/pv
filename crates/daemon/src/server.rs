@@ -1,23 +1,23 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use config::ProjectConfigFile;
 use futures_util::StreamExt;
-use state::{Database, ProjectMode, PvPaths};
+use state::PvPaths;
 use tokio::io::AsyncRead;
 use tokio::sync::oneshot;
 use tokio::task::{JoinHandle, JoinSet};
-use tokio::time::{MissedTickBehavior, sleep, timeout};
+use tokio::time::{Instant, sleep, sleep_until, timeout};
 
 use crate::DaemonError;
+use crate::health::{RuntimeHealthScan, RuntimeRecoveryBackoff, scan_runtime_health};
 use crate::ipc::{LocalListener, LocalStream};
 use crate::jobs::{
-    BackgroundReconciliationError, record_background_reconciliation_error,
+    BackgroundReconciliationError, complete_queued_background_reconciliation_job,
+    enqueue_background_reconciliation_job, record_background_reconciliation_error,
     run_background_reconciliation_job_with_origin, run_job, run_startup_reconciliation_job,
 };
 use crate::managed_resources::ManagedResourceRuntimeCatalog;
-use crate::project_env::{project_tls_artifact_exists, project_tls_files_are_current};
-use crate::reconciliation::{ReconciliationQueue, ReconciliationScope};
+use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use crate::structured_log;
 use crate::watcher::ProjectConfigWatcher;
 use protocol::{
@@ -28,7 +28,6 @@ const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 const PROJECT_CONFIG_DEBOUNCE: Duration = Duration::from_millis(50);
 const PROJECT_CONFIG_WATCH_INTERVAL: Duration = Duration::from_millis(100);
 const REQUEST_LINE_TIMEOUT: Duration = Duration::from_secs(30);
-const TLS_HEALTH_INTERVAL: Duration = Duration::from_secs(30);
 
 pub(crate) async fn serve(
     paths: PvPaths,
@@ -63,7 +62,7 @@ pub(crate) async fn serve(
             let runtime_catalog = background_runtime_catalog.clone();
             let _task = tokio::spawn(async move {
                 let scope_text = scope.to_string();
-                let result = run_watcher_reconciliation_job(
+                let result = run_debounced_reconciliation_job(
                     paths.clone(),
                     queue,
                     scope,
@@ -81,10 +80,9 @@ pub(crate) async fn serve(
     );
     let mut watcher_task = tokio::spawn(watcher.run());
     let mut watcher_task_finished = false;
-    let mut tls_health_task: Option<JoinHandle<Result<Vec<ReconciliationScope>, DaemonError>>> =
-        None;
-    let mut tls_health_interval = tokio::time::interval(TLS_HEALTH_INTERVAL);
-    tls_health_interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut runtime_health_task: Option<JoinHandle<Result<RuntimeHealthScan, DaemonError>>> = None;
+    let mut recovery_backoff = RuntimeRecoveryBackoff::default();
+    let mut next_health_scan = None;
 
     let result = loop {
         tokio::select! {
@@ -113,34 +111,101 @@ pub(crate) async fn serve(
                 {
                     break Err(error);
                 }
+                next_health_scan = Some(recovery_backoff.next_scan_at(Instant::now()));
             }
-            tls_health_result = async {
-                match tls_health_task.as_mut() {
+            runtime_health_result = async {
+                match runtime_health_task.as_mut() {
                     Some(task) => Some(task.await),
                     None => None,
                 }
-            }, if tls_health_task.is_some() => {
-                tls_health_task = None;
-                if let Some(tls_health_result) = tls_health_result {
-                    match tls_health_result {
-                        Ok(Ok(scopes)) => {
-                            for scope in scopes {
+            }, if runtime_health_task.is_some() => {
+                runtime_health_task = None;
+                let now = Instant::now();
+                if let Some(runtime_health_result) = runtime_health_result {
+                    match runtime_health_result {
+                        Ok(Ok(scan)) => {
+                            for error in &scan.errors {
+                                structured_log::runtime_health_probe_failed(
+                                    &paths,
+                                    &error.subject,
+                                    &error.scope,
+                                    &error.error,
+                                );
+                            }
+                            if let Err(error) =
+                                recovery_backoff.record_exhausted_failures(&paths, &scan)
+                            {
+                                structured_log::runtime_health_scan_failed(
+                                    &paths,
+                                    &error.to_string(),
+                                );
+                            }
+                            let runtime_scopes = recovery_backoff.scopes_due(now, &scan);
+                            for scope in runtime_scopes {
+                                let scope_text = scope.to_string();
+                                match enqueue_runtime_recovery_job(
+                                    &paths,
+                                    &queue,
+                                    &mut recovery_backoff,
+                                    now,
+                                    &scan,
+                                    &scope,
+                                ) {
+                                    Ok(Some(EnqueueResult::Queued(queued))) => {
+                                        let completion_paths = paths.clone();
+                                        let completion_runtime_catalog = runtime_catalog.clone();
+                                        let _task = tokio::spawn(async move {
+                                            let result = complete_queued_background_reconciliation_job(
+                                                &completion_paths,
+                                                queued,
+                                                completion_runtime_catalog.as_deref(),
+                                            )
+                                            .await;
+                                            let _result = handle_background_reconciliation_result(
+                                                &completion_paths,
+                                                &scope_text,
+                                                result,
+                                            );
+                                        });
+                                    }
+                                    Ok(Some(EnqueueResult::Coalesced(_)) | None) => {}
+                                    Err(error) => {
+                                        let _result = handle_background_reconciliation_result(
+                                            &paths,
+                                            &scope_text,
+                                            Err(error),
+                                        );
+                                    }
+                                }
+                            }
+                            for scope in scan.maintenance_scopes {
                                 debouncer.request(scope).await;
                             }
+                            next_health_scan = Some(recovery_backoff.next_scan_at(now));
                         }
-                        Ok(Err(_error)) => {}
+                        Ok(Err(error)) => {
+                            structured_log::runtime_health_scan_failed(&paths, &error.to_string());
+                            next_health_scan = Some(recovery_backoff.next_scan_at(now));
+                        }
                         Err(error) if error.is_panic() => break Err(error.into()),
-                        Err(_error) => {}
+                        Err(error) => {
+                            structured_log::runtime_health_scan_failed(&paths, &error.to_string());
+                            next_health_scan = Some(recovery_backoff.next_scan_at(now));
+                        }
                     }
                 }
             }
-            _ = tls_health_interval.tick() => {
-                if tls_health_task.is_none() {
-                    let health_paths = paths.clone();
-                    tls_health_task = Some(tokio::task::spawn_blocking(move || {
-                        collect_project_tls_health_scopes(&health_paths)
-                    }));
+            _ = async {
+                if let Some(next_health_scan) = next_health_scan {
+                    sleep_until(next_health_scan).await;
                 }
+            }, if next_health_scan.is_some() && runtime_health_task.is_none() => {
+                let health_paths = paths.clone();
+                let health_runtime_catalog = runtime_catalog.clone();
+                runtime_health_task = Some(tokio::spawn(scan_runtime_health(
+                    health_paths,
+                    health_runtime_catalog,
+                )));
             }
             accepted = listener.accept() => {
                 match accepted {
@@ -179,7 +244,7 @@ pub(crate) async fn serve(
         watcher_task.abort();
         let _join_result = watcher_task.await;
     }
-    if let Some(task) = tls_health_task.take() {
+    if let Some(task) = runtime_health_task.take() {
         task.abort();
         let _join_result = task.await;
     }
@@ -192,7 +257,7 @@ pub(crate) async fn serve(
     startup_result
 }
 
-async fn run_watcher_reconciliation_job(
+async fn run_debounced_reconciliation_job(
     paths: PvPaths,
     queue: ReconciliationQueue,
     scope: ReconciliationScope,
@@ -220,6 +285,22 @@ async fn run_watcher_reconciliation_job(
             result => return result,
         }
     }
+}
+
+fn enqueue_runtime_recovery_job(
+    paths: &PvPaths,
+    queue: &ReconciliationQueue,
+    recovery_backoff: &mut RuntimeRecoveryBackoff,
+    now: Instant,
+    scan: &RuntimeHealthScan,
+    scope: &ReconciliationScope,
+) -> Result<Option<EnqueueResult>, BackgroundReconciliationError> {
+    let result = enqueue_background_reconciliation_job(paths, queue, scope.clone())?;
+    if matches!(&result, Some(EnqueueResult::Queued(_))) {
+        recovery_backoff.record_accepted_recovery(now, scan, scope);
+    }
+
+    Ok(result)
 }
 
 fn handle_startup_task_result(
@@ -259,7 +340,17 @@ fn handle_background_reconciliation_result(
             Err(*recording_error)
         }
         Err(BackgroundReconciliationError::Admission(error)) => {
-            record_background_reconciliation_error(paths, scope, &error)
+            let result = record_background_reconciliation_error(paths, scope, &error);
+            if let Err(recording_error) = &result {
+                structured_log::background_reconciliation_error_recording_failed(
+                    paths,
+                    scope,
+                    &error.to_string(),
+                    &recording_error.to_string(),
+                );
+            }
+
+            result
         }
     }
 }
@@ -277,41 +368,6 @@ async fn stop_startup_task(
     };
 
     handle_startup_task_result(paths, task.await)
-}
-
-fn collect_project_tls_health_scopes(
-    paths: &PvPaths,
-) -> Result<Vec<ReconciliationScope>, DaemonError> {
-    let Some(database) = Database::open_read_only(paths)? else {
-        return Ok(Vec::new());
-    };
-    let ca_certificate_pem = state::fs::read_to_string(&paths.ca_certificate())?;
-    let _ca_private_key_pem = state::fs::read_to_string(&paths.ca_private_key())?;
-    let projects = database.projects()?;
-    let mut scopes = Vec::new();
-
-    for project in projects {
-        if project.mode == ProjectMode::ResourceOnly {
-            continue;
-        }
-        let should_assess = match ProjectConfigFile::read_from_root(&project.path) {
-            Ok(config_file) => config_file.config.uses_tls_placeholders(),
-            Err(_error) => project_tls_artifact_exists(paths, &project).unwrap_or(false),
-        };
-        if !should_assess {
-            continue;
-        }
-        let Ok(is_current) = project_tls_files_are_current(paths, &project, &ca_certificate_pem)
-        else {
-            continue;
-        };
-        if !is_current && let Ok(scope) = ReconciliationScope::project(project.id) {
-            scopes.push(scope);
-        }
-    }
-
-    scopes.sort();
-    Ok(scopes)
 }
 
 async fn handle_connection(
@@ -396,6 +452,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    use std::sync::Arc;
     use std::time::Duration;
 
     use anyhow::{Result, anyhow};
@@ -412,17 +470,145 @@ mod tests {
     };
     use time::{Duration as CertificateDuration, OffsetDateTime};
     use tokio::io::duplex;
+    #[cfg(target_os = "macos")]
+    use tokio::time::Instant;
     use tokio::time::{sleep, timeout};
 
+    #[cfg(target_os = "macos")]
+    use super::enqueue_runtime_recovery_job;
     use super::{
-        collect_project_tls_health_scopes, handle_background_reconciliation_result,
-        handle_startup_task_result, read_request_line, run_watcher_reconciliation_job,
+        handle_background_reconciliation_result, handle_startup_task_result, read_request_line,
+        run_debounced_reconciliation_job,
     };
+    use crate::health::collect_project_tls_health_scopes;
+    #[cfg(target_os = "macos")]
+    use crate::health::{RuntimeRecoveryBackoff, scan_runtime_health};
     use crate::jobs::{
         BackgroundReconciliationError, run_background_reconciliation_job_with_origin,
     };
+    #[cfg(target_os = "macos")]
+    use crate::managed_resources::ManagedResourceRuntimeCatalog;
+    #[cfg(target_os = "macos")]
+    use crate::reconciliation::EnqueueResult;
     use crate::reconciliation::{ReconciliationQueue, ReconciliationScope};
     use protocol::transport;
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn runtime_recovery_backoff_counts_only_new_queue_jobs() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(&config_path, "php: \"8.4\"\n")?;
+        state::fs::write_sensitive_file(&paths.ca_certificate(), "unused certificate")?;
+        state::fs::write_sensitive_file(&paths.ca_private_key(), "unused private key")?;
+        let project_input = LinkProjectInput {
+            path: project_path.clone(),
+            original_path: project_path,
+            primary_hostname: "health-queue.test".to_owned(),
+            config_path,
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        };
+        let mut database = Database::open(&paths)?;
+        let project = database.link_project(project_input)?.project;
+        drop(database);
+
+        let scan = scan_runtime_health(
+            paths.clone(),
+            Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+        )
+        .await?;
+        let queue = ReconciliationQueue::new();
+        let mut backoff = RuntimeRecoveryBackoff::default();
+        let detected_at = Instant::now();
+        assert!(backoff.scopes_due(detected_at, &scan).is_empty());
+
+        let first_attempt_at = detected_at + Duration::from_secs(1);
+        let scope = backoff
+            .scopes_due(first_attempt_at, &scan)
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow!("expected a due runtime recovery scope"))?;
+        let first_result = enqueue_runtime_recovery_job(
+            &paths,
+            &queue,
+            &mut backoff,
+            first_attempt_at,
+            &scan,
+            &scope,
+        )
+        .map_err(BackgroundReconciliationError::into_error)?;
+        let Some(EnqueueResult::Queued(first_queued)) = first_result else {
+            return Err(anyhow!("expected the first recovery to be queued"));
+        };
+        assert_eq!(
+            backoff.next_scan_at(first_attempt_at),
+            first_attempt_at + Duration::from_secs(5)
+        );
+
+        let coalesced_at = first_attempt_at + Duration::from_secs(5);
+        assert!(matches!(
+            enqueue_runtime_recovery_job(
+                &paths,
+                &queue,
+                &mut backoff,
+                coalesced_at,
+                &scan,
+                &scope,
+            )
+            .map_err(BackgroundReconciliationError::into_error)?,
+            Some(EnqueueResult::Coalesced(_))
+        ));
+        assert_eq!(
+            backoff.next_scan_at(coalesced_at),
+            coalesced_at + Duration::from_secs(1)
+        );
+        drop(first_queued);
+
+        let jobs_lock = JobsLock::acquire(&paths)?;
+        let rejected_at = coalesced_at + Duration::from_secs(1);
+        assert!(matches!(
+            enqueue_runtime_recovery_job(&paths, &queue, &mut backoff, rejected_at, &scan, &scope,),
+            Err(BackgroundReconciliationError::Admission(_))
+        ));
+        assert_eq!(
+            backoff.next_scan_at(rejected_at),
+            rejected_at + Duration::from_secs(1)
+        );
+        drop(jobs_lock);
+
+        let accepted_at = rejected_at + Duration::from_secs(1);
+        assert!(matches!(
+            enqueue_runtime_recovery_job(&paths, &queue, &mut backoff, accepted_at, &scan, &scope,)
+                .map_err(BackgroundReconciliationError::into_error)?,
+            Some(EnqueueResult::Queued(_))
+        ));
+        assert_eq!(
+            backoff.next_scan_at(accepted_at),
+            accepted_at + Duration::from_secs(15)
+        );
+
+        let jobs_before_obsolete_scope = Database::open(&paths)?.recent_jobs()?.len();
+        Database::open(&paths)?.unlink_project(&project.id)?;
+        let obsolete_at = accepted_at + Duration::from_secs(15);
+        assert!(
+            enqueue_runtime_recovery_job(&paths, &queue, &mut backoff, obsolete_at, &scan, &scope,)
+                .map_err(BackgroundReconciliationError::into_error)?
+                .is_none()
+        );
+        assert_eq!(
+            Database::open(&paths)?.recent_jobs()?.len(),
+            jobs_before_obsolete_scope
+        );
+        assert_eq!(
+            backoff.next_scan_at(obsolete_at),
+            obsolete_at + Duration::from_secs(1)
+        );
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn request_line_read_times_out_for_idle_connection() -> Result<(), crate::DaemonError> {
@@ -440,12 +626,17 @@ mod tests {
     async fn watcher_reconciliation_retries_after_jobs_lock_contention() -> Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
-        Database::open(&paths)?;
+        let project = link_health_project(
+            &paths,
+            &tempdir.path().join("invalid-project"),
+            "invalid-project.test",
+            "php: [\n",
+        )?;
         let jobs_lock = JobsLock::acquire(&paths)?;
         let task_paths = paths.clone();
-        let scope = ReconciliationScope::project("missing")?;
+        let scope = ReconciliationScope::project(project.id)?;
         let task = tokio::spawn(async move {
-            run_watcher_reconciliation_job(task_paths, ReconciliationQueue::new(), scope, None)
+            run_debounced_reconciliation_job(task_paths, ReconciliationQueue::new(), scope, None)
                 .await
         });
 
@@ -508,13 +699,25 @@ mod tests {
     async fn unrecorded_background_failure_is_logged_against_originating_job() -> Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
-        Database::open(&paths)?;
+        let project_path = tempdir.path().join("invalid-project");
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(&config_path, "php: [\n")?;
+        let project = Database::open(&paths)?
+            .link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path,
+                primary_hostname: "invalid-project.test".to_owned(),
+                config_path,
+                desired_php_track: None,
+                additional_hostnames: Vec::new(),
+            })?
+            .project;
         Connection::open(paths.db().as_std_path())?.execute_batch(
             "CREATE TRIGGER reject_job_failure BEFORE UPDATE OF status ON jobs
              WHEN NEW.status = 'failed'
              BEGIN SELECT RAISE(FAIL, 'fixture rejected job failure'); END;",
         )?;
-        let scope = ReconciliationScope::project("missing")?;
+        let scope = ReconciliationScope::project(project.id)?;
         let scope_text = scope.to_string();
 
         let result = run_background_reconciliation_job_with_origin(
@@ -524,12 +727,12 @@ mod tests {
             None,
         )
         .await;
-        let job_id = match &result {
+        let (job_id, execution_error) = match &result {
             Err(BackgroundReconciliationError::Execution {
                 job_id,
+                error,
                 recording_error: Some(_),
-                ..
-            }) => job_id.clone(),
+            }) => (job_id.clone(), error.to_string()),
             _ => return Err(anyhow!("expected an unrecorded execution failure")),
         };
 
@@ -551,7 +754,7 @@ mod tests {
             event["event"] == "job_failure_recording_failed"
                 && event["job_id"] == job_id
                 && event["scope"] == scope_text
-                && event["error"] == "state error: Project `missing` was not found"
+                && event["error"] == execution_error
                 && event["recording_error"]
                     == "state error: SQLite error: fixture rejected job failure"
         }));
@@ -612,7 +815,10 @@ mod tests {
         state::fs::remove_file(&paths.project_tls_private_key(&malformed_cert_only_project.id))?;
         state::fs::remove_file(&paths.project_tls_certificate(&malformed_key_only_project.id))?;
 
-        let scopes = collect_project_tls_health_scopes(&paths)?;
+        let Some(database) = Database::open_read_only(&paths)? else {
+            anyhow::bail!("health test database was not created");
+        };
+        let scopes = collect_project_tls_health_scopes(&paths, &database)?;
         let mut expected_scopes = vec![
             ReconciliationScope::project(expiring_project.id.clone())?,
             ReconciliationScope::project(invalid_project.id.clone())?,
@@ -647,7 +853,10 @@ mod tests {
             "env: [\n",
         )?;
 
-        assert!(collect_project_tls_health_scopes(&paths)?.is_empty());
+        let Some(database) = Database::open_read_only(&paths)? else {
+            anyhow::bail!("health test database was not created");
+        };
+        assert!(collect_project_tls_health_scopes(&paths, &database)?.is_empty());
         assert!(!state::fs::path_entry_exists(
             &paths.project_tls_certificate(&project.id)
         )?);
