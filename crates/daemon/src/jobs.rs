@@ -3,15 +3,19 @@ use std::future::Future;
 use std::io;
 
 use crate::DaemonError;
-use crate::gateway::{CADDY_NOT_INSTALLED, reconcile_gateway_runtimes};
+use crate::gateway::{
+    CADDY_NOT_INSTALLED, reconcile_gateway_runtimes, reconcile_gateway_runtimes_with_phase_log,
+};
 use crate::ipc::LocalStream;
 use crate::managed_resources::{
     ManagedResourceRuntimeCatalog, ManagedResourceUpdateReport,
     reconcile_system_resources_with_catalog_and_progress, reconcile_system_resources_with_progress,
 };
 use crate::project_env::reconcile_project_env_with_runtime_catalog_and_progress;
-use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
-use crate::structured_log;
+use crate::reconciliation::{
+    EnqueueResult, ReconciliationJobTiming, ReconciliationQueue, ReconciliationScope,
+};
+use crate::structured_log::{self, PhaseOutcome, ReconciliationPhase, ReconciliationPhaseLog};
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
 use state::{
     Database, JobDiagnosticSubject, ManagedResourceDesiredState, ProjectRecord, PvPaths, StateError,
@@ -40,6 +44,11 @@ struct CompletedUpdateJob {
     coverage: Vec<JobDiagnosticSubject>,
 }
 
+struct CompletedReconciliationJob {
+    summary: String,
+    coverage: Vec<JobDiagnosticSubject>,
+}
+
 struct FailedUpdateJob {
     error: Box<DaemonError>,
     subject: JobDiagnosticSubject,
@@ -63,17 +72,27 @@ struct StreamedJobCompletion {
 #[derive(Clone, Debug)]
 pub(crate) struct DaemonDownloadProgress {
     sender: Option<Sender<ForegroundJobEvent>>,
+    phase_log: Option<ReconciliationPhaseLog>,
 }
 
 impl DaemonDownloadProgress {
     fn new(sender: Sender<ForegroundJobEvent>) -> Self {
         Self {
             sender: Some(sender),
+            phase_log: None,
         }
     }
 
     pub(crate) fn disabled() -> Self {
-        Self { sender: None }
+        Self {
+            sender: None,
+            phase_log: None,
+        }
+    }
+
+    fn with_phase_log(mut self, phase_log: ReconciliationPhaseLog) -> Self {
+        self.phase_log = Some(phase_log);
+        self
     }
 
     fn send_download_progress(
@@ -112,6 +131,51 @@ impl resources::DownloadProgress for DaemonDownloadProgress {
             }
         }
     }
+
+    fn operation_finished(&self, event: resources::ResourceOperationEvent<'_, '_>) {
+        let Some(phase_log) = &self.phase_log else {
+            return;
+        };
+        let manifest_operation = matches!(event.operation, resources::ResourceOperation::Manifest);
+        let (phase, subject, counts) = match event.operation {
+            resources::ResourceOperation::Manifest => (
+                ReconciliationPhase::Manifest,
+                "artifact_manifest".to_owned(),
+                vec![("manifest_count", 1)],
+            ),
+            resources::ResourceOperation::Download(artifact) => (
+                ReconciliationPhase::Download,
+                artifact_subject(artifact),
+                vec![("artifact_count", 1), ("artifact_bytes", artifact.size())],
+            ),
+            resources::ResourceOperation::Install(artifact) => (
+                ReconciliationPhase::Install,
+                artifact_subject(artifact),
+                vec![("artifact_count", 1)],
+            ),
+        };
+        let (outcome, fields) = match event.outcome {
+            resources::ResourceOperationOutcome::Succeeded if manifest_operation => {
+                (PhaseOutcome::Succeeded, vec![("manifest_source", "latest")])
+            }
+            resources::ResourceOperationOutcome::Succeeded => (PhaseOutcome::Succeeded, Vec::new()),
+            resources::ResourceOperationOutcome::Failed => (PhaseOutcome::Failed, Vec::new()),
+            resources::ResourceOperationOutcome::Fallback { reason } => (
+                PhaseOutcome::Fallback,
+                vec![("manifest_source", "cached"), ("fallback_reason", reason)],
+            ),
+        };
+        phase_log.completed_with_fields(phase, &subject, outcome, event.elapsed, &counts, &fields);
+    }
+}
+
+fn artifact_subject(artifact: &resources::ManifestArtifact) -> String {
+    format!(
+        "{}:{}:{}",
+        artifact.resource_name(),
+        artifact.track(),
+        artifact.artifact_version()
+    )
 }
 
 pub(crate) async fn run_job(
@@ -153,9 +217,10 @@ pub(crate) async fn run_background_reconciliation_job(
     let running = queued.wait_for_turn().await;
     let job_id = running.job_id().to_string();
     let scope = running.scope().clone();
-    let result = complete_reconciliation_job(&paths, &job_id, &scope, runtime_catalog)
-        .await
-        .map(|_summary| ());
+    let result =
+        complete_reconciliation_job(&paths, &job_id, &scope, runtime_catalog, running.timing())
+            .await
+            .map(|_summary| ());
 
     running.finish();
 
@@ -198,6 +263,7 @@ async fn run_reconciliation_job(
                 running.job_id(),
                 scope,
                 runtime_catalog,
+                running.timing(),
             )
             .await;
 
@@ -426,6 +492,7 @@ async fn stream_started_reconciliation_job<Stream>(
     job_id: &str,
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    timing: ReconciliationJobTiming,
 ) -> Result<(), DaemonError>
 where
     Stream: AsyncWrite + Unpin,
@@ -467,6 +534,7 @@ where
                     &scope,
                     runtime_catalog,
                     progress,
+                    timing,
                 ),
                 event_receiver,
             )
@@ -475,7 +543,7 @@ where
             (completion.result, completion.transport_is_open)
         } else {
             (
-                complete_reconciliation_job(&paths, job_id, &scope, runtime_catalog).await,
+                complete_reconciliation_job(&paths, job_id, &scope, runtime_catalog, timing).await,
                 false,
             )
         };
@@ -937,25 +1005,33 @@ fn unchanged_update_summary(report: &ManagedResourceUpdateReport) -> String {
 
 async fn complete_managed_resource_reconciliation_with_progress(
     paths: &PvPaths,
-    job_id: &str,
     name: &crate::reconciliation::ReconciliationScopeComponent,
     track: &crate::reconciliation::ReconciliationScopeComponent,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
-) -> Result<String, DaemonError> {
-    let project_report =
-        reconcile_system_projects_with_progress(paths, runtime_catalog, &progress).await?;
+    phase_log: &ReconciliationPhaseLog,
+) -> Result<CompletedReconciliationJob, DaemonError> {
+    phase_log.completed(
+        ReconciliationPhase::Resources,
+        &format!("{}:{}", name.as_str(), track.as_str()),
+        PhaseOutcome::Skipped,
+        Duration::ZERO,
+        &[("resource_count", 0)],
+    );
+    let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
+    let project_result =
+        reconcile_system_projects_with_progress(paths, runtime_catalog, &progress).await;
+    finish_project_phase(project_timer, &project_result);
+    let project_report = project_result?;
     let summary =
         managed_resource_reconciliation_summary(name.as_str(), track.as_str(), &project_report);
-    let mut database = Database::open(paths)?;
     let mut coverage = vec![JobDiagnosticSubject::Resource {
         name: name.as_str().to_owned(),
         track: track.as_str().to_owned(),
     }];
     coverage.extend(project_report.successful_project_coverage());
-    database.complete_job_with_coverage(job_id, &summary, &coverage)?;
 
-    Ok(summary)
+    Ok(CompletedReconciliationJob { summary, coverage })
 }
 
 async fn complete_reconciliation_job(
@@ -963,6 +1039,7 @@ async fn complete_reconciliation_job(
     job_id: &str,
     scope: &ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    timing: ReconciliationJobTiming,
 ) -> Result<String, DaemonError> {
     complete_reconciliation_job_with_progress(
         paths,
@@ -970,6 +1047,7 @@ async fn complete_reconciliation_job(
         scope,
         runtime_catalog,
         DaemonDownloadProgress::disabled(),
+        timing,
     )
     .await
 }
@@ -980,122 +1058,236 @@ async fn complete_reconciliation_job_with_progress(
     scope: &ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
+    timing: ReconciliationJobTiming,
 ) -> Result<String, DaemonError> {
+    let scope_text = scope.to_string();
+    let phase_log = ReconciliationPhaseLog::new(paths, job_id, &scope_text);
+    phase_log.completed(
+        ReconciliationPhase::Queue,
+        "job",
+        PhaseOutcome::Succeeded,
+        timing.queue_wait(),
+        &[],
+    );
+    let progress = progress.with_phase_log(phase_log.clone());
     let result = match scope {
         ReconciliationScope::System => {
-            complete_system_reconciliation_with_progress(paths, job_id, runtime_catalog, progress)
-                .await
+            complete_system_reconciliation_with_progress(
+                paths,
+                runtime_catalog,
+                progress,
+                &phase_log,
+            )
+            .await
         }
         ReconciliationScope::Resource { name, .. } if gateway_runtime_resource(name.as_str()) => {
-            complete_gateway_reconciliation(paths, job_id).await
+            complete_gateway_reconciliation(paths, &phase_log).await
         }
         ReconciliationScope::Resource { name, track } => {
             complete_managed_resource_reconciliation_with_progress(
                 paths,
-                job_id,
                 name,
                 track,
                 runtime_catalog,
                 progress,
+                &phase_log,
             )
             .await
         }
         ReconciliationScope::Project { id } => {
             complete_project_reconciliation_with_progress(
                 paths,
-                job_id,
                 id,
                 runtime_catalog,
                 progress,
+                &phase_log,
             )
             .await
         }
     };
 
-    if let Err(error) = &result {
-        let error_message = error.to_string();
-        let mut database = Database::open(paths)?;
-        database.fail_job(job_id, &error_message)?;
-        structured_log::job_failed(
-            paths,
-            job_id,
-            "reconcile",
-            &scope.to_string(),
-            &error_message,
-        );
-    } else if let Ok(summary) = &result {
-        structured_log::job_completed(paths, job_id, "reconcile", &scope.to_string(), summary);
-    }
+    let coverage_count = result
+        .as_ref()
+        .map_or(0, |completed| completed.coverage.len());
+    let finalization_timer = phase_log.start(ReconciliationPhase::Finalization, "job");
+    let final_result = match result {
+        Ok(completed) => {
+            let completion_result = (|| {
+                let mut database = Database::open(paths)?;
+                database.complete_job_with_coverage(
+                    job_id,
+                    &completed.summary,
+                    &completed.coverage,
+                )?;
 
-    result
+                Ok::<(), DaemonError>(())
+            })();
+            match completion_result {
+                Ok(()) => {
+                    structured_log::job_completed(
+                        paths,
+                        job_id,
+                        "reconcile",
+                        &scope_text,
+                        &completed.summary,
+                    );
+
+                    Ok(completed.summary)
+                }
+                Err(error) => {
+                    fail_reconciliation_job(paths, job_id, &scope_text, &error)?;
+
+                    Err(error)
+                }
+            }
+        }
+        Err(error) => {
+            fail_reconciliation_job(paths, job_id, &scope_text, &error)?;
+
+            Err(error)
+        }
+    };
+    finalization_timer.finish(
+        PhaseOutcome::from_succeeded(final_result.is_ok()),
+        &[
+            (
+                "total_execution_ms",
+                duration_milliseconds(timing.execution_elapsed()),
+            ),
+            ("coverage_count", usize_as_u64(coverage_count)),
+        ],
+    );
+
+    final_result
+}
+
+fn fail_reconciliation_job(
+    paths: &PvPaths,
+    job_id: &str,
+    scope: &str,
+    error: &DaemonError,
+) -> Result<(), DaemonError> {
+    let error_message = error.to_string();
+    let mut database = Database::open(paths)?;
+    database.fail_job(job_id, &error_message)?;
+    structured_log::job_failed(paths, job_id, "reconcile", scope, &error_message);
+
+    Ok(())
 }
 
 async fn complete_gateway_reconciliation(
     paths: &PvPaths,
-    job_id: &str,
-) -> Result<String, DaemonError> {
-    let summary = reconcile_gateway_runtimes(paths).await?;
-    let mut database = Database::open(paths)?;
-    database.complete_job_with_coverage(
-        job_id,
-        &summary,
-        &[JobDiagnosticSubject::GatewayRuntime],
-    )?;
+    phase_log: &ReconciliationPhaseLog,
+) -> Result<CompletedReconciliationJob, DaemonError> {
+    let summary = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await?;
 
-    Ok(summary)
+    Ok(CompletedReconciliationJob {
+        summary,
+        coverage: vec![JobDiagnosticSubject::GatewayRuntime],
+    })
 }
 
 async fn complete_system_reconciliation_with_progress(
     paths: &PvPaths,
-    job_id: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
-) -> Result<String, DaemonError> {
-    let project_report =
-        reconcile_system_projects_and_resources_with_progress(paths, runtime_catalog, progress)
-            .await?;
-    let gateway_summary = reconcile_gateway_runtimes(paths).await?;
+    phase_log: &ReconciliationPhaseLog,
+) -> Result<CompletedReconciliationJob, DaemonError> {
+    let initial_project_timer = phase_log.start(
+        ReconciliationPhase::ProjectApply,
+        "linked_projects_initial_pass",
+    );
+    let initial_project_result =
+        reconcile_system_projects_with_progress(paths, runtime_catalog, &progress).await;
+    finish_project_phase(initial_project_timer, &initial_project_result);
+    initial_project_result?;
+
+    let resources_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
+    let resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
+        paths,
+        runtime_catalog,
+        progress.clone(),
+    )
+    .await;
+    resources_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
+    resources_result?;
+
+    let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
+    let project_result =
+        reconcile_system_projects_with_progress(paths, runtime_catalog, &progress).await;
+    finish_project_phase(project_timer, &project_result);
+    let project_report = project_result?;
+    let gateway_summary = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await?;
     let summary = system_reconciliation_summary(&project_report, &gateway_summary);
     let coverage = completed_system_reconciliation_coverage(paths, &project_report)?;
-    let mut database = Database::open(paths)?;
-    database.complete_job_with_coverage(job_id, &summary, &coverage)?;
 
-    Ok(summary)
+    Ok(CompletedReconciliationJob { summary, coverage })
 }
 
 async fn complete_project_reconciliation_with_progress(
     paths: &PvPaths,
-    job_id: &str,
     id: &crate::reconciliation::ReconciliationScopeComponent,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
-) -> Result<String, DaemonError> {
-    let project_env_summary = reconcile_project_env_and_missing_resources_with_progress(
+    phase_log: &ReconciliationPhaseLog,
+) -> Result<CompletedReconciliationJob, DaemonError> {
+    let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, id.as_str());
+    let project_result = reconcile_project_env_and_missing_resources_with_progress(
         paths,
         id.as_str(),
         runtime_catalog,
         progress,
     )
-    .await?;
-    let gateway_summary = reconcile_gateway_runtimes(paths).await?;
+    .await;
+    project_timer.finish(
+        PhaseOutcome::from_succeeded(project_result.is_ok()),
+        &[("project_count", 1)],
+    );
+    let project_env_summary = project_result?;
+    let gateway_summary = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await?;
     let summary = if gateway_summary == CADDY_NOT_INSTALLED {
         project_env_summary.as_str().to_string()
     } else {
         format!("{}; {gateway_summary}", project_env_summary.as_str())
     };
-    let mut database = Database::open(paths)?;
-    database.complete_job_with_coverage(
-        job_id,
-        &summary,
-        &[
+    Ok(CompletedReconciliationJob {
+        summary,
+        coverage: vec![
             JobDiagnosticSubject::Project {
                 id: id.as_str().to_owned(),
             },
             JobDiagnosticSubject::GatewayRuntime,
         ],
-    )?;
+    })
+}
 
-    Ok(summary)
+fn finish_project_phase(
+    timer: structured_log::PhaseTimer,
+    result: &Result<SystemProjectReconciliationReport, DaemonError>,
+) {
+    let (project_count, succeeded_count, failed_count) =
+        result.as_ref().map_or((0, 0, 0), |report| {
+            (report.total, report.succeeded, report.failures.len())
+        });
+    let succeeded = result
+        .as_ref()
+        .is_ok_and(|report| report.failures.is_empty());
+    timer.finish(
+        PhaseOutcome::from_succeeded(succeeded),
+        &[
+            ("project_count", usize_as_u64(project_count)),
+            ("succeeded_count", usize_as_u64(succeeded_count)),
+            ("failed_count", usize_as_u64(failed_count)),
+        ],
+    );
+}
+
+fn duration_milliseconds(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn usize_as_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -1592,8 +1784,9 @@ mod tests {
     use rusqlite::Connection;
     use serde_json::json;
     use state::{
-        Database, GatewayPort, JobDiagnosticSubject, JobStatus, LinkProjectInput, PortRequest,
-        ProjectManagedResourceInput, PvPaths, StateError, UpdateLock,
+        Database, GatewayPort, JobDiagnosticSubject, JobStatus, LinkProjectInput,
+        ManagedResourceDesiredState, PortRequest, ProjectManagedResourceInput, PvPaths, StateError,
+        UpdateLock,
     };
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, duplex};
     use tokio::sync::{mpsc::channel, oneshot};
@@ -1610,7 +1803,9 @@ mod tests {
         stream_started_reconciliation_job, stream_started_update_job,
         write_coalesced_update_response,
     };
-    use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
+    use crate::reconciliation::{
+        EnqueueResult, ReconciliationJobTiming, ReconciliationQueue, ReconciliationScope,
+    };
     use crate::{DaemonError, ProcessSupervisor};
 
     const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
@@ -1802,6 +1997,7 @@ mod tests {
             &job_id,
             ReconciliationScope::System,
             None,
+            ReconciliationJobTiming::immediate(),
         )
         .await;
 
@@ -2189,7 +2385,7 @@ mod tests {
         database.record_managed_resource_track_desired(
             "composer",
             COMPOSER_TEST_TRACK,
-            state::ManagedResourceDesiredState::Installed,
+            ManagedResourceDesiredState::Installed,
         )?;
         drop(database);
         let job_id = start_reconciliation_job(&paths, "system")?;
@@ -2214,6 +2410,7 @@ mod tests {
                 &task_job_id,
                 ReconciliationScope::System,
                 Some(task_catalog.as_ref()),
+                ReconciliationJobTiming::immediate(),
             )
             .await
         });
@@ -2286,7 +2483,7 @@ mod tests {
             resource_client,
         )?;
         let download_progress = reconciliation_download_progress_events(
-            paths,
+            paths.clone(),
             &job_id,
             ReconciliationScope::System,
             &catalog,
@@ -2305,6 +2502,79 @@ mod tests {
                 "total_bytes": total_bytes,
             }))
         );
+        let phases = reconciliation_phase_events(&paths, &job_id)?;
+        for phase in ["manifest", "download", "install"] {
+            let event = phases
+                .iter()
+                .find(|event| event["phase"] == phase)
+                .ok_or_else(|| anyhow::anyhow!("missing {phase} phase event"))?;
+            assert!(event["elapsed_ms"].as_u64().is_some());
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn failed_system_reconciliation_streams_and_persists_failure_phases() -> anyhow::Result<()>
+    {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut database = Database::open(&paths)?;
+        database.record_managed_resource_track_desired(
+            "composer",
+            COMPOSER_TEST_TRACK,
+            state::ManagedResourceDesiredState::Installed,
+        )?;
+        drop(database);
+        let job_id = start_reconciliation_job(&paths, "system")?;
+        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+            OFFLINE_TEST_MANIFEST_URL,
+            ScriptedArtifactClient {
+                manifest: "not valid manifest JSON".to_owned(),
+                archive: Vec::new(),
+            },
+        )?;
+        let (client, daemon) = duplex(64 * 1024);
+
+        stream_started_reconciliation_job(
+            paths.clone(),
+            protocol::transport(daemon),
+            true,
+            &job_id,
+            ReconciliationScope::System,
+            Some(&catalog),
+            ReconciliationJobTiming::immediate(),
+        )
+        .await?;
+
+        let mut reader = protocol::transport(client);
+        let mut events = Vec::new();
+        while let Some(line) = reader.next().await {
+            events.push(serde_json::from_str::<serde_json::Value>(&line?)?);
+        }
+        assert!(
+            events
+                .iter()
+                .any(|event| { event["type"] == "job_failed" && event["job_id"] == job_id })
+        );
+        let database = Database::open(&paths)?;
+        let job = database
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.id == job_id)
+            .ok_or_else(|| anyhow::anyhow!("missing job {job_id}"))?;
+        assert_eq!(job.status, JobStatus::Failed);
+        let phases = reconciliation_phase_events(&paths, &job_id)?;
+        for (phase, expected_count) in [("manifest", 2), ("resources", 1), ("finalization", 1)] {
+            let matching = phases
+                .iter()
+                .filter(|event| event["phase"] == phase && event["outcome"] == "failed")
+                .count();
+            assert_eq!(
+                matching, expected_count,
+                "unexpected {phase} failure phase count"
+            );
+        }
 
         Ok(())
     }
@@ -3188,6 +3458,7 @@ mod tests {
             job_id,
             scope,
             Some(catalog),
+            ReconciliationJobTiming::immediate(),
         )
         .await?;
 
@@ -3201,6 +3472,21 @@ mod tests {
         }
 
         Ok(download_progress)
+    }
+
+    fn reconciliation_phase_events(
+        paths: &PvPaths,
+        job_id: &str,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        Ok(state::fs::read_to_string(&paths.daemon_log())?
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .filter(|event| {
+                event["event"] == "reconciliation_phase_completed" && event["job_id"] == job_id
+            })
+            .collect())
     }
 
     async fn update_download_progress_events(

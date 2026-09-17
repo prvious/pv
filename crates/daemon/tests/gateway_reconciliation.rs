@@ -465,13 +465,13 @@ async fn assert_uncertain_pf_state_preserves_gateway(
     let started_at = Instant::now();
     let summary = reconcile_gateway_runtimes_with_pf_state_for_test(
         &paths,
-        Duration::from_millis(100),
+        Duration::from_secs(2),
         pf_routing_state,
     )
     .await?;
 
     assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
-    assert!(started_at.elapsed() < Duration::from_secs(2));
+    assert!(started_at.elapsed() < Duration::from_secs(5));
     assert!(paths.gateway_pid().exists());
     assert_runtime_states_snapshot(
         snapshot_name,

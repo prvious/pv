@@ -22,9 +22,9 @@ use crate::DaemonError;
 
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
-const SCRIPT_IDENTITY_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const PROCESS_IDENTITY_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const PROCESS_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const SCRIPT_IDENTITY_STABILIZATION: Duration = Duration::from_millis(250);
-const SCRIPT_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
@@ -218,7 +218,7 @@ impl ProcessSupervisor {
         };
         post_spawn(pid).await;
 
-        if let Err(error) = persist_runtime_files(&spec, pid).await {
+        if let Err(error) = persist_runtime_files(&spec, pid, &mut child).await {
             terminate_spawned_child(pid, &mut child).await;
 
             return Err(error);
@@ -842,9 +842,13 @@ fn process_command(spec: &ProcessSpec) -> tokio::process::Command {
     command
 }
 
-async fn persist_runtime_files(spec: &ProcessSpec, pid: u32) -> Result<(), DaemonError> {
+async fn persist_runtime_files(
+    spec: &ProcessSpec,
+    pid: u32,
+    child: &mut Child,
+) -> Result<(), DaemonError> {
     let (process_identity, process_executable_identity) =
-        process_identity_for_runtime_metadata(spec, pid).await?;
+        process_identity_for_runtime_metadata(spec, pid, child).await?;
 
     fs::write_sensitive_file(&spec.pid_path, &format!("{pid}\n"))?;
     write_runtime_metadata(
@@ -858,13 +862,11 @@ async fn persist_runtime_files(spec: &ProcessSpec, pid: u32) -> Result<(), Daemo
 async fn process_identity_for_runtime_metadata(
     spec: &ProcessSpec,
     pid: u32,
+    child: &mut Child,
 ) -> Result<(platform::ProcessIdentity, Option<ProcessExecutableIdentity>), DaemonError> {
-    let Some(mut process_identity) = platform::inspect_process_identity(pid)? else {
-        return Err(DaemonError::MissingProcessIdentity {
-            name: spec.name.clone(),
-            pid,
-        });
-    };
+    let identity_started_at = Instant::now();
+    let mut process_identity =
+        inspect_spawned_process_identity(spec, pid, child, &identity_started_at).await?;
     if executable_matches(&process_identity, &spec.command) {
         return Ok((process_identity, None));
     }
@@ -903,21 +905,36 @@ async fn process_identity_for_runtime_metadata(
         } else {
             stable_identity = None;
         }
-        if started_at.elapsed() >= SCRIPT_IDENTITY_TIMEOUT {
+        if started_at.elapsed() >= PROCESS_IDENTITY_TIMEOUT {
             return Err(DaemonError::MissingProcessIdentity {
                 name: spec.name.clone(),
                 pid,
             });
         }
 
-        sleep(SCRIPT_IDENTITY_POLL_INTERVAL).await;
-        let Some(identity) = platform::inspect_process_identity(pid)? else {
+        sleep(PROCESS_IDENTITY_POLL_INTERVAL).await;
+        process_identity = inspect_spawned_process_identity(spec, pid, child, &started_at).await?;
+    }
+}
+
+async fn inspect_spawned_process_identity(
+    spec: &ProcessSpec,
+    pid: u32,
+    child: &mut Child,
+    started_at: &Instant,
+) -> Result<platform::ProcessIdentity, DaemonError> {
+    loop {
+        if let Some(process_identity) = platform::inspect_process_identity(pid)? {
+            return Ok(process_identity);
+        }
+        if child.try_wait()?.is_some() || started_at.elapsed() >= PROCESS_IDENTITY_TIMEOUT {
             return Err(DaemonError::MissingProcessIdentity {
                 name: spec.name.clone(),
                 pid,
             });
-        };
-        process_identity = identity;
+        }
+
+        sleep(PROCESS_IDENTITY_POLL_INTERVAL).await;
     }
 }
 
