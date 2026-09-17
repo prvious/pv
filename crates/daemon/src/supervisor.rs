@@ -436,6 +436,41 @@ impl ManagedProcess {
     }
 }
 
+pub(crate) async fn wait_for_started_runtime_readiness<Readiness>(
+    process: &mut ManagedProcess,
+    runtime_name: &str,
+    readiness: Readiness,
+    process_exit_poll_interval: Duration,
+) -> Result<(), DaemonError>
+where
+    Readiness: Future<Output = Result<(), DaemonError>>,
+{
+    tokio::pin!(readiness);
+
+    loop {
+        tokio::select! {
+            result = &mut readiness => {
+                if result.is_err() && process.has_exited()? {
+                    return Err(runtime_exited_before_readiness_error(runtime_name));
+                }
+
+                return result;
+            }
+            () = sleep(process_exit_poll_interval) => {
+                if process.has_exited()? {
+                    return Err(runtime_exited_before_readiness_error(runtime_name));
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn runtime_exited_before_readiness_error(runtime_name: &str) -> DaemonError {
+    DaemonError::UnexpectedProtocolResponse {
+        reason: format!("runtime `{runtime_name}` exited before readiness was verified"),
+    }
+}
+
 impl OwnedRuntime {
     pub fn pid(&self) -> u32 {
         self.pid
