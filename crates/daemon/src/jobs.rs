@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::io;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::DaemonError;
 use crate::gateway::{
@@ -72,7 +73,9 @@ struct StreamedJobCompletion {
 #[derive(Clone, Debug)]
 pub(crate) struct DaemonDownloadProgress {
     sender: Option<Sender<ForegroundJobEvent>>,
-    phase_log: Option<ReconciliationPhaseLog>,
+    phase_log: Option<Arc<Mutex<ReconciliationPhaseLog>>>,
+    manifest_snapshot:
+        Arc<OnceLock<Result<Arc<resources::ArtifactManifestRefresh>, resources::ResourcesError>>>,
 }
 
 impl DaemonDownloadProgress {
@@ -80,6 +83,7 @@ impl DaemonDownloadProgress {
         Self {
             sender: Some(sender),
             phase_log: None,
+            manifest_snapshot: Arc::new(OnceLock::new()),
         }
     }
 
@@ -87,11 +91,12 @@ impl DaemonDownloadProgress {
         Self {
             sender: None,
             phase_log: None,
+            manifest_snapshot: Arc::new(OnceLock::new()),
         }
     }
 
     fn with_phase_log(mut self, phase_log: ReconciliationPhaseLog) -> Self {
-        self.phase_log = Some(phase_log);
+        self.phase_log = Some(Arc::new(Mutex::new(phase_log)));
         self
     }
 
@@ -110,6 +115,42 @@ impl DaemonDownloadProgress {
             downloaded_bytes,
             total_bytes: artifact.size(),
         });
+    }
+
+    pub(crate) fn manifest_snapshot(
+        &self,
+        commands: &resources::ManagedResourceCommands,
+        client: &(impl resources::ResourceHttpClient + ?Sized),
+    ) -> Result<Arc<resources::ArtifactManifestRefresh>, DaemonError> {
+        self.initialize_manifest_snapshot(commands, client, false)
+    }
+
+    pub(crate) fn latest_manifest_snapshot(
+        &self,
+        commands: &resources::ManagedResourceCommands,
+        client: &(impl resources::ResourceHttpClient + ?Sized),
+    ) -> Result<Arc<resources::ArtifactManifestRefresh>, DaemonError> {
+        self.initialize_manifest_snapshot(commands, client, true)
+    }
+
+    fn initialize_manifest_snapshot(
+        &self,
+        commands: &resources::ManagedResourceCommands,
+        client: &(impl resources::ResourceHttpClient + ?Sized),
+        latest_only: bool,
+    ) -> Result<Arc<resources::ArtifactManifestRefresh>, DaemonError> {
+        self.manifest_snapshot
+            .get_or_init(|| {
+                let result = if latest_only {
+                    commands.latest_manifest_snapshot_with_progress(client, self)
+                } else {
+                    commands.manifest_snapshot_with_progress(client, self)
+                };
+
+                result.map(Arc::new)
+            })
+            .clone()
+            .map_err(|error| resources::ManagedResourceCommandError::from(error).into())
     }
 }
 
@@ -164,6 +205,10 @@ impl resources::DownloadProgress for DaemonDownloadProgress {
                 PhaseOutcome::Fallback,
                 vec![("manifest_source", "cached"), ("fallback_reason", reason)],
             ),
+        };
+        let phase_log = match phase_log.lock() {
+            Ok(phase_log) => phase_log,
+            Err(poisoned) => poisoned.into_inner(),
         };
         phase_log.completed_with_fields(phase, &subject, outcome, event.elapsed, &counts, &fields);
     }
@@ -1765,14 +1810,15 @@ async fn run_started_job(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, VecDeque};
     use std::fs;
     use std::io::{self, Write};
     use std::net::TcpListener;
     use std::os::unix::fs::PermissionsExt;
     use std::pin::Pin;
     use std::process;
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::task::{Context, Poll};
     use std::time::Instant;
 
@@ -2325,7 +2371,7 @@ mod tests {
         let report = crate::managed_resources::update_installed_with_progress(
             paths.clone(),
             Some(&catalog),
-            &resources::NoDownloadProgress,
+            &super::DaemonDownloadProgress::disabled(),
         )?;
         let database_lock = Connection::open(paths.db().as_std_path())?;
         database_lock.execute_batch("BEGIN EXCLUSIVE")?;
@@ -2565,7 +2611,7 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("missing job {job_id}"))?;
         assert_eq!(job.status, JobStatus::Failed);
         let phases = reconciliation_phase_events(&paths, &job_id)?;
-        for (phase, expected_count) in [("manifest", 2), ("resources", 1), ("finalization", 1)] {
+        for (phase, expected_count) in [("manifest", 1), ("resources", 1), ("finalization", 1)] {
             let matching = phases
                 .iter()
                 .filter(|event| event["phase"] == phase && event["outcome"] == "failed")
@@ -2696,12 +2742,21 @@ mod tests {
                 },
             ],
         }))?;
-        let client = MultiArtifactClient {
-            manifest,
+        let manifest_requests = Arc::new(AtomicUsize::new(0));
+        let client = SequencedMultiArtifactClient {
+            manifests: Mutex::new(VecDeque::from([
+                manifest,
+                serde_json::to_string(&json!({
+                    "schema_version": 1,
+                    "minimum_pv_version": "0.1.0",
+                    "resources": [],
+                }))?,
+            ])),
             archives: BTreeMap::from([
                 (mailpit_url.to_string(), mailpit_archive),
                 (composer_url.to_string(), composer_archive),
             ]),
+            manifest_requests: Arc::clone(&manifest_requests),
         };
         let installed_mailpit_release = paths.resources().join("mailpit/1.0/releases/1.0.0-pv1");
         let installed_mailpit_executable = installed_mailpit_release.join("bin/pv-fake-mailpit");
@@ -2743,6 +2798,7 @@ mod tests {
                     "total_bytes": composer_size,
                 })
         }));
+        assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
 
         Ok(())
     }
@@ -3907,6 +3963,44 @@ mod tests {
     struct MultiArtifactClient {
         manifest: String,
         archives: BTreeMap<String, Vec<u8>>,
+    }
+
+    struct SequencedMultiArtifactClient {
+        manifests: Mutex<VecDeque<String>>,
+        archives: BTreeMap<String, Vec<u8>>,
+        manifest_requests: Arc<AtomicUsize>,
+    }
+
+    impl resources::ResourceHttpClient for SequencedMultiArtifactClient {
+        fn get_text(&self, url: &str) -> resources::Result<String> {
+            self.manifest_requests.fetch_add(1, Ordering::SeqCst);
+            self.manifests
+                .lock()
+                .map_err(|_poison| resources::ResourcesError::HttpRequestFailed {
+                    url: url.to_string(),
+                    reason: "manifest response lock poisoned".to_string(),
+                })?
+                .pop_front()
+                .ok_or_else(|| resources::ResourcesError::HttpRequestFailed {
+                    url: url.to_string(),
+                    reason: "no scripted manifest response".to_string(),
+                })
+        }
+
+        fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
+            let archive = self.archives.get(url).ok_or_else(|| {
+                resources::ResourcesError::HttpRequestFailed {
+                    url: url.to_string(),
+                    reason: "missing scripted archive".to_string(),
+                }
+            })?;
+            writer.write_all(archive).map_err(|error| {
+                resources::ResourcesError::HttpRequestFailed {
+                    url: url.to_string(),
+                    reason: error.to_string(),
+                }
+            })
+        }
     }
 
     impl resources::ResourceHttpClient for MultiArtifactClient {
