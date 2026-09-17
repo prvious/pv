@@ -142,7 +142,7 @@ impl ReconciliationQueue {
         create_job_id: impl FnOnce() -> Result<String, E>,
         abandon_job: impl FnOnce(&str) + Send + 'static,
     ) -> Result<EnqueueResult, E> {
-        let key = ReconciliationQueueKey::Reconcile(scope.clone());
+        let key = ReconciliationQueueKey::Reconcile(scope.effective());
 
         self.enqueue_with_key(scope, key, create_job_id, abandon_job)
     }
@@ -187,7 +187,7 @@ impl ReconciliationQueue {
     where
         E: From<StateError>,
     {
-        let key = ReconciliationQueueKey::Reconcile(scope.clone());
+        let key = ReconciliationQueueKey::Reconcile(scope.effective());
 
         self.enqueue_mutating_with_key(paths, scope, key, create_job_id, abandon_job)
     }
@@ -455,6 +455,15 @@ impl ReconciliationScope {
         let track = ReconciliationScopeComponent::new(track, "track", &scope, 3)?;
 
         Ok(Self::Resource { name, track })
+    }
+
+    pub(crate) fn effective(&self) -> Self {
+        match self {
+            Self::Resource { name, .. } if matches!(name.as_str(), "php" | "frankenphp") => {
+                Self::System
+            }
+            scope => scope.clone(),
+        }
     }
 }
 
@@ -760,6 +769,28 @@ mod tests {
         let running = timeout(Duration::from_secs(1), trailing.wait_for_turn()).await?;
         assert_eq!(running.job_id(), "job_2");
         running.finish();
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn queue_coalesces_resource_scopes_with_the_same_effective_work() -> anyhow::Result<()> {
+        let queue = ReconciliationQueue::new();
+        let first_scope = ReconciliationScope::resource("php", "8.4")?;
+        let first = queued(queue.enqueue(first_scope.clone(), || {
+            Ok::<String, anyhow::Error>("job_1".to_owned())
+        })?)?;
+        let duplicate = queue
+            .enqueue(ReconciliationScope::resource("frankenphp", "8.4")?, || {
+                Ok::<String, anyhow::Error>("job_2".to_owned())
+            })?;
+
+        assert!(matches!(
+            duplicate,
+            EnqueueResult::Coalesced(job)
+                if job.job_id() == "job_1" && job.scope() == &first_scope
+        ));
+        first.wait_for_turn().await.finish();
 
         Ok(())
     }
