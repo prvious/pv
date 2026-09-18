@@ -987,6 +987,14 @@ pub(crate) fn project_php_identity_matches_applied(
     };
     match php_track {
         Some(track) => {
+            if project.mode == ProjectMode::Served
+                && installed_php_release(database, &track)
+                    .ok()
+                    .flatten()
+                    .is_none()
+            {
+                return false;
+            }
             let Ok(runtime) = resolve_project_php_runtime_for_track(
                 database,
                 config_file.config.php.as_ref(),
@@ -1608,6 +1616,12 @@ fn validate_persisted_project_env_dependencies(
         None,
     )?;
     let php_matches = match php_track {
+        Some(track)
+            if candidate_project.mode == ProjectMode::Served
+                && installed_php_release(database, &track)?.is_none() =>
+        {
+            false
+        }
         Some(track) => {
             let runtime = resolve_project_php_runtime_for_track(
                 database,

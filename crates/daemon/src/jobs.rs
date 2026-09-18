@@ -2570,8 +2570,8 @@ mod tests {
         Database, GatewayPort, JobDiagnosticSubject, JobStatus, LinkProjectInput,
         ManagedResourceDesiredState, PortRequest, ProjectEnvObservedStatus,
         ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectMode,
-        ProjectPhpRuntimeInput, PvPaths, ResourceAllocationInput, RuntimeObservedStatus,
-        RuntimeSubject, StateError, UpdateLock,
+        ProjectPhpRuntimeInput, ProjectReconciliationStateInput, PvPaths, ResourceAllocationInput,
+        RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
     };
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, duplex};
     use tokio::sync::{mpsc::channel, oneshot};
@@ -3694,6 +3694,136 @@ mod tests {
                 );
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn targeted_resource_scope_refuses_served_project_without_installed_php()
+    -> anyhow::Result<()> {
+        for installed in [false, true] {
+            let tempdir = tempdir()?;
+            let paths = PvPaths::for_home(tempdir.path().join("home"));
+            let project_path = tempdir.path().join("project");
+            let config_path = project_path.join("pv.yml");
+            state::fs::write_sensitive_file(
+                &config_path,
+                "php: \"8.5\"\nmailpit:\n  version: \"1.0\"\n  env:\n    MAIL_HOST: \"${smtp_host}\"\n",
+            )?;
+            let mut database = Database::open(&paths)?;
+            let project = database
+                .link_project(LinkProjectInput {
+                    path: project_path.clone(),
+                    original_path: project_path.clone(),
+                    primary_hostname: "project.test".to_owned(),
+                    config_path,
+                    desired_php_track: Some(PHP_TEST_TRACK.to_owned()),
+                    additional_hostnames: Vec::new(),
+                })?
+                .project;
+            database.replace_project_managed_resources(
+                &project.id,
+                &[ProjectManagedResourceInput {
+                    resource_name: "mailpit".to_owned(),
+                    track: MAILPIT_TEST_TRACK.to_owned(),
+                }],
+            )?;
+            database.replace_project_php_runtime(
+                &project.id,
+                Some(&ProjectPhpRuntimeInput {
+                    track: PHP_TEST_TRACK.to_owned(),
+                    requested_extensions: Vec::new(),
+                    loaded_extensions: Vec::new(),
+                    ignored_extensions: Vec::new(),
+                }),
+            )?;
+            if installed {
+                database.record_managed_resource_track_installed(
+                    "php",
+                    PHP_TEST_TRACK,
+                    PHP_TEST_ARTIFACT_VERSION,
+                    &paths
+                        .resources()
+                        .join("php/8.5/releases")
+                        .join(PHP_TEST_ARTIFACT_VERSION),
+                )?;
+            }
+            database.record_managed_resource_track_env_context(
+                "mailpit",
+                MAILPIT_TEST_TRACK,
+                &BTreeMap::from([("smtp_host".to_owned(), "127.0.0.1".to_owned())]),
+            )?;
+            database.record_runtime_observed_snapshot(
+                RuntimeSubject::Resource {
+                    name: "mailpit".to_owned(),
+                    track: MAILPIT_TEST_TRACK.to_owned(),
+                },
+                RuntimeObservedStatus::Running,
+                Some("fixture mailpit readiness diagnostic"),
+            )?;
+            let previous_env = "USER_VALUE=kept\n";
+            state::fs::write_sensitive_file(&project.path.join(".env"), previous_env)?;
+
+            let result =
+                reconcile_project_env_from_persisted_state(&paths, &mut database, &project.id);
+            if installed {
+                assert!(result.is_ok(), "{result:?}");
+            } else {
+                assert!(
+                    matches!(
+                        result,
+                        Err(DaemonError::ProjectEnvDependenciesNotApplied { .. })
+                    ),
+                    "{result:?}"
+                );
+            }
+
+            let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_url(OFFLINE_TEST_MANIFEST_URL)?;
+            let scope = ReconciliationScope::resource("mailpit", MAILPIT_TEST_TRACK)?;
+            let ReconciliationScope::Resource { name, track } = &scope else {
+                return Err(anyhow::anyhow!("expected resource scope"));
+            };
+            let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
+                &paths,
+                "installed-php",
+                &scope.to_string(),
+            );
+            let completion = complete_managed_resource_reconciliation_with_progress(
+                &paths,
+                name,
+                track,
+                Some(&catalog),
+                super::DaemonDownloadProgress::disabled(),
+                &phase_log,
+            )
+            .await?;
+            assert_eq!(
+                completion
+                    .coverage
+                    .contains(&JobDiagnosticSubject::Project {
+                        id: project.id.clone()
+                    }),
+                installed
+            );
+            assert_eq!(
+                database
+                    .project_env_observed_state(&project.id)?
+                    .map(|observed| observed.status),
+                Some(if installed {
+                    ProjectEnvObservedStatus::Rendered
+                } else {
+                    ProjectEnvObservedStatus::Failed
+                })
+            );
+            assert_eq!(
+                state::fs::read_to_string(&project.path.join(".env"))?,
+                if installed {
+                    "USER_VALUE=kept\n# >>> PV MANAGED\nMAIL_HOST=127.0.0.1\n# <<< PV MANAGED\n"
+                } else {
+                    previous_env
+                }
+            );
+        }
+
         Ok(())
     }
 
@@ -5916,6 +6046,22 @@ mod tests {
             desired_php_track: None,
             additional_hostnames: Vec::new(),
         })?;
+        database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+            project_id: linked.project.id.clone(),
+            link: LinkProjectInput {
+                path: linked.project.path.clone(),
+                original_path: linked.project.original_path.clone(),
+                primary_hostname: "project.test".to_owned(),
+                config_path: linked.project.config_path.clone(),
+                desired_php_track: None,
+                additional_hostnames: Vec::new(),
+            },
+            mode: ProjectMode::ResourceOnly,
+            php_runtime: None,
+            env_status: ProjectEnvObservedStatus::Rendered,
+            env_message: Some("fixture state".to_owned()),
+            env_warnings: Vec::new(),
+        })?;
         drop(database);
         let catalog =
             crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_url(
@@ -6214,6 +6360,42 @@ mod tests {
             config_path,
             desired_php_track: None,
             additional_hostnames: Vec::new(),
+        })?;
+        database.replace_project_managed_resources(
+            &linked.project.id,
+            &[ProjectManagedResourceInput {
+                resource_name: "mailpit".to_owned(),
+                track: MAILPIT_TEST_TRACK.to_owned(),
+            }],
+        )?;
+        database.record_managed_resource_track_env_context(
+            "mailpit",
+            MAILPIT_TEST_TRACK,
+            &BTreeMap::from([("smtp_host".to_owned(), "127.0.0.1".to_owned())]),
+        )?;
+        database.record_runtime_observed_snapshot(
+            RuntimeSubject::Resource {
+                name: "mailpit".to_owned(),
+                track: MAILPIT_TEST_TRACK.to_owned(),
+            },
+            RuntimeObservedStatus::Running,
+            Some("fixture mailpit readiness diagnostic"),
+        )?;
+        database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+            project_id: linked.project.id.clone(),
+            link: LinkProjectInput {
+                path: linked.project.path.clone(),
+                original_path: linked.project.original_path.clone(),
+                primary_hostname: "project.test".to_owned(),
+                config_path: linked.project.config_path.clone(),
+                desired_php_track: None,
+                additional_hostnames: Vec::new(),
+            },
+            mode: ProjectMode::ResourceOnly,
+            php_runtime: None,
+            env_status: ProjectEnvObservedStatus::Rendered,
+            env_message: Some("fixture state".to_owned()),
+            env_warnings: Vec::new(),
         })?;
         drop(database);
 
