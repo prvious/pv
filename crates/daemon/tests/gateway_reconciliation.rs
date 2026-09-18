@@ -2479,10 +2479,11 @@ async fn frankenphp_config_validation_timeout_stops_validator_process_group() ->
 }
 
 #[tokio::test]
-async fn gateway_reconciliation_stops_worker_when_no_projects_remain_on_track() -> Result<()> {
+async fn retired_worker_cleanup_removes_runtime_identity() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_root = tempdir.path().join("acme");
+    let surviving_project_root = tempdir.path().join("other");
     let release_path = tempdir.path().join("fake-frankenphp-release");
     let gateway_release_path = tempdir.path().join("fake-frankenphp-gateway-release");
     let fake_frankenphp = release_path.join("bin/frankenphp");
@@ -2496,6 +2497,12 @@ async fn gateway_reconciliation_stops_worker_when_no_projects_remain_on_track() 
 document_root: public
 "#,
     )?;
+    create_project(
+        &surviving_project_root,
+        r#"php: "8.3"
+document_root: public
+"#,
+    )?;
 
     let mut database = Database::open(&paths)?;
     let project = database.link_project(LinkProjectInput {
@@ -2504,6 +2511,14 @@ document_root: public
         primary_hostname: "acme.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: Some("8.4".to_owned()),
+        additional_hostnames: Vec::new(),
+    })?;
+    let surviving_project = database.link_project(LinkProjectInput {
+        path: surviving_project_root.clone(),
+        original_path: surviving_project_root.clone(),
+        primary_hostname: "other.test".to_owned(),
+        config_path: surviving_project_root.join("pv.yml"),
+        desired_php_track: Some("8.3".to_owned()),
         additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
@@ -2518,21 +2533,26 @@ document_root: public
         "fake-frankenphp-83-pv1",
         &gateway_release_path,
     )?;
-    let ports = available_loopback_ports(3)?;
+    let ports = available_loopback_ports(4)?;
     seed_runtime_ports(
         &paths,
         &mut database,
         ports[0],
         ports[1],
-        &[("8.4", ports[2])],
+        &[("8.3", ports[2]), ("8.4", ports[3])],
     )?;
     drop(database);
 
     reconcile_gateway_runtimes(&paths).await?;
-    let worker_metadata = state::testing::read_to_string(&paths.worker_runtime_metadata("8.4"))?;
-    let worker_metadata_json: serde_json::Value = serde_json::from_str(&worker_metadata)?;
-    let worker_pid = metadata_pid(&worker_metadata_json)?;
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    let retiring_worker_metadata =
+        state::testing::read_to_string(&paths.worker_runtime_metadata("8.4"))?;
+    let retiring_worker_metadata_json: serde_json::Value =
+        serde_json::from_str(&retiring_worker_metadata)?;
+    let retiring_worker_pid = metadata_pid(&retiring_worker_metadata_json)?;
+    let surviving_worker_pid =
+        required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.3"))?;
+    assert!(process_is_alive(surviving_worker_pid)?);
+    let retiring_worker_config_dir = paths.worker_config_dir("8.4");
 
     let mut database = Database::open(&paths)?;
     state::testing::transaction(&mut database, |transaction| {
@@ -2548,10 +2568,55 @@ document_root: public
 
     reconcile_gateway_runtimes(&paths).await?;
 
-    wait_for_process_exit(worker_pid).await?;
+    wait_for_process_exit(retiring_worker_pid).await?;
+    let targeted_reconcile_result = reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &surviving_project.project.id,
+        Duration::from_secs(5),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await;
+    let daemon_log_result = state::fs::read_to_string(&paths.daemon_log());
+
+    let surviving_worker_cleanup_result =
+        stop_runtime_from_pid_file(&paths.worker_pid("8.3")).await;
+    let gateway_cleanup_result = stop_runtime_from_pid_file(&paths.gateway_pid()).await;
+
+    targeted_reconcile_result?;
+    let daemon_log = daemon_log_result?;
+    surviving_worker_cleanup_result?;
+    gateway_cleanup_result?;
+
+    let targeted_phase_events = daemon_log
+        .lines()
+        .map(serde_json::from_str::<serde_json::Value>)
+        .collect::<std::result::Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|event| {
+            event["event"] == "reconciliation_phase_completed"
+                && event["job_id"] == "targeted-gateway-test"
+        })
+        .map(|event| {
+            (
+                event["phase"].as_str().unwrap_or_default().to_owned(),
+                event["subject"].as_str().unwrap_or_default().to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        targeted_phase_events,
+        vec![
+            ("workers".to_owned(), "target_project".to_owned()),
+            ("gateway".to_owned(), "target_project".to_owned()),
+            ("workers".to_owned(), "stale_workers".to_owned()),
+        ]
+    );
+
+    assert!(!process_is_alive(retiring_worker_pid)?);
     assert!(!paths.worker_pid("8.4").exists());
     assert!(!paths.worker_runtime_metadata("8.4").exists());
-    assert!(!paths.worker_root_config("8.4").exists());
+    assert!(!paths.worker_admin_socket("8.4").exists());
+    assert!(!retiring_worker_config_dir.exists());
 
     let database = Database::open(&paths)?;
     let assigned_ports = database.assigned_ports()?;
@@ -2559,8 +2624,6 @@ document_root: public
         &port.owner,
         PortOwner::PhpWorker { php_runtime_key } if php_runtime_key == "8.4"
     )));
-
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
 
     Ok(())
 }

@@ -3383,16 +3383,15 @@ async fn stop_worker_if_undemanded(
 }
 
 fn cleanup_stale_worker_runtime(paths: &PvPaths, runtime_key: &str) -> Result<(), DaemonError> {
-    delete_optional_file(&paths.worker_pid(runtime_key))?;
-    delete_optional_file(&paths.worker_runtime_metadata(runtime_key))?;
-    delete_optional_file(&paths.worker_root_config(runtime_key))?;
-    delete_optional_file(&paths.worker_admin_socket(runtime_key))?;
-    delete_optional_dir(&paths.worker_projects_config_dir(runtime_key))?;
-
     let mut database = Database::open(paths)?;
     database.release_port(PortOwner::PhpWorker {
         php_runtime_key: runtime_key.to_owned(),
     })?;
+
+    delete_optional_file(&paths.worker_pid(runtime_key))?;
+    delete_optional_file(&paths.worker_admin_socket(runtime_key))?;
+    delete_optional_dir(&paths.worker_config_dir(runtime_key))?;
+    delete_optional_file(&paths.worker_runtime_metadata(runtime_key))?;
 
     Ok(())
 }

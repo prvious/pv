@@ -80,6 +80,10 @@ fn pv_paths_include_gateway_and_worker_runtime_artifacts() {
         "/Users/alice/.pv/config/gateway/projects"
     );
     assert_eq!(
+        paths.worker_config_dir("8.4").as_str(),
+        "/Users/alice/.pv/config/workers/php-8.4"
+    );
+    assert_eq!(
         paths.worker_root_config("8.4").as_str(),
         "/Users/alice/.pv/config/workers/php-8.4/Caddyfile"
     );
