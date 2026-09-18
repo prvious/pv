@@ -559,6 +559,7 @@ pub(crate) fn promote_config_dir(
     let previous_contents = if active_existed {
         fs::read_dir_paths(active_dir)?
             .into_iter()
+            .filter(|path| path.as_str().ends_with(".Caddyfile"))
             .map(|path| fs::read_to_string(&path).map_err(DaemonError::from))
             .collect::<Result<Vec<_>, _>>()?
     } else {
@@ -660,6 +661,44 @@ mod tests {
     use super::*;
 
     use camino_tempfile::tempdir;
+
+    #[tokio::test]
+    async fn previous_fragment_snapshot_ignores_non_caddy_files()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tempdir = tempdir()?;
+        let root_config = tempdir.path().join("Caddyfile");
+        let active_dir = tempdir.path().join("active-fragments");
+        let candidate_dir = tempdir.path().join("candidate-fragments");
+        let previous_fragment = "http://project.test:9001 {\n}\n";
+        create_dir_all(&active_dir)?;
+        create_dir_all(&candidate_dir)?;
+        state::fs::write_sensitive_file(&root_config, "previous root\n")?;
+        state::fs::write_sensitive_file(&active_dir.join("project.Caddyfile"), previous_fragment)?;
+        state::fs::write_sensitive_file(
+            &active_dir.join("notes.txt"),
+            "rollback notes: http://127.0.0.1:6553\n",
+        )?;
+        state::fs::write_sensitive_file(
+            &candidate_dir.join("project.Caddyfile"),
+            "new fragment\n",
+        )?;
+
+        let promoted = promote_validated_config_tree_async(
+            &root_config,
+            "candidate root\n",
+            "active root\n",
+            |_candidate_path| async { Ok(()) },
+            || promote_config_dir(&active_dir, &candidate_dir),
+        )
+        .await?;
+
+        assert_eq!(
+            promoted.previous_fragment_contents(),
+            &[previous_fragment.to_owned()]
+        );
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn promotion_reports_restore_failure_when_fragment_promotion_rollback_fails()
