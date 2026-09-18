@@ -268,6 +268,12 @@ pub struct ManagedResourceTrackRecord {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ManagedResourceTrackDesiredInput<'a> {
+    pub resource_name: &'a str,
+    pub track: &'a str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ManagedResourceTrackInstallInput<'a> {
     pub resource_name: &'a str,
     pub track: &'a str,
@@ -1507,6 +1513,38 @@ impl Database {
         self.managed_resource_track(resource_name, track)
     }
 
+    pub fn record_managed_resource_tracks_desired(
+        &mut self,
+        inputs: &[ManagedResourceTrackDesiredInput<'_>],
+    ) -> Result<Vec<ManagedResourceTrackRecord>, StateError> {
+        for input in inputs {
+            validate_managed_resource_identity("name", input.resource_name)?;
+            validate_concrete_track(input.track)?;
+        }
+
+        let updated_at = timestamp()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for input in inputs {
+            upsert_managed_resource_track_desired_in_transaction(
+                &transaction,
+                input.resource_name,
+                input.track,
+                &updated_at,
+            )?;
+        }
+        let records = inputs
+            .iter()
+            .map(|input| {
+                managed_resource_track_in_connection(&transaction, input.resource_name, input.track)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        transaction.commit()?;
+
+        Ok(records)
+    }
+
     pub fn record_managed_resource_track_removal_intent(
         &mut self,
         resource_name: &str,
@@ -2410,18 +2448,26 @@ impl Database {
         resource_name: &str,
         track: &str,
     ) -> Result<ManagedResourceTrackRecord, StateError> {
-        let mut statement = self.connection.prepare(
-            "SELECT resource_name, track, desired_state, installed_version, current_artifact_path, env_json, usage_count, removal_prune, removal_force, updated_at
-            FROM managed_resource_tracks
-            WHERE resource_name = ?1 AND track = ?2",
-        )?;
-        let row = statement.query_row(
-            params![resource_name, track],
-            managed_resource_track_from_row,
-        )?;
-
-        row.into_record()
+        managed_resource_track_in_connection(&self.connection, resource_name, track)
     }
+}
+
+fn managed_resource_track_in_connection(
+    connection: &Connection,
+    resource_name: &str,
+    track: &str,
+) -> Result<ManagedResourceTrackRecord, StateError> {
+    let mut statement = connection.prepare(
+        "SELECT resource_name, track, desired_state, installed_version, current_artifact_path, env_json, usage_count, removal_prune, removal_force, updated_at
+        FROM managed_resource_tracks
+        WHERE resource_name = ?1 AND track = ?2",
+    )?;
+    let row = statement.query_row(
+        params![resource_name, track],
+        managed_resource_track_from_row,
+    )?;
+
+    row.into_record()
 }
 
 struct ProjectPhpRuntimeDatabaseValues {

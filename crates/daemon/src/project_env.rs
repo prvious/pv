@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
+#[cfg(test)]
+use std::sync::{Arc, Barrier, LazyLock, Mutex};
 
 use camino::Utf8PathBuf;
 use config::{
@@ -11,9 +13,9 @@ use resources::{
     generated_allocation_name,
 };
 use state::{
-    Database, LinkProjectInput, ManagedResourceDesiredState, ProjectEnvObservedStatus,
-    ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectMode,
-    ProjectPhpRuntimeInput, ProjectReconciliationStateInput, ProjectRecord, PvPaths,
+    Database, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackDesiredInput,
+    ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
+    ProjectMode, ProjectPhpRuntimeInput, ProjectReconciliationStateInput, ProjectRecord, PvPaths,
     ResourceAllocationInput, ResourceAllocationRecord, ResourceAllocationStatus, StateError,
 };
 
@@ -1117,32 +1119,93 @@ fn record_project_php_runtime_resource_requirements(
     database: &mut Database,
     runtime: &ResolvedPhpRuntime,
 ) -> Result<(), DaemonError> {
-    if let Some(removed) = database
-        .managed_resource_tracks()?
+    // Avoid touching stable removal timestamps when intent is already visible. The sticky batch
+    // below handles removal committed after this pre-check.
+    for resource_name in ["php", "frankenphp"] {
+        crate::managed_resources::installed_track(database, resource_name, &runtime.track)?;
+    }
+
+    #[cfg(test)]
+    wait_for_project_php_demand_test_barrier(&runtime.track);
+
+    let inputs = [
+        ManagedResourceTrackDesiredInput {
+            resource_name: "php",
+            track: &runtime.track,
+        },
+        ManagedResourceTrackDesiredInput {
+            resource_name: "frankenphp",
+            track: &runtime.track,
+        },
+    ];
+    let records = database.record_managed_resource_tracks_desired(&inputs)?;
+    if let Some(record) = records
         .into_iter()
-        .find(|record| {
-            record.track == runtime.track
-                && matches!(record.resource_name.as_str(), "php" | "frankenphp")
-                && record.desired_state == ManagedResourceDesiredState::Removed
-        })
+        .find(|record| record.desired_state == ManagedResourceDesiredState::Removed)
     {
         return Err(DaemonError::ManagedResourceTrackRemoved {
-            resource: removed.resource_name,
-            track: removed.track,
+            resource: record.resource_name,
+            track: record.track,
         });
     }
-    database.record_managed_resource_track_desired(
-        "php",
-        &runtime.track,
-        ManagedResourceDesiredState::Installed,
-    )?;
-    database.record_managed_resource_track_desired(
-        "frankenphp",
-        &runtime.track,
-        ManagedResourceDesiredState::Installed,
-    )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+type ProjectPhpDemandTestBarrier = Mutex<Option<(String, Arc<Barrier>)>>;
+
+#[cfg(test)]
+static PROJECT_PHP_DEMAND_TEST_BARRIER: LazyLock<ProjectPhpDemandTestBarrier> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
+pub(crate) fn set_project_php_demand_test_barrier(track: &str, barrier: Arc<Barrier>) {
+    let mut hook = match PROJECT_PHP_DEMAND_TEST_BARRIER.lock() {
+        Ok(hook) => hook,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *hook = Some((track.to_owned(), barrier));
+}
+
+#[cfg(test)]
+pub(crate) fn clear_project_php_demand_test_barrier(track: &str) -> bool {
+    let mut hook = match PROJECT_PHP_DEMAND_TEST_BARRIER.lock() {
+        Ok(hook) => hook,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if hook
+        .as_ref()
+        .is_some_and(|(hook_track, _barrier)| hook_track == track)
+    {
+        hook.take();
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+fn wait_for_project_php_demand_test_barrier(track: &str) {
+    let barrier = {
+        let mut hook = match PROJECT_PHP_DEMAND_TEST_BARRIER.lock() {
+            Ok(hook) => hook,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if hook
+            .as_ref()
+            .is_some_and(|(hook_track, _barrier)| hook_track == track)
+        {
+            hook.take().map(|(_track, barrier)| barrier)
+        } else {
+            None
+        }
+    };
+
+    if let Some(barrier) = barrier {
+        barrier.wait();
+        barrier.wait();
+    }
 }
 
 fn validate_project_config_and_plan(

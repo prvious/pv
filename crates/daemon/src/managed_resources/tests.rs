@@ -3,7 +3,7 @@ use std::fmt::Debug;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::sync::{Arc, Barrier, Condvar, Mutex, mpsc};
 use std::time::Duration;
 
 use crate::{
@@ -2027,6 +2027,92 @@ async fn project_download_failures_follow_original_plan_order() -> Result<()> {
             &resource.track,
             RuntimeObservedStatus::Failed,
         );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test commits pair removal on a thread while reconciliation waits at the barrier"
+)]
+async fn project_php_demand_does_not_overwrite_concurrent_pair_removal() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let track = "8.5-concurrent";
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        &format!("serve: false\nphp:\n  version: \"{track}\"\n"),
+    )?;
+    let barrier = Arc::new(Barrier::new(2));
+    crate::project_env::set_project_php_demand_test_barrier(track, Arc::clone(&barrier));
+    let removal_paths = paths.clone();
+    let removal_barrier = Arc::clone(&barrier);
+    let removal = std::thread::spawn(move || -> Result<()> {
+        removal_barrier.wait();
+        let result = (|| {
+            let mut database = Database::open(&removal_paths)?;
+            database.record_managed_resource_tracks_removal_intent(&[
+                state::ManagedResourceTrackRemovalInput {
+                    resource_name: "php",
+                    track,
+                    prune: true,
+                    force: true,
+                },
+                state::ManagedResourceTrackRemovalInput {
+                    resource_name: "frankenphp",
+                    track,
+                    prune: true,
+                    force: true,
+                },
+            ])?;
+
+            Ok(())
+        })();
+        removal_barrier.wait();
+
+        result
+    });
+    let result = crate::project_env::reconcile_project_env_with_runtime_catalog_and_progress(
+        &paths,
+        &project.id,
+        None,
+        None,
+        &BTreeSet::new(),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+        crate::project_env::ProjectApplyStage::RecordRequirements,
+    )
+    .await;
+    if crate::project_env::clear_project_php_demand_test_barrier(track) {
+        barrier.wait();
+        barrier.wait();
+    }
+    removal
+        .join()
+        .map_err(|_| anyhow!("concurrent pair removal thread panicked"))??;
+
+    assert!(
+        matches!(
+            &result,
+            Err(DaemonError::ManagedResourceTrackRemoved { resource, track: error_track })
+                if resource == "php" && error_track == track
+        ),
+        "expected concurrent removal to reject Project PHP demand, got {result:#?}"
+    );
+    let tracks = Database::open(&paths)?.managed_resource_tracks()?;
+    for resource_name in ["php", "frankenphp"] {
+        let record = find_managed_resource_track(&tracks, resource_name, track)?;
+
+        assert_eq!(
+            record.desired_state,
+            state::ManagedResourceDesiredState::Removed,
+            "the PHP pair must never split or overwrite {resource_name} removal, got {tracks:#?}"
+        );
+        assert!(record.removal_prune, "prune intent must survive");
+        assert!(record.removal_force, "force intent must survive");
     }
 
     Ok(())
