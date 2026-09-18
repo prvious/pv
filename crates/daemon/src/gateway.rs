@@ -1474,16 +1474,14 @@ fn build_target_runtime_plan(
             })?;
 
     if project.mode == ProjectMode::Served {
-        let config_file = match ProjectConfigFile::read_from_root(&project.path) {
-            Ok(config_file) => config_file,
-            Err(_error) => return Ok(None),
-        };
-        if !config_file.config.serve
-            || validate_project_config_for_gateway(paths, &database, &project, &config_file)
-                .is_err()
-        {
+        // Project-to-System promotion is fail-closed: unreadable or invalid Project
+        // config is a typed error, never uncertainty. Only a valid config that
+        // contradicts the stored mode hands off to System reconciliation.
+        let config_file = ProjectConfigFile::read_from_root(&project.path)?;
+        if !config_file.config.serve {
             return Ok(None);
         }
+        validate_project_config_for_gateway(paths, &database, &project, &config_file)?;
         let primary_hostname =
             project
                 .primary_hostname
@@ -1752,10 +1750,7 @@ fn active_worker_plan(
     else {
         return Ok(None);
     };
-    let loaded_modules = match loaded_php_extension_modules(&database, track, &loaded_extensions) {
-        Ok(loaded_modules) => loaded_modules,
-        Err(_error) => return Ok(None),
-    };
+    let loaded_modules = loaded_php_extension_modules(&database, track, &loaded_extensions)?;
 
     Ok(Some(PhpWorkerRuntimePlan {
         php_track: track.to_owned(),
@@ -1863,10 +1858,7 @@ fn append_targeted_persisted_runtime_project(
     if project.mode == ProjectMode::ResourceOnly {
         return Ok(true);
     }
-    let Some(runtime) = (match persisted_project_php_runtime(database, &project) {
-        Ok(runtime) => runtime,
-        Err(_error) => return Ok(false),
-    }) else {
+    let Some(runtime) = persisted_project_php_runtime(database, &project)? else {
         return Ok(false);
     };
     let file_name = project_config_file_name(&project.id);
@@ -3790,7 +3782,7 @@ mod tests {
     };
 
     #[test]
-    fn targeted_runtime_plan_promotes_uncertain_project_to_system() -> Result<()> {
+    fn targeted_runtime_plan_returns_config_error_for_invalid_project() -> Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let project_path = tempdir.path().join("project");
@@ -3809,7 +3801,10 @@ mod tests {
             .project;
         drop(database);
 
-        assert!(build_target_runtime_plan(&paths, &project.id)?.is_none());
+        assert!(matches!(
+            build_target_runtime_plan(&paths, &project.id),
+            Err(crate::DaemonError::Config(_))
+        ));
 
         Ok(())
     }
