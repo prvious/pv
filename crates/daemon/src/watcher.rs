@@ -47,8 +47,11 @@ impl ProjectConfigWatcher {
 
     async fn poll_once(&mut self) -> Result<(), DaemonError> {
         let paths = self.paths.clone();
-        let current_configs =
-            spawn_project_config_snapshot(move || load_project_config_snapshots(&paths)).await?;
+        let Some(current_configs) =
+            spawn_project_config_snapshot(move || load_project_config_snapshots(&paths)).await?
+        else {
+            return Ok(());
+        };
 
         for (project_id, watched_config) in &current_configs {
             if let Some(previous_config) = self
@@ -69,18 +72,19 @@ impl ProjectConfigWatcher {
 
 async fn spawn_project_config_snapshot<Snapshot>(
     snapshot: Snapshot,
-) -> Result<BTreeMap<String, WatchedConfig>, DaemonError>
+) -> Result<Option<BTreeMap<String, WatchedConfig>>, DaemonError>
 where
-    Snapshot: FnOnce() -> Result<BTreeMap<String, WatchedConfig>, DaemonError> + Send + 'static,
+    Snapshot:
+        FnOnce() -> Result<Option<BTreeMap<String, WatchedConfig>>, DaemonError> + Send + 'static,
 {
     tokio::task::spawn_blocking(snapshot).await?
 }
 
 fn load_project_config_snapshots(
     paths: &PvPaths,
-) -> Result<BTreeMap<String, WatchedConfig>, DaemonError> {
+) -> Result<Option<BTreeMap<String, WatchedConfig>>, DaemonError> {
     let Some(database) = Database::open_read_only(paths)? else {
-        return Ok(BTreeMap::new());
+        return Ok(None);
     };
     database
         .project_config_watches()?
@@ -91,7 +95,8 @@ fn load_project_config_snapshots(
                 project_config_snapshot(&watch.project_path)?,
             ))
         })
-        .collect()
+        .collect::<Result<BTreeMap<_, _>, DaemonError>>()
+        .map(Some)
 }
 
 fn project_config_snapshot(project_path: &Utf8Path) -> Result<WatchedConfig, DaemonError> {
@@ -103,7 +108,6 @@ fn project_config_snapshot(project_path: &Utf8Path) -> Result<WatchedConfig, Dae
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -142,14 +146,14 @@ mod tests {
                 .recv_timeout(Duration::from_secs(5))
                 .map_err(std::io::Error::other)?;
 
-            Ok(BTreeMap::new())
+            Ok(None)
         }));
 
         started_receiver.await?;
         tokio::task::yield_now().await;
         release_sender.send(())?;
 
-        assert!(snapshot.await??.is_empty());
+        assert!(snapshot.await??.is_none());
 
         Ok(())
     }
@@ -255,6 +259,32 @@ mod tests {
 
         watcher.poll_once().await?;
         fs::write_sensitive_file(&project_path.join("pv.yaml"), "php: '8.4'\n")?;
+        watcher.poll_once().await?;
+
+        assert_eq!(next_scope(&mut scopes).await?, "project:project_1");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn watcher_retains_baseline_while_database_is_absent() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+        fs::write_sensitive_file(&config_path, "php: '8.3'\n")?;
+        insert_project(&paths, &project_path, &config_path)?;
+        let (debouncer, mut scopes) = project_scope_recorder();
+        let mut watcher =
+            ProjectConfigWatcher::new(paths.clone(), debouncer, Duration::from_millis(1));
+
+        watcher.poll_once().await?;
+
+        fs::remove_file_if_exists(paths.db())?;
+        watcher.poll_once().await?;
+
+        insert_project(&paths, &project_path, &config_path)?;
+        fs::write_sensitive_file(&config_path, "php: '8.4'\n")?;
         watcher.poll_once().await?;
 
         assert_eq!(next_scope(&mut scopes).await?, "project:project_1");
