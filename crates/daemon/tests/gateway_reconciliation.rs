@@ -10,6 +10,7 @@ use daemon::{CaddyAdminError, CaddyAdminOperation, DaemonError, ProcessSuperviso
 use insta::{Settings, allow_duplicates, assert_debug_snapshot};
 use rcgen::generate_simple_self_signed;
 use resources::{PHP_TRACK_DEFAULT_INI, php_track_defaults};
+use rusqlite::Connection;
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
 use serde_json::{Value, json};
 use state::{
@@ -5874,6 +5875,87 @@ async fn targeted_inspection_promotes_only_recoverable_uncertainty() -> Result<(
         stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
         stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
     }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_failure_preserves_primary_error_when_observation_write_fails() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = create_project_with_config(tempdir.path(), "acme", "php: \"8.4\"\n")?;
+    let caddy_release = tempdir.path().join("fake-caddy-release");
+    let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
+    write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
+    write_stateful_fake_frankenphp(&frankenphp_release.join("bin/frankenphp"))?;
+    let mut database = Database::open(&paths)?;
+    let project = database
+        .link_project(LinkProjectInput {
+            path: project_root.clone(),
+            original_path: project_root.clone(),
+            primary_hostname: "acme.test".to_owned(),
+            config_path: project_root.join("pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-pv1",
+        &frankenphp_release,
+    )?;
+    let ports = available_loopback_ports(3)?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
+    drop(database);
+    reconcile_gateway_runtimes(&paths).await?;
+
+    Connection::open(paths.db().as_std_path())?.execute_batch(
+        "CREATE TRIGGER reject_gateway_observation BEFORE INSERT ON observed_states
+         WHEN NEW.subject_kind = 'runtime' AND NEW.subject_id = 'gateway'
+         BEGIN SELECT RAISE(FAIL, 'fixture rejected Gateway observation'); END;",
+    )?;
+    fs::write_sensitive_file(&project_root.join("pv.yml"), "php: [\n")?;
+    let result = reconcile_project_gateway_runtimes_for_test(
+        &paths,
+        &project.id,
+        Duration::from_secs(5),
+        GatewayPfRoutingState::Inactive,
+    )
+    .await;
+
+    let Err(DaemonError::RuntimeCleanupFailed {
+        runtime,
+        source,
+        cleanup,
+    }) = result
+    else {
+        bail!("expected the primary and recording failures aggregated, got {result:?}");
+    };
+    assert_eq!(runtime, "gateway");
+    assert!(
+        matches!(source.as_ref(), DaemonError::Config(_)),
+        "expected the primary config error, got {source:?}"
+    );
+    assert!(
+        matches!(cleanup.as_ref(), DaemonError::State(StateError::Sqlite(_))),
+        "expected the recording SQLite failure, got {cleanup:?}"
+    );
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
 
     Ok(())
 }

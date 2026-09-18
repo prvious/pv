@@ -298,9 +298,7 @@ async fn reconcile_project_gateway_runtimes(
         Ok(Some(targeted)) => targeted,
         Ok(None) => return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem),
         Err(error) => {
-            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
-
-            return Err(error);
+            return Err(record_primary_error(paths, RuntimeSubject::Gateway, error));
         }
     };
     let supervisor = ProcessSupervisor::new(paths.clone());
@@ -462,9 +460,11 @@ async fn reconcile_project_gateway_runtimes(
             if let Err(error) =
                 stop_worker_if_undemanded(paths, &supervisor, previous_runtime_key).await
             {
-                record_runtime_error(paths, php_runtime_subject(previous_runtime_key), &error)?;
-
-                return Err(error);
+                return Err(record_primary_error(
+                    paths,
+                    php_runtime_subject(previous_runtime_key),
+                    error,
+                ));
             }
         }
         stale_worker_count += 1;
@@ -590,9 +590,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
     let plan = match build_runtime_plan(paths) {
         Ok(plan) => plan,
         Err(error) => {
-            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
-
-            return Err(error);
+            return Err(record_primary_error(paths, RuntimeSubject::Gateway, error));
         }
     };
     let mut worker_commands = Vec::new();
@@ -674,9 +672,7 @@ async fn reconcile_planned_gateway(
     let desired_gateway_config = match desired_gateway_config(paths, plan, preserved_fragments) {
         Ok(desired_config) => desired_config,
         Err(error) => {
-            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
-
-            return Err(error);
+            return Err(record_primary_error(paths, RuntimeSubject::Gateway, error));
         }
     };
     let pf_routing_state =
@@ -699,9 +695,7 @@ async fn reconcile_planned_gateway(
     {
         Ok(outcome) => outcome,
         Err(error) => {
-            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
-
-            return Err(error);
+            return Err(record_primary_error(paths, RuntimeSubject::Gateway, error));
         }
     } {
         outcome
@@ -748,17 +742,13 @@ async fn reconcile_planned_worker(
     ) {
         Ok(process_spec) => process_spec,
         Err(error) => {
-            record_runtime_error(paths, subject.clone(), &error)?;
-
-            return Err(error);
+            return Err(record_primary_error(paths, subject.clone(), error));
         }
     };
     let desired_config = match desired_worker_config(paths, worker, preserved_fragments) {
         Ok(desired_config) => desired_config,
         Err(error) => {
-            record_runtime_error(paths, subject.clone(), &error)?;
-
-            return Err(error);
+            return Err(record_primary_error(paths, subject.clone(), error));
         }
     };
     let readiness = RuntimeReadinessPlan {
@@ -774,9 +764,7 @@ async fn reconcile_planned_worker(
         match worker_config_private_environment(paths, worker, &worker_runtime.artifact_root) {
             Ok(private_environment) => private_environment,
             Err(error) => {
-                record_runtime_error(paths, subject.clone(), &error)?;
-
-                return Err(error);
+                return Err(record_primary_error(paths, subject.clone(), error));
             }
         };
     match reconcile_unchanged_runtime(
@@ -799,9 +787,7 @@ async fn reconcile_planned_worker(
         }
         Ok(None) => {}
         Err(error) => {
-            record_runtime_error(paths, subject.clone(), &error)?;
-
-            return Err(error);
+            return Err(record_primary_error(paths, subject.clone(), error));
         }
     }
     let promoted_config = promote_runtime_config_tree(
@@ -847,15 +833,9 @@ fn required_installed_worker_runtime(
                     worker.php_track
                 ),
             };
-            record_runtime_error(paths, subject, &error)?;
-
-            Err(error)
+            Err(record_primary_error(paths, subject, error))
         }
-        Err(error) => {
-            record_runtime_error(paths, subject, &error)?;
-
-            Err(error)
-        }
+        Err(error) => Err(record_primary_error(paths, subject, error)),
     }
 }
 
@@ -2335,11 +2315,10 @@ async fn promote_runtime_config_tree(
         },
     };
 
-    if let Err(error) = &result {
-        record_runtime_error(paths, subject, error)?;
+    match result {
+        Ok(promoted_config) => Ok(promoted_config),
+        Err(error) => Err(record_primary_error(paths, subject, error)),
     }
-
-    result
 }
 
 async fn reconcile_unchanged_runtime(
@@ -2410,9 +2389,8 @@ async fn start_or_adopt_promoted_runtime(
                 Ok(()) => error,
                 Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
             };
-            record_runtime_error(paths, subject, &error)?;
 
-            return Err(error);
+            return Err(record_primary_error(paths, subject.clone(), error));
         }
     };
     let previous_fingerprint = matching_runtime
@@ -2430,9 +2408,8 @@ async fn start_or_adopt_promoted_runtime(
                         runtime_config_rollback_failed_error(error, rollback_error)
                     }
                 };
-                record_runtime_error(paths, subject, &error)?;
 
-                return Err(error);
+                return Err(record_primary_error(paths, subject.clone(), error));
             }
         }
     } else {
@@ -2526,9 +2503,7 @@ async fn start_or_adopt_promoted_runtime(
                     error
                 }
             };
-            record_runtime_error(paths, subject, &error)?;
-
-            Err(error)
+            Err(record_primary_error(paths, subject, error))
         }
     }
 }
@@ -3648,6 +3623,27 @@ fn record_runtime_error(
         RuntimeObservedStatus::Failed,
         Some(&error.to_string()),
     )
+}
+
+/// Records a primary failure without letting a recording failure replace it: returns
+/// the primary error alone, or the existing keyed aggregate when recording also fails.
+fn record_primary_error(
+    paths: &PvPaths,
+    subject: RuntimeSubject,
+    error: DaemonError,
+) -> DaemonError {
+    let runtime = match &subject {
+        RuntimeSubject::Gateway => "gateway".to_owned(),
+        RuntimeSubject::PhpWorker { php_track } => format!("php-worker-{php_track}"),
+        RuntimeSubject::PhpRuntimeWorker { php_runtime_key } => {
+            format!("php-worker-{php_runtime_key}")
+        }
+        RuntimeSubject::Resource { name, track } => format!("{name}-{track}"),
+    };
+    match record_runtime_error(paths, subject, &error) {
+        Ok(()) => error,
+        Err(recording) => runtime_cleanup_failed_error(&runtime, error, recording),
+    }
 }
 
 fn record_gateway_runtime_observed(
