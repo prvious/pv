@@ -84,6 +84,13 @@ pub enum DaemonError {
         reconciliation: Box<DaemonError>,
     },
 
+    #[error("Project apply failed with `{source}`; resource repair also failed: {repair}")]
+    ProjectApplyAfterResourceRepairFailed {
+        #[source]
+        source: Box<DaemonError>,
+        repair: Box<DaemonError>,
+    },
+
     #[error(
         "Managed Resource update partially completed: {}; remaining update failed: {source}",
         managed_resource_partial_update_summary(.update)

@@ -1622,6 +1622,7 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
         None,
         &demanded_tracks,
         DaemonDownloadProgress::disabled(),
+        crate::project_env::ProjectApplyStage::CompleteApply,
     )
     .await?;
 
@@ -1980,6 +1981,7 @@ async fn project_download_failures_follow_original_plan_order() -> Result<()> {
         &catalog,
         &BTreeSet::new(),
         crate::jobs::DaemonDownloadProgress::disabled(),
+        super::ArtifactInstall::Allowed,
     )
     .await;
     let Err(DaemonError::ManagedResourceProjectFailures { failures }) = result else {
@@ -2072,6 +2074,7 @@ async fn project_manifest_failure_preserves_earlier_installed_resource_work() ->
         &catalog,
         &BTreeSet::new(),
         crate::jobs::DaemonDownloadProgress::disabled(),
+        super::ArtifactInstall::Allowed,
     )
     .await;
     let states = database.runtime_observed_states()?;
@@ -2087,6 +2090,7 @@ async fn project_manifest_failure_preserves_earlier_installed_resource_work() ->
         &catalog,
         &BTreeSet::new(),
         crate::jobs::DaemonDownloadProgress::disabled(),
+        super::ArtifactInstall::Allowed,
     )
     .await?;
     assert!(result.is_err());
@@ -2163,6 +2167,7 @@ async fn project_application_pins_resource_track_until_selector_changes() -> Res
         Some(&demand),
         &demand.resource_tracks,
         progress.clone(),
+        crate::project_env::ProjectApplyStage::CompleteApply,
     )
     .await;
     let database = Database::open(&paths)?;
@@ -2189,6 +2194,7 @@ async fn project_application_pins_resource_track_until_selector_changes() -> Res
         Some(&demand),
         &demand.resource_tracks,
         progress,
+        crate::project_env::ProjectApplyStage::CompleteApply,
     )
     .await;
     let mut database = Database::open(&paths)?;

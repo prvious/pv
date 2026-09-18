@@ -27,14 +27,14 @@ use protocol::{
 use resources::{ManagedResourceCommands, ResourceAdapter, TrackName};
 use state::{
     Database, EnvContextValues, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
-    PortRequest, PostgresPreloadLibrary, ProjectManagedResourceInput, ProjectRecord, PvPaths,
-    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationRecord,
-    ResourceAllocationStatus, RuntimeObservedStatus, RuntimeSubject, StateError,
+    PortRequest, PostgresPreloadLibrary, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END,
+    RUNTIME_PORT_FALLBACK_START, ResourceAllocationRecord, RuntimeObservedStatus, RuntimeSubject,
+    StateError,
 };
 use tokio::time::{sleep, timeout};
 
 use crate::jobs::DaemonDownloadProgress;
-use crate::project_env::{DemandedResourceTrack, record_project_env_failure};
+use crate::project_env::DemandedResourceTrack;
 use crate::{
     DaemonError, ManagedResourceProjectFailure, ProcessSpec, ProcessSupervisor, ReadinessCheck,
     wait_for_readiness,
@@ -264,12 +264,29 @@ impl ManagedResourceRuntimeCatalog {
         self.adapters.get(resource_name).map(Box::as_ref)
     }
 
+    /// Whether this catalog contains a runtime adapter for the Managed Resource.
+    pub(crate) fn has_adapter(&self, resource_name: &str) -> bool {
+        self.adapters.contains_key(resource_name)
+    }
+
     fn artifact_adapters(&self) -> Result<Vec<resources::RuntimeArtifactAdapter>, DaemonError> {
         self.adapters
             .values()
             .map(|adapter| adapter.artifact_adapter())
             .collect()
     }
+}
+
+/// Whether reconciling a Project's resources may install a missing artifact, or must treat it
+/// as a failure because an earlier Resources phase was responsible for installing it.
+///
+/// Only direct test helpers apply without a preceding Resources phase, so
+/// [`ArtifactInstall::Allowed`] is constructed solely by those test-only callers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ArtifactInstall {
+    #[cfg(test)]
+    Allowed,
+    Forbidden,
 }
 
 pub(crate) async fn reconcile_project_resources_with_progress(
@@ -279,6 +296,7 @@ pub(crate) async fn reconcile_project_resources_with_progress(
     plan: &crate::project_env::ProjectResourcePlan,
     demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
+    artifact_install: ArtifactInstall,
 ) -> Result<(), DaemonError> {
     let catalog = ManagedResourceRuntimeCatalog::production()?;
 
@@ -290,10 +308,17 @@ pub(crate) async fn reconcile_project_resources_with_progress(
         &catalog,
         demanded_tracks,
         progress,
+        artifact_install,
     )
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "`demanded_tracks` is the system-wide union that decides which runtimes stay, while \
+              `artifact_install` is this stage's install permission. Neither is derivable from the \
+              Project's own plan, so bundling them would hide two independent inputs."
+)]
 pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
     paths: &PvPaths,
     database: &mut Database,
@@ -302,6 +327,7 @@ pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
     catalog: &ManagedResourceRuntimeCatalog,
     demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
+    artifact_install: ArtifactInstall,
 ) -> Result<(), DaemonError> {
     let supervisor = ProcessSupervisor::new(paths.clone());
     let mut demanded_tracks = demanded_tracks.clone();
@@ -320,6 +346,7 @@ pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
         supervisor: &supervisor,
         progress: &progress,
         prefetched_installs: &mut prefetched_installs,
+        artifact_install,
     };
 
     for (index, resource) in plan.resources.iter().enumerate() {
@@ -345,6 +372,10 @@ pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
     Ok(())
 }
 
+/// Reconciles one resource track for the Projects demanding it, including runtime
+/// readiness and allocation reconciliation. Only tests exercise this entry point
+/// directly now; the resource scope passes its dependents explicitly.
+#[cfg(test)]
 pub(crate) async fn reconcile_persisted_resource_track_with_progress(
     paths: &PvPaths,
     resource_name: &str,
@@ -352,6 +383,34 @@ pub(crate) async fn reconcile_persisted_resource_track_with_progress(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
 ) -> Result<(Vec<ProjectRecord>, BTreeMap<String, DaemonError>), DaemonError> {
+    let projects =
+        Database::open(paths)?.projects_demanding_managed_resource_track(resource_name, track)?;
+    let (_, failures) = reconcile_persisted_resource_track_for_projects_with_progress(
+        paths,
+        resource_name,
+        track,
+        runtime_catalog,
+        &projects,
+        progress,
+    )
+    .await?;
+
+    Ok((projects, failures))
+}
+
+/// Reconciles one resource track for an explicit set of dependent Projects, installing
+/// a missing artifact first when the catalog provides a runtime adapter. Returns
+/// whether an install ran alongside any per-Project allocation failures.
+pub(crate) async fn reconcile_persisted_resource_track_for_projects_with_progress(
+    paths: &PvPaths,
+    resource_name: &str,
+    track: &str,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    projects: &[ProjectRecord],
+    progress: DaemonDownloadProgress,
+) -> Result<(bool, BTreeMap<String, DaemonError>), DaemonError> {
+    use crate::project_env::record_project_env_failure;
+    use state::ResourceAllocationStatus;
     let production_catalog;
     let catalog = if let Some(catalog) = runtime_catalog {
         catalog
@@ -360,7 +419,6 @@ pub(crate) async fn reconcile_persisted_resource_track_with_progress(
         &production_catalog
     };
     let mut database = Database::open(paths)?;
-    let projects = database.projects_demanding_managed_resource_track(resource_name, track)?;
     let supervisor = ProcessSupervisor::new(paths.clone());
 
     if projects.is_empty() {
@@ -381,11 +439,21 @@ pub(crate) async fn reconcile_persisted_resource_track_with_progress(
             }
         }
 
-        return Ok((projects, BTreeMap::new()));
+        return Ok((false, BTreeMap::new()));
     }
 
     let mut project_failures = BTreeMap::new();
-    let result: Result<(), DaemonError> = async {
+    let result: Result<bool, DaemonError> = async {
+        let installed = if catalog.adapter(resource_name).is_some() {
+            let scoped_track = BTreeSet::from([DemandedResourceTrack::new(
+                resource_name.to_owned(),
+                track.to_owned(),
+            )]);
+            install_missing_resource_tracks(paths, Some(catalog), &scoped_track, progress.clone())
+                .await?
+        } else {
+            false
+        };
         let resource = state::ProjectManagedResourceInput {
             resource_name: resource_name.to_owned(),
             track: track.to_owned(),
@@ -403,6 +471,7 @@ pub(crate) async fn reconcile_persisted_resource_track_with_progress(
             supervisor: &supervisor,
             progress: &progress,
             prefetched_installs: &mut prefetched_installs,
+            artifact_install: ArtifactInstall::Forbidden,
         };
 
         reconcile_resource_track(paths, &mut database, &mut context, &resource, &[]).await?;
@@ -410,7 +479,7 @@ pub(crate) async fn reconcile_persisted_resource_track_with_progress(
         if let Some(adapter) = catalog.adapter(resource_name) {
             let runtime_context =
                 persisted_resource_runtime_context(paths, &mut database, adapter, &resource)?;
-            for project in &projects {
+            for project in projects {
                 let allocations = database
                     .resource_allocations(&project.id, resource_name)?
                     .into_iter()
@@ -445,14 +514,14 @@ pub(crate) async fn reconcile_persisted_resource_track_with_progress(
             }
         }
 
-        Ok(())
+        Ok(installed)
     }
     .await;
 
     match result {
-        Ok(()) => Ok((projects, project_failures)),
+        Ok(installed) => Ok((installed, project_failures)),
         Err(reconciliation) => {
-            for project in &projects {
+            for project in projects {
                 let message = if let Some(error) = project_failures.get(&project.id) {
                     error.to_string()
                 } else {
@@ -501,11 +570,12 @@ fn record_allocation_reconciliation_failure(
     error
 }
 
+/// Builds the runtime context for persisted allocation reconciliation.
 fn persisted_resource_runtime_context(
     paths: &PvPaths,
     database: &mut Database,
     adapter: &dyn ManagedResourceRuntimeAdapter,
-    resource: &ProjectManagedResourceInput,
+    resource: &state::ProjectManagedResourceInput,
 ) -> Result<ManagedResourceRuntimeContext, DaemonError> {
     let track = database.managed_resource_track(&resource.resource_name, &resource.track)?;
     let Some(artifact_path) = track.current_artifact_path else {
@@ -891,6 +961,57 @@ impl DesiredResourceInstall {
             }
         }
     }
+}
+
+/// Installs the missing artifacts of the named Managed Resource tracks, and reports whether any
+/// install ran. Unlike the system pass this records no defaults and stops no runtimes.
+/// Tracks with no runtime adapter have no artifact to install and are skipped.
+pub(crate) async fn install_missing_resource_tracks(
+    paths: &PvPaths,
+    catalog: Option<&ManagedResourceRuntimeCatalog>,
+    tracks: &BTreeSet<DemandedResourceTrack>,
+    progress: DaemonDownloadProgress,
+) -> Result<bool, DaemonError> {
+    if tracks.is_empty() {
+        return Ok(false);
+    }
+
+    let production_catalog;
+    let catalog = match catalog {
+        Some(catalog) => catalog,
+        None => {
+            production_catalog = ManagedResourceRuntimeCatalog::production()?;
+            &production_catalog
+        }
+    };
+    let tracks = tracks
+        .iter()
+        .filter(|track| catalog.has_adapter(track.resource_name.as_str()))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if tracks.is_empty() {
+        return Ok(false);
+    }
+
+    let installs = {
+        let database = Database::open(paths)?;
+
+        missing_resource_installs(&database, catalog, &tracks)?
+    };
+    if installs.is_empty() {
+        return Ok(false);
+    }
+
+    install_missing_desired_resource_tracks(
+        paths,
+        catalog.install_options.clone(),
+        catalog.http_client.clone(),
+        installs,
+        progress,
+    )
+    .await?;
+
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -1395,6 +1516,7 @@ struct ResourceTrackReconciliationContext<'context> {
     supervisor: &'context ProcessSupervisor,
     progress: &'context DaemonDownloadProgress,
     prefetched_installs: &'context mut BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>,
+    artifact_install: ArtifactInstall,
 }
 
 type ProjectTrackKey = (String, String);
@@ -1459,6 +1581,7 @@ async fn reconcile_resource_track(
             resource,
             reconciliation.progress,
             reconciliation.prefetched_installs,
+            reconciliation.artifact_install,
         )
         .await?;
         let Some(artifact_path) = track_record.current_artifact_path else {
@@ -1839,9 +1962,16 @@ async fn ensure_track_artifact(
     resource: &state::ProjectManagedResourceInput,
     progress: &DaemonDownloadProgress,
     prefetched_installs: &mut BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>,
+    artifact_install: ArtifactInstall,
 ) -> Result<ManagedResourceTrackRecord, DaemonError> {
     if let Some(record) = installed_track(database, &resource.resource_name, &resource.track)? {
         return Ok(record);
+    }
+    if artifact_install == ArtifactInstall::Forbidden {
+        return Err(DaemonError::ManagedResourceArtifactMissing {
+            resource: resource.resource_name.clone(),
+            track: resource.track.clone(),
+        });
     }
 
     let install_paths = paths.clone();
@@ -1883,7 +2013,7 @@ async fn ensure_track_artifact(
     })
 }
 
-fn installed_track(
+pub(crate) fn installed_track(
     database: &Database,
     resource_name: &str,
     track: &str,
@@ -1907,6 +2037,24 @@ fn installed_track(
     }
 
     Ok(Some(record))
+}
+
+/// Requires both sides of an installed PHP pair. The Resources phase owns every install, so an
+/// apply that follows one only reports a pair it did not provide.
+pub(crate) fn ensure_installed_php_pair(
+    database: &Database,
+    track: &str,
+) -> Result<(), DaemonError> {
+    for resource_name in ["php", "frankenphp"] {
+        if installed_track(database, resource_name, track)?.is_none() {
+            return Err(DaemonError::ManagedResourceArtifactMissing {
+                resource: resource_name.to_owned(),
+                track: track.to_owned(),
+            });
+        }
+    }
+
+    Ok(())
 }
 
 fn install_prefetched_project_track_blocking(

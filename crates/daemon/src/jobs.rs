@@ -12,13 +12,12 @@ use crate::gateway::{
 use crate::ipc::LocalStream;
 use crate::managed_resources::{
     ManagedResourceRuntimeCatalog, ManagedResourceUpdateReport,
-    reconcile_persisted_resource_track_with_progress,
+    reconcile_persisted_resource_track_for_projects_with_progress,
     reconcile_system_resources_with_catalog_and_progress, reconcile_system_resources_with_progress,
     stop_undemanded_system_resource_runtimes, verify_system_resource_installations,
 };
 use crate::project_env::{
-    DemandedResourceTrack, ProjectDemand, discover_project_demand,
-    reconcile_project_env_from_persisted_state,
+    DemandedResourceTrack, ProjectApplyStage, ProjectDemand, discover_project_demand,
     reconcile_project_env_with_runtime_catalog_and_progress, record_project_env_failure,
 };
 use crate::reconciliation::{
@@ -27,7 +26,8 @@ use crate::reconciliation::{
 use crate::structured_log::{self, PhaseOutcome, ReconciliationPhase, ReconciliationPhaseLog};
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
 use state::{
-    Database, JobDiagnosticSubject, ManagedResourceDesiredState, ProjectRecord, PvPaths, StateError,
+    Database, JobDiagnosticSubject, ManagedResourceDesiredState, ProjectRecord, PvPaths,
+    ResourceAllocationStatus, RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 use tokio::io::AsyncWrite;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
@@ -85,6 +85,7 @@ pub(crate) struct DaemonDownloadProgress {
     manifest_snapshot:
         Arc<OnceLock<Result<Arc<resources::ArtifactManifestRefresh>, resources::ResourcesError>>>,
     install_failures: Arc<Mutex<BTreeMap<String, String>>>,
+    suppress_operation_phases: bool,
 }
 
 impl DaemonDownloadProgress {
@@ -94,6 +95,7 @@ impl DaemonDownloadProgress {
             phase_log: None,
             manifest_snapshot: Arc::new(OnceLock::new()),
             install_failures: Arc::new(Mutex::new(BTreeMap::new())),
+            suppress_operation_phases: false,
         }
     }
 
@@ -103,6 +105,7 @@ impl DaemonDownloadProgress {
             phase_log: None,
             manifest_snapshot: Arc::new(OnceLock::new()),
             install_failures: Arc::new(Mutex::new(BTreeMap::new())),
+            suppress_operation_phases: false,
         }
     }
 
@@ -129,6 +132,26 @@ impl DaemonDownloadProgress {
             Err(poisoned) => poisoned.into_inner(),
         };
         failures.get(label).cloned()
+    }
+
+    /// Keeps foreground download reporting and structured diagnostics but stops writing timed
+    /// operation records, so work already covered by an open phase is not timed again inside
+    /// it.
+    fn suppressing_operation_phases(mut self) -> Self {
+        self.suppress_operation_phases = true;
+        self
+    }
+
+    /// A clone for retrying the Resources phase. A cached snapshot failure must not be replayed,
+    /// so the retry gets a fresh cell and re-fetches; a cached success is kept, so one successful
+    /// refresh is still shared across the pass.
+    fn retrying_manifest_snapshot(&self) -> Self {
+        let mut retry = self.clone();
+        if matches!(self.manifest_snapshot.get(), Some(Err(_))) {
+            retry.manifest_snapshot = Arc::new(OnceLock::new());
+        }
+
+        retry
     }
 
     fn send_download_progress(
@@ -208,6 +231,21 @@ impl resources::DownloadProgress for DaemonDownloadProgress {
         let Some(phase_log) = &self.phase_log else {
             return;
         };
+        if self.suppress_operation_phases {
+            // The owning phase already times this work, but a cached-manifest fallback still
+            // has to be reported, so it is recorded as a plain diagnostic instead.
+            if let resources::ResourceOperation::Manifest = event.operation
+                && let resources::ResourceOperationOutcome::Fallback { reason } = event.outcome
+            {
+                let phase_log = match phase_log.lock() {
+                    Ok(phase_log) => phase_log,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                phase_log.artifact_manifest_fallback(reason);
+            }
+
+            return;
+        }
         let manifest_operation = matches!(event.operation, resources::ResourceOperation::Manifest);
         let (phase, subject, counts) = match event.operation {
             resources::ResourceOperation::Manifest => (
@@ -1088,6 +1126,124 @@ fn unchanged_update_summary(report: &ManagedResourceUpdateReport) -> String {
     }
 }
 
+/// Projects with recorded backing-resource demands must not render environments
+/// from changed or failed runtimes. Drifted demands and changed PHP identities are
+/// refused outright; unready demands are refused once they are established through
+/// allocations or provisioned track env contexts. Projects without any recorded
+/// demand are tolerated until the Resources phase provisions them. Only the given
+/// Projects are examined, so a scope never records failures for Projects it does
+/// not apply.
+fn unready_established_resource_projects(
+    paths: &PvPaths,
+    projects: &[ProjectRecord],
+) -> Result<BTreeMap<String, DaemonError>, DaemonError> {
+    let database = Database::open(paths)?;
+    let tracks = database.managed_resource_tracks()?;
+    let observations = database.runtime_observed_states()?;
+    let mut failures = BTreeMap::new();
+    for project in projects {
+        let demands = database.project_managed_resources(&project.id)?;
+        if demands.is_empty() {
+            continue;
+        }
+        if !crate::project_env::project_resource_demands_match_recorded(paths, &demands, project) {
+            failures.insert(
+                project.id.clone(),
+                DaemonError::ProjectEnvDependenciesNotApplied {
+                    project_id: project.id.clone(),
+                    reason: "serving mode, hostnames, resource tracks, or allocation identities differ from their last applied state"
+                        .to_owned(),
+                },
+            );
+            continue;
+        }
+        if !crate::project_env::project_php_identity_matches_applied(paths, &database, project) {
+            failures.insert(
+                project.id.clone(),
+                DaemonError::ProjectEnvDependenciesNotApplied {
+                    project_id: project.id.clone(),
+                    reason: "PHP track or extensions differ from their last applied state"
+                        .to_owned(),
+                },
+            );
+            continue;
+        }
+        for demand in &demands {
+            let allocations = database.resource_allocations(&project.id, &demand.resource_name)?;
+            let has_env_context = tracks.iter().any(|track| {
+                track.resource_name == demand.resource_name
+                    && track.track == demand.track
+                    && !track.env.is_empty()
+            });
+            if allocations.is_empty() && !has_env_context {
+                continue;
+            }
+            let observed = observations.iter().find(|observed| {
+                matches!(
+                    &observed.subject,
+                    RuntimeSubject::Resource { name, track }
+                        if name == &demand.resource_name && track == &demand.track
+                )
+            });
+            let failure = match observed {
+                None => {
+                    let unready = allocations
+                        .iter()
+                        .find(|allocation| allocation.status != ResourceAllocationStatus::Ready);
+                    if let Some(allocation) = unready {
+                        // The env context cannot be built without a ready allocation;
+                        // report that before the missing observation behind it.
+                        Some(
+                            config::ConfigError::MissingAllocationEnvContext {
+                                resource: demand.resource_name.clone(),
+                                allocation: allocation.allocation_name.clone(),
+                            }
+                            .into(),
+                        )
+                    } else {
+                        Some(DaemonError::ProjectEnvDependenciesNotApplied {
+                            project_id: project.id.clone(),
+                            reason: format!(
+                                "required resource {} track {} has no observed state",
+                                demand.resource_name, demand.track
+                            ),
+                        })
+                    }
+                }
+                Some(observed) => match observed.status {
+                    RuntimeObservedStatus::Running => None,
+                    failed => {
+                        let status = match failed {
+                            RuntimeObservedStatus::Failed => "failed",
+                            RuntimeObservedStatus::Degraded => "degraded",
+                            RuntimeObservedStatus::Stopped => "stopped",
+                            RuntimeObservedStatus::Pending => "pending",
+                            RuntimeObservedStatus::Running => "running",
+                        };
+                        Some(DaemonError::ProjectEnvDependenciesNotApplied {
+                            project_id: project.id.clone(),
+                            reason: format!(
+                                "required resource {} track {} is {status}: {}",
+                                demand.resource_name,
+                                demand.track,
+                                observed
+                                    .message
+                                    .as_deref()
+                                    .unwrap_or("no diagnostic recorded")
+                            ),
+                        })
+                    }
+                },
+            };
+            if let Some(error) = failure {
+                failures.insert(project.id.clone(), error);
+                break;
+            }
+        }
+    }
+    Ok(failures)
+}
+
 async fn complete_managed_resource_reconciliation_with_progress(
     paths: &PvPaths,
     name: &crate::reconciliation::ReconciliationScopeComponent,
@@ -1096,28 +1252,99 @@ async fn complete_managed_resource_reconciliation_with_progress(
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
-    let resource_timer = phase_log.start(
+    let dependent_projects = Database::open(paths)?
+        .projects_demanding_managed_resource_track(name.as_str(), track.as_str())?;
+    let strict_failures = unready_established_resource_projects(paths, &dependent_projects)?;
+    let mut skip_projects: BTreeSet<String> = BTreeSet::new();
+    if !strict_failures.is_empty() {
+        let mut database = Database::open(paths)?;
+        for (project_id, error) in &strict_failures {
+            record_project_env_failure(&mut database, project_id, &error.to_string())?;
+            skip_projects.insert(project_id.clone());
+        }
+    }
+
+    let record_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
+    let record_result = reconcile_system_projects_with_progress(
+        paths,
+        runtime_catalog,
+        &BTreeSet::new(),
+        &BTreeMap::new(),
+        &progress,
+        ProjectApplyStage::RecordRequirements,
+        &linked_projects(paths)?,
+        &skip_projects,
+    )
+    .await;
+    finish_project_phase(record_timer, &record_result);
+    record_result?;
+
+    let resources_timer = phase_log.start(
         ReconciliationPhase::Resources,
         format!("{}:{}", name.as_str(), track.as_str()),
     );
-    let resource_result = reconcile_persisted_resource_track_with_progress(
+    let resources_result = reconcile_persisted_resource_track_for_projects_with_progress(
         paths,
         name.as_str(),
         track.as_str(),
         runtime_catalog,
-        progress,
+        &dependent_projects,
+        progress.clone().suppressing_operation_phases(),
     )
     .await;
-    resource_timer.finish(
-        PhaseOutcome::from_succeeded(resource_result.is_ok()),
+    resources_timer.finish(
+        match resources_result {
+            Ok((false, _)) => PhaseOutcome::Skipped,
+            Ok((true, _)) => PhaseOutcome::Succeeded,
+            Err(_) => PhaseOutcome::Failed,
+        },
         &[("resource_count", 1)],
     );
-    let (projects, resource_failures) = resource_result?;
+    let (_, resource_failures) = resources_result?;
+    if !resource_failures.is_empty() {
+        let mut database = Database::open(paths)?;
+        for (project_id, error) in &resource_failures {
+            record_project_env_failure(&mut database, project_id, &error.to_string())?;
+            skip_projects.insert(project_id.clone());
+        }
+    }
 
-    let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "dependent_projects");
-    let project_result = reconcile_persisted_project_envs(paths, &projects, resource_failures);
+    let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
+    // The staged apply covers established dependents only: Projects that never
+    // demanded this track have no persisted state for it, and recording their
+    // requirements above must not pull them into this scope's apply.
+    let project_result = reconcile_system_projects_with_progress(
+        paths,
+        runtime_catalog,
+        &BTreeSet::new(),
+        &BTreeMap::new(),
+        &progress,
+        ProjectApplyStage::CompleteStagedApply,
+        &dependent_projects,
+        &skip_projects,
+    )
+    .await;
     finish_project_phase(project_timer, &project_result);
-    let project_report = project_result?;
+    let mut project_report = project_result?;
+    for (project_id, error) in strict_failures {
+        let project_label = dependent_projects
+            .iter()
+            .find(|project| project.id == project_id)
+            .map(|project| {
+                project
+                    .primary_hostname
+                    .as_deref()
+                    .unwrap_or(&project.slug)
+                    .to_owned()
+            })
+            .unwrap_or(project_id.clone());
+        project_report
+            .failures
+            .push(DaemonError::ProjectReconciliation {
+                project_label,
+                source: Box::new(error),
+            });
+    }
     let summary =
         managed_resource_reconciliation_summary(name.as_str(), track.as_str(), &project_report);
     let mut coverage = vec![JobDiagnosticSubject::Resource {
@@ -1129,11 +1356,15 @@ async fn complete_managed_resource_reconciliation_with_progress(
     Ok(CompletedReconciliationJob { summary, coverage })
 }
 
+/// Applies persisted environments after a resource change. Only tests exercise this path
+/// directly now; job-orchestrated scopes apply through the staged flows instead.
+#[cfg(test)]
 fn reconcile_persisted_project_envs(
     paths: &PvPaths,
     projects: &[ProjectRecord],
     mut resource_failures: BTreeMap<String, DaemonError>,
 ) -> Result<SystemProjectReconciliationReport, DaemonError> {
+    use crate::project_env::reconcile_project_env_from_persisted_state;
     let mut report = SystemProjectReconciliationReport {
         total: projects.len(),
         ..SystemProjectReconciliationReport::default()
@@ -1367,21 +1598,58 @@ async fn complete_system_reconciliation_with_progress(
     let demand = discovery_result?;
 
     let resources_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
+    let mut resources_progress = progress.clone().suppressing_operation_phases();
     let mut resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
         paths,
         runtime_catalog,
         &demand.resource_tracks,
-        progress.clone(),
+        resources_progress.clone(),
     )
     .await;
     resources_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
+    // Retry the install once before applying the Projects. No Project Apply downloads, so a
+    // retry after one could never recover the apply that needed the artifact. The retry is its
+    // own timed phase and suppresses nested operation records, so the log stays coherent. If it
+    // still fails, the later read-only check decides whether current applied demand still needs it.
+    if resources_result.is_err() {
+        let retry_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
+        resources_progress = progress
+            .retrying_manifest_snapshot()
+            .suppressing_operation_phases();
+        resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
+            paths,
+            runtime_catalog,
+            &demand.resource_tracks,
+            resources_progress.clone(),
+        )
+        .await;
+        retry_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
+    }
+    let mut resource_tracks = demand.resource_tracks;
+    let mut project_demands = demand.project_demands;
+    let has_late_resource_demand =
+        discover_late_system_project_demand(paths, &mut resource_tracks, &mut project_demands)?;
+    if has_late_resource_demand {
+        let late_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
+        resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
+            paths,
+            runtime_catalog,
+            &resource_tracks,
+            resources_progress,
+        )
+        .await;
+        late_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
+    }
     let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
     let project_result = reconcile_system_projects_with_progress(
         paths,
         runtime_catalog,
-        &demand.resource_tracks,
-        &demand.project_demands,
+        &resource_tracks,
+        &project_demands,
         &progress,
+        ProjectApplyStage::CompleteStagedApply,
+        &linked_projects(paths)?,
+        &BTreeSet::new(),
     )
     .await;
     finish_project_phase(project_timer, &project_result);
@@ -1439,19 +1707,14 @@ async fn complete_project_reconciliation_with_progress(
     pf_routing_state: Option<GatewayPfRoutingState>,
     failure_subject: &mut Option<JobDiagnosticSubject>,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
-    let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, id.as_str());
-    let project_result = reconcile_project_env_and_missing_resources_with_progress(
+    let project_env_summary = reconcile_project_env_and_missing_resources_with_progress(
         paths,
         id.as_str(),
         runtime_catalog,
         progress.clone(),
+        phase_log,
     )
-    .await;
-    project_timer.finish(
-        PhaseOutcome::from_succeeded(project_result.is_ok()),
-        &[("project_count", 1)],
-    );
-    let project_env_summary = project_result?;
+    .await?;
     let gateway_outcome = reconcile_project_gateway_runtimes_with_phase_log(
         paths,
         id.as_str(),
@@ -1552,6 +1815,7 @@ async fn reconcile_project_env_and_missing_resources(
         project_id,
         runtime_catalog,
         DaemonDownloadProgress::disabled(),
+        &ReconciliationPhaseLog::new(paths, "test_job", &format!("project:{project_id}")),
     )
     .await
 }
@@ -1561,36 +1825,145 @@ async fn reconcile_project_env_and_missing_resources_with_progress(
     project_id: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
+    phase_log: &ReconciliationPhaseLog,
 ) -> Result<crate::project_env::ProjectEnvReconciliationSummary, DaemonError> {
-    let summary = reconcile_project_env_with_runtime_catalog_and_progress(
+    let record_timer = phase_log.start(ReconciliationPhase::ProjectApply, project_id);
+    let record_result = reconcile_project_env_with_runtime_catalog_and_progress(
         paths,
         project_id,
         runtime_catalog,
         None,
         &BTreeSet::new(),
         progress.clone(),
+        ProjectApplyStage::RecordRequirements,
     )
-    .await?;
-    if !summary.requested_php_extensions() || !missing_gateway_runtime_resource(paths)? {
-        return Ok(summary);
-    }
+    .await;
+    record_timer.finish(
+        PhaseOutcome::from_succeeded(record_result.is_ok()),
+        &[("project_count", 1)],
+    );
+    let recorded = record_result?;
+    let requested_php_extensions = recorded.requested_php_extensions();
+    let recorded_tracks = recorded.recorded_tracks().clone();
 
-    reconcile_system_resources_with_runtime_catalog_and_progress(
+    let resources_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
+    let resources_result = install_project_resources(
         paths,
+        &recorded_tracks,
         runtime_catalog,
         &BTreeSet::new(),
         progress.clone(),
+        requested_php_extensions,
     )
-    .await?;
-    reconcile_project_env_with_runtime_catalog_and_progress(
+    .await;
+    resources_timer.finish(
+        match &resources_result {
+            Ok(install) if install.deferred_error.is_some() => PhaseOutcome::Failed,
+            Ok(install) if install.installed => PhaseOutcome::Succeeded,
+            Ok(_) => PhaseOutcome::Skipped,
+            Err(_) => PhaseOutcome::Failed,
+        },
+        &[],
+    );
+    let deferred_resources_error = resources_result?.deferred_error;
+
+    let apply_timer = phase_log.start(ReconciliationPhase::ProjectApply, project_id);
+    let apply_result = reconcile_project_env_with_runtime_catalog_and_progress(
         paths,
         project_id,
         runtime_catalog,
         None,
         &BTreeSet::new(),
         progress,
+        ProjectApplyStage::CompleteStagedApply,
     )
-    .await
+    .await;
+    apply_timer.finish(
+        PhaseOutcome::from_succeeded(apply_result.is_ok()),
+        &[("project_count", 1)],
+    );
+
+    match (apply_result, deferred_resources_error) {
+        (Ok(summary), None) => Ok(summary),
+        (Ok(_), Some(repair_error)) => Err(repair_error),
+        (Err(apply_error), None) => Err(apply_error),
+        // Both stages failed. The apply is reported as primary because it is the later,
+        // Project-scoped failure, and the earlier repair failure is retained rather than
+        // dropped.
+        (Err(apply_error), Some(repair_error)) => {
+            Err(DaemonError::ProjectApplyAfterResourceRepairFailed {
+                source: Box::new(apply_error),
+                repair: Box::new(repair_error),
+            })
+        }
+    }
+}
+
+/// Installs the Managed Resource tracks the Project declares, then, under the original
+/// optional-extension gate, may run the unchanged system-wide repair pass. That pass installs
+/// every desired track that is missing, so it can still install and fail on tracks unrelated to
+/// this Project.
+///
+/// A declared-track failure short-circuits, but a repair-pass failure is returned as
+/// [`ProjectResourceInstall::deferred_error`] so the caller can still complete the apply that
+/// used to run before the repair. `installed` means an install ran, not that an artifact was
+/// downloaded.
+struct ProjectResourceInstall {
+    installed: bool,
+    deferred_error: Option<DaemonError>,
+}
+
+async fn install_project_resources(
+    paths: &PvPaths,
+    recorded_tracks: &BTreeSet<DemandedResourceTrack>,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
+    progress: DaemonDownloadProgress,
+    requested_php_extensions: bool,
+) -> Result<ProjectResourceInstall, DaemonError> {
+    let production_catalog;
+    let catalog = match runtime_catalog {
+        Some(catalog) => catalog,
+        None => {
+            production_catalog = ManagedResourceRuntimeCatalog::production()?;
+            &production_catalog
+        }
+    };
+    // Install what the Record Requirements pass resolved. A declared track with no runtime
+    // adapter has no artifact to install, so it is left to the apply, which decides whether
+    // to tolerate it or record and fail it exactly as it always has.
+    let declared_tracks = recorded_tracks
+        .iter()
+        .filter(|track| catalog.has_adapter(track.resource_name.as_str()))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let installed = crate::managed_resources::install_missing_resource_tracks(
+        paths,
+        runtime_catalog,
+        &declared_tracks,
+        progress.clone().suppressing_operation_phases(),
+    )
+    .await?;
+
+    if !requested_php_extensions || !missing_gateway_runtime_resource(paths)? {
+        return Ok(ProjectResourceInstall {
+            installed,
+            deferred_error: None,
+        });
+    }
+
+    let repair_result = reconcile_system_resources_with_runtime_catalog_and_progress(
+        paths,
+        runtime_catalog,
+        demanded_tracks,
+        progress.suppressing_operation_phases(),
+    )
+    .await;
+
+    Ok(ProjectResourceInstall {
+        installed: true,
+        deferred_error: repair_result.err(),
+    })
 }
 
 fn missing_gateway_runtime_resource(paths: &PvPaths) -> Result<bool, DaemonError> {
@@ -1631,14 +2004,22 @@ impl SystemProjectReconciliationReport {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "`projects` scopes the apply to a resource scope's dependents while \
+              `skip_project_ids` carries established-demand failures that must be reported \
+              without being re-applied; neither is derivable from the other."
+)]
 async fn reconcile_system_projects_with_progress(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     project_demands: &BTreeMap<String, ProjectDemand>,
     progress: &DaemonDownloadProgress,
+    stage: ProjectApplyStage,
+    projects: &[ProjectRecord],
+    skip_project_ids: &BTreeSet<String>,
 ) -> Result<SystemProjectReconciliationReport, DaemonError> {
-    let projects = linked_projects(paths)?;
     let mut report = SystemProjectReconciliationReport {
         total: projects.len(),
         ..SystemProjectReconciliationReport::default()
@@ -1647,6 +2028,9 @@ async fn reconcile_system_projects_with_progress(
     let empty_demand = ProjectDemand::default();
 
     for project in projects {
+        if skip_project_ids.contains(&project.id) {
+            continue;
+        }
         match reconcile_project_env_with_runtime_catalog_and_progress(
             paths,
             &project.id,
@@ -1654,13 +2038,17 @@ async fn reconcile_system_projects_with_progress(
             Some(project_demands.get(&project.id).unwrap_or(&empty_demand)),
             demanded_tracks,
             progress.clone(),
+            stage,
         )
         .await
         {
             Ok(summary) => {
                 report.succeeded += 1;
-                report.successful_project_ids.push(project.id);
+                report.successful_project_ids.push(project.id.clone());
                 report.summaries.push(summary.as_str().to_owned());
+            }
+            Err(error @ DaemonError::ProjectEnvFailureRecordingFailed { .. }) => {
+                return Err(error);
             }
             Err(error) => {
                 let project_label = project.primary_hostname.as_deref().unwrap_or(&project.slug);
@@ -1675,25 +2063,77 @@ async fn reconcile_system_projects_with_progress(
     Ok(report)
 }
 
+/// Adds Projects linked while Resources was running to the demand pinned for Project Apply.
+/// Returns whether a new Project added resource demand that needs another full Resources pass.
+fn discover_late_system_project_demand(
+    paths: &PvPaths,
+    resource_tracks: &mut BTreeSet<DemandedResourceTrack>,
+    project_demands: &mut BTreeMap<String, ProjectDemand>,
+) -> Result<bool, DaemonError> {
+    let database = Database::open(paths)?;
+    let mut has_late_resource_demand = false;
+
+    for project in database.projects()? {
+        if project_demands.contains_key(&project.id) {
+            continue;
+        }
+        let demand = discover_project_demand(paths, &database, &project)?;
+        has_late_resource_demand |= !demand.resource_tracks.is_empty();
+        resource_tracks.extend(demand.resource_tracks.iter().cloned());
+        project_demands.insert(project.id, demand);
+    }
+
+    Ok(has_late_resource_demand)
+}
+
 async fn reconcile_system_projects_and_resources_with_progress(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
 ) -> Result<SystemProjectReconciliationReport, DaemonError> {
-    let demand = discover_system_project_demand(paths)?;
+    let SystemProjectDemandReport {
+        mut resource_tracks,
+        mut project_demands,
+        ..
+    } = discover_system_project_demand(paths)?;
     let mut resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
         paths,
         runtime_catalog,
-        &demand.resource_tracks,
+        &resource_tracks,
         progress.clone(),
     )
     .await;
+    // Retry the install once before applying the Projects, for the same reason as the logged
+    // flow: no Project Apply downloads, so a later retry could not recover this apply.
+    if resources_result.is_err() {
+        resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
+            paths,
+            runtime_catalog,
+            &resource_tracks,
+            progress.retrying_manifest_snapshot(),
+        )
+        .await;
+    }
+    let has_late_resource_demand =
+        discover_late_system_project_demand(paths, &mut resource_tracks, &mut project_demands)?;
+    if has_late_resource_demand {
+        resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
+            paths,
+            runtime_catalog,
+            &resource_tracks,
+            progress.clone(),
+        )
+        .await;
+    }
     let project_result = reconcile_system_projects_with_progress(
         paths,
         runtime_catalog,
-        &demand.resource_tracks,
-        &demand.project_demands,
+        &resource_tracks,
+        &project_demands,
         &progress,
+        ProjectApplyStage::CompleteStagedApply,
+        &linked_projects(paths)?,
+        &BTreeSet::new(),
     )
     .await;
     let cleanup_result = stop_undemanded_system_resource_runtimes(paths, runtime_catalog).await;
@@ -1803,7 +2243,7 @@ fn discover_system_project_demand(
     })
 }
 
-fn linked_projects(paths: &PvPaths) -> Result<Vec<ProjectRecord>, DaemonError> {
+pub(crate) fn linked_projects(paths: &PvPaths) -> Result<Vec<ProjectRecord>, DaemonError> {
     let database = Database::open(paths)?;
 
     Ok(database.projects()?)
@@ -2140,13 +2580,15 @@ mod tests {
     use crate::project_env::reconcile_project_env_from_persisted_state;
 
     use super::{
-        FOREGROUND_JOB_PROGRESS_BUFFER, FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent,
-        SystemProjectReconciliationReport, complete_managed_resource_reconciliation_with_progress,
+        DaemonDownloadProgress, FOREGROUND_JOB_PROGRESS_BUFFER,
+        FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent, SystemProjectReconciliationReport,
+        complete_managed_resource_reconciliation_with_progress,
         complete_or_fail_background_reconciliation, complete_project_reconciliation_with_progress,
-        complete_streamed_job_with_heartbeat, complete_streamed_job_with_heartbeat_and_events,
+        complete_reconciliation_job_with_progress, complete_streamed_job_with_heartbeat,
+        complete_streamed_job_with_heartbeat_and_events,
         complete_system_reconciliation_with_progress, complete_update_job,
         completed_system_reconciliation_coverage, discover_system_project_demand,
-        enqueue_reconciliation_job, foreground_reconciliation_result,
+        enqueue_reconciliation_job, foreground_reconciliation_result, linked_projects,
         managed_resource_reconciliation_summary, reconcile_persisted_project_envs,
         reconcile_project_env_and_missing_resources,
         reconcile_project_env_with_runtime_catalog_and_progress,
@@ -2158,6 +2600,7 @@ mod tests {
         stream_started_reconciliation_job, stream_started_update_job, system_project_summary,
         write_coalesced_update_response,
     };
+    use crate::project_env::ProjectApplyStage;
     use crate::reconciliation::{
         EnqueueResult, ReconciliationJobTiming, ReconciliationQueue, ReconciliationScope,
     };
@@ -2546,6 +2989,15 @@ mod tests {
             },
             RuntimeObservedStatus::Running,
             Some("fixture mailpit readiness diagnostic"),
+        )?;
+        database.record_managed_resource_track_installed(
+            "php",
+            PHP_TEST_TRACK,
+            PHP_TEST_ARTIFACT_VERSION,
+            &paths
+                .resources()
+                .join("php/8.5/releases")
+                .join(PHP_TEST_ARTIFACT_VERSION),
         )?;
         database.replace_project_php_runtime(
             &projects[1].id,
@@ -3657,6 +4109,7 @@ mod tests {
         let mut mixed_errors = Vec::new();
         for (update_path, fail_install, fail_env) in [
             (true, false, false),
+            (false, false, false),
             (true, true, false),
             (false, true, false),
             (true, true, true),
@@ -3814,6 +4267,28 @@ mod tests {
                 .into_iter()
                 .find(|project| project.path == project_path)
                 .ok_or_else(|| anyhow::anyhow!("expected late Project"))?;
+            if !update_path {
+                let phases = reconciliation_phase_events(&paths, &job_id)?;
+                let expected = if fail_install {
+                    [
+                        "resources/desired_resources/succeeded",
+                        "resources/desired_resources/failed",
+                        "project_apply/linked_projects/failed",
+                    ]
+                } else {
+                    [
+                        "resources/desired_resources/succeeded",
+                        "resources/desired_resources/succeeded",
+                        "project_apply/linked_projects/succeeded",
+                    ]
+                };
+                assert_eq!(
+                    project_resource_phases(&phases, &project.id),
+                    expected,
+                    "phases were {:?}",
+                    job_phase_outcomes(&phases)
+                );
+            }
             if fail_install {
                 if let Some(env_project) = env_project {
                     let message = if let Some(message) = streamed_error {
@@ -3854,11 +4329,8 @@ mod tests {
                         };
                         assert!(matches!(
                             source.as_ref(),
-                            DaemonError::ManagedResourceCommand(
-                                ManagedResourceCommandError::Resources(
-                                    ResourcesError::HttpRequestFailed { .. }
-                                )
-                            )
+                            DaemonError::ManagedResourceArtifactMissing { resource, track }
+                                if resource == "php" && track == PHP_TEST_TRACK
                         ));
                         error.to_string()
                     };
@@ -3899,11 +4371,8 @@ mod tests {
                     };
                     assert!(matches!(
                         source.as_ref(),
-                        DaemonError::ManagedResourceCommand(
-                            ManagedResourceCommandError::Resources(
-                                ResourcesError::HttpRequestFailed { .. }
-                            )
-                        )
+                        DaemonError::ManagedResourceArtifactMissing { resource, track }
+                            if resource == "php" && track == PHP_TEST_TRACK
                     ));
                     allow_duplicates! {
                         assert_snapshot!(error_message, @r#"System reconciliation failed: Managed Resource default installs failed: php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`: missing scripted archive; late.test: Project application stopped after resource installation failed"#);
@@ -3955,11 +4424,14 @@ mod tests {
                     .map(|state| state.status),
                 Some(ProjectEnvObservedStatus::Rendered)
             );
-            assert_snapshot!(state::fs::read_to_string(&project_path.join(".env"))?, @r"
-            # >>> PV MANAGED
-            APP_NAME=late
-            # <<< PV MANAGED
-            ");
+            let rendered_env = state::fs::read_to_string(&project_path.join(".env"))?;
+            allow_duplicates! {
+                assert_snapshot!(rendered_env, @r"
+                # >>> PV MANAGED
+                APP_NAME=late
+                # <<< PV MANAGED
+                ");
+            }
         }
         assert_debug_snapshot!(mixed_errors, @r#"
         [
@@ -4263,9 +4735,8 @@ mod tests {
         };
         assert!(matches!(
             source.as_ref(),
-            DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
-                ResourcesError::ResourceNotInManifest { .. }
-            ))
+            DaemonError::ManagedResourceArtifactMissing { resource, track }
+                if resource == "mailpit" && track == MAILPIT_TEST_TRACK
         ));
         allow_duplicates! {
             assert_snapshot!(error_message, @r#"System reconciliation failed: Managed Resource default installs failed: mailpit 1.0: Managed Resource command failed: artifact manifest does not include Managed Resource `mailpit`; failed.test: Project application stopped after resource installation failed"#);
@@ -4379,6 +4850,7 @@ mod tests {
             None,
             &BTreeSet::new(),
             super::DaemonDownloadProgress::disabled(),
+            ProjectApplyStage::CompleteApply,
         )
         .await?;
         let verification = async {
@@ -4476,9 +4948,8 @@ mod tests {
         };
         assert!(matches!(
             source.as_ref(),
-            DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
-                ResourcesError::HttpRequestFailed { .. }
-            ))
+            DaemonError::ManagedResourceArtifactMissing { resource, track }
+                if resource == "mailpit" && track == "1.1"
         ));
         allow_duplicates! {
             assert_snapshot!(error_message, @r#"System reconciliation failed: Managed Resource default installs failed: mailpit 1.1: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/mailpit-1.1.0-pv1-any.tar.gz`: missing scripted archive; project.test: Project application stopped after resource installation failed"#);
@@ -4566,19 +5037,34 @@ mod tests {
                     assert_eq!(report.succeeded, 1);
                 })
             } else {
-                let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
-                    &paths,
-                    "system-recovered-download-test",
-                    "system",
-                );
-                complete_system_reconciliation_with_progress(
+                let job_id = "system-recovered-download-test";
+                let phase_log =
+                    crate::structured_log::ReconciliationPhaseLog::new(&paths, job_id, "system");
+                let result = complete_system_reconciliation_with_progress(
                     &paths,
                     Some(&catalog),
                     progress,
                     &phase_log,
                 )
                 .await
-                .map(|_| ())
+                .map(|_| ());
+                if download_failures == 1 {
+                    // The retry is a second timed Resources phase that runs before Project Apply,
+                    // and it suppresses nested operation records so artifact work is counted only
+                    // by its owning phase.
+                    let events = reconciliation_phase_events(&paths, job_id)?;
+                    assert_eq!(
+                        project_resource_phases(&events, &linked.project.id),
+                        [
+                            "resources/desired_resources/failed",
+                            "resources/desired_resources/succeeded",
+                            "project_apply/linked_projects/succeeded",
+                        ],
+                        "phases were {:?}",
+                        job_phase_outcomes(&events)
+                    );
+                }
+                result
             };
             assert_eq!(download_attempts.load(Ordering::SeqCst), 2);
             assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
@@ -4607,12 +5093,8 @@ mod tests {
                 };
                 assert!(matches!(
                     source.as_ref(),
-                    DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
-                        ResourcesError::HttpStatusFailed {
-                            status_code: 410,
-                            ..
-                        }
-                    ))
+                    DaemonError::ManagedResourceArtifactMissing { resource, track }
+                        if resource == "php" && track == PHP_TEST_TRACK
                 ));
                 allow_duplicates! {
                     assert_snapshot!(error_message, @r#"System reconciliation failed: Managed Resource default installs failed: php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP status 410 for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`; project.test: Project application stopped after resource installation failed"#);
@@ -4804,16 +5286,15 @@ mod tests {
                 };
                 assert!(matches!(
                     source.as_ref(),
-                    DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
-                        ResourcesError::TrackNotFound { .. }
-                    ))
+                    DaemonError::ManagedResourceArtifactMissing { resource, track }
+                        if resource == "mailpit" && track == "1.1"
                 ));
                 allow_duplicates! {
-                    assert_snapshot!(error_message, @r#"System reconciliation failed: Managed Resource default installs failed: mailpit 1.1: Managed Resource command failed: artifact manifest resource `mailpit` has no track `1.1`; project.test: Project application stopped after resource installation failed"#);
+                    assert_snapshot!(error_message, @r#"System reconciliation failed: Managed Resource default installs failed: mailpit 1.1: installation is still pending; project.test: Project application stopped after resource installation failed"#);
                 }
                 assert_debug_snapshot!(failures, @r#"
                 [
-                    "mailpit 1.1: Managed Resource command failed: artifact manifest resource `mailpit` has no track `1.1`",
+                    "mailpit 1.1: installation is still pending",
                 ]
                 "#);
                 assert_eq!(
@@ -5125,10 +5606,9 @@ mod tests {
         drop(database);
         let demand = discover_system_project_demand(&paths)?;
         assert!(!project_path.join(".env").exists());
-        state::fs::write_sensitive_file(
-            &config_path,
-            "serve: false\nphp:\n  version: \"8.5\"\n  extensions: [redis]\nenv:\n  APP_NAME: applied\n",
-        )?;
+        // Mailpit leaves the config and nothing new is demanded, so the reread is proved by the
+        // rendered env rather than by an artifact the Resources phase was never asked to install.
+        state::fs::write_sensitive_file(&config_path, "serve: false\nenv:\n  APP_NAME: applied\n")?;
         let catalog = crate::managed_resources::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
         let progress = super::DaemonDownloadProgress::disabled();
 
@@ -5145,12 +5625,15 @@ mod tests {
             &demand.resource_tracks,
             &demand.project_demands,
             &progress,
+            ProjectApplyStage::CompleteStagedApply,
+            &linked_projects(&paths)?,
+            &BTreeSet::new(),
         )
         .await?;
         stop_undemanded_system_resource_runtimes(&paths, Some(&catalog)).await?;
 
+        assert!(report.failures.is_empty(), "got {:?}", report.failures);
         assert_eq!(report.succeeded, 1);
-        assert!(report.failures.is_empty());
         let env = state::fs::read_to_string(&project_path.join(".env"))?;
         assert!(env.contains("APP_NAME=applied"));
         assert!(!env.contains("APP_NAME=discovered"));
@@ -5159,8 +5642,17 @@ mod tests {
             .project_by_id(&linked.project.id)?
             .ok_or_else(|| anyhow::anyhow!("expected linked project"))?;
         assert_eq!(project.mode, ProjectMode::ResourceOnly);
-        assert_eq!(project.php_runtime.track.as_deref(), Some(PHP_TEST_TRACK));
-        assert_eq!(project.php_runtime.loaded_extensions, ["redis"]);
+        // The Project Apply installs nothing, so a pair the Resources phase never demanded stays
+        // uninstalled even though its archives are cached.
+        assert!(
+            database
+                .managed_resource_tracks()?
+                .iter()
+                .filter(|track| track.resource_name == "php" || track.resource_name == "frankenphp")
+                .all(|track| track.current_artifact_path.is_none()),
+            "neither PHP side may gain an installed artifact path, got {:?}",
+            database.managed_resource_tracks()?
+        );
         assert!(
             database
                 .runtime_observed_states()?
@@ -5326,6 +5818,9 @@ mod tests {
                 &demand.resource_tracks,
                 &demand.project_demands,
                 &super::DaemonDownloadProgress::disabled(),
+                ProjectApplyStage::CompleteStagedApply,
+                &linked_projects(&paths)?,
+                &BTreeSet::new(),
             )
             .await?;
 
@@ -5439,6 +5934,452 @@ mod tests {
         assert_eq!(project.php_runtime.requested_extensions, ["redis"]);
         assert_eq!(project.php_runtime.loaded_extensions, ["redis"]);
         assert!(project.php_runtime.ignored_extensions.is_empty());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn project_reconciliation_reports_disjoint_project_and_resource_phases()
+    -> anyhow::Result<()> {
+        for (scenario, label, expected_phases) in [
+            (
+                ProjectPhaseScenario::DeclaredBackingResource,
+                "declared backing resource",
+                vec![
+                    "project_apply/project/succeeded",
+                    "resources/desired_resources/skipped",
+                    "project_apply/project/failed",
+                ],
+            ),
+            (
+                ProjectPhaseScenario::InvalidProjectConfig,
+                "invalid project config",
+                vec!["project_apply/project/failed"],
+            ),
+            (
+                ProjectPhaseScenario::MissingPhpArtifact,
+                "missing PHP artifact",
+                vec![
+                    "project_apply/project/succeeded",
+                    "resources/desired_resources/failed",
+                    "project_apply/project/succeeded",
+                ],
+            ),
+            (
+                ProjectPhaseScenario::UnreadablePhpExtensions,
+                "unreadable PHP extensions",
+                vec![
+                    "project_apply/project/succeeded",
+                    "resources/desired_resources/succeeded",
+                    "project_apply/project/failed",
+                ],
+            ),
+            (
+                ProjectPhaseScenario::DeclaredBackingResourceInstallFailure,
+                "declared backing resource install failure",
+                vec![
+                    "project_apply/project/succeeded",
+                    "resources/desired_resources/failed",
+                ],
+            ),
+        ] {
+            let scenario_tempdir = tempdir()?;
+            let scenario_paths = PvPaths::for_home(scenario_tempdir.path().join("home"));
+            let (scenario_events, scenario_project_id, scenario_succeeded) =
+                run_project_php_extension_reconciliation(
+                    &scenario_paths,
+                    scenario_tempdir.path(),
+                    scenario,
+                )
+                .await?;
+
+            assert!(!scenario_succeeded, "expected {label} to fail the job");
+            assert_eq!(
+                project_resource_phases(&scenario_events, &scenario_project_id),
+                expected_phases,
+                "unexpected phases for {label}; all phases were {:?}",
+                job_phase_outcomes(&scenario_events)
+            );
+            assert_phase_time_within_execution(&scenario_events)?;
+        }
+
+        let success_tempdir = tempdir()?;
+        let success_paths = PvPaths::for_home(success_tempdir.path().join("home"));
+        let (events, project_id, _succeeded) = run_project_php_extension_reconciliation(
+            &success_paths,
+            success_tempdir.path(),
+            ProjectPhaseScenario::Success,
+        )
+        .await?;
+
+        // The stub FrankenPHP artifact cannot serve, so the job still fails at the worker
+        // stage. What matters here is that nothing before Gateway work is blamed for it.
+        assert_eq!(
+            failed_phases(&events),
+            ["workers/php_workers", "finalization/job"],
+            "resource installation must not be blamed for a worker failure"
+        );
+        // This cold fixture has no active Gateway snapshot, so targeted proof safely promotes
+        // to System after the Project-scoped resource stages complete.
+        assert_eq!(
+            project_resource_phases(&events, &project_id),
+            [
+                "project_apply/project/succeeded",
+                "resources/desired_resources/succeeded",
+                "project_apply/project/succeeded",
+                "resources/desired_resources/succeeded",
+                "project_apply/linked_projects/succeeded",
+            ],
+            "installing a missing artifact must be owned by Resources"
+        );
+        assert_phase_time_within_execution(&events)?;
+
+        // This scenario's manifest URL is unreachable and its cached copy is seeded, so the
+        // install falls back. Suppressing the operation phase must not suppress that
+        // diagnostic, and the diagnostic must not itself be a phase record.
+        let fallback = daemon_log_events(&success_paths)?
+            .into_iter()
+            .find(|event| event["event"] == "artifact_manifest_fallback")
+            .ok_or_else(|| anyhow::anyhow!("missing artifact_manifest_fallback event"))?;
+        assert_eq!(fallback["level"], "warn");
+        assert_eq!(fallback["scope"], format!("project:{project_id}"));
+        assert_eq!(fallback["manifest_source"], "cached");
+        assert!(
+            fallback["fallback_reason"]
+                .as_str()
+                .is_some_and(|reason| !reason.is_empty()),
+            "fallback reason must be recorded, got {fallback:?}"
+        );
+        assert!(
+            fallback.get("phase").is_none() && fallback.get("elapsed_ms").is_none(),
+            "the fallback diagnostic must not be a phase record, got {fallback:?}"
+        );
+
+        let (settled_events, _settled_succeeded) = run_reconciliation_job(
+            &success_paths,
+            format!("project:{project_id}").parse::<ReconciliationScope>()?,
+        )
+        .await?;
+
+        assert_eq!(
+            project_resource_phases(&settled_events, &project_id),
+            [
+                "project_apply/project/succeeded",
+                "resources/desired_resources/skipped",
+                "project_apply/project/succeeded",
+                "resources/desired_resources/succeeded",
+                "project_apply/linked_projects/succeeded",
+            ],
+            "a settled project must still report Resources and complete the apply"
+        );
+        assert_phase_time_within_execution(&settled_events)?;
+
+        // A Project that demands no artifact work must not be charged with installing
+        // unrelated desired tracks, even though they are missing.
+        let idle_tempdir = tempdir()?;
+        let idle_paths = PvPaths::for_home(idle_tempdir.path().join("home"));
+        let (idle_events, idle_project_id, idle_succeeded) =
+            run_project_php_extension_reconciliation(
+                &idle_paths,
+                idle_tempdir.path(),
+                ProjectPhaseScenario::NoProjectArtifactDemand,
+            )
+            .await?;
+
+        assert!(
+            idle_succeeded,
+            "a Project with no artifact demand must not fail; phases were {:?}",
+            job_phase_outcomes(&idle_events)
+        );
+        assert_eq!(
+            project_resource_phases(&idle_events, &idle_project_id),
+            [
+                "project_apply/project/succeeded",
+                "resources/desired_resources/skipped",
+                "project_apply/project/succeeded",
+            ],
+            "Resources must not install tracks the Project never demanded"
+        );
+        assert_phase_time_within_execution(&idle_events)?;
+
+        // A declared track with no adapter but seeded env context has no artifact to install,
+        // so Resources must leave it alone and the apply must still tolerate it.
+        let seeded_tempdir = tempdir()?;
+        let seeded_paths = PvPaths::for_home(seeded_tempdir.path().join("home"));
+        let (seeded_events, seeded_project_id, seeded_succeeded) =
+            run_project_php_extension_reconciliation(
+                &seeded_paths,
+                seeded_tempdir.path(),
+                ProjectPhaseScenario::SeededResourceWithoutAdapter,
+            )
+            .await?;
+
+        assert!(
+            seeded_succeeded,
+            "a seeded adapterless track must not fail the job; phases were {:?}",
+            job_phase_outcomes(&seeded_events)
+        );
+        assert_eq!(
+            project_resource_phases(&seeded_events, &seeded_project_id),
+            [
+                "project_apply/project/succeeded",
+                "resources/desired_resources/skipped",
+                "project_apply/project/succeeded",
+            ],
+            "Resources must skip a declared track that has no artifact to install"
+        );
+        assert_phase_time_within_execution(&seeded_events)?;
+
+        // When the repair pass and the apply both fail, the apply is primary but the repair
+        // failure that preceded it is preserved alongside it.
+        let both_tempdir = tempdir()?;
+        let both_paths = PvPaths::for_home(both_tempdir.path().join("home"));
+        let (both_events, both_project_id, both_succeeded) =
+            run_project_php_extension_reconciliation(
+                &both_paths,
+                both_tempdir.path(),
+                ProjectPhaseScenario::RepairAndApplyFailure,
+            )
+            .await?;
+
+        assert!(!both_succeeded, "expected the combined failure to fail");
+        assert_eq!(
+            project_resource_phases(&both_events, &both_project_id),
+            [
+                "project_apply/project/succeeded",
+                "resources/desired_resources/failed",
+                "project_apply/project/failed",
+            ],
+            "a deferred repair failure must still let the apply run and be reported"
+        );
+        assert_phase_time_within_execution(&both_events)?;
+
+        let failure = Database::open(&both_paths)?
+            .recent_jobs()?
+            .into_iter()
+            .find(|job| job.scope == format!("project:{both_project_id}"))
+            .and_then(|job| job.error)
+            .ok_or_else(|| anyhow::anyhow!("missing persisted job failure"))?;
+
+        assert!(
+            failure.contains("Project apply failed with"),
+            "apply must be the primary failure, got {failure}"
+        );
+        assert!(
+            failure.contains("Managed Resource runtime `mailpit` is not supported yet"),
+            "the apply failure must be the primary cause, got {failure}"
+        );
+        assert!(
+            failure.contains("resource repair also failed"),
+            "repair failure must be preserved, got {failure}"
+        );
+        assert!(
+            failure.contains("php 8.5"),
+            "the repair failure must name the PHP track it could not install, got {failure}"
+        );
+        assert!(
+            failure.contains("frankenphp 8.5"),
+            "the repair failure must name the FrankenPHP track it could not install, got {failure}"
+        );
+        assert!(
+            failure.contains("HTTP request failed for"),
+            "the repair failure detail must be preserved, got {failure}"
+        );
+
+        Ok(())
+    }
+
+    /// A Managed Resource scope reconciles linked Projects too, so it stages them around its
+    /// own Resources phase rather than applying them in one pass.
+    #[tokio::test]
+    async fn resource_scoped_reconciliation_stages_project_apply_around_resources()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+
+        state::fs::write_sensitive_file(&config_path, "serve: false\n")?;
+        let mut database = Database::open(&paths)?;
+        // Desired but missing, and unrelated to the scope, so it must not be installed here.
+        database.record_managed_resource_track_desired(
+            "redis",
+            "8.8",
+            state::ManagedResourceDesiredState::Installed,
+        )?;
+        let linked = database.link_project(LinkProjectInput {
+            path: project_path.clone(),
+            original_path: project_path,
+            primary_hostname: "project.test".to_owned(),
+            config_path,
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?;
+        drop(database);
+
+        let (events, succeeded) = run_reconciliation_job(
+            &paths,
+            format!("resource:mailpit:{MAILPIT_TEST_TRACK}").parse::<ReconciliationScope>()?,
+        )
+        .await?;
+
+        assert!(
+            succeeded,
+            "expected the resource scoped job to succeed; phases were {:?}",
+            job_phase_outcomes(&events)
+        );
+        assert_eq!(
+            project_resource_phases(&events, &linked.project.id),
+            [
+                "project_apply/linked_projects/succeeded",
+                format!("resources/mailpit:{MAILPIT_TEST_TRACK}/skipped").as_str(),
+                "project_apply/linked_projects/succeeded",
+            ],
+            "a Managed Resource scope must stage Project Apply around its own Resources phase"
+        );
+        assert_phase_time_within_execution(&events)?;
+
+        Ok(())
+    }
+
+    /// Whole-system reconciliation records per-Project failures instead of stopping, so
+    /// Resources and the final Project Apply still run.
+    #[tokio::test]
+    async fn system_reconciliation_continues_after_a_project_failure() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+
+        state::fs::write_sensitive_file(&config_path, "bogus_key: true\n")?;
+        // The catalog is offline, so Resources needs a cached manifest to fall back to;
+        // without one it fails before the final Project Apply could run at all.
+        seed_cached_php_pair(&paths, tempdir.path())?;
+        let mut database = Database::open(&paths)?;
+        let linked = database.link_project(LinkProjectInput {
+            path: project_path.clone(),
+            original_path: project_path,
+            primary_hostname: "project.test".to_owned(),
+            config_path,
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?;
+        drop(database);
+
+        let (events, succeeded) =
+            run_reconciliation_job(&paths, ReconciliationScope::System).await?;
+
+        assert_eq!(
+            project_resource_phases(&events, &linked.project.id),
+            [
+                "resources/desired_resources/succeeded",
+                "project_apply/linked_projects/failed",
+            ],
+            "Resources must run before the failed Project Apply"
+        );
+        // Demand Discovery does not fail on the invalid config; it falls back to the Project's
+        // last applied demand and reports that fallback.
+        let discovery = events
+            .iter()
+            .find(|event| event["phase"] == "demand_discovery")
+            .ok_or_else(|| anyhow::anyhow!("expected a demand discovery phase, got {events:?}"))?;
+
+        assert_eq!(discovery["outcome"], "fallback", "in {discovery:?}");
+        assert_eq!(discovery["project_count"], 1, "in {discovery:?}");
+        assert_eq!(discovery["fallback_count"], 1, "in {discovery:?}");
+        // The Project failure never stops the job; the seeded Caddy is a stub that cannot
+        // serve, so the job fails later at the Gateway instead.
+        assert_eq!(
+            failed_phases(&events),
+            [
+                "project_apply/linked_projects",
+                "gateway/gateway",
+                "finalization/job",
+            ],
+            "only the Gateway may end the job; phases were {:?}",
+            job_phase_outcomes(&events)
+        );
+        assert!(!succeeded, "the stub Gateway must fail the job");
+        for event in events
+            .iter()
+            .filter(|event| event["phase"] == "project_apply")
+        {
+            assert_eq!(event["project_count"], 1, "in {event:?}");
+            assert_eq!(event["succeeded_count"], 0, "in {event:?}");
+            assert_eq!(event["failed_count"], 1, "in {event:?}");
+        }
+        let finalization = events
+            .iter()
+            .find(|event| event["phase"] == "finalization")
+            .ok_or_else(|| anyhow::anyhow!("missing finalization phase"))?;
+        assert_eq!(finalization["outcome"], "failed");
+        assert_phase_time_within_execution(&events)?;
+
+        Ok(())
+    }
+
+    /// A staged apply refuses an artifact that is missing at the time it runs, rather than
+    /// doing artifact work the Resources phase never covered.
+    #[tokio::test]
+    async fn staged_project_apply_refuses_to_install_a_missing_artifact() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+
+        state::fs::write_sensitive_file(
+            &config_path,
+            "mailpit:\n  version: \"1.0\"\n  env:\n    MAIL_HOST: \"${smtp_host}\"\n",
+        )?;
+        // An unusable manifest, so any attempt to discover or download the artifact fails with
+        // a manifest error instead of the refusal this guard expects.
+        let resource_client = ScriptedArtifactClient {
+            manifest: "not valid manifest JSON".to_owned(),
+            archive: Vec::new(),
+        };
+        let mut database = Database::open(&paths)?;
+        let linked = database.link_project(LinkProjectInput {
+            path: project_path.clone(),
+            original_path: project_path,
+            primary_hostname: "project.test".to_owned(),
+            config_path,
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?;
+        drop(database);
+        let catalog = crate::managed_resources::fake_runtime_catalog_with_manifest_client(
+            OFFLINE_TEST_MANIFEST_URL,
+            resource_client,
+        )?;
+
+        let staged = reconcile_project_env_with_runtime_catalog_and_progress(
+            &paths,
+            &linked.project.id,
+            Some(&catalog),
+            None,
+            &BTreeSet::new(),
+            DaemonDownloadProgress::disabled(),
+            ProjectApplyStage::CompleteStagedApply,
+        )
+        .await;
+
+        let Err(DaemonError::ProjectResourceInstallation { source }) = staged else {
+            anyhow::bail!("staged apply must refuse a missing artifact, got {staged:?}");
+        };
+        assert!(
+            matches!(
+                source.as_ref(),
+                DaemonError::ManagedResourceArtifactMissing {
+                    resource,
+                    track,
+                } if resource == "mailpit" && track == MAILPIT_TEST_TRACK
+            ),
+            "staged apply must retain the missing-artifact cause, got {source:?}"
+        );
+        assert!(
+            !state::fs::path_exists(&paths.resources().join("mailpit").join(MAILPIT_TEST_TRACK)),
+            "staged apply must not install the missing artifact"
+        );
 
         Ok(())
     }
@@ -5966,13 +6907,28 @@ mod tests {
                 "total_bytes": total_bytes,
             }))
         );
+        // Downloading still streams progress to the foreground command, but the artifact work
+        // is timed once by the Resources phase that owns it rather than by records nested
+        // inside that phase.
         let phases = reconciliation_phase_events(&paths, &job_id)?;
+        let resources = phases
+            .iter()
+            .find(|event| event["phase"] == "resources")
+            .ok_or_else(|| anyhow::anyhow!("missing resources phase event"))?;
+        // This fixture seeds only the Composer artifact, so the pass fails after downloading
+        // it. What matters here is that Resources owns and times that work.
+        assert_eq!(
+            resources["outcome"],
+            "failed",
+            "phases were {:?}",
+            job_phase_outcomes(&phases)
+        );
+        assert!(resources["elapsed_ms"].as_u64().is_some());
         for phase in ["manifest", "download", "install"] {
-            let event = phases
-                .iter()
-                .find(|event| event["phase"] == phase)
-                .ok_or_else(|| anyhow::anyhow!("missing {phase} phase event"))?;
-            assert!(event["elapsed_ms"].as_u64().is_some());
+            assert!(
+                !phases.iter().any(|event| event["phase"] == phase),
+                "{phase} must not be timed inside the Resources phase"
+            );
         }
 
         Ok(())
@@ -6035,7 +6991,10 @@ mod tests {
         assert_eq!(failed_event["error"].as_str(), job.error.as_deref());
         assert_snapshot!(job.error.as_deref().ok_or_else(|| anyhow::anyhow!("expected persisted failure"))?, @r"Managed Resource default installs failed: caddy 2: Managed Resource command failed: invalid artifact manifest: expected ident at line 1 column 2; composer 2: Managed Resource command failed: invalid artifact manifest: expected ident at line 1 column 2");
         let phases = reconciliation_phase_events(&paths, &job_id)?;
-        for (phase, expected_count) in [("manifest", 1), ("resources", 1), ("finalization", 1)] {
+        // The manifest failure is reported by the Resources phase that owns it; timing it
+        // separately inside that phase would nest one timer inside another. A persistent failure
+        // is retried once before Project Apply, so two Resources phases own it.
+        for (phase, expected_count) in [("manifest", 0), ("resources", 2), ("finalization", 1)] {
             let matching = phases
                 .iter()
                 .filter(|event| event["phase"] == phase && event["outcome"] == "failed")
@@ -6958,15 +7917,275 @@ mod tests {
         paths: &PvPaths,
         job_id: &str,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
-        Ok(state::fs::read_to_string(&paths.daemon_log())?
-            .lines()
-            .map(serde_json::from_str::<serde_json::Value>)
-            .collect::<Result<Vec<_>, _>>()?
+        Ok(daemon_log_events(paths)?
             .into_iter()
             .filter(|event| {
                 event["event"] == "reconciliation_phase_completed" && event["job_id"] == job_id
             })
             .collect())
+    }
+
+    fn daemon_log_events(paths: &PvPaths) -> anyhow::Result<Vec<serde_json::Value>> {
+        Ok(state::fs::read_to_string(&paths.daemon_log())?
+            .lines()
+            .map(serde_json::from_str::<serde_json::Value>)
+            .collect::<Result<Vec<_>, _>>()?)
+    }
+
+    #[derive(Clone, Copy)]
+    enum ProjectPhaseScenario {
+        /// The initial apply records PHP demand, Resources install the desired Gateway
+        /// runtime artifacts (Caddy plus the PHP/FrankenPHP pair), and the post-install
+        /// apply succeeds.
+        Success,
+        /// Project config is invalid, so the first Project Apply fails before any
+        /// missing-artifact lookup runs.
+        InvalidProjectConfig,
+        /// The cached PHP archive is gone, so resource installation fails.
+        MissingPhpArtifact,
+        /// PHP installs but its extension metadata cannot be read, so only the post-install
+        /// Project Apply fails.
+        UnreadablePhpExtensions,
+        /// The Project declares a backing resource PV has no adapter for and no seeded env
+        /// context, so Resources has nothing to install and the apply records the failure.
+        DeclaredBackingResource,
+        /// The Project declares a backing resource PV does have an adapter for, but its
+        /// artifact cannot be resolved, so the install fails inside Resources.
+        DeclaredBackingResourceInstallFailure,
+        /// The legacy repair pass and the final Project Apply both fail, so the apply error is
+        /// primary and the repair error is preserved alongside it.
+        RepairAndApplyFailure,
+        /// The Project declares no resources and requests no optional PHP extensions, so it
+        /// demands no artifact work even while other tracks are desired but missing.
+        NoProjectArtifactDemand,
+        /// The Project declares a backing resource PV has no adapter for, but whose track env
+        /// context is seeded, so there is no artifact to install and the apply tolerates it.
+        SeededResourceWithoutAdapter,
+    }
+
+    /// Runs one project reconciliation fixture scenario and returns its recorded phases plus
+    /// job outcome.
+    async fn run_project_php_extension_reconciliation(
+        paths: &PvPaths,
+        tempdir: &Utf8Path,
+        scenario: ProjectPhaseScenario,
+    ) -> anyhow::Result<(Vec<serde_json::Value>, String, bool)> {
+        let project_path = tempdir.join("project");
+        let config_path = project_path.join("pv.yml");
+
+        state::fs::write_sensitive_file(
+            &config_path,
+            match scenario {
+                ProjectPhaseScenario::InvalidProjectConfig => {
+                    "php:\n  version: \"8.5\"\n  extensions: [redis]\nbogus_key: true\n"
+                }
+                ProjectPhaseScenario::DeclaredBackingResource => {
+                    "mailpit:\n  version: \"1.0\"\n  env:\n    MAIL_HOST: \"${smtp_host}\"\n"
+                }
+                ProjectPhaseScenario::NoProjectArtifactDemand => "php: \"8.4\"\n",
+                ProjectPhaseScenario::DeclaredBackingResourceInstallFailure => {
+                    "serve: false\nmailpit:\n  version: \"1.0\"\n"
+                }
+                ProjectPhaseScenario::RepairAndApplyFailure => {
+                    "php:\n  version: \"8.5\"\n  extensions: [redis]\nmailpit:\n  version: \"1.0\"\n"
+                }
+                ProjectPhaseScenario::SeededResourceWithoutAdapter => {
+                    "serve: false\npostgres:\n  version: \"18\"\n"
+                }
+                _ => "php:\n  version: \"8.5\"\n  extensions: [redis]\n",
+            },
+        )?;
+        match scenario {
+            ProjectPhaseScenario::UnreadablePhpExtensions => seed_cached_php_pair_with_php_archive(
+                paths,
+                tempdir,
+                seed_php_archive_with_invalid_extension_metadata,
+            )?,
+            // Left unseeded so no required artifact is available to install.
+            ProjectPhaseScenario::DeclaredBackingResource
+            | ProjectPhaseScenario::NoProjectArtifactDemand
+            | ProjectPhaseScenario::SeededResourceWithoutAdapter
+            | ProjectPhaseScenario::DeclaredBackingResourceInstallFailure => {}
+            _ => seed_cached_php_pair(paths, tempdir)?,
+        }
+        if matches!(
+            scenario,
+            ProjectPhaseScenario::MissingPhpArtifact | ProjectPhaseScenario::RepairAndApplyFailure
+        ) {
+            remove_cached_archive(paths, PHP_TEST_ARCHIVE_FILE_NAME)?;
+        }
+        let mut database = Database::open(paths)?;
+        if matches!(scenario, ProjectPhaseScenario::SeededResourceWithoutAdapter) {
+            database.record_managed_resource_track_env_context(
+                "postgres",
+                "18",
+                &BTreeMap::from([("host".to_string(), "127.0.0.1".to_string())]),
+            )?;
+        }
+        let linked = database.link_project(LinkProjectInput {
+            path: project_path.clone(),
+            original_path: project_path,
+            primary_hostname: "project.test".to_owned(),
+            config_path,
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?;
+        drop(database);
+        let scope = format!("project:{}", linked.project.id).parse::<ReconciliationScope>()?;
+        let (events, succeeded) = match scenario {
+            // An adapter-backed declaration needs a catalog that can reach the resource, so the
+            // install is attempted and fails on the artifact rather than on a missing adapter.
+            ProjectPhaseScenario::DeclaredBackingResourceInstallFailure => {
+                let catalog = crate::managed_resources::fake_runtime_catalog_with_manifest_client(
+                    OFFLINE_TEST_MANIFEST_URL,
+                    ScriptedArtifactClient {
+                        manifest: "not valid manifest JSON".to_owned(),
+                        archive: Vec::new(),
+                    },
+                )?;
+
+                run_reconciliation_job_with_catalog(paths, scope, &catalog).await?
+            }
+            _ => run_reconciliation_job(paths, scope).await?,
+        };
+
+        Ok((events, linked.project.id, succeeded))
+    }
+
+    /// Returns the job's recorded phases and whether the job itself succeeded, so a scenario
+    /// cannot assert the right phases while the overall outcome is wrong.
+    async fn run_reconciliation_job(
+        paths: &PvPaths,
+        scope: ReconciliationScope,
+    ) -> anyhow::Result<(Vec<serde_json::Value>, bool)> {
+        let catalog =
+            crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_url(
+                OFFLINE_TEST_MANIFEST_URL,
+            )?;
+
+        run_reconciliation_job_with_catalog(paths, scope, &catalog).await
+    }
+
+    async fn run_reconciliation_job_with_catalog(
+        paths: &PvPaths,
+        scope: ReconciliationScope,
+        catalog: &crate::managed_resources::ManagedResourceRuntimeCatalog,
+    ) -> anyhow::Result<(Vec<serde_json::Value>, bool)> {
+        let job_id = start_reconciliation_job(paths, &scope.to_string())?;
+        let succeeded = complete_reconciliation_job_with_progress(
+            paths,
+            &job_id,
+            &scope,
+            Some(catalog),
+            DaemonDownloadProgress::disabled(),
+            ReconciliationJobTiming::immediate(),
+            None,
+        )
+        .await
+        .is_ok();
+
+        Ok((reconciliation_phase_events(paths, &job_id)?, succeeded))
+    }
+
+    /// Every phase this sums must carry `elapsed_ms`. Staged top-level phases and any emitted
+    /// operation records are expected not to nest, so their total cannot exceed the job's own
+    /// execution time; this assertion trips if `CompleteApply` performs artifact work. Queue
+    /// time is excluded because it is measured before execution begins, and finalization
+    /// supplies the total rather than contributing to it.
+    fn assert_phase_time_within_execution(events: &[serde_json::Value]) -> anyhow::Result<()> {
+        let mut phase_total = 0;
+        for event in events
+            .iter()
+            .filter(|event| event["phase"] != "queue" && event["phase"] != "finalization")
+        {
+            let elapsed = event["elapsed_ms"]
+                .as_u64()
+                .ok_or_else(|| anyhow::anyhow!("phase {} is missing elapsed_ms", event["phase"]))?;
+            phase_total += elapsed;
+        }
+        let total_execution = events
+            .iter()
+            .find(|event| event["phase"] == "finalization")
+            .and_then(|event| event["total_execution_ms"].as_u64())
+            .ok_or_else(|| anyhow::anyhow!("missing finalization total_execution_ms"))?;
+
+        assert!(
+            phase_total <= total_execution,
+            "phases overlap: {phase_total}ms of phase time exceeds {total_execution}ms of execution"
+        );
+
+        Ok(())
+    }
+
+    /// The `phase/subject` of every phase the job recorded as failed, which pins the job's
+    /// outcome so a correct phase order cannot hide a wrong result.
+    fn failed_phases(events: &[serde_json::Value]) -> Vec<String> {
+        events
+            .iter()
+            .filter(|event| event["outcome"] == "failed")
+            .map(|event| {
+                format!(
+                    "{}/{}",
+                    event["phase"].as_str().unwrap_or_default(),
+                    event["subject"].as_str().unwrap_or_default()
+                )
+            })
+            .collect()
+    }
+
+    /// Every `phase/subject/outcome` the job recorded, for diagnosing an unexpected outcome.
+    fn job_phase_outcomes(events: &[serde_json::Value]) -> Vec<String> {
+        events
+            .iter()
+            .map(|event| {
+                format!(
+                    "{}/{}/{}",
+                    event["phase"].as_str().unwrap_or_default(),
+                    event["subject"].as_str().unwrap_or_default(),
+                    event["outcome"].as_str().unwrap_or_default()
+                )
+            })
+            .collect()
+    }
+
+    /// Ordered `phase/subject/outcome` records before Gateway work, with the project id
+    /// normalized; includes any Manifest, Download, or Install records emitted by Project
+    /// Apply.
+    fn project_resource_phases(events: &[serde_json::Value], project_id: &str) -> Vec<String> {
+        events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event["phase"].as_str(),
+                    Some("project_apply" | "resources" | "manifest" | "download" | "install")
+                )
+            })
+            .map(|event| {
+                let phase = event["phase"].as_str().unwrap_or_default();
+                let outcome = event["outcome"].as_str().unwrap_or_default();
+                let subject = event["subject"].as_str().unwrap_or_default();
+                let subject = if subject == project_id {
+                    "project"
+                } else {
+                    subject
+                };
+
+                format!("{phase}/{subject}/{outcome}")
+            })
+            .collect()
+    }
+
+    fn remove_cached_archive(paths: &PvPaths, archive_file_name: &str) -> anyhow::Result<()> {
+        for path in state::fs::read_dir_paths(paths.downloads())? {
+            if path
+                .file_name()
+                .is_some_and(|name| name.ends_with(archive_file_name))
+            {
+                state::fs::remove_file(&path)?;
+            }
+        }
+
+        Ok(())
     }
 
     async fn update_download_progress_events(
@@ -7010,6 +8229,14 @@ mod tests {
     }
 
     fn seed_cached_php_pair(paths: &PvPaths, tempdir: &Utf8Path) -> anyhow::Result<()> {
+        seed_cached_php_pair_with_php_archive(paths, tempdir, seed_php_archive)
+    }
+
+    fn seed_cached_php_pair_with_php_archive(
+        paths: &PvPaths,
+        tempdir: &Utf8Path,
+        seed_php_archive: fn(&Utf8Path, &Utf8Path) -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
         let caddy = CachedArtifact::new(
             "caddy",
             CADDY_TEST_ARCHIVE_FILE_NAME,
@@ -7214,6 +8441,31 @@ mod tests {
     }
 
     fn seed_php_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> anyhow::Result<()> {
+        seed_php_archive_with_extension_metadata(
+            tempdir,
+            archive_path,
+            r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
+        )
+    }
+
+    /// Installs cleanly but cannot be read for optional extension modules, so the artifact
+    /// only fails the Project Apply that runs after installation.
+    fn seed_php_archive_with_invalid_extension_metadata(
+        tempdir: &Utf8Path,
+        archive_path: &Utf8Path,
+    ) -> anyhow::Result<()> {
+        seed_php_archive_with_extension_metadata(
+            tempdir,
+            archive_path,
+            "not valid extension metadata",
+        )
+    }
+
+    fn seed_php_archive_with_extension_metadata(
+        tempdir: &Utf8Path,
+        archive_path: &Utf8Path,
+        extension_metadata: &str,
+    ) -> anyhow::Result<()> {
         let archive_parent = tempdir.join("php-archive");
         let root_name = format!("php-{PHP_TEST_ARTIFACT_VERSION}");
         let root = archive_parent.join(&root_name);
@@ -7223,7 +8475,7 @@ mod tests {
         set_executable(&executable)?;
         state::fs::write_sensitive_file(
             &root.join("share/pv/php-extensions.json"),
-            r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
+            extension_metadata,
         )?;
         state::fs::write_sensitive_file(&root.join("lib/php/extensions/redis.so"), "")?;
         create_archive(&archive_parent, archive_path, &root_name)

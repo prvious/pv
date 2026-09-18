@@ -66,6 +66,25 @@ impl ReconciliationPhaseLog {
         }
     }
 
+    /// Reports that the artifact manifest could not be refreshed and the cached copy was used.
+    /// This is an ordinary structured record, not a phase: the work it describes is already
+    /// timed by the phase that owns it.
+    pub(crate) fn artifact_manifest_fallback(&self, reason: &str) {
+        append_best_effort(
+            &self.paths,
+            "warn",
+            "reconciliation",
+            "artifact_manifest_fallback",
+            "artifact manifest fell back to the cached copy",
+            &[
+                ("job_id", &self.job_id),
+                ("scope", &self.scope),
+                ("manifest_source", "cached"),
+                ("fallback_reason", reason),
+            ],
+        );
+    }
+
     pub(crate) fn completed(
         &self,
         phase: ReconciliationPhase,
