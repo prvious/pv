@@ -366,7 +366,10 @@ impl ManagedResourceCommands {
     ) -> ManagedResourceCommandResult<ManagedResourceInstall> {
         validate_prefetched_install(self, adapter, &resolved, download)?;
         let install = self.install_prefetched_artifact(adapter, resolved, download, progress)?;
-        let mut database = Database::open(&self.paths)?;
+        let mut database = match Database::open(&self.paths) {
+            Ok(database) => database,
+            Err(error) => return Err(self.rollback_after_error(&[&install], error.into())),
+        };
         if let Err(error) = database.record_managed_resource_track_installed(
             adapter.resource_name().as_str(),
             install.track.as_str(),

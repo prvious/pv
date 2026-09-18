@@ -195,6 +195,67 @@ fn failed_prefetched_install_does_not_record_desired_state() -> Result<()> {
 }
 
 #[test]
+fn database_open_failure_rolls_back_prefetched_install() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
+    let first_artifact = fixture_artifact("7.2.5-pv1", "first")?;
+    let second_artifact = fixture_artifact("7.2.6-pv1", "second")?;
+    let first_client = ScriptedClient::new()
+        .with_text(&manifest_with_artifacts(&[&first_artifact]))
+        .with_bytes(first_artifact.bytes());
+    commands.install(&adapter, TrackSelector::Latest, &first_client)?;
+
+    let second_client = ScriptedClient::new()
+        .with_text(&manifest_with_artifacts(&[
+            &first_artifact,
+            &second_artifact,
+        ]))
+        .with_bytes(second_artifact.bytes());
+    let snapshot = commands.manifest_snapshot_with_progress(&second_client, &NoDownloadProgress)?;
+    let resolved =
+        commands.resolve_install_artifact(&adapter, TrackName::new("7.2")?, &snapshot)?;
+    let download =
+        ArtifactDownloader::new(paths.downloads()).download(resolved.artifact(), &second_client)?;
+    fs::remove_file_if_exists(paths.db())?;
+    fs::ensure_user_dir(paths.db())?;
+
+    let result = commands.install_resolved_artifact_with_progress(
+        &adapter,
+        resolved,
+        Some(&download),
+        &NoDownloadProgress,
+    );
+
+    assert!(matches!(
+        result,
+        Err(ManagedResourceCommandError::State(
+            state::StateError::Sqlite(_)
+        ))
+    ));
+    assert!(path_exists(&release_path(
+        &paths,
+        "redis",
+        "7.2",
+        first_artifact.version.as_str(),
+    ))?);
+    assert!(!path_exists(&release_path(
+        &paths,
+        "redis",
+        "7.2",
+        second_artifact.version.as_str(),
+    ))?);
+    assert_eq!(
+        symlink_target(&current_path(&paths, "redis", "7.2"))?.as_deref(),
+        Some("releases/7.2.5-pv1")
+    );
+
+    Ok(())
+}
+
+#[test]
 fn managed_resource_commands_rejects_download_for_different_artifact() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
