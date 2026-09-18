@@ -340,6 +340,11 @@ async fn reconcile_project_gateway_runtimes(
         ) {
             return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem);
         }
+        record_gateway_runtime_observed(
+            paths,
+            pf_routing_state,
+            RuntimeReadinessOutcome::Verified,
+        )?;
 
         return Ok(skipped_project_gateway_outcome(phase_log));
     }

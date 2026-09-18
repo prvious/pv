@@ -2729,6 +2729,124 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn targeted_skip_refreshes_failed_gateway_observation() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("resource-only");
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(&config_path, "serve: false\n")?;
+        let mut database = Database::open(&paths)?;
+        let project = database
+            .link_project_with_mode(
+                LinkProjectInput {
+                    path: project_path.clone(),
+                    original_path: project_path,
+                    primary_hostname: "ignored.test".to_owned(),
+                    config_path,
+                    desired_php_track: None,
+                    additional_hostnames: Vec::new(),
+                },
+                ProjectMode::ResourceOnly,
+            )?
+            .project;
+        drop(database);
+        seed_installed_caddy(&paths)?;
+        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        crate::gateway::reconcile_gateway_runtimes_with_pf_state_for_test(
+            &paths,
+            Duration::from_secs(5),
+            crate::gateway::GatewayPfRoutingState::Inactive,
+        )
+        .await?;
+        let mut database = Database::open(&paths)?;
+        database.record_runtime_observed_snapshot(
+            RuntimeSubject::Gateway,
+            RuntimeObservedStatus::Failed,
+            Some("previous gateway failure"),
+        )?;
+        drop(database);
+
+        let scope = ReconciliationScope::project(project.id.clone())?;
+        let ReconciliationScope::Project { id } = &scope else {
+            return Err(anyhow::anyhow!("expected Project scope"));
+        };
+        let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
+            &paths,
+            "targeted-skip-gateway-test",
+            &scope.to_string(),
+        );
+        let completed = complete_project_reconciliation_with_progress(
+            &paths,
+            id,
+            None,
+            super::DaemonDownloadProgress::disabled(),
+            &phase_log,
+            Some(crate::gateway::GatewayPfRoutingState::Inactive),
+            &mut None,
+        )
+        .await?;
+
+        assert_eq!(
+            completed.coverage,
+            [JobDiagnosticSubject::Project {
+                id: project.id.clone()
+            }]
+        );
+        let gateway_observation = Database::open(&paths)?
+            .runtime_observed_states()?
+            .into_iter()
+            .find(|state| state.subject == RuntimeSubject::Gateway)
+            .ok_or_else(|| anyhow::anyhow!("missing Gateway observation"))?;
+        assert_eq!(gateway_observation.status, RuntimeObservedStatus::Degraded);
+        assert_eq!(
+            gateway_observation.message.as_deref(),
+            Some(
+                "Low-port routing is inactive; run `pv ports:install` to restore ports 80 and 443"
+            )
+        );
+
+        stop_seeded_caddy(&paths).await?;
+        let mut database = Database::open(&paths)?;
+        database.record_runtime_observed_snapshot(
+            RuntimeSubject::Gateway,
+            RuntimeObservedStatus::Failed,
+            Some("previous gateway failure"),
+        )?;
+        drop(database);
+        let failed_probe_phase_log = crate::structured_log::ReconciliationPhaseLog::new(
+            &paths,
+            "targeted-skip-gateway-failed-probe",
+            &scope.to_string(),
+        );
+        let outcome = crate::gateway::reconcile_project_gateway_runtimes_with_phase_log(
+            &paths,
+            &project.id,
+            Some(crate::gateway::GatewayPfRoutingState::Inactive),
+            &failed_probe_phase_log,
+        )
+        .await?;
+        assert!(
+            matches!(
+                outcome,
+                crate::gateway::ProjectGatewayReconciliationOutcome::PromoteSystem
+            ),
+            "expected failed probe to promote to System reconciliation"
+        );
+        let gateway_observation = Database::open(&paths)?
+            .runtime_observed_states()?
+            .into_iter()
+            .find(|state| state.subject == RuntimeSubject::Gateway)
+            .ok_or_else(|| anyhow::anyhow!("missing Gateway observation"))?;
+        assert_eq!(gateway_observation.status, RuntimeObservedStatus::Failed);
+        assert_eq!(
+            gateway_observation.message.as_deref(),
+            Some("previous gateway failure")
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn uncertain_project_gateway_plan_promotes_to_system_reconciliation() -> anyhow::Result<()>
     {
         let tempdir = tempdir()?;
