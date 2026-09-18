@@ -360,7 +360,6 @@ async fn reconcile_project_gateway_runtimes(
         structured_log::ReconciliationPhase::Workers,
         "target_project",
     );
-    let mut reconciled_worker_count = 0;
 
     if let Some(runtime_key) = targeted.current_runtime_key.as_deref() {
         let worker = targeted
@@ -383,8 +382,21 @@ async fn reconcile_project_gateway_runtimes(
             active_impact.worker_fragments.get(runtime_key),
         )
         .await?;
-        reconciled_worker_count += 1;
     }
+
+    worker_timer.finish(
+        structured_log::PhaseOutcome::Succeeded,
+        &[
+            (
+                "worker_count",
+                usize_as_u64(usize::from(targeted.current_runtime_key.is_some())),
+            ),
+            (
+                "project_count",
+                usize_as_u64(usize::from(targeted.current_runtime_key.is_some())),
+            ),
+        ],
+    );
 
     let gateway_required = active_impact.served
         || targeted.current_runtime_key.is_some()
@@ -414,6 +426,12 @@ async fn reconcile_project_gateway_runtimes(
         &[("project_count", usize_as_u64(usize::from(gateway_required)))],
     );
 
+    let stale_workers_timer = phase_log.start(
+        structured_log::ReconciliationPhase::Workers,
+        "stale_workers",
+    );
+    let mut stale_worker_count = 0;
+
     for previous_runtime_key in active_impact
         .runtime_keys
         .iter()
@@ -435,7 +453,6 @@ async fn reconcile_project_gateway_runtimes(
                 active_impact.worker_fragments.get(previous_runtime_key),
             )
             .await?;
-            reconciled_worker_count += 1;
         } else {
             if let Err(error) =
                 stop_worker_if_undemanded(paths, &supervisor, previous_runtime_key).await
@@ -445,11 +462,12 @@ async fn reconcile_project_gateway_runtimes(
                 return Err(error);
             }
         }
+        stale_worker_count += 1;
     }
-    worker_timer.finish(
+    stale_workers_timer.finish(
         structured_log::PhaseOutcome::Succeeded,
         &[
-            ("worker_count", usize_as_u64(reconciled_worker_count)),
+            ("worker_count", usize_as_u64(stale_worker_count)),
             ("project_count", 1),
         ],
     );

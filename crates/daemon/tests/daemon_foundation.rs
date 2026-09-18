@@ -1130,6 +1130,263 @@ async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum TargetedGatewayPhaseScenario {
+    Success,
+    GatewayFailure,
+    StaleWorkerFailure,
+}
+
+#[tokio::test]
+async fn targeted_gateway_phases_are_disjoint() -> Result<()> {
+    for (scenario, expected_status, expected_phases) in [
+        (
+            TargetedGatewayPhaseScenario::Success,
+            JobStatus::Succeeded,
+            vec![
+                ("workers", "target_project", "succeeded"),
+                ("gateway", "target_project", "succeeded"),
+                ("workers", "stale_workers", "succeeded"),
+            ],
+        ),
+        (
+            TargetedGatewayPhaseScenario::GatewayFailure,
+            JobStatus::Failed,
+            vec![
+                ("workers", "target_project", "succeeded"),
+                ("gateway", "target_project", "failed"),
+            ],
+        ),
+        (
+            TargetedGatewayPhaseScenario::StaleWorkerFailure,
+            JobStatus::Failed,
+            vec![
+                ("workers", "target_project", "succeeded"),
+                ("gateway", "target_project", "succeeded"),
+                ("workers", "stale_workers", "failed"),
+            ],
+        ),
+    ] {
+        let (status, phases) = run_targeted_gateway_phase_scenario(scenario).await?;
+
+        assert_eq!(status, expected_status);
+        assert_eq!(
+            phases
+                .iter()
+                .filter(|event| {
+                    event["subject"] == "target_project" || event["subject"] == "stale_workers"
+                })
+                .map(|event| {
+                    (
+                        event["phase"].as_str().unwrap_or_default(),
+                        event["subject"].as_str().unwrap_or_default(),
+                        event["outcome"].as_str().unwrap_or_default(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            expected_phases
+        );
+        let target_workers = phases
+            .iter()
+            .find(|event| event["phase"] == "workers" && event["subject"] == "target_project")
+            .ok_or_else(|| anyhow!("missing target Project Workers phase"))?;
+        assert_eq!(target_workers["worker_count"], 0);
+        assert_eq!(target_workers["project_count"], 0);
+        if matches!(scenario, TargetedGatewayPhaseScenario::Success) {
+            let stale_workers = phases
+                .iter()
+                .find(|event| event["phase"] == "workers" && event["subject"] == "stale_workers")
+                .ok_or_else(|| anyhow!("missing stale Workers phase"))?;
+            assert_eq!(stale_workers["worker_count"], 1);
+            assert_eq!(stale_workers["project_count"], 1);
+        }
+        assert!(
+            phases
+                .iter()
+                .all(|event| event["elapsed_ms"].as_u64().is_some())
+        );
+
+        let phase_total = phases
+            .iter()
+            .filter(|event| event["phase"] != "queue" && event["phase"] != "finalization")
+            .map(|event| event["elapsed_ms"].as_u64().unwrap_or_default())
+            .sum::<u64>();
+        let total_execution = phases
+            .iter()
+            .find(|event| event["phase"] == "finalization")
+            .and_then(|event| event["total_execution_ms"].as_u64())
+            .ok_or_else(|| anyhow!("missing finalization total_execution_ms"))?;
+        assert!(phase_total <= total_execution);
+    }
+
+    Ok(())
+}
+
+async fn run_targeted_gateway_phase_scenario(
+    scenario: TargetedGatewayPhaseScenario,
+) -> Result<(JobStatus, Vec<Value>)> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    seed_foundation_caddy(&paths)?;
+    state::fs::write_sensitive_file(
+        resources::ArtifactManifestCache::new(paths.downloads()).path(),
+        CADDY_ARTIFACT_MANIFEST,
+    )?;
+
+    let php_track = "8.4";
+    let php_release = paths.home().join("8.4-php-release");
+    state::fs::write_sensitive_file(&php_release.join("bin/php"), "#!/bin/sh\n")?;
+    state::fs::write_sensitive_file(&php_release.join("share/pv/php-extensions.json"), "[]")?;
+    let frankenphp_release = paths.home().join("8.4-frankenphp-release");
+    let frankenphp_source = paths.home().join("fake-frankenphp-source");
+    state::fs::write_sensitive_file(
+        &frankenphp_source,
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test-fixtures/gateway/fake-frankenphp.sh"
+        )),
+    )?;
+    state::fs::write_sensitive_file(
+        &frankenphp_release.join("bin/frankenphp.server.py"),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test-fixtures/gateway/fake-frankenphp-server.py"
+        )),
+    )?;
+    let frankenphp_install =
+        AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.0", &frankenphp_source)?;
+    let frankenphp_executable = frankenphp_release.join("bin/frankenphp");
+    state::fs::rename(frankenphp_install.binary_path(), &frankenphp_executable)?;
+    state::fs::write_sensitive_file(
+        &frankenphp_release.join("share/pv/php-extensions.json"),
+        "[]",
+    )?;
+
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "php",
+        php_track,
+        "8.4.8-pv1",
+        &php_release,
+    )?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        php_track,
+        "8.4.8-pv1",
+        &frankenphp_release,
+    )?;
+    let worker_port_reservations = reserve_foundation_ports(1, 40_000, 44_999)?;
+    let worker_service_port = worker_port_reservations[0].local_addr()?.port();
+    database.assign_port(
+        PortRequest::php_worker(
+            php_track,
+            worker_service_port,
+            worker_service_port,
+            worker_service_port,
+        ),
+        |_port| true,
+    )?;
+
+    let target_path = tempdir.path().join("target-project");
+    let target_config_path = target_path.join("pv.yml");
+    state::fs::write_sensitive_file(&target_config_path, "php: \"8.4\"\n")?;
+    let target = database
+        .link_project(LinkProjectInput {
+            path: target_path.clone(),
+            original_path: target_path,
+            primary_hostname: "target.test".to_owned(),
+            config_path: target_config_path.clone(),
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    let retained_path = tempdir.path().join("retained-project");
+    let retained_config_path = retained_path.join("pv.yml");
+    state::fs::write_sensitive_file(&retained_config_path, "php: \"8.4\"\n")?;
+    database.link_project(LinkProjectInput {
+        path: retained_path.clone(),
+        original_path: retained_path,
+        primary_hostname: "retained.test".to_owned(),
+        config_path: retained_config_path,
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+    drop(database);
+
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    gateway_guard.attach_worker(php_track);
+    drop(worker_port_reservations);
+    let initial_lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "reconcile",
+            "scope": "system",
+        }),
+    )
+    .await?;
+    let initial_job_id = required_response_job_id(&initial_lines)?;
+    wait_for_succeeded_job_id(&paths, initial_job_id).await?;
+
+    state::fs::write_sensitive_file(&target_config_path, "serve: false\n")?;
+    match scenario {
+        TargetedGatewayPhaseScenario::Success => {}
+        TargetedGatewayPhaseScenario::GatewayFailure => {
+            state::fs::write_sensitive_file(
+                &paths.home().join("fake-caddy-release/bin/caddy"),
+                "#!/bin/sh\nexit 2\n",
+            )?;
+        }
+        TargetedGatewayPhaseScenario::StaleWorkerFailure => {
+            state::fs::write_sensitive_file(&frankenphp_executable, "#!/bin/sh\nexit 2\n")?;
+        }
+    }
+
+    let lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "reconcile",
+            "scope": format!("project:{}", target.id),
+        }),
+    )
+    .await?;
+    let job_id = required_response_job_id(&lines)?.to_owned();
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+
+    let database = Database::open(&paths)?;
+    let job = database
+        .recent_jobs()?
+        .into_iter()
+        .find(|job| job.id == job_id)
+        .ok_or_else(|| anyhow!("missing targeted reconciliation job {job_id}"));
+    let log = state::fs::read_to_string(&paths.daemon_log());
+    let job = propagate_after_cleanup(job, cleanup_result)?;
+    let phases = log?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|event| {
+            event["event"] == "reconciliation_phase_completed" && event["job_id"] == job_id
+        })
+        .collect();
+
+    Ok((job.status, phases))
+}
+
+fn required_response_job_id(lines: &[Value]) -> Result<&str> {
+    lines
+        .iter()
+        .find_map(|line| line["job_id"].as_str())
+        .ok_or_else(|| anyhow!("daemon response did not include a job id"))
+}
+
 #[tokio::test]
 async fn blocking_client_reports_failed_job_streams() -> Result<()> {
     let tempdir = tempdir()?;
