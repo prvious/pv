@@ -665,7 +665,7 @@ async fn reconcile_planned_gateway(
         readiness_timeout,
     );
     let gateway_spec = gateway_process_spec(paths, gateway_command);
-    let readiness_outcome = if let Some(outcome) = reconcile_unchanged_runtime(
+    let readiness_outcome = if let Some(outcome) = match reconcile_unchanged_runtime(
         supervisor,
         &gateway_spec,
         &paths.gateway_root_config(),
@@ -674,6 +674,13 @@ async fn reconcile_planned_gateway(
     )
     .await
     {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
+
+            return Err(error);
+        }
+    } {
         outcome
     } else {
         let promoted_config = promote_runtime_config_tree(
@@ -749,7 +756,7 @@ async fn reconcile_planned_worker(
                 return Err(error);
             }
         };
-    if reconcile_unchanged_runtime(
+    match reconcile_unchanged_runtime(
         supervisor,
         &process_spec,
         &paths.worker_root_config(&worker.runtime_key),
@@ -757,15 +764,22 @@ async fn reconcile_planned_worker(
         &desired_config,
     )
     .await
-    .is_some()
     {
-        record_runtime_observed(
-            paths,
-            subject,
-            RuntimeObservedStatus::Running,
-            Some(GATEWAY_RUNTIME_RECONCILED),
-        )?;
-        return Ok(());
+        Ok(Some(_outcome)) => {
+            record_runtime_observed(
+                paths,
+                subject,
+                RuntimeObservedStatus::Running,
+                Some(GATEWAY_RUNTIME_RECONCILED),
+            )?;
+            return Ok(());
+        }
+        Ok(None) => {}
+        Err(error) => {
+            record_runtime_error(paths, subject.clone(), &error)?;
+
+            return Err(error);
+        }
     }
     let promoted_config = promote_runtime_config_tree(
         paths,
@@ -2319,14 +2333,14 @@ async fn reconcile_unchanged_runtime(
     config_path: &Utf8Path,
     readiness: &RuntimeReadinessPlan,
     desired: &DesiredRuntimeConfigTree,
-) -> Option<RuntimeReadinessOutcome> {
+) -> Result<Option<RuntimeReadinessOutcome>, DaemonError> {
     let Ok(Some(runtime)) = supervisor.verify_ownership(spec) else {
-        return None;
+        return Ok(None);
     };
     if runtime.replacement_required()
         || runtime.applied_config_fingerprint() != Some(desired.fingerprint.as_str())
     {
-        return None;
+        return Ok(None);
     }
 
     let probe_timeout = readiness.timeout.min(OWNED_READINESS_PROBE_TIMEOUT);
@@ -2334,27 +2348,28 @@ async fn reconcile_unchanged_runtime(
         timeout(probe_timeout, probe_readiness_once(&readiness.check)).await,
         Ok(Ok(()))
     ) {
-        return None;
+        return Ok(None);
     }
 
-    if !matches!(
+    if matches!(
         active_runtime_config_matches(config_path, desired),
         Ok(true)
-    ) && restore_generated_runtime_config(config_path, desired).is_err()
-    {
-        return None;
+    ) {
+        harden_generated_runtime_config(config_path, desired)?;
+    } else if restore_generated_runtime_config(config_path, desired).is_err() {
+        return Ok(None);
     }
 
     let Ok(Some(runtime)) = supervisor.verify_ownership(spec) else {
-        return None;
+        return Ok(None);
     };
     if runtime.replacement_required()
         || runtime.applied_config_fingerprint() != Some(desired.fingerprint.as_str())
     {
-        return None;
+        return Ok(None);
     }
 
-    Some(RuntimeReadinessOutcome::Verified)
+    Ok(Some(RuntimeReadinessOutcome::Verified))
 }
 
 async fn start_or_adopt_promoted_runtime(
@@ -3242,6 +3257,26 @@ fn restore_generated_runtime_config(
     delete_optional_dir(&desired.active_dir)?;
     write_project_config_fragments(&desired.active_dir, &desired.fragments)?;
     fs::write_sensitive_file(config_path, &desired.active_content)?;
+
+    Ok(())
+}
+
+fn harden_generated_runtime_config(
+    config_path: &Utf8Path,
+    desired: &DesiredRuntimeConfigTree,
+) -> Result<(), DaemonError> {
+    let config_directory =
+        config_path
+            .parent()
+            .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                reason: format!("generated config path `{config_path}` has no parent"),
+            })?;
+    fs::ensure_user_dir(config_directory)?;
+    fs::ensure_user_dir(&desired.active_dir)?;
+    fs::secure_sensitive_file(config_path)?;
+    for fragment in &desired.fragments {
+        fs::secure_sensitive_file(&desired.active_dir.join(&fragment.file_name))?;
+    }
 
     Ok(())
 }

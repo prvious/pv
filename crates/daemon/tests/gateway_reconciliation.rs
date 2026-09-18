@@ -715,6 +715,103 @@ env:
     Ok(())
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn unchanged_gateway_config_is_rehardened() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("acme");
+    let caddy_release = tempdir.path().join("fake-caddy-release");
+    let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
+    let caddy_executable = caddy_release.join("bin/caddy");
+
+    write_stateful_fake_caddy(&caddy_executable)?;
+    write_stateful_fake_frankenphp(&frankenphp_release.join("bin/frankenphp"))?;
+    create_project(&project_root, "php: \"8.4\"\ndocument_root: public\n")?;
+    let mut database = Database::open(&paths)?;
+    let project = database.link_project(LinkProjectInput {
+        path: project_root.clone(),
+        original_path: project_root.clone(),
+        primary_hostname: "acme.test".to_owned(),
+        config_path: project_root.join("pv.yml"),
+        desired_php_track: Some("8.4".to_owned()),
+        additional_hostnames: Vec::new(),
+    })?;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-pv1",
+        &frankenphp_release,
+    )?;
+    let ports = available_loopback_ports(3)?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2])],
+    )?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let first_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
+    let root_config = paths.gateway_root_config();
+    let fragments_dir = paths.gateway_projects_config_dir();
+    let fragment = fragments_dir.join(format!("{}.Caddyfile", project.project.id));
+    let gateway_dir = root_config
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("expected Gateway config parent"))?;
+    let root_bytes = read_test_bytes(root_config.clone())?;
+    let fragment_bytes = read_test_bytes(fragment.clone())?;
+    let sentinel = fragments_dir.join("notes.txt");
+    fs::write_sensitive_file(&sentinel, "preserve me\n")?;
+    let sentinel_bytes = read_test_bytes(sentinel.clone())?;
+    let validation_count = fake_validator_spawns(&root_config)?;
+
+    set_test_mode(&root_config, 0o644)?;
+    set_test_mode(&fragment, 0o644)?;
+    set_test_mode(gateway_dir, 0o755)?;
+    set_test_mode(&fragments_dir, 0o755)?;
+    write_failing_validator(&caddy_executable)?;
+
+    let result = reconcile_gateway_runtimes(&paths).await;
+    let second_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
+    let root_after = read_test_bytes(root_config.clone())?;
+    let fragment_after = read_test_bytes(fragment.clone())?;
+    let validations_after = fake_validator_spawns(&root_config)?;
+    let sentinel_after = if sentinel.exists() {
+        Some(read_test_bytes(sentinel)?)
+    } else {
+        None
+    };
+    let admin_loads = fake_admin_load_bodies(&root_config)?;
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+
+    assert_eq!(result?, GATEWAY_RECONCILIATION_SUMMARY);
+    assert_eq!(second_gateway_pid, first_gateway_pid);
+    assert_eq!(root_after, root_bytes);
+    assert_eq!(fragment_after, fragment_bytes);
+    assert_eq!(sentinel_after, Some(sentinel_bytes));
+    assert_eq!(test_mode(&root_config)?, 0o600);
+    assert_eq!(test_mode(&fragment)?, 0o600);
+    assert_eq!(test_mode(gateway_dir)?, 0o700);
+    assert_eq!(test_mode(&fragments_dir)?, 0o700);
+    assert_eq!(validations_after, validation_count);
+    assert!(admin_loads.is_empty());
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn targeted_project_reconciliation_touches_only_old_and_new_workers() -> Result<()> {
     let tempdir = tempdir()?;
@@ -5249,6 +5346,32 @@ fn loopback_ports(listeners: &[TcpListener]) -> Result<Vec<u16>> {
         .iter()
         .map(|listener| Ok(listener.local_addr()?.port()))
         .collect()
+}
+
+#[cfg(unix)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "integration test deliberately drifts generated config permissions"
+)]
+fn set_test_mode(path: &Utf8Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = std::fs::metadata(path)?.permissions();
+    permissions.set_mode(mode);
+    std::fs::set_permissions(path, permissions)?;
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "integration test directly inspects generated config permissions"
+)]
+fn test_mode(path: &Utf8Path) -> Result<u32> {
+    use std::os::unix::fs::PermissionsExt;
+
+    Ok(std::fs::metadata(path)?.permissions().mode() & 0o777)
 }
 
 #[cfg(unix)]

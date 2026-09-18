@@ -266,11 +266,11 @@ fn run_database_auxiliary_hardening_test_hook(path: &Utf8Path) -> Result<(), Sta
     Ok(())
 }
 
-pub(crate) fn secure_sensitive_file(path: &Utf8Path) -> Result<(), StateError> {
+pub fn secure_sensitive_file(path: &Utf8Path) -> Result<(), StateError> {
     require_owner_only_filesystem()?;
+    validate_owner(path)?;
     set_file_mode(path, SENSITIVE_FILE_MODE)?;
-    validate_mode(path, SENSITIVE_FILE_MODE)?;
-    validate_owner(path)
+    validate_mode(path, SENSITIVE_FILE_MODE)
 }
 
 pub(crate) fn secure_executable_file(path: &Utf8Path) -> Result<(), StateError> {
@@ -298,9 +298,9 @@ fn database_auxiliary_files(paths: &PvPaths) -> [Utf8PathBuf; 2] {
 pub fn ensure_user_dir(path: &Utf8Path) -> Result<(), StateError> {
     require_owner_only_filesystem()?;
     create_dir_all(path)?;
+    validate_owner(path)?;
     set_dir_mode(path, USER_ONLY_DIR_MODE)?;
-    validate_mode(path, USER_ONLY_DIR_MODE)?;
-    validate_owner(path)
+    validate_mode(path, USER_ONLY_DIR_MODE)
 }
 
 fn ensure_parent_dir(path: &Utf8Path) -> Result<(), StateError> {
