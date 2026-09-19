@@ -306,11 +306,21 @@ impl ProcessSupervisor {
         let Some(metadata) = read_runtime_metadata(&spec.metadata_path)? else {
             return Ok(None);
         };
-        if !metadata.matches(spec, pid) || metadata.process_start_identity.is_none() {
-            return Ok(None);
+        if metadata.matches(spec, pid) && metadata.process_start_identity.is_some() {
+            return Ok(metadata.recorded_config_fingerprint());
         }
 
-        Ok(metadata.recorded_config_fingerprint())
+        // The installed artifact changed under a live runtime: prove the prior recording
+        // against its recorded spec so old applied fingerprints stay readable. Live
+        // ownership decisions still use verify_ownership against the current spec.
+        let Some(adopted) = self.adopt_recorded(&spec.pid_path, &spec.metadata_path)? else {
+            return Ok(None);
+        };
+
+        Ok(adopted
+            .into_owned()
+            .applied_config_fingerprint()
+            .map(|fingerprint| RecordedConfigFingerprint::Applied(fingerprint.to_owned())))
     }
 
     pub fn mark_replacement_required(
@@ -558,6 +568,10 @@ impl OwnedRuntime {
 impl AdoptedProcess {
     pub fn pid(&self) -> u32 {
         self.owned.pid()
+    }
+
+    pub(crate) fn into_owned(self) -> OwnedRuntime {
+        self.owned
     }
 
     pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
@@ -1428,7 +1442,7 @@ mod tests {
     use tokio::sync::oneshot;
     use tokio::time::sleep;
 
-    use super::{ProcessSpec, ProcessSupervisor};
+    use super::{ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint};
     use state::PvPaths;
 
     /// Shorter than the script identity stabilization window, so cancellation lands while
@@ -1574,6 +1588,46 @@ mod tests {
         );
 
         committed.stop(Duration::from_secs(5)).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recorded_fingerprint_accepts_prior_proof_only_while_process_is_live() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::ensure_layout(&paths)?;
+        let supervisor = ProcessSupervisor::new(paths.clone());
+        let spec = descendant_spec(
+            &paths,
+            "prior-proof",
+            "/bin/sleep".into(),
+            vec!["60".to_string()],
+        );
+        let process = supervisor.start(spec.clone()).await?;
+        assert!(supervisor.record_applied_config(&spec, "sha256:v1:applied")?);
+
+        // The installed artifact changed: strict proof against the new spec fails, but the
+        // live prior recording still proves the old applied fingerprint.
+        let mut changed_spec = spec.clone();
+        changed_spec.command = "/bin/changed-artifact".into();
+        assert_eq!(
+            supervisor.recorded_config_fingerprint(&changed_spec)?,
+            Some(RecordedConfigFingerprint::Applied(
+                "sha256:v1:applied".to_owned()
+            ))
+        );
+
+        // Once the recorded process is dead, prior proof is refused even though the
+        // recording files are intact.
+        process.stop(Duration::from_secs(5)).await?;
+        assert!(spec.pid_path.exists());
+        assert!(spec.metadata_path.exists());
+        assert!(
+            supervisor
+                .recorded_config_fingerprint(&changed_spec)?
+                .is_none()
+        );
 
         Ok(())
     }

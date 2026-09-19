@@ -712,6 +712,87 @@ async fn matching_worker_recovers_after_post_load_readiness_is_cancelled() -> Re
 }
 
 #[tokio::test]
+async fn runtime_move_accepts_prior_proof_after_artifact_change() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let moving_root = create_project_with_config(tempdir.path(), "moving", "php: \"8.4\"\n")?;
+    let peer_root = create_project_with_config(tempdir.path(), "peer", "php: \"8.4\"\n")?;
+    link_project_record(&paths, &moving_root, "acme.test", Some("8.4"))?;
+    link_project_record(&paths, &peer_root, "api.acme.test", Some("8.4"))?;
+    let caddy_release = tempdir.path().join("caddy");
+    let source_release = tempdir.path().join("frankenphp-84");
+    let replaced_release = tempdir.path().join("frankenphp-84b");
+    let destination_release = tempdir.path().join("frankenphp-85");
+    write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
+    write_stateful_fake_frankenphp(&source_release.join("bin/frankenphp"))?;
+    write_stateful_fake_frankenphp(&replaced_release.join("bin/frankenphp"))?;
+    write_stateful_fake_frankenphp(&destination_release.join("bin/frankenphp"))?;
+    let ports = available_loopback_ports(4)?;
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-84-pv1",
+        &source_release,
+    )?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.5",
+        "fake-85-pv1",
+        &destination_release,
+    )?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.4", ports[2]), ("8.5", ports[3])],
+    )?;
+    let moving = database
+        .projects()?
+        .into_iter()
+        .find(|project| project.path == moving_root)
+        .ok_or_else(|| anyhow::anyhow!("missing moving Project"))?;
+    drop(database);
+    reconcile_gateway_runtimes(&paths).await?;
+    let file_name = format!("{}.Caddyfile", moving.id);
+    let source_fragment = paths.worker_projects_config_dir("8.4").join(&file_name);
+    let gateway_fragment = paths.gateway_projects_config_dir().join(&file_name);
+    let previous_gateway = fs::read_to_string(&gateway_fragment)?;
+
+    Database::open(&paths)?.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-84b-pv1",
+        &replaced_release,
+    )?;
+    fs::write_sensitive_file(&moving.config_path, "php: \"8.5\"\n")?;
+
+    reconcile_gateway_runtimes(&paths).await?;
+    let moved_worker_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?;
+    assert!(process_is_alive(moved_worker_pid)?);
+    assert!(!source_fragment.exists());
+    let destination_fragment = paths.worker_projects_config_dir("8.5").join(&file_name);
+    assert!(destination_fragment.exists());
+    assert_ne!(fs::read_to_string(&gateway_fragment)?, previous_gateway);
+    assert!(process_is_alive(required_runtime_metadata_pid(
+        &paths.gateway_runtime_metadata()
+    )?)?);
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid("8.5")).await?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
