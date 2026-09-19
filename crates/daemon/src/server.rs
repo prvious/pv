@@ -5,19 +5,20 @@ use config::ProjectConfigFile;
 use futures_util::StreamExt;
 use state::{Database, ProjectMode, PvPaths};
 use tokio::io::AsyncRead;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{MissedTickBehavior, sleep, timeout};
 
 use crate::DaemonError;
 use crate::ipc::{LocalListener, LocalStream};
 use crate::jobs::{
-    BackgroundReconciliationError, record_background_reconciliation_error,
-    run_background_reconciliation_job_with_origin, run_job, run_startup_reconciliation_job,
+    BackgroundReconciliationError, complete_running_background_reconciliation_job,
+    enqueue_reconciliation_job, record_background_reconciliation_error, run_job,
+    run_startup_reconciliation_job,
 };
 use crate::managed_resources::ManagedResourceRuntimeCatalog;
 use crate::project_env::{project_tls_artifact_exists, project_tls_files_are_current};
-use crate::reconciliation::{ReconciliationQueue, ReconciliationScope};
+use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use crate::structured_log;
 use crate::watcher::ProjectConfigWatcher;
 use protocol::{
@@ -37,6 +38,7 @@ pub(crate) async fn serve(
     runtime_catalog: Option<Arc<ManagedResourceRuntimeCatalog>>,
 ) -> Result<(), DaemonError> {
     let mut connections = JoinSet::new();
+    let mut background_tasks = JoinSet::new();
     let queue = ReconciliationQueue::new();
     let startup_paths = paths.clone();
     let startup_queue = queue.clone();
@@ -52,26 +54,13 @@ pub(crate) async fn serve(
         )
         .await
     }));
-    let background_paths = paths.clone();
-    let background_queue = queue.clone();
-    let background_runtime_catalog = runtime_catalog.clone();
+    let (background_scope_sender, mut background_scope_receiver) = mpsc::unbounded_channel();
+    let mut background_scopes_open = true;
+    let (background_shutdown, background_shutdown_receiver) = watch::channel(false);
     let debouncer = crate::reconciliation::ReconciliationDebouncer::new(
         PROJECT_CONFIG_DEBOUNCE,
         move |scope| {
-            let paths = background_paths.clone();
-            let queue = background_queue.clone();
-            let runtime_catalog = background_runtime_catalog.clone();
-            let _task = tokio::spawn(async move {
-                let scope_text = scope.to_string();
-                let result = run_watcher_reconciliation_job(
-                    paths.clone(),
-                    queue,
-                    scope,
-                    runtime_catalog.as_deref(),
-                )
-                .await;
-                let _result = handle_background_reconciliation_result(&paths, &scope_text, result);
-            });
+            let _send_result = background_scope_sender.send(scope);
         },
     );
     let watcher = ProjectConfigWatcher::new(
@@ -142,6 +131,36 @@ pub(crate) async fn serve(
                     }));
                 }
             }
+            scope = background_scope_receiver.recv(), if background_scopes_open => {
+                match scope {
+                    Some(scope) => {
+                        let task_paths = paths.clone();
+                        let task_queue = queue.clone();
+                        let task_runtime_catalog = runtime_catalog.clone();
+                        let task_shutdown = background_shutdown_receiver.clone();
+
+                        background_tasks.spawn(async move {
+                            let scope_text = scope.to_string();
+                            let result = run_watcher_reconciliation_job(
+                                task_paths.clone(),
+                                task_queue,
+                                scope,
+                                task_runtime_catalog.as_deref(),
+                                task_shutdown,
+                            )
+                            .await;
+                            let _result = handle_background_reconciliation_result(
+                                &task_paths,
+                                &scope_text,
+                                result,
+                            );
+                        });
+                    }
+                    None => {
+                        background_scopes_open = false;
+                    }
+                }
+            }
             accepted = listener.accept() => {
                 match accepted {
                     Ok((stream, _address)) => {
@@ -172,6 +191,13 @@ pub(crate) async fn serve(
                     Some(Err(_error)) => {}
                 }
             }
+            joined = background_tasks.join_next(), if !background_tasks.is_empty() => {
+                match joined {
+                    Some(Ok(())) | None => {}
+                    Some(Err(error)) if error.is_panic() => break Err(error.into()),
+                    Some(Err(_error)) => {}
+                }
+            }
         }
     };
 
@@ -183,9 +209,11 @@ pub(crate) async fn serve(
         task.abort();
         let _join_result = task.await;
     }
+    let _send_result = background_shutdown.send(true);
     let startup_result =
         stop_startup_task(&paths, startup_shutdown.take(), startup_task.take()).await;
     connections.abort_all();
+    while background_tasks.join_next().await.is_some() {}
     while connections.join_next().await.is_some() {}
 
     result?;
@@ -197,29 +225,46 @@ async fn run_watcher_reconciliation_job(
     queue: ReconciliationQueue,
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), BackgroundReconciliationError> {
-    loop {
-        let result = run_background_reconciliation_job_with_origin(
-            paths.clone(),
-            queue.clone(),
-            scope.clone(),
-            runtime_catalog,
-        )
-        .await;
-
-        match result {
-            Err(BackgroundReconciliationError::Admission(error))
-                if matches!(
-                    error.as_ref(),
-                    DaemonError::State(state::StateError::CoordinationLockHeld { path })
-                        if path == &paths.jobs_lock()
-                ) =>
+    let result = loop {
+        match enqueue_reconciliation_job(&paths, &queue, scope.clone()) {
+            Ok(result) => break result,
+            Err(DaemonError::State(state::StateError::CoordinationLockHeld { path }))
+                if path == paths.jobs_lock() =>
             {
-                sleep(PROJECT_CONFIG_DEBOUNCE).await;
+                tokio::select! {
+                    _ = sleep(PROJECT_CONFIG_DEBOUNCE) => {}
+                    _ = wait_for_background_shutdown(&mut shutdown) => return Ok(()),
+                }
             }
-            result => return result,
+            Err(error) => return Err(BackgroundReconciliationError::Admission(Box::new(error))),
         }
+    };
+
+    let EnqueueResult::Queued(queued) = result else {
+        return Ok(());
+    };
+    let running = tokio::select! {
+        biased;
+        _ = wait_for_background_shutdown(&mut shutdown) => return Ok(()),
+        running = queued.wait_for_turn() => running,
+    };
+
+    complete_running_background_reconciliation_job(&paths, running, runtime_catalog, None).await
+}
+
+/// Resolves once daemon shutdown is requested, or once the shutdown signal can no
+/// longer arrive because the server task is being torn down.
+///
+/// Watching `changed()` alone would miss a shutdown that was already requested, so
+/// the current value is checked first.
+async fn wait_for_background_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    if *shutdown.borrow() {
+        return;
     }
+
+    let _changed = shutdown.changed().await;
 }
 
 fn handle_startup_task_result(
@@ -412,6 +457,7 @@ mod tests {
     };
     use time::{Duration as CertificateDuration, OffsetDateTime};
     use tokio::io::duplex;
+    use tokio::sync::watch;
     use tokio::time::{sleep, timeout};
 
     use super::{
@@ -444,9 +490,16 @@ mod tests {
         let jobs_lock = JobsLock::acquire(&paths)?;
         let task_paths = paths.clone();
         let scope = ReconciliationScope::project("missing")?;
+        let (_shutdown_sender, shutdown_receiver) = watch::channel(false);
         let task = tokio::spawn(async move {
-            run_watcher_reconciliation_job(task_paths, ReconciliationQueue::new(), scope, None)
-                .await
+            run_watcher_reconciliation_job(
+                task_paths,
+                ReconciliationQueue::new(),
+                scope,
+                None,
+                shutdown_receiver,
+            )
+            .await
         });
 
         sleep(Duration::from_millis(100)).await;
@@ -459,6 +512,40 @@ mod tests {
             Err(BackgroundReconciliationError::Execution { .. })
         ));
         assert_eq!(Database::open(&paths)?.recent_jobs()?.len(), 1);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn watcher_reconciliation_stops_retrying_when_shutdown_is_requested() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        Database::open(&paths)?;
+        let jobs_lock = JobsLock::acquire(&paths)?;
+        let task_paths = paths.clone();
+        let scope = ReconciliationScope::project("missing")?;
+        let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+        let task = tokio::spawn(async move {
+            run_watcher_reconciliation_job(
+                task_paths,
+                ReconciliationQueue::new(),
+                scope,
+                None,
+                shutdown_receiver,
+            )
+            .await
+        });
+
+        sleep(Duration::from_millis(100)).await;
+        assert!(Database::open(&paths)?.recent_jobs()?.is_empty());
+        shutdown_sender
+            .send(true)
+            .map_err(|_error| anyhow!("watcher shutdown receiver was dropped"))?;
+        let result = timeout(Duration::from_secs(1), task).await??;
+        drop(jobs_lock);
+
+        assert!(result.is_ok());
+        assert!(Database::open(&paths)?.recent_jobs()?.is_empty());
 
         Ok(())
     }

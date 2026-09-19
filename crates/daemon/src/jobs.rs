@@ -351,6 +351,7 @@ impl BackgroundReconciliationError {
     }
 }
 
+#[cfg(test)]
 pub(crate) async fn run_background_reconciliation_job_with_origin(
     paths: PvPaths,
     queue: ReconciliationQueue,
@@ -440,6 +441,7 @@ async fn wait_for_startup_reconciliation_turn(
     }
 }
 
+#[cfg(test)]
 async fn complete_background_reconciliation_job(
     paths: &PvPaths,
     result: EnqueueResult,
@@ -453,7 +455,7 @@ async fn complete_background_reconciliation_job(
     complete_running_background_reconciliation_job(paths, running, runtime_catalog, None).await
 }
 
-async fn complete_running_background_reconciliation_job(
+pub(crate) async fn complete_running_background_reconciliation_job(
     paths: &PvPaths,
     running: RunningReconciliation,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
@@ -544,7 +546,7 @@ async fn run_reconciliation_job(
     }
 }
 
-fn enqueue_reconciliation_job(
+pub(crate) fn enqueue_reconciliation_job(
     paths: &PvPaths,
     queue: &ReconciliationQueue,
     scope: ReconciliationScope,

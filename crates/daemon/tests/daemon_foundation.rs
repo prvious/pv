@@ -2108,6 +2108,54 @@ async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> 
 }
 
 #[tokio::test]
+async fn daemon_shutdown_cancels_watcher_retry_waiting_for_jobs_lock() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    let config_path = project_path.join("pv.yml");
+    state::fs::write_sensitive_file(&config_path, "php: '8.3'\n")?;
+    let mut database = Database::open(&paths)?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "INSERT INTO projects (id, project_slug, path, primary_hostname, config_path, created_at, updated_at)
+            VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                "project_1",
+                project_path.as_str(),
+                "project.test",
+                config_path.as_str(),
+                "2026-05-24T00:00:00Z",
+                "2026-05-24T00:00:00Z",
+            ],
+        )?;
+
+        Ok(())
+    })?;
+    drop(database);
+    let jobs_lock = JobsLock::acquire(&paths)?;
+    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+
+    write_file_after_modified_time_tick(
+        &config_path,
+        "env:\n  APP_URL: \"${project_url}\"\n  APP_NAME: watched\n",
+    )
+    .await?;
+    // Give the config watcher time to observe the change and enter its jobs-lock retry loop.
+    sleep(Duration::from_secs(1)).await;
+    let jobs_before_shutdown = Database::open(&paths)?.recent_jobs()?.len();
+
+    daemon.shutdown().await?;
+    drop(jobs_lock);
+    sleep(Duration::from_millis(300)).await;
+
+    let database = Database::open(&paths)?;
+    assert_eq!(database.recent_jobs()?.len(), jobs_before_shutdown);
+    assert!(!state::fs::path_entry_exists(&project_path.join(".env"))?);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn dns_resolver_answers_udp_a_and_aaaa_for_test_hostnames() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
