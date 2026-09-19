@@ -14,7 +14,7 @@ use config::ProjectConfigFile;
 use insta::assert_debug_snapshot;
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use state::{
-    Database, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackRecord,
+    Database, JobsLock, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackRecord,
     ProjectRecord, PvPaths, fs,
 };
 
@@ -233,6 +233,28 @@ fn composer_install_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()
             environment.text_request_count(),
             environment.byte_request_count(),
         ));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn composer_install_checks_jobs_lock_before_reading_php_selector() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let paths = pv_paths(&home);
+    let _jobs_lock = JobsLock::acquire(&paths)?;
+    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+
+    let output = run_pv(&["composer:install"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(!fs::path_entry_exists(paths.db())?);
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!(output);
         Ok(())
     })?;
 

@@ -27,9 +27,9 @@ pub(crate) fn install(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let commands = resource_commands(&paths, environment)?;
+    let jobs_lock = super::acquire_jobs_lock(&paths)?;
     let database = Database::open(&paths)?;
     let selector = php_selector(&database)?;
-    let jobs_lock = super::acquire_jobs_lock(&paths)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
     let installed = with_resource_http_client(environment, |client| {
         commands.install_composer_with_php_pair_and_progress(selector, client, &progress)
