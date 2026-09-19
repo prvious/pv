@@ -563,13 +563,16 @@ fn readiness_probe_outcome(
     }
 }
 
+/// Gateway readiness includes privileged PF inspection, which can legitimately take
+/// longer than the runtime readiness deadline because each `pfctl` command carries its
+/// own bound. The HTTP identity probe that follows PF inspection keeps its own timeout,
+/// so the aggregate Gateway future is not bounded here.
 async fn gateway_readiness_probe_outcome(
     probe: impl Future<Output = Result<bool, DaemonError>>,
     existing_error: Option<String>,
 ) -> (bool, Option<String>) {
-    match timeout(RUNTIME_HEALTH_PROBE_TIMEOUT, probe).await {
-        Ok(Ok(healthy)) => (healthy, existing_error),
-        Ok(Err(error)) => (false, Some(error.to_string())),
+    match probe.await {
+        Ok(healthy) => (healthy, existing_error),
         Err(error) => (false, Some(error.to_string())),
     }
 }
@@ -611,14 +614,13 @@ mod tests {
         ProjectManagedResourceInput,
     };
     use state::{PvPaths, RuntimeSubject};
-    #[cfg(target_os = "macos")]
-    use tokio::time::sleep;
-    use tokio::time::{Duration, Instant, advance};
+    use tokio::time::{Duration, Instant, advance, sleep};
 
     use super::{
-        DesiredRuntimeProbe, HEALTHY_RESET_INTERVAL, RUNTIME_HEALTH_INTERVAL, RUNTIME_RETRY_DELAYS,
-        RuntimeHealthObservation, RuntimeHealthScan, RuntimeReadinessProbe, RuntimeRecoveryBackoff,
-        RuntimeRecoveryEntry, gateway_readiness_probe_outcome, inspect_runtime_probe,
+        DesiredRuntimeProbe, HEALTHY_RESET_INTERVAL, RUNTIME_HEALTH_INTERVAL,
+        RUNTIME_HEALTH_PROBE_TIMEOUT, RUNTIME_RETRY_DELAYS, RuntimeHealthObservation,
+        RuntimeHealthScan, RuntimeReadinessProbe, RuntimeRecoveryBackoff, RuntimeRecoveryEntry,
+        gateway_readiness_probe_outcome, inspect_runtime_probe,
     };
     #[cfg(target_os = "macos")]
     use super::{RUNTIME_RECOVERY_EXHAUSTED, scan_runtime_health};
@@ -943,12 +945,34 @@ mod tests {
         );
 
         let (healthy, error) = gateway_readiness_probe_outcome(
-            std::future::pending::<Result<bool, crate::DaemonError>>(),
+            async {
+                Err(crate::DaemonError::Io(io::Error::other(
+                    "gateway probe failed",
+                )))
+            },
             None,
         )
         .await;
         assert!(!healthy);
-        assert_eq!(error, Some("deadline has elapsed".to_owned()));
+        assert_eq!(error, Some("I/O error: gateway probe failed".to_owned()));
+
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn gateway_pf_inspection_is_not_bounded_by_readiness_timeout() -> anyhow::Result<()> {
+        let (healthy, error) = gateway_readiness_probe_outcome(
+            async {
+                sleep(RUNTIME_HEALTH_PROBE_TIMEOUT + Duration::from_secs(1)).await;
+
+                Ok(true)
+            },
+            None,
+        )
+        .await;
+
+        assert!(healthy);
+        assert_eq!(error, None);
 
         Ok(())
     }
