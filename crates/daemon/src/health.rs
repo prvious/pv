@@ -26,6 +26,7 @@ const RUNTIME_HEALTH_SCAN_ERROR_RETRY_DELAY: Duration = Duration::from_secs(1);
 const RUNTIME_HEALTH_PROBE_CONCURRENCY: usize = 4;
 const RUNTIME_RECOVERY_EXHAUSTED: &str =
     "Runtime recovery exhausted after 3 attempts; waiting for a later health scan";
+const RUNTIME_RECOVERY_RESTORED: &str = "Runtime recovered after 60 continuous healthy seconds";
 const RUNTIME_RETRY_DELAYS: [Duration; 3] = [
     Duration::from_secs(1),
     Duration::from_secs(5),
@@ -90,15 +91,11 @@ impl RuntimeRecoveryBackoff {
         self.entries
             .retain(|subject, _entry| desired_subjects.contains(subject));
 
-        let mut reset_subjects = Vec::new();
         let mut scopes = BTreeSet::new();
         for observation in &scan.observations {
             if observation.healthy {
                 if let Some(entry) = self.entries.get_mut(&observation.subject) {
-                    let healthy_since = entry.healthy_since.get_or_insert(now);
-                    if now.duration_since(*healthy_since) >= HEALTHY_RESET_INTERVAL {
-                        reset_subjects.push(observation.subject.clone());
-                    }
+                    entry.healthy_since.get_or_insert(now);
                 }
                 continue;
             }
@@ -118,11 +115,59 @@ impl RuntimeRecoveryBackoff {
                 scopes.insert(scope.clone());
             }
         }
+
+        scopes
+    }
+
+    /// Forgets backoff entries whose runtimes stayed healthy for the full reset interval,
+    /// replacing a recorded recovery-exhaustion failure with a newer healthy observation.
+    ///
+    /// Entries stay in place when observed state cannot be refreshed, so a later scan
+    /// retries the reset instead of leaving the stale failure current.
+    pub(crate) fn record_healthy_resets(
+        &mut self,
+        paths: &PvPaths,
+        scan: &RuntimeHealthScan,
+        now: Instant,
+    ) -> Result<(), DaemonError> {
+        let mut reset_subjects = Vec::new();
+        for observation in &scan.observations {
+            if !observation.healthy {
+                continue;
+            }
+            let Some(entry) = self.entries.get_mut(&observation.subject) else {
+                continue;
+            };
+            let healthy_since = *entry.healthy_since.get_or_insert(now);
+            if now.duration_since(healthy_since) >= HEALTHY_RESET_INTERVAL {
+                reset_subjects.push(observation.subject.clone());
+            }
+        }
+        if reset_subjects.is_empty() {
+            return Ok(());
+        }
+
+        let mut database = Database::open(paths)?;
+        let observed_states = database.runtime_observed_states()?;
+        for subject in &reset_subjects {
+            let exhausted = observed_states.iter().any(|observed| {
+                observed.subject == *subject
+                    && observed.status == RuntimeObservedStatus::Failed
+                    && observed.message.as_deref() == Some(RUNTIME_RECOVERY_EXHAUSTED)
+            });
+            if exhausted {
+                database.record_runtime_observed_snapshot(
+                    subject.clone(),
+                    RuntimeObservedStatus::Running,
+                    Some(RUNTIME_RECOVERY_RESTORED),
+                )?;
+            }
+        }
         for subject in reset_subjects {
             self.entries.remove(&subject);
         }
 
-        scopes
+        Ok(())
     }
 
     pub(crate) fn record_accepted_recovery(
@@ -606,7 +651,6 @@ mod tests {
     use anyhow::anyhow;
     #[cfg(target_os = "macos")]
     use camino::{Utf8Path, Utf8PathBuf};
-    #[cfg(target_os = "macos")]
     use camino_tempfile::tempdir;
     #[cfg(target_os = "macos")]
     use state::{
@@ -623,7 +667,7 @@ mod tests {
         gateway_readiness_probe_outcome, inspect_runtime_probe,
     };
     #[cfg(target_os = "macos")]
-    use super::{RUNTIME_RECOVERY_EXHAUSTED, scan_runtime_health};
+    use super::{RUNTIME_RECOVERY_EXHAUSTED, RUNTIME_RECOVERY_RESTORED, scan_runtime_health};
     use crate::ReconciliationScope;
     use crate::managed_resources::ManagedResourceReadiness;
     #[cfg(target_os = "macos")]
@@ -689,6 +733,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn backoff_resets_after_sixty_continuously_healthy_seconds() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
         let mut backoff = RuntimeRecoveryBackoff::default();
         let mut now = Instant::now();
         accept_due(&mut backoff, now, &scan(false)?);
@@ -699,7 +745,7 @@ mod tests {
 
         advance(HEALTHY_RESET_INTERVAL).await;
         now = Instant::now();
-        backoff.scopes_due(now, &scan(true)?);
+        backoff.record_healthy_resets(&paths, &scan(true)?, now)?;
         assert!(backoff.scopes_due(now, &scan(false)?).is_empty());
         assert_eq!(backoff.next_scan_at(now), now + Duration::from_secs(1));
 
@@ -823,6 +869,46 @@ mod tests {
             observed.message.as_deref(),
             Some(RUNTIME_RECOVERY_EXHAUSTED)
         );
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test(start_paused = true)]
+    async fn healthy_reset_retracts_exhausted_runtime_failure() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        Database::open(&paths)?;
+        let failed_scan = scan(false)?;
+        let subject = failed_scan.observations[0].subject.clone();
+        let mut database = Database::open(&paths)?;
+        database.record_runtime_observed_snapshot(
+            subject.clone(),
+            state::RuntimeObservedStatus::Failed,
+            Some(RUNTIME_RECOVERY_EXHAUSTED),
+        )?;
+        drop(database);
+
+        let mut backoff = RuntimeRecoveryBackoff::default();
+        let mut now = Instant::now();
+        backoff.entries.insert(
+            subject.clone(),
+            RuntimeRecoveryEntry::after_failure(now, RUNTIME_RETRY_DELAYS.len()),
+        );
+        backoff.record_healthy_resets(&paths, &scan(true)?, now)?;
+
+        advance(HEALTHY_RESET_INTERVAL).await;
+        now = Instant::now();
+        backoff.record_healthy_resets(&paths, &scan(true)?, now)?;
+
+        let observed = Database::open(&paths)?
+            .runtime_observed_states()?
+            .into_iter()
+            .find(|observed| observed.subject == subject)
+            .ok_or_else(|| anyhow!("missing reset runtime observation"))?;
+        assert_eq!(observed.status, state::RuntimeObservedStatus::Running);
+        assert_eq!(observed.message.as_deref(), Some(RUNTIME_RECOVERY_RESTORED));
+        assert_eq!(backoff.next_scan_at(now), now + RUNTIME_HEALTH_INTERVAL);
 
         Ok(())
     }
