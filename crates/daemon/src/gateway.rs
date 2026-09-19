@@ -2705,21 +2705,32 @@ fn merge_worker_fragment_sites(desired: &str, previous: &str) -> Result<String, 
             .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
                 reason: "desired PHP worker fragment is missing a site block".to_owned(),
             })?;
-    let (previous_sites, _previous_body) =
+    let (previous_sites, previous_body) =
         previous
             .split_once(" {\n")
             .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
                 reason: "previous PHP worker fragment is missing a site block".to_owned(),
             })?;
-    let sites = desired_sites
-        .split(", ")
-        .chain(previous_sites.split(", "))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
+    let desired_labels = desired_sites.split(", ").collect::<BTreeSet<_>>();
+    let previous_labels = previous_sites.split(", ").collect::<BTreeSet<_>>();
+    let previous_only = previous_labels
+        .difference(&desired_labels)
+        .copied()
         .collect::<Vec<_>>()
         .join(", ");
+    if desired_body == previous_body || previous_only.is_empty() {
+        let sites = desired_labels
+            .union(&previous_labels)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
 
-    Ok(format!("{sites} {{\n{desired_body}"))
+        return Ok(format!("{sites} {{\n{desired_body}"));
+    }
+
+    Ok(format!(
+        "{desired_sites} {{\n{desired_body}{previous_only} {{\n{previous_body}"
+    ))
 }
 
 async fn promote_runtime_config_tree(

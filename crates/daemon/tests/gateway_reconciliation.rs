@@ -4376,6 +4376,131 @@ hostnames:
 }
 
 #[tokio::test]
+async fn retained_hostname_uses_previous_document_root() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_root = tempdir.path().join("acme");
+    create_project(
+        &project_root,
+        r#"php: "8.4"
+document_root: public
+hostnames:
+  - old.acme.test
+"#,
+    )?;
+
+    let mut database = Database::open(&paths)?;
+    let project = database
+        .link_project(LinkProjectInput {
+            path: project_root.clone(),
+            original_path: project_root.clone(),
+            primary_hostname: "acme.test".to_owned(),
+            config_path: project_root.join("pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    let release = paths.home().join("8.4-php-release");
+    seed_installed_php_with_extensions(&paths, "8.4", &["redis"])?;
+    seed_installed_frankenphp_with_extensions(&paths, "8.4", &release, &["redis"])?;
+    write_fake_frankenphp(&release.join("bin/frankenphp"))?;
+    let base_runtime_key = state::php_runtime_key("8.4", &[])?;
+    let redis_runtime_key = state::php_runtime_key("8.4", &["redis".to_owned()])?;
+    let ports = available_loopback_ports(4)?;
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[
+            (&base_runtime_key, ports[2]),
+            (&redis_runtime_key, ports[3]),
+        ],
+    )?;
+    drop(database);
+
+    reconcile_gateway_runtimes(&paths).await?;
+
+    let redis_root = create_project_with_config(
+        tempdir.path(),
+        "redis",
+        "php:\n  version: \"8.4\"\n  extensions: [redis]\n",
+    )?;
+    link_project_record(&paths, &redis_root, "api.acme.test", Some("8.4"))?;
+    fs::write_sensitive_file(&project_root.join("web/index.php"), "<?php\n")?;
+    fs::write_sensitive_file(
+        &project_root.join("pv.yml"),
+        r#"php: "8.4"
+document_root: web
+hostnames:
+  - new.acme.test
+"#,
+    )?;
+    let redis_failure_marker = Utf8PathBuf::from(format!(
+        "{}.readiness-fail",
+        paths.worker_root_config(&redis_runtime_key)
+    ));
+    fs::write_sensitive_file(&redis_failure_marker, "fail\n")?;
+
+    let result = reconcile_gateway_runtimes(&paths).await;
+    assert!(
+        matches!(
+            &result,
+            Err(DaemonError::UnexpectedProtocolResponse { reason })
+                if reason.contains(&format!("php-worker-{redis_runtime_key}"))
+        ),
+        "the sibling failure must surface after worker validation succeeds, got {result:?}"
+    );
+    let fragment_path = paths
+        .worker_projects_config_dir(&base_runtime_key)
+        .join(format!("{}.Caddyfile", project.id));
+    let merged = fs::read_to_string(&fragment_path)?;
+    let blocks = fragment_site_blocks(&merged);
+    assert_eq!(
+        blocks.len(),
+        2,
+        "expected retained and desired site blocks: {merged:?}"
+    );
+    assert_eq!(merged.matches("old.acme.test").count(), 1);
+    let (old_labels, old_body) = blocks
+        .iter()
+        .find(|(labels, _)| labels.contains("old.acme.test"))
+        .ok_or_else(|| anyhow::anyhow!("retained block is missing: {merged:?}"))?;
+    assert!(!old_labels.contains("new.acme.test"));
+    assert!(old_body.contains("public"));
+    assert!(!old_body.contains("web"));
+    let (new_labels, new_body) = blocks
+        .iter()
+        .find(|(labels, _)| labels.contains("new.acme.test"))
+        .ok_or_else(|| anyhow::anyhow!("desired block is missing: {merged:?}"))?;
+    assert!(new_labels.contains("acme.test"));
+    assert!(new_body.contains("web"));
+    assert!(!new_body.contains("public"));
+
+    fs::remove_file(&redis_failure_marker)?;
+    reconcile_gateway_runtimes(&paths).await?;
+    let committed = fs::read_to_string(&fragment_path)?;
+    assert!(!committed.contains("old.acme.test"));
+    assert!(committed.contains("new.acme.test"));
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid(&base_runtime_key)).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid(&redis_runtime_key)).await?;
+
+    Ok(())
+}
+
+fn fragment_site_blocks(fragment: &str) -> Vec<(&str, &str)> {
+    fragment
+        .split_terminator("}\n")
+        .filter_map(|section| {
+            let (labels, body) = section.split_once(" {\n")?;
+            Some((labels.trim(), body))
+        })
+        .collect()
+}
+
+#[tokio::test]
 async fn gateway_reconciliation_loads_exact_gateway_and_worker_roots_without_restarting()
 -> Result<()> {
     let tempdir = tempdir()?;
