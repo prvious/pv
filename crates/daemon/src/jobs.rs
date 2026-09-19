@@ -1058,10 +1058,7 @@ where
                     continue;
                 }
                 if !write_pending_phases(transport, job_id, &mut phases, &mut next_phase).await {
-                    return StreamedJobCompletion {
-                        result: completion.await,
-                        transport_is_open: false,
-                    };
+                    phases_open = false;
                 }
             }
             result = &mut completion => {
@@ -3098,7 +3095,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::pin::Pin;
     use std::process;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, mpsc};
     use std::task::{Context, Poll};
     use std::time::Instant;
@@ -3119,7 +3116,7 @@ mod tests {
         ProjectPhpRuntimeInput, ProjectReconciliationStateInput, PvPaths, ResourceAllocationInput,
         RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
     };
-    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf, duplex};
+    use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf, duplex};
     #[cfg(target_os = "macos")]
     use tokio::net::UnixStream;
     use tokio::sync::{mpsc::channel, oneshot, watch};
@@ -3154,6 +3151,7 @@ mod tests {
         stop_undemanded_system_resource_runtimes, stream_started_reconciliation_job,
         stream_started_update_job, system_project_summary, wait_for_foreground_turn,
         wait_for_startup_reconciliation_turn, write_coalesced_update_response,
+        write_foreground_terminal_event,
     };
     use crate::project_env::ProjectApplyStage;
     use crate::reconciliation::{
@@ -8927,7 +8925,80 @@ mod tests {
         let completion = outcome??;
 
         assert_eq!(completion.result?, "job done");
-        assert!(!completion.transport_is_open);
+        assert!(completion.transport_is_open);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stalled_phase_progress_does_not_close_job_stream() -> anyhow::Result<()> {
+        let (client, server) = duplex(1024);
+        let writable = Arc::new(AtomicBool::new(false));
+        let (stalled_sender, stalled_receiver) = oneshot::channel();
+        let writer = protocol::transport(GatedWriteStream::new(
+            server,
+            Arc::clone(&writable),
+            stalled_sender,
+        ));
+        let (_event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
+        let (phase_sender, phase_receiver) = watch::channel(Vec::new());
+        let (finish_sender, finish_receiver) = oneshot::channel::<()>();
+        let mut task = tokio::spawn(async move {
+            let mut writer = writer;
+            let completion = complete_streamed_job_with_heartbeat_and_events(
+                &mut writer,
+                "job_1",
+                "job still running",
+                Duration::from_secs(60),
+                async {
+                    finish_receiver.await.map_err(|_error| {
+                        crate::DaemonError::Io(io::Error::other("completion cancelled"))
+                    })?;
+
+                    Ok("job done".to_string())
+                },
+                event_receiver,
+                phase_receiver,
+            )
+            .await;
+            if completion.transport_is_open {
+                let _terminal_result = write_foreground_terminal_event(
+                    &mut writer,
+                    &protocol::DaemonEvent::JobCompleted {
+                        job_id: "job_1",
+                        summary: "job done",
+                    },
+                )
+                .await;
+            }
+
+            completion
+        });
+
+        phase_sender.send_modify(|phases| {
+            phases.push(crate::structured_log::ReconciliationPhase::Install);
+        });
+        timeout(Duration::from_millis(100), stalled_receiver)
+            .await
+            .map_err(|_error| anyhow::anyhow!("phase write did not stall"))?
+            .map_err(|_error| anyhow::anyhow!("phase write stream dropped"))?;
+        tokio::time::sleep(FOREGROUND_JOB_STREAM_WRITE_TIMEOUT + Duration::from_millis(50)).await;
+        writable.store(true, Ordering::SeqCst);
+        finish_sender
+            .send(())
+            .map_err(|_error| anyhow::anyhow!("completion task dropped"))?;
+        let completion = timeout(Duration::from_millis(300), &mut task).await??;
+
+        assert_eq!(completion.result?, "job done");
+        assert!(completion.transport_is_open);
+
+        let mut reader = protocol::transport(client);
+        let line = timeout(Duration::from_millis(100), reader.next())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("missing terminal event"))??;
+        let event = serde_json::from_str::<serde_json::Value>(&line)?;
+        assert_eq!(event["type"], "job_completed");
+        assert!(reader.next().await.is_none());
 
         Ok(())
     }
@@ -9057,6 +9128,67 @@ mod tests {
 
         fn poll_flush(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
             Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    struct GatedWriteStream {
+        inner: DuplexStream,
+        writable: Arc<AtomicBool>,
+        blocked_write_sender: Option<oneshot::Sender<()>>,
+    }
+
+    impl GatedWriteStream {
+        fn new(
+            inner: DuplexStream,
+            writable: Arc<AtomicBool>,
+            blocked_write_sender: oneshot::Sender<()>,
+        ) -> Self {
+            Self {
+                inner,
+                writable,
+                blocked_write_sender: Some(blocked_write_sender),
+            }
+        }
+    }
+
+    impl AsyncRead for GatedWriteStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _context: &mut Context<'_>,
+            _buffer: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            Poll::Pending
+        }
+    }
+
+    impl AsyncWrite for GatedWriteStream {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            context: &mut Context<'_>,
+            buffer: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            if !self.writable.load(Ordering::SeqCst) {
+                if let Some(sender) = self.blocked_write_sender.take() {
+                    let _send_result = sender.send(());
+                }
+
+                // The stalled write is dropped instead of being buffered for a later flush.
+                return Poll::Ready(Ok(buffer.len()));
+            }
+
+            Pin::new(&mut self.inner).poll_write(context, buffer)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+            if !self.writable.load(Ordering::SeqCst) {
+                return Poll::Pending;
+            }
+
+            Pin::new(&mut self.inner).poll_flush(context)
         }
 
         fn poll_shutdown(self: Pin<&mut Self>, _context: &mut Context<'_>) -> Poll<io::Result<()>> {
