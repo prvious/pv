@@ -545,6 +545,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
     let lookup_started_at = Instant::now();
     let gateway_command = first_installed_caddy_command(paths).inspect_err(|_| {
         if let Some(phase_log) = phase_log {
+            phase_log.report_progress(structured_log::ReconciliationPhase::Gateway);
             phase_log.completed(
                 structured_log::ReconciliationPhase::Gateway,
                 "gateway",
@@ -555,6 +556,18 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         }
     })?;
     let Some(gateway_command) = gateway_command else {
+        if let Some(phase_log) = phase_log {
+            phase_log.report_progress(structured_log::ReconciliationPhase::Workers);
+            phase_log.completed(
+                structured_log::ReconciliationPhase::Workers,
+                "php_workers",
+                structured_log::PhaseOutcome::Skipped,
+                Duration::ZERO,
+                &[("worker_count", 0), ("project_count", 0)],
+            );
+            phase_log.report_progress(structured_log::ReconciliationPhase::Gateway);
+        }
+
         let observation_started_at = Instant::now();
         record_runtime_observed(
             paths,
@@ -574,15 +587,6 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             }
         })?;
         if let Some(phase_log) = phase_log {
-            phase_log.report_progress(structured_log::ReconciliationPhase::Workers);
-            phase_log.completed(
-                structured_log::ReconciliationPhase::Workers,
-                "php_workers",
-                structured_log::PhaseOutcome::Skipped,
-                Duration::ZERO,
-                &[("worker_count", 0), ("project_count", 0)],
-            );
-            phase_log.report_progress(structured_log::ReconciliationPhase::Gateway);
             phase_log.completed(
                 structured_log::ReconciliationPhase::Gateway,
                 "gateway",

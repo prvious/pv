@@ -172,7 +172,7 @@ async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Res
 }
 
 #[tokio::test]
-async fn gateway_lookup_failure_records_failed_gateway_phase() -> Result<()> {
+async fn gateway_lookup_failure_streams_and_records_failed_gateway_phase() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
@@ -196,7 +196,7 @@ async fn gateway_lookup_failure_records_failed_gateway_phase() -> Result<()> {
     )
     .await;
     daemon.shutdown().await?;
-    response?;
+    let lines = response?;
 
     let job = database
         .recent_jobs()?
@@ -204,6 +204,29 @@ async fn gateway_lookup_failure_records_failed_gateway_phase() -> Result<()> {
         .find(|job| job.scope == "resource:caddy:2")
         .ok_or_else(|| anyhow!("missing Gateway reconciliation job"))?;
     assert_eq!(job.status, JobStatus::Failed);
+
+    let selected_events = lines
+        .iter()
+        .filter(|event| {
+            (event["type"] == "progress" && event["message"] == "gateway")
+                || event["type"] == "job_failed"
+        })
+        .collect::<Vec<_>>();
+    let selected_sequence = selected_events
+        .iter()
+        .map(|event| {
+            if event["type"] == "progress" {
+                "gateway"
+            } else {
+                "job_failed"
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(selected_sequence, ["gateway", "job_failed"]);
+    for event in selected_events {
+        assert_eq!(event["job_id"], job.id);
+    }
+
     let log = state::fs::read_to_string(&paths.daemon_log())?;
     let phases = log
         .lines()
