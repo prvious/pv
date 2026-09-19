@@ -28,7 +28,7 @@ use resources::{
     ManagedResourceCommandError, ResourceAdapter, ResourceName, ResourcesError,
     RuntimeArtifactAdapter,
 };
-use rusqlite::TransactionBehavior;
+use rusqlite::{TransactionBehavior, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use state::{
@@ -2020,6 +2020,112 @@ fn project_scope_missing_installs_share_one_manifest_snapshot() -> Result<()> {
             .is_some(),
         "the second install should use snapshot A instead of fetching empty snapshot B"
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_allocation_failure_preserves_shared_runtime_health() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "serve: false\nmysql:\n  version: \"8.0\"\n  allocations:\n    main:\n      env:\n        DATABASE_URL: \"${url}\"\n",
+    )?;
+    seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
+    let generated = resources::generated_allocation_name("mysql", &project.slug, "main")?;
+    let mut database = Database::open(&paths)?;
+    database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        FAKE_SQL_TRACK,
+        &[ResourceAllocationInput {
+            allocation_name: "main".to_owned(),
+            generated_name: generated.generated_name().to_owned(),
+        }],
+    )?;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::Resource {
+            name: "mysql".to_owned(),
+            track: FAKE_SQL_TRACK.to_owned(),
+        },
+        RuntimeObservedStatus::Running,
+        Some("fixture mysql readiness diagnostic"),
+    )?;
+    let healthy_before = Database::open(&paths)?
+        .runtime_observed_states()?
+        .into_iter()
+        .find(|state| {
+            state.subject
+                == RuntimeSubject::Resource {
+                    name: "mysql".to_owned(),
+                    track: FAKE_SQL_TRACK.to_owned(),
+                }
+        })
+        .ok_or_else(|| anyhow!("missing shared mysql runtime observation"))?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "UPDATE resource_allocations SET env_json = 'not-json' WHERE project_id = ?1",
+            params![project.id],
+        )?;
+
+        Ok(())
+    })?;
+    drop(database);
+
+    let hook_events = Arc::new(Mutex::new(Vec::new()));
+    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: OFFLINE_TEST_MANIFEST_URL.to_owned(),
+            target_platform: resources::TargetPlatform::current()?,
+        },
+        AsyncSqlHookRuntimeAdapter::new(Arc::clone(&hook_events))?,
+    );
+    let allocation = ResourceAllocationInput {
+        allocation_name: "main".to_owned(),
+        generated_name: generated.generated_name().to_owned(),
+    };
+    let plan = crate::project_env::ProjectResourcePlan {
+        resources: vec![ProjectManagedResourceInput {
+            resource_name: "mysql".to_owned(),
+            track: FAKE_SQL_TRACK.to_owned(),
+        }],
+        allocations: BTreeMap::from([(
+            "mysql".to_owned(),
+            crate::project_env::ProjectResourceAllocationPlan {
+                allocations: vec![allocation],
+            },
+        )]),
+    };
+    let mut database = Database::open(&paths)?;
+    let result = super::reconcile_project_resources_with_catalog_and_progress(
+        &paths,
+        &mut database,
+        &project,
+        &plan,
+        &catalog,
+        &BTreeSet::new(),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+        super::ArtifactInstall::Allowed,
+    )
+    .await;
+    let Err(DaemonError::State(StateError::InvalidEnvJson { .. })) = result else {
+        bail!("expected the corrupt allocation decode to fail the project, got {result:?}");
+    };
+    let healthy_after = Database::open(&paths)?
+        .runtime_observed_states()?
+        .into_iter()
+        .find(|state| {
+            state.subject
+                == RuntimeSubject::Resource {
+                    name: "mysql".to_owned(),
+                    track: FAKE_SQL_TRACK.to_owned(),
+                }
+        })
+        .ok_or_else(|| anyhow!("missing shared mysql runtime observation"))?;
+    assert_eq!(healthy_after, healthy_before);
 
     Ok(())
 }

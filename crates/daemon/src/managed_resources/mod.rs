@@ -1569,21 +1569,25 @@ async fn reconcile_resource_tracks(
         {
             ready.push_back(runtime);
         }
-        let result = match desired_allocations(database, project, plan, resource) {
-            Ok(allocations) => {
-                let preparation =
-                    prepare_resource_track(paths, database, reconciliation, resource, &allocations);
-                tokio::pin!(preparation);
-                loop {
-                    tokio::select! {
-                        result = &mut preparation => break result,
-                        Some(runtime) = pending.next(), if !pending.is_empty() => {
-                            ready.push_back(runtime);
-                        }
+        let allocations = match desired_allocations(database, project, plan, resource) {
+            Ok(allocations) => allocations,
+            Err(error) => {
+                failures.push((resource_key(resource), error));
+                continue;
+            }
+        };
+        let result = {
+            let preparation =
+                prepare_resource_track(paths, database, reconciliation, resource, &allocations);
+            tokio::pin!(preparation);
+            loop {
+                tokio::select! {
+                    result = &mut preparation => break result,
+                    Some(runtime) = pending.next(), if !pending.is_empty() => {
+                        ready.push_back(runtime);
                     }
                 }
             }
-            Err(error) => Err(error),
         };
         match result {
             Ok(Some(runtime)) => pending.push(runtime.wait()),
