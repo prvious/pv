@@ -4501,6 +4501,180 @@ fn fragment_site_blocks(fragment: &str) -> Vec<(&str, &str)> {
 }
 
 #[tokio::test]
+async fn post_commit_cleanup_continues_after_worker_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_a_root = tempdir.path().join("a");
+    let project_b_root = tempdir.path().join("b");
+    let project_c_root = tempdir.path().join("c");
+    create_project(
+        &project_a_root,
+        r#"php: "8.4"
+document_root: public
+hostnames:
+  - old.acme.test
+"#,
+    )?;
+    create_project(
+        &project_b_root,
+        r#"php: "8.5"
+document_root: public
+hostnames:
+  - old.api.acme.test
+"#,
+    )?;
+    create_project(&project_c_root, "php: \"8.3\"\n")?;
+    link_project_record(&paths, &project_a_root, "acme.test", Some("8.4"))?;
+    link_project_record(&paths, &project_b_root, "api.acme.test", Some("8.5"))?;
+    link_project_record(&paths, &project_c_root, "other.test", Some("8.3"))?;
+    let caddy_release = tempdir.path().join("caddy");
+    let release_83 = tempdir.path().join("frankenphp-83");
+    let release_84 = tempdir.path().join("frankenphp-84");
+    let release_85 = tempdir.path().join("frankenphp-85");
+    write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
+    write_stateful_fake_frankenphp(&release_83.join("bin/frankenphp"))?;
+    write_stateful_fake_frankenphp(&release_84.join("bin/frankenphp"))?;
+    write_stateful_fake_frankenphp(&release_85.join("bin/frankenphp"))?;
+    let ports = available_loopback_ports(5)?;
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    for (track, release) in [
+        ("8.3", &release_83),
+        ("8.4", &release_84),
+        ("8.5", &release_85),
+    ] {
+        database.record_managed_resource_track_installed(
+            "frankenphp",
+            track,
+            &format!("fake-{track}-pv1"),
+            release,
+        )?;
+    }
+    seed_runtime_ports(
+        &paths,
+        &mut database,
+        ports[0],
+        ports[1],
+        &[("8.3", ports[2]), ("8.4", ports[3]), ("8.5", ports[4])],
+    )?;
+    let projects = database.projects()?;
+    let project_a_id = projects
+        .iter()
+        .find(|project| project.path == project_a_root)
+        .ok_or_else(|| anyhow::anyhow!("missing project A"))?
+        .id
+        .clone();
+    let project_b_id = projects
+        .iter()
+        .find(|project| project.path == project_b_root)
+        .ok_or_else(|| anyhow::anyhow!("missing project B"))?
+        .id
+        .clone();
+    drop(database);
+    reconcile_gateway_runtimes(&paths).await?;
+    let stale_worker_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.3"))?;
+    assert!(process_is_alive(stale_worker_pid)?);
+
+    fs::write_sensitive_file(&project_a_root.join("web/index.php"), "<?php\n")?;
+    fs::write_sensitive_file(&project_b_root.join("web/index.php"), "<?php\n")?;
+    fs::write_sensitive_file(
+        &project_a_root.join("pv.yml"),
+        r#"php: "8.4"
+document_root: web
+hostnames:
+  - new.acme.test
+"#,
+    )?;
+    fs::write_sensitive_file(
+        &project_b_root.join("pv.yml"),
+        r#"php: "8.5"
+document_root: web
+hostnames:
+  - new.api.acme.test
+"#,
+    )?;
+    fs::write_sensitive_file(&project_c_root.join("pv.yml"), "php: \"8.5\"\n")?;
+    write_fake_admin_control(
+        &paths.worker_root_config("8.4"),
+        json!({"load_statuses": [200, 422]}),
+    )?;
+
+    let result = reconcile_gateway_runtimes(&paths).await;
+    assert!(
+        matches!(
+            &result,
+            Err(DaemonError::CaddyAdmin(CaddyAdminError::LoadRejected { status, .. }))
+                if *status == 422
+        ),
+        "expected the injected second-pass load failure, got {result:?}"
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
+        2,
+        "expected one wave load and one failing cleanup load on 8.4",
+    );
+
+    let worker_b_fragment = paths
+        .worker_projects_config_dir("8.5")
+        .join(format!("{project_b_id}.Caddyfile"));
+    let worker_b_content = fs::read_to_string(&worker_b_fragment)?;
+    assert!(
+        !worker_b_content.contains("old.api.acme.test"),
+        "later retained worker was not cleaned: {worker_b_content:?}"
+    );
+    assert!(worker_b_content.contains("new.api.acme.test"));
+
+    let gateway_a_fragment = paths
+        .gateway_projects_config_dir()
+        .join(format!("{project_a_id}.Caddyfile"));
+    assert!(
+        fs::read_to_string(&gateway_a_fragment)?.contains("new.acme.test"),
+        "committed Gateway must not be rolled back by cleanup failure",
+    );
+
+    assert!(!paths.worker_pid("8.3").exists());
+    assert!(!paths.worker_runtime_metadata("8.3").exists());
+    assert!(!process_is_alive(stale_worker_pid)?);
+    let stale_status = Database::open(&paths)?
+        .runtime_observed_states()?
+        .into_iter()
+        .find(|state| {
+            state.subject
+                == RuntimeSubject::PhpWorker {
+                    php_track: "8.3".to_owned(),
+                }
+        })
+        .map(|state| state.status);
+    assert_eq!(stale_status, Some(RuntimeObservedStatus::Stopped));
+    let stale_ports = Database::open(&paths)?
+        .assigned_ports()?
+        .into_iter()
+        .filter(|port| {
+            matches!(
+                &port.owner,
+                PortOwner::PhpWorker { php_runtime_key } if php_runtime_key == "8.3"
+            )
+        })
+        .count();
+    assert_eq!(stale_ports, 0);
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    for track in ["8.4", "8.5"] {
+        let pid_path = paths.worker_pid(track);
+        if pid_path.exists() {
+            stop_runtime_from_pid_file(&pid_path).await?;
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn gateway_reconciliation_loads_exact_gateway_and_worker_roots_without_restarting()
 -> Result<()> {
     let tempdir = tempdir()?;

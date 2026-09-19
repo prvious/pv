@@ -817,24 +817,51 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             "stale_workers",
         )
     });
+    let mut cleanup_failures: Vec<(String, DaemonError)> = Vec::new();
     for worker in &plan.workers {
         if retained_worker_fragments.contains_key(&worker.runtime_key) {
-            let worker_runtime = required_installed_worker_runtime(paths, worker)?;
-            reconcile_planned_worker(
-                paths,
-                &supervisor,
-                worker,
-                &worker_runtime,
-                readiness_timeout,
-                None,
-                None,
-            )
-            .await?;
+            let result = match required_installed_worker_runtime(paths, worker) {
+                Ok(worker_runtime) => {
+                    reconcile_planned_worker(
+                        paths,
+                        &supervisor,
+                        worker,
+                        &worker_runtime,
+                        readiness_timeout,
+                        None,
+                        None,
+                    )
+                    .await
+                }
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result {
+                cleanup_failures.push((worker.runtime_key.clone(), error));
+            }
         }
     }
-    stop_stale_worker_runtimes(paths, &supervisor, &plan).await?;
-    if let Some(cleanup_timer) = cleanup_timer {
-        cleanup_timer.finish(structured_log::PhaseOutcome::Succeeded, &[]);
+    let mut cleanup_timer = cleanup_timer;
+    if let Err(error) = stop_stale_worker_runtimes(paths, &supervisor, &plan)
+        .await
+        .map(|failures| cleanup_failures.extend(failures))
+    {
+        if let Some(timer) = cleanup_timer.take() {
+            timer.finish(structured_log::PhaseOutcome::Failed, &[]);
+        }
+        return Err(error);
+    }
+    if let Some(timer) = cleanup_timer.take() {
+        timer.finish(
+            if cleanup_failures.is_empty() {
+                structured_log::PhaseOutcome::Succeeded
+            } else {
+                structured_log::PhaseOutcome::Failed
+            },
+            &[],
+        );
+    }
+    if !cleanup_failures.is_empty() {
+        return Err(combined_runtime_reconciliation_error(cleanup_failures));
     }
 
     Ok(GATEWAY_RUNTIME_RECONCILED.to_owned())
@@ -4045,12 +4072,13 @@ async fn stop_stale_worker_runtimes(
     paths: &PvPaths,
     supervisor: &ProcessSupervisor,
     plan: &RuntimePlan,
-) -> Result<(), DaemonError> {
+) -> Result<Vec<(String, DaemonError)>, DaemonError> {
     let desired_runtime_keys = plan
         .workers
         .iter()
         .map(|worker| worker.runtime_key.as_str())
         .collect::<BTreeSet<_>>();
+    let mut failures: Vec<(String, DaemonError)> = Vec::new();
 
     for runtime_key in runtime_worker_tracks(paths)? {
         if desired_runtime_keys.contains(runtime_key.as_str()) {
@@ -4058,22 +4086,28 @@ async fn stop_stale_worker_runtimes(
         }
         let subject = php_runtime_subject(&runtime_key);
 
-        if let Some(adopted) = supervisor.adopt_recorded(
-            &paths.worker_pid(&runtime_key),
-            &paths.worker_runtime_metadata(&runtime_key),
-        )? {
-            adopted.stop(Duration::from_secs(1)).await?;
+        let result: Result<(), DaemonError> = async {
+            if let Some(adopted) = supervisor.adopt_recorded(
+                &paths.worker_pid(&runtime_key),
+                &paths.worker_runtime_metadata(&runtime_key),
+            )? {
+                adopted.stop(Duration::from_secs(1)).await?;
+            }
+            record_runtime_observed(
+                paths,
+                subject,
+                RuntimeObservedStatus::Stopped,
+                Some("PHP worker stopped; no Projects remain on this track"),
+            )?;
+            cleanup_stale_worker_runtime(paths, &runtime_key)
         }
-        record_runtime_observed(
-            paths,
-            subject,
-            RuntimeObservedStatus::Stopped,
-            Some("PHP worker stopped; no Projects remain on this track"),
-        )?;
-        cleanup_stale_worker_runtime(paths, &runtime_key)?;
+        .await;
+        if let Err(error) = result {
+            failures.push((runtime_key, error));
+        }
     }
 
-    Ok(())
+    Ok(failures)
 }
 
 async fn stop_worker_if_undemanded(
