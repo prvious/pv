@@ -1012,6 +1012,103 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
 }
 
 #[tokio::test]
+async fn worker_failure_starts_missing_gateway_without_reloading_live_gateway() -> Result<()> {
+    for live_gateway in [false, true] {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let track = "8.4";
+        let base_project =
+            create_project_with_config(tempdir.path(), "base", "php:\n  version: \"8.4\"\n")?;
+        link_project_record(&paths, &base_project, "acme.test", Some(track))?;
+        let base_id = Database::open(&paths)?
+            .projects()?
+            .into_iter()
+            .find(|project| project.path == base_project)
+            .ok_or_else(|| anyhow::anyhow!("missing base Project"))?
+            .id;
+
+        let release_path = seed_installed_php_with_extensions(&paths, track, &["redis"])?;
+        seed_installed_frankenphp_with_extensions(&paths, track, &release_path, &["redis"])?;
+        write_fake_frankenphp(&release_path.join("bin/frankenphp"))?;
+
+        let base_runtime_key = state::php_runtime_key(track, &[])?;
+        let redis_runtime_key = state::php_runtime_key(track, &["redis".to_owned()])?;
+        let ports = available_loopback_ports(4)?;
+        let mut database = Database::open(&paths)?;
+        seed_runtime_ports(
+            &paths,
+            &mut database,
+            ports[0],
+            ports[1],
+            &[
+                (&base_runtime_key, ports[2]),
+                (&redis_runtime_key, ports[3]),
+            ],
+        )?;
+        drop(database);
+
+        reconcile_gateway_runtimes(&paths).await?;
+        let gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
+        let gateway_root = fs::read_to_string(&paths.gateway_root_config())?;
+        let source_fragment = paths
+            .worker_projects_config_dir(&base_runtime_key)
+            .join(format!("{base_id}.Caddyfile"));
+        let source_content = fs::read_to_string(&source_fragment)?;
+
+        let redis_project = create_project_with_config(
+            tempdir.path(),
+            "redis",
+            "php:\n  version: \"8.4\"\n  extensions: [redis]\n",
+        )?;
+        link_project_record(&paths, &redis_project, "api.acme.test", Some(track))?;
+        if !live_gateway {
+            stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+            let tampered = format!(
+                "{}# tampered Gateway root\n",
+                fs::read_to_string(&paths.gateway_root_config())?
+            );
+            fs::write_sensitive_file(&paths.gateway_root_config(), &tampered)?;
+        }
+        let redis_failure_marker = Utf8PathBuf::from(format!(
+            "{}.readiness-fail",
+            paths.worker_root_config(&redis_runtime_key)
+        ));
+        fs::write_sensitive_file(&redis_failure_marker, "fail\n")?;
+
+        let result = reconcile_gateway_runtimes(&paths).await;
+        assert!(
+            matches!(
+                &result,
+                Err(DaemonError::UnexpectedProtocolResponse { reason })
+                    if reason.contains(&format!("php-worker-{redis_runtime_key}"))
+            ),
+            "the worker failure must survive gateway recovery, got {result:?}"
+        );
+        let gateway_pid_after = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
+        let gateway_root_after = fs::read_to_string(&paths.gateway_root_config())?;
+        if live_gateway {
+            assert_eq!(gateway_pid_after, gateway_pid);
+            assert!(process_is_alive(gateway_pid)?);
+            assert_eq!(gateway_root_after, gateway_root);
+        } else {
+            assert_ne!(gateway_pid_after, gateway_pid);
+            assert!(process_is_alive(gateway_pid_after)?);
+            assert!(!gateway_root_after.contains("# tampered Gateway root"));
+        }
+        assert_eq!(fs::read_to_string(&source_fragment)?, source_content);
+
+        fs::remove_file(&redis_failure_marker)?;
+        stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+        stop_runtime_from_pid_file(&paths.worker_pid(&base_runtime_key)).await?;
+        if paths.worker_pid(&redis_runtime_key).exists() {
+            stop_runtime_from_pid_file(&paths.worker_pid(&redis_runtime_key)).await?;
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1178,10 +1275,12 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
         Err(DaemonError::UnexpectedProtocolResponse { .. })
     ));
     assert!(!process_is_alive(gateway_pid)?);
-    assert_eq!(
-        required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?,
-        gateway_pid
-    );
+    // A failed worker with unprovable prior bytes and no live Gateway restarts the Gateway
+    // from the desired plan instead of leaving it dead; the tampered bytes are never loaded.
+    let restarted_gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
+    assert_ne!(restarted_gateway_pid, gateway_pid);
+    assert!(process_is_alive(restarted_gateway_pid)?);
+    assert!(!fs::read_to_string(&paths.gateway_root_config())?.contains("# unverified change"));
     assert_eq!(fs::read_to_string(&source_fragment)?, old_source_content);
 
     fs::write_sensitive_file(&paths.gateway_root_config(), &verified_gateway_root)?;
@@ -1197,7 +1296,9 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
         fs::read_to_string(&paths.gateway_root_config())?,
         verified_gateway_root
     );
-    assert_eq!(fs::read_to_string(&source_fragment)?, old_source_content);
+    // The restarted Gateway is verifiably running the desired config, so normal hygiene
+    // applies: the stale fragment of the moved project is collected instead of retained.
+    assert!(!source_fragment.exists());
     assert_eq!(
         required_runtime_metadata_pid(&paths.worker_runtime_metadata(&xdebug_runtime_key))?,
         xdebug_worker_pid

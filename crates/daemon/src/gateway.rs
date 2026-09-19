@@ -620,6 +620,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
                 paths,
                 &supervisor,
                 &gateway_command,
+                None,
                 previous_gateway.as_ref(),
                 pf_routing_state,
                 readiness_timeout,
@@ -764,6 +765,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             paths,
             &supervisor,
             &gateway_command,
+            Some(&plan),
             previous_gateway.as_ref(),
             pf_routing_state,
             readiness_timeout,
@@ -842,12 +844,41 @@ async fn recover_previous_gateway(
     paths: &PvPaths,
     supervisor: &ProcessSupervisor,
     gateway_command: &CaddyCliCommand,
+    plan: Option<&RuntimePlan>,
     snapshot: Option<&ActiveRuntimeConfigSnapshot>,
     pf_routing_state: Option<GatewayPfRoutingState>,
     readiness_timeout: Duration,
 ) -> Result<(), DaemonError> {
     let Some(snapshot) = snapshot else {
-        return Ok(());
+        // Prior bytes are unprovable: only a previously recorded Gateway that is now
+        // definitively absent may be started from the desired plan, exactly once. A live,
+        // unverifiable, or never-installed Gateway is left untouched so recovery never
+        // issues a competing load or materializes a Gateway the plan never ran.
+        let Some(plan) = plan else {
+            return Ok(());
+        };
+        let gateway_spec = gateway_process_spec(paths, gateway_command);
+        if supervisor
+            .recorded_config_fingerprint(&gateway_spec)?
+            .is_none()
+        {
+            return Ok(());
+        }
+        match supervisor.verify_ownership(&gateway_spec) {
+            Ok(None) => {
+                return reconcile_planned_gateway(
+                    paths,
+                    supervisor,
+                    plan,
+                    gateway_command,
+                    pf_routing_state,
+                    readiness_timeout,
+                    None,
+                )
+                .await;
+            }
+            Ok(Some(_)) | Err(_) => return Ok(()),
+        }
     };
     let active_dir = paths.gateway_projects_config_dir();
     let candidate_dir = candidate_config_dir_for(&active_dir);
@@ -2195,7 +2226,9 @@ fn active_runtime_config_snapshot(
             {
                 return Ok(None);
             }
-            Err(error) => return Err(error.into()),
+            Err(error) => {
+                return Err(error.into());
+            }
         };
         fragments.insert(file_name.to_owned(), content);
     }
