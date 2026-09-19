@@ -1,5 +1,6 @@
-use std::io::Write;
+use std::io::{self, Write};
 use std::process::ExitCode;
+use std::time::Duration;
 
 use camino::Utf8PathBuf;
 use platform::PlatformCapability;
@@ -300,8 +301,56 @@ fn command_blocked_during_update(command: &Command) -> bool {
     }
 }
 
+const RECONCILE_KIND: &str = "reconcile";
+const JOBS_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(100);
+const DEFERRED_RECONCILIATION_WARNING: &str =
+    "warning: reconciliation deferred while another PV mutation holds the jobs lock";
+const DAEMON_UNAVAILABLE_WARNING: &str =
+    "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it";
+
 fn acquire_jobs_lock(paths: &PvPaths) -> Result<state::JobsLock, ExecuteError> {
     state::JobsLock::acquire(paths).map_err(coordination_lock_error)
+}
+
+/// Submits a reconciliation request for state a command has already committed.
+///
+/// The command releases `jobs.lock` before notifying the daemon, so a competing
+/// mutation can win the handoff and make the daemon reject this request. Retry
+/// that specific rejection until the request is admitted instead of losing the
+/// reconciliation for committed state.
+fn submit_reconciliation(
+    paths: &PvPaths,
+    scope: &str,
+    output: &mut Output<'_, impl Write>,
+) -> Result<Option<::daemon::SubmittedJob>, ExecuteError> {
+    let mut deferred = false;
+    loop {
+        match ::daemon::submit_job_blocking(paths.clone(), RECONCILE_KIND, scope) {
+            Ok(job) => return Ok(Some(job)),
+            Err(::daemon::DaemonError::Io(error)) if daemon_is_unavailable(&error) => {
+                output.line(DAEMON_UNAVAILABLE_WARNING)?;
+
+                return Ok(None);
+            }
+            Err(::daemon::DaemonError::DaemonRejected { message })
+                if message.contains(paths.jobs_lock().as_str()) =>
+            {
+                if !deferred {
+                    deferred = true;
+                    output.line(DEFERRED_RECONCILIATION_WARNING)?;
+                }
+                std::thread::sleep(JOBS_LOCK_RETRY_INTERVAL);
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn daemon_is_unavailable(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+    )
 }
 
 fn coordination_lock_error(error: StateError) -> ExecuteError {

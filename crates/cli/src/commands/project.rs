@@ -299,16 +299,12 @@ fn request_project_reconciliation(
     output: &mut Output<'_, impl Write>,
 ) -> Result<(), ExecuteError> {
     let scope = format!("project:{}", project.id);
-    match daemon::submit_job_blocking(paths.clone(), "reconcile", &scope) {
-        Ok(job) => output.line(&format!(
+    if let Some(job) = super::submit_reconciliation(paths, &scope, output)? {
+        output.line(&format!(
             "Queued reconciliation {} for {}",
             job.id,
             project_display_name(project)
-        ))?,
-        Err(daemon::DaemonError::Io(error)) if daemon_is_unavailable(&error) => output.line(
-            "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it",
-        )?,
-        Err(error) => return Err(error.into()),
+        ))?;
     }
 
     Ok(())
@@ -318,12 +314,8 @@ fn request_system_reconciliation(
     paths: &PvPaths,
     output: &mut Output<'_, impl Write>,
 ) -> Result<(), ExecuteError> {
-    match daemon::submit_job_blocking(paths.clone(), "reconcile", "system") {
-        Ok(job) => output.line(&format!("System reconciliation requested: {}", job.id))?,
-        Err(daemon::DaemonError::Io(error)) if daemon_is_unavailable(&error) => output.line(
-            "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it",
-        )?,
-        Err(error) => return Err(error.into()),
+    if let Some(job) = super::submit_reconciliation(paths, "system", output)? {
+        output.line(&format!("System reconciliation requested: {}", job.id))?;
     }
 
     Ok(())
@@ -406,13 +398,6 @@ fn select_project(
     };
 
     Ok(project)
-}
-
-fn daemon_is_unavailable(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-    )
 }
 
 fn project_env_context(
