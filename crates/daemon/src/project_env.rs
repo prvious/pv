@@ -251,6 +251,11 @@ pub(crate) async fn reconcile_project_env_with_runtime_catalog_and_progress(
     .await;
     match result {
         Ok(summary) => Ok(summary),
+        // No project row exists, so there is no env to attribute a failure to;
+        // propagate bare as reviewed instead of recording against nothing.
+        Err(reconciliation @ DaemonError::State(StateError::ProjectNotFound { .. })) => {
+            Err(reconciliation)
+        }
         Err(reconciliation) => {
             let message = reconciliation.to_string();
             if let Err(recording) = record_project_env_failure(&mut database, project_id, &message)
