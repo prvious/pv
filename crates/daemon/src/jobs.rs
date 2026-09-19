@@ -420,7 +420,13 @@ pub(crate) async fn run_startup_reconciliation_job(
         return Ok(());
     };
 
-    complete_running_background_reconciliation_job(&paths, running, runtime_catalog).await
+    complete_running_background_reconciliation_job(
+        &paths,
+        running,
+        runtime_catalog,
+        Some(&shutdown),
+    )
+    .await
 }
 
 async fn wait_for_startup_reconciliation_turn(
@@ -444,13 +450,14 @@ async fn complete_background_reconciliation_job(
     };
     let running = queued.wait_for_turn().await;
 
-    complete_running_background_reconciliation_job(paths, running, runtime_catalog).await
+    complete_running_background_reconciliation_job(paths, running, runtime_catalog, None).await
 }
 
 async fn complete_running_background_reconciliation_job(
     paths: &PvPaths,
     running: RunningReconciliation,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    shutdown: Option<&oneshot::Receiver<()>>,
 ) -> Result<(), BackgroundReconciliationError> {
     let job_id = running.job_id().to_string();
     let scope = running.scope().clone();
@@ -462,6 +469,7 @@ async fn complete_running_background_reconciliation_job(
         DaemonDownloadProgress::disabled(),
         running.timing(),
         None,
+        shutdown,
     )
     .await;
 
@@ -1620,6 +1628,7 @@ async fn complete_reconciliation_job_with_progress(
         progress,
         timing,
         pf_routing_state,
+        None,
     )
     .await
     .into_result()
@@ -1649,6 +1658,11 @@ impl ReconciliationJobCompletion {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "`shutdown` is only owned by the startup task; all other callers pass `None`, \
+              so it cannot be derived from the job parameters."
+)]
 async fn complete_reconciliation_job_with_progress_outcome(
     paths: &PvPaths,
     job_id: &str,
@@ -1657,6 +1671,7 @@ async fn complete_reconciliation_job_with_progress_outcome(
     progress: DaemonDownloadProgress,
     timing: ReconciliationJobTiming,
     pf_routing_state: Option<GatewayPfRoutingState>,
+    shutdown: Option<&oneshot::Receiver<()>>,
 ) -> ReconciliationJobCompletion {
     let scope_text = scope.to_string();
     let phase_log = ReconciliationPhaseLog::new(paths, job_id, &scope_text);
@@ -1677,6 +1692,7 @@ async fn complete_reconciliation_job_with_progress_outcome(
                 runtime_catalog,
                 progress,
                 &phase_log,
+                shutdown,
             )
             .await
         }
@@ -1820,6 +1836,7 @@ async fn complete_system_reconciliation_with_progress(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
+    shutdown: Option<&oneshot::Receiver<()>>,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
     let discovery_timer = phase_log.start(ReconciliationPhase::DemandDiscovery, "linked_projects");
     let discovery_result = discover_system_project_demand(paths);
@@ -1840,7 +1857,10 @@ async fn complete_system_reconciliation_with_progress(
     // retry after one could never recover the apply that needed the artifact. The retry is its
     // own timed phase and suppresses nested operation records, so the log stays coherent. If it
     // still fails, the later read-only check decides whether current applied demand still needs it.
-    if resources_result.is_err() {
+    // Skip the retry when shutdown was already requested: a second blocking download would
+    // hold the shutdown drain with no one left to consume its result.
+    let shutdown_requested = shutdown.is_some_and(|shutdown| !shutdown.is_empty());
+    if resources_result.is_err() && !shutdown_requested {
         let retry_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
         resources_progress = progress
             .retrying_manifest_snapshot()
@@ -1963,6 +1983,7 @@ async fn complete_project_reconciliation_with_progress(
                 runtime_catalog,
                 progress,
                 phase_log,
+                None,
             )
             .await;
         }
@@ -2811,17 +2832,15 @@ mod tests {
     use super::{
         DaemonDownloadProgress, FOREGROUND_JOB_PROGRESS_BUFFER,
         FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent, SystemProjectReconciliationReport,
-        abandon_reconciliation_job,
-        complete_managed_resource_reconciliation_with_progress,
+        abandon_reconciliation_job, complete_managed_resource_reconciliation_with_progress,
         complete_or_fail_background_reconciliation, complete_project_reconciliation_with_progress,
         complete_reconciliation_job_with_progress, complete_streamed_job_with_heartbeat,
         complete_streamed_job_with_heartbeat_and_events,
         complete_system_reconciliation_with_progress, complete_update_job,
         completed_system_reconciliation_coverage, discover_system_project_demand,
         enqueue_reconciliation_job, enqueue_startup_reconciliation_job,
-        foreground_reconciliation_result, linked_projects,
-        managed_resource_reconciliation_summary, reconcile_persisted_project_envs,
-        reconcile_project_env_and_missing_resources,
+        foreground_reconciliation_result, linked_projects, managed_resource_reconciliation_summary,
+        reconcile_persisted_project_envs, reconcile_project_env_and_missing_resources,
         reconcile_project_env_with_runtime_catalog_and_progress,
         reconcile_system_projects_and_resources_with_progress,
         reconcile_system_projects_with_progress,
@@ -4731,6 +4750,7 @@ mod tests {
                     Some(&catalog),
                     progress,
                     &phase_log,
+                    None,
                 )
                 .await
                 .map(|_| ())
@@ -5085,6 +5105,7 @@ mod tests {
                 Some(&catalog),
                 super::DaemonDownloadProgress::disabled(),
                 &phase_log,
+                None,
             )
             .await?;
 
@@ -5189,6 +5210,7 @@ mod tests {
             Some(&catalog),
             super::DaemonDownloadProgress::disabled(),
             &phase_log,
+            None,
         )
         .await;
 
@@ -5365,6 +5387,7 @@ mod tests {
                 Some(&catalog),
                 super::DaemonDownloadProgress::disabled(),
                 &phase_log,
+                None,
             )
             .await;
             let database = Database::open(&paths)?;
@@ -5525,6 +5548,7 @@ mod tests {
                     Some(&catalog),
                     progress,
                     &phase_log,
+                    None,
                 )
                 .await
                 .map(|_| ());
@@ -5729,6 +5753,7 @@ mod tests {
                     Some(&catalog),
                     progress,
                     &phase_log,
+                    None,
                 )
                 .await
                 .map(|_| ())
@@ -5895,6 +5920,7 @@ mod tests {
                 Some(&catalog),
                 super::DaemonDownloadProgress::disabled(),
                 &phase_log,
+                None,
             )
             .await;
 
