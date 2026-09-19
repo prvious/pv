@@ -376,6 +376,21 @@ fn collect_runtime_health_probes(
         }
     }
     for (runtime_key, (php_track, scopes)) in projects_by_runtime {
+        // A desired worker without a completed FrankenPHP artifact cannot be repaired by
+        // targeted Project reconciliation, so health recovery must not keep retrying it.
+        // Existing installation failure diagnostics stay authoritative until an explicit
+        // installing path records the artifact.
+        let Some(artifact_root) = tracks
+            .iter()
+            .find(|track| {
+                track.resource_name == "frankenphp"
+                    && track.track == php_track
+                    && track.desired_state == ManagedResourceDesiredState::Installed
+            })
+            .and_then(|track| track.current_artifact_path.as_deref())
+        else {
+            continue;
+        };
         let port = assignments
             .iter()
             .find_map(|assignment| match &assignment.owner {
@@ -384,19 +399,11 @@ fn collect_runtime_health_probes(
                 }
                 _ => None,
             });
-        let artifact_root = tracks
-            .iter()
-            .find(|track| {
-                track.resource_name == "frankenphp"
-                    && track.track == php_track
-                    && track.desired_state == ManagedResourceDesiredState::Installed
-            })
-            .and_then(|track| track.current_artifact_path.as_deref());
         let (current, error) = recorded_runtime_is_current(
             &supervisor,
             &paths.worker_pid(&runtime_key),
             &paths.worker_runtime_metadata(&runtime_key),
-            artifact_root,
+            Some(artifact_root),
             true,
         );
         probes.push(DesiredRuntimeProbe {
@@ -1096,6 +1103,43 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
+    async fn scanner_excludes_incomplete_frankenphp_installations() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::write_sensitive_file(&paths.ca_certificate(), "unused certificate")?;
+        state::fs::write_sensitive_file(&paths.ca_private_key(), "unused private key")?;
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(&config_path, "php: \"8.4\"\n")?;
+        let mut database = Database::open(&paths)?;
+        database.link_project(LinkProjectInput {
+            path: project_path.clone(),
+            original_path: project_path,
+            primary_hostname: "health.test".to_owned(),
+            config_path,
+            desired_php_track: Some("8.4".to_owned()),
+            additional_hostnames: Vec::new(),
+        })?;
+        database.record_managed_resource_track_desired(
+            "frankenphp",
+            "8.4",
+            ManagedResourceDesiredState::Installed,
+        )?;
+        drop(database);
+
+        let scan = scan_runtime_health(
+            paths,
+            Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+        )
+        .await?;
+
+        assert!(scan.observations.is_empty());
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
     async fn scanner_selects_only_gateway_caddy_track_two() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1155,6 +1199,12 @@ mod tests {
                 additional_hostnames: Vec::new(),
             })?
             .project;
+        database.record_managed_resource_track_installed(
+            "frankenphp",
+            "8.4",
+            "8.4.0-pv1",
+            &tempdir.path().join("frankenphp-8.4"),
+        )?;
         let projects_before = database.projects()?;
         let tracks_before = database.managed_resource_tracks()?;
         let observed_before = database.runtime_observed_states()?;

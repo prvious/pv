@@ -571,6 +571,12 @@ mod tests {
         };
         let mut database = Database::open(&paths)?;
         let project = database.link_project(project_input)?.project;
+        database.record_managed_resource_track_installed(
+            "frankenphp",
+            "8.4",
+            "8.4.0-pv1",
+            &tempdir.path().join("frankenphp-8.4"),
+        )?;
         drop(database);
 
         let scan = scan_runtime_health(
