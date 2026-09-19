@@ -199,12 +199,10 @@ impl JobEventHandler for DownloadProgressRenderer<'_> {
             }
             return;
         }
-        if !self.enabled
-            && matches!(
-                message,
-                "Reconciliation still running" | "Managed Resource update still running"
-            )
-        {
+        if matches!(
+            message,
+            "Reconciliation still running" | "Managed Resource update still running"
+        ) {
             return;
         }
         self.transition(message, false);
@@ -438,6 +436,55 @@ mod tests {
                     ),
                 ),
             ],
+        )
+        "#);
+    }
+
+    #[test]
+    fn terminal_heartbeats_preserve_active_phase() {
+        let target = MultiProgress::with_draw_target(ProgressDrawTarget::hidden());
+        let mut progress = DownloadProgressRenderer::with_progress(true, None, target);
+        assert!(progress.enabled);
+        progress.progress("gateway");
+        let active = progress
+            .status
+            .as_ref()
+            .map(indicatif::ProgressBar::message);
+
+        progress.log("Reconciliation still running");
+        let after_reconciliation_heartbeat = progress
+            .status
+            .as_ref()
+            .map(indicatif::ProgressBar::message);
+
+        progress.log("Managed Resource update still running");
+        let after_update_heartbeat = progress
+            .status
+            .as_ref()
+            .map(indicatif::ProgressBar::message);
+
+        progress.log("System reconciliation started");
+        let after_normal_log = progress
+            .status
+            .as_ref()
+            .map(indicatif::ProgressBar::message);
+
+        insta::assert_debug_snapshot!(
+            (active, after_reconciliation_heartbeat, after_update_heartbeat, after_normal_log),
+            @r#"
+        (
+            Some(
+                "Reconciliation phase: Gateway",
+            ),
+            Some(
+                "Reconciliation phase: Gateway",
+            ),
+            Some(
+                "Reconciliation phase: Gateway",
+            ),
+            Some(
+                "System reconciliation started",
+            ),
         )
         "#);
     }
