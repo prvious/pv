@@ -7,17 +7,48 @@ if [ "$1" = "validate" ]; then
 fi
 
 if [ "$1" = "run" ]; then
+  parent_pid="${PPID:-}"
+  if [ -z "$parent_pid" ] || [ "$parent_pid" = "1" ]; then
+    exit 0
+  fi
+  child=""
+  watcher=""
+  # shellcheck disable=SC2329 # Invoked indirectly by the signal trap.
+  stop_child() {
+    if [ -n "$child" ]; then
+      kill "$child" 2>/dev/null || :
+      wait "$child" 2>/dev/null || :
+    fi
+    if [ -n "$watcher" ]; then
+      kill "$watcher" 2>/dev/null || :
+      wait "$watcher" 2>/dev/null || :
+    fi
+    exit 0
+  }
+  trap 'stop_child' TERM INT
+  watch_parent() {
+    while true; do
+      current_parent_pid="$(ps -o ppid= -p "$$" 2>/dev/null | tr -d '[:space:]')"
+      if [ -z "$current_parent_pid" ] || [ "$current_parent_pid" = "1" ] || [ "$current_parent_pid" != "$parent_pid" ]; then
+        kill -TERM "$$" 2>/dev/null || :
+        return 0
+      fi
+      sleep 0.1
+    done
+  }
+  watch_parent &
+  watcher="$!"
+  export PV_FAKE_FIXTURE_PARENT_PID="$parent_pid"
   python3 - "$3" < "$0.server.py" &
   child="$!"
-  trap 'kill "$child"; wait "$child"; exit 0' TERM INT
-  while true; do
-    wait "$child" && exit 0
-    status="$?"
-    if kill -0 "$child" 2>/dev/null; then
-      continue
-    fi
-    exit "$status"
-  done
+  if wait "$child"; then
+    child_status=0
+  else
+    child_status="$?"
+  fi
+  kill "$watcher" 2>/dev/null || :
+  wait "$watcher" 2>/dev/null || :
+  exit "$child_status"
 fi
 
 exit 2

@@ -19,6 +19,36 @@ current_path = state_directory / "fake-admin-current.bin"
 request_log_path = state_directory / "fake-admin-requests.jsonl"
 runtime_name = os.environ.get("PV_FAKE_RUNTIME", "runtime")
 
+parent_pid = os.getppid()
+if parent_pid == 1:
+    os._exit(0)
+expected_parent_pid = os.environ.get("PV_FAKE_FIXTURE_PARENT_PID")
+if expected_parent_pid is None:
+    expected_parent_pid = parent_pid
+else:
+    try:
+        expected_parent_pid = int(expected_parent_pid)
+    except ValueError:
+        expected_parent_pid = parent_pid
+if expected_parent_pid == 1:
+    os._exit(0)
+
+
+def monitor_parent():
+    while True:
+        current_parent_pid = os.getppid()
+        if current_parent_pid == 1 or current_parent_pid != parent_pid:
+            os._exit(0)
+        if expected_parent_pid != parent_pid:
+            try:
+                os.kill(expected_parent_pid, 0)
+            except OSError:
+                os._exit(0)
+        time.sleep(0.1)
+
+
+threading.Thread(target=monitor_parent, daemon=True).start()
+
 
 def setting(pattern, config):
     match = re.search(pattern, config.decode("utf-8"), re.MULTILINE)
