@@ -8,12 +8,16 @@ use hickory_proto::serialize::binary::BinEncodable;
 use insta::{Settings, assert_debug_snapshot};
 use rcgen::generate_simple_self_signed;
 use rusqlite::{Connection, params};
+use rustix::io::Errno;
+use rustix::process::{Pid, test_kill_process, test_kill_process_group};
 use serde_json::{Value, json};
 use state::{
     AppReleaseLayout, DNS_PREFERRED_PORT, Database, GatewayPort, JobRecord, JobStatus, JobsLock,
     LinkProjectInput, PortOwner, PortRequest, PvPaths, RUNTIME_PORT_FALLBACK_END,
     RUNTIME_PORT_FALLBACK_START, RuntimeObservedStatus, RuntimeSubject, UpdateLock,
 };
+use std::collections::BTreeMap;
+use std::future::Future;
 use std::io::{self, ErrorKind, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
 use std::str::FromStr;
@@ -104,6 +108,8 @@ const FOUNDATION_FAKE_CADDY_SERVER_SCRIPT: &str = include_str!(concat!(
 ));
 const SEEDED_GATEWAY_CLEANUP_TIMEOUT: Duration = Duration::from_millis(500);
 const SEEDED_GATEWAY_CLEANUP_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const FALLBACK_SUBPROCESS_HOME: &str = "PV_DAEMON_FALLBACK_SUBPROCESS_HOME";
+const FALLBACK_SUBPROCESS_RELEASE: &str = "PV_DAEMON_FALLBACK_SUBPROCESS_RELEASE";
 
 #[tokio::test]
 async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Result<()> {
@@ -422,7 +428,8 @@ async fn daemon_shutdown_cancels_startup_reconciliation_waiting_for_jobs_lock() 
 async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let [validation_started, release_validation] = seed_barrier_foundation_caddy(&paths)?;
+    let [validation_started, release_validation, runtime_started] =
+        seed_barrier_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
 
     let result = async {
@@ -460,12 +467,605 @@ async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
         assert!(shutdown_was_pending);
         assert_eq!(job.status, JobStatus::Succeeded);
         assert_eq!(job.error, None);
+        assert!(runtime_started.exists());
+        assert!(paths.gateway_pid().exists());
+        assert!(paths.gateway_runtime_metadata().exists());
 
         Ok::<(), anyhow::Error>(())
     }
     .await;
     let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
     propagate_after_cleanup(result, cleanup_result)
+}
+
+#[tokio::test]
+async fn seeded_gateway_drop_does_not_block_current_thread_runtime() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_user_dir(paths.home())?;
+    let output_path = tempdir.path().join("nested.output");
+    let nested_pid_path = paths.run().join("nested-test.pid");
+    let nested_metadata_path = paths.run().join("nested-test.json");
+    let nested_release_path = paths.run().join("nested-test.release");
+    let mut private_environment = BTreeMap::new();
+    private_environment.insert(
+        FALLBACK_SUBPROCESS_HOME.to_owned(),
+        paths.home().to_string(),
+    );
+    private_environment.insert(
+        FALLBACK_SUBPROCESS_RELEASE.to_owned(),
+        nested_release_path.to_string(),
+    );
+    let mut child = daemon::ProcessSupervisor::new(paths.clone())
+        .start(daemon::ProcessSpec {
+            name: "nested seeded gateway regression".to_owned(),
+            command: current_test_binary()?,
+            arguments: vec![
+                "--exact".to_owned(),
+                "seeded_gateway_drop_current_thread_inner".to_owned(),
+                "--ignored".to_owned(),
+                "--nocapture".to_owned(),
+            ],
+            private_environment,
+            config_path: paths.home().to_owned(),
+            config_fingerprint: None,
+            log_path: output_path.clone(),
+            pid_path: nested_pid_path.clone(),
+            metadata_path: nested_metadata_path.clone(),
+            resource_name: "test".to_owned(),
+            track: "fallback".to_owned(),
+        })
+        .await?;
+    if let Err(error) = state::fs::write_sensitive_file(&nested_release_path, "release\n") {
+        let cleanup_result = async {
+            child.stop(Duration::from_millis(100)).await?;
+            state::fs::remove_file_if_exists(&nested_pid_path)?;
+            state::fs::remove_file_if_exists(&nested_metadata_path)?;
+            Ok(())
+        }
+        .await;
+        return propagate_after_cleanup(Err(error.into()), cleanup_result);
+    }
+    let deadline = TokioInstant::now() + Duration::from_secs(5);
+
+    loop {
+        if child.has_exited()? {
+            break;
+        }
+        if TokioInstant::now() >= deadline {
+            let mut cleanup_failures = Vec::new();
+            if let Err(error) = async {
+                child.stop(Duration::from_millis(100)).await?;
+                state::fs::remove_file_if_exists(&nested_pid_path)?;
+                state::fs::remove_file_if_exists(&nested_metadata_path)?;
+                Ok::<(), anyhow::Error>(())
+            }
+            .await
+            {
+                cleanup_failures.push(format!("child stop failed: {error}"));
+            }
+            if let Err(error) = emergency_cleanup_seeded_runtimes(&paths).await {
+                cleanup_failures.push(format!("fixture cleanup failed: {error}"));
+            }
+            let output = state::fs::read_to_string(&output_path).unwrap_or_else(|error| {
+                cleanup_failures.push(format!("output capture failed: {error}"));
+                "<unavailable>".to_owned()
+            });
+            let cleanup_diagnostic = if cleanup_failures.is_empty() {
+                String::new()
+            } else {
+                format!("; cleanup failures: {}", cleanup_failures.join("; "))
+            };
+            return Err(anyhow!(
+                "nested fallback regression timed out; output={output}{cleanup_diagnostic}"
+            ));
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    child.stop(Duration::from_millis(100)).await?;
+    state::fs::remove_file_if_exists(&nested_pid_path)?;
+    state::fs::remove_file_if_exists(&nested_metadata_path)?;
+    let output = state::fs::read_to_string(&output_path)?;
+    assert!(
+        output.contains("seeded gateway fallback sentinel"),
+        "nested test did not report its sentinel; output={output}"
+    );
+    assert!(!paths.daemon_socket().exists());
+    assert!(!paths.gateway_pid().exists());
+    assert!(!paths.gateway_runtime_metadata().exists());
+    let gateway_group = recorded_test_pid(&paths.run().join("captured-gateway-leader.pid"))?;
+    let gateway_descendant = recorded_test_pid(&paths.run().join("gateway-descendant.pid"))?;
+    assert_eq!(test_kill_process_group(gateway_group), Err(Errno::SRCH));
+    assert_eq!(test_kill_process(gateway_descendant), Err(Errno::SRCH));
+    assert_fixture_listeners_released(&paths)?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "run by seeded_gateway_drop_does_not_block_current_thread_runtime"]
+async fn seeded_gateway_drop_current_thread_inner() -> Result<()> {
+    let home = std::env::vars_os()
+        .find_map(|(key, value)| (key == FALLBACK_SUBPROCESS_HOME).then_some(value))
+        .ok_or_else(|| anyhow!("nested fallback subprocess home was missing"))?;
+    let home = Utf8PathBuf::from_path_buf(home.into())
+        .map_err(|path| anyhow!("nested fallback subprocess home is not UTF-8: {path:?}"))?;
+    let release = std::env::vars_os()
+        .find_map(|(key, value)| (key == FALLBACK_SUBPROCESS_RELEASE).then_some(value))
+        .ok_or_else(|| anyhow!("nested fallback subprocess release path was missing"))?;
+    let release = Utf8PathBuf::from_path_buf(release.into()).map_err(|path| {
+        anyhow!("nested fallback subprocess release path is not UTF-8: {path:?}")
+    })?;
+    wait_for_path(&release).await?;
+    let paths = PvPaths::for_home(home);
+    seed_foundation_caddy(&paths)?;
+    make_gateway_descendant_observable(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    wait_for_succeeded_job_scope(&paths, "system").await?;
+    state::fs::write_sensitive_file(
+        &paths.run().join("captured-gateway-leader.pid"),
+        &state::fs::read_to_string(&paths.gateway_pid())?,
+    )?;
+    wait_for_path(&paths.run().join("gateway-descendant.pid")).await?;
+
+    Err(anyhow!("seeded gateway fallback sentinel"))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fallback_shutdown_prevents_late_gateway_startup() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let [validation_started, release_validation, runtime_started] =
+        seed_barrier_foundation_caddy(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if validation_started.exists() {
+                return;
+            }
+            sleep(JOB_STATUS_POLL_INTERVAL).await;
+        }
+    })
+    .await?;
+    let job = wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
+
+    gateway_guard.shutdown_daemon_without_waiting()?;
+    state::fs::write_sensitive_file(&release_validation, "release\n")?;
+    let job = wait_for_job_id_status(&paths, &job.id, JobStatus::Failed).await?;
+    assert_eq!(
+        job.error.as_deref(),
+        Some("reconciliation was abandoned before completion")
+    );
+    assert_job_has_no_coverage(&paths, &job.id)?;
+    assert!(!runtime_started.exists());
+    assert!(!paths.gateway_root_config().exists());
+    gateway_guard.shutdown_and_cleanup().await?;
+
+    assert!(!paths.daemon_socket().exists());
+    assert!(!paths.gateway_pid().exists());
+    assert!(!paths.gateway_runtime_metadata().exists());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fallback_shutdown_prevents_late_worker_startup() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    let ([validation_started, release_validation, runtime_started], _port_reservation) =
+        seed_barrier_foundation_worker(&paths, &project_path, false)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    gateway_guard.attach_worker("8.4");
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    wait_for_path(&validation_started).await?;
+    let job = wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
+
+    gateway_guard.shutdown_daemon_without_waiting()?;
+    state::fs::write_sensitive_file(&release_validation, "release\n")?;
+    let job = wait_for_job_id_status(&paths, &job.id, JobStatus::Failed).await?;
+    assert_eq!(
+        job.error.as_deref(),
+        Some("reconciliation was abandoned before completion")
+    );
+    assert_job_has_no_coverage(&paths, &job.id)?;
+    assert!(!runtime_started.exists());
+    assert!(!paths.worker_root_config("8.4").exists());
+    gateway_guard.shutdown_and_cleanup().await?;
+
+    assert!(!paths.worker_pid("8.4").exists());
+    assert!(!paths.worker_runtime_metadata("8.4").exists());
+    assert!(!paths.daemon_socket().exists());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fallback_shutdown_dominates_worker_validation_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    let ([validation_started, release_validation, runtime_started], _port_reservation) =
+        seed_barrier_foundation_worker(&paths, &project_path, true)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    gateway_guard.attach_worker("8.4");
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    wait_for_path(&validation_started).await?;
+    let job = wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
+
+    gateway_guard.shutdown_daemon_without_waiting()?;
+    state::fs::write_sensitive_file(&release_validation, "release\n")?;
+    let job = wait_for_job_id_status(&paths, &job.id, JobStatus::Failed).await?;
+    assert_eq!(
+        job.error.as_deref(),
+        Some("reconciliation was abandoned before completion")
+    );
+    assert_job_has_no_coverage(&paths, &job.id)?;
+    assert!(!runtime_started.exists());
+    assert!(!paths.worker_root_config("8.4").exists());
+    gateway_guard.shutdown_and_cleanup().await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fallback_shutdown_cancels_fresh_worker_readiness() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    let (_project_id, port_reservation) = seed_foundation_php_project_in_range(
+        &paths,
+        &project_path,
+        "php: \"8.4\"\n",
+        50_000,
+        54_999,
+    )?;
+    let worker_port = port_reservation.local_addr()?.port();
+    let [readiness_started, readiness_gate] = install_worker_readiness_barrier(&paths)?;
+    drop(port_reservation);
+    let worker_root_config = paths.worker_root_config("8.4");
+    state::fs::write_sensitive_file(&readiness_gate, "blocked\n")?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    gateway_guard.attach_worker("8.4");
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    let job = wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
+    wait_for_path(&readiness_started).await?;
+    wait_for_path(&paths.worker_pid("8.4")).await?;
+    wait_for_runtime_replacement_required(&paths.worker_runtime_metadata("8.4")).await?;
+    let worker_pid = recorded_test_pid(&paths.worker_pid("8.4"))?;
+
+    gateway_guard.shutdown_daemon_without_waiting()?;
+    let job = wait_for_job_id_status(&paths, &job.id, JobStatus::Failed).await?;
+    assert_eq!(
+        job.error.as_deref(),
+        Some("reconciliation was abandoned before completion")
+    );
+    assert_job_has_no_coverage(&paths, &job.id)?;
+    assert_eq!(test_kill_process_group(worker_pid), Err(Errno::SRCH));
+    assert!(!paths.worker_pid("8.4").exists());
+    assert!(!paths.worker_runtime_metadata("8.4").exists());
+    assert!(!worker_root_config.exists());
+    if platform::loopback_tcp_port_has_listener(worker_port)? {
+        return Err(anyhow!(
+            "worker port {worker_port} still has a TCP listener"
+        ));
+    }
+    gateway_guard.shutdown_and_cleanup().await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fallback_shutdown_preserves_pending_matching_worker_reload() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    state::fs::ensure_user_dir(&project_path.join("public"))?;
+    state::fs::ensure_user_dir(&project_path.join("web"))?;
+    let (project_id, port_reservation) = seed_foundation_php_project_in_range(
+        &paths,
+        &project_path,
+        "php: \"8.4\"\ndocument_root: public\n",
+        55_000,
+        59_999,
+    )?;
+    let [load_started, release_load, load_requests] = install_worker_load_barrier(&paths)?;
+    drop(port_reservation);
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    gateway_guard.attach_worker("8.4");
+    daemon::gateway::reconcile_gateway_runtimes(&paths).await?;
+    let worker_pid = recorded_test_pid(&paths.worker_pid("8.4"))?;
+    let previous_config = state::fs::read_to_string(&paths.worker_root_config("8.4"))?;
+    let worker_fragment = paths
+        .worker_projects_config_dir("8.4")
+        .join(format!("{project_id}.Caddyfile"));
+    let previous_fragment = state::fs::read_to_string(&worker_fragment)?;
+    state::fs::write_sensitive_file(
+        &project_path.join("pv.yml"),
+        "php: \"8.4\"\ndocument_root: web\n",
+    )?;
+
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    wait_for_path(&load_started).await?;
+    let job = wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
+    gateway_guard.shutdown_daemon_without_waiting()?;
+    state::fs::write_sensitive_file(&release_load, "release\n")?;
+    let job = wait_for_job_id_status(&paths, &job.id, JobStatus::Failed).await?;
+    assert_eq!(
+        job.error.as_deref(),
+        Some("reconciliation was abandoned before completion")
+    );
+    assert_job_has_no_coverage(&paths, &job.id)?;
+    assert_eq!(recorded_test_pid(&paths.worker_pid("8.4"))?, worker_pid);
+    assert_eq!(
+        state::fs::read_to_string(&paths.worker_root_config("8.4"))?,
+        previous_config
+    );
+    let promoted_fragment = state::fs::read_to_string(&worker_fragment)?;
+    assert_ne!(promoted_fragment, previous_fragment);
+    assert!(promoted_fragment.contains(project_path.join("web").as_str()));
+    assert!(!promoted_fragment.contains(project_path.join("public").as_str()));
+    assert_eq!(state::fs::read_to_string(&load_requests)?, "load\n");
+    let metadata: Value = serde_json::from_str(&state::fs::read_to_string(
+        &paths.worker_runtime_metadata("8.4"),
+    )?)?;
+    assert_eq!(metadata["replacement_required"], true);
+    assert!(metadata["applied_config_fingerprint"].is_null());
+    assert!(metadata["staged_config_fingerprint"].is_string());
+    assert_eq!(
+        metadata["staged_config_fingerprint"],
+        metadata["desired_config_fingerprint"]
+    );
+    let supervisor = daemon::ProcessSupervisor::new(paths.clone());
+    assert!(
+        supervisor
+            .adopt_recorded(
+                &paths.worker_pid("8.4"),
+                &paths.worker_runtime_metadata("8.4")
+            )?
+            .is_some()
+    );
+    gateway_guard.shutdown_and_cleanup().await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fallback_shutdown_cancels_watcher_reload_and_preserves_pending_worker() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    state::fs::ensure_user_dir(&project_path.join("public"))?;
+    state::fs::ensure_user_dir(&project_path.join("web"))?;
+    let (project_id, port_reservation) = seed_foundation_php_project_in_range(
+        &paths,
+        &project_path,
+        "php: \"8.4\"\ndocument_root: public\n",
+        55_000,
+        59_999,
+    )?;
+    let [load_started, release_load, load_requests] = install_worker_load_barrier(&paths)?;
+    drop(port_reservation);
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    gateway_guard.attach_worker("8.4");
+    daemon::gateway::reconcile_gateway_runtimes(&paths).await?;
+    let worker_pid = recorded_test_pid(&paths.worker_pid("8.4"))?;
+    let previous_config = state::fs::read_to_string(&paths.worker_root_config("8.4"))?;
+    let worker_fragment = paths
+        .worker_projects_config_dir("8.4")
+        .join(format!("{project_id}.Caddyfile"));
+    let previous_fragment = state::fs::read_to_string(&worker_fragment)?;
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    wait_for_succeeded_job_scope(&paths, "system").await?;
+
+    state::fs::write_sensitive_file(
+        &project_path.join("pv.yml"),
+        "php: \"8.4\"\ndocument_root: web\n",
+    )?;
+    wait_for_path(&load_started).await?;
+    let job =
+        wait_for_job_scope_status(&paths, &format!("project:{project_id}"), JobStatus::Running)
+            .await?;
+
+    gateway_guard.shutdown_daemon_without_waiting()?;
+    state::fs::write_sensitive_file(&release_load, "release\n")?;
+    let job = wait_for_job_id_status(&paths, &job.id, JobStatus::Failed).await?;
+    assert_eq!(
+        job.error.as_deref(),
+        Some("reconciliation was abandoned before completion")
+    );
+    assert_job_has_no_coverage(&paths, &job.id)?;
+    assert_eq!(state::fs::read_to_string(&load_requests)?, "load\n");
+    assert_eq!(recorded_test_pid(&paths.worker_pid("8.4"))?, worker_pid);
+    assert_eq!(
+        state::fs::read_to_string(&paths.worker_root_config("8.4"))?,
+        previous_config
+    );
+    let promoted_fragment = state::fs::read_to_string(&worker_fragment)?;
+    assert_ne!(promoted_fragment, previous_fragment);
+    assert!(promoted_fragment.contains(project_path.join("web").as_str()));
+    assert!(!promoted_fragment.contains(project_path.join("public").as_str()));
+    let metadata: Value = serde_json::from_str(&state::fs::read_to_string(
+        &paths.worker_runtime_metadata("8.4"),
+    )?)?;
+    assert_eq!(metadata["replacement_required"], true);
+    assert!(metadata["applied_config_fingerprint"].is_null());
+    assert!(metadata["staged_config_fingerprint"].is_string());
+    assert_eq!(
+        metadata["staged_config_fingerprint"],
+        metadata["desired_config_fingerprint"]
+    );
+    let supervisor = daemon::ProcessSupervisor::new(paths.clone());
+    assert!(
+        supervisor
+            .adopt_recorded(
+                &paths.worker_pid("8.4"),
+                &paths.worker_runtime_metadata("8.4")
+            )?
+            .is_some()
+    );
+
+    gateway_guard.shutdown_and_cleanup().await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn matching_cancellation_preserves_pending_runtime_without_restore_proof() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    state::fs::ensure_user_dir(&project_path.join("public"))?;
+    state::fs::ensure_user_dir(&project_path.join("web"))?;
+    let (project_id, port_reservation) = seed_foundation_php_project_in_range(
+        &paths,
+        &project_path,
+        "php: \"8.4\"\ndocument_root: public\n",
+        60_000,
+        64_999,
+    )?;
+    let [load_started, release_load, load_requests] = install_worker_load_barrier(&paths)?;
+    drop(port_reservation);
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    gateway_guard.attach_worker("8.4");
+    daemon::gateway::reconcile_gateway_runtimes(&paths)
+        .await
+        .context("start missing-proof fixture runtimes")?;
+    let worker_pid = recorded_test_pid(&paths.worker_pid("8.4"))?;
+    let previous_config = state::fs::read_to_string(&paths.worker_root_config("8.4"))?;
+    let worker_fragment = paths
+        .worker_projects_config_dir("8.4")
+        .join(format!("{project_id}.Caddyfile"));
+    let previous_fragment = state::fs::read_to_string(&worker_fragment)?;
+    let metadata_path = paths.worker_runtime_metadata("8.4");
+    let mut metadata: Value = serde_json::from_str(&state::fs::read_to_string(&metadata_path)?)?;
+    metadata
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("worker runtime metadata was not an object"))?
+        .remove("applied_config_fingerprint");
+    state::fs::write_sensitive_file(&metadata_path, &serde_json::to_string_pretty(&metadata)?)
+        .context("remove matching runtime fingerprint")?;
+    state::fs::write_sensitive_file(
+        &project_path.join("pv.yml"),
+        "php: \"8.4\"\ndocument_root: web\n",
+    )?;
+
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    wait_for_path(&load_started).await?;
+    let job = wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
+    gateway_guard.shutdown_daemon_without_waiting()?;
+    state::fs::write_sensitive_file(&release_load, "release\n")?;
+    let job = wait_for_job_id_status(&paths, &job.id, JobStatus::Failed).await?;
+
+    assert_eq!(
+        job.error.as_deref(),
+        Some("reconciliation was abandoned before completion")
+    );
+    assert_job_has_no_coverage(&paths, &job.id)?;
+    assert_eq!(recorded_test_pid(&paths.worker_pid("8.4"))?, worker_pid);
+    assert_eq!(
+        state::fs::read_to_string(&paths.worker_root_config("8.4"))?,
+        previous_config
+    );
+    let promoted_fragment = state::fs::read_to_string(&worker_fragment)?;
+    assert_ne!(promoted_fragment, previous_fragment);
+    assert!(promoted_fragment.contains(project_path.join("web").as_str()));
+    assert!(!promoted_fragment.contains(project_path.join("public").as_str()));
+    assert_eq!(state::fs::read_to_string(&load_requests)?, "load\n");
+    let metadata: Value = serde_json::from_str(&state::fs::read_to_string(&metadata_path)?)?;
+    assert_eq!(metadata["replacement_required"], true);
+    assert!(metadata["applied_config_fingerprint"].is_null());
+    assert!(metadata["staged_config_fingerprint"].is_string());
+    assert_eq!(
+        metadata["staged_config_fingerprint"],
+        metadata["desired_config_fingerprint"]
+    );
+    let supervisor = daemon::ProcessSupervisor::new(paths.clone());
+    assert!(
+        supervisor
+            .adopt_recorded(&paths.worker_pid("8.4"), &metadata_path)?
+            .is_some()
+    );
+    gateway_guard.shutdown_and_cleanup().await?;
+
+    Ok(())
+}
+
+fn assert_job_has_no_coverage(paths: &PvPaths, job_id: &str) -> Result<()> {
+    let coverage_count = Connection::open(paths.db().as_std_path())?.query_row(
+        "SELECT COUNT(*) FROM job_diagnostic_outcomes WHERE job_id = ?1 AND outcome = 'success'",
+        [job_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+    assert_eq!(coverage_count, 0);
+
+    Ok(())
+}
+
+fn current_test_binary() -> Result<Utf8PathBuf> {
+    let binary = std::env::args_os()
+        .next()
+        .ok_or_else(|| anyhow!("test binary path was missing"))?;
+    Utf8PathBuf::from_path_buf(binary.into())
+        .map_err(|path| anyhow!("test binary path is not UTF-8: {path:?}"))
+}
+
+async fn emergency_cleanup_seeded_runtimes(paths: &PvPaths) -> Result<()> {
+    cleanup_seeded_runtimes(paths, None).await?;
+    state::fs::remove_file_if_exists(&paths.daemon_socket())?;
+
+    Ok(())
+}
+
+fn recorded_test_pid(path: &Utf8Path) -> Result<Pid> {
+    let raw_pid = state::fs::read_to_string(path)?.trim().parse::<i32>()?;
+    Pid::from_raw(raw_pid).ok_or_else(|| anyhow!("invalid recorded test pid {raw_pid}"))
+}
+
+fn assert_fixture_listeners_released(paths: &PvPaths) -> Result<()> {
+    for assignment in Database::open(paths)?.assigned_ports()? {
+        match assignment.owner {
+            PortOwner::Gateway(_) => {
+                if platform::loopback_tcp_port_has_listener(assignment.port)? {
+                    return Err(anyhow!(
+                        "gateway port {} still has a TCP listener",
+                        assignment.port
+                    ));
+                }
+            }
+            PortOwner::Dns => {
+                if platform::loopback_tcp_port_has_listener(assignment.port)? {
+                    return Err(anyhow!(
+                        "DNS port {} still has a TCP listener",
+                        assignment.port
+                    ));
+                }
+                let _udp_socket = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, assignment.port))?;
+            }
+            PortOwner::PhpWorker { .. } | PortOwner::Resource { .. } => {}
+        }
+    }
+
+    Ok(())
 }
 
 #[tokio::test]
@@ -556,6 +1156,139 @@ async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
     assert_eq!(jobs_before_first_scan.len(), 1);
     assert_eq!(jobs_before_first_scan[0].scope, "system");
     assert_ne!(recovered_gateway_pid, gateway_pid);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fallback_shutdown_cancels_foreground_socket_reconciliation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    seed_foundation_caddy(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    wait_for_succeeded_job_scope(&paths, "system").await?;
+    let gateway_pid = recorded_test_pid(&paths.gateway_pid())?;
+
+    let project_path = tempdir.path().join("project");
+    let (project_id, port_reservation) = seed_foundation_php_project_after_caddy(
+        &paths,
+        &project_path,
+        "php: \"8.4\"\n",
+        40_000,
+        44_999,
+    )?;
+    let [validation_started, release_validation, runtime_started] =
+        install_worker_validation_barrier(&paths, false)?;
+    drop(port_reservation);
+    gateway_guard.attach_worker("8.4");
+    let request_paths = paths.clone();
+    let request_scope = format!("project:{project_id}");
+    let request_task = tokio::spawn(async move {
+        request_lines(
+            &request_paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "reconcile",
+                "scope": request_scope,
+            }),
+        )
+        .await
+    });
+    wait_for_path(&validation_started).await?;
+    let job =
+        wait_for_job_scope_status(&paths, &format!("project:{project_id}"), JobStatus::Running)
+            .await?;
+
+    gateway_guard.shutdown_daemon_without_waiting()?;
+    let job = wait_for_job_id_status(&paths, &job.id, JobStatus::Failed).await?;
+    assert_eq!(
+        job.error.as_deref(),
+        Some("reconciliation was abandoned before completion")
+    );
+    assert_job_has_no_coverage(&paths, &job.id)?;
+    state::fs::write_sensitive_file(&release_validation, "release\n")?;
+    let lines = timeout(Duration::from_secs(5), request_task).await???;
+    assert_eq!(required_response_job_id(&lines)?, job.id);
+    sleep(Duration::from_millis(100)).await;
+    assert!(!runtime_started.exists());
+    assert!(!paths.worker_pid("8.4").exists());
+    assert!(!paths.worker_runtime_metadata("8.4").exists());
+    assert_eq!(recorded_test_pid(&paths.gateway_pid())?, gateway_pid);
+    gateway_guard.shutdown_and_cleanup().await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn daemon_shutdown_joins_health_triggered_worker_recovery() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    let (project_id, port_reservation) = seed_foundation_php_project_in_range(
+        &paths,
+        &project_path,
+        "php: \"8.4\"\n",
+        30_000,
+        34_999,
+    )?;
+    drop(port_reservation);
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    gateway_guard.attach_worker("8.4");
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    wait_for_succeeded_job_scope(&paths, "system").await?;
+    let [validation_started, release_validation, runtime_started] =
+        install_worker_validation_barrier(&paths, true)?;
+    let supervisor = daemon::ProcessSupervisor::new(paths.clone());
+    let worker = supervisor
+        .adopt_recorded(
+            &paths.worker_pid("8.4"),
+            &paths.worker_runtime_metadata("8.4"),
+        )?
+        .ok_or_else(|| anyhow!("worker was not running before health recovery"))?;
+    worker.stop(Duration::from_secs(1)).await?;
+    state::fs::remove_file_if_exists(&paths.worker_pid("8.4"))?;
+    state::fs::remove_file_if_exists(&paths.worker_runtime_metadata("8.4"))?;
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(30)).await;
+    tokio::task::yield_now().await;
+    tokio::time::resume();
+    wait_for_path(&validation_started).await?;
+    let job =
+        wait_for_job_scope_status(&paths, &format!("project:{project_id}"), JobStatus::Running)
+            .await?;
+
+    let daemon = gateway_guard
+        .daemon
+        .take()
+        .ok_or_else(|| anyhow!("daemon was not attached before health recovery shutdown"))?;
+    let mut shutdown_task = tokio::spawn(daemon.shutdown());
+    let early_shutdown = timeout(Duration::from_millis(100), &mut shutdown_task).await;
+    let shutdown_completed_before_recovery = early_shutdown.is_ok();
+    state::fs::write_sensitive_file(&release_validation, "release\n")?;
+    match early_shutdown {
+        Ok(result) => result??,
+        Err(_elapsed) => shutdown_task.await??,
+    }
+    let job = wait_for_job_id_status(&paths, &job.id, JobStatus::Failed).await?;
+    assert!(
+        job.error
+            .as_deref()
+            .is_some_and(|error| error.contains("FrankenPHP config validation failed"))
+    );
+    assert_job_has_no_coverage(&paths, &job.id)?;
+    sleep(Duration::from_millis(100)).await;
+    assert!(!runtime_started.exists());
+    assert!(!paths.worker_pid("8.4").exists());
+    assert!(!paths.worker_runtime_metadata("8.4").exists());
+    gateway_guard.shutdown_and_cleanup().await?;
+    assert!(!shutdown_completed_before_recovery);
 
     Ok(())
 }
@@ -719,7 +1452,8 @@ async fn startup_reconciliation_starts_then_adopts_gateway_across_daemon_restart
 async fn repeated_system_requests_during_startup_create_one_trailing_job() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let [validation_started, release_validation] = seed_barrier_foundation_caddy(&paths)?;
+    let [validation_started, release_validation, _runtime_started] =
+        seed_barrier_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
 
     let result = async {
@@ -1101,12 +1835,56 @@ fn seed_foundation_caddy(paths: &PvPaths) -> Result<()> {
     Ok(())
 }
 
+fn make_gateway_descendant_observable(paths: &PvPaths) -> Result<()> {
+    let executable = paths.home().join("fake-caddy-release/bin/caddy");
+    let descendant_pid_path = paths.run().join("gateway-descendant.pid");
+    let source = paths.home().join("observable-fake-caddy");
+    let script = FOUNDATION_FAKE_CADDY_SCRIPT.replace(
+        "  child=\"$!\"\n",
+        &format!("  child=\"$!\"\n  printf '%s\\n' \"$child\" > \"{descendant_pid_path}\"\n"),
+    );
+    if script == FOUNDATION_FAKE_CADDY_SCRIPT {
+        return Err(anyhow!("fake Caddy child launch was not instrumented"));
+    }
+    state::fs::write_sensitive_file(&source, &script)?;
+    let install = AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.2", &source)?;
+    state::fs::rename(install.binary_path(), &executable)?;
+
+    Ok(())
+}
+
 fn seed_foundation_php_project(
     paths: &PvPaths,
     project_path: &Utf8Path,
     config: &str,
 ) -> Result<(String, StdTcpListener)> {
+    seed_foundation_php_project_in_range(paths, project_path, config, 40_000, 44_999)
+}
+
+fn seed_foundation_php_project_in_range(
+    paths: &PvPaths,
+    project_path: &Utf8Path,
+    config: &str,
+    port_range_start: u16,
+    port_range_end: u16,
+) -> Result<(String, StdTcpListener)> {
     seed_foundation_caddy(paths)?;
+    seed_foundation_php_project_after_caddy(
+        paths,
+        project_path,
+        config,
+        port_range_start,
+        port_range_end,
+    )
+}
+
+fn seed_foundation_php_project_after_caddy(
+    paths: &PvPaths,
+    project_path: &Utf8Path,
+    config: &str,
+    port_range_start: u16,
+    port_range_end: u16,
+) -> Result<(String, StdTcpListener)> {
     let certified_key = generate_simple_self_signed(vec![
         "project.test".to_owned(),
         "pv-gateway.localhost".to_owned(),
@@ -1163,7 +1941,8 @@ fn seed_foundation_php_project(
         "8.4.8-pv1",
         &frankenphp_release,
     )?;
-    let mut worker_port_reservations = reserve_foundation_ports(1, 40_000, 44_999)?;
+    let mut worker_port_reservations =
+        reserve_foundation_ports(1, port_range_start, port_range_end)?;
     let worker_port_reservation = worker_port_reservations
         .pop()
         .ok_or_else(|| anyhow!("expected one reserved worker port"))?;
@@ -1193,11 +1972,12 @@ fn seed_foundation_php_project(
     Ok((project.id, worker_port_reservation))
 }
 
-fn seed_barrier_foundation_caddy(paths: &PvPaths) -> Result<[Utf8PathBuf; 2]> {
+fn seed_barrier_foundation_caddy(paths: &PvPaths) -> Result<[Utf8PathBuf; 3]> {
     seed_foundation_caddy(paths)?;
     let executable = paths.home().join("fake-caddy-release/bin/caddy");
     let validation_started = paths.run().join("startup-validation-started");
     let release_validation = paths.run().join("release-startup-validation");
+    let runtime_started = paths.run().join("gateway-runtime-started");
     let wrapper_source = paths.home().join("caddy-startup-barrier");
     let caddy_script = FOUNDATION_FAKE_CADDY_SCRIPT
         .strip_prefix("#!/bin/sh\n")
@@ -1205,14 +1985,103 @@ fn seed_barrier_foundation_caddy(paths: &PvPaths) -> Result<[Utf8PathBuf; 2]> {
     state::fs::write_sensitive_file(
         &wrapper_source,
         &format!(
-            "#!/bin/sh\nset -eu\nif [ \"${{1:-}}\" = \"validate\" ]; then\n  : > \"{validation_started}\"\n  while [ ! -f \"{release_validation}\" ]; do sleep 0.01; done\nfi\n{caddy_script}"
+            "#!/bin/sh\nset -eu\nif [ \"${{1:-}}\" = \"validate\" ]; then\n  : > \"{validation_started}\"\n  while [ ! -f \"{release_validation}\" ]; do sleep 0.01; done\nelif [ \"${{1:-}}\" = \"run\" ]; then\n  : > \"{runtime_started}\"\nfi\n{caddy_script}"
         ),
     )?;
     let wrapper_install =
         AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.1", &wrapper_source)?;
     state::fs::rename(wrapper_install.binary_path(), &executable)?;
 
-    Ok([validation_started, release_validation])
+    Ok([validation_started, release_validation, runtime_started])
+}
+
+fn seed_barrier_foundation_worker(
+    paths: &PvPaths,
+    project_path: &Utf8Path,
+    fail_validation: bool,
+) -> Result<([Utf8PathBuf; 3], StdTcpListener)> {
+    let (_project_id, port_reservation) =
+        seed_foundation_php_project(paths, project_path, "php: \"8.4\"\n")?;
+    let barrier = install_worker_validation_barrier(paths, fail_validation)?;
+
+    Ok((barrier, port_reservation))
+}
+
+fn install_worker_validation_barrier(
+    paths: &PvPaths,
+    fail_validation: bool,
+) -> Result<[Utf8PathBuf; 3]> {
+    let executable = paths.home().join("8.4-frankenphp-release/bin/frankenphp");
+    let validation_started = paths.run().join("worker-validation-started");
+    let release_validation = paths.run().join("release-worker-validation");
+    let runtime_started = paths.run().join("worker-runtime-started");
+    let wrapper_source = paths.home().join("worker-startup-barrier");
+    let worker_script = state::fs::read_to_string(&executable)?;
+    let worker_script = worker_script
+        .strip_prefix("#!/bin/sh\n")
+        .ok_or_else(|| anyhow!("fake FrankenPHP script is missing its shebang"))?;
+    let validation_outcome = if fail_validation { "exit 7" } else { ":" };
+    state::fs::write_sensitive_file(
+        &wrapper_source,
+        &format!(
+            "#!/bin/sh\nset -eu\nif [ \"${{1:-}}\" = \"validate\" ]; then\n  : > \"{validation_started}\"\n  while [ ! -f \"{release_validation}\" ]; do sleep 0.01; done\n  {validation_outcome}\nelif [ \"${{1:-}}\" = \"run\" ]; then\n  : > \"{runtime_started}\"\nfi\n{worker_script}"
+        ),
+    )?;
+    let wrapper_install =
+        AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.3", &wrapper_source)?;
+    state::fs::rename(wrapper_install.binary_path(), &executable)?;
+
+    Ok([validation_started, release_validation, runtime_started])
+}
+
+fn install_worker_load_barrier(paths: &PvPaths) -> Result<[Utf8PathBuf; 3]> {
+    let server_path = paths
+        .home()
+        .join("8.4-frankenphp-release/bin/frankenphp.server.py");
+    let load_started = paths.run().join("worker-load-started");
+    let release_load = paths.run().join("release-worker-load");
+    let load_consumed = paths.run().join("worker-load-consumed");
+    let load_requests = paths.run().join("worker-load-requests");
+    let server = state::fs::read_to_string(&server_path)?;
+    let insertion = format!(
+        "        with open({load_requests:?}, \"a\", encoding=\"utf-8\") as request_file:\n            request_file.write(\"load\\n\")\n        if not os.path.exists({load_consumed:?}):\n            with open({load_started:?}, \"w\", encoding=\"utf-8\") as marker_file:\n                marker_file.write(\"started\\n\")\n            while not os.path.exists({release_load:?}):\n                time.sleep(0.01)\n            with open({load_consumed:?}, \"w\", encoding=\"utf-8\") as marker_file:\n                marker_file.write(\"consumed\\n\")\n\n        content_length = int(self.headers.get(\"Content-Length\", \"0\"))",
+        load_requests = load_requests.as_str(),
+        load_consumed = load_consumed.as_str(),
+        load_started = load_started.as_str(),
+        release_load = release_load.as_str(),
+    );
+    let instrumented = server.replace(
+        "        content_length = int(self.headers.get(\"Content-Length\", \"0\"))",
+        &insertion,
+    );
+    if instrumented == server {
+        return Err(anyhow!("fake FrankenPHP load handler was not instrumented"));
+    }
+    state::fs::write_sensitive_file(&server_path, &instrumented)?;
+
+    Ok([load_started, release_load, load_requests])
+}
+
+fn install_worker_readiness_barrier(paths: &PvPaths) -> Result<[Utf8PathBuf; 2]> {
+    let server_path = paths
+        .home()
+        .join("8.4-frankenphp-release/bin/frankenphp.server.py");
+    let readiness_started = paths.run().join("worker-readiness-started");
+    let readiness_gate = paths.run().join("worker-readiness-gate");
+    let server = state::fs::read_to_string(&server_path)?;
+    let binding = "servers = [Server((\"127.0.0.1\", http_port), Handler)]";
+    let insertion = format!(
+        "{binding}\nwith open({readiness_started:?}, \"w\", encoding=\"utf-8\") as marker_file:\n    marker_file.write(\"started\\n\")\nwhile os.path.exists({readiness_gate:?}):\n    time.sleep(0.01)",
+        readiness_started = readiness_started.as_str(),
+        readiness_gate = readiness_gate.as_str(),
+    );
+    let instrumented = server.replacen(binding, &insertion, 1);
+    if instrumented == server {
+        return Err(anyhow!("fake FrankenPHP readiness was not instrumented"));
+    }
+    state::fs::write_sensitive_file(&server_path, &instrumented)?;
+
+    Ok([readiness_started, readiness_gate])
 }
 
 fn available_foundation_gateway_ports() -> Result<[u16; 2]> {
@@ -1290,6 +2159,16 @@ impl SeededGatewayGuard {
         daemon.shutdown().await.map_err(|error| anyhow!(error))
     }
 
+    fn shutdown_daemon_without_waiting(&mut self) -> Result<()> {
+        let Some(daemon) = self.daemon.take() else {
+            return Ok(());
+        };
+
+        daemon
+            .shutdown_without_waiting_for_test()
+            .map_err(anyhow::Error::from)
+    }
+
     async fn shutdown_and_cleanup(&mut self) -> Result<()> {
         let result = shutdown_seeded_gateway(
             self.daemon.take(),
@@ -1313,7 +2192,11 @@ impl Drop for SeededGatewayGuard {
 
         let paths = self.paths.clone();
         let diagnostic_paths = paths.clone();
-        let daemon = self.daemon.take();
+        let daemon_shutdown_result = self.daemon.take().map_or(Ok(()), |daemon| {
+            daemon
+                .shutdown_without_waiting_for_test()
+                .map_err(anyhow::Error::from)
+        });
         let worker_track = self.worker_track.clone();
         let cleanup_panicked = std::thread::scope(|scope| {
             let cleanup_thread = scope.spawn(move || {
@@ -1331,11 +2214,11 @@ impl Drop for SeededGatewayGuard {
                     }
                 };
 
-                if let Err(error) = runtime.block_on(shutdown_seeded_gateway(
-                    daemon,
-                    &paths,
-                    worker_track.as_deref(),
-                )) {
+                let runtime_cleanup_result =
+                    runtime.block_on(cleanup_seeded_runtimes(&paths, worker_track.as_deref()));
+                if let Err(error) =
+                    combine_cleanup_results(daemon_shutdown_result, runtime_cleanup_result)
+                {
                     report_seeded_gateway_cleanup_failure(
                         &paths,
                         &format!("cleanup failed: {error}"),
@@ -1360,6 +2243,7 @@ fn report_seeded_gateway_cleanup_failure(paths: &PvPaths, message: &str) {
     if let Ok(mut log) = state::fs::open_append_file(&paths.daemon_log()) {
         let _write_result = log.write_all(format!("{record}\n").as_bytes());
     }
+    let _write_result = writeln!(io::stderr().lock(), "{record}");
 }
 
 async fn shutdown_seeded_gateway(
@@ -1371,9 +2255,15 @@ async fn shutdown_seeded_gateway(
         Some(daemon) => daemon.shutdown().await.map_err(|error| anyhow!(error)),
         None => Ok(()),
     };
+    let cleanup_result = cleanup_seeded_runtimes(paths, worker_track).await;
+
+    combine_cleanup_results(shutdown_result, cleanup_result)
+}
+
+async fn cleanup_seeded_runtimes(paths: &PvPaths, worker_track: Option<&str>) -> Result<()> {
     let worker_cleanup_result = stop_seeded_worker(paths, worker_track).await;
     let gateway_cleanup_result = stop_seeded_gateway(paths).await;
-    let cleanup_result = match (worker_cleanup_result, gateway_cleanup_result) {
+    match (worker_cleanup_result, gateway_cleanup_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(worker_error), Ok(())) => {
             Err(anyhow!("seeded FrankenPHP cleanup failed: {worker_error}"))
@@ -1382,14 +2272,19 @@ async fn shutdown_seeded_gateway(
         (Err(worker_error), Err(gateway_error)) => Err(anyhow!(
             "seeded FrankenPHP cleanup failed: {worker_error}; seeded Caddy cleanup failed: {gateway_error}"
         )),
-    };
+    }
+}
 
-    match (shutdown_result, cleanup_result) {
+fn combine_cleanup_results(
+    shutdown_result: Result<()>,
+    runtime_cleanup_result: Result<()>,
+) -> Result<()> {
+    match (shutdown_result, runtime_cleanup_result) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(shutdown_error), Ok(())) => Err(anyhow!("daemon shutdown failed: {shutdown_error}")),
         (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
         (Err(shutdown_error), Err(cleanup_error)) => Err(anyhow!(
-            "daemon shutdown failed: {shutdown_error}; seeded Caddy cleanup failed: {cleanup_error}"
+            "daemon shutdown failed: {shutdown_error}; runtime cleanup failed: {cleanup_error}"
         )),
     }
 }
@@ -1448,9 +2343,27 @@ fn propagate_after_cleanup<T>(
         (Err(operation_error), Ok(())) => Err(operation_error),
         (Ok(_), Err(cleanup_error)) => Err(cleanup_error),
         (Err(operation_error), Err(cleanup_error)) => Err(anyhow!(
-            "operation failed: {operation_error}; seeded Caddy cleanup failed: {cleanup_error}"
+            "operation failed: {operation_error}; fixture cleanup failed: {cleanup_error}"
         )),
     }
+}
+
+#[test]
+fn fixture_cleanup_preserves_operation_error_precedence() {
+    let outcomes = [
+        propagate_after_cleanup(Ok("value"), Ok(())).map(str::to_owned),
+        propagate_after_cleanup::<&str>(Err(anyhow!("operation sentinel")), Ok(()))
+            .map(str::to_owned),
+        propagate_after_cleanup(Ok("value"), Err(anyhow!("cleanup sentinel"))).map(str::to_owned),
+        propagate_after_cleanup::<&str>(
+            Err(anyhow!("operation sentinel")),
+            Err(anyhow!("cleanup sentinel")),
+        )
+        .map(str::to_owned),
+    ]
+    .map(|result| result.map_err(|error| error.to_string()));
+
+    assert_debug_snapshot!(outcomes);
 }
 
 async fn stop_seeded_gateway(paths: &PvPaths) -> Result<()> {
@@ -2613,6 +3526,10 @@ async fn request_lines(paths: &PvPaths, request: Value) -> Result<Vec<Value>> {
 }
 
 async fn wait_for_succeeded_job_id(paths: &PvPaths, id: &str) -> Result<JobRecord> {
+    wait_for_job_id_status(paths, id, JobStatus::Succeeded).await
+}
+
+async fn wait_for_job_id_status(paths: &PvPaths, id: &str, status: JobStatus) -> Result<JobRecord> {
     let deadline = Instant::now() + JOB_STATUS_WAIT_TIMEOUT;
 
     loop {
@@ -2620,7 +3537,7 @@ async fn wait_for_succeeded_job_id(paths: &PvPaths, id: &str) -> Result<JobRecor
         if let Some(job) = database
             .recent_jobs()?
             .into_iter()
-            .find(|job| job.id == id && job.status == JobStatus::Succeeded)
+            .find(|job| job.id == id && job.status == status)
         {
             return Ok(job);
         }
@@ -2632,7 +3549,38 @@ async fn wait_for_succeeded_job_id(paths: &PvPaths, id: &str) -> Result<JobRecor
         sleep(JOB_STATUS_POLL_INTERVAL).await;
     }
 
-    Err(anyhow!("succeeded job with id {id:?} was not recorded"))
+    Err(anyhow!("{status:?} job with id {id:?} was not recorded"))
+}
+
+async fn wait_for_path(path: &Utf8Path) -> Result<()> {
+    timeout(TARGETED_SCENARIO_TIMEOUT, async {
+        loop {
+            if path.exists() {
+                return;
+            }
+            sleep(JOB_STATUS_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .map_err(|_elapsed| anyhow!("file {path} was not created"))
+}
+
+async fn wait_for_runtime_replacement_required(metadata_path: &Utf8Path) -> Result<()> {
+    timeout(TARGETED_SCENARIO_TIMEOUT, async {
+        loop {
+            if let Ok(content) = state::fs::read_to_string(metadata_path)
+                && let Ok(metadata) = serde_json::from_str::<Value>(&content)
+                && metadata["replacement_required"] == true
+            {
+                return;
+            }
+            sleep(JOB_STATUS_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .map_err(|_elapsed| {
+        anyhow!("runtime metadata {metadata_path} did not record a pending replacement")
+    })
 }
 
 async fn wait_for_succeeded_job_scope(paths: &PvPaths, scope: &str) -> Result<JobRecord> {

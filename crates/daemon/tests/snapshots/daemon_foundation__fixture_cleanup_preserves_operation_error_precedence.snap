@@ -1,0 +1,18 @@
+---
+source: crates/daemon/tests/daemon_foundation.rs
+expression: outcomes
+---
+[
+    Ok(
+        "value",
+    ),
+    Err(
+        "operation sentinel",
+    ),
+    Err(
+        "cleanup sentinel",
+    ),
+    Err(
+        "operation failed: operation sentinel; fixture cleanup failed: cleanup sentinel",
+    ),
+]
