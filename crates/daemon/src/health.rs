@@ -1593,7 +1593,7 @@ mod tests {
     ) -> anyhow::Result<Utf8PathBuf> {
         let artifact_root = root.join(format!("frankenphp-{php_track}"));
         let runtime = artifact_root.join("bin/frankenphp");
-        state::fs::copy_file_atomically(Utf8Path::new("/bin/sleep"), &runtime)?;
+        state::fs::write_sensitive_file(&runtime, "#!/bin/sh\nsleep \"$1\"\n")?;
         set_executable(&runtime)?;
         database.record_managed_resource_track_installed(
             "frankenphp",
