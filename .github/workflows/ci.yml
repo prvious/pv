@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   rust:
     name: Rust (${{ matrix.name }})
@@ -28,6 +32,7 @@ jobs:
             macos_major: "26"
             architecture: arm64
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -88,7 +93,7 @@ jobs:
         run: shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh release/artifacts/recipes/redis/*.sh release/artifacts/recipes/mysql/*.sh release/artifacts/recipes/postgres/*.sh release/artifacts/recipes/mailpit/*.sh release/artifacts/recipes/rustfs/*.sh
 
       - name: Run tests
-        run: cargo nextest run --workspace --all-features --locked
+        run: cargo nextest run --profile ci --workspace --all-features --locked
 
   runtime-portability:
     name: Runtime (${{ matrix.target }})
