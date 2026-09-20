@@ -8,6 +8,8 @@ use hickory_proto::serialize::binary::BinEncodable;
 use insta::{Settings, assert_debug_snapshot};
 use rcgen::generate_simple_self_signed;
 use rusqlite::{Connection, params};
+#[cfg(unix)]
+use rustix::fs::FlockOperation;
 use rustix::io::Errno;
 use rustix::process::{Pid, test_kill_process, test_kill_process_group};
 use serde_json::{Value, json};
@@ -20,6 +22,8 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::io::{self, ErrorKind, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
+#[cfg(unix)]
+use std::os::fd::OwnedFd;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -112,6 +116,8 @@ const SEEDED_GATEWAY_CLEANUP_TIMEOUT: Duration = Duration::from_millis(500);
 const SEEDED_GATEWAY_CLEANUP_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const FALLBACK_SUBPROCESS_HOME: &str = "PV_DAEMON_FALLBACK_SUBPROCESS_HOME";
 const FALLBACK_SUBPROCESS_RELEASE: &str = "PV_DAEMON_FALLBACK_SUBPROCESS_RELEASE";
+#[cfg(unix)]
+const FOUNDATION_WORKER_PORT_HANDOFF_LOCK: &str = "daemon-foundation-worker-port-handoff.lock";
 
 #[tokio::test]
 async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Result<()> {
@@ -1167,6 +1173,7 @@ async fn fallback_shutdown_cancels_foreground_socket_reconciliation() -> Result<
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     seed_foundation_caddy(&paths)?;
+    let mut port_handoff;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
@@ -1175,17 +1182,20 @@ async fn fallback_shutdown_cancels_foreground_socket_reconciliation() -> Result<
     let gateway_pid = recorded_test_pid(&paths.gateway_pid())?;
 
     let project_path = tempdir.path().join("project");
-    let (project_id, port_reservation) = seed_foundation_php_project_after_caddy(
-        &paths,
-        &project_path,
-        "php: \"8.4\"\n",
-        40_000,
-        44_999,
-    )?;
+    let (project_id, worker_port_handoff) = FoundationWorkerPortHandoff::new(|| {
+        seed_foundation_php_project_after_caddy(
+            &paths,
+            &project_path,
+            "php: \"8.4\"\n",
+            40_000,
+            44_999,
+        )
+    })?;
     let [validation_started, release_validation, runtime_started] =
         install_worker_validation_barrier(&paths, false)?;
-    drop(port_reservation);
     gateway_guard.attach_worker("8.4");
+    port_handoff = worker_port_handoff;
+    port_handoff.release_for_runtime_start();
     let request_paths = paths.clone();
     let request_scope = format!("project:{project_id}");
     let request_task = tokio::spawn(async move {
@@ -1906,8 +1916,10 @@ fn seed_foundation_php_project(
     paths: &PvPaths,
     project_path: &Utf8Path,
     config: &str,
-) -> Result<(String, StdTcpListener)> {
-    seed_foundation_php_project_in_range(paths, project_path, config, 40_000, 44_999)
+) -> Result<(String, FoundationWorkerPortHandoff)> {
+    FoundationWorkerPortHandoff::new(|| {
+        seed_foundation_php_project_in_range(paths, project_path, config, 40_000, 44_999)
+    })
 }
 
 fn seed_foundation_php_project_in_range(
@@ -2049,11 +2061,11 @@ fn seed_barrier_foundation_worker(
     project_path: &Utf8Path,
     fail_validation: bool,
 ) -> Result<([Utf8PathBuf; 3], StdTcpListener)> {
-    let (_project_id, port_reservation) =
+    let (_project_id, port_handoff) =
         seed_foundation_php_project(paths, project_path, "php: \"8.4\"\n")?;
     let barrier = install_worker_validation_barrier(paths, fail_validation)?;
 
-    Ok((barrier, port_reservation))
+    Ok((barrier, port_handoff.into_reservation()?))
 }
 
 fn install_worker_validation_barrier(
@@ -2153,6 +2165,95 @@ fn available_foundation_gateway_ports() -> Result<[u16; 2]> {
     ports
         .try_into()
         .map_err(|_| anyhow!("expected two available gateway ports"))
+}
+
+struct FoundationWorkerPortHandoff {
+    port: u16,
+    reservation: Option<StdTcpListener>,
+    #[cfg(unix)]
+    lock: Option<OwnedFd>,
+}
+
+impl FoundationWorkerPortHandoff {
+    fn new(reserve: impl FnOnce() -> Result<(String, StdTcpListener)>) -> Result<(String, Self)> {
+        #[cfg(unix)]
+        let lock = {
+            let lock_path = Utf8Path::new(env!("CARGO_TARGET_TMPDIR"))
+                .join(FOUNDATION_WORKER_PORT_HANDOFF_LOCK);
+            let file = state::fs::open_append_file(&lock_path)?;
+            rustix::fs::flock(&file, FlockOperation::LockExclusive).map_err(io::Error::from)?;
+            file.into()
+        };
+        let (output, reservation) = reserve()?;
+        let port = reservation.local_addr()?.port();
+
+        Ok((
+            output,
+            Self {
+                port,
+                reservation: Some(reservation),
+                #[cfg(unix)]
+                lock: Some(lock),
+            },
+        ))
+    }
+
+    fn release_for_runtime_start(&mut self) {
+        self.reservation = None;
+    }
+
+    fn into_reservation(self) -> Result<StdTcpListener> {
+        self.reservation
+            .ok_or_else(|| anyhow!("foundation worker port reservation was released"))
+    }
+
+    async fn verify_publication_and_release_lock(
+        &mut self,
+        paths: &PvPaths,
+        php_track: &str,
+    ) -> Result<u32> {
+        if self.reservation.is_some() {
+            return Err(anyhow!(
+                "foundation worker port reservation was not released before publication"
+            ));
+        }
+
+        let supervisor = daemon::ProcessSupervisor::new(paths.clone());
+        let recorded_pid = supervisor
+            .adopt_recorded(
+                &paths.worker_pid(php_track),
+                &paths.worker_runtime_metadata(php_track),
+            )?
+            .ok_or_else(|| anyhow!("seeded FrankenPHP runtime was not adoptable"))?
+            .pid();
+        daemon::wait_for_readiness(
+            daemon::ReadinessCheck::Tcp {
+                host: Ipv4Addr::LOCALHOST.to_string(),
+                port: self.port,
+            },
+            Duration::from_secs(1),
+        )
+        .await?;
+        let published_pid = supervisor
+            .adopt_recorded(
+                &paths.worker_pid(php_track),
+                &paths.worker_runtime_metadata(php_track),
+            )?
+            .ok_or_else(|| anyhow!("seeded FrankenPHP runtime was not adoptable after readiness"))?
+            .pid();
+        if published_pid != recorded_pid {
+            return Err(anyhow!(
+                "seeded FrankenPHP runtime changed during publication from PID {recorded_pid} to {published_pid}"
+            ));
+        }
+
+        #[cfg(unix)]
+        {
+            self.lock = None;
+        }
+
+        Ok(published_pid)
+    }
 }
 
 fn reserve_foundation_ports(count: usize, start: u16, end: u16) -> Result<Vec<StdTcpListener>> {
@@ -2553,26 +2654,33 @@ async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_path = tempdir.path().join("project");
-    let (_project_id, worker_port_reservation) = seed_foundation_php_project(
+    let (_project_id, mut worker_port_handoff) = seed_foundation_php_project(
         &paths,
         &project_path,
         "php: \"8.4\"\nenv:\n  APP_URL: \"${project_url}\"\n  APP_NAME: setup\n",
     )?;
     let php_track = "8.4";
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    gateway_guard.attach_worker(php_track);
+    worker_port_handoff.release_for_runtime_start();
 
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
-    gateway_guard.attach_worker(php_track);
-    drop(worker_port_reservation);
     let client_paths = paths.clone();
-    let completed_result = tokio::task::spawn_blocking(move || {
-        daemon::run_job_blocking(client_paths, "reconcile", "system")
-    })
-    .await
-    .map_err(anyhow::Error::from)
-    .and_then(|result| result.map_err(anyhow::Error::from));
+    let completed_result = async {
+        let completed = tokio::task::spawn_blocking(move || {
+            daemon::run_job_blocking(client_paths, "reconcile", "system")
+        })
+        .await
+        .map_err(anyhow::Error::from)
+        .and_then(|result| result.map_err(anyhow::Error::from))?;
+        worker_port_handoff
+            .verify_publication_and_release_lock(&paths, php_track)
+            .await?;
+        Ok(completed)
+    }
+    .await;
     let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
     let completed = propagate_after_cleanup(completed_result, cleanup_result)?;
 
@@ -2942,12 +3050,11 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_path = tempdir.path().join("project");
     let config_path = project_path.join("pv.yml");
-    let (project_id, worker_port_reservation) =
+    let (project_id, mut worker_port_handoff) =
         seed_foundation_php_project(&paths, &project_path, "php: \"8.4\"\n")?;
-    let worker_service_port = worker_port_reservation.local_addr()?.port();
-    drop(worker_port_reservation);
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     gateway_guard.attach_worker("8.4");
+    worker_port_handoff.release_for_runtime_start();
 
     let initial_daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
@@ -2978,20 +3085,9 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
             wait_for_job_scope_status(&paths, &format!("project:{project_id}"), JobStatus::Failed)
                 .await?;
 
-        let recovered_worker = supervisor
-            .adopt_recorded(
-                &paths.worker_pid("8.4"),
-                &paths.worker_runtime_metadata("8.4"),
-            )?
-            .ok_or_else(|| anyhow!("health recovery did not restart the worker"))?;
-        daemon::wait_for_readiness(
-            daemon::ReadinessCheck::Tcp {
-                host: "127.0.0.1".to_owned(),
-                port: worker_service_port,
-            },
-            Duration::from_secs(1),
-        )
-        .await?;
+        let recovered_worker_pid = worker_port_handoff
+            .verify_publication_and_release_lock(&paths, "8.4")
+            .await?;
 
         let database = Database::open(&paths)?;
         let assignments = database.assigned_ports()?;
@@ -3013,7 +3109,7 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
         .await?;
         let runtime_states = database.runtime_observed_states()?;
 
-        assert_ne!(recovered_worker.pid(), initial_worker_pid);
+        assert_ne!(recovered_worker_pid, initial_worker_pid);
         assert_eq!(job.status, JobStatus::Failed);
         assert_eq!(state::fs::read_to_string(&config_path)?, "php: [\n");
         assert!(runtime_states.iter().any(|state| {
