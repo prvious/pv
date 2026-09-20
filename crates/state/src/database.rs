@@ -115,9 +115,8 @@ impl JobDiagnosticSubject {
             ["project", id] if !id.is_empty() => Self::Project {
                 id: (*id).to_owned(),
             },
-            ["resource", name, _track] if matches!(*name, "caddy" | "php" | "frankenphp") => {
-                Self::GatewayRuntime
-            }
+            ["resource", "caddy", _track] => Self::GatewayRuntime,
+            ["resource", "php" | "frankenphp", _track] => Self::SystemReconciliation,
             ["resource", name, track] if !name.is_empty() && !track.is_empty() => Self::Resource {
                 name: (*name).to_owned(),
                 track: (*track).to_owned(),
@@ -266,6 +265,12 @@ pub struct ManagedResourceTrackRecord {
     pub removal_prune: bool,
     pub removal_force: bool,
     pub updated_at: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ManagedResourceTrackDesiredInput<'a> {
+    pub resource_name: &'a str,
+    pub track: &'a str,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -474,7 +479,7 @@ pub struct ProjectEnvObservedStateRecord {
     pub warnings: Vec<ProjectEnvObservedWarningRecord>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum RuntimeSubject {
     Gateway,
     PhpWorker { php_track: String },
@@ -1423,6 +1428,60 @@ impl Database {
         project_managed_resources_in_connection(&self.connection, project_id)
     }
 
+    pub fn projects_demanding_managed_resource_track(
+        &self,
+        resource_name: &str,
+        track: &str,
+    ) -> Result<Vec<ProjectRecord>, StateError> {
+        validate_managed_resource_identity("name", resource_name)?;
+        validate_concrete_track(track)?;
+        let mut statement = self.connection.prepare(
+            "SELECT projects.id, projects.path, projects.original_path, projects.primary_hostname, projects.config_path, projects.desired_php_track, projects.created_at, projects.updated_at, projects.project_slug, projects.serves_http
+            FROM projects
+            INNER JOIN project_managed_resources
+                ON project_managed_resources.project_id = projects.id
+            WHERE project_managed_resources.resource_name = ?1
+            AND project_managed_resources.track = ?2
+            ORDER BY projects.project_slug",
+        )?;
+        let rows = statement.query_map(params![resource_name, track], project_from_row)?;
+        let mut projects = Vec::new();
+
+        for row in rows {
+            projects.push(row?.into_record(&self.connection)?);
+        }
+
+        Ok(projects)
+    }
+
+    pub fn php_runtime_is_demanded(&self, runtime_key: &str) -> Result<bool, StateError> {
+        validate_php_runtime_key(runtime_key)?;
+        let mut statement = self.connection.prepare(
+            "SELECT id, desired_php_track, desired_php_loaded_extensions_json
+            FROM projects
+            WHERE serves_http = 1
+            AND desired_php_track IS NOT NULL",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+
+        for row in rows {
+            let (project_id, track, loaded_extensions_json) = row?;
+            let loaded_extensions =
+                parse_runtime_extension_json(&project_id, "loaded", &loaded_extensions_json)?;
+            if php_runtime_key(&track, &loaded_extensions)? == runtime_key {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
     pub fn record_managed_resource_track_desired(
         &mut self,
         resource_name: &str,
@@ -1452,6 +1511,38 @@ impl Database {
         )?;
 
         self.managed_resource_track(resource_name, track)
+    }
+
+    pub fn record_managed_resource_tracks_desired(
+        &mut self,
+        inputs: &[ManagedResourceTrackDesiredInput<'_>],
+    ) -> Result<Vec<ManagedResourceTrackRecord>, StateError> {
+        for input in inputs {
+            validate_managed_resource_identity("name", input.resource_name)?;
+            validate_concrete_track(input.track)?;
+        }
+
+        let updated_at = timestamp()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for input in inputs {
+            upsert_managed_resource_track_desired_in_transaction(
+                &transaction,
+                input.resource_name,
+                input.track,
+                &updated_at,
+            )?;
+        }
+        let records = inputs
+            .iter()
+            .map(|input| {
+                managed_resource_track_in_connection(&transaction, input.resource_name, input.track)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        transaction.commit()?;
+
+        Ok(records)
     }
 
     pub fn record_managed_resource_track_removal_intent(
@@ -1811,6 +1902,32 @@ impl Database {
         transaction.commit()?;
 
         Ok(records)
+    }
+
+    pub fn invalidate_project_resource_allocation_readiness(
+        &mut self,
+        project_id: &str,
+        resource_name: &str,
+        track: &str,
+    ) -> Result<(), StateError> {
+        validate_resource_allocation_identity("resource", resource_name)?;
+        validate_concrete_track(track)?;
+        let updated_at = timestamp()?;
+        self.transaction(|transaction| {
+            transaction.execute(
+                "UPDATE resource_allocations SET status = ?1, updated_at = ?2
+                 WHERE project_id = ?3 AND resource_name = ?4 AND track = ?5 AND status = ?6",
+                params![
+                    ResourceAllocationStatus::Desired.as_str(),
+                    updated_at,
+                    project_id,
+                    resource_name,
+                    track,
+                    ResourceAllocationStatus::Ready.as_str(),
+                ],
+            )?;
+            Ok(())
+        })
     }
 
     pub fn mark_resource_allocation_ready(
@@ -2331,18 +2448,26 @@ impl Database {
         resource_name: &str,
         track: &str,
     ) -> Result<ManagedResourceTrackRecord, StateError> {
-        let mut statement = self.connection.prepare(
-            "SELECT resource_name, track, desired_state, installed_version, current_artifact_path, env_json, usage_count, removal_prune, removal_force, updated_at
-            FROM managed_resource_tracks
-            WHERE resource_name = ?1 AND track = ?2",
-        )?;
-        let row = statement.query_row(
-            params![resource_name, track],
-            managed_resource_track_from_row,
-        )?;
-
-        row.into_record()
+        managed_resource_track_in_connection(&self.connection, resource_name, track)
     }
+}
+
+fn managed_resource_track_in_connection(
+    connection: &Connection,
+    resource_name: &str,
+    track: &str,
+) -> Result<ManagedResourceTrackRecord, StateError> {
+    let mut statement = connection.prepare(
+        "SELECT resource_name, track, desired_state, installed_version, current_artifact_path, env_json, usage_count, removal_prune, removal_force, updated_at
+        FROM managed_resource_tracks
+        WHERE resource_name = ?1 AND track = ?2",
+    )?;
+    let row = statement.query_row(
+        params![resource_name, track],
+        managed_resource_track_from_row,
+    )?;
+
+    row.into_record()
 }
 
 struct ProjectPhpRuntimeDatabaseValues {
@@ -3161,19 +3286,16 @@ fn upsert_managed_resource_track_desired_in_transaction(
         ON CONFLICT(resource_name, track) DO UPDATE SET
             desired_state = CASE
                 WHEN managed_resource_tracks.desired_state = 'removed'
-                    AND managed_resource_tracks.current_artifact_path IS NOT NULL
                 THEN managed_resource_tracks.desired_state
                 ELSE excluded.desired_state
             END,
             removal_prune = CASE
                 WHEN managed_resource_tracks.desired_state = 'removed'
-                    AND managed_resource_tracks.current_artifact_path IS NOT NULL
                 THEN managed_resource_tracks.removal_prune
                 ELSE 0
             END,
             removal_force = CASE
                 WHEN managed_resource_tracks.desired_state = 'removed'
-                    AND managed_resource_tracks.current_artifact_path IS NOT NULL
                 THEN managed_resource_tracks.removal_force
                 ELSE 0
             END,

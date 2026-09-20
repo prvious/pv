@@ -5,6 +5,7 @@ use std::time::Duration;
 use std::{fmt, future::Future, io};
 
 use camino::{Utf8Path, Utf8PathBuf};
+use futures_util::{Stream, StreamExt, stream};
 use platform::PlatformCapability;
 #[cfg(target_os = "macos")]
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
@@ -15,6 +16,7 @@ use state::{PvPaths, StateError, fs};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::process::Child;
+use tokio::runtime::Handle;
 use tokio::time::{Instant, sleep, timeout};
 use tokio_rustls::TlsConnector;
 
@@ -22,12 +24,13 @@ use crate::DaemonError;
 
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
-const SCRIPT_IDENTITY_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const PROCESS_IDENTITY_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const PROCESS_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const SCRIPT_IDENTITY_STABILIZATION: Duration = Duration::from_millis(250);
-const SCRIPT_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
+pub(crate) const RUNTIME_READINESS_CONCURRENCY_LIMIT: usize = 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProcessSignal {
@@ -104,11 +107,22 @@ pub struct ManagedProcess {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum RecordedConfigFingerprint {
+    /// Bytes committed as applied; service readiness may remain unverified under the preserve policy.
+    Applied(String),
+    /// Exact promoted bytes prepared for a transaction; this proves neither application nor
+    /// readiness and can remain useful after the process exits.
+    Staged(String),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedRuntime {
     pid: u32,
     command: Utf8PathBuf,
     arguments: Vec<String>,
     replacement_required: bool,
+    applied_config_fingerprint: Option<String>,
+    desired_config_fingerprint: Option<String>,
     process_start_identity: platform::ProcessStartIdentity,
     process_executable_identity: Option<ProcessExecutableIdentity>,
 }
@@ -171,6 +185,12 @@ struct RuntimeMetadata {
     track: String,
     #[serde(default, skip_serializing_if = "is_false")]
     replacement_required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    applied_config_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    desired_config_fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    staged_config_fingerprint: Option<String>,
     log_path: String,
     started_at: String,
     #[serde(default)]
@@ -212,25 +232,28 @@ impl ProcessSupervisor {
         command.stdout(Stdio::from(stdout));
         command.stderr(Stdio::from(stderr));
 
-        let mut child = command.spawn()?;
+        let child = command.spawn()?;
         let Some(pid) = child.id() else {
             return Err(DaemonError::MissingProcessId { name: spec.name });
         };
+        let mut spawned = SpawnedProcessGroup::armed(pid, child);
         post_spawn(pid).await;
 
-        if let Err(error) = persist_runtime_files(&spec, pid).await {
-            terminate_spawned_child(pid, &mut child).await;
+        match spawned.commit(&spec).await {
+            Ok(Some(child)) => Ok(ManagedProcess {
+                pid,
+                child,
+                log_path: spec.log_path,
+                pid_path: spec.pid_path,
+                metadata_path: spec.metadata_path,
+            }),
+            Ok(None) => Err(DaemonError::MissingProcessId { name: spec.name }),
+            Err(error) => {
+                spawned.terminate().await;
 
-            return Err(error);
+                Err(error)
+            }
         }
-
-        Ok(ManagedProcess {
-            pid,
-            child,
-            log_path: spec.log_path,
-            pid_path: spec.pid_path,
-            metadata_path: spec.metadata_path,
-        })
     }
 
     pub fn verify_ownership(
@@ -263,6 +286,11 @@ impl ProcessSupervisor {
                 command: spec.command.clone(),
                 arguments: spec.arguments.clone(),
                 replacement_required: metadata.replacement_required,
+                applied_config_fingerprint: match metadata.recorded_config_fingerprint() {
+                    Some(RecordedConfigFingerprint::Applied(fingerprint)) => Some(fingerprint),
+                    Some(RecordedConfigFingerprint::Staged(_)) | None => None,
+                },
+                desired_config_fingerprint: metadata.desired_config_fingerprint,
                 process_start_identity,
                 process_executable_identity: metadata.process_executable_identity,
             }));
@@ -271,18 +299,83 @@ impl ProcessSupervisor {
         Ok(None)
     }
 
-    pub fn mark_replacement_required(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
-        self.set_replacement_required(spec, true)
+    /// Returns recorded config identity without proving that a process is alive.
+    pub(crate) fn recorded_config_fingerprint(
+        &self,
+        spec: &ProcessSpec,
+    ) -> Result<Option<RecordedConfigFingerprint>, DaemonError> {
+        let Some(pid) = read_pid_file(&spec.pid_path)? else {
+            return Ok(None);
+        };
+        let Some(metadata) = read_runtime_metadata(&spec.metadata_path)? else {
+            return Ok(None);
+        };
+        if metadata.matches(spec, pid) && metadata.process_start_identity.is_some() {
+            return Ok(metadata.recorded_config_fingerprint());
+        }
+
+        // The installed artifact changed under a live runtime: prove the prior recording
+        // against its recorded spec so old applied fingerprints stay readable. Live
+        // ownership decisions still use verify_ownership against the current spec.
+        let Some(adopted) = self.adopt_recorded(&spec.pid_path, &spec.metadata_path)? else {
+            return Ok(None);
+        };
+
+        Ok(adopted
+            .into_owned()
+            .applied_config_fingerprint()
+            .map(|fingerprint| RecordedConfigFingerprint::Applied(fingerprint.to_owned())))
+    }
+
+    pub fn mark_replacement_required(
+        &self,
+        spec: &ProcessSpec,
+        staged_config_fingerprint: &str,
+    ) -> Result<bool, DaemonError> {
+        self.set_config_application_state(
+            spec,
+            true,
+            None,
+            Some(staged_config_fingerprint),
+            Some(staged_config_fingerprint),
+        )
+    }
+
+    pub(crate) fn mark_restoration_required(
+        &self,
+        spec: &ProcessSpec,
+        staged_config_fingerprint: &str,
+    ) -> Result<bool, DaemonError> {
+        self.set_config_application_state(spec, true, None, Some(staged_config_fingerprint), None)
     }
 
     pub fn clear_replacement_required(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
-        self.set_replacement_required(spec, false)
+        self.set_config_application_state(spec, false, None, None, None)
     }
 
-    fn set_replacement_required(
+    pub fn record_applied_config(
+        &self,
+        spec: &ProcessSpec,
+        fingerprint: &str,
+    ) -> Result<bool, DaemonError> {
+        self.set_config_application_state(spec, false, Some(fingerprint), None, Some(fingerprint))
+    }
+
+    pub(crate) fn record_restored_config(
+        &self,
+        spec: &ProcessSpec,
+        fingerprint: &str,
+    ) -> Result<bool, DaemonError> {
+        self.set_config_application_state(spec, false, Some(fingerprint), None, None)
+    }
+
+    fn set_config_application_state(
         &self,
         spec: &ProcessSpec,
         replacement_required: bool,
+        applied_config_fingerprint: Option<&str>,
+        staged_config_fingerprint: Option<&str>,
+        desired_config_fingerprint: Option<&str>,
     ) -> Result<bool, DaemonError> {
         require_process_containment()?;
         let Some(pid) = read_pid_file(&spec.pid_path)? else {
@@ -308,6 +401,15 @@ impl ProcessSupervisor {
         }
 
         metadata.replacement_required = replacement_required;
+        metadata.applied_config_fingerprint = applied_config_fingerprint.map(str::to_owned);
+        metadata.staged_config_fingerprint = staged_config_fingerprint.map(str::to_owned);
+        if let Some(desired_config_fingerprint) = desired_config_fingerprint {
+            metadata.desired_config_fingerprint = Some(desired_config_fingerprint.to_owned());
+        } else if metadata.desired_config_fingerprint.is_none()
+            && let Some(applied_config_fingerprint) = applied_config_fingerprint
+        {
+            metadata.desired_config_fingerprint = Some(applied_config_fingerprint.to_owned());
+        }
         let encoded = serde_json::to_string(&metadata)?;
         fs::write_sensitive_file(&spec.metadata_path, &encoded)?;
 
@@ -354,6 +456,11 @@ impl ProcessSupervisor {
                     command: spec.command,
                     arguments: spec.arguments,
                     replacement_required: metadata.replacement_required,
+                    applied_config_fingerprint: match metadata.recorded_config_fingerprint() {
+                        Some(RecordedConfigFingerprint::Applied(fingerprint)) => Some(fingerprint),
+                        Some(RecordedConfigFingerprint::Staged(_)) | None => None,
+                    },
+                    desired_config_fingerprint: metadata.desired_config_fingerprint,
                     process_start_identity,
                     process_executable_identity: metadata.process_executable_identity,
                 },
@@ -421,6 +528,54 @@ impl ManagedProcess {
     }
 }
 
+pub(crate) async fn wait_for_started_runtime_readiness<Readiness>(
+    process: &mut ManagedProcess,
+    runtime_name: &str,
+    readiness: Readiness,
+    process_exit_poll_interval: Duration,
+) -> Result<(), DaemonError>
+where
+    Readiness: Future<Output = Result<(), DaemonError>>,
+{
+    tokio::pin!(readiness);
+
+    loop {
+        tokio::select! {
+            result = &mut readiness => {
+                if result.is_err() && process.has_exited()? {
+                    return Err(runtime_exited_before_readiness_error(runtime_name));
+                }
+
+                return result;
+            }
+            () = sleep(process_exit_poll_interval) => {
+                if process.has_exited()? {
+                    return Err(runtime_exited_before_readiness_error(runtime_name));
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn bounded_runtime_readiness<Item, Output, Wait, Readiness>(
+    items: impl IntoIterator<Item = Item>,
+    wait: Wait,
+) -> impl Stream<Item = Output>
+where
+    Wait: FnMut(Item) -> Readiness,
+    Readiness: Future<Output = Output>,
+{
+    stream::iter(items)
+        .map(wait)
+        .buffer_unordered(RUNTIME_READINESS_CONCURRENCY_LIMIT)
+}
+
+pub(crate) fn runtime_exited_before_readiness_error(runtime_name: &str) -> DaemonError {
+    DaemonError::UnexpectedProtocolResponse {
+        reason: format!("runtime `{runtime_name}` exited before readiness was verified"),
+    }
+}
+
 impl OwnedRuntime {
     pub fn pid(&self) -> u32 {
         self.pid
@@ -428,6 +583,16 @@ impl OwnedRuntime {
 
     pub fn replacement_required(&self) -> bool {
         self.replacement_required
+    }
+
+    pub fn applied_config_fingerprint(&self) -> Option<&str> {
+        self.applied_config_fingerprint.as_deref()
+    }
+
+    pub(crate) fn has_applied_desired_config(&self) -> bool {
+        self.desired_config_fingerprint
+            .as_ref()
+            .is_some_and(|desired| self.applied_config_fingerprint.as_ref() == Some(desired))
     }
 
     fn matches_live(&self) -> Result<bool, DaemonError> {
@@ -444,6 +609,18 @@ impl OwnedRuntime {
 impl AdoptedProcess {
     pub fn pid(&self) -> u32 {
         self.owned.pid()
+    }
+
+    pub(crate) fn into_owned(self) -> OwnedRuntime {
+        self.owned
+    }
+
+    pub(crate) fn uses_current_artifact(&self, artifact_root: &Utf8Path) -> bool {
+        !self.owned.replacement_required() && self.owned.command.starts_with(artifact_root)
+    }
+
+    pub(crate) fn has_applied_desired_config(&self) -> bool {
+        self.owned.has_applied_desired_config()
     }
 
     pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
@@ -764,6 +941,57 @@ fn signal_process_group(_pid: u32, _signal: ProcessSignal) -> Result<(), DaemonE
     require_process_containment()
 }
 
+/// Owns a freshly spawned process group until its runtime files are durably committed.
+///
+/// Every release path runs [`terminate_spawned_child`], so a failed or cancelled
+/// [`ProcessSupervisor::start`] cannot orphan the leader or its descendants.
+struct SpawnedProcessGroup {
+    pid: u32,
+    child: Option<Child>,
+    runtime: Handle,
+}
+
+impl SpawnedProcessGroup {
+    /// Arming captures the current runtime, so cancellation still reaps the group no matter
+    /// which thread or context finally drops the guard.
+    fn armed(pid: u32, child: Child) -> Self {
+        Self {
+            pid,
+            child: Some(child),
+            runtime: Handle::current(),
+        }
+    }
+
+    /// Commits the PID and runtime metadata, releasing the child only once both are durable.
+    /// Nothing is awaited between a successful commit and taking ownership back.
+    async fn commit(&mut self, spec: &ProcessSpec) -> Result<Option<Child>, DaemonError> {
+        let Some(child) = self.child.as_mut() else {
+            return Ok(None);
+        };
+        persist_runtime_files(spec, self.pid, child).await?;
+
+        Ok(self.child.take())
+    }
+
+    async fn terminate(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            terminate_spawned_child(self.pid, &mut child).await;
+        }
+    }
+}
+
+impl Drop for SpawnedProcessGroup {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let pid = self.pid;
+
+        self.runtime
+            .spawn(async move { terminate_spawned_child(pid, &mut child).await });
+    }
+}
+
 async fn terminate_spawned_child(pid: u32, child: &mut Child) {
     #[cfg(target_os = "macos")]
     let _group_kill_result = signal_process_group(pid, ProcessSignal::Kill);
@@ -842,9 +1070,13 @@ fn process_command(spec: &ProcessSpec) -> tokio::process::Command {
     command
 }
 
-async fn persist_runtime_files(spec: &ProcessSpec, pid: u32) -> Result<(), DaemonError> {
+async fn persist_runtime_files(
+    spec: &ProcessSpec,
+    pid: u32,
+    child: &mut Child,
+) -> Result<(), DaemonError> {
     let (process_identity, process_executable_identity) =
-        process_identity_for_runtime_metadata(spec, pid).await?;
+        process_identity_for_runtime_metadata(spec, pid, child).await?;
 
     fs::write_sensitive_file(&spec.pid_path, &format!("{pid}\n"))?;
     write_runtime_metadata(
@@ -858,13 +1090,11 @@ async fn persist_runtime_files(spec: &ProcessSpec, pid: u32) -> Result<(), Daemo
 async fn process_identity_for_runtime_metadata(
     spec: &ProcessSpec,
     pid: u32,
+    child: &mut Child,
 ) -> Result<(platform::ProcessIdentity, Option<ProcessExecutableIdentity>), DaemonError> {
-    let Some(mut process_identity) = platform::inspect_process_identity(pid)? else {
-        return Err(DaemonError::MissingProcessIdentity {
-            name: spec.name.clone(),
-            pid,
-        });
-    };
+    let identity_started_at = Instant::now();
+    let mut process_identity =
+        inspect_spawned_process_identity(spec, pid, child, &identity_started_at).await?;
     if executable_matches(&process_identity, &spec.command) {
         return Ok((process_identity, None));
     }
@@ -903,21 +1133,36 @@ async fn process_identity_for_runtime_metadata(
         } else {
             stable_identity = None;
         }
-        if started_at.elapsed() >= SCRIPT_IDENTITY_TIMEOUT {
+        if started_at.elapsed() >= PROCESS_IDENTITY_TIMEOUT {
             return Err(DaemonError::MissingProcessIdentity {
                 name: spec.name.clone(),
                 pid,
             });
         }
 
-        sleep(SCRIPT_IDENTITY_POLL_INTERVAL).await;
-        let Some(identity) = platform::inspect_process_identity(pid)? else {
+        sleep(PROCESS_IDENTITY_POLL_INTERVAL).await;
+        process_identity = inspect_spawned_process_identity(spec, pid, child, &started_at).await?;
+    }
+}
+
+async fn inspect_spawned_process_identity(
+    spec: &ProcessSpec,
+    pid: u32,
+    child: &mut Child,
+    started_at: &Instant,
+) -> Result<platform::ProcessIdentity, DaemonError> {
+    loop {
+        if let Some(process_identity) = platform::inspect_process_identity(pid)? {
+            return Ok(process_identity);
+        }
+        if child.try_wait()?.is_some() || started_at.elapsed() >= PROCESS_IDENTITY_TIMEOUT {
             return Err(DaemonError::MissingProcessIdentity {
                 name: spec.name.clone(),
                 pid,
             });
-        };
-        process_identity = identity;
+        }
+
+        sleep(PROCESS_IDENTITY_POLL_INTERVAL).await;
     }
 }
 
@@ -939,6 +1184,9 @@ fn write_runtime_metadata(
         resource_name: spec.resource_name.clone(),
         track: spec.track.clone(),
         replacement_required: false,
+        applied_config_fingerprint: None,
+        desired_config_fingerprint: None,
+        staged_config_fingerprint: None,
         log_path: spec.log_path.to_string(),
         started_at,
         process_start_identity: Some(process_start_identity),
@@ -1072,6 +1320,22 @@ fn process_not_found(error: &io::Error) -> bool {
 }
 
 impl RuntimeMetadata {
+    fn recorded_config_fingerprint(&self) -> Option<RecordedConfigFingerprint> {
+        match (
+            self.replacement_required,
+            self.applied_config_fingerprint.as_deref(),
+            self.staged_config_fingerprint.as_deref(),
+        ) {
+            (false, Some(fingerprint), None) => {
+                Some(RecordedConfigFingerprint::Applied(fingerprint.to_owned()))
+            }
+            (true, None, Some(fingerprint)) => {
+                Some(RecordedConfigFingerprint::Staged(fingerprint.to_owned()))
+            }
+            _ => None,
+        }
+    }
+
     fn process_spec(&self, pid_path: Utf8PathBuf, metadata_path: Utf8PathBuf) -> ProcessSpec {
         ProcessSpec {
             name: self.name.clone(),
@@ -1137,17 +1401,103 @@ fn timestamp() -> Result<String, DaemonError> {
     Ok(time::OffsetDateTime::now_utc().format(format)?)
 }
 
-#[cfg(all(test, target_os = "macos"))]
-mod tests {
+#[cfg(test)]
+mod bounded_readiness_tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use std::time::Duration;
 
     use anyhow::{Result, anyhow};
+    use tokio::sync::Semaphore;
+    use tokio::time::timeout;
+
+    use super::bounded_runtime_readiness;
+    use futures_util::StreamExt;
+
+    #[tokio::test]
+    async fn readiness_waits_overlap_at_the_fixed_bound() -> Result<()> {
+        let started = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum_active = Arc::new(AtomicUsize::new(0));
+        let gate = Arc::new(Semaphore::new(0));
+        let task = tokio::spawn(
+            bounded_runtime_readiness(0..8, {
+                let started = Arc::clone(&started);
+                let active = Arc::clone(&active);
+                let maximum_active = Arc::clone(&maximum_active);
+                let gate = Arc::clone(&gate);
+
+                move |item| {
+                    let started = Arc::clone(&started);
+                    let active = Arc::clone(&active);
+                    let maximum_active = Arc::clone(&maximum_active);
+                    let gate = Arc::clone(&gate);
+
+                    async move {
+                        started.fetch_add(1, Ordering::SeqCst);
+                        let active_now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        maximum_active.fetch_max(active_now, Ordering::SeqCst);
+                        let permit = gate
+                            .acquire_owned()
+                            .await
+                            .map_err(|error| anyhow!("readiness gate closed: {error}"))?;
+                        permit.forget();
+                        active.fetch_sub(1, Ordering::SeqCst);
+
+                        Ok::<_, anyhow::Error>(item)
+                    }
+                }
+            })
+            .collect::<Vec<_>>(),
+        );
+
+        timeout(Duration::from_secs(1), async {
+            while started.load(Ordering::SeqCst) < 4 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        for _attempt in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(started.load(Ordering::SeqCst), 4);
+        assert_eq!(active.load(Ordering::SeqCst), 4);
+        assert_eq!(maximum_active.load(Ordering::SeqCst), 4);
+
+        gate.add_permits(8);
+        let outcomes = timeout(Duration::from_secs(1), task)
+            .await??
+            .into_iter()
+            .collect::<Result<Vec<_>>>()?;
+
+        assert_eq!(outcomes.len(), 8);
+        assert_eq!(maximum_active.load(Ordering::SeqCst), 4);
+
+        Ok(())
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use std::future::pending;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::Duration;
+
+    use anyhow::{Result, anyhow};
+    use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
     use rustix::process::{Pid, Signal, kill_process, test_kill_process};
+    use tokio::sync::oneshot;
     use tokio::time::sleep;
 
-    use super::{ProcessSpec, ProcessSupervisor};
+    use super::{ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint};
     use state::PvPaths;
+
+    /// Shorter than the script identity stabilization window, so cancellation lands while
+    /// the runtime files are still uncommitted.
+    const IDENTITY_CANCEL_DELAY: Duration = Duration::from_millis(150);
 
     #[tokio::test]
     async fn startup_persistence_failure_terminates_process_group_descendants() -> Result<()> {
@@ -1203,7 +1553,212 @@ mod tests {
         Ok(())
     }
 
-    async fn wait_for_test_path(path: &camino::Utf8Path) {
+    #[tokio::test]
+    async fn canceled_spawn_reaps_uncommitted_process_group() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::ensure_layout(&paths)?;
+        let supervisor = ProcessSupervisor::new(paths.clone());
+
+        let hook_descendant_pid_path = paths.run().join("hook-cancel-descendant.pid");
+        let hook_observed_pid_path = hook_descendant_pid_path.clone();
+        let (hook_pid_sender, hook_pid_receiver) = oneshot::channel();
+        let mut hook_start = Box::pin(supervisor.start_inner(
+            descendant_spec(
+                &paths,
+                "hook-cancel",
+                "/bin/sh".into(),
+                shell_arguments(&hook_descendant_pid_path),
+            ),
+            move |pid| async move {
+                wait_for_test_path(&hook_observed_pid_path).await;
+                let _delivered = hook_pid_sender.send(pid);
+                pending::<()>().await;
+            },
+        ));
+        let hook_leader_pid = tokio::select! {
+            _result = &mut hook_start => {
+                return Err(anyhow!(
+                    "start_inner returned while the post-spawn hook was parked"
+                ));
+            }
+            pid = hook_pid_receiver => pid?,
+        };
+        drop(hook_start);
+
+        assert_process_group_reaped(hook_leader_pid, &hook_descendant_pid_path).await?;
+
+        let identity_descendant_pid_path = paths.run().join("identity-cancel-descendant.pid");
+        let identity_command = paths.run().join("identity-cancel.sh");
+        write_descendant_script(&identity_command, &identity_descendant_pid_path)?;
+        let identity_observed_pid_path = identity_descendant_pid_path.clone();
+        let (identity_pid_sender, identity_pid_receiver) = oneshot::channel();
+        let mut identity_start = Box::pin(supervisor.start_inner(
+            descendant_spec(&paths, "identity-cancel", identity_command, Vec::new()),
+            move |pid| async move {
+                wait_for_test_path(&identity_observed_pid_path).await;
+                let _delivered = identity_pid_sender.send(pid);
+            },
+        ));
+        let identity_leader_pid = tokio::select! {
+            _result = &mut identity_start => {
+                return Err(anyhow!(
+                    "start_inner returned before the spawned process was observed"
+                ));
+            }
+            pid = identity_pid_receiver => pid?,
+        };
+        tokio::select! {
+            _result = &mut identity_start => {
+                return Err(anyhow!(
+                    "start_inner committed runtime files before cancellation"
+                ));
+            }
+            () = sleep(IDENTITY_CANCEL_DELAY) => {}
+        }
+        drop(identity_start);
+
+        assert_process_group_reaped(identity_leader_pid, &identity_descendant_pid_path).await?;
+
+        let committed_descendant_pid_path = paths.run().join("committed-descendant.pid");
+        let committed = ProcessSupervisor::new(paths.clone())
+            .start(descendant_spec(
+                &paths,
+                "committed",
+                "/bin/sh".into(),
+                shell_arguments(&committed_descendant_pid_path),
+            ))
+            .await?;
+        let committed_pid = committed.pid();
+        wait_for_test_path(&committed_descendant_pid_path).await;
+
+        assert!(
+            test_kill_process(test_pid(committed_pid)?).is_ok(),
+            "committed runtime {committed_pid} was reaped despite durable runtime files"
+        );
+
+        committed.stop(Duration::from_secs(5)).await?;
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn recorded_fingerprint_accepts_prior_proof_only_while_process_is_live() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::ensure_layout(&paths)?;
+        let supervisor = ProcessSupervisor::new(paths.clone());
+        let spec = descendant_spec(
+            &paths,
+            "prior-proof",
+            "/bin/sleep".into(),
+            vec!["60".to_string()],
+        );
+        let process = supervisor.start(spec.clone()).await?;
+        assert!(supervisor.record_applied_config(&spec, "sha256:v1:applied")?);
+
+        // The installed artifact changed: strict proof against the new spec fails, but the
+        // live prior recording still proves the old applied fingerprint.
+        let mut changed_spec = spec.clone();
+        changed_spec.command = "/bin/changed-artifact".into();
+        assert_eq!(
+            supervisor.recorded_config_fingerprint(&changed_spec)?,
+            Some(RecordedConfigFingerprint::Applied(
+                "sha256:v1:applied".to_owned()
+            ))
+        );
+
+        // Once the recorded process is dead, prior proof is refused even though the
+        // recording files are intact.
+        process.stop(Duration::from_secs(5)).await?;
+        assert!(spec.pid_path.exists());
+        assert!(spec.metadata_path.exists());
+        assert!(
+            supervisor
+                .recorded_config_fingerprint(&changed_spec)?
+                .is_none()
+        );
+
+        Ok(())
+    }
+
+    fn descendant_spec(
+        paths: &PvPaths,
+        name: &str,
+        command: Utf8PathBuf,
+        arguments: Vec<String>,
+    ) -> ProcessSpec {
+        ProcessSpec {
+            name: name.to_string(),
+            command,
+            arguments,
+            private_environment: Default::default(),
+            config_path: paths.config().join(format!("{name}.json")),
+            config_fingerprint: None,
+            log_path: paths.logs().join(format!("{name}.log")),
+            pid_path: paths.run().join(format!("{name}.pid")),
+            metadata_path: paths.run().join(format!("{name}-metadata.json")),
+            resource_name: name.to_string(),
+            track: "test".to_string(),
+        }
+    }
+
+    fn shell_arguments(descendant_pid_path: &Utf8Path) -> Vec<String> {
+        vec!["-c".to_string(), descendant_shell_body(descendant_pid_path)]
+    }
+
+    fn descendant_shell_body(descendant_pid_path: &Utf8Path) -> String {
+        format!(
+            "sh -c 'while true; do sleep 1; done' & echo $! > \"{descendant_pid_path}\"; while true; do sleep 1; done"
+        )
+    }
+
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "supervisor cancellation test sets its fixture executable bit directly"
+    )]
+    fn write_descendant_script(path: &Utf8Path, descendant_pid_path: &Utf8Path) -> Result<()> {
+        let body = descendant_shell_body(descendant_pid_path);
+        state::fs::write_sensitive_file(path, &format!("#!/bin/sh\n{body}\n"))?;
+        let mut permissions = std::fs::metadata(path)?.permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions)?;
+
+        Ok(())
+    }
+
+    async fn assert_process_group_reaped(
+        leader_pid: u32,
+        descendant_pid_path: &Utf8Path,
+    ) -> Result<()> {
+        let descendant_pid = state::fs::read_to_string(descendant_pid_path)?
+            .trim()
+            .parse::<u32>()?;
+        let leader_exited = wait_for_test_process_exit(leader_pid).await?;
+        let descendant_exited = wait_for_test_process_exit(descendant_pid).await?;
+        for (pid, exited) in [
+            (leader_pid, leader_exited),
+            (descendant_pid, descendant_exited),
+        ] {
+            if !exited {
+                kill_test_process(pid)?;
+                let _cleanup_complete = wait_for_test_process_exit(pid).await?;
+            }
+        }
+
+        assert!(
+            leader_exited,
+            "canceled spawn left leader process {leader_pid} unreaped"
+        );
+        assert!(
+            descendant_exited,
+            "canceled spawn left descendant process {descendant_pid} unreaped"
+        );
+
+        Ok(())
+    }
+
+    async fn wait_for_test_path(path: &Utf8Path) {
         for _attempt in 0..50 {
             if path.exists() {
                 return;

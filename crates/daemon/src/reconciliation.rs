@@ -2,9 +2,9 @@ use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use state::{PvPaths, StateError, UpdateLock};
+use state::{JobsLock, PvPaths, StateError};
 use thiserror::Error;
 use tokio::sync::Notify;
 
@@ -43,6 +43,7 @@ pub struct ReconciliationJob {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ReconciliationQueueKey {
     Reconcile(ReconciliationScope),
+    StartupSystem,
     UpdateSystem,
 }
 
@@ -50,6 +51,7 @@ pub struct QueuedReconciliation {
     job: ReconciliationJob,
     inner: Arc<QueueInner>,
     abandon_job: Option<JobFinalizer>,
+    enqueued_at: Instant,
     released: bool,
 }
 
@@ -57,7 +59,14 @@ pub struct RunningReconciliation {
     job: ReconciliationJob,
     inner: Arc<QueueInner>,
     abandon_job: Option<JobFinalizer>,
+    timing: ReconciliationJobTiming,
     finished: bool,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ReconciliationJobTiming {
+    enqueued_at: Instant,
+    started_at: Instant,
 }
 
 #[derive(Clone)]
@@ -101,7 +110,7 @@ struct DebounceState {
 struct QueueState {
     active: Option<ReconciliationJob>,
     queued: VecDeque<ReconciliationJob>,
-    update_lock: Option<UpdateLock>,
+    jobs_lock: Option<JobsLock>,
 }
 
 #[derive(Debug, Default)]
@@ -120,7 +129,8 @@ impl ReconciliationQueue {
         }
     }
 
-    pub fn enqueue<E>(
+    #[cfg(test)]
+    fn enqueue<E>(
         &self,
         scope: ReconciliationScope,
         create_job_id: impl FnOnce() -> Result<String, E>,
@@ -128,17 +138,19 @@ impl ReconciliationQueue {
         self.enqueue_with_abandon(scope, create_job_id, |_job_id| {})
     }
 
-    pub(crate) fn enqueue_with_abandon<E>(
+    #[cfg(test)]
+    fn enqueue_with_abandon<E>(
         &self,
         scope: ReconciliationScope,
         create_job_id: impl FnOnce() -> Result<String, E>,
         abandon_job: impl FnOnce(&str) + Send + 'static,
     ) -> Result<EnqueueResult, E> {
-        let key = ReconciliationQueueKey::Reconcile(scope.clone());
+        let key = ReconciliationQueueKey::Reconcile(scope.effective());
 
         self.enqueue_with_key(scope, key, create_job_id, abandon_job)
     }
 
+    #[cfg(test)]
     fn enqueue_with_key<E>(
         &self,
         scope: ReconciliationScope,
@@ -164,6 +176,7 @@ impl ReconciliationQueue {
             job,
             inner: Arc::clone(&self.inner),
             abandon_job: Some(Box::new(abandon_job)),
+            enqueued_at: Instant::now(),
             released: false,
         }))
     }
@@ -178,7 +191,7 @@ impl ReconciliationQueue {
     where
         E: From<StateError>,
     {
-        let key = ReconciliationQueueKey::Reconcile(scope.clone());
+        let key = ReconciliationQueueKey::Reconcile(scope.effective());
 
         self.enqueue_mutating_with_key(paths, scope, key, create_job_id, abandon_job)
     }
@@ -201,6 +214,24 @@ impl ReconciliationQueue {
         )
     }
 
+    pub(crate) fn enqueue_startup_with_abandon<E>(
+        &self,
+        paths: &PvPaths,
+        create_job_id: impl FnOnce() -> Result<String, E>,
+        abandon_job: impl FnOnce(&str) + Send + 'static,
+    ) -> Result<EnqueueResult, E>
+    where
+        E: From<StateError>,
+    {
+        self.enqueue_mutating_with_key(
+            paths,
+            ReconciliationScope::System,
+            ReconciliationQueueKey::StartupSystem,
+            create_job_id,
+            abandon_job,
+        )
+    }
+
     fn enqueue_mutating_with_key<E>(
         &self,
         paths: &PvPaths,
@@ -218,16 +249,16 @@ impl ReconciliationQueue {
             return Ok(EnqueueResult::Coalesced(job));
         }
 
-        let acquired_lock = state.update_lock.is_none();
+        let acquired_lock = state.jobs_lock.is_none();
         if acquired_lock {
-            state.update_lock = Some(UpdateLock::acquire(paths).map_err(E::from)?);
+            state.jobs_lock = Some(JobsLock::acquire(paths).map_err(E::from)?);
         }
 
         let job_id = match create_job_id() {
             Ok(job_id) => job_id,
             Err(error) => {
                 if acquired_lock && state.active.is_none() && state.queued.is_empty() {
-                    state.update_lock = None;
+                    state.jobs_lock = None;
                 }
 
                 return Err(error);
@@ -242,6 +273,7 @@ impl ReconciliationQueue {
             job,
             inner: Arc::clone(&self.inner),
             abandon_job: Some(Box::new(abandon_job)),
+            enqueued_at: Instant::now(),
             released: false,
         }))
     }
@@ -270,11 +302,16 @@ impl QueuedReconciliation {
                     state.active = Some(job.clone());
                     let abandon_job = queued.abandon_job.take();
                     queued.released = true;
+                    let started_at = Instant::now();
 
                     return RunningReconciliation {
                         job,
                         inner: Arc::clone(&queued.inner),
                         abandon_job,
+                        timing: ReconciliationJobTiming {
+                            enqueued_at: queued.enqueued_at,
+                            started_at,
+                        },
                         finished: false,
                     };
                 }
@@ -286,6 +323,30 @@ impl QueuedReconciliation {
 
     pub fn job_id(&self) -> &str {
         &self.job.job_id
+    }
+}
+
+impl ReconciliationJobTiming {
+    #[cfg(test)]
+    pub(crate) fn immediate() -> Self {
+        let now = Instant::now();
+
+        Self {
+            enqueued_at: now,
+            started_at: now,
+        }
+    }
+
+    pub(crate) fn queue_wait(self) -> Duration {
+        self.started_at.saturating_duration_since(self.enqueued_at)
+    }
+
+    pub(crate) fn execution_elapsed(self) -> Duration {
+        self.execution_elapsed_at(Instant::now())
+    }
+
+    fn execution_elapsed_at(self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.started_at)
     }
 }
 
@@ -310,6 +371,10 @@ impl RunningReconciliation {
 
     pub fn job_id(&self) -> &str {
         &self.job.job_id
+    }
+
+    pub(crate) fn timing(&self) -> ReconciliationJobTiming {
+        self.timing
     }
 
     pub fn finish(mut self) {
@@ -412,6 +477,15 @@ impl ReconciliationScope {
         let track = ReconciliationScopeComponent::new(track, "track", &scope, 3)?;
 
         Ok(Self::Resource { name, track })
+    }
+
+    pub(crate) fn effective(&self) -> Self {
+        match self {
+            Self::Resource { name, .. } if matches!(name.as_str(), "php" | "frankenphp") => {
+                Self::System
+            }
+            scope => scope.clone(),
+        }
     }
 }
 
@@ -521,7 +595,7 @@ fn remove_queued_job(inner: &QueueInner, job: &ReconciliationJob) -> bool {
     state.queued.retain(|queued| queued.job_id != job.job_id);
 
     if state.queued.len() != queued_len {
-        release_update_lock_if_idle(&mut state);
+        release_jobs_lock_if_idle(&mut state);
         inner.notify.notify_waiters();
         return true;
     }
@@ -538,7 +612,7 @@ fn release_active_job(inner: &QueueInner, job: &ReconciliationJob) -> bool {
         .is_some_and(|active| active.job_id == job.job_id)
     {
         state.active = None;
-        release_update_lock_if_idle(&mut state);
+        release_jobs_lock_if_idle(&mut state);
         inner.notify.notify_waiters();
         return true;
     }
@@ -546,9 +620,9 @@ fn release_active_job(inner: &QueueInner, job: &ReconciliationJob) -> bool {
     false
 }
 
-fn release_update_lock_if_idle(state: &mut QueueState) {
+fn release_jobs_lock_if_idle(state: &mut QueueState) {
     if state.active.is_none() && state.queued.is_empty() {
-        state.update_lock = None;
+        state.jobs_lock = None;
     }
 }
 
@@ -568,12 +642,68 @@ fn lock_debounce_state(state: &DebounceState) -> MutexGuard<'_, DebounceInner> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Instant;
+
     use tokio::time::{Duration, sleep, timeout};
 
     use super::{
-        EnqueueResult, QueuedReconciliation, ReconciliationDebouncer, ReconciliationQueue,
-        ReconciliationQueueKey, ReconciliationScope, ReconciliationScopeParseError,
+        EnqueueResult, QueuedReconciliation, ReconciliationDebouncer, ReconciliationJobTiming,
+        ReconciliationQueue, ReconciliationQueueKey, ReconciliationScope,
+        ReconciliationScopeParseError,
     };
+
+    #[test]
+    fn job_timing_separates_queue_wait_from_execution() {
+        let enqueued_at = Instant::now();
+        let started_at = enqueued_at + Duration::from_millis(11);
+        let timing = ReconciliationJobTiming {
+            enqueued_at,
+            started_at,
+        };
+
+        assert_eq!(timing.queue_wait(), Duration::from_millis(11));
+        assert_eq!(
+            timing.execution_elapsed_at(started_at + Duration::from_millis(7)),
+            Duration::from_millis(7)
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_job_timing_uses_actual_enqueue_and_start_boundaries() -> anyhow::Result<()> {
+        let queue = ReconciliationQueue::new();
+        let active = queued(queue.enqueue(ReconciliationScope::System, || {
+            Ok::<String, anyhow::Error>("job_1".to_string())
+        })?)?
+        .wait_for_turn()
+        .await;
+        let enqueued_before = Instant::now();
+        let waiting = queued(
+            queue.enqueue(ReconciliationScope::project("project_1")?, || {
+                Ok::<String, anyhow::Error>("job_2".to_string())
+            })?,
+        )?;
+        let enqueued_after = Instant::now();
+
+        sleep(Duration::from_millis(10)).await;
+        let released_at = Instant::now();
+        active.finish();
+        let running = timeout(Duration::from_secs(1), waiting.wait_for_turn()).await?;
+        let started_after = Instant::now();
+        let timing = running.timing();
+
+        assert!(timing.enqueued_at >= enqueued_before);
+        assert!(timing.enqueued_at <= enqueued_after);
+        assert!(timing.started_at >= released_at);
+        assert!(timing.started_at <= started_after);
+        assert!(timing.queue_wait() >= Duration::from_millis(10));
+        assert_eq!(
+            timing.execution_elapsed_at(timing.started_at),
+            Duration::ZERO
+        );
+        running.finish();
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn queue_runs_one_scope_at_a_time_and_coalesces_duplicates() -> anyhow::Result<()> {
@@ -666,6 +796,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queue_coalesces_resource_scopes_with_the_same_effective_work() -> anyhow::Result<()> {
+        let queue = ReconciliationQueue::new();
+        let first_scope = ReconciliationScope::resource("php", "8.4")?;
+        let first = queued(queue.enqueue(first_scope.clone(), || {
+            Ok::<String, anyhow::Error>("job_1".to_owned())
+        })?)?;
+        let duplicate = queue
+            .enqueue(ReconciliationScope::resource("frankenphp", "8.4")?, || {
+                Ok::<String, anyhow::Error>("job_2".to_owned())
+            })?;
+
+        assert!(matches!(
+            duplicate,
+            EnqueueResult::Coalesced(job)
+                if job.job_id() == "job_1" && job.scope() == &first_scope
+        ));
+        first.wait_for_turn().await.finish();
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn update_system_does_not_coalesce_with_reconcile_system() -> anyhow::Result<()> {
         let queue = ReconciliationQueue::new();
         let update = queued(queue.enqueue_with_key(
@@ -695,6 +847,30 @@ mod tests {
 
         let running_reconcile = timeout(Duration::from_secs(1), reconcile.wait_for_turn()).await?;
         assert_eq!(running_reconcile.scope(), &ReconciliationScope::System);
+        assert_eq!(running_reconcile.job_id(), "job_2");
+        running_reconcile.finish();
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn startup_system_does_not_coalesce_with_trailing_reconcile_system() -> anyhow::Result<()>
+    {
+        let queue = ReconciliationQueue::new();
+        let startup = queued(queue.enqueue_with_key(
+            ReconciliationScope::System,
+            ReconciliationQueueKey::StartupSystem,
+            || Ok::<String, anyhow::Error>("job_1".to_string()),
+            |_job_id| {},
+        )?)?;
+        let reconcile = queued(queue.enqueue(ReconciliationScope::System, || {
+            Ok::<String, anyhow::Error>("job_2".to_string())
+        })?)?;
+
+        let running_startup = startup.wait_for_turn().await;
+        running_startup.finish();
+
+        let running_reconcile = timeout(Duration::from_secs(1), reconcile.wait_for_turn()).await?;
         assert_eq!(running_reconcile.job_id(), "job_2");
         running_reconcile.finish();
 

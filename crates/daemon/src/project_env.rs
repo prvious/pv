@@ -1,5 +1,7 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
+#[cfg(test)]
+use std::sync::{Arc, Barrier, LazyLock, Mutex};
 
 use camino::Utf8PathBuf;
 use config::{
@@ -11,9 +13,9 @@ use resources::{
     generated_allocation_name,
 };
 use state::{
-    Database, LinkProjectInput, ManagedResourceDesiredState, ProjectEnvObservedStatus,
-    ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectMode,
-    ProjectPhpRuntimeInput, ProjectReconciliationStateInput, ProjectRecord, PvPaths,
+    Database, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackDesiredInput,
+    ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
+    ProjectMode, ProjectPhpRuntimeInput, ProjectReconciliationStateInput, ProjectRecord, PvPaths,
     ResourceAllocationInput, ResourceAllocationRecord, ResourceAllocationStatus, StateError,
 };
 
@@ -26,6 +28,78 @@ use crate::structured_log;
 pub(crate) struct ProjectEnvReconciliationSummary {
     message: &'static str,
     requested_php_extensions: bool,
+    recorded_tracks: BTreeSet<DemandedResourceTrack>,
+}
+
+impl ProjectEnvReconciliationSummary {
+    /// The resource tracks the Record Requirements pass resolved from the current config:
+    /// declared backing resources plus the PHP pair when the Project configures PHP. The
+    /// Resources phase installs exactly these, so install work is never timed inside a
+    /// Project Apply span.
+    pub(crate) fn recorded_tracks(&self) -> &BTreeSet<DemandedResourceTrack> {
+        &self.recorded_tracks
+    }
+}
+
+struct ProjectEnvRender {
+    message: &'static str,
+    warnings: Vec<ProjectEnvObservedWarningInput>,
+    summary: &'static str,
+}
+
+impl ProjectEnvRender {
+    fn status(&self) -> ProjectEnvObservedStatus {
+        if self.warnings.is_empty() {
+            ProjectEnvObservedStatus::Rendered
+        } else {
+            ProjectEnvObservedStatus::Warning
+        }
+    }
+}
+
+/// Which half of a Project Apply to run, and whether that half may install artifacts.
+///
+/// A job-orchestrated apply runs [`ProjectApplyStage::RecordRequirements`], then the Resources
+/// phase, then [`ProjectApplyStage::CompleteStagedApply`]. The staged variant cannot install,
+/// so artifact work can only ever be timed and attributed to Resources even when the Project
+/// config gains a resource after requirements were recorded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ProjectApplyStage {
+    /// Validate the config and record what the Project needs. This may read cached manifest
+    /// metadata to resolve a default or `latest` track, but downloads and installs nothing.
+    RecordRequirements,
+    /// Reconcile the Project's resources and render its environment, requiring every artifact
+    /// to be installed already. A missing artifact fails with
+    /// [`DaemonError::ManagedResourceArtifactMissing`] before any manifest read or install.
+    CompleteStagedApply,
+    /// Reconcile the Project's resources and render its environment, installing any missing
+    /// artifact. Only direct test helpers apply without a preceding Resources phase, so no
+    /// job-orchestrated path constructs this.
+    #[cfg(test)]
+    CompleteApply,
+}
+
+impl ProjectApplyStage {
+    fn artifact_install(self) -> crate::managed_resources::ArtifactInstall {
+        match self {
+            // Never consulted, because this stage returns before reconciling resources, but
+            // fail closed so a stage that must not install can never gain permission.
+            Self::RecordRequirements => crate::managed_resources::ArtifactInstall::Forbidden,
+            Self::CompleteStagedApply => crate::managed_resources::ArtifactInstall::Forbidden,
+            #[cfg(test)]
+            Self::CompleteApply => crate::managed_resources::ArtifactInstall::Allowed,
+        }
+    }
+
+    /// Whether this stage may install missing artifacts inline. Only applies without a
+    /// preceding Resources phase, so every job-orchestrated staged flow answers false.
+    fn may_install_artifacts(self) -> bool {
+        match self {
+            Self::RecordRequirements | Self::CompleteStagedApply => false,
+            #[cfg(test)]
+            Self::CompleteApply => true,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -37,6 +111,72 @@ pub(crate) struct ProjectResourcePlan {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ProjectResourceAllocationPlan {
     pub(crate) allocations: Vec<ResourceAllocationInput>,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ProjectDemand {
+    pub(crate) resource_tracks: BTreeSet<DemandedResourceTrack>,
+    resource_selections: BTreeMap<String, ProjectResourceTrackDemand>,
+    pub(crate) php_track: Option<ProjectPhpTrackDemand>,
+    /// Whether the Resources phase was given this demand's PHP pair to install, so a staged apply
+    /// may require it. Only a successful system Demand Discovery promises that. A Record
+    /// Requirements pin does not: a Project scope installs its adapter-backed declared tracks and
+    /// may reach the pair only through its conditional repair pass, and a Resource scope installs
+    /// just the one track its scope names.
+    pub(crate) resources_install_php_pair: bool,
+    pub(crate) used_persisted_state: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProjectResourceTrackDemand {
+    version_selector: Option<String>,
+    track: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProjectPhpTrackDemand {
+    php_configured: bool,
+    version_selector: Option<String>,
+    global_version_selector: Option<String>,
+    serves_http: bool,
+    track: String,
+}
+
+impl ProjectPhpTrackDemand {
+    fn matches(
+        &self,
+        php: Option<&config::PhpConfig>,
+        serves_http: bool,
+        global_version_selector: Option<&str>,
+    ) -> bool {
+        let discovered_selector = self
+            .version_selector
+            .as_deref()
+            .or(self.global_version_selector.as_deref())
+            .unwrap_or("latest");
+        let current_selector = php
+            .and_then(config::PhpConfig::version_selector)
+            .or(global_version_selector)
+            .unwrap_or("latest");
+        self.php_configured == php.is_some()
+            && discovered_selector == current_selector
+            && (self.php_configured || self.serves_http == serves_http)
+    }
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) struct DemandedResourceTrack {
+    pub(crate) resource_name: String,
+    pub(crate) track: String,
+}
+
+impl DemandedResourceTrack {
+    pub(crate) fn new(resource_name: impl Into<String>, track: impl Into<String>) -> Self {
+        Self {
+            resource_name: resource_name.into(),
+            track: track.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,6 +194,9 @@ impl ProjectEnvReconciliationSummary {
         self.message
     }
 
+    /// Whether the Project asked for optional PHP extensions. This is the original gate on the
+    /// system-wide repair pass the Resources phase may run, which installs every desired
+    /// Managed Resource track that is missing, not only this Project's PHP/FrankenPHP pair.
     pub(crate) fn requested_php_extensions(&self) -> bool {
         self.requested_php_extensions
     }
@@ -68,7 +211,10 @@ pub(crate) async fn reconcile_project_env(
         paths,
         project_id,
         None,
+        None,
+        &BTreeSet::new(),
         DaemonDownloadProgress::disabled(),
+        ProjectApplyStage::CompleteApply,
     )
     .await
 }
@@ -77,23 +223,124 @@ pub(crate) async fn reconcile_project_env_with_runtime_catalog_and_progress(
     paths: &PvPaths,
     project_id: &str,
     catalog: Option<&ManagedResourceRuntimeCatalog>,
+    discovered_demand: Option<&ProjectDemand>,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
+    stage: ProjectApplyStage,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
     let mut database = Database::open(paths)?;
-    let project =
-        database
-            .project_by_id(project_id)?
-            .ok_or_else(|| StateError::ProjectNotFound {
-                target: project_id.to_string(),
-            })?;
-
-    match reconcile_loaded_project(paths, &mut database, &project, catalog, progress).await {
+    let result: Result<ProjectEnvReconciliationSummary, DaemonError> = async {
+        let project =
+            database
+                .project_by_id(project_id)?
+                .ok_or_else(|| StateError::ProjectNotFound {
+                    target: project_id.to_string(),
+                })?;
+        reconcile_loaded_project(
+            paths,
+            &mut database,
+            &project,
+            catalog,
+            discovered_demand,
+            demanded_tracks,
+            progress,
+            stage,
+        )
+        .await
+    }
+    .await;
+    match result {
         Ok(summary) => Ok(summary),
-        Err(error) => {
-            let message = error.to_string();
-            record_project_env_failure(&mut database, &project.id, &message)?;
+        // No project row exists, so there is no env to attribute a failure to;
+        // propagate bare as reviewed instead of recording against nothing.
+        Err(reconciliation @ DaemonError::State(StateError::ProjectNotFound { .. })) => {
+            Err(reconciliation)
+        }
+        Err(reconciliation) => {
+            let message = reconciliation.to_string();
+            if let Err(recording) = record_project_env_failure(&mut database, project_id, &message)
+            {
+                return Err(DaemonError::ProjectEnvFailureRecordingFailed {
+                    project_id: project_id.to_owned(),
+                    reconciliation: Box::new(reconciliation),
+                    recording: Box::new(recording),
+                });
+            }
 
-            Err(error)
+            Err(reconciliation)
+        }
+    }
+}
+
+/// Applies a Project from persisted state without revalidating its config. Only tests
+/// exercise this path directly now; job-orchestrated scopes apply through the staged flows.
+#[cfg(test)]
+pub(crate) fn reconcile_project_env_from_persisted_state(
+    paths: &PvPaths,
+    database: &mut Database,
+    project_id: &str,
+) -> Result<&'static str, DaemonError> {
+    use config::ConfigError;
+    let mut preserve_existing_failure = false;
+    let result: Result<&'static str, DaemonError> = (|| {
+        let project =
+            database
+                .project_by_id(project_id)?
+                .ok_or_else(|| StateError::ProjectNotFound {
+                    target: project_id.to_owned(),
+                })?;
+        let config_file = ProjectConfigFile::read_from_root(&project.path)?;
+        if let Err(error) =
+            validate_persisted_project_env_dependencies(paths, database, &project, &config_file)
+        {
+            if matches!(
+                &error,
+                DaemonError::Config(ConfigError::MissingAllocationEnvContext { .. })
+            ) {
+                preserve_existing_failure = database
+                    .project_env_observed_state(project_id)?
+                    .is_some_and(|observed| {
+                        observed.status == ProjectEnvObservedStatus::Failed
+                            && observed.message.is_some_and(|message| {
+                                !message.starts_with("Project config error:")
+                            })
+                    });
+            }
+            return Err(error);
+        }
+        let context = config_file
+            .config
+            .has_env_mappings()
+            .then(|| persisted_project_env_context(paths, database, &project))
+            .transpose()?;
+        let runtime_warnings =
+            ignored_php_extension_warnings(&project.php_runtime.ignored_extensions);
+        let rendered =
+            render_project_env(&project, &config_file, context.as_ref(), runtime_warnings)?;
+        database.record_project_env_observed_snapshot(
+            &project.id,
+            rendered.status(),
+            Some(rendered.message),
+            &rendered.warnings,
+        )?;
+        Ok(rendered.summary)
+    })();
+
+    match result {
+        Ok(summary) => Ok(summary),
+        Err(reconciliation) => {
+            let message = reconciliation.to_string();
+            if !preserve_existing_failure
+                && let Err(recording) = record_project_env_failure(database, project_id, &message)
+            {
+                return Err(DaemonError::ProjectEnvFailureRecordingFailed {
+                    project_id: project_id.to_owned(),
+                    reconciliation: Box::new(reconciliation),
+                    recording: Box::new(recording),
+                });
+            }
+
+            Err(reconciliation)
         }
     }
 }
@@ -117,7 +364,10 @@ pub(crate) async fn reconcile_project_env_with_catalog(
         database,
         &project,
         Some(catalog),
+        None,
+        &BTreeSet::new(),
         DaemonDownloadProgress::disabled(),
+        ProjectApplyStage::CompleteApply,
     )
     .await
     {
@@ -137,17 +387,153 @@ pub(crate) fn validate_project_config_for_gateway(
     project: &ProjectRecord,
     config_file: &ProjectConfigFile,
 ) -> Result<(), DaemonError> {
-    let _plan = validate_project_config_and_plan(paths, database, project, config_file)?;
+    let _plan = validate_project_config_and_plan(paths, database, project, config_file, None)?;
 
     Ok(())
 }
 
+pub(crate) fn discover_project_demand(
+    paths: &PvPaths,
+    database: &Database,
+    project: &ProjectRecord,
+) -> Result<ProjectDemand, DaemonError> {
+    let discovered = (|| {
+        let config_file = ProjectConfigFile::read_from_root(&project.path)?;
+        let candidate_project = project_with_config_mode(project, &config_file.config);
+        let plan = validate_project_config_and_plan(
+            paths,
+            database,
+            &candidate_project,
+            &config_file,
+            None,
+        )?;
+        let global_version_selector = database.global_php_default_track()?;
+        let php_track = maybe_resolve_project_php_track(
+            paths,
+            global_version_selector.as_deref(),
+            &candidate_project,
+            config_file.config.php.as_ref(),
+            candidate_project.mode == ProjectMode::Served,
+            None,
+        )?;
+
+        Ok::<_, DaemonError>(project_demand_from_plan(
+            &plan,
+            &config_file.config,
+            candidate_project.mode == ProjectMode::Served,
+            php_track,
+            global_version_selector,
+        ))
+    })();
+
+    // Discovery is conservative: current-config errors retain last-applied demand so the resource
+    // pass cannot tear down runtimes before authoritative application reports persistent errors.
+    match discovered {
+        Ok(mut demand) => {
+            // Resources installs this discovered demand, the PHP pair included, so the staged
+            // apply that follows may require it.
+            demand.resources_install_php_pair = true;
+
+            Ok(demand)
+        }
+        Err(_error) => persisted_project_demand(database, project),
+    }
+}
+
+fn project_demand_from_plan(
+    plan: &ProjectResourcePlan,
+    config: &ProjectConfig,
+    serves_http: bool,
+    php_track: Option<String>,
+    global_version_selector: Option<String>,
+) -> ProjectDemand {
+    let php = config.php.as_ref();
+    let resource_selections = plan
+        .resources
+        .iter()
+        .map(|resource| {
+            (
+                resource.resource_name.clone(),
+                ProjectResourceTrackDemand {
+                    version_selector: config
+                        .resources
+                        .get(&resource.resource_name)
+                        .and_then(|config| config.track.clone()),
+                    track: resource.track.clone(),
+                },
+            )
+        })
+        .collect();
+    let mut resource_tracks = plan
+        .resources
+        .iter()
+        .map(|resource| {
+            DemandedResourceTrack::new(resource.resource_name.clone(), resource.track.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    if let Some(track) = php_track.as_deref() {
+        resource_tracks.insert(DemandedResourceTrack::new("php", track));
+        resource_tracks.insert(DemandedResourceTrack::new("frankenphp", track));
+    }
+
+    ProjectDemand {
+        resource_tracks,
+        resource_selections,
+        php_track: php_track.map(|track| ProjectPhpTrackDemand {
+            php_configured: php.is_some(),
+            version_selector: php
+                .and_then(config::PhpConfig::version_selector)
+                .map(str::to_owned),
+            global_version_selector,
+            serves_http,
+            track,
+        }),
+        // Only successful system Demand Discovery promises the pair, and it sets this itself.
+        resources_install_php_pair: false,
+        used_persisted_state: false,
+    }
+}
+
+fn persisted_project_demand(
+    database: &Database,
+    project: &ProjectRecord,
+) -> Result<ProjectDemand, DaemonError> {
+    let mut resource_tracks = database
+        .project_managed_resources(&project.id)?
+        .into_iter()
+        .map(|resource| DemandedResourceTrack::new(resource.resource_name, resource.track))
+        .collect::<BTreeSet<_>>();
+    if let Some(track) = &project.php_runtime.track {
+        resource_tracks.insert(DemandedResourceTrack::new("php", track.clone()));
+        resource_tracks.insert(DemandedResourceTrack::new("frankenphp", track.clone()));
+    }
+
+    Ok(ProjectDemand {
+        resource_tracks,
+        resource_selections: BTreeMap::new(),
+        php_track: None,
+        // Resources received last-applied demand, which may not name the track the current config
+        // selects, so the apply must not require the pair either.
+        resources_install_php_pair: false,
+        used_persisted_state: true,
+    })
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "`discovered_demand` is this Project's own resolved demand and may be absent, while \
+              `demanded_tracks` is the system-wide union every Project shares; valid callers pass \
+              `None` with a non-empty union, so neither can be derived from the other."
+)]
 async fn reconcile_loaded_project(
     paths: &PvPaths,
     database: &mut Database,
     project: &ProjectRecord,
     catalog: Option<&ManagedResourceRuntimeCatalog>,
+    discovered_demand: Option<&ProjectDemand>,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
+    stage: ProjectApplyStage,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
     let config_file = match ProjectConfigFile::read_from_root(&project.path) {
         Ok(config_file) => config_file,
@@ -159,20 +545,80 @@ async fn reconcile_loaded_project(
     let candidate_project = project_with_config_mode(project, &config_file.config);
     let serves_http = candidate_project.mode == ProjectMode::Served;
     let preflight_result = (|| {
-        let plan =
-            validate_project_config_and_plan(paths, database, &candidate_project, &config_file)?;
-        let resolved_php_runtime = maybe_resolve_project_php_runtime(
+        let plan = validate_project_config_and_plan(
             paths,
             database,
             &candidate_project,
+            &config_file,
+            discovered_demand,
+        )?;
+        let global_version_selector = database.global_php_default_track()?;
+        let php_track = maybe_resolve_project_php_track(
+            paths,
+            global_version_selector.as_deref(),
+            &candidate_project,
             config_file.config.php.as_ref(),
             serves_http,
+            discovered_demand.and_then(|demand| demand.php_track.as_ref()),
         )?;
 
-        Ok::<_, DaemonError>((plan, resolved_php_runtime))
+        Ok::<_, DaemonError>((plan, php_track))
     })();
-    let (plan, resolved_php_runtime) = match preflight_result {
+    let (plan, php_track) = match preflight_result {
         Ok(result) => result,
+        Err(error) => {
+            maintain_existing_project_tls_after_config_error(
+                paths,
+                project,
+                config_file.config.uses_tls_placeholders(),
+            );
+            return Err(error);
+        }
+    };
+    let recorded_tracks = recorded_demand_tracks(&plan, php_track.as_deref());
+    // The Resources phase owns every install, so an apply that follows one only reports a pair it
+    // did not provide. Which phase should have provided it differs by scope, but reporting does
+    // not: no Project Apply downloads.
+    if discovered_demand.is_some_and(|demand| demand.resources_install_php_pair)
+        && let Some(track) = php_track.as_deref()
+        && let Err(error) = crate::managed_resources::ensure_installed_php_pair(database, track)
+    {
+        maintain_existing_project_tls_after_config_error(
+            paths,
+            project,
+            config_file.config.uses_tls_placeholders(),
+        );
+        return Err(DaemonError::ProjectResourceInstallation {
+            source: Box::new(error),
+        });
+    }
+    if discovered_demand.is_some()
+        && stage.may_install_artifacts()
+        && let Err(error) = install_project_resources(
+            paths,
+            catalog,
+            &plan,
+            php_track.as_deref(),
+            progress.clone(),
+        )
+        .await
+    {
+        maintain_existing_project_tls_after_config_error(
+            paths,
+            project,
+            config_file.config.uses_tls_placeholders(),
+        );
+        return Err(DaemonError::ProjectResourceInstallation {
+            source: Box::new(error),
+        });
+    }
+    let resolved_php_runtime = match php_track
+        .map(|track| {
+            resolve_project_php_runtime_for_track(database, config_file.config.php.as_ref(), track)
+        })
+        .transpose()
+    {
+        Ok(runtime) => runtime,
         Err(error) => {
             maintain_existing_project_tls_after_config_error(
                 paths,
@@ -188,20 +634,44 @@ async fn reconcile_loaded_project(
         None
     };
     let has_env_mappings = config_file.config.has_env_mappings();
+    let requested_php_extensions = config_file
+        .config
+        .php
+        .as_ref()
+        .is_some_and(|php| !php.requested_extensions().is_empty());
     let pre_render_result = async {
         if let Some(runtime) = &resolved_php_runtime {
             record_project_php_runtime_resource_requirements(database, runtime)?;
         }
-        apply_project_resource_plan(database, &candidate_project.id, &plan)?;
+        // Record Requirements resolves what the Project needs and returns it; it does not replace
+        // usage, because the Resources phase has not installed the artifacts yet.
+        if stage != ProjectApplyStage::RecordRequirements {
+            // Fail before replacing usage when an artifact the Resources phase should have
+            // installed is missing, so the runtime this apply would replace stays demanded.
+            if stage.artifact_install() == crate::managed_resources::ArtifactInstall::Forbidden {
+                ensure_planned_artifacts_installed(database, &plan, catalog).map_err(|error| {
+                    DaemonError::ProjectResourceInstallation {
+                        source: Box::new(error),
+                    }
+                })?;
+            }
+            apply_project_resource_plan(database, &candidate_project.id, &plan)?;
+        }
 
-        let resource_result = if let Some(catalog) = catalog {
+        // The Resources phase owns artifact work, so a staged apply refuses to install and an
+        // unstaged apply installs what its caller never provisioned.
+        let resource_result = if stage == ProjectApplyStage::RecordRequirements {
+            Ok(())
+        } else if let Some(catalog) = catalog {
             crate::managed_resources::reconcile_project_resources_with_catalog_and_progress(
                 paths,
                 database,
                 &candidate_project,
                 &plan,
                 catalog,
+                demanded_tracks,
                 progress,
+                stage.artifact_install(),
             )
             .await
         } else {
@@ -210,7 +680,9 @@ async fn reconcile_loaded_project(
                 database,
                 &candidate_project,
                 &plan,
+                demanded_tracks,
                 progress,
+                stage.artifact_install(),
             )
             .await
         };
@@ -218,18 +690,13 @@ async fn reconcile_loaded_project(
 
         let runtime_warnings = resolved_php_runtime
             .as_ref()
-            .map(ignored_php_extension_warnings)
+            .map(|runtime| ignored_php_extension_warnings(&runtime.ignored_extensions))
             .unwrap_or_default();
-        let requested_php_extensions = config_file
-            .config
-            .php
-            .as_ref()
-            .is_some_and(|php| !php.requested_extensions().is_empty());
 
-        Ok::<_, DaemonError>((plan, runtime_warnings, requested_php_extensions))
+        Ok::<_, DaemonError>((plan, runtime_warnings))
     }
     .await;
-    let (plan, runtime_warnings, requested_php_extensions) = match pre_render_result {
+    let (plan, runtime_warnings) = match pre_render_result {
         Ok(values) => values,
         Err(error) => {
             if let Some(Err(tls_error)) = tls_maintenance_result.as_ref() {
@@ -247,89 +714,67 @@ async fn reconcile_loaded_project(
         return Err(error);
     }
 
-    if !has_env_mappings {
-        let status = if runtime_warnings.is_empty() {
-            ProjectEnvObservedStatus::Rendered
-        } else {
-            ProjectEnvObservedStatus::Warning
-        };
-        let message = if runtime_warnings.is_empty() {
-            "no Project env mappings configured"
-        } else {
-            "Project runtime has warnings"
-        };
-        finalize_project_reconciliation_state(
-            database,
-            project,
-            &config_file,
-            resolved_php_runtime.as_ref(),
-            status,
-            message,
-            &runtime_warnings,
-        )?;
-
-        let summary = if runtime_warnings.is_empty() {
-            ProjectEnvReconciliationSummary {
-                message: "Project env unchanged; no mappings configured",
-                requested_php_extensions,
-            }
-        } else {
-            ProjectEnvReconciliationSummary {
-                message: "Project env unchanged with warnings",
-                requested_php_extensions,
-            }
-        };
-
-        return Ok(summary);
+    if stage == ProjectApplyStage::RecordRequirements {
+        return Ok(ProjectEnvReconciliationSummary {
+            message: "project requirements recorded",
+            requested_php_extensions,
+            recorded_tracks,
+        });
     }
 
-    let context = project_env_context_for_plan(
-        paths,
-        database,
+    let context = has_env_mappings
+        .then(|| {
+            project_env_context_for_plan(
+                paths,
+                database,
+                &candidate_project,
+                &config_file.config,
+                &plan,
+            )
+        })
+        .transpose()?;
+    let rendered = render_project_env(
         &candidate_project,
-        &config_file.config,
-        &plan,
+        &config_file,
+        context.as_ref(),
+        runtime_warnings,
     )?;
-    let rendered = config::render_project_env(&config_file.config, &context)?;
-    let env_file_path =
-        config::resolve_project_env_file_path(&candidate_project.path, &config_file.config)?;
-    let transform = config::write_project_env_file(&env_file_path, &rendered)?;
-    let mut warnings = observed_warnings(&transform.warnings);
-    warnings.extend(runtime_warnings);
-    let status = if warnings.is_empty() {
-        ProjectEnvObservedStatus::Rendered
-    } else {
-        ProjectEnvObservedStatus::Warning
-    };
-    let message = if warnings.is_empty() {
-        "rendered Project env"
-    } else {
-        "rendered Project env with warnings"
-    };
-
     finalize_project_reconciliation_state(
         database,
         project,
         &config_file,
         resolved_php_runtime.as_ref(),
-        status,
-        message,
-        &warnings,
+        rendered.status(),
+        rendered.message,
+        &rendered.warnings,
     )?;
 
-    let summary = if warnings.is_empty() {
-        ProjectEnvReconciliationSummary {
-            message: "Project env rendered",
-            requested_php_extensions,
-        }
-    } else {
-        ProjectEnvReconciliationSummary {
-            message: "Project env rendered with warnings",
-            requested_php_extensions,
-        }
-    };
+    Ok(ProjectEnvReconciliationSummary {
+        message: rendered.summary,
+        requested_php_extensions,
+        recorded_tracks: BTreeSet::new(),
+    })
+}
 
-    Ok(summary)
+/// The resource tracks a Record Requirements pass resolves from the current config:
+/// declared backing resources plus the PHP pair when the Project configures PHP.
+fn recorded_demand_tracks(
+    plan: &ProjectResourcePlan,
+    php_track: Option<&str>,
+) -> BTreeSet<DemandedResourceTrack> {
+    let mut tracks = plan
+        .resources
+        .iter()
+        .map(|resource| {
+            DemandedResourceTrack::new(resource.resource_name.clone(), resource.track.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    if let Some(track) = php_track {
+        tracks.insert(DemandedResourceTrack::new("php", track));
+        tracks.insert(DemandedResourceTrack::new("frankenphp", track));
+    }
+
+    tracks
 }
 
 fn maintain_existing_project_tls_after_config_error(
@@ -410,26 +855,69 @@ fn read_optional_file(path: &Utf8PathBuf) -> Result<Option<String>, DaemonError>
     }
 }
 
-fn maybe_resolve_project_php_runtime(
+async fn install_project_resources(
     paths: &PvPaths,
-    database: &Database,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    plan: &ProjectResourcePlan,
+    php_track: Option<&str>,
+    progress: DaemonDownloadProgress,
+) -> Result<(), DaemonError> {
+    let production_catalog;
+    let catalog = if let Some(catalog) = runtime_catalog {
+        catalog
+    } else {
+        production_catalog = ManagedResourceRuntimeCatalog::production()?;
+        &production_catalog
+    };
+    let mut demanded_tracks = plan
+        .resources
+        .iter()
+        .map(|resource| {
+            DemandedResourceTrack::new(resource.resource_name.clone(), resource.track.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    if let Some(track) = php_track {
+        demanded_tracks.insert(DemandedResourceTrack::new("php", track));
+        demanded_tracks.insert(DemandedResourceTrack::new("frankenphp", track));
+    }
+
+    crate::managed_resources::install_missing_resource_demands_with_catalog_and_progress(
+        paths,
+        catalog,
+        &demanded_tracks,
+        progress,
+    )
+    .await
+}
+
+fn maybe_resolve_project_php_track(
+    paths: &PvPaths,
+    global_version_selector: Option<&str>,
     project: &ProjectRecord,
     php: Option<&config::PhpConfig>,
     serves_http: bool,
-) -> Result<Option<ResolvedPhpRuntime>, DaemonError> {
+    discovered_php_track: Option<&ProjectPhpTrackDemand>,
+) -> Result<Option<String>, DaemonError> {
     if !serves_http && php.is_none() {
         return Ok(None);
+    }
+
+    if let Some(discovered_php_track) = discovered_php_track
+        && discovered_php_track.matches(php, serves_http, global_version_selector)
+    {
+        // Keep `latest` stable when the resource pass refreshes the manifest between phases.
+        return Ok(Some(discovered_php_track.track.clone()));
     }
 
     if php.is_none()
         && project.desired_php_track.is_none()
         && !paths.downloads().join("manifest.json").exists()
-        && database.global_php_default_track()?.is_none()
+        && global_version_selector.is_none()
     {
         return Ok(None);
     }
 
-    resolve_project_php_runtime(paths, database, project, php).map(Some)
+    selected_project_php_track(paths, global_version_selector, project, php).map(Some)
 }
 
 pub(crate) fn resolve_project_php_runtime(
@@ -438,17 +926,118 @@ pub(crate) fn resolve_project_php_runtime(
     project: &ProjectRecord,
     php: Option<&config::PhpConfig>,
 ) -> Result<ResolvedPhpRuntime, DaemonError> {
+    let global_version_selector = database.global_php_default_track()?;
+    let track =
+        selected_project_php_track(paths, global_version_selector.as_deref(), project, php)?;
+
+    resolve_project_php_runtime_for_track(database, php, track)
+}
+
+/// Whether the Project's recorded backing-resource demands still match its current
+/// config. Resource scopes refuse to apply drifted demands; re-resolving them
+/// belongs to Project and System scopes. Unresolvable configs never match.
+pub(crate) fn project_resource_demands_match_recorded(
+    paths: &PvPaths,
+    recorded: &[state::ProjectManagedResourceRecord],
+    project: &ProjectRecord,
+) -> bool {
+    let Ok(config_file) = ProjectConfigFile::read_from_root(&project.path) else {
+        return false;
+    };
+    if recorded.len() != config_file.config.resources.len() {
+        return false;
+    }
+    recorded.iter().all(|demand| {
+        let Ok(resource_name) = ResourceName::new(demand.resource_name.clone()) else {
+            return false;
+        };
+        let Some(resource_config) = config_file.config.resources.get(&demand.resource_name) else {
+            return false;
+        };
+        let Ok(resolved) = resolved_project_resource_track(
+            paths,
+            &resource_name,
+            resource_config.track.as_deref(),
+            Some(demand.track.as_str()),
+        ) else {
+            return false;
+        };
+        resolved == demand.track
+    })
+}
+
+/// Whether the Project's current config resolves to its last applied PHP runtime
+/// identity. Resource scopes refuse to apply a changed identity; switching runtimes
+/// belongs to Project and System scopes. Unresolvable configs never match.
+pub(crate) fn project_php_identity_matches_applied(
+    paths: &PvPaths,
+    database: &Database,
+    project: &ProjectRecord,
+) -> bool {
+    let Ok(config_file) = ProjectConfigFile::read_from_root(&project.path) else {
+        return false;
+    };
+    let Ok(global_version_selector) = database.global_php_default_track() else {
+        return false;
+    };
+    let Ok(php_track) = maybe_resolve_project_php_track(
+        paths,
+        global_version_selector.as_deref(),
+        project,
+        config_file.config.php.as_ref(),
+        project.mode == ProjectMode::Served,
+        None,
+    ) else {
+        return false;
+    };
+    match php_track {
+        Some(track) => {
+            if project.mode == ProjectMode::Served
+                && installed_php_release(database, &track)
+                    .ok()
+                    .flatten()
+                    .is_none()
+            {
+                return false;
+            }
+            let Ok(runtime) = resolve_project_php_runtime_for_track(
+                database,
+                config_file.config.php.as_ref(),
+                track,
+            ) else {
+                return false;
+            };
+            project.php_runtime.track.as_deref() == Some(runtime.track.as_str())
+                && project.php_runtime.requested_extensions == runtime.requested_extensions
+                && project.php_runtime.loaded_extensions == runtime.loaded_extensions
+                && project.php_runtime.ignored_extensions == runtime.ignored_extensions
+        }
+        None => project.php_runtime == Default::default(),
+    }
+}
+
+fn selected_project_php_track(
+    paths: &PvPaths,
+    global_version_selector: Option<&str>,
+    project: &ProjectRecord,
+    php: Option<&config::PhpConfig>,
+) -> Result<String, DaemonError> {
     let selector = php.and_then(config::PhpConfig::version_selector);
-    let global_selector = database.global_php_default_track()?;
     let stored_selector = if selector.is_some()
-        || (!paths.downloads().join("manifest.json").exists() && global_selector.is_none())
+        || (!paths.downloads().join("manifest.json").exists() && global_version_selector.is_none())
     {
         project.desired_php_track.as_deref()
     } else {
         None
     };
-    let track =
-        resolve_project_php_track(paths, selector, stored_selector, global_selector.as_deref())?;
+    resolve_project_php_track(paths, selector, stored_selector, global_version_selector)
+}
+
+fn resolve_project_php_runtime_for_track(
+    database: &Database,
+    php: Option<&config::PhpConfig>,
+    track: String,
+) -> Result<ResolvedPhpRuntime, DaemonError> {
     let requested_extensions = php
         .map(|php| php.requested_extensions().to_vec())
         .unwrap_or_default();
@@ -478,6 +1067,45 @@ pub(crate) fn resolve_project_php_runtime(
     })
 }
 
+/// Fails when a planned backing resource with a runtime adapter has no installed
+/// artifact. The staged apply runs this before replacing usage, so a runtime the
+/// apply would replace stays demanded when its artifact is missing. Tracks without
+/// an adapter have nothing to install and are left to the apply itself.
+fn ensure_planned_artifacts_installed(
+    database: &Database,
+    plan: &ProjectResourcePlan,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<(), DaemonError> {
+    let production_catalog;
+    let catalog = match runtime_catalog {
+        Some(catalog) => catalog,
+        None => {
+            production_catalog = ManagedResourceRuntimeCatalog::production()?;
+            &production_catalog
+        }
+    };
+
+    for resource in &plan.resources {
+        if !catalog.has_adapter(&resource.resource_name) {
+            continue;
+        }
+        if crate::managed_resources::installed_track(
+            database,
+            &resource.resource_name,
+            &resource.track,
+        )?
+        .is_none()
+        {
+            return Err(DaemonError::ManagedResourceArtifactMissing {
+                resource: resource.resource_name.clone(),
+                track: resource.track.clone(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
 fn installed_php_release(
     database: &Database,
     track: &str,
@@ -504,18 +1132,93 @@ fn record_project_php_runtime_resource_requirements(
     database: &mut Database,
     runtime: &ResolvedPhpRuntime,
 ) -> Result<(), DaemonError> {
-    database.record_managed_resource_track_desired(
-        "php",
-        &runtime.track,
-        ManagedResourceDesiredState::Installed,
-    )?;
-    database.record_managed_resource_track_desired(
-        "frankenphp",
-        &runtime.track,
-        ManagedResourceDesiredState::Installed,
-    )?;
+    // Avoid touching stable removal timestamps when intent is already visible. The sticky batch
+    // below handles removal committed after this pre-check.
+    for resource_name in ["php", "frankenphp"] {
+        crate::managed_resources::installed_track(database, resource_name, &runtime.track)?;
+    }
+
+    #[cfg(test)]
+    wait_for_project_php_demand_test_barrier(&runtime.track);
+
+    let inputs = [
+        ManagedResourceTrackDesiredInput {
+            resource_name: "php",
+            track: &runtime.track,
+        },
+        ManagedResourceTrackDesiredInput {
+            resource_name: "frankenphp",
+            track: &runtime.track,
+        },
+    ];
+    let records = database.record_managed_resource_tracks_desired(&inputs)?;
+    if let Some(record) = records
+        .into_iter()
+        .find(|record| record.desired_state == ManagedResourceDesiredState::Removed)
+    {
+        return Err(DaemonError::ManagedResourceTrackRemoved {
+            resource: record.resource_name,
+            track: record.track,
+        });
+    }
 
     Ok(())
+}
+
+#[cfg(test)]
+type ProjectPhpDemandTestBarrier = Mutex<Option<(String, Arc<Barrier>)>>;
+
+#[cfg(test)]
+static PROJECT_PHP_DEMAND_TEST_BARRIER: LazyLock<ProjectPhpDemandTestBarrier> =
+    LazyLock::new(|| Mutex::new(None));
+
+#[cfg(test)]
+pub(crate) fn set_project_php_demand_test_barrier(track: &str, barrier: Arc<Barrier>) {
+    let mut hook = match PROJECT_PHP_DEMAND_TEST_BARRIER.lock() {
+        Ok(hook) => hook,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *hook = Some((track.to_owned(), barrier));
+}
+
+#[cfg(test)]
+pub(crate) fn clear_project_php_demand_test_barrier(track: &str) -> bool {
+    let mut hook = match PROJECT_PHP_DEMAND_TEST_BARRIER.lock() {
+        Ok(hook) => hook,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if hook
+        .as_ref()
+        .is_some_and(|(hook_track, _barrier)| hook_track == track)
+    {
+        hook.take();
+        true
+    } else {
+        false
+    }
+}
+
+#[cfg(test)]
+fn wait_for_project_php_demand_test_barrier(track: &str) {
+    let barrier = {
+        let mut hook = match PROJECT_PHP_DEMAND_TEST_BARRIER.lock() {
+            Ok(hook) => hook,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if hook
+            .as_ref()
+            .is_some_and(|(hook_track, _barrier)| hook_track == track)
+        {
+            hook.take().map(|(_track, barrier)| barrier)
+        } else {
+            None
+        }
+    };
+
+    if let Some(barrier) = barrier {
+        barrier.wait();
+        barrier.wait();
+    }
 }
 
 fn validate_project_config_and_plan(
@@ -523,6 +1226,7 @@ fn validate_project_config_and_plan(
     database: &Database,
     project: &ProjectRecord,
     config_file: &ProjectConfigFile,
+    discovered_demand: Option<&ProjectDemand>,
 ) -> Result<ProjectResourcePlan, DaemonError> {
     if project.mode == ProjectMode::Served && config_file.config.serve {
         database.validate_project_hostnames(
@@ -533,7 +1237,13 @@ fn validate_project_config_and_plan(
     }
     config::validate_project_env_shape(&config_file.config)?;
 
-    let plan = project_resource_plan(paths, database, project, &config_file.config)?;
+    let plan = project_resource_plan(
+        paths,
+        database,
+        project,
+        &config_file.config,
+        discovered_demand,
+    )?;
     if config_file.config.has_env_mappings() {
         let existing_content = read_optional_project_env_file(project, &config_file.config)?;
         config::validate_managed_env_block(existing_content.as_deref())?;
@@ -611,6 +1321,7 @@ fn project_resource_plan(
     database: &Database,
     project: &ProjectRecord,
     config: &ProjectConfig,
+    discovered_demand: Option<&ProjectDemand>,
 ) -> Result<ProjectResourcePlan, DaemonError> {
     let mut resources = Vec::new();
     let mut allocation_plans = BTreeMap::new();
@@ -623,12 +1334,22 @@ fn project_resource_plan(
     for (resource, resource_config) in &config.resources {
         let resource_name = ResourceName::new(resource.clone())?;
         let existing_track = existing_resource_tracks.get(resource);
-        let track = resolved_project_resource_track(
-            paths,
-            &resource_name,
-            resource_config.track.as_deref(),
-            existing_track.map(String::as_str),
-        )?;
+        let discovered_track = discovered_demand
+            .and_then(|demand| demand.resource_selections.get(resource))
+            .filter(|selection| {
+                selection.version_selector.as_deref().unwrap_or("latest")
+                    == resource_config.track.as_deref().unwrap_or("latest")
+            });
+        let track = if let Some(selection) = discovered_track {
+            selection.track.clone()
+        } else {
+            resolved_project_resource_track(
+                paths,
+                &resource_name,
+                resource_config.track.as_deref(),
+                existing_track.map(String::as_str),
+            )?
+        };
 
         resources.push(ProjectManagedResourceInput {
             resource_name: resource.clone(),
@@ -779,6 +1500,270 @@ fn apply_project_resource_plan(
     Ok(())
 }
 
+fn render_project_env(
+    project: &ProjectRecord,
+    config_file: &ProjectConfigFile,
+    context: Option<&ProjectEnvContext>,
+    mut warnings: Vec<ProjectEnvObservedWarningInput>,
+) -> Result<ProjectEnvRender, DaemonError> {
+    if !config_file.config.has_env_mappings() {
+        let (message, summary) = if warnings.is_empty() {
+            (
+                "no Project env mappings configured",
+                "Project env unchanged; no mappings configured",
+            )
+        } else {
+            (
+                "Project runtime has warnings",
+                "Project env unchanged with warnings",
+            )
+        };
+
+        return Ok(ProjectEnvRender {
+            message,
+            warnings,
+            summary,
+        });
+    }
+
+    let context = context.ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+        reason: format!(
+            "missing env context while rendering Project `{}`",
+            project.id
+        ),
+    })?;
+    let rendered = config::render_project_env(&config_file.config, context)?;
+    let env_file_path = config::resolve_project_env_file_path(&project.path, &config_file.config)?;
+    let transform = config::write_project_env_file(&env_file_path, &rendered)?;
+    warnings.splice(0..0, observed_warnings(&transform.warnings));
+    let (message, summary) = if warnings.is_empty() {
+        ("rendered Project env", "Project env rendered")
+    } else {
+        (
+            "rendered Project env with warnings",
+            "Project env rendered with warnings",
+        )
+    };
+
+    Ok(ProjectEnvRender {
+        message,
+        warnings,
+        summary,
+    })
+}
+
+// Use current env mappings with persisted Project/resource values. Full Project reconciliation
+// applies changes to the serving mode, PHP identity, resource tracks, and allocation identities.
+#[cfg(test)]
+fn validate_persisted_project_env_dependencies(
+    paths: &PvPaths,
+    database: &Database,
+    project: &ProjectRecord,
+    config_file: &ProjectConfigFile,
+) -> Result<(), DaemonError> {
+    use state::{RuntimeObservedStatus, RuntimeSubject};
+    let candidate_project = project_with_config_mode(project, &config_file.config);
+    let plan =
+        validate_project_config_and_plan(paths, database, &candidate_project, config_file, None)?;
+    let persisted_resources = database
+        .project_managed_resources(&project.id)?
+        .into_iter()
+        .map(|resource| ProjectManagedResourceInput {
+            resource_name: resource.resource_name,
+            track: resource.track,
+        })
+        .collect::<Vec<_>>();
+    let resources_match = plan.resources == persisted_resources;
+    let configured_hostnames = config_file.config.hostnames.iter().collect::<BTreeSet<_>>();
+    let persisted_hostnames = project.additional_hostnames.iter().collect::<BTreeSet<_>>();
+    let hostnames_match = configured_hostnames == persisted_hostnames;
+    let mut allocations_match = true;
+    for resource in &plan.resources {
+        let planned = plan
+            .allocations
+            .get(&resource.resource_name)
+            .map(|plan| plan.allocations.as_slice())
+            .unwrap_or_default();
+        let persisted = database
+            .resource_allocations(&project.id, &resource.resource_name)?
+            .into_iter()
+            .filter(|allocation| allocation.status != ResourceAllocationStatus::Inactive)
+            .collect::<Vec<_>>();
+        allocations_match &= persisted
+            .iter()
+            .all(|allocation| allocation.track == resource.track)
+            && planned
+                == persisted
+                    .into_iter()
+                    .map(|allocation| ResourceAllocationInput {
+                        allocation_name: allocation.allocation_name,
+                        generated_name: allocation.generated_name,
+                    })
+                    .collect::<Vec<_>>();
+    }
+    if candidate_project.mode != project.mode
+        || !hostnames_match
+        || !resources_match
+        || !allocations_match
+    {
+        return Err(DaemonError::ProjectEnvDependenciesNotApplied {
+            project_id: project.id.clone(),
+            reason: "serving mode, hostnames, resource tracks, or allocation identities differ from their last applied state".to_owned(),
+        });
+    }
+    let global_version_selector = database.global_php_default_track()?;
+    let php_track = maybe_resolve_project_php_track(
+        paths,
+        global_version_selector.as_deref(),
+        project,
+        config_file.config.php.as_ref(),
+        project.mode == ProjectMode::Served,
+        None,
+    )?;
+    let php_matches = match php_track {
+        Some(track)
+            if candidate_project.mode == ProjectMode::Served
+                && installed_php_release(database, &track)?.is_none() =>
+        {
+            false
+        }
+        Some(track) => {
+            let runtime = resolve_project_php_runtime_for_track(
+                database,
+                config_file.config.php.as_ref(),
+                track,
+            )?;
+            project.php_runtime.track.as_deref() == Some(runtime.track.as_str())
+                && project.php_runtime.requested_extensions == runtime.requested_extensions
+                && project.php_runtime.loaded_extensions == runtime.loaded_extensions
+                && project.php_runtime.ignored_extensions == runtime.ignored_extensions
+        }
+        None => project.php_runtime == Default::default(),
+    };
+    if !php_matches {
+        return Err(DaemonError::ProjectEnvDependenciesNotApplied {
+            project_id: project.id.clone(),
+            reason: "PHP track or extensions differ from their last applied state".to_owned(),
+        });
+    }
+    for resource in &plan.resources {
+        planned_allocation_contexts(
+            database,
+            &project.id,
+            &resource.resource_name,
+            &resource.track,
+            plan.allocations.get(&resource.resource_name),
+        )?;
+    }
+    let observations = database.runtime_observed_states()?;
+    for resource in &plan.resources {
+        let observed = observations.iter().find(|observed| {
+            matches!(
+                &observed.subject,
+                RuntimeSubject::Resource { name, track }
+                    if name == &resource.resource_name && track == &resource.track
+            )
+        });
+        let Some(observed) = observed else {
+            return Err(DaemonError::ProjectEnvDependenciesNotApplied {
+                project_id: project.id.clone(),
+                reason: format!(
+                    "required resource {} track {} has no observed state",
+                    resource.resource_name, resource.track
+                ),
+            });
+        };
+        let status = match observed.status {
+            RuntimeObservedStatus::Failed => "failed",
+            RuntimeObservedStatus::Degraded => "degraded",
+            RuntimeObservedStatus::Stopped => "stopped",
+            RuntimeObservedStatus::Pending => "pending",
+            RuntimeObservedStatus::Running => continue,
+        };
+        return Err(DaemonError::ProjectEnvDependenciesNotApplied {
+            project_id: project.id.clone(),
+            reason: format!(
+                "required resource {} track {} is {status}: {}",
+                resource.resource_name,
+                resource.track,
+                observed
+                    .message
+                    .as_deref()
+                    .unwrap_or("no diagnostic recorded")
+            ),
+        });
+    }
+    if candidate_project.mode == ProjectMode::Served && config_file.config.uses_tls_placeholders() {
+        ensure_project_tls_files(paths, project)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+fn persisted_project_env_context(
+    paths: &PvPaths,
+    database: &Database,
+    project: &ProjectRecord,
+) -> Result<ProjectEnvContext, DaemonError> {
+    let persisted = database.project_env_context(&project.id)?;
+    let mut resources = BTreeMap::new();
+    for (resource_name, resource) in persisted.resources {
+        if resource.values.is_empty() {
+            return Err(config::ConfigError::MissingResourceEnvContext {
+                resource: resource_name,
+            }
+            .into());
+        }
+        let allocations = resource
+            .allocations
+            .into_iter()
+            .map(|(allocation_name, allocation)| {
+                (
+                    allocation_name,
+                    AllocationEnvContext {
+                        generated_name: allocation.generated_name,
+                        values: allocation.values,
+                    },
+                )
+            })
+            .collect();
+        resources.insert(
+            resource_name,
+            ResourceEnvContext {
+                track: resource.track,
+                values: resource.values,
+                allocations,
+            },
+        );
+    }
+
+    let serves_http = project.mode == ProjectMode::Served;
+    Ok(ProjectEnvContext {
+        primary_hostname: if serves_http {
+            served_project_hostname(project)?.to_owned()
+        } else {
+            String::new()
+        },
+        tls_ca_path: if serves_http {
+            paths.ca_certificate().to_string()
+        } else {
+            String::new()
+        },
+        tls_cert_path: if serves_http {
+            paths.project_tls_certificate(&project.id).to_string()
+        } else {
+            String::new()
+        },
+        tls_key_path: if serves_http {
+            paths.project_tls_private_key(&project.id).to_string()
+        } else {
+            String::new()
+        },
+        resources,
+    })
+}
+
 fn project_env_context_for_plan(
     paths: &PvPaths,
     database: &Database,
@@ -923,10 +1908,9 @@ fn observed_warnings(warnings: &[ProjectEnvWarning]) -> Vec<ProjectEnvObservedWa
 }
 
 fn ignored_php_extension_warnings(
-    runtime: &ResolvedPhpRuntime,
+    ignored_extensions: &[String],
 ) -> Vec<ProjectEnvObservedWarningInput> {
-    runtime
-        .ignored_extensions
+    ignored_extensions
         .iter()
         .map(|extension| ProjectEnvObservedWarningInput {
             kind: "ignored_php_extension".to_string(),
@@ -935,7 +1919,7 @@ fn ignored_php_extension_warnings(
         .collect()
 }
 
-fn record_project_env_failure(
+pub(crate) fn record_project_env_failure(
     database: &mut Database,
     project_id: &str,
     message: &str,

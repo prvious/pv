@@ -24,6 +24,8 @@ struct DatabaseAuxiliaryHardeningTestHook {
 #[cfg(any(test, feature = "test-support"))]
 static DATABASE_AUXILIARY_HARDENING_TEST_HOOK: Mutex<Option<DatabaseAuxiliaryHardeningTestHook>> =
     Mutex::new(None);
+#[cfg(any(test, feature = "test-support"))]
+static SENSITIVE_WRITE_FAILURE_TEST_HOOK: Mutex<Option<Utf8PathBuf>> = Mutex::new(None);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LayoutInspection {
@@ -81,9 +83,45 @@ pub fn remove_daemon_socket(paths: &PvPaths) -> Result<(), StateError> {
 }
 
 pub fn write_sensitive_file(path: &Utf8Path, content: &str) -> Result<(), StateError> {
+    #[cfg(any(test, feature = "test-support"))]
+    fail_sensitive_write_for_test(path)?;
+
     ensure_parent_dir(path)?;
     write_atomically(path, content)?;
     secure_sensitive_file(path)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub(crate) fn fail_next_sensitive_write(path: Utf8PathBuf) {
+    let mut hook = match SENSITIVE_WRITE_FAILURE_TEST_HOOK.lock() {
+        Ok(hook) => hook,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    *hook = Some(path);
+}
+
+#[cfg(any(test, feature = "test-support"))]
+fn fail_sensitive_write_for_test(path: &Utf8Path) -> Result<(), StateError> {
+    let should_fail = {
+        let mut hook = match SENSITIVE_WRITE_FAILURE_TEST_HOOK.lock() {
+            Ok(hook) => hook,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if hook.as_deref() == Some(path) {
+            hook.take();
+            true
+        } else {
+            false
+        }
+    };
+    if should_fail {
+        return Err(StateError::filesystem(
+            path.to_path_buf(),
+            io::Error::other("injected sensitive write failure"),
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn copy_file_atomically(source: &Utf8Path, target: &Utf8Path) -> Result<(), StateError> {
@@ -228,11 +266,11 @@ fn run_database_auxiliary_hardening_test_hook(path: &Utf8Path) -> Result<(), Sta
     Ok(())
 }
 
-pub(crate) fn secure_sensitive_file(path: &Utf8Path) -> Result<(), StateError> {
+pub fn secure_sensitive_file(path: &Utf8Path) -> Result<(), StateError> {
     require_owner_only_filesystem()?;
+    validate_owner(path)?;
     set_file_mode(path, SENSITIVE_FILE_MODE)?;
-    validate_mode(path, SENSITIVE_FILE_MODE)?;
-    validate_owner(path)
+    validate_mode(path, SENSITIVE_FILE_MODE)
 }
 
 pub(crate) fn secure_executable_file(path: &Utf8Path) -> Result<(), StateError> {
@@ -260,9 +298,9 @@ fn database_auxiliary_files(paths: &PvPaths) -> [Utf8PathBuf; 2] {
 pub fn ensure_user_dir(path: &Utf8Path) -> Result<(), StateError> {
     require_owner_only_filesystem()?;
     create_dir_all(path)?;
+    validate_owner(path)?;
     set_dir_mode(path, USER_ONLY_DIR_MODE)?;
-    validate_mode(path, USER_ONLY_DIR_MODE)?;
-    validate_owner(path)
+    validate_mode(path, USER_ONLY_DIR_MODE)
 }
 
 fn ensure_parent_dir(path: &Utf8Path) -> Result<(), StateError> {

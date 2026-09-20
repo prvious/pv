@@ -7,10 +7,15 @@ import socketserver
 import ssl
 import sys
 import threading
+import time
 
 
 with open(sys.argv[1], encoding="utf-8") as config_file:
     config = config_file.read()
+
+readiness_gate = f"{sys.argv[1]}.readiness-gate"
+readiness_probe = f"{sys.argv[1]}.readiness-probed"
+readiness_failure = f"{sys.argv[1]}.readiness-fail"
 
 
 def required(pattern):
@@ -33,6 +38,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/config/":
+            if os.path.exists(readiness_failure):
+                os._exit(1)
+            if os.path.exists(readiness_gate):
+                with open(readiness_probe, "w", encoding="utf-8") as probe_file:
+                    probe_file.write("probed\n")
+                while os.path.exists(readiness_gate):
+                    time.sleep(0.01)
             body = b"{}\n"
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))

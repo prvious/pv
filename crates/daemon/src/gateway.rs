@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use config::{ProjectConfig, ProjectConfigFile};
+use futures_util::StreamExt;
 use resources::{ResourceAdapter, caddy_adapter, frankenphp_adapter};
 #[cfg(target_os = "macos")]
 use rustix::process::{Pid, Signal, kill_process_group};
@@ -24,19 +25,22 @@ use tokio::time::{sleep, timeout};
 
 use crate::gateway_config::{
     GATEWAY_HEALTH_HOSTNAME, GATEWAY_HEALTH_PATH, GatewayConfigInput, GatewayProjectRoute,
-    PhpWorkerConfigInput, PhpWorkerProject, PromotedConfigDir, PromotedConfigTree,
-    gateway_health_response, promote_config_dir, promote_validated_config_tree_async,
-    render_gateway_config, render_gateway_project_config, render_php_worker_config,
-    render_php_worker_project_config,
+    PhpWorkerConfigInput, PhpWorkerProject, PromotedConfigTree, gateway_health_response,
+    promote_config_dir, promote_validated_config_tree_async, render_gateway_config,
+    render_gateway_project_config, render_php_worker_config, render_php_worker_project_config,
 };
 use crate::project_env::{
     ResolvedPhpRuntime, resolve_project_php_runtime, validate_project_config_for_gateway,
 };
 use crate::structured_log;
-use crate::supervisor::{ManagedProcess, probe_readiness_once};
+use crate::supervisor::{
+    ManagedProcess, RecordedConfigFingerprint, bounded_runtime_readiness, probe_readiness_once,
+    runtime_exited_before_readiness_error, wait_for_started_runtime_readiness,
+};
 use crate::{
     CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, CaddyAdminVerifier,
-    DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness,
+    DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, RuntimeReconciliationFailure,
+    wait_for_readiness,
 };
 
 #[expect(
@@ -55,6 +59,7 @@ const OWNED_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const PUBLIC_HTTP_PORT: u16 = 80;
 const PUBLIC_HTTPS_PORT: u16 = 443;
 const GATEWAY_RUNTIME_RECONCILED: &str = "Gateway runtime reconciled";
+const RUNTIME_CONFIG_FINGERPRINT_SCHEME: &[u8] = b"pv-runtime-config:v1";
 pub(crate) const CADDY_NOT_INSTALLED: &str = "Gateway runtime skipped; Caddy is not installed";
 static CANDIDATE_CONFIG_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -167,6 +172,31 @@ pub struct RuntimeProject {
     pub document_root: Utf8PathBuf,
 }
 
+struct TargetedRuntimePlan {
+    plan: RuntimePlan,
+    current_runtime_key: Option<String>,
+}
+
+pub(crate) enum ProjectGatewayReconciliationOutcome {
+    Reconciled {
+        summary: String,
+        gateway_evaluated: bool,
+    },
+    PromoteSystem,
+}
+
+struct ActiveProjectGatewayImpact {
+    served: bool,
+    runtime_keys: BTreeSet<String>,
+    gateway_fragments: BTreeMap<String, String>,
+    worker_fragments: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+struct ActiveRuntimeConfigSnapshot {
+    root: String,
+    fragments: BTreeMap<String, String>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct InstalledFrankenphpRuntime {
     command: CaddyCliCommand,
@@ -183,6 +213,290 @@ pub fn promote_validated_config_for_test(
 
 pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, DaemonError> {
     reconcile_gateway_runtimes_with_readiness_timeout(paths, RUNTIME_READINESS_TIMEOUT).await
+}
+
+pub(crate) async fn reconcile_gateway_runtimes_with_phase_log(
+    paths: &PvPaths,
+    phase_log: &structured_log::ReconciliationPhaseLog,
+) -> Result<String, DaemonError> {
+    reconcile_gateway_runtimes_with_pf_state(
+        paths,
+        RUNTIME_READINESS_TIMEOUT,
+        None,
+        Some(phase_log),
+    )
+    .await
+}
+
+pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
+    paths: &PvPaths,
+    project_id: &str,
+    pf_routing_state: Option<GatewayPfRoutingState>,
+    phase_log: &structured_log::ReconciliationPhaseLog,
+) -> Result<ProjectGatewayReconciliationOutcome, DaemonError> {
+    reconcile_project_gateway_runtimes(
+        paths,
+        project_id,
+        RUNTIME_READINESS_TIMEOUT,
+        pf_routing_state,
+        phase_log,
+    )
+    .await
+}
+
+#[doc(hidden)]
+pub async fn reconcile_project_gateway_runtimes_for_test(
+    paths: &PvPaths,
+    project_id: &str,
+    readiness_timeout: Duration,
+    pf_routing_state: GatewayPfRoutingState,
+) -> Result<String, DaemonError> {
+    let phase_log = structured_log::ReconciliationPhaseLog::new(
+        paths,
+        "targeted-gateway-test",
+        "reconcile",
+        &format!("project:{project_id}"),
+    );
+    match reconcile_project_gateway_runtimes(
+        paths,
+        project_id,
+        readiness_timeout,
+        Some(pf_routing_state),
+        &phase_log,
+    )
+    .await?
+    {
+        ProjectGatewayReconciliationOutcome::Reconciled { summary, .. } => Ok(summary),
+        ProjectGatewayReconciliationOutcome::PromoteSystem => {
+            reconcile_gateway_runtimes_with_pf_state(
+                paths,
+                readiness_timeout,
+                Some(pf_routing_state),
+                Some(&phase_log),
+            )
+            .await
+        }
+    }
+}
+
+async fn reconcile_project_gateway_runtimes(
+    paths: &PvPaths,
+    project_id: &str,
+    readiness_timeout: Duration,
+    pf_routing_state: Option<GatewayPfRoutingState>,
+    phase_log: &structured_log::ReconciliationPhaseLog,
+) -> Result<ProjectGatewayReconciliationOutcome, DaemonError> {
+    let Some(gateway_command) = first_installed_caddy_command(paths)? else {
+        let summary = reconcile_gateway_runtimes_with_pf_state(
+            paths,
+            readiness_timeout,
+            pf_routing_state,
+            Some(phase_log),
+        )
+        .await?;
+
+        return Ok(ProjectGatewayReconciliationOutcome::Reconciled {
+            summary,
+            gateway_evaluated: true,
+        });
+    };
+    let mut targeted = match build_target_runtime_plan(paths, project_id) {
+        Ok(Some(targeted)) => targeted,
+        Ok(None) => return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem),
+        Err(error) => {
+            return Err(record_primary_error(paths, RuntimeSubject::Gateway, error));
+        }
+    };
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let target_active_impact = match verified_active_project_gateway_impact(
+        paths,
+        &supervisor,
+        &gateway_command,
+        &targeted,
+        project_id,
+    )? {
+        Some(active_impact) => active_impact,
+        None => return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem),
+    };
+    if failed_worker_outside_target(paths, &targeted, &target_active_impact)? {
+        return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem);
+    }
+    if targeted.current_runtime_key.is_none()
+        && !target_active_impact.served
+        && target_active_impact.runtime_keys.is_empty()
+    {
+        let pf_routing_state = match pf_routing_state {
+            Some(pf_routing_state) => pf_routing_state,
+            None => gateway_pf_routing_state(paths, &targeted.plan).await?,
+        };
+        let readiness_hostname = active_gateway_readiness_hostname(
+            paths,
+            target_active_impact.gateway_fragments.keys(),
+        )?;
+        let readiness = gateway_readiness_plan(
+            &targeted.plan,
+            readiness_hostname,
+            pf_routing_state,
+            readiness_timeout,
+        );
+        let probe_timeout = readiness.timeout.min(OWNED_READINESS_PROBE_TIMEOUT);
+        if !matches!(
+            timeout(probe_timeout, probe_readiness_once(&readiness.check)).await,
+            Ok(Ok(()))
+        ) {
+            return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem);
+        }
+        record_gateway_runtime_observed(
+            paths,
+            pf_routing_state,
+            RuntimeReadinessOutcome::Verified,
+        )?;
+
+        return Ok(skipped_project_gateway_outcome(phase_log));
+    }
+    if !complete_targeted_runtime_plan(paths, project_id, &mut targeted)? {
+        return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem);
+    }
+    let active_impact = match verified_active_project_gateway_impact(
+        paths,
+        &supervisor,
+        &gateway_command,
+        &targeted,
+        project_id,
+    )? {
+        Some(active_impact) => active_impact,
+        None => return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem),
+    };
+    let worker_timer = phase_log.start(
+        structured_log::ReconciliationPhase::Workers,
+        "target_project",
+    );
+
+    if let Some(runtime_key) = targeted.current_runtime_key.as_deref() {
+        let worker = targeted
+            .plan
+            .workers
+            .iter()
+            .find(|worker| worker.runtime_key == runtime_key)
+            .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                reason: format!(
+                    "targeted runtime plan is missing current PHP worker `{runtime_key}`"
+                ),
+            })?;
+        let worker_runtime = required_installed_worker_runtime(paths, worker)?;
+        reconcile_planned_worker(
+            paths,
+            &supervisor,
+            worker,
+            &worker_runtime,
+            readiness_timeout,
+            active_impact.worker_fragments.get(runtime_key),
+            None,
+        )
+        .await?;
+    }
+
+    worker_timer.finish(
+        structured_log::PhaseOutcome::Succeeded,
+        &[
+            (
+                "worker_count",
+                usize_as_u64(usize::from(targeted.current_runtime_key.is_some())),
+            ),
+            (
+                "project_count",
+                usize_as_u64(usize::from(targeted.current_runtime_key.is_some())),
+            ),
+        ],
+    );
+
+    let gateway_required = active_impact.served
+        || targeted.current_runtime_key.is_some()
+        || !active_impact.runtime_keys.is_empty();
+    let gateway_timer = phase_log.start(
+        structured_log::ReconciliationPhase::Gateway,
+        "target_project",
+    );
+    if gateway_required {
+        reconcile_planned_gateway(
+            paths,
+            &supervisor,
+            &targeted.plan,
+            &gateway_command,
+            pf_routing_state,
+            readiness_timeout,
+            Some(&active_impact.gateway_fragments),
+        )
+        .await?;
+    }
+    gateway_timer.finish(
+        if gateway_required {
+            structured_log::PhaseOutcome::Succeeded
+        } else {
+            structured_log::PhaseOutcome::Skipped
+        },
+        &[("project_count", usize_as_u64(usize::from(gateway_required)))],
+    );
+
+    let stale_workers_timer = phase_log.start(
+        structured_log::ReconciliationPhase::Workers,
+        "stale_workers",
+    );
+    let mut stale_worker_count = 0;
+
+    for previous_runtime_key in active_impact
+        .runtime_keys
+        .iter()
+        .filter(|runtime_key| Some(runtime_key.as_str()) != targeted.current_runtime_key.as_deref())
+    {
+        if let Some(worker) = targeted
+            .plan
+            .workers
+            .iter()
+            .find(|worker| worker.runtime_key == *previous_runtime_key)
+        {
+            let worker_runtime = required_installed_worker_runtime(paths, worker)?;
+            reconcile_planned_worker(
+                paths,
+                &supervisor,
+                worker,
+                &worker_runtime,
+                readiness_timeout,
+                active_impact.worker_fragments.get(previous_runtime_key),
+                None,
+            )
+            .await?;
+        } else {
+            if let Err(error) =
+                stop_worker_if_undemanded(paths, &supervisor, previous_runtime_key).await
+            {
+                return Err(record_primary_error(
+                    paths,
+                    php_runtime_subject(previous_runtime_key),
+                    error,
+                ));
+            }
+        }
+        stale_worker_count += 1;
+    }
+    stale_workers_timer.finish(
+        structured_log::PhaseOutcome::Succeeded,
+        &[
+            ("worker_count", usize_as_u64(stale_worker_count)),
+            ("project_count", 1),
+        ],
+    );
+
+    let summary = if gateway_required {
+        GATEWAY_RUNTIME_RECONCILED.to_owned()
+    } else {
+        "Gateway runtime unchanged; Project has no routes".to_owned()
+    };
+
+    Ok(ProjectGatewayReconciliationOutcome::Reconciled {
+        summary,
+        gateway_evaluated: gateway_required,
+    })
 }
 
 pub fn probe_gateway_identity_blocking(
@@ -209,7 +523,7 @@ pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
     paths: &PvPaths,
     readiness_timeout: Duration,
 ) -> Result<String, DaemonError> {
-    reconcile_gateway_runtimes_with_pf_state(paths, readiness_timeout, None).await
+    reconcile_gateway_runtimes_with_pf_state(paths, readiness_timeout, None, None).await
 }
 
 #[doc(hidden)]
@@ -218,129 +532,696 @@ pub async fn reconcile_gateway_runtimes_with_pf_state_for_test(
     readiness_timeout: Duration,
     pf_routing_state: GatewayPfRoutingState,
 ) -> Result<String, DaemonError> {
-    reconcile_gateway_runtimes_with_pf_state(paths, readiness_timeout, Some(pf_routing_state)).await
+    reconcile_gateway_runtimes_with_pf_state(paths, readiness_timeout, Some(pf_routing_state), None)
+        .await
 }
 
 async fn reconcile_gateway_runtimes_with_pf_state(
     paths: &PvPaths,
     readiness_timeout: Duration,
     pf_routing_state: Option<GatewayPfRoutingState>,
+    phase_log: Option<&structured_log::ReconciliationPhaseLog>,
 ) -> Result<String, DaemonError> {
-    let Some(gateway_command) = first_installed_caddy_command(paths)? else {
+    let lookup_started_at = Instant::now();
+    let gateway_command = first_installed_caddy_command(paths).inspect_err(|_| {
+        if let Some(phase_log) = phase_log {
+            phase_log.report_progress(structured_log::ReconciliationPhase::Gateway);
+            phase_log.completed(
+                structured_log::ReconciliationPhase::Gateway,
+                "gateway",
+                structured_log::PhaseOutcome::Failed,
+                lookup_started_at.elapsed(),
+                &[],
+            );
+        }
+    })?;
+    let Some(gateway_command) = gateway_command else {
+        if let Some(phase_log) = phase_log {
+            phase_log.report_progress(structured_log::ReconciliationPhase::Workers);
+            phase_log.completed(
+                structured_log::ReconciliationPhase::Workers,
+                "php_workers",
+                structured_log::PhaseOutcome::Skipped,
+                Duration::ZERO,
+                &[("worker_count", 0), ("project_count", 0)],
+            );
+            phase_log.report_progress(structured_log::ReconciliationPhase::Gateway);
+        }
+
+        let observation_started_at = Instant::now();
         record_runtime_observed(
             paths,
             RuntimeSubject::Gateway,
             RuntimeObservedStatus::Stopped,
             Some(CADDY_NOT_INSTALLED),
-        )?;
+        )
+        .inspect_err(|_| {
+            if let Some(phase_log) = phase_log {
+                phase_log.completed(
+                    structured_log::ReconciliationPhase::Gateway,
+                    "gateway",
+                    structured_log::PhaseOutcome::Failed,
+                    observation_started_at.elapsed(),
+                    &[],
+                );
+            }
+        })?;
+        if let Some(phase_log) = phase_log {
+            phase_log.completed(
+                structured_log::ReconciliationPhase::Gateway,
+                "gateway",
+                structured_log::PhaseOutcome::Skipped,
+                Duration::ZERO,
+                &[("project_count", 0)],
+            );
+        }
 
         return Ok(CADDY_NOT_INSTALLED.to_owned());
     };
 
+    let worker_timer = phase_log.map(|phase_log| {
+        phase_log.start(structured_log::ReconciliationPhase::Workers, "php_workers")
+    });
     let supervisor = ProcessSupervisor::new(paths.clone());
+    let previous_gateway = match verified_recorded_applied_runtime_config(
+        &supervisor,
+        &gateway_process_spec(paths, &gateway_command),
+        &paths.gateway_root_config(),
+        &paths.gateway_projects_config_dir(),
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let mut failures = Vec::new();
+            if let Err(recording) = record_runtime_error(paths, RuntimeSubject::Gateway, &error) {
+                failures.push(("gateway".to_owned(), recording));
+            }
+            failures.push(("gateway".to_owned(), error));
+            return Err(combined_runtime_reconciliation_error(failures));
+        }
+    };
     let plan = match build_runtime_plan(paths) {
         Ok(plan) => plan,
         Err(error) => {
-            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
+            let recording = record_runtime_error(paths, RuntimeSubject::Gateway, &error).err();
+            let recovery = recover_previous_gateway(
+                paths,
+                &supervisor,
+                &gateway_command,
+                None,
+                previous_gateway.as_ref(),
+                pf_routing_state,
+                readiness_timeout,
+            )
+            .await
+            .err();
+            let mut failures = vec![("gateway".to_owned(), error)];
+            if let Some(recording) = recording {
+                failures.push(("gateway".to_owned(), recording));
+            }
+            if let Some(recovery) = recovery {
+                failures.push(("gateway".to_owned(), recovery));
+            }
 
-            return Err(error);
+            return Err(combined_runtime_reconciliation_error(failures));
         }
     };
     let mut worker_commands = Vec::new();
+    let mut worker_failures = Vec::new();
+    let mut retained_worker_fragments = BTreeMap::new();
 
     for worker in &plan.workers {
-        let subject = worker_runtime_subject(worker);
-        let worker_runtime = match installed_frankenphp_runtime_for_track(paths, &worker.php_track)
-        {
-            Ok(Some(runtime)) => runtime,
-            Ok(None) => {
-                let error = DaemonError::UnexpectedProtocolResponse {
-                    reason: format!(
-                        "FrankenPHP is not installed for PHP track `{}`",
-                        worker.php_track
-                    ),
+        match required_installed_worker_runtime(paths, worker) {
+            Ok(worker_runtime) => {
+                let snapshot = worker_process_spec(
+                    paths,
+                    worker,
+                    &worker_runtime.command,
+                    &worker_runtime.artifact_root,
+                )
+                .and_then(|spec| {
+                    verified_recorded_runtime_config(
+                        &supervisor,
+                        &spec,
+                        &paths.worker_root_config(&worker.runtime_key),
+                        &paths.worker_projects_config_dir(&worker.runtime_key),
+                    )
+                });
+                let snapshot = match snapshot {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        if let Err(recording) =
+                            record_runtime_error(paths, worker_runtime_subject(worker), &error)
+                        {
+                            worker_failures.push((worker.runtime_key.clone(), recording));
+                        }
+                        worker_failures.push((worker.runtime_key.clone(), error));
+                        continue;
+                    }
                 };
-                record_runtime_error(paths, subject, &error)?;
-
-                return Err(error);
+                if snapshot.is_none()
+                    && previous_gateway.as_ref().is_some_and(|gateway| {
+                        gateway.fragments.iter().any(|(file_name, fragment)| {
+                            gateway_fragment_targets_worker(fragment, worker.port)
+                                && !worker.projects.iter().any(|project| {
+                                    project_config_file_name(&project.id) == *file_name
+                                })
+                        })
+                    })
+                {
+                    let error = DaemonError::UnexpectedProtocolResponse {
+                        reason: format!(
+                            "cannot verify source routes for PHP worker `{}` before Gateway commit",
+                            worker.runtime_key
+                        ),
+                    };
+                    if let Err(recording) =
+                        record_runtime_error(paths, worker_runtime_subject(worker), &error)
+                    {
+                        worker_failures.push((worker.runtime_key.clone(), recording));
+                    }
+                    worker_failures.push((worker.runtime_key.clone(), error));
+                    continue;
+                }
+                if let Some(snapshot) = snapshot {
+                    let desired_fragments = match worker_project_config_fragments(
+                        paths,
+                        worker,
+                        Some(&snapshot.fragments),
+                    ) {
+                        Ok(fragments) => fragments
+                            .into_iter()
+                            .map(|fragment| (fragment.file_name, fragment.content))
+                            .collect::<BTreeMap<_, _>>(),
+                        Err(error) => {
+                            if let Err(recording) =
+                                record_runtime_error(paths, worker_runtime_subject(worker), &error)
+                            {
+                                worker_failures.push((worker.runtime_key.clone(), recording));
+                            }
+                            worker_failures.push((worker.runtime_key.clone(), error));
+                            continue;
+                        }
+                    };
+                    let fragments = snapshot
+                        .fragments
+                        .into_iter()
+                        .filter(|(file_name, content)| {
+                            desired_fragments.get(file_name) != Some(content)
+                                && previous_gateway.as_ref().is_none_or(|gateway| {
+                                    gateway.fragments.get(file_name).is_some_and(|fragment| {
+                                        gateway_fragment_targets_worker(fragment, worker.port)
+                                    })
+                                })
+                        })
+                        .collect::<BTreeMap<_, _>>();
+                    if !fragments.is_empty() {
+                        retained_worker_fragments.insert(worker.runtime_key.clone(), fragments);
+                    }
+                }
+                worker_commands.push((worker.clone(), worker_runtime));
             }
-            Err(error) => {
-                record_runtime_error(paths, subject, &error)?;
-
-                return Err(error);
-            }
-        };
-        worker_commands.push((worker, worker_runtime));
+            Err(error) => worker_failures.push((worker.runtime_key.clone(), error)),
+        }
     }
 
-    for (worker, worker_runtime) in worker_commands {
-        let subject = worker_runtime_subject(worker);
-        let process_spec = match worker_process_spec(
+    let workers = bounded_runtime_readiness(worker_commands, |(worker, worker_runtime)| {
+        let supervisor = &supervisor;
+        let retained_fragments = retained_worker_fragments.get(&worker.runtime_key);
+        async move {
+            let result = reconcile_planned_worker(
+                paths,
+                supervisor,
+                &worker,
+                &worker_runtime,
+                readiness_timeout,
+                None,
+                retained_fragments,
+            )
+            .await;
+            (worker.runtime_key.clone(), result)
+        }
+    });
+    tokio::pin!(workers);
+    while let Some((runtime_key, result)) = workers.next().await {
+        if let Err(error) = result {
+            worker_failures.push((runtime_key, error));
+        }
+    }
+    if !worker_failures.is_empty() {
+        if let Err(error) = recover_previous_gateway(
             paths,
-            worker,
-            &worker_runtime.command,
-            &worker_runtime.artifact_root,
-        ) {
-            Ok(process_spec) => process_spec,
-            Err(error) => {
-                record_runtime_error(paths, subject.clone(), &error)?;
+            &supervisor,
+            &gateway_command,
+            Some(&plan),
+            previous_gateway.as_ref(),
+            pf_routing_state,
+            readiness_timeout,
+        )
+        .await
+        {
+            worker_failures.push(("gateway".to_owned(), error));
+        }
+        return Err(combined_runtime_reconciliation_error(worker_failures));
+    }
+    let worker_count = plan.workers.len();
+    let project_count = plan
+        .workers
+        .iter()
+        .map(|worker| worker.projects.len())
+        .sum::<usize>();
+    if let Some(worker_timer) = worker_timer {
+        worker_timer.finish(
+            structured_log::PhaseOutcome::Succeeded,
+            &[
+                ("worker_count", usize_as_u64(worker_count)),
+                ("project_count", usize_as_u64(project_count)),
+            ],
+        );
+    }
 
-                return Err(error);
+    let gateway_timer = phase_log
+        .map(|phase_log| phase_log.start(structured_log::ReconciliationPhase::Gateway, "gateway"));
+    reconcile_planned_gateway(
+        paths,
+        &supervisor,
+        &plan,
+        &gateway_command,
+        pf_routing_state,
+        readiness_timeout,
+        None,
+    )
+    .await?;
+    if let Some(gateway_timer) = gateway_timer {
+        gateway_timer.finish(
+            structured_log::PhaseOutcome::Succeeded,
+            &[("project_count", usize_as_u64(project_count))],
+        );
+    }
+
+    let cleanup_timer = phase_log.map(|phase_log| {
+        phase_log.start(
+            structured_log::ReconciliationPhase::Workers,
+            "stale_workers",
+        )
+    });
+    let mut cleanup_failures: Vec<(String, DaemonError)> = Vec::new();
+    for worker in &plan.workers {
+        if retained_worker_fragments.contains_key(&worker.runtime_key) {
+            let result = match required_installed_worker_runtime(paths, worker) {
+                Ok(worker_runtime) => {
+                    reconcile_planned_worker(
+                        paths,
+                        &supervisor,
+                        worker,
+                        &worker_runtime,
+                        readiness_timeout,
+                        None,
+                        None,
+                    )
+                    .await
+                }
+                Err(error) => Err(error),
+            };
+            if let Err(error) = result {
+                cleanup_failures.push((worker.runtime_key.clone(), error));
             }
+        }
+    }
+    let mut cleanup_timer = cleanup_timer;
+    if let Err(error) = stop_stale_worker_runtimes(paths, &supervisor, &plan)
+        .await
+        .map(|failures| cleanup_failures.extend(failures))
+    {
+        if let Some(timer) = cleanup_timer.take() {
+            timer.finish(structured_log::PhaseOutcome::Failed, &[]);
+        }
+        return Err(error);
+    }
+    if let Some(timer) = cleanup_timer.take() {
+        timer.finish(
+            if cleanup_failures.is_empty() {
+                structured_log::PhaseOutcome::Succeeded
+            } else {
+                structured_log::PhaseOutcome::Failed
+            },
+            &[],
+        );
+    }
+    if !cleanup_failures.is_empty() {
+        return Err(combined_runtime_reconciliation_error(cleanup_failures));
+    }
+
+    Ok(GATEWAY_RUNTIME_RECONCILED.to_owned())
+}
+
+async fn recover_previous_gateway(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    gateway_command: &CaddyCliCommand,
+    plan: Option<&RuntimePlan>,
+    snapshot: Option<&ActiveRuntimeConfigSnapshot>,
+    pf_routing_state: Option<GatewayPfRoutingState>,
+    readiness_timeout: Duration,
+) -> Result<(), DaemonError> {
+    let Some(snapshot) = snapshot else {
+        // Prior bytes are unprovable: only a previously recorded Gateway that is now
+        // definitively absent may be started from the desired plan, exactly once. A live,
+        // unverifiable, or never-installed Gateway is left untouched so recovery never
+        // issues a competing load or materializes a Gateway the plan never ran.
+        let Some(plan) = plan else {
+            return Ok(());
         };
-        let promoted_config = reconcile_worker_config(
+        let gateway_spec = gateway_process_spec(paths, gateway_command);
+        if supervisor
+            .recorded_config_fingerprint(&gateway_spec)?
+            .is_none()
+        {
+            return Ok(());
+        }
+        match supervisor.verify_ownership(&gateway_spec) {
+            Ok(None) => {
+                return reconcile_planned_gateway(
+                    paths,
+                    supervisor,
+                    plan,
+                    gateway_command,
+                    pf_routing_state,
+                    readiness_timeout,
+                    None,
+                )
+                .await;
+            }
+            Ok(Some(_)) | Err(_) => return Ok(()),
+        }
+    };
+    let active_dir = paths.gateway_projects_config_dir();
+    let candidate_dir = candidate_config_dir_for(&active_dir);
+    let fragments = snapshot
+        .fragments
+        .iter()
+        .map(|(file_name, content)| preserved_project_config_fragment(file_name, content))
+        .collect::<Vec<_>>();
+    let plan = RuntimePlan {
+        gateway: GatewayRuntimePlan {
+            http_port: optional_config_port(&snapshot.root, "http_port ")?
+                .ok_or_else(missing_previous_service_port)?,
+            https_port: optional_config_port(&snapshot.root, "https_port ")?
+                .ok_or_else(missing_previous_service_port)?,
+            admin_socket_path: paths.gateway_admin_socket(),
+            ca_certificate_path: paths.ca_certificate(),
+            ca_private_key_path: paths.ca_private_key(),
+            storage_path: gateway_storage_path(paths)?,
+        },
+        workers: Vec::new(),
+    };
+    let desired = DesiredGatewayConfig {
+        readiness_hostname: gateway_readiness_hostname(&fragments),
+        tree: DesiredRuntimeConfigTree {
+            candidate_content: snapshot
+                .root
+                .replace(active_dir.as_str(), candidate_dir.as_str()),
+            fingerprint: desired_runtime_config_fingerprint(&snapshot.root, &fragments),
+            active_content: snapshot.root.clone(),
+            active_dir,
+            candidate_dir,
+            fragments,
+        },
+    };
+    reconcile_gateway_config(
+        paths,
+        supervisor,
+        &plan,
+        gateway_command,
+        pf_routing_state,
+        readiness_timeout,
+        desired,
+    )
+    .await
+}
+
+async fn reconcile_planned_gateway(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    plan: &RuntimePlan,
+    gateway_command: &CaddyCliCommand,
+    pf_routing_state: Option<GatewayPfRoutingState>,
+    readiness_timeout: Duration,
+    preserved_fragments: Option<&BTreeMap<String, String>>,
+) -> Result<(), DaemonError> {
+    let desired_gateway_config = match desired_gateway_config(paths, plan, preserved_fragments) {
+        Ok(desired_config) => desired_config,
+        Err(error) => {
+            return Err(record_primary_error(paths, RuntimeSubject::Gateway, error));
+        }
+    };
+    reconcile_gateway_config(
+        paths,
+        supervisor,
+        plan,
+        gateway_command,
+        pf_routing_state,
+        readiness_timeout,
+        desired_gateway_config,
+    )
+    .await
+}
+
+async fn reconcile_gateway_config(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    plan: &RuntimePlan,
+    gateway_command: &CaddyCliCommand,
+    pf_routing_state: Option<GatewayPfRoutingState>,
+    readiness_timeout: Duration,
+    desired_gateway_config: DesiredGatewayConfig,
+) -> Result<(), DaemonError> {
+    let pf_routing_state = match pf_routing_state {
+        Some(pf_routing_state) => pf_routing_state,
+        None => gateway_pf_routing_state(paths, plan).await?,
+    };
+    let gateway_readiness = gateway_readiness_plan(
+        plan,
+        desired_gateway_config.readiness_hostname,
+        pf_routing_state,
+        readiness_timeout,
+    );
+    let gateway_spec = gateway_process_spec(paths, gateway_command);
+    let readiness_outcome = if let Some(outcome) = match reconcile_unchanged_runtime(
+        supervisor,
+        &gateway_spec,
+        &paths.gateway_root_config(),
+        &gateway_readiness,
+        &desired_gateway_config.tree,
+    )
+    .await
+    {
+        Ok(outcome) => outcome,
+        Err(error) => {
+            return Err(record_primary_error(paths, RuntimeSubject::Gateway, error));
+        }
+    } {
+        outcome
+    } else {
+        let promoted_config = promote_runtime_config_tree(
             paths,
-            &worker_runtime.command,
-            &worker_runtime.artifact_root,
-            worker,
+            gateway_command,
+            RuntimeSubject::Gateway,
+            paths.gateway_root_config(),
+            caddy_xdg_environment(paths),
+            &desired_gateway_config.tree,
         )
         .await?;
         start_or_adopt_promoted_runtime(
             paths,
-            &supervisor,
+            supervisor,
             promoted_config,
-            process_spec,
-            RuntimeReadinessPlan {
-                check: ReadinessCheck::Tcp {
-                    host: "127.0.0.1".to_owned(),
-                    port: worker.port,
-                },
-                failure_policy: ReadinessFailurePolicy::FailRuntime,
-                timeout: readiness_timeout,
-                admin_endpoint: CaddyAdminEndpoint::new(worker.admin_socket_path.clone()),
-            },
-            subject.clone(),
+            gateway_spec,
+            gateway_readiness,
+            &desired_gateway_config.tree.fingerprint,
+            RuntimeSubject::Gateway,
         )
-        .await?;
-        record_runtime_observed(
-            paths,
-            subject,
-            RuntimeObservedStatus::Running,
-            Some(GATEWAY_RUNTIME_RECONCILED),
-        )?;
-    }
-    let gateway_config = reconcile_gateway_config(paths, &gateway_command, &plan).await?;
-    let pf_routing_state =
-        pf_routing_state.unwrap_or_else(|| gateway_pf_routing_state(paths, &plan));
-    let gateway_readiness = gateway_readiness_plan(
-        &plan,
-        gateway_config.readiness_hostname.clone(),
-        pf_routing_state,
-        readiness_timeout,
-    );
-    let readiness_outcome = start_or_adopt_promoted_runtime(
+        .await?
+    };
+    record_gateway_runtime_observed(paths, pf_routing_state, readiness_outcome)?;
+
+    Ok(())
+}
+
+async fn reconcile_planned_worker(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    worker: &PhpWorkerRuntimePlan,
+    worker_runtime: &InstalledFrankenphpRuntime,
+    readiness_timeout: Duration,
+    preserved_fragments: Option<&BTreeMap<String, String>>,
+    retained_fragments: Option<&BTreeMap<String, String>>,
+) -> Result<(), DaemonError> {
+    let prepared = prepare_planned_worker(
         paths,
-        &supervisor,
-        gateway_config.promoted_config,
-        gateway_process_spec(paths, &gateway_command),
-        gateway_readiness,
-        RuntimeSubject::Gateway,
+        supervisor,
+        worker,
+        worker_runtime,
+        readiness_timeout,
+        preserved_fragments,
+        retained_fragments,
     )
     .await?;
-    record_gateway_runtime_observed(paths, pf_routing_state, readiness_outcome)?;
-    stop_stale_worker_runtimes(paths, &supervisor, &plan).await?;
+    match prepared {
+        PreparedWorkerReconciliation::Complete => Ok(()),
+        PreparedWorkerReconciliation::Pending(worker) => {
+            finish_planned_worker(paths, (*worker).wait().await).await
+        }
+    }
+}
 
-    Ok(GATEWAY_RUNTIME_RECONCILED.to_owned())
+enum PreparedWorkerReconciliation {
+    Complete,
+    Pending(Box<PendingPromotedRuntime>),
+}
+
+async fn prepare_planned_worker(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    worker: &PhpWorkerRuntimePlan,
+    worker_runtime: &InstalledFrankenphpRuntime,
+    readiness_timeout: Duration,
+    preserved_fragments: Option<&BTreeMap<String, String>>,
+    retained_fragments: Option<&BTreeMap<String, String>>,
+) -> Result<PreparedWorkerReconciliation, DaemonError> {
+    let subject = worker_runtime_subject(worker);
+    let process_spec = match worker_process_spec(
+        paths,
+        worker,
+        &worker_runtime.command,
+        &worker_runtime.artifact_root,
+    ) {
+        Ok(process_spec) => process_spec,
+        Err(error) => {
+            return Err(record_primary_error(paths, subject.clone(), error));
+        }
+    };
+    let desired_config =
+        match desired_worker_config(paths, worker, preserved_fragments, retained_fragments) {
+            Ok(desired_config) => desired_config,
+            Err(error) => {
+                return Err(record_primary_error(paths, subject.clone(), error));
+            }
+        };
+    let readiness = RuntimeReadinessPlan {
+        check: ReadinessCheck::Tcp {
+            host: "127.0.0.1".to_owned(),
+            port: worker.port,
+        },
+        failure_policy: ReadinessFailurePolicy::FailRuntime,
+        timeout: readiness_timeout,
+        admin_endpoint: CaddyAdminEndpoint::new(worker.admin_socket_path.clone()),
+        preserve_staged_config: retained_fragments.is_some_and(|fragments| !fragments.is_empty()),
+    };
+    let private_environment =
+        match worker_config_private_environment(paths, worker, &worker_runtime.artifact_root) {
+            Ok(private_environment) => private_environment,
+            Err(error) => {
+                return Err(record_primary_error(paths, subject.clone(), error));
+            }
+        };
+    match reconcile_unchanged_runtime(
+        supervisor,
+        &process_spec,
+        &paths.worker_root_config(&worker.runtime_key),
+        &readiness,
+        &desired_config,
+    )
+    .await
+    {
+        Ok(Some(_outcome)) => {
+            record_runtime_observed(
+                paths,
+                subject,
+                RuntimeObservedStatus::Running,
+                Some(GATEWAY_RUNTIME_RECONCILED),
+            )?;
+            return Ok(PreparedWorkerReconciliation::Complete);
+        }
+        Ok(None) => {}
+        Err(error) => {
+            return Err(record_primary_error(paths, subject.clone(), error));
+        }
+    }
+    let promoted_config = promote_runtime_config_tree(
+        paths,
+        &worker_runtime.command,
+        subject.clone(),
+        paths.worker_root_config(&worker.runtime_key),
+        private_environment,
+        &desired_config,
+    )
+    .await?;
+    let runtime = prepare_promoted_runtime(
+        paths,
+        supervisor,
+        promoted_config,
+        process_spec,
+        readiness,
+        &desired_config.fingerprint,
+        subject.clone(),
+    )
+    .await?;
+
+    Ok(PreparedWorkerReconciliation::Pending(Box::new(runtime)))
+}
+
+async fn finish_planned_worker(
+    paths: &PvPaths,
+    completed: CompletedPromotedRuntime,
+) -> Result<(), DaemonError> {
+    let subject = completed.subject.clone();
+    finish_promoted_runtime(completed).await?;
+    record_runtime_observed(
+        paths,
+        subject,
+        RuntimeObservedStatus::Running,
+        Some(GATEWAY_RUNTIME_RECONCILED),
+    )?;
+
+    Ok(())
+}
+
+fn combined_runtime_reconciliation_error(mut failures: Vec<(String, DaemonError)>) -> DaemonError {
+    failures.sort_by(|left, right| left.0.cmp(&right.0));
+    if failures.len() == 1 {
+        return failures.remove(0).1;
+    }
+
+    DaemonError::RuntimeReconciliationFailures {
+        failures: failures
+            .into_iter()
+            .map(|(runtime_key, error)| RuntimeReconciliationFailure::new(runtime_key, error))
+            .collect(),
+    }
+}
+
+fn required_installed_worker_runtime(
+    paths: &PvPaths,
+    worker: &PhpWorkerRuntimePlan,
+) -> Result<InstalledFrankenphpRuntime, DaemonError> {
+    let subject = worker_runtime_subject(worker);
+    match installed_frankenphp_runtime_for_track(paths, &worker.php_track) {
+        Ok(Some(runtime)) => Ok(runtime),
+        Ok(None) => {
+            let error = DaemonError::UnexpectedProtocolResponse {
+                reason: format!(
+                    "FrankenPHP is not installed for PHP track `{}`",
+                    worker.php_track
+                ),
+            };
+            Err(record_primary_error(paths, subject, error))
+        }
+        Err(error) => Err(record_primary_error(paths, subject, error)),
+    }
+}
+
+fn usize_as_u64(value: usize) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
 }
 
 fn gateway_readiness_plan(
@@ -376,6 +1257,7 @@ fn gateway_readiness_plan(
         failure_policy,
         timeout,
         admin_endpoint: CaddyAdminEndpoint::new(plan.gateway.admin_socket_path.clone()),
+        preserve_staged_config: false,
     }
 }
 
@@ -385,6 +1267,7 @@ struct RuntimeReadinessPlan {
     failure_policy: ReadinessFailurePolicy,
     timeout: Duration,
     admin_endpoint: CaddyAdminEndpoint,
+    preserve_staged_config: bool,
 }
 
 fn previous_runtime_readiness(
@@ -550,16 +1433,93 @@ fn gateway_readiness_ports(
     }
 }
 
-fn gateway_pf_routing_state(paths: &PvPaths, plan: &RuntimePlan) -> GatewayPfRoutingState {
-    let expected = platform::PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port);
-    let files_current = pf_files_current(paths, &expected);
+async fn gateway_pf_routing_state(
+    paths: &PvPaths,
+    plan: &RuntimePlan,
+) -> Result<GatewayPfRoutingState, DaemonError> {
+    gateway_pf_routing_state_for_ports(paths, plan.gateway.http_port, plan.gateway.https_port).await
+}
 
-    match platform::inspect_active_pf_redirects_unprivileged() {
-        Ok(inspection) => {
-            classify_gateway_pf_routing_state(&expected, Some(&inspection), files_current)
+async fn gateway_pf_routing_state_for_ports(
+    paths: &PvPaths,
+    http_port: u16,
+    https_port: u16,
+) -> Result<GatewayPfRoutingState, DaemonError> {
+    let paths = paths.clone();
+    let expected = platform::PfRedirectConfig::new(http_port, https_port);
+    spawn_gateway_pf_inspection(move || {
+        let files_current = pf_files_current(&paths, &expected);
+
+        match platform::inspect_active_pf_redirects_unprivileged() {
+            Ok(inspection) => {
+                classify_gateway_pf_routing_state(&expected, Some(&inspection), files_current)
+            }
+            Err(_error) => classify_gateway_pf_routing_state(&expected, None, files_current),
         }
-        Err(_error) => classify_gateway_pf_routing_state(&expected, None, files_current),
+    })
+    .await
+}
+
+/// Returns whether the persisted Gateway runtime passes its state-selected readiness probe.
+pub(crate) async fn persisted_gateway_is_ready(
+    paths: &PvPaths,
+    http_port: u16,
+    https_port: u16,
+) -> Result<bool, DaemonError> {
+    let pf_routing_state = gateway_pf_routing_state_for_ports(paths, http_port, https_port).await?;
+
+    persisted_gateway_is_ready_with_pf_state_for_test(
+        paths,
+        http_port,
+        https_port,
+        pf_routing_state,
+    )
+    .await
+}
+
+pub async fn persisted_gateway_is_ready_with_pf_state_for_test(
+    paths: &PvPaths,
+    http_port: u16,
+    https_port: u16,
+    pf_routing_state: GatewayPfRoutingState,
+) -> Result<bool, DaemonError> {
+    let probe_ports = if pf_routing_state == GatewayPfRoutingState::Inactive {
+        GatewayReadinessPorts {
+            http: http_port,
+            https: https_port,
+        }
+    } else {
+        GatewayReadinessPorts {
+            http: PUBLIC_HTTP_PORT,
+            https: PUBLIC_HTTPS_PORT,
+        }
+    };
+    let check = gateway_identity_readiness_check(
+        http_port,
+        https_port,
+        probe_ports.http,
+        probe_ports.https,
+        &paths.ca_certificate(),
+    );
+
+    match timeout(OWNED_READINESS_PROBE_TIMEOUT, probe_readiness_once(&check)).await {
+        Ok(Ok(())) => Ok(true),
+        Ok(Err(error)) => Err(error),
+        Err(error) => Err(DaemonError::ReadinessTimedOut {
+            check: format!("{check:?}"),
+            timeout_ms: OWNED_READINESS_PROBE_TIMEOUT.as_millis(),
+            last_error: Some(error.to_string()),
+        }),
     }
+}
+
+async fn spawn_gateway_pf_inspection<Inspect>(
+    inspect: Inspect,
+) -> Result<GatewayPfRoutingState, DaemonError>
+where
+    Inspect: FnOnce() -> GatewayPfRoutingState + Send + 'static,
+{
+    Ok(tokio::task::spawn_blocking(inspect).await?)
 }
 
 fn classify_gateway_pf_routing_state(
@@ -923,15 +1883,7 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
         )?;
     }
 
-    let workers = projects_by_runtime_key
-        .into_values()
-        .map(|mut worker| {
-            worker
-                .projects
-                .sort_by(|left, right| left.primary_hostname.cmp(&right.primary_hostname));
-            worker
-        })
-        .collect();
+    let workers = sorted_runtime_workers(projects_by_runtime_key);
 
     Ok(RuntimePlan {
         gateway: GatewayRuntimePlan {
@@ -944,6 +1896,531 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
         },
         workers,
     })
+}
+
+fn build_target_runtime_plan(
+    paths: &PvPaths,
+    project_id: &str,
+) -> Result<Option<TargetedRuntimePlan>, DaemonError> {
+    let mut database = Database::open(paths)?;
+    let gateway_ports = database.assign_gateway_ports(local_loopback_port_available)?;
+    let mut projects_by_runtime_key: BTreeMap<String, PhpWorkerRuntimePlan> = BTreeMap::new();
+    let mut current_runtime_key = None;
+    let project =
+        database
+            .project_by_id(project_id)?
+            .ok_or_else(|| StateError::ProjectNotFound {
+                target: project_id.to_owned(),
+            })?;
+
+    if project.mode == ProjectMode::Served {
+        // Project-to-System promotion is fail-closed: unreadable or invalid Project
+        // config is a typed error, never uncertainty. Only a valid config that
+        // contradicts the stored mode hands off to System reconciliation.
+        let config_file = ProjectConfigFile::read_from_root(&project.path)?;
+        if !config_file.config.serve {
+            return Ok(None);
+        }
+        validate_project_config_for_gateway(paths, &database, &project, &config_file)?;
+        let primary_hostname =
+            project
+                .primary_hostname
+                .clone()
+                .ok_or_else(|| StateError::ProjectNotServed {
+                    project_id: project.id.clone(),
+                })?;
+        let runtime = resolve_project_php_runtime(
+            paths,
+            &database,
+            &project,
+            config_file.config.php.as_ref(),
+        )?;
+        let persisted_runtime_key = persisted_project_runtime_key(&project)?;
+        if persisted_runtime_key.as_deref() != Some(runtime.runtime_key.as_str()) {
+            return Ok(None);
+        }
+        let document_root =
+            resolve_project_document_root(&project.path, Some(&config_file.config))?;
+        let runtime_project = RuntimeProject {
+            id: project.id,
+            render_config: true,
+            primary_hostname: primary_hostname.clone(),
+            hostnames: additional_hostnames(
+                &primary_hostname,
+                project.additional_hostnames,
+                config_file.config.hostnames,
+            ),
+            project_root: project.path,
+            document_root,
+        };
+        current_runtime_key = Some(runtime.runtime_key.clone());
+        append_runtime_project(
+            paths,
+            &mut database,
+            &mut projects_by_runtime_key,
+            runtime,
+            runtime_project,
+        )?;
+    }
+
+    let workers = sorted_runtime_workers(projects_by_runtime_key);
+    Ok(Some(TargetedRuntimePlan {
+        plan: RuntimePlan {
+            gateway: GatewayRuntimePlan {
+                http_port: gateway_ports.http.port,
+                https_port: gateway_ports.https.port,
+                admin_socket_path: paths.gateway_admin_socket(),
+                ca_certificate_path: paths.ca_certificate(),
+                ca_private_key_path: paths.ca_private_key(),
+                storage_path: gateway_storage_path(paths)?,
+            },
+            workers,
+        },
+        current_runtime_key,
+    }))
+}
+
+fn complete_targeted_runtime_plan(
+    paths: &PvPaths,
+    project_id: &str,
+    targeted: &mut TargetedRuntimePlan,
+) -> Result<bool, DaemonError> {
+    let mut database = Database::open(paths)?;
+    let mut projects_by_runtime_key = std::mem::take(&mut targeted.plan.workers)
+        .into_iter()
+        .map(|worker| (worker.runtime_key.clone(), worker))
+        .collect::<BTreeMap<_, _>>();
+
+    for project in database.projects()? {
+        if project.id != project_id
+            && !append_targeted_persisted_runtime_project(
+                paths,
+                &mut database,
+                &mut projects_by_runtime_key,
+                project,
+            )?
+        {
+            return Ok(false);
+        }
+    }
+
+    targeted.plan.workers = sorted_runtime_workers(projects_by_runtime_key);
+
+    Ok(true)
+}
+
+fn skipped_project_gateway_outcome(
+    phase_log: &structured_log::ReconciliationPhaseLog,
+) -> ProjectGatewayReconciliationOutcome {
+    phase_log.report_progress(structured_log::ReconciliationPhase::Workers);
+    phase_log.completed(
+        structured_log::ReconciliationPhase::Workers,
+        "target_project",
+        structured_log::PhaseOutcome::Skipped,
+        Duration::ZERO,
+        &[("worker_count", 0), ("project_count", 0)],
+    );
+    phase_log.report_progress(structured_log::ReconciliationPhase::Gateway);
+    phase_log.completed(
+        structured_log::ReconciliationPhase::Gateway,
+        "target_project",
+        structured_log::PhaseOutcome::Skipped,
+        Duration::ZERO,
+        &[("project_count", 0)],
+    );
+
+    ProjectGatewayReconciliationOutcome::Reconciled {
+        summary: "Gateway runtime unchanged; Project has no route changes".to_owned(),
+        gateway_evaluated: false,
+    }
+}
+
+fn verified_active_project_gateway_impact(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    gateway_command: &CaddyCliCommand,
+    targeted: &TargetedRuntimePlan,
+    project_id: &str,
+) -> Result<Option<ActiveProjectGatewayImpact>, DaemonError> {
+    let file_name = project_config_file_name(project_id);
+    let Some(snapshot) = verified_active_runtime_config(
+        supervisor,
+        &gateway_process_spec(paths, gateway_command),
+        &paths.gateway_root_config(),
+        &paths.gateway_projects_config_dir(),
+    )?
+    else {
+        return Ok(None);
+    };
+    let gateway_fragments = snapshot.fragments;
+    let served = gateway_fragments.contains_key(&file_name);
+
+    let mut runtime_keys = BTreeSet::new();
+    let mut worker_fragments = BTreeMap::new();
+    for runtime_key in runtime_worker_tracks(paths)? {
+        let worker = if let Some(worker) = targeted
+            .plan
+            .workers
+            .iter()
+            .find(|worker| worker.runtime_key == runtime_key)
+        {
+            worker.clone()
+        } else {
+            let Some(worker) = active_worker_plan(paths, &runtime_key)? else {
+                return Ok(None);
+            };
+            worker
+        };
+        let Some(snapshot) = verified_active_worker_config(paths, supervisor, &worker)? else {
+            return Ok(None);
+        };
+        if snapshot.fragments.contains_key(&file_name) {
+            worker_fragments.insert(runtime_key.clone(), snapshot.fragments);
+            runtime_keys.insert(runtime_key);
+        }
+    }
+
+    if served && runtime_keys.is_empty() {
+        return Ok(None);
+    }
+
+    if let Some(current_runtime_key) = targeted.current_runtime_key.as_deref()
+        && !runtime_keys.contains(current_runtime_key)
+    {
+        let worker = targeted
+            .plan
+            .workers
+            .iter()
+            .find(|worker| worker.runtime_key == current_runtime_key)
+            .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                reason: format!(
+                    "targeted runtime plan is missing current PHP worker `{current_runtime_key}`"
+                ),
+            })?;
+        if worker.projects.iter().any(|project| !project.render_config)
+            && !worker_fragments.contains_key(current_runtime_key)
+        {
+            let Some(snapshot) = verified_active_worker_config(paths, supervisor, worker)? else {
+                return Ok(None);
+            };
+            worker_fragments.insert(current_runtime_key.to_owned(), snapshot.fragments);
+        }
+    }
+
+    Ok(Some(ActiveProjectGatewayImpact {
+        served,
+        runtime_keys,
+        gateway_fragments,
+        worker_fragments,
+    }))
+}
+
+fn failed_worker_outside_target(
+    paths: &PvPaths,
+    targeted: &TargetedRuntimePlan,
+    active_impact: &ActiveProjectGatewayImpact,
+) -> Result<bool, DaemonError> {
+    let database = Database::open(paths)?;
+    let tracked_workers = runtime_worker_tracks(paths)?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+
+    Ok(database
+        .runtime_observed_states()?
+        .into_iter()
+        .any(|state| {
+            if state.status != RuntimeObservedStatus::Failed {
+                return false;
+            }
+            let runtime_key = match state.subject {
+                RuntimeSubject::PhpWorker { php_track } => php_track,
+                RuntimeSubject::PhpRuntimeWorker { php_runtime_key } => php_runtime_key,
+                RuntimeSubject::Gateway | RuntimeSubject::Resource { .. } => return false,
+            };
+
+            tracked_workers.contains(&runtime_key)
+                && Some(runtime_key.as_str()) != targeted.current_runtime_key.as_deref()
+                && !active_impact.runtime_keys.contains(&runtime_key)
+        }))
+}
+
+fn active_gateway_readiness_hostname<'a>(
+    paths: &PvPaths,
+    fragment_file_names: impl IntoIterator<Item = &'a String>,
+) -> Result<Option<String>, DaemonError> {
+    let database = Database::open(paths)?;
+
+    for file_name in fragment_file_names {
+        let Some(project_id) = file_name.strip_suffix(".Caddyfile") else {
+            continue;
+        };
+        if let Some(hostname) = database
+            .project_by_id(project_id)?
+            .and_then(|project| project.primary_hostname)
+        {
+            return Ok(Some(hostname));
+        }
+    }
+
+    Ok(None)
+}
+
+fn active_worker_plan(
+    paths: &PvPaths,
+    runtime_key: &str,
+) -> Result<Option<PhpWorkerRuntimePlan>, DaemonError> {
+    let mut components = runtime_key.split('+');
+    let Some(track) = components.next() else {
+        return Ok(None);
+    };
+    let loaded_extensions = components.map(str::to_owned).collect::<Vec<_>>();
+    if state::php_runtime_key(track, &loaded_extensions)? != runtime_key {
+        return Ok(None);
+    }
+
+    let database = Database::open(paths)?;
+    let Some(port) = database
+        .assigned_ports()?
+        .into_iter()
+        .find_map(|assignment| {
+            matches!(
+                assignment.owner,
+                PortOwner::PhpWorker { ref php_runtime_key } if php_runtime_key == runtime_key
+            )
+            .then_some(assignment.port)
+        })
+    else {
+        return Ok(None);
+    };
+    let loaded_modules = loaded_php_extension_modules(&database, track, &loaded_extensions)?;
+
+    Ok(Some(PhpWorkerRuntimePlan {
+        php_track: track.to_owned(),
+        runtime_key: runtime_key.to_owned(),
+        loaded_modules,
+        port,
+        admin_socket_path: paths.worker_admin_socket(runtime_key),
+        projects: Vec::new(),
+    }))
+}
+
+fn verified_active_worker_config(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    worker: &PhpWorkerRuntimePlan,
+) -> Result<Option<ActiveRuntimeConfigSnapshot>, DaemonError> {
+    let Some(runtime) = installed_frankenphp_runtime_for_track(paths, &worker.php_track)? else {
+        return Ok(None);
+    };
+    let spec = worker_process_spec(paths, worker, &runtime.command, &runtime.artifact_root)?;
+
+    verified_active_runtime_config(
+        supervisor,
+        &spec,
+        &paths.worker_root_config(&worker.runtime_key),
+        &paths.worker_projects_config_dir(&worker.runtime_key),
+    )
+}
+
+fn verified_active_runtime_config(
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    root_path: &Utf8Path,
+    fragments_directory: &Utf8Path,
+) -> Result<Option<ActiveRuntimeConfigSnapshot>, DaemonError> {
+    let Some(runtime) = supervisor.verify_ownership(spec)? else {
+        return Ok(None);
+    };
+    let Some(recorded_fingerprint) = runtime.applied_config_fingerprint() else {
+        return Ok(None);
+    };
+    if runtime.replacement_required() {
+        return Ok(None);
+    }
+    verified_runtime_config_snapshot(root_path, fragments_directory, recorded_fingerprint)
+}
+
+fn verified_recorded_applied_runtime_config(
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    root_path: &Utf8Path,
+    fragments_directory: &Utf8Path,
+) -> Result<Option<ActiveRuntimeConfigSnapshot>, DaemonError> {
+    let Some(RecordedConfigFingerprint::Applied(recorded_fingerprint)) =
+        supervisor.recorded_config_fingerprint(spec)?
+    else {
+        return Ok(None);
+    };
+    verified_runtime_config_snapshot(root_path, fragments_directory, &recorded_fingerprint)
+}
+
+fn verified_recorded_runtime_config(
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    root_path: &Utf8Path,
+    fragments_directory: &Utf8Path,
+) -> Result<Option<ActiveRuntimeConfigSnapshot>, DaemonError> {
+    let Some(recorded_fingerprint) = supervisor.recorded_config_fingerprint(spec)? else {
+        return Ok(None);
+    };
+    let recorded_fingerprint = match recorded_fingerprint {
+        RecordedConfigFingerprint::Applied(fingerprint)
+        | RecordedConfigFingerprint::Staged(fingerprint) => fingerprint,
+    };
+    verified_runtime_config_snapshot(root_path, fragments_directory, &recorded_fingerprint)
+}
+
+fn verified_runtime_config_snapshot(
+    root_path: &Utf8Path,
+    fragments_directory: &Utf8Path,
+    recorded_fingerprint: &str,
+) -> Result<Option<ActiveRuntimeConfigSnapshot>, DaemonError> {
+    let Some(snapshot) = active_runtime_config_snapshot(root_path, fragments_directory)? else {
+        return Ok(None);
+    };
+    let active_fingerprint = runtime_config_fingerprint(
+        &snapshot.root,
+        snapshot
+            .fragments
+            .iter()
+            .map(|(name, content)| (name.as_str(), content.as_str())),
+    );
+    if active_fingerprint != recorded_fingerprint {
+        return Ok(None);
+    }
+
+    Ok(Some(snapshot))
+}
+
+fn active_runtime_config_snapshot(
+    root_path: &Utf8Path,
+    fragments_directory: &Utf8Path,
+) -> Result<Option<ActiveRuntimeConfigSnapshot>, DaemonError> {
+    let root = match fs::read_to_string(root_path) {
+        Ok(root) => root,
+        Err(StateError::Filesystem { source, .. })
+            if matches!(
+                source.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::InvalidData
+            ) =>
+        {
+            return Ok(None);
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut fragments = BTreeMap::new();
+    for path in read_directory_files(fragments_directory)? {
+        if path.extension() != Some("Caddyfile") {
+            continue;
+        }
+        let Some(file_name) = path.file_name() else {
+            continue;
+        };
+        let content = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(StateError::Filesystem { source, .. })
+                if source.kind() == io::ErrorKind::InvalidData =>
+            {
+                return Ok(None);
+            }
+            Err(error) => {
+                return Err(error.into());
+            }
+        };
+        fragments.insert(file_name.to_owned(), content);
+    }
+
+    Ok(Some(ActiveRuntimeConfigSnapshot { root, fragments }))
+}
+
+fn append_targeted_persisted_runtime_project(
+    paths: &PvPaths,
+    database: &mut Database,
+    projects_by_runtime_key: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
+    project: state::ProjectRecord,
+) -> Result<bool, DaemonError> {
+    if project.mode == ProjectMode::ResourceOnly {
+        return Ok(true);
+    }
+    let Some(runtime) = persisted_project_php_runtime(database, &project)? else {
+        return Ok(false);
+    };
+    let file_name = project_config_file_name(&project.id);
+    let gateway_fragment =
+        read_preserved_project_config_fragment(&paths.gateway_projects_config_dir(), &file_name)?;
+    let worker_fragment = read_preserved_project_config_fragment(
+        &paths.worker_projects_config_dir(&runtime.runtime_key),
+        &file_name,
+    )?;
+    let (Some(gateway_fragment), Some(_worker_fragment)) = (gateway_fragment, worker_fragment)
+    else {
+        return Ok(false);
+    };
+    let primary_hostname =
+        project
+            .primary_hostname
+            .clone()
+            .ok_or_else(|| StateError::ProjectNotServed {
+                project_id: project.id.clone(),
+            })?;
+    let runtime_project = RuntimeProject {
+        id: project.id,
+        render_config: false,
+        primary_hostname: primary_hostname.clone(),
+        hostnames: additional_hostnames(
+            &primary_hostname,
+            project.additional_hostnames,
+            Vec::new(),
+        ),
+        project_root: project.path.clone(),
+        document_root: project.path,
+    };
+    let worker_port = append_runtime_project(
+        paths,
+        database,
+        projects_by_runtime_key,
+        runtime,
+        runtime_project.clone(),
+    )?;
+    let expected_gateway_fragment = render_gateway_project_config(&GatewayProjectRoute {
+        id: runtime_project.id,
+        render_config: false,
+        primary_hostname: runtime_project.primary_hostname,
+        hostnames: runtime_project.hostnames,
+        worker_port,
+        access_log_path: paths.gateway_access_log(),
+    })?;
+    if gateway_fragment != expected_gateway_fragment {
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
+fn persisted_project_runtime_key(
+    project: &state::ProjectRecord,
+) -> Result<Option<String>, DaemonError> {
+    project
+        .php_runtime
+        .track
+        .as_deref()
+        .map(|track| state::php_runtime_key(track, &project.php_runtime.loaded_extensions))
+        .transpose()
+        .map_err(Into::into)
+}
+
+fn sorted_runtime_workers(
+    projects_by_runtime_key: BTreeMap<String, PhpWorkerRuntimePlan>,
+) -> Vec<PhpWorkerRuntimePlan> {
+    projects_by_runtime_key
+        .into_values()
+        .map(|mut worker| {
+            worker
+                .projects
+                .sort_by(|left, right| left.primary_hostname.cmp(&right.primary_hostname));
+            worker
+        })
+        .collect()
 }
 
 fn resolve_project_document_root(
@@ -963,18 +2440,24 @@ fn resolve_project_document_root(
 }
 
 fn gateway_storage_path(paths: &PvPaths) -> Result<Utf8PathBuf, DaemonError> {
-    let suffix = match fs::read_to_string(&paths.ca_certificate()) {
-        Ok(certificate) => {
-            let digest = Sha256::digest(certificate.as_bytes());
-            format!("{digest:x}")
+    let mut hasher = Sha256::new();
+    for path in [paths.ca_certificate(), paths.ca_private_key()] {
+        match fs::read_to_string(&path) {
+            Ok(content) => {
+                hasher.update([1]);
+                update_fingerprint_component(&mut hasher, content.as_bytes());
+            }
+            Err(StateError::Filesystem { source, .. })
+                if source.kind() == io::ErrorKind::NotFound =>
+            {
+                hasher.update([0]);
+            }
+            Err(error) => return Err(error.into()),
         }
-        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-            "missing-ca".to_owned()
-        }
-        Err(error) => return Err(error.into()),
-    };
+    }
 
-    Ok(paths.certificates().join(format!("caddy-{suffix}")))
+    let digest = hasher.finalize();
+    Ok(paths.certificates().join(format!("caddy-{digest:x}")))
 }
 
 fn append_persisted_runtime_project(
@@ -993,7 +2476,7 @@ fn append_persisted_runtime_project(
             .ok_or_else(|| StateError::ProjectNotServed {
                 project_id: project.id.clone(),
             })?;
-    let runtime = match persisted_project_php_runtime(database, &project) {
+    let mut runtime = match persisted_project_php_runtime(database, &project) {
         Ok(Some(runtime)) => runtime,
         Ok(None) => return Ok(()),
         Err(
@@ -1009,7 +2492,7 @@ fn append_persisted_runtime_project(
                 &[],
             )?;
 
-            return Ok(());
+            return Err(error);
         }
         Err(error) => return Err(error),
     };
@@ -1025,6 +2508,22 @@ fn append_persisted_runtime_project(
         project_root: project.path.clone(),
         document_root: project.path,
     };
+    if let Some(gateway_fragment) = read_preserved_project_config_fragment(
+        &paths.gateway_projects_config_dir(),
+        &project_config_file_name(&runtime_project.id),
+    )? {
+        runtime = active_project_runtime_for_gateway_fragment(
+            paths,
+            &runtime_project.id,
+            &gateway_fragment,
+        )?
+        .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+            reason: format!(
+                "active Gateway route for Project `{}` does not match a preserved PHP worker",
+                runtime_project.id
+            ),
+        })?;
+    }
 
     append_runtime_project(
         paths,
@@ -1032,7 +2531,52 @@ fn append_persisted_runtime_project(
         projects_by_runtime_key,
         runtime,
         runtime_project,
-    )
+    )?;
+
+    Ok(())
+}
+
+fn active_project_runtime_for_gateway_fragment(
+    paths: &PvPaths,
+    project_id: &str,
+    gateway_fragment: &str,
+) -> Result<Option<ResolvedPhpRuntime>, DaemonError> {
+    let file_name = project_config_file_name(project_id);
+    for runtime_key in runtime_worker_tracks(paths)? {
+        if !fs::path_entry_exists(
+            &paths
+                .worker_projects_config_dir(&runtime_key)
+                .join(&file_name),
+        )? {
+            continue;
+        }
+        let Some(worker) = active_worker_plan(paths, &runtime_key)? else {
+            continue;
+        };
+        if !gateway_fragment_targets_worker(gateway_fragment, worker.port) {
+            continue;
+        }
+        let loaded_extensions = runtime_key
+            .split('+')
+            .skip(1)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+
+        return Ok(Some(ResolvedPhpRuntime {
+            track: worker.php_track,
+            runtime_key: worker.runtime_key,
+            requested_extensions: loaded_extensions.clone(),
+            loaded_extensions,
+            ignored_extensions: Vec::new(),
+            loaded_modules: worker.loaded_modules,
+        }));
+    }
+
+    Ok(None)
+}
+
+fn gateway_fragment_targets_worker(gateway_fragment: &str, port: u16) -> bool {
+    gateway_fragment.contains(&format!("    reverse_proxy 127.0.0.1:{port} {{\n"))
 }
 
 fn append_runtime_project(
@@ -1041,10 +2585,12 @@ fn append_runtime_project(
     projects_by_runtime_key: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
     runtime: ResolvedPhpRuntime,
     runtime_project: RuntimeProject,
-) -> Result<(), DaemonError> {
-    match projects_by_runtime_key.entry(runtime.runtime_key.clone()) {
+) -> Result<u16, DaemonError> {
+    let port = match projects_by_runtime_key.entry(runtime.runtime_key.clone()) {
         btree_map::Entry::Occupied(mut entry) => {
+            let port = entry.get().port;
             entry.get_mut().projects.push(runtime_project);
+            port
         }
         btree_map::Entry::Vacant(entry) => {
             let port_assignment = database
@@ -1059,10 +2605,11 @@ fn append_runtime_project(
                 admin_socket_path,
                 projects: vec![runtime_project],
             });
+            port_assignment.port
         }
-    }
+    };
 
-    Ok(())
+    Ok(port)
 }
 
 fn persisted_project_php_runtime(
@@ -1135,18 +2682,32 @@ fn installed_php_release(
     Ok(release)
 }
 
-async fn reconcile_gateway_config(
+struct DesiredRuntimeConfigTree {
+    active_dir: Utf8PathBuf,
+    candidate_dir: Utf8PathBuf,
+    active_content: String,
+    candidate_content: String,
+    fragments: Vec<ProjectConfigFragment>,
+    fingerprint: String,
+}
+
+struct DesiredGatewayConfig {
+    tree: DesiredRuntimeConfigTree,
+    readiness_hostname: Option<String>,
+}
+
+fn desired_gateway_config(
     paths: &PvPaths,
-    command: &CaddyCliCommand,
     plan: &RuntimePlan,
-) -> Result<GatewayConfigReconciliation, DaemonError> {
+    preserved_fragments: Option<&BTreeMap<String, String>>,
+) -> Result<DesiredGatewayConfig, DaemonError> {
     let routes = gateway_project_routes(paths, plan);
     let active_dir = paths.gateway_projects_config_dir();
     let candidate_dir = candidate_config_dir_for(&active_dir);
-    let fragments = gateway_project_config_fragments(paths, &routes)?;
+    let fragments = gateway_project_config_fragments(paths, &routes, preserved_fragments)?;
     let readiness_hostname = gateway_readiness_hostname(&fragments);
     let import_project_configs = !fragments.is_empty();
-    let active_content = match render_gateway_config(&GatewayConfigInput {
+    let mut config_input = GatewayConfigInput {
         http_port: plan.gateway.http_port,
         https_port: plan.gateway.https_port,
         admin_socket_path: plan.gateway.admin_socket_path.clone(),
@@ -1157,84 +2718,46 @@ async fn reconcile_gateway_config(
         error_log_path: paths.gateway_error_log(),
         projects_config_glob: active_dir.join("*.Caddyfile"),
         import_project_configs,
-    }) {
-        Ok(content) => content,
-        Err(error) => {
-            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
-
-            return Err(error);
-        }
     };
-    let candidate_content = match render_gateway_config(&GatewayConfigInput {
-        http_port: plan.gateway.http_port,
-        https_port: plan.gateway.https_port,
-        admin_socket_path: plan.gateway.admin_socket_path.clone(),
-        ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
-        ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
-        storage_path: plan.gateway.storage_path.clone(),
-        access_log_path: paths.gateway_access_log(),
-        error_log_path: paths.gateway_error_log(),
-        projects_config_glob: candidate_dir.join("*.Caddyfile"),
-        import_project_configs,
-    }) {
-        Ok(content) => content,
-        Err(error) => {
-            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
+    let active_content = render_gateway_config(&config_input)?;
+    config_input.projects_config_glob = candidate_dir.join("*.Caddyfile");
+    let candidate_content = render_gateway_config(&config_input)?;
+    let fingerprint = desired_runtime_config_fingerprint(&active_content, &fragments);
 
-            return Err(error);
-        }
-    };
-    let result = match write_project_config_fragments(&candidate_dir, &fragments) {
-        Ok(()) => {
-            let promotion = RuntimeConfigTreePromotion {
-                subject: RuntimeSubject::Gateway,
-                config_path: paths.gateway_root_config(),
-                candidate_content: &candidate_content,
-                active_content: &active_content,
-                private_environment: caddy_xdg_environment(paths),
-                promote_fragments: || promote_config_dir(&active_dir, &candidate_dir),
-                command,
-            };
-
-            promote_runtime_config_tree(paths, promotion).await
-        }
-        Err(error) => {
-            record_runtime_error(paths, RuntimeSubject::Gateway, &error)?;
-            Err(error)
-        }
-    };
-    let _cleanup_result = delete_optional_dir(&candidate_dir);
-
-    result.map(|promoted_config| GatewayConfigReconciliation {
-        promoted_config,
+    Ok(DesiredGatewayConfig {
+        tree: DesiredRuntimeConfigTree {
+            active_dir,
+            candidate_dir,
+            active_content,
+            candidate_content,
+            fragments,
+            fingerprint,
+        },
         readiness_hostname,
     })
 }
 
-struct GatewayConfigReconciliation {
-    promoted_config: PromotedConfigTree,
-    readiness_hostname: Option<String>,
-}
-
-async fn reconcile_worker_config(
+fn desired_worker_config(
     paths: &PvPaths,
-    command: &CaddyCliCommand,
-    artifact_root: &Utf8Path,
     worker: &PhpWorkerRuntimePlan,
-) -> Result<PromotedConfigTree, DaemonError> {
-    let subject = worker_runtime_subject(worker);
-    let private_environment = match worker_config_private_environment(paths, worker, artifact_root)
-    {
-        Ok(private_environment) => private_environment,
-        Err(error) => {
-            record_runtime_error(paths, subject.clone(), &error)?;
-
-            return Err(error);
-        }
-    };
+    preserved_fragments: Option<&BTreeMap<String, String>>,
+    retained_fragments: Option<&BTreeMap<String, String>>,
+) -> Result<DesiredRuntimeConfigTree, DaemonError> {
     let active_dir = paths.worker_projects_config_dir(&worker.runtime_key);
     let candidate_dir = candidate_config_dir_for(&active_dir);
-    let fragments = worker_project_config_fragments(paths, worker)?;
+    let mut fragments = worker_project_config_fragments(paths, worker, preserved_fragments)?;
+    if let Some(retained_fragments) = retained_fragments {
+        for (file_name, content) in retained_fragments {
+            if let Some(fragment) = fragments
+                .iter_mut()
+                .find(|fragment| fragment.file_name == *file_name)
+            {
+                fragment.content = merge_worker_fragment_sites(&fragment.content, content)?;
+            } else {
+                fragments.push(preserved_project_config_fragment(file_name, content));
+            }
+        }
+    }
     let fragment_project_ids = fragments
         .iter()
         .map(|fragment| fragment.project_id.as_str())
@@ -1250,100 +2773,158 @@ async fn reconcile_worker_config(
             document_root: project.document_root.clone(),
         })
         .collect::<Vec<_>>();
-    let active_content = match render_php_worker_config(&PhpWorkerConfigInput {
+    let mut config_input = PhpWorkerConfigInput {
         php_track: worker.php_track.clone(),
         port: worker.port,
         admin_socket_path: worker.admin_socket_path.clone(),
         projects_config_glob: active_dir.join("*.Caddyfile"),
-        projects: projects.clone(),
-    }) {
-        Ok(content) => content,
-        Err(error) => {
-            record_runtime_error(paths, subject, &error)?;
-
-            return Err(error);
-        }
-    };
-    let candidate_content = match render_php_worker_config(&PhpWorkerConfigInput {
-        php_track: worker.php_track.clone(),
-        port: worker.port,
-        admin_socket_path: worker.admin_socket_path.clone(),
-        projects_config_glob: candidate_dir.join("*.Caddyfile"),
         projects,
-    }) {
-        Ok(content) => content,
-        Err(error) => {
-            record_runtime_error(paths, subject, &error)?;
-
-            return Err(error);
-        }
     };
-    let result = match write_project_config_fragments(&candidate_dir, &fragments) {
-        Ok(()) => {
-            let promotion = RuntimeConfigTreePromotion {
-                subject,
-                config_path: paths.worker_root_config(&worker.runtime_key),
-                candidate_content: &candidate_content,
-                active_content: &active_content,
-                private_environment,
-                promote_fragments: || promote_config_dir(&active_dir, &candidate_dir),
-                command,
-            };
+    let active_content = render_php_worker_config(&config_input)?;
+    config_input.projects_config_glob = candidate_dir.join("*.Caddyfile");
+    let candidate_content = render_php_worker_config(&config_input)?;
+    let fingerprint = desired_runtime_config_fingerprint(&active_content, &fragments);
 
-            promote_runtime_config_tree(paths, promotion).await
-        }
-        Err(error) => {
-            record_runtime_error(paths, subject, &error)?;
-            Err(error)
-        }
-    };
-    let _cleanup_result = delete_optional_dir(&candidate_dir);
-
-    result
+    Ok(DesiredRuntimeConfigTree {
+        active_dir,
+        candidate_dir,
+        active_content,
+        candidate_content,
+        fragments,
+        fingerprint,
+    })
 }
 
-struct RuntimeConfigTreePromotion<'a, PromoteFragments> {
-    subject: RuntimeSubject,
-    config_path: Utf8PathBuf,
-    candidate_content: &'a str,
-    active_content: &'a str,
-    private_environment: BTreeMap<String, String>,
-    promote_fragments: PromoteFragments,
-    command: &'a CaddyCliCommand,
-}
+fn merge_worker_fragment_sites(desired: &str, previous: &str) -> Result<String, DaemonError> {
+    let (desired_sites, desired_body) =
+        desired
+            .split_once(" {\n")
+            .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                reason: "desired PHP worker fragment is missing a site block".to_owned(),
+            })?;
+    let (previous_sites, previous_body) =
+        previous
+            .split_once(" {\n")
+            .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                reason: "previous PHP worker fragment is missing a site block".to_owned(),
+            })?;
+    let desired_labels = desired_sites.split(", ").collect::<BTreeSet<_>>();
+    let previous_labels = previous_sites.split(", ").collect::<BTreeSet<_>>();
+    let previous_only = previous_labels
+        .difference(&desired_labels)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if desired_body == previous_body || previous_only.is_empty() {
+        let sites = desired_labels
+            .union(&previous_labels)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
 
-async fn promote_runtime_config_tree<PromoteFragments>(
-    paths: &PvPaths,
-    promotion: RuntimeConfigTreePromotion<'_, PromoteFragments>,
-) -> Result<PromotedConfigTree, DaemonError>
-where
-    PromoteFragments: FnOnce() -> Result<PromotedConfigDir, DaemonError>,
-{
-    let RuntimeConfigTreePromotion {
-        subject,
-        config_path,
-        candidate_content,
-        active_content,
-        private_environment,
-        promote_fragments,
-        command,
-    } = promotion;
-    let result = promote_validated_config_tree_async(
-        &config_path,
-        candidate_content,
-        active_content,
-        |candidate_path| async move {
-            validate_config(command, &candidate_path, &private_environment).await
-        },
-        promote_fragments,
-    )
-    .await;
-
-    if let Err(error) = &result {
-        record_runtime_error(paths, subject, error)?;
+        return Ok(format!("{sites} {{\n{desired_body}"));
     }
 
-    result
+    Ok(format!(
+        "{desired_sites} {{\n{desired_body}{previous_only} {{\n{previous_body}"
+    ))
+}
+
+async fn promote_runtime_config_tree(
+    paths: &PvPaths,
+    command: &CaddyCliCommand,
+    subject: RuntimeSubject,
+    config_path: Utf8PathBuf,
+    private_environment: BTreeMap<String, String>,
+    desired: &DesiredRuntimeConfigTree,
+) -> Result<PromotedConfigTree, DaemonError> {
+    let result = delete_optional_dir(&desired.candidate_dir)
+        .and_then(|()| write_project_config_fragments(&desired.candidate_dir, &desired.fragments));
+    let result = match result {
+        Ok(()) => {
+            promote_validated_config_tree_async(
+                &config_path,
+                &desired.candidate_content,
+                &desired.active_content,
+                |candidate_path| async move {
+                    validate_config(command, &candidate_path, &private_environment).await
+                },
+                || promote_config_dir(&desired.active_dir, &desired.candidate_dir),
+            )
+            .await
+        }
+        Err(error) => Err(error),
+    };
+    let result = match result {
+        Ok(promoted_config) => Ok(promoted_config),
+        Err(error) => match delete_optional_dir(&desired.candidate_dir) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(runtime_cleanup_failed_error(
+                desired.candidate_dir.as_str(),
+                error,
+                cleanup_error,
+            )),
+        },
+    };
+
+    match result {
+        Ok(promoted_config) => Ok(promoted_config),
+        Err(error) => Err(record_primary_error(paths, subject, error)),
+    }
+}
+
+async fn reconcile_unchanged_runtime(
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    config_path: &Utf8Path,
+    readiness: &RuntimeReadinessPlan,
+    desired: &DesiredRuntimeConfigTree,
+) -> Result<Option<RuntimeReadinessOutcome>, DaemonError> {
+    let Ok(Some(runtime)) = supervisor.verify_ownership(spec) else {
+        return Ok(None);
+    };
+    if runtime.replacement_required()
+        || runtime.applied_config_fingerprint() != Some(desired.fingerprint.as_str())
+    {
+        return Ok(None);
+    }
+
+    let probe_timeout = readiness.timeout.min(OWNED_READINESS_PROBE_TIMEOUT);
+    if !matches!(
+        timeout(probe_timeout, probe_readiness_once(&readiness.check)).await,
+        Ok(Ok(()))
+    ) {
+        return Ok(None);
+    }
+
+    if matches!(
+        active_runtime_config_matches(config_path, desired),
+        Ok(true)
+    ) {
+        harden_generated_runtime_config(config_path, desired)?;
+    } else if restore_generated_runtime_config(config_path, desired).is_err() {
+        return Ok(None);
+    }
+
+    let Ok(Some(runtime)) = supervisor.verify_ownership(spec) else {
+        return Ok(None);
+    };
+    if runtime.replacement_required()
+        || runtime.applied_config_fingerprint() != Some(desired.fingerprint.as_str())
+    {
+        return Ok(None);
+    }
+
+    if !runtime.has_applied_desired_config()
+        && !matches!(
+            supervisor.record_applied_config(spec, &desired.fingerprint),
+            Ok(true)
+        )
+    {
+        return Ok(None);
+    }
+
+    Ok(Some(RuntimeReadinessOutcome::Verified))
 }
 
 async fn start_or_adopt_promoted_runtime(
@@ -1352,28 +2933,122 @@ async fn start_or_adopt_promoted_runtime(
     promoted_config: PromotedConfigTree,
     spec: ProcessSpec,
     readiness: RuntimeReadinessPlan,
+    desired_fingerprint: &str,
     subject: RuntimeSubject,
 ) -> Result<RuntimeReadinessOutcome, DaemonError> {
-    let matching_runtime = match supervisor.verify_ownership(&spec) {
-        Ok(Some(runtime)) => {
-            !runtime.replacement_required()
-                && promoted_config
-                    .previous_root_content()
-                    .is_some_and(|config| {
-                        runtime_config_uses_admin_endpoint(config, &readiness.admin_endpoint)
-                    })
+    let pending = prepare_promoted_runtime(
+        paths,
+        supervisor,
+        promoted_config,
+        spec,
+        readiness,
+        desired_fingerprint,
+        subject,
+    )
+    .await?;
+
+    finish_promoted_runtime(pending.wait().await).await
+}
+
+struct PendingPromotedRuntime {
+    paths: PvPaths,
+    promoted_config: PromotedConfigTree,
+    spec: ProcessSpec,
+    readiness: RuntimeReadinessPlan,
+    desired_fingerprint: String,
+    subject: RuntimeSubject,
+    previous_fingerprint: Option<String>,
+    restoration_readiness: RuntimeReadinessPlan,
+    started: StartedRuntimeTransaction,
+}
+
+struct CompletedPromotedRuntime {
+    paths: PvPaths,
+    promoted_config: PromotedConfigTree,
+    spec: ProcessSpec,
+    subject: RuntimeSubject,
+    previous_fingerprint: Option<String>,
+    restoration_readiness: RuntimeReadinessPlan,
+    result: Result<RuntimeReadinessOutcome, RuntimeTransactionError>,
+}
+
+struct PromotedRuntimeRecovery {
+    paths: PvPaths,
+    promoted_config: PromotedConfigTree,
+    spec: ProcessSpec,
+    subject: RuntimeSubject,
+    previous_fingerprint: Option<String>,
+    restoration_readiness: RuntimeReadinessPlan,
+}
+
+impl PendingPromotedRuntime {
+    async fn wait(self) -> CompletedPromotedRuntime {
+        let Self {
+            paths,
+            promoted_config,
+            spec,
+            readiness,
+            desired_fingerprint,
+            subject,
+            previous_fingerprint,
+            restoration_readiness,
+            started,
+        } = self;
+        let supervisor = ProcessSupervisor::new(paths.clone());
+        let result = finish_runtime_transaction(
+            &paths,
+            &supervisor,
+            &spec,
+            &readiness,
+            &desired_fingerprint,
+            started,
+        )
+        .await;
+
+        CompletedPromotedRuntime {
+            paths,
+            promoted_config,
+            spec,
+            subject,
+            previous_fingerprint,
+            restoration_readiness,
+            result,
         }
-        Ok(None) => false,
+    }
+}
+
+async fn prepare_promoted_runtime(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    promoted_config: PromotedConfigTree,
+    spec: ProcessSpec,
+    readiness: RuntimeReadinessPlan,
+    desired_fingerprint: &str,
+    subject: RuntimeSubject,
+) -> Result<PendingPromotedRuntime, DaemonError> {
+    let matching_runtime = match supervisor.verify_ownership(&spec) {
+        Ok(Some(runtime)) => (!runtime.replacement_required()
+            && promoted_config
+                .previous_root_content()
+                .is_some_and(|config| {
+                    runtime_config_uses_admin_endpoint(config, &readiness.admin_endpoint)
+                }))
+        .then_some(runtime),
+        Ok(None) => None,
         Err(error) => {
             let error = match promoted_config.rollback() {
                 Ok(()) => error,
                 Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
             };
-            record_runtime_error(paths, subject, &error)?;
 
-            return Err(error);
+            return Err(record_primary_error(paths, subject.clone(), error));
         }
     };
+    let previous_fingerprint = matching_runtime
+        .as_ref()
+        .and_then(|runtime| runtime.applied_config_fingerprint())
+        .map(str::to_owned);
+    let matching_runtime = matching_runtime.is_some();
     let previous_readiness = if matching_runtime {
         match previous_runtime_readiness(&promoted_config, &readiness) {
             Ok(readiness) => Some(readiness),
@@ -1384,80 +3059,183 @@ async fn start_or_adopt_promoted_runtime(
                         runtime_config_rollback_failed_error(error, rollback_error)
                     }
                 };
-                record_runtime_error(paths, subject, &error)?;
 
-                return Err(error);
+                return Err(record_primary_error(paths, subject.clone(), error));
             }
         }
     } else {
         None
     };
     let restoration_readiness = if let Some(previous_readiness) = &previous_readiness {
-        previous_readiness
+        previous_readiness.clone()
     } else {
-        &readiness
+        readiness.clone()
     };
-    let result = start_or_adopt_runtime(
+    let started = match begin_runtime_transaction(
         paths,
         supervisor,
         &spec,
-        readiness.clone(),
+        &readiness,
+        desired_fingerprint,
         matching_runtime,
     )
-    .await;
+    .await
+    {
+        Ok(started) => started,
+        Err(error) => {
+            return Err(recover_promoted_runtime(
+                PromotedRuntimeRecovery {
+                    paths: paths.clone(),
+                    promoted_config,
+                    spec,
+                    subject,
+                    previous_fingerprint,
+                    restoration_readiness,
+                },
+                error,
+            )
+            .await);
+        }
+    };
 
+    Ok(PendingPromotedRuntime {
+        paths: paths.clone(),
+        promoted_config,
+        spec,
+        readiness,
+        desired_fingerprint: desired_fingerprint.to_owned(),
+        subject,
+        previous_fingerprint,
+        restoration_readiness,
+        started,
+    })
+}
+
+async fn finish_promoted_runtime(
+    completed: CompletedPromotedRuntime,
+) -> Result<RuntimeReadinessOutcome, DaemonError> {
+    let CompletedPromotedRuntime {
+        paths,
+        promoted_config,
+        spec,
+        subject,
+        previous_fingerprint,
+        restoration_readiness,
+        result,
+    } = completed;
     match result {
         Ok(outcome) => {
             if let Err(error) = promoted_config.cleanup() {
                 structured_log::runtime_config_cleanup_failed(
-                    paths,
+                    &paths,
                     &spec.name,
                     &error.to_string(),
                 );
             }
             Ok(outcome)
         }
-        Err(RuntimeTransactionError {
+        Err(error) => Err(recover_promoted_runtime(
+            PromotedRuntimeRecovery {
+                paths,
+                promoted_config,
+                spec,
+                subject,
+                previous_fingerprint,
+                restoration_readiness,
+            },
             error,
-            restore_active_runtime,
-            config_disposition,
-        }) => {
-            let error = *error;
-            let error = match config_disposition {
-                RuntimeConfigDisposition::Rollback => match promoted_config.rollback() {
-                    Ok(()) if restore_active_runtime => {
+        )
+        .await),
+    }
+}
+
+async fn recover_promoted_runtime(
+    recovery: PromotedRuntimeRecovery,
+    transaction: RuntimeTransactionError,
+) -> DaemonError {
+    let PromotedRuntimeRecovery {
+        paths,
+        promoted_config,
+        spec,
+        subject,
+        previous_fingerprint,
+        restoration_readiness,
+    } = recovery;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let RuntimeTransactionError { error, recovery } = transaction;
+    let error = *error;
+    let error = match recovery {
+        RuntimeRecovery::Rollback => match promoted_config.rollback() {
+            Ok(()) => error,
+            Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
+        },
+        RuntimeRecovery::RollbackPending => {
+            let verified_previous_fingerprint = previous_fingerprint
+                .as_deref()
+                .map(|fingerprint| {
+                    verified_previous_config_fingerprint(&promoted_config, Some(fingerprint))
+                })
+                .transpose();
+            match promoted_config.rollback() {
+                Ok(()) => {
+                    let recording = verified_previous_fingerprint.and_then(|fingerprint| {
+                        if let Some(fingerprint) = fingerprint {
+                            supervisor.record_restored_config(&spec, &fingerprint)
+                        } else {
+                            supervisor.clear_replacement_required(&spec)
+                        }
+                    });
+                    match recording {
+                        Ok(true) => error,
+                        Ok(false) => compound_runtime_restore_error(
+                            error,
+                            CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
+                        ),
+                        Err(recording) => compound_runtime_restore_error(error, recording),
+                    }
+                }
+                Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
+            }
+        }
+        RuntimeRecovery::RollbackAndRestore => {
+            let verified_previous_fingerprint = verified_previous_config_fingerprint(
+                &promoted_config,
+                previous_fingerprint.as_deref(),
+            );
+            match promoted_config.rollback() {
+                Ok(()) => match verified_previous_fingerprint {
+                    Ok(previous_fingerprint) => {
                         restore_runtime_after_failed_load(
-                            paths,
-                            supervisor,
+                            &paths,
+                            &supervisor,
                             &spec,
-                            restoration_readiness,
+                            &restoration_readiness,
+                            &previous_fingerprint,
                             error,
                         )
                         .await
                     }
-                    Ok(()) => error,
-                    Err(rollback_error) => {
-                        runtime_config_rollback_failed_error(error, rollback_error)
+                    Err(verification_error) => {
+                        compound_runtime_restore_error(error, verification_error)
                     }
                 },
-                RuntimeConfigDisposition::Preserve => {
-                    // Keep the desired promoted tree when runtime state is uncertain. The branch
-                    // that selected this disposition owns the specific recovery rationale.
-                    if let Err(cleanup_error) = promoted_config.cleanup() {
-                        structured_log::runtime_config_cleanup_failed(
-                            paths,
-                            &spec.name,
-                            &cleanup_error.to_string(),
-                        );
-                    }
-                    error
-                }
-            };
-            record_runtime_error(paths, subject, &error)?;
-
-            Err(error)
+                Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
+            }
         }
-    }
+        RuntimeRecovery::PreservePending => {
+            // Keep the desired promoted tree when runtime state is uncertain. The branch that
+            // selected this disposition owns the specific recovery rationale.
+            if let Err(cleanup_error) = promoted_config.cleanup() {
+                structured_log::runtime_config_cleanup_failed(
+                    &paths,
+                    &spec.name,
+                    &cleanup_error.to_string(),
+                );
+            }
+            error
+        }
+    };
+    record_primary_error(&paths, subject, error)
 }
 
 fn runtime_config_uses_admin_endpoint(config: &str, endpoint: &CaddyAdminEndpoint) -> bool {
@@ -1466,15 +3244,74 @@ fn runtime_config_uses_admin_endpoint(config: &str, endpoint: &CaddyAdminEndpoin
     config.lines().any(|line| line.trim() == expected)
 }
 
+fn verified_previous_config_fingerprint(
+    promoted_config: &PromotedConfigTree,
+    recorded_fingerprint: Option<&str>,
+) -> Result<String, DaemonError> {
+    let recorded_fingerprint =
+        recorded_fingerprint.ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+            reason: "cannot restore runtime config without a recorded applied fingerprint"
+                .to_owned(),
+        })?;
+    let (root, fragments) = promoted_config.previous_tree_contents()?.ok_or_else(|| {
+        DaemonError::UnexpectedProtocolResponse {
+            reason: "cannot restore runtime config without a complete backup tree".to_owned(),
+        }
+    })?;
+    let backup_fingerprint = runtime_config_fingerprint(
+        &root,
+        fragments
+            .iter()
+            .map(|(file_name, content)| (file_name.as_str(), content.as_str())),
+    );
+    if backup_fingerprint != recorded_fingerprint {
+        return Err(DaemonError::UnexpectedProtocolResponse {
+            reason: "refusing to load a runtime config backup that does not match the recorded applied fingerprint"
+                .to_owned(),
+        });
+    }
+
+    Ok(recorded_fingerprint.to_owned())
+}
+
 async fn load_runtime_config(
     paths: &PvPaths,
-    supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
     client: CaddyAdminClient,
     admin_endpoint: &CaddyAdminEndpoint,
     content: Vec<u8>,
 ) -> Result<(), RuntimeTransactionError> {
-    match supervisor.mark_replacement_required(spec) {
+    match client
+        .load_caddyfile_with(
+            admin_endpoint,
+            content,
+            runtime_ownership_verifier(paths, spec),
+        )
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(
+            error @ CaddyAdminError::RequestOutcomeUnknown {
+                operation: CaddyAdminOperation::Load,
+                ..
+            },
+        ) => Err(RuntimeTransactionError::pending_preserve(error.into())),
+        Err(error) => Err(RuntimeTransactionError::pending(error.into())),
+    }
+}
+
+fn mark_runtime_config_pending(
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    staged_config_fingerprint: &str,
+    restoring_previous: bool,
+) -> Result<(), RuntimeTransactionError> {
+    let marking_result = if restoring_previous {
+        supervisor.mark_restoration_required(spec, staged_config_fingerprint)
+    } else {
+        supervisor.mark_replacement_required(spec, staged_config_fingerprint)
+    };
+    match marking_result {
         Ok(true) => {}
         Ok(false) => {
             return Err(RuntimeTransactionError::new(
@@ -1484,50 +3321,22 @@ async fn load_runtime_config(
         Err(error) => return Err(RuntimeTransactionError::new(error)),
     }
 
-    match client
-        .load_caddyfile_with(
-            admin_endpoint,
-            content,
-            runtime_ownership_verifier(paths, spec),
-        )
-        .await
-    {
-        Ok(()) => match supervisor.clear_replacement_required(spec) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err(RuntimeTransactionError::preserve_promoted_config(
-                CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
-            )),
-            Err(error) => Err(RuntimeTransactionError::preserve_promoted_config(error)),
-        },
-        Err(
-            error @ CaddyAdminError::RequestOutcomeUnknown {
-                operation: CaddyAdminOperation::Load,
-                ..
-            },
-        ) => Err(RuntimeTransactionError::preserve_promoted_config(
-            error.into(),
-        )),
-        Err(error) => {
-            let _clear_result = supervisor.clear_replacement_required(spec);
-
-            Err(RuntimeTransactionError::new(error.into()))
-        }
-    }
+    Ok(())
 }
 
-async fn start_or_adopt_runtime(
+enum StartedRuntimeTransaction {
+    Matching,
+    Fresh(Box<ManagedProcess>),
+}
+
+async fn begin_runtime_transaction(
     paths: &PvPaths,
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
-    readiness: RuntimeReadinessPlan,
+    readiness: &RuntimeReadinessPlan,
+    desired_fingerprint: &str,
     matching_runtime: bool,
-) -> Result<RuntimeReadinessOutcome, RuntimeTransactionError> {
-    let RuntimeReadinessPlan {
-        check,
-        failure_policy,
-        timeout: readiness_timeout,
-        admin_endpoint,
-    } = readiness;
+) -> Result<StartedRuntimeTransaction, RuntimeTransactionError> {
     if matching_runtime {
         if supervisor.verify_ownership(spec)?.is_none() {
             return Err(RuntimeTransactionError::new(
@@ -1536,45 +3345,24 @@ async fn start_or_adopt_runtime(
         }
 
         let active_content = read_config_bytes(&spec.config_path)?;
-        let client = CaddyAdminClient::new().with_timeout(readiness_timeout);
+        let client = CaddyAdminClient::new().with_timeout(readiness.timeout);
+        mark_runtime_config_pending(supervisor, spec, desired_fingerprint, false)?;
         load_runtime_config(
             paths,
-            supervisor,
             spec,
             client,
-            &admin_endpoint,
+            &readiness.admin_endpoint,
             active_content,
         )
         .await?;
-        verify_runtime_ownership(supervisor, spec)?;
+        verify_runtime_ownership(supervisor, spec)
+            .map_err(RuntimeTransactionError::pending_preserve)?;
 
-        if let Err(error) = wait_for_owned_readiness(check.clone(), readiness_timeout, || {
-            verify_runtime_ownership(supervisor, spec)
-        })
-        .await
-        {
-            if failure_policy == ReadinessFailurePolicy::PreserveRuntime
-                && supervisor.verify_ownership(spec)?.is_some()
-                && client
-                    .wait_until_ready_with(
-                        &admin_endpoint,
-                        readiness_timeout,
-                        runtime_ownership_verifier(paths, spec),
-                    )
-                    .await
-                    .is_ok()
-            {
-                return Ok(RuntimeReadinessOutcome::Unverified);
-            }
-
-            return Err(RuntimeTransactionError::requiring_restore(error));
-        }
-        verify_runtime_ownership(supervisor, spec)?;
-
-        return Ok(RuntimeReadinessOutcome::Verified);
-    } else if let Some(adopted) = supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)? {
+        return Ok(StartedRuntimeTransaction::Matching);
+    }
+    if let Some(adopted) = supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)? {
         adopted.stop(Duration::from_secs(1)).await?;
-    } else if foreign_listener_is_ready(&check).await {
+    } else if foreign_listener_is_ready(&readiness.check).await {
         return Err(RuntimeTransactionError::new(
             DaemonError::UnexpectedProtocolResponse {
                 reason: format!(
@@ -1585,92 +3373,259 @@ async fn start_or_adopt_runtime(
         ));
     }
 
-    delete_optional_file(admin_endpoint.path()).map_err(RuntimeTransactionError::new)?;
-    let mut process = supervisor.start(spec.clone()).await?;
-    if let Err(error) = CaddyAdminClient::new()
-        .with_timeout(readiness_timeout)
-        .wait_until_ready_with(
-            &admin_endpoint,
-            readiness_timeout,
-            runtime_ownership_verifier(paths, spec),
+    delete_optional_file(readiness.admin_endpoint.path()).map_err(RuntimeTransactionError::new)?;
+    let process = supervisor.start(spec.clone()).await?;
+    let staging_error = match supervisor.mark_replacement_required(spec, desired_fingerprint) {
+        Ok(true) => None,
+        Ok(false) => Some(CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into()),
+        Err(error) => Some(error),
+    };
+    if let Some(error) = staging_error {
+        return Err(cleanup_fresh_runtime(
+            supervisor,
+            spec,
+            process,
+            desired_fingerprint,
+            false,
+            error,
         )
-        .await
-        .map_err(DaemonError::from)
-    {
-        record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
-        return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+        .await);
     }
 
-    if let Err(error) = wait_for_owned_readiness(check, readiness_timeout, || {
+    Ok(StartedRuntimeTransaction::Fresh(Box::new(process)))
+}
+
+async fn finish_runtime_transaction(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    readiness: &RuntimeReadinessPlan,
+    desired_fingerprint: &str,
+    started: StartedRuntimeTransaction,
+) -> Result<RuntimeReadinessOutcome, RuntimeTransactionError> {
+    let RuntimeReadinessPlan {
+        check,
+        failure_policy,
+        timeout: readiness_timeout,
+        admin_endpoint,
+        preserve_staged_config,
+    } = readiness;
+    let preserve_staged_config = *preserve_staged_config;
+    let StartedRuntimeTransaction::Fresh(process) = started else {
+        let client = CaddyAdminClient::new().with_timeout(*readiness_timeout);
+        if let Err(error) = wait_for_owned_readiness(check.clone(), *readiness_timeout, || {
+            verify_runtime_ownership(supervisor, spec)
+        })
+        .await
+        {
+            if *failure_policy == ReadinessFailurePolicy::PreserveRuntime
+                && supervisor
+                    .verify_ownership(spec)
+                    .map_err(RuntimeTransactionError::pending_preserve)?
+                    .is_some()
+                && client
+                    .wait_until_ready_with(
+                        admin_endpoint,
+                        *readiness_timeout,
+                        runtime_ownership_verifier(paths, spec),
+                    )
+                    .await
+                    .is_ok()
+            {
+                record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
+                return Ok(RuntimeReadinessOutcome::Unverified);
+            }
+
+            return Err(RuntimeTransactionError::pending_requiring_restore(error));
+        }
         verify_runtime_ownership(supervisor, spec)
-    })
+            .map_err(RuntimeTransactionError::pending_preserve)?;
+        record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
+
+        return Ok(RuntimeReadinessOutcome::Verified);
+    };
+    let mut process = *process;
+    let admin_readiness = async {
+        CaddyAdminClient::new()
+            .with_timeout(*readiness_timeout)
+            .wait_until_ready_with(
+                admin_endpoint,
+                *readiness_timeout,
+                runtime_ownership_verifier(paths, spec),
+            )
+            .await
+            .map_err(DaemonError::from)
+    };
+    if let Err(error) = wait_for_started_runtime_readiness(
+        &mut process,
+        &spec.name,
+        admin_readiness,
+        OWNED_READINESS_POLL_INTERVAL,
+    )
     .await
     {
         record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
-        if failure_policy == ReadinessFailurePolicy::PreserveRuntime {
+        return Err(cleanup_fresh_runtime(
+            supervisor,
+            spec,
+            process,
+            desired_fingerprint,
+            preserve_staged_config,
+            error,
+        )
+        .await);
+    }
+    let service_readiness = wait_for_owned_readiness(check.clone(), *readiness_timeout, || {
+        verify_runtime_ownership(supervisor, spec)
+    });
+    if let Err(error) = wait_for_started_runtime_readiness(
+        &mut process,
+        &spec.name,
+        service_readiness,
+        OWNED_READINESS_POLL_INTERVAL,
+    )
+    .await
+    {
+        record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
+        if *failure_policy == ReadinessFailurePolicy::PreserveRuntime {
             let process_exited = match process.has_exited() {
                 Ok(process_exited) => process_exited,
                 Err(error) => {
-                    return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+                    return Err(cleanup_fresh_runtime(
+                        supervisor,
+                        spec,
+                        process,
+                        desired_fingerprint,
+                        preserve_staged_config,
+                        error,
+                    )
+                    .await);
                 }
             };
             if !process_exited {
                 match supervisor.verify_ownership(spec) {
-                    Ok(Some(_runtime)) => return Ok(RuntimeReadinessOutcome::Unverified),
+                    Ok(Some(_runtime)) => {
+                        record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
+                        return Ok(RuntimeReadinessOutcome::Unverified);
+                    }
                     Ok(None) => {}
                     Err(error) => {
-                        return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+                        return Err(cleanup_fresh_runtime(
+                            supervisor,
+                            spec,
+                            process,
+                            desired_fingerprint,
+                            preserve_staged_config,
+                            error,
+                        )
+                        .await);
                     }
                 }
             }
         }
-        return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+        return Err(cleanup_fresh_runtime(
+            supervisor,
+            spec,
+            process,
+            desired_fingerprint,
+            preserve_staged_config,
+            error,
+        )
+        .await);
     }
 
     let process_exited = match process.has_exited() {
         Ok(process_exited) => process_exited,
         Err(error) => {
-            return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+            return Err(cleanup_fresh_runtime(
+                supervisor,
+                spec,
+                process,
+                desired_fingerprint,
+                preserve_staged_config,
+                error,
+            )
+            .await);
         }
     };
     if process_exited {
-        let error = DaemonError::UnexpectedProtocolResponse {
-            reason: format!(
-                "runtime `{}` exited before readiness was verified",
-                spec.name
-            ),
-        };
-        return Err(cleanup_fresh_runtime(supervisor, spec, process, error).await);
+        let error = runtime_exited_before_readiness_error(&spec.name);
+        return Err(cleanup_fresh_runtime(
+            supervisor,
+            spec,
+            process,
+            desired_fingerprint,
+            preserve_staged_config,
+            error,
+        )
+        .await);
     }
+    record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
 
     Ok(RuntimeReadinessOutcome::Verified)
+}
+
+fn record_applied_runtime_config(
+    supervisor: &ProcessSupervisor,
+    spec: &ProcessSpec,
+    fingerprint: &str,
+) -> Result<(), RuntimeTransactionError> {
+    match supervisor.record_applied_config(spec, fingerprint) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(RuntimeTransactionError::pending_preserve(
+            CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
+        )),
+        Err(error) => Err(RuntimeTransactionError::pending_preserve(error)),
+    }
 }
 
 async fn cleanup_fresh_runtime(
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
     process: ManagedProcess,
+    staged_config_fingerprint: &str,
+    preserve_staged_config: bool,
     readiness_error: DaemonError,
 ) -> RuntimeTransactionError {
     if let Err(cleanup_error) = process.stop(Duration::from_secs(1)).await {
-        match supervisor.mark_replacement_required(spec) {
+        match supervisor.mark_replacement_required(spec, staged_config_fingerprint) {
             Ok(true) => {
                 // Keep the promoted config and marked runtime metadata when the process may still
                 // be alive. The next reconciliation replaces it without a disk/runtime split.
-                return RuntimeTransactionError::preserve_promoted_config(
-                    runtime_cleanup_failed_error(&spec.name, readiness_error, cleanup_error),
-                );
+                return RuntimeTransactionError::pending_preserve(runtime_cleanup_failed_error(
+                    &spec.name,
+                    readiness_error,
+                    cleanup_error,
+                ));
             }
             Ok(false) => {}
             Err(replacement_error) => {
-                return RuntimeTransactionError::preserve_promoted_config(
-                    runtime_cleanup_failed_error(
-                        &spec.name,
-                        readiness_error,
-                        runtime_cleanup_failed_error(&spec.name, cleanup_error, replacement_error),
-                    ),
-                );
+                return RuntimeTransactionError::pending_preserve(runtime_cleanup_failed_error(
+                    &spec.name,
+                    readiness_error,
+                    runtime_cleanup_failed_error(&spec.name, cleanup_error, replacement_error),
+                ));
             }
+        }
+    }
+
+    if preserve_staged_config {
+        // The previous Gateway may still reference these source routes. Keep exact staged bytes
+        // and their metadata so a retry can verify them after the failed process has stopped.
+        match supervisor.recorded_config_fingerprint(spec) {
+            Ok(Some(RecordedConfigFingerprint::Staged(fingerprint)))
+                if fingerprint == staged_config_fingerprint =>
+            {
+                return RuntimeTransactionError::pending_preserve(readiness_error);
+            }
+            Err(proof_error) => {
+                return RuntimeTransactionError::pending_preserve(runtime_cleanup_failed_error(
+                    &spec.name,
+                    readiness_error,
+                    proof_error,
+                ));
+            }
+            Ok(_) => {}
         }
     }
 
@@ -1703,38 +3658,43 @@ fn cleanup_fresh_runtime_files(spec: &ProcessSpec) -> Result<(), DaemonError> {
 #[derive(Debug)]
 struct RuntimeTransactionError {
     error: Box<DaemonError>,
-    restore_active_runtime: bool,
-    config_disposition: RuntimeConfigDisposition,
+    recovery: RuntimeRecovery,
 }
 
 #[derive(Debug)]
-enum RuntimeConfigDisposition {
+enum RuntimeRecovery {
     Rollback,
-    Preserve,
+    RollbackPending,
+    RollbackAndRestore,
+    PreservePending,
 }
 
 impl RuntimeTransactionError {
     fn new(error: DaemonError) -> Self {
         Self {
             error: Box::new(error),
-            restore_active_runtime: false,
-            config_disposition: RuntimeConfigDisposition::Rollback,
+            recovery: RuntimeRecovery::Rollback,
         }
     }
 
-    fn requiring_restore(error: DaemonError) -> Self {
+    fn pending(error: DaemonError) -> Self {
         Self {
             error: Box::new(error),
-            restore_active_runtime: true,
-            config_disposition: RuntimeConfigDisposition::Rollback,
+            recovery: RuntimeRecovery::RollbackPending,
         }
     }
 
-    fn preserve_promoted_config(error: DaemonError) -> Self {
+    fn pending_requiring_restore(error: DaemonError) -> Self {
         Self {
             error: Box::new(error),
-            restore_active_runtime: false,
-            config_disposition: RuntimeConfigDisposition::Preserve,
+            recovery: RuntimeRecovery::RollbackAndRestore,
+        }
+    }
+
+    fn pending_preserve(error: DaemonError) -> Self {
+        Self {
+            error: Box::new(error),
+            recovery: RuntimeRecovery::PreservePending,
         }
     }
 }
@@ -1750,6 +3710,7 @@ async fn restore_runtime_after_failed_load(
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
     readiness: &RuntimeReadinessPlan,
+    previous_fingerprint: &str,
     original_error: DaemonError,
 ) -> DaemonError {
     if let Err(error) = verify_runtime_ownership(supervisor, spec) {
@@ -1761,9 +3722,11 @@ async fn restore_runtime_after_failed_load(
         Err(error) => return compound_runtime_restore_error(original_error, error),
     };
     let client = CaddyAdminClient::new().with_timeout(readiness.timeout);
+    if let Err(error) = mark_runtime_config_pending(supervisor, spec, previous_fingerprint, true) {
+        return compound_runtime_restore_error(original_error, *error.error);
+    }
     if let Err(error) = load_runtime_config(
         paths,
-        supervisor,
         spec,
         client,
         &readiness.admin_endpoint,
@@ -1792,6 +3755,16 @@ async fn restore_runtime_after_failed_load(
     .await
     {
         return compound_runtime_restore_error(original_error, error);
+    }
+    match supervisor.record_restored_config(spec, previous_fingerprint) {
+        Ok(true) => {}
+        Ok(false) => {
+            return compound_runtime_restore_error(
+                original_error,
+                CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
+            );
+        }
+        Err(error) => return compound_runtime_restore_error(original_error, error),
     }
 
     original_error
@@ -1972,9 +3945,56 @@ struct ProjectConfigFragment {
     content: String,
 }
 
+fn preserved_project_config_fragment(file_name: &str, content: &str) -> ProjectConfigFragment {
+    ProjectConfigFragment {
+        project_id: file_name.trim_end_matches(".Caddyfile").to_owned(),
+        file_name: file_name.to_owned(),
+        primary_hostname: content
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .trim_end_matches(',')
+            .to_owned(),
+        content: content.to_owned(),
+    }
+}
+
+fn desired_runtime_config_fingerprint(root: &str, fragments: &[ProjectConfigFragment]) -> String {
+    runtime_config_fingerprint(
+        root,
+        fragments
+            .iter()
+            .map(|fragment| (fragment.file_name.as_str(), fragment.content.as_str())),
+    )
+}
+
+fn runtime_config_fingerprint<'a>(
+    root: &str,
+    fragments: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> String {
+    let mut fragments = fragments.into_iter().collect::<Vec<_>>();
+    fragments.sort_unstable_by_key(|(file_name, _content)| *file_name);
+
+    let mut hasher = Sha256::new();
+    update_fingerprint_component(&mut hasher, RUNTIME_CONFIG_FINGERPRINT_SCHEME);
+    update_fingerprint_component(&mut hasher, root.as_bytes());
+    for (file_name, content) in fragments {
+        update_fingerprint_component(&mut hasher, file_name.as_bytes());
+        update_fingerprint_component(&mut hasher, content.as_bytes());
+    }
+
+    format!("sha256:v1:{:x}", hasher.finalize())
+}
+
+fn update_fingerprint_component(hasher: &mut Sha256, component: &[u8]) {
+    hasher.update((component.len() as u64).to_be_bytes());
+    hasher.update(component);
+}
+
 fn gateway_project_config_fragments(
     paths: &PvPaths,
     routes: &[GatewayProjectRoute],
+    preserved_fragments: Option<&BTreeMap<String, String>>,
 ) -> Result<Vec<ProjectConfigFragment>, DaemonError> {
     let active_dir = paths.gateway_projects_config_dir();
     let mut fragments = Vec::new();
@@ -1983,6 +4003,17 @@ fn gateway_project_config_fragments(
         let file_name = project_config_file_name(&route.id);
         let content = if route.render_config {
             Some(render_gateway_project_config(route)?)
+        } else if let Some(preserved_fragments) = preserved_fragments {
+            Some(
+                preserved_fragments
+                    .get(&file_name)
+                    .cloned()
+                    .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                        reason: format!(
+                            "verified Gateway config is missing preserved Project fragment `{file_name}`"
+                        ),
+                    })?,
+            )
         } else {
             read_preserved_project_config_fragment(&active_dir, &file_name)?
         };
@@ -2004,6 +4035,7 @@ fn gateway_project_config_fragments(
 fn worker_project_config_fragments(
     paths: &PvPaths,
     worker: &PhpWorkerRuntimePlan,
+    preserved_fragments: Option<&BTreeMap<String, String>>,
 ) -> Result<Vec<ProjectConfigFragment>, DaemonError> {
     let active_dir = paths.worker_projects_config_dir(&worker.runtime_key);
     let mut fragments = Vec::new();
@@ -2019,6 +4051,17 @@ fn worker_project_config_fragments(
             };
 
             Some(render_php_worker_project_config(&input, worker.port)?)
+        } else if let Some(preserved_fragments) = preserved_fragments {
+            Some(
+                preserved_fragments
+                    .get(&file_name)
+                    .cloned()
+                    .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                        reason: format!(
+                            "verified PHP worker config is missing preserved Project fragment `{file_name}`"
+                        ),
+                    })?,
+            )
         } else {
             read_preserved_project_config_fragment(&active_dir, &file_name)?
         };
@@ -2035,6 +4078,66 @@ fn worker_project_config_fragments(
     }
 
     Ok(fragments)
+}
+
+fn active_runtime_config_matches(
+    config_path: &Utf8Path,
+    desired: &DesiredRuntimeConfigTree,
+) -> Result<bool, DaemonError> {
+    let root = fs::read_to_string(config_path)?;
+    let fragments = fs::read_dir_paths(&desired.active_dir)?
+        .into_iter()
+        .filter(|path| path.as_str().ends_with(".Caddyfile"))
+        .map(|path| {
+            let file_name =
+                path.file_name()
+                    .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                        reason: format!("config fragment path `{path}` has no file name"),
+                    })?;
+            let content = fs::read_to_string(&path)?;
+
+            Ok((file_name.to_owned(), content))
+        })
+        .collect::<Result<Vec<_>, DaemonError>>()?;
+    let fingerprint = runtime_config_fingerprint(
+        &root,
+        fragments
+            .iter()
+            .map(|(file_name, content)| (file_name.as_str(), content.as_str())),
+    );
+
+    Ok(fingerprint == desired.fingerprint)
+}
+
+fn restore_generated_runtime_config(
+    config_path: &Utf8Path,
+    desired: &DesiredRuntimeConfigTree,
+) -> Result<(), DaemonError> {
+    delete_optional_dir(&desired.active_dir)?;
+    write_project_config_fragments(&desired.active_dir, &desired.fragments)?;
+    fs::write_sensitive_file(config_path, &desired.active_content)?;
+
+    Ok(())
+}
+
+fn harden_generated_runtime_config(
+    config_path: &Utf8Path,
+    desired: &DesiredRuntimeConfigTree,
+) -> Result<(), DaemonError> {
+    let config_directory =
+        config_path
+            .parent()
+            .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+                reason: format!("generated config path `{config_path}` has no parent"),
+            })?;
+    fs::ensure_user_dir(config_directory)?;
+    fs::ensure_user_dir(&desired.active_dir)?;
+    fs::secure_sensitive_file(config_path)?;
+    for fragment in &desired.fragments {
+        fs::secure_sensitive_file(&desired.active_dir.join(&fragment.file_name))?;
+    }
+
+    Ok(())
 }
 
 fn write_project_config_fragments(
@@ -2060,12 +4163,13 @@ async fn stop_stale_worker_runtimes(
     paths: &PvPaths,
     supervisor: &ProcessSupervisor,
     plan: &RuntimePlan,
-) -> Result<(), DaemonError> {
+) -> Result<Vec<(String, DaemonError)>, DaemonError> {
     let desired_runtime_keys = plan
         .workers
         .iter()
         .map(|worker| worker.runtime_key.as_str())
         .collect::<BTreeSet<_>>();
+    let mut failures: Vec<(String, DaemonError)> = Vec::new();
 
     for runtime_key in runtime_worker_tracks(paths)? {
         if desired_runtime_keys.contains(runtime_key.as_str()) {
@@ -2073,35 +4177,69 @@ async fn stop_stale_worker_runtimes(
         }
         let subject = php_runtime_subject(&runtime_key);
 
-        if let Some(adopted) = supervisor.adopt_recorded(
-            &paths.worker_pid(&runtime_key),
-            &paths.worker_runtime_metadata(&runtime_key),
-        )? {
-            adopted.stop(Duration::from_secs(1)).await?;
+        let result: Result<(), DaemonError> = async {
+            if let Some(adopted) = supervisor.adopt_recorded(
+                &paths.worker_pid(&runtime_key),
+                &paths.worker_runtime_metadata(&runtime_key),
+            )? {
+                adopted.stop(Duration::from_secs(1)).await?;
+            }
+            record_runtime_observed(
+                paths,
+                subject,
+                RuntimeObservedStatus::Stopped,
+                Some("PHP worker stopped; no Projects remain on this track"),
+            )?;
+            cleanup_stale_worker_runtime(paths, &runtime_key)
         }
-        record_runtime_observed(
-            paths,
-            subject,
-            RuntimeObservedStatus::Stopped,
-            Some("PHP worker stopped; no Projects remain on this track"),
-        )?;
-        cleanup_stale_worker_runtime(paths, &runtime_key)?;
+        .await;
+        if let Err(error) = result {
+            failures.push((runtime_key, error));
+        }
     }
+
+    Ok(failures)
+}
+
+async fn stop_worker_if_undemanded(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    runtime_key: &str,
+) -> Result<(), DaemonError> {
+    let database = Database::open(paths)?;
+    let is_demanded = database.php_runtime_is_demanded(runtime_key)?;
+    drop(database);
+    if is_demanded {
+        return Ok(());
+    }
+
+    if let Some(adopted) = supervisor.adopt_recorded(
+        &paths.worker_pid(runtime_key),
+        &paths.worker_runtime_metadata(runtime_key),
+    )? {
+        adopted.stop(Duration::from_secs(1)).await?;
+    }
+    record_runtime_observed(
+        paths,
+        php_runtime_subject(runtime_key),
+        RuntimeObservedStatus::Stopped,
+        Some("PHP worker stopped; no Projects remain on this runtime"),
+    )?;
+    cleanup_stale_worker_runtime(paths, runtime_key)?;
 
     Ok(())
 }
 
 fn cleanup_stale_worker_runtime(paths: &PvPaths, runtime_key: &str) -> Result<(), DaemonError> {
-    delete_optional_file(&paths.worker_pid(runtime_key))?;
-    delete_optional_file(&paths.worker_runtime_metadata(runtime_key))?;
-    delete_optional_file(&paths.worker_root_config(runtime_key))?;
-    delete_optional_file(&paths.worker_admin_socket(runtime_key))?;
-    delete_optional_dir(&paths.worker_projects_config_dir(runtime_key))?;
-
     let mut database = Database::open(paths)?;
     database.release_port(PortOwner::PhpWorker {
         php_runtime_key: runtime_key.to_owned(),
     })?;
+
+    delete_optional_file(&paths.worker_pid(runtime_key))?;
+    delete_optional_file(&paths.worker_admin_socket(runtime_key))?;
+    delete_optional_dir(&paths.worker_config_dir(runtime_key))?;
+    delete_optional_file(&paths.worker_runtime_metadata(runtime_key))?;
 
     Ok(())
 }
@@ -2156,7 +4294,7 @@ fn candidate_config_dir_for(directory: &Utf8Path) -> Utf8PathBuf {
 }
 
 fn runtime_worker_tracks(paths: &PvPaths) -> Result<Vec<String>, DaemonError> {
-    let mut tracks = Vec::new();
+    let mut tracks = BTreeSet::new();
 
     for path in read_directory_files(&paths.run().join("workers"))? {
         let Some(file_name) = path.file_name() else {
@@ -2169,17 +4307,36 @@ fn runtime_worker_tracks(paths: &PvPaths) -> Result<Vec<String>, DaemonError> {
             continue;
         };
 
-        tracks.push(track.to_string());
+        tracks.insert(track.to_owned());
     }
 
-    Ok(tracks)
+    for path in read_directory_directories(&paths.config().join("workers"))? {
+        let Some(track) = path.file_name().and_then(|name| name.strip_prefix("php-")) else {
+            continue;
+        };
+
+        tracks.insert(track.to_owned());
+    }
+
+    Ok(tracks.into_iter().collect())
+}
+
+fn read_directory_files(directory: &Utf8Path) -> Result<Vec<Utf8PathBuf>, DaemonError> {
+    read_directory_paths(directory, false)
+}
+
+fn read_directory_directories(directory: &Utf8Path) -> Result<Vec<Utf8PathBuf>, DaemonError> {
+    read_directory_paths(directory, true)
 }
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "daemon Gateway reconciliation prunes generated Caddyfile fragments"
+    reason = "daemon Gateway reconciliation inspects generated runtime paths"
 )]
-fn read_directory_files(directory: &Utf8Path) -> Result<Vec<Utf8PathBuf>, DaemonError> {
+fn read_directory_paths(
+    directory: &Utf8Path,
+    directories: bool,
+) -> Result<Vec<Utf8PathBuf>, DaemonError> {
     let entries = match std::fs::read_dir(directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -2190,7 +4347,7 @@ fn read_directory_files(directory: &Utf8Path) -> Result<Vec<Utf8PathBuf>, Daemon
     for entry in entries {
         let entry = entry?;
         let file_type = entry.file_type()?;
-        if !file_type.is_file() {
+        if (directories && !file_type.is_dir()) || (!directories && !file_type.is_file()) {
             continue;
         }
         let path = Utf8PathBuf::from_path_buf(entry.path()).map_err(|path| {
@@ -2344,6 +4501,27 @@ fn record_runtime_error(
     )
 }
 
+/// Records a primary failure without letting a recording failure replace it: returns
+/// the primary error alone, or the existing keyed aggregate when recording also fails.
+fn record_primary_error(
+    paths: &PvPaths,
+    subject: RuntimeSubject,
+    error: DaemonError,
+) -> DaemonError {
+    let runtime = match &subject {
+        RuntimeSubject::Gateway => "gateway".to_owned(),
+        RuntimeSubject::PhpWorker { php_track } => format!("php-worker-{php_track}"),
+        RuntimeSubject::PhpRuntimeWorker { php_runtime_key } => {
+            format!("php-worker-{php_runtime_key}")
+        }
+        RuntimeSubject::Resource { name, track } => format!("{name}-{track}"),
+    };
+    match record_runtime_error(paths, subject, &error) {
+        Ok(()) => error,
+        Err(recording) => runtime_cleanup_failed_error(&runtime, error, recording),
+    }
+}
+
 fn record_gateway_runtime_observed(
     paths: &PvPaths,
     pf_routing_state: GatewayPfRoutingState,
@@ -2456,24 +4634,115 @@ fn worker_config_private_environment(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::sync::mpsc;
     use std::time::Duration;
 
     use anyhow::Result;
     use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
     use platform::{ActivePfRedirectInspection, PfRedirectConfig};
-    use state::PvPaths;
+    use state::{Database, LinkProjectInput, PvPaths};
 
-    use crate::ReadinessCheck;
     use crate::gateway_config::GatewayProjectRoute;
+    use crate::{DaemonError, ReadinessCheck};
 
     use super::{
         GatewayPfRoutingState, GatewayReadinessPorts, GatewayRuntimePlan, ReadinessFailurePolicy,
-        RuntimePlan, classify_gateway_pf_routing_state, gateway_project_config_fragments,
+        RuntimePlan, build_target_runtime_plan, classify_gateway_pf_routing_state,
+        combined_runtime_reconciliation_error, gateway_project_config_fragments,
         gateway_public_readiness_check, gateway_readiness_check_for_ports,
         gateway_readiness_hostname, gateway_readiness_plan, gateway_readiness_ports,
         previous_runtime_readiness_from_parts, project_config_file_name,
+        spawn_gateway_pf_inspection,
     };
+
+    #[test]
+    fn runtime_reconciliation_failures_are_sorted_by_runtime_key() -> Result<()> {
+        let error = combined_runtime_reconciliation_error(vec![
+            (
+                "8.4+xdebug".to_owned(),
+                DaemonError::UnexpectedProtocolResponse {
+                    reason: "xdebug failed".to_owned(),
+                },
+            ),
+            (
+                "8.4+redis".to_owned(),
+                DaemonError::UnexpectedProtocolResponse {
+                    reason: "redis failed".to_owned(),
+                },
+            ),
+        ]);
+
+        match error {
+            DaemonError::RuntimeReconciliationFailures { failures } => {
+                let failures = failures
+                    .iter()
+                    .map(|failure| format!("{}: {}", failure.runtime_key(), failure.error()))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    failures,
+                    [
+                        "8.4+redis: daemon protocol error: redis failed",
+                        "8.4+xdebug: daemon protocol error: xdebug failed",
+                    ]
+                );
+            }
+            error => anyhow::bail!("expected aggregate runtime failure, got {error:?}"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pf_inspection_does_not_block_the_async_executor() -> Result<()> {
+        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
+        let inspection = tokio::spawn(spawn_gateway_pf_inspection(move || {
+            let _result = started_sender.send(());
+            let result = release_receiver.recv_timeout(Duration::from_secs(5));
+            let _result = result_sender.send(result);
+
+            GatewayPfRoutingState::Inactive
+        }));
+
+        started_receiver.await?;
+        tokio::task::yield_now().await;
+        release_sender.send(())?;
+
+        assert_eq!(inspection.await??, GatewayPfRoutingState::Inactive);
+        result_receiver.await??;
+
+        Ok(())
+    }
+
+    #[test]
+    fn targeted_runtime_plan_returns_config_error_for_invalid_project() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(&config_path, "php: [\n")?;
+        let mut database = Database::open(&paths)?;
+        let project = database
+            .link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path,
+                primary_hostname: "project.test".to_owned(),
+                config_path,
+                desired_php_track: Some("8.4".to_owned()),
+                additional_hostnames: Vec::new(),
+            })?
+            .project;
+        drop(database);
+
+        assert!(matches!(
+            build_target_runtime_plan(&paths, &project.id),
+            Err(crate::DaemonError::Config(_))
+        ));
+
+        Ok(())
+    }
 
     #[test]
     fn gateway_readiness_uses_https_for_hostname_before_ca_file_exists() -> Result<()> {
@@ -2734,6 +5003,7 @@ mod tests {
                 worker_port: 8123,
                 access_log_path: paths.gateway_access_log(),
             }],
+            None,
         )?;
 
         assert_eq!(fragments.len(), 1);

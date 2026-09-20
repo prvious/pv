@@ -1,16 +1,22 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Debug;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Barrier, Condvar, Mutex, mpsc};
 use std::time::Duration;
 
 use crate::{
     DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck,
+    jobs::DaemonDownloadProgress,
     managed_resources::{ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext},
+    project_env::{
+        DemandedResourceTrack, discover_project_demand,
+        reconcile_project_env_with_runtime_catalog_and_progress,
+    },
     reconciliation::{ReconciliationQueue, ReconciliationScope},
 };
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
@@ -22,7 +28,9 @@ use resources::{
     ManagedResourceCommandError, ResourceAdapter, ResourceName, ResourcesError,
     RuntimeArtifactAdapter,
 };
+use rusqlite::{TransactionBehavior, params};
 use serde::Deserialize;
+use serde_json::{Value, json};
 use state::{
     Database, EnvContextValues, JobDiagnosticSubject, JobStatus, LinkProjectInput, PortOwner,
     PortRequest, PostgresPreloadLibrary, ProjectEnvObservedStatus, ProjectManagedResourceInput,
@@ -30,6 +38,8 @@ use state::{
     ResourceAllocationStatus, RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 use time::{Duration as CertificateDuration, OffsetDateTime};
+use tokio::sync::Semaphore;
+use tokio::time::timeout;
 
 const FAKE_MAILPIT_TRACK: &str = "1.0";
 const FAKE_MAILPIT_NEXT_TRACK: &str = "1.1";
@@ -307,6 +317,112 @@ impl resources::ResourceHttpClient for RecordingManifestClient {
         Err(resources::ResourcesError::HttpRequestFailed {
             url: url.to_string(),
             reason: "downloads are not used by update checks".to_string(),
+        })
+    }
+}
+
+#[derive(Debug)]
+struct GatedArtifactClient {
+    manifest: String,
+    archives: BTreeMap<String, Vec<u8>>,
+    manifest_requests: Arc<AtomicUsize>,
+    active_downloads: Arc<AtomicUsize>,
+    maximum_active_downloads: Arc<AtomicUsize>,
+    download_started_sender: mpsc::Sender<()>,
+    release_downloads: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl resources::ResourceHttpClient for GatedArtifactClient {
+    fn get_text(&self, _url: &str) -> resources::Result<String> {
+        self.manifest_requests.fetch_add(1, Ordering::SeqCst);
+
+        Ok(self.manifest.clone())
+    }
+
+    fn download(&self, url: &str, writer: &mut dyn std::io::Write) -> resources::Result<()> {
+        let archive =
+            self.archives
+                .get(url)
+                .ok_or_else(|| resources::ResourcesError::HttpRequestFailed {
+                    url: url.to_owned(),
+                    reason: "missing scripted archive".to_owned(),
+                })?;
+        let active_downloads = self.active_downloads.fetch_add(1, Ordering::SeqCst) + 1;
+        self.maximum_active_downloads
+            .fetch_max(active_downloads, Ordering::SeqCst);
+        if self.download_started_sender.send(()).is_err() {
+            self.active_downloads.fetch_sub(1, Ordering::SeqCst);
+
+            return Err(resources::ResourcesError::HttpRequestFailed {
+                url: url.to_owned(),
+                reason: "download gate receiver closed".to_owned(),
+            });
+        }
+        let released = self.release_downloads.0.lock().map_err(|_poison| {
+            resources::ResourcesError::HttpRequestFailed {
+                url: url.to_owned(),
+                reason: "download release gate lock poisoned".to_owned(),
+            }
+        });
+        let released = released.and_then(|released| {
+            self.release_downloads
+                .1
+                .wait_while(released, |released| !*released)
+                .map_err(|_poison| resources::ResourcesError::HttpRequestFailed {
+                    url: url.to_owned(),
+                    reason: "download release gate lock poisoned".to_owned(),
+                })
+        });
+        let result = released.and_then(|_released| {
+            std::io::Write::write_all(writer, archive).map_err(|error| {
+                resources::ResourcesError::DownloadWriteFailed {
+                    url: url.to_owned(),
+                    reason: error.to_string(),
+                }
+            })
+        });
+        self.active_downloads.fetch_sub(1, Ordering::SeqCst);
+
+        result
+    }
+}
+
+#[derive(Debug)]
+struct SequencedManifestArtifactClient {
+    manifests: Mutex<VecDeque<String>>,
+    archives: BTreeMap<String, Vec<u8>>,
+    manifest_requests: Arc<AtomicUsize>,
+}
+
+impl resources::ResourceHttpClient for SequencedManifestArtifactClient {
+    fn get_text(&self, url: &str) -> resources::Result<String> {
+        self.manifest_requests.fetch_add(1, Ordering::SeqCst);
+        self.manifests
+            .lock()
+            .map_err(|_poison| resources::ResourcesError::HttpRequestFailed {
+                url: url.to_owned(),
+                reason: "manifest response lock poisoned".to_owned(),
+            })?
+            .pop_front()
+            .ok_or_else(|| resources::ResourcesError::HttpRequestFailed {
+                url: url.to_owned(),
+                reason: "no scripted manifest response".to_owned(),
+            })
+    }
+
+    fn download(&self, url: &str, writer: &mut dyn std::io::Write) -> resources::Result<()> {
+        let archive =
+            self.archives
+                .get(url)
+                .ok_or_else(|| resources::ResourcesError::HttpStatusFailed {
+                    url: url.to_owned(),
+                    status_code: 404,
+                })?;
+        std::io::Write::write_all(writer, archive).map_err(|error| {
+            resources::ResourcesError::DownloadWriteFailed {
+                url: url.to_owned(),
+                reason: error.to_string(),
+            }
         })
     }
 }
@@ -1177,6 +1293,357 @@ fn unready_fake_runtime_uses_http_readiness_to_avoid_parallel_tcp_collisions() -
 }
 
 #[tokio::test]
+async fn targeted_resource_reconciliation_preserves_other_tracks_and_stops_final_consumer()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let first = link_project(
+        &paths,
+        &tempdir.path().join("first"),
+        "first.test",
+        r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+"#,
+    )?;
+    let second = link_project(
+        &paths,
+        &tempdir.path().join("second"),
+        "second.test",
+        r#"mailpit:
+  version: "1.0"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+"#,
+    )?;
+    let other_track = link_project(
+        &paths,
+        &tempdir.path().join("other-track"),
+        "other.test",
+        r#"mailpit:
+  version: "1.1"
+  env:
+    MAIL_HOST: "${smtp_host}"
+    MAIL_PORT: "${smtp_port}"
+"#,
+    )?;
+    seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+    seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_NEXT_TRACK)?;
+    let current_track_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+    let other_track_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_NEXT_TRACK)?;
+    drop((current_track_port_guards, other_track_port_guards));
+
+    reconcile_project_env_with_fake_runtime_catalog(&paths, &first.id).await?;
+    reconcile_project_env_with_fake_runtime_catalog(&paths, &second.id).await?;
+    reconcile_project_env_with_fake_runtime_catalog(&paths, &other_track.id).await?;
+    let original_current_pid =
+        resource_runtime_metadata_pid(&paths, "mailpit", FAKE_MAILPIT_TRACK)?;
+    let original_other_pid =
+        resource_runtime_metadata_pid(&paths, "mailpit", FAKE_MAILPIT_NEXT_TRACK)?;
+    let catalog = super::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
+
+    super::reconcile_persisted_resource_track_with_progress(
+        &paths,
+        "mailpit",
+        FAKE_MAILPIT_TRACK,
+        Some(&catalog),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+    assert_eq!(
+        resource_runtime_metadata_pid(&paths, "mailpit", FAKE_MAILPIT_TRACK)?,
+        original_current_pid
+    );
+    assert_eq!(
+        resource_runtime_metadata_pid(&paths, "mailpit", FAKE_MAILPIT_NEXT_TRACK)?,
+        original_other_pid
+    );
+
+    {
+        let mut database = Database::open(&paths)?;
+        database.replace_project_managed_resources(&first.id, &[])?;
+    }
+    super::reconcile_persisted_resource_track_with_progress(
+        &paths,
+        "mailpit",
+        FAKE_MAILPIT_TRACK,
+        Some(&catalog),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+    assert_eq!(
+        resource_runtime_metadata_pid(&paths, "mailpit", FAKE_MAILPIT_TRACK)?,
+        original_current_pid
+    );
+
+    {
+        let mut database = Database::open(&paths)?;
+        database.replace_project_managed_resources(&second.id, &[])?;
+    }
+    super::reconcile_persisted_resource_track_with_progress(
+        &paths,
+        "mailpit",
+        FAKE_MAILPIT_TRACK,
+        Some(&catalog),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+    assert_eq!(
+        runtime_files_exist(&paths, FAKE_MAILPIT_TRACK)?,
+        RuntimeFilePresence {
+            pid: false,
+            metadata: false,
+            config: false,
+        }
+    );
+    assert_eq!(
+        resource_runtime_metadata_pid(&paths, "mailpit", FAKE_MAILPIT_NEXT_TRACK)?,
+        original_other_pid
+    );
+
+    {
+        let mut database = Database::open(&paths)?;
+        database.replace_project_managed_resources(&other_track.id, &[])?;
+    }
+    super::reconcile_persisted_resource_track_with_progress(
+        &paths,
+        "mailpit",
+        FAKE_MAILPIT_NEXT_TRACK,
+        Some(&catalog),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+
+    let database = Database::open(&paths)?;
+    assert_runtime_status(
+        &database.runtime_observed_states()?,
+        FAKE_MAILPIT_TRACK,
+        RuntimeObservedStatus::Stopped,
+    );
+    assert!(database.assigned_ports()?.into_iter().all(|assignment| {
+        !matches!(
+            assignment.owner,
+            PortOwner::Resource { name, track, .. }
+                if name == "mailpit" && track == FAKE_MAILPIT_TRACK
+        )
+    }));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn targeted_resource_preparation_failure_replaces_running_observation() -> Result<()> {
+    for (name, catalog) in [
+        ("unsupported", empty_runtime_catalog()?),
+        ("port-assignment", invalid_default_port_runtime_catalog()?),
+    ] {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project = link_project(&paths, &tempdir.path().join("project"), "acme.test", "")?;
+        seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+        let mut database = Database::open(&paths)?;
+        database.replace_project_managed_resources(
+            &project.id,
+            &[ProjectManagedResourceInput {
+                resource_name: "mailpit".to_owned(),
+                track: FAKE_MAILPIT_TRACK.to_owned(),
+            }],
+        )?;
+        let subject = RuntimeSubject::Resource {
+            name: "mailpit".to_owned(),
+            track: FAKE_MAILPIT_TRACK.to_owned(),
+        };
+        database.record_runtime_observed_snapshot(
+            subject.clone(),
+            RuntimeObservedStatus::Running,
+            None,
+        )?;
+        drop(database);
+
+        let result = super::reconcile_persisted_resource_track_with_progress(
+            &paths,
+            "mailpit",
+            FAKE_MAILPIT_TRACK,
+            Some(&catalog),
+            DaemonDownloadProgress::disabled(),
+        )
+        .await;
+        let Err(error) = result else {
+            bail!("expected preparation failure: {result:?}");
+        };
+        match name {
+            "unsupported" => assert!(
+                matches!(&error, DaemonError::UnsupportedManagedResourceRuntime { resource } if resource == "mailpit")
+            ),
+            _ => assert!(
+                matches!(&error, DaemonError::ManagedResourcePortNameReserved { resource, track, port }
+                if resource == "mailpit" && track == FAKE_MAILPIT_TRACK && port == "default"),
+                "{error:?}"
+            ),
+        }
+        let observed = Database::open(&paths)?
+            .runtime_observed_states()?
+            .into_iter()
+            .find(|record| record.subject == subject)
+            .ok_or_else(|| anyhow!("missing resource observation"))?;
+        assert_eq!(observed.status, RuntimeObservedStatus::Failed);
+        assert_eq!(observed.message, Some(error.to_string()));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn targeted_resource_reconciliation_isolates_project_allocation_failures() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let broken = link_project(
+        &paths,
+        &tempdir.path().join("broken"),
+        "broken.test",
+        r#"mysql:
+  version: "8.0"
+  allocations:
+    broken:
+      env:
+        DATABASE_URL: "${url}"
+"#,
+    )?;
+    let healthy = link_project(
+        &paths,
+        &tempdir.path().join("healthy"),
+        "healthy.test",
+        r#"mysql:
+  version: "8.0"
+  allocations:
+    healthy:
+      env:
+        DATABASE_URL: "${url}"
+"#,
+    )?;
+    state::fs::write_sensitive_file(&broken.path.join(".env"), "EXISTING=broken\n")?;
+    state::fs::write_sensitive_file(&healthy.path.join(".env"), "EXISTING=healthy\n")?;
+    let desired_resource = ProjectManagedResourceInput {
+        resource_name: "mysql".to_owned(),
+        track: FAKE_SQL_TRACK.to_owned(),
+    };
+    let mut database = Database::open(&paths)?;
+    for (project, allocation_name) in [(&broken, "broken"), (&healthy, "healthy")] {
+        database.replace_project_managed_resources(
+            &project.id,
+            std::slice::from_ref(&desired_resource),
+        )?;
+        let generated =
+            resources::generated_allocation_name("mysql", &project.slug, allocation_name)?;
+        database.replace_project_resource_allocations(
+            &project.id,
+            "mysql",
+            FAKE_SQL_TRACK,
+            &[ResourceAllocationInput {
+                allocation_name: allocation_name.to_owned(),
+                generated_name: generated.generated_name().to_owned(),
+            }],
+        )?;
+    }
+    let healthy_name = resources::generated_allocation_name("mysql", &healthy.slug, "healthy")?;
+    let removed_name = resources::generated_allocation_name("mysql", &healthy.slug, "broken")?;
+    let desired_healthy = ResourceAllocationInput {
+        allocation_name: "healthy".to_owned(),
+        generated_name: healthy_name.generated_name().to_owned(),
+    };
+    database.replace_project_resource_allocations(
+        &healthy.id,
+        "mysql",
+        FAKE_SQL_TRACK,
+        &[
+            ResourceAllocationInput {
+                allocation_name: "broken".to_owned(),
+                generated_name: removed_name.generated_name().to_owned(),
+            },
+            desired_healthy.clone(),
+        ],
+    )?;
+    database.replace_project_resource_allocations(
+        &healthy.id,
+        "mysql",
+        FAKE_SQL_TRACK,
+        &[desired_healthy],
+    )?;
+    drop(database);
+    seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
+    let hook_events = Arc::new(Mutex::new(Vec::new()));
+    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: OFFLINE_TEST_MANIFEST_URL.to_owned(),
+            target_platform: resources::TargetPlatform::current()?,
+        },
+        AsyncSqlHookRuntimeAdapter::failing_allocation(Arc::clone(&hook_events), "broken")?,
+    );
+
+    let (projects, failures) = super::reconcile_persisted_resource_track_with_progress(
+        &paths,
+        "mysql",
+        FAKE_SQL_TRACK,
+        Some(&catalog),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+    for project in &projects {
+        if !failures.contains_key(&project.id) {
+            crate::project_env::reconcile_project_env_from_persisted_state(
+                &paths,
+                &mut Database::open(&paths)?,
+                &project.id,
+            )?;
+        }
+    }
+    let database = Database::open(&paths)?;
+    let broken_allocation = database.resource_allocations(&broken.id, "mysql")?;
+    let healthy_allocation = database.resource_allocations(&healthy.id, "mysql")?;
+    let [broken_allocation] = broken_allocation.as_slice() else {
+        bail!("expected one broken Project allocation, got {broken_allocation:#?}");
+    };
+    let [removed_allocation, healthy_allocation] = healthy_allocation.as_slice() else {
+        bail!(
+            "expected removed and active healthy Project allocations, got {healthy_allocation:#?}"
+        );
+    };
+    let broken_env = read_dotenv(&broken)?;
+    let healthy_env = read_dotenv(&healthy)?;
+    let broken_status = broken_allocation.status;
+    let healthy_status = healthy_allocation.status;
+    let removed_status = removed_allocation.status;
+    drop(database);
+
+    {
+        let mut database = Database::open(&paths)?;
+        database.replace_project_managed_resources(&broken.id, &[])?;
+        database.replace_project_managed_resources(&healthy.id, &[])?;
+    }
+    super::reconcile_persisted_resource_track_with_progress(
+        &paths,
+        "mysql",
+        FAKE_SQL_TRACK,
+        Some(&catalog),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+
+    assert_eq!(projects.len(), 2);
+    assert_eq!(failures.len(), 1);
+    assert!(failures.contains_key(&broken.id));
+    assert_eq!(broken_status, ResourceAllocationStatus::Desired);
+    assert_eq!(removed_status, ResourceAllocationStatus::Inactive);
+    assert_eq!(healthy_status, ResourceAllocationStatus::Ready);
+    assert_eq!(broken_env, "EXISTING=broken\n");
+    assert!(healthy_env.contains("DATABASE_URL=mysql://"));
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1197,6 +1664,37 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
 
     drop(mailpit_port_guards);
     reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
+    let first_project = link_project(
+        &paths,
+        &tempdir.path().join("first-project"),
+        "first.test",
+        "serve: false\n",
+    )?;
+    let demanded_tracks =
+        BTreeSet::from([DemandedResourceTrack::new("mailpit", FAKE_MAILPIT_TRACK)]);
+    let mut database = Database::open(&paths)?;
+    database.replace_project_managed_resources(&project.id, &[])?;
+    drop(database);
+    let catalog = super::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
+    let pid_before_apply =
+        state::fs::read_to_string(&paths.resource_pid("mailpit", FAKE_MAILPIT_TRACK))?;
+
+    reconcile_project_env_with_runtime_catalog_and_progress(
+        &paths,
+        &first_project.id,
+        Some(&catalog),
+        None,
+        &demanded_tracks,
+        DaemonDownloadProgress::disabled(),
+        crate::project_env::ProjectApplyStage::CompleteApply,
+    )
+    .await?;
+
+    assert_eq!(
+        state::fs::read_to_string(&paths.resource_pid("mailpit", FAKE_MAILPIT_TRACK))?,
+        pid_before_apply,
+        "applying an earlier Project should preserve a later Project's discovered runtime"
+    );
     let stale_port_guard = seed_mailpit_runtime_port(&paths, FAKE_MAILPIT_TRACK, "obsolete")?;
     drop(stale_port_guard);
     let caddy_fixture = setup_default_fixture("caddy")?;
@@ -1205,8 +1703,24 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
     let cleanup_snapshot = {
         let mut database = Database::open(&paths)?;
         database.unlink_project(&project.id)?;
-        let mut catalog = super::fake_runtime_catalog(resources::default_artifact_manifest_url())?;
-        catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
+
+        super::reconcile_system_resources_with_catalog_and_progress(
+            &paths,
+            &mut database,
+            &catalog,
+            &demanded_tracks,
+            DaemonDownloadProgress::disabled(),
+        )
+        .await?;
+        assert_eq!(
+            runtime_files_exist(&paths, FAKE_MAILPIT_TRACK)?,
+            RuntimeFilePresence {
+                pid: true,
+                metadata: true,
+                config: true,
+            },
+            "discovered demand should preserve the running runtime"
+        );
 
         super::reconcile_system_resources_with_catalog(&paths, &mut database, &catalog).await?;
 
@@ -1321,6 +1835,873 @@ async fn system_reconciliation_installs_desired_setup_defaults_without_starting_
     Ok(())
 }
 
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test runs the blocking install plan on a thread so downloads can be gate-controlled"
+)]
+fn system_setup_default_downloads_are_parallel_and_bounded_at_four() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let (manifest, archives) =
+        remote_setup_default_fixtures(tempdir.path(), SETUP_DEFAULT_FIXTURES)?;
+    let mut database = Database::open(&paths)?;
+    record_desired_setup_tracks(&mut database, &setup_default_tracks())?;
+    let catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    let installs = super::missing_desired_resource_installs(&database, &catalog)?;
+    let install_options = catalog.install_options.clone();
+    drop(database);
+
+    let manifest_requests = Arc::new(AtomicUsize::new(0));
+    let active_downloads = Arc::new(AtomicUsize::new(0));
+    let maximum_active_downloads = Arc::new(AtomicUsize::new(0));
+    let release_downloads = Arc::new((Mutex::new(false), Condvar::new()));
+    let (download_started_sender, download_started_receiver) = mpsc::channel();
+    let client = Arc::new(GatedArtifactClient {
+        manifest,
+        archives,
+        manifest_requests: Arc::clone(&manifest_requests),
+        active_downloads: Arc::clone(&active_downloads),
+        maximum_active_downloads: Arc::clone(&maximum_active_downloads),
+        download_started_sender,
+        release_downloads: Arc::clone(&release_downloads),
+    });
+    let http_client: Arc<dyn resources::ResourceHttpClient + Send + Sync> = client;
+    let install_paths = paths.clone();
+    let install_thread = std::thread::spawn(move || {
+        super::install_missing_desired_resource_tracks_blocking(
+            install_paths,
+            install_options,
+            Some(http_client),
+            installs,
+            crate::jobs::DaemonDownloadProgress::disabled(),
+        )
+    });
+
+    for _download in 0..resources::MAX_PARALLEL_ARTIFACT_DOWNLOADS {
+        download_started_receiver.recv_timeout(Duration::from_secs(5))?;
+    }
+    assert_eq!(
+        active_downloads.load(Ordering::SeqCst),
+        resources::MAX_PARALLEL_ARTIFACT_DOWNLOADS
+    );
+    assert_eq!(
+        download_started_receiver.recv_timeout(Duration::from_millis(250)),
+        Err(mpsc::RecvTimeoutError::Timeout),
+        "a fifth download started before the first four were released"
+    );
+    let database = Database::open(&paths)?;
+    assert!(
+        database
+            .managed_resource_tracks()?
+            .iter()
+            .all(|track| track.installed_version.is_none()),
+        "artifact state was committed before all downloads completed"
+    );
+    drop(database);
+    {
+        let mut released = release_downloads
+            .0
+            .lock()
+            .map_err(|_poison| anyhow!("download release gate lock poisoned"))?;
+        *released = true;
+        release_downloads.1.notify_all();
+    }
+    let install_result = install_thread
+        .join()
+        .map_err(|_panic| anyhow!("setup default install thread panicked"))?;
+    install_result?;
+
+    let maximum_active_downloads = maximum_active_downloads.load(Ordering::SeqCst);
+    assert!(maximum_active_downloads > 1);
+    assert!(maximum_active_downloads <= resources::MAX_PARALLEL_ARTIFACT_DOWNLOADS);
+    assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
+
+    Ok(())
+}
+
+#[test]
+fn project_scope_missing_installs_share_one_manifest_snapshot() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let fixtures = [
+        setup_default_fixture("mailpit")?,
+        setup_default_fixture("redis")?,
+    ];
+    let (manifest, archives) = remote_setup_default_fixtures(tempdir.path(), &fixtures)?;
+    let manifest_requests = Arc::new(AtomicUsize::new(0));
+    let client = Arc::new(SequencedManifestArtifactClient {
+        manifests: Mutex::new(VecDeque::from([
+            manifest,
+            EMPTY_ARTIFACT_MANIFEST.to_owned(),
+        ])),
+        archives,
+        manifest_requests: Arc::clone(&manifest_requests),
+    });
+    let install_options = super::ManagedResourceInstallOptions {
+        manifest_url: TEST_ARTIFACT_MANIFEST_URL.to_owned(),
+        target_platform: resources::TargetPlatform::current()?,
+    };
+    let progress = crate::jobs::DaemonDownloadProgress::disabled();
+
+    let mut database = Database::open(&paths)?;
+    let removed =
+        database.record_managed_resource_track_removal_intent("mysql", "8.0", false, true)?;
+    let catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    let plan = crate::project_env::ProjectResourcePlan {
+        resources: [
+            ("mysql", "8.0"),
+            ("mailpit", SETUP_DEFAULT_MAILPIT_TRACK),
+            ("unsupported", "1"),
+            ("redis", SETUP_DEFAULT_REDIS_TRACK),
+        ]
+        .into_iter()
+        .map(|(resource_name, track)| ProjectManagedResourceInput {
+            resource_name: resource_name.to_owned(),
+            track: track.to_owned(),
+        })
+        .collect(),
+        allocations: BTreeMap::new(),
+    };
+    let requests = super::missing_project_install_requests(&database, &plan, &catalog);
+    drop(database);
+    let http_client: Arc<dyn resources::ResourceHttpClient + Send + Sync> = client;
+    let mut prefetched = super::prefetch_missing_project_installs_blocking(
+        paths.clone(),
+        install_options,
+        Some(http_client),
+        requests,
+        progress.clone(),
+    )?;
+    assert_eq!(prefetched.len(), 4);
+    assert!(matches!(
+        prefetched.remove(&("mysql".to_owned(), "8.0".to_owned())),
+        Some(super::PrefetchedProjectInstall::Failed(
+            DaemonError::ManagedResourceTrackRemoved { resource, track }
+        )) if resource == "mysql" && track == "8.0"
+    ));
+    assert!(matches!(
+        prefetched.remove(&("unsupported".to_owned(), "1".to_owned())),
+        Some(super::PrefetchedProjectInstall::Failed(
+            DaemonError::UnsupportedManagedResourceRuntime { resource }
+        )) if resource == "unsupported"
+    ));
+    for (_key, install) in prefetched {
+        let super::PrefetchedProjectInstall::Ready {
+            adapter,
+            resolved,
+            download,
+        } = install
+        else {
+            bail!("expected resolved Project install");
+        };
+        super::install_prefetched_project_track_blocking(
+            paths.clone(),
+            adapter,
+            *resolved,
+            download,
+            progress.clone(),
+        )?;
+    }
+
+    assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
+    let database = Database::open(&paths)?;
+    assert_eq!(database.managed_resource_track("mysql", "8.0")?, removed);
+    assert!(
+        database
+            .managed_resource_track("mailpit", SETUP_DEFAULT_MAILPIT_TRACK)?
+            .installed_version
+            .is_some()
+    );
+    assert!(
+        database
+            .managed_resource_track("redis", SETUP_DEFAULT_REDIS_TRACK)?
+            .installed_version
+            .is_some(),
+        "the second install should use snapshot A instead of fetching empty snapshot B"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_allocation_failure_preserves_shared_runtime_health() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "serve: false\nmysql:\n  version: \"8.0\"\n  allocations:\n    main:\n      env:\n        DATABASE_URL: \"${url}\"\n",
+    )?;
+    seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
+    let generated = resources::generated_allocation_name("mysql", &project.slug, "main")?;
+    let mut database = Database::open(&paths)?;
+    database.replace_project_resource_allocations(
+        &project.id,
+        "mysql",
+        FAKE_SQL_TRACK,
+        &[ResourceAllocationInput {
+            allocation_name: "main".to_owned(),
+            generated_name: generated.generated_name().to_owned(),
+        }],
+    )?;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::Resource {
+            name: "mysql".to_owned(),
+            track: FAKE_SQL_TRACK.to_owned(),
+        },
+        RuntimeObservedStatus::Running,
+        Some("fixture mysql readiness diagnostic"),
+    )?;
+    let healthy_before = Database::open(&paths)?
+        .runtime_observed_states()?
+        .into_iter()
+        .find(|state| {
+            state.subject
+                == RuntimeSubject::Resource {
+                    name: "mysql".to_owned(),
+                    track: FAKE_SQL_TRACK.to_owned(),
+                }
+        })
+        .ok_or_else(|| anyhow!("missing shared mysql runtime observation"))?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "UPDATE resource_allocations SET env_json = 'not-json' WHERE project_id = ?1",
+            params![project.id],
+        )?;
+
+        Ok(())
+    })?;
+    drop(database);
+
+    let hook_events = Arc::new(Mutex::new(Vec::new()));
+    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: OFFLINE_TEST_MANIFEST_URL.to_owned(),
+            target_platform: resources::TargetPlatform::current()?,
+        },
+        AsyncSqlHookRuntimeAdapter::new(Arc::clone(&hook_events))?,
+    );
+    let allocation = ResourceAllocationInput {
+        allocation_name: "main".to_owned(),
+        generated_name: generated.generated_name().to_owned(),
+    };
+    let plan = crate::project_env::ProjectResourcePlan {
+        resources: vec![ProjectManagedResourceInput {
+            resource_name: "mysql".to_owned(),
+            track: FAKE_SQL_TRACK.to_owned(),
+        }],
+        allocations: BTreeMap::from([(
+            "mysql".to_owned(),
+            crate::project_env::ProjectResourceAllocationPlan {
+                allocations: vec![allocation],
+            },
+        )]),
+    };
+    let mut database = Database::open(&paths)?;
+    let result = super::reconcile_project_resources_with_catalog_and_progress(
+        &paths,
+        &mut database,
+        &project,
+        &plan,
+        &catalog,
+        &BTreeSet::new(),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+        super::ArtifactInstall::Allowed,
+    )
+    .await;
+    let Err(DaemonError::State(StateError::InvalidEnvJson { .. })) = result else {
+        bail!("expected the corrupt allocation decode to fail the project, got {result:?}");
+    };
+    let healthy_after = Database::open(&paths)?
+        .runtime_observed_states()?
+        .into_iter()
+        .find(|state| {
+            state.subject
+                == RuntimeSubject::Resource {
+                    name: "mysql".to_owned(),
+                    track: FAKE_SQL_TRACK.to_owned(),
+                }
+        })
+        .ok_or_else(|| anyhow!("missing shared mysql runtime observation"))?;
+    assert_eq!(healthy_after, healthy_before);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_download_failures_follow_original_plan_order() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "env: {}\n",
+    )?;
+    let fixtures = [
+        setup_default_fixture("mailpit")?,
+        setup_default_fixture("redis")?,
+    ];
+    let (manifest, _archives) = remote_setup_default_fixtures(tempdir.path(), &fixtures)?;
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    catalog.install_options.manifest_url = TEST_ARTIFACT_MANIFEST_URL.to_owned();
+    catalog.http_client = Some(Arc::new(SequencedManifestArtifactClient {
+        manifests: Mutex::new(VecDeque::from([manifest])),
+        archives: BTreeMap::new(),
+        manifest_requests: Arc::new(AtomicUsize::new(0)),
+    }));
+    let plan = crate::project_env::ProjectResourcePlan {
+        resources: fixtures
+            .iter()
+            .map(|fixture| ProjectManagedResourceInput {
+                resource_name: fixture.resource_name.to_owned(),
+                track: fixture.track.to_owned(),
+            })
+            .collect(),
+        allocations: BTreeMap::new(),
+    };
+    let mut database = Database::open(&paths)?;
+
+    let result = super::reconcile_project_resources_with_catalog_and_progress(
+        &paths,
+        &mut database,
+        &project,
+        &plan,
+        &catalog,
+        &BTreeSet::new(),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+        super::ArtifactInstall::Allowed,
+    )
+    .await;
+    let Err(DaemonError::ManagedResourceProjectFailures { failures }) = result else {
+        bail!("expected aggregated Project Managed Resource failures");
+    };
+    let failures = failures
+        .iter()
+        .map(|failure| {
+            (
+                failure.resource_name(),
+                failure.track(),
+                failure.error().to_string(),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    assert_debug_snapshot!(failures, @r###"
+    [
+        (
+            "mailpit",
+            "1",
+            "Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/mailpit-1.27.0-pv1-any.tar.gz`",
+        ),
+        (
+            "redis",
+            "8.8",
+            "Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/redis-8.8.0-pv1-any.tar.gz`",
+        ),
+    ]
+    "###);
+    assert!(
+        database
+            .managed_resource_tracks()?
+            .iter()
+            .all(|track| track.installed_version.is_none())
+    );
+
+    let states = database.runtime_observed_states()?;
+    for resource in &plan.resources {
+        assert_runtime_status_for_resource(
+            &states,
+            &resource.resource_name,
+            &resource.track,
+            RuntimeObservedStatus::Failed,
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test commits pair removal on a thread while reconciliation waits at the barrier"
+)]
+async fn project_php_demand_does_not_overwrite_concurrent_pair_removal() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let track = "8.5-concurrent";
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        &format!("serve: false\nphp:\n  version: \"{track}\"\n"),
+    )?;
+    let barrier = Arc::new(Barrier::new(2));
+    crate::project_env::set_project_php_demand_test_barrier(track, Arc::clone(&barrier));
+    let removal_paths = paths.clone();
+    let removal_barrier = Arc::clone(&barrier);
+    let removal = std::thread::spawn(move || -> Result<()> {
+        removal_barrier.wait();
+        let result = (|| {
+            let mut database = Database::open(&removal_paths)?;
+            database.record_managed_resource_tracks_removal_intent(&[
+                state::ManagedResourceTrackRemovalInput {
+                    resource_name: "php",
+                    track,
+                    prune: true,
+                    force: true,
+                },
+                state::ManagedResourceTrackRemovalInput {
+                    resource_name: "frankenphp",
+                    track,
+                    prune: true,
+                    force: true,
+                },
+            ])?;
+
+            Ok(())
+        })();
+        removal_barrier.wait();
+
+        result
+    });
+    let result = crate::project_env::reconcile_project_env_with_runtime_catalog_and_progress(
+        &paths,
+        &project.id,
+        None,
+        None,
+        &BTreeSet::new(),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+        crate::project_env::ProjectApplyStage::RecordRequirements,
+    )
+    .await;
+    if crate::project_env::clear_project_php_demand_test_barrier(track) {
+        barrier.wait();
+        barrier.wait();
+    }
+    removal
+        .join()
+        .map_err(|_| anyhow!("concurrent pair removal thread panicked"))??;
+
+    assert!(
+        matches!(
+            &result,
+            Err(DaemonError::ManagedResourceTrackRemoved { resource, track: error_track })
+                if resource == "php" && error_track == track
+        ),
+        "expected concurrent removal to reject Project PHP demand, got {result:#?}"
+    );
+    let tracks = Database::open(&paths)?.managed_resource_tracks()?;
+    for resource_name in ["php", "frankenphp"] {
+        let record = find_managed_resource_track(&tracks, resource_name, track)?;
+
+        assert_eq!(
+            record.desired_state,
+            state::ManagedResourceDesiredState::Removed,
+            "the PHP pair must never split or overwrite {resource_name} removal, got {tracks:#?}"
+        );
+        assert!(record.removal_prune, "prune intent must survive");
+        assert!(record.removal_force, "force intent must survive");
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_manifest_failure_preserves_earlier_installed_resource_work() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "env: {}\n",
+    )?;
+    seed_mailpit_fixture_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+    drop(seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?);
+    let manifest_requests = Arc::new(AtomicUsize::new(0));
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    catalog.install_options.manifest_url = TEST_ARTIFACT_MANIFEST_URL.to_owned();
+    catalog.http_client = Some(Arc::new(SequencedManifestArtifactClient {
+        manifests: Mutex::new(VecDeque::new()),
+        archives: BTreeMap::new(),
+        manifest_requests: Arc::clone(&manifest_requests),
+    }));
+    let plan = crate::project_env::ProjectResourcePlan {
+        resources: [
+            ("mailpit", FAKE_MAILPIT_TRACK),
+            ("redis", SETUP_DEFAULT_REDIS_TRACK),
+            ("postgres", SETUP_DEFAULT_POSTGRES_TRACK),
+        ]
+        .into_iter()
+        .map(|(resource_name, track)| ProjectManagedResourceInput {
+            resource_name: resource_name.to_owned(),
+            track: track.to_owned(),
+        })
+        .collect(),
+        allocations: BTreeMap::new(),
+    };
+    let mut database = Database::open(&paths)?;
+    let result = super::reconcile_project_resources_with_catalog_and_progress(
+        &paths,
+        &mut database,
+        &project,
+        &plan,
+        &catalog,
+        &BTreeSet::new(),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+        super::ArtifactInstall::Allowed,
+    )
+    .await;
+    let states = database.runtime_observed_states()?;
+    let empty_plan = crate::project_env::ProjectResourcePlan {
+        resources: Vec::new(),
+        allocations: BTreeMap::new(),
+    };
+    super::reconcile_project_resources_with_catalog_and_progress(
+        &paths,
+        &mut database,
+        &project,
+        &empty_plan,
+        &catalog,
+        &BTreeSet::new(),
+        crate::jobs::DaemonDownloadProgress::disabled(),
+        super::ArtifactInstall::Allowed,
+    )
+    .await?;
+    let Err(DaemonError::ManagedResourceProjectFailures { failures }) = result else {
+        bail!("expected aggregated Project manifest failures");
+    };
+    assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
+    assert_runtime_status_for_resource(
+        &states,
+        "mailpit",
+        FAKE_MAILPIT_TRACK,
+        RuntimeObservedStatus::Running,
+    );
+    assert_runtime_status_for_resource(
+        &states,
+        "redis",
+        SETUP_DEFAULT_REDIS_TRACK,
+        RuntimeObservedStatus::Failed,
+    );
+    assert_runtime_status_for_resource(
+        &states,
+        "postgres",
+        SETUP_DEFAULT_POSTGRES_TRACK,
+        RuntimeObservedStatus::Failed,
+    );
+    let failure_messages = failures
+        .iter()
+        .map(|failure| {
+            let subject = RuntimeSubject::Resource {
+                name: failure.resource_name().to_owned(),
+                track: failure.track().to_owned(),
+            };
+            let observed_message = states
+                .iter()
+                .find(|state| state.subject == subject)
+                .and_then(|state| state.message.as_deref());
+            (
+                failure.resource_name(),
+                failure.track(),
+                failure.error().to_string(),
+                observed_message,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_with_normalized_runtime(
+        tempdir.path(),
+        "project_manifest_failure_preserves_installed_work",
+        failure_messages,
+    )?;
+    assert_eq!(failures.len(), 2);
+    for failure in &failures {
+        let DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
+            ResourcesError::ManifestUnavailable { url, .. },
+        )) = failure.error()
+        else {
+            bail!("expected original manifest failure: {:?}", failure.error());
+        };
+        assert_eq!(url, TEST_ARTIFACT_MANIFEST_URL);
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_application_pins_resource_track_until_selector_changes() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    seed_fake_mailpit_cached_fixture(&paths, tempdir.path())?;
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "serve: false\nmailpit: {}\n",
+    )?;
+    let mut refreshed: Value = serde_json::from_str(&state::fs::read_to_string(
+        &paths.downloads().join("manifest.json"),
+    )?)?;
+    let resource = &mut refreshed["resources"][0];
+    let mut next_track = resource["tracks"][0].clone();
+    next_track["name"] = json!(FAKE_MAILPIT_NEXT_TRACK);
+    resource["tracks"]
+        .as_array_mut()
+        .ok_or_else(|| anyhow!("expected fixture tracks"))?
+        .push(next_track);
+    resource["default_track"] = json!(FAKE_MAILPIT_NEXT_TRACK);
+    let manifest_requests = Arc::new(AtomicUsize::new(0));
+    let catalog = super::fake_runtime_catalog_with_manifest_client(
+        TEST_ARTIFACT_MANIFEST_URL,
+        SequencedManifestArtifactClient {
+            manifests: Mutex::new(VecDeque::from([serde_json::to_string(&refreshed)?])),
+            archives: BTreeMap::new(),
+            manifest_requests: Arc::clone(&manifest_requests),
+        },
+    )?;
+    let database = Database::open(&paths)?;
+    let demand = discover_project_demand(&paths, &database, &project)?;
+    drop(database);
+    let progress = DaemonDownloadProgress::disabled();
+    super::install_missing_resource_demands_with_catalog_and_progress(
+        &paths,
+        &catalog,
+        &demand.resource_tracks,
+        progress.clone(),
+    )
+    .await?;
+    drop(seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?);
+    drop(seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_NEXT_TRACK)?);
+    state::fs::write_sensitive_file(
+        &project.config_path,
+        "serve: false\nmailpit:\n  version: latest\n",
+    )?;
+
+    let first_result = reconcile_project_env_with_runtime_catalog_and_progress(
+        &paths,
+        &project.id,
+        Some(&catalog),
+        Some(&demand),
+        &demand.resource_tracks,
+        progress.clone(),
+        crate::project_env::ProjectApplyStage::CompleteApply,
+    )
+    .await;
+    let database = Database::open(&paths)?;
+    let initial_resources = database
+        .project_managed_resources(&project.id)?
+        .into_iter()
+        .map(|resource| (resource.resource_name, resource.track))
+        .collect::<Vec<_>>();
+    let initial_installs = database
+        .managed_resource_tracks()?
+        .into_iter()
+        .filter(|track| track.current_artifact_path.is_some())
+        .map(|track| (track.resource_name, track.track))
+        .collect::<Vec<_>>();
+    drop(database);
+    state::fs::write_sensitive_file(
+        &project.config_path,
+        "serve: false\nmailpit:\n  version: \"1.1\"\n",
+    )?;
+    let changed_result = reconcile_project_env_with_runtime_catalog_and_progress(
+        &paths,
+        &project.id,
+        Some(&catalog),
+        Some(&demand),
+        &demand.resource_tracks,
+        progress,
+        crate::project_env::ProjectApplyStage::CompleteApply,
+    )
+    .await;
+    let mut database = Database::open(&paths)?;
+    let changed_resources = database
+        .project_managed_resources(&project.id)?
+        .into_iter()
+        .map(|resource| (resource.resource_name, resource.track))
+        .collect::<Vec<_>>();
+    database.replace_project_managed_resources(&project.id, &[])?;
+    drop(database);
+    super::stop_undemanded_system_resource_runtimes(&paths, Some(&catalog)).await?;
+
+    first_result?;
+    changed_result?;
+    assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        initial_installs,
+        [("mailpit".to_owned(), FAKE_MAILPIT_TRACK.to_owned())]
+    );
+    assert_eq!(initial_resources, initial_installs);
+    assert_eq!(
+        changed_resources,
+        [("mailpit".to_owned(), FAKE_MAILPIT_NEXT_TRACK.to_owned())]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn setup_default_download_failures_follow_original_plan_order() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let fixtures = [
+        setup_default_fixture("caddy")?,
+        setup_default_fixture("php")?,
+        setup_default_fixture("frankenphp")?,
+        setup_default_fixture("mysql")?,
+        setup_default_fixture("redis")?,
+    ];
+    let (manifest, _archives) = remote_setup_default_fixtures(tempdir.path(), &fixtures)?;
+    let mut database = Database::open(&paths)?;
+    record_desired_setup_tracks(
+        &mut database,
+        &[
+            ("caddy", SETUP_DEFAULT_CADDY_TRACK),
+            ("php", SETUP_DEFAULT_PHP_TRACK),
+            ("frankenphp", SETUP_DEFAULT_PHP_TRACK),
+            ("mysql", SETUP_DEFAULT_MYSQL_TRACK),
+            ("redis", SETUP_DEFAULT_REDIS_TRACK),
+        ],
+    )?;
+    let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    catalog.install_options.manifest_url = TEST_ARTIFACT_MANIFEST_URL.to_owned();
+    let installs = super::missing_desired_resource_installs(&database, &catalog)?;
+    drop(database);
+    let client: Arc<dyn resources::ResourceHttpClient + Send + Sync> =
+        Arc::new(SequencedManifestArtifactClient {
+            manifests: Mutex::new(VecDeque::from([manifest])),
+            archives: BTreeMap::new(),
+            manifest_requests: Arc::new(AtomicUsize::new(0)),
+        });
+
+    let progress = DaemonDownloadProgress::disabled();
+    let result = super::install_missing_desired_resource_tracks_blocking(
+        paths.clone(),
+        catalog.install_options.clone(),
+        Some(client),
+        installs,
+        progress.clone(),
+    );
+    let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
+        bail!("expected setup default download failures");
+    };
+
+    assert_debug_snapshot!(failures, @r###"
+    [
+        "caddy 2: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/caddy-2.11.4-pv1-any.tar.gz`",
+        "php 8.5: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`",
+        "frankenphp 8.5: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/frankenphp-8.5.0-pv1-any.tar.gz`",
+        "mysql 8.4: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/mysql-8.4.0-pv1-any.tar.gz`",
+        "redis 8.8: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/redis-8.8.0-pv1-any.tar.gz`",
+    ]
+    "###);
+
+    let verification = super::verify_system_resource_installations(
+        &paths,
+        Some(&catalog),
+        BTreeSet::new(),
+        &progress,
+    );
+    let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = verification else {
+        bail!("expected current installation failures: {verification:?}");
+    };
+    assert_debug_snapshot!(failures, @r#"
+    [
+        "caddy 2: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/caddy-2.11.4-pv1-any.tar.gz`",
+        "php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`; frankenphp 8.5: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/frankenphp-8.5.0-pv1-any.tar.gz`",
+        "mysql 8.4: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/mysql-8.4.0-pv1-any.tar.gz`",
+        "redis 8.8: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/redis-8.8.0-pv1-any.tar.gz`",
+    ]
+    "#);
+    Ok(())
+}
+
+#[test]
+fn failure_only_setup_plan_does_not_fetch_manifest() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    record_desired_setup_tracks(&mut database, &[("unsupported", "1")])?;
+    let catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    let installs = super::missing_desired_resource_installs(&database, &catalog)?;
+    drop(database);
+    let manifest_requests = Arc::new(AtomicUsize::new(0));
+    let client: Arc<dyn resources::ResourceHttpClient + Send + Sync> =
+        Arc::new(SequencedManifestArtifactClient {
+            manifests: Mutex::new(VecDeque::new()),
+            archives: BTreeMap::new(),
+            manifest_requests: Arc::clone(&manifest_requests),
+        });
+
+    let result = super::install_missing_desired_resource_tracks_blocking(
+        paths,
+        catalog.install_options,
+        Some(client),
+        installs,
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    );
+
+    assert!(matches!(
+        result,
+        Err(DaemonError::UnsupportedManagedResourceRuntime { resource })
+            if resource == "unsupported"
+    ));
+    assert_eq!(manifest_requests.load(Ordering::SeqCst), 0);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_failure_does_not_hide_existing_setup_plan_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    record_desired_setup_tracks(
+        &mut database,
+        &[("unsupported", "1"), ("redis", SETUP_DEFAULT_REDIS_TRACK)],
+    )?;
+    let catalog = super::ManagedResourceRuntimeCatalog::production()?;
+    let installs = super::missing_desired_resource_installs(&database, &catalog)?;
+    drop(database);
+    let client: Arc<dyn resources::ResourceHttpClient + Send + Sync> =
+        Arc::new(SequencedManifestArtifactClient {
+            manifests: Mutex::new(VecDeque::new()),
+            archives: BTreeMap::new(),
+            manifest_requests: Arc::new(AtomicUsize::new(0)),
+        });
+
+    let result = super::install_missing_desired_resource_tracks_blocking(
+        paths,
+        catalog.install_options,
+        Some(client),
+        installs,
+        crate::jobs::DaemonDownloadProgress::disabled(),
+    );
+    let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
+        bail!("expected existing and manifest failures to be aggregated");
+    };
+    let failure_labels = failures
+        .iter()
+        .map(|failure| {
+            failure
+                .split_once(':')
+                .map_or(failure.as_str(), |(label, _message)| label)
+        })
+        .collect::<Vec<_>>();
+
+    assert_debug_snapshot!(failure_labels, @r###"
+    [
+        "unsupported 1",
+        "artifact manifest",
+    ]
+    "###);
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn system_reconciliation_upserts_and_installs_caddy_for_existing_state() -> Result<()> {
     let tempdir = tempdir()?;
@@ -1353,7 +2734,8 @@ async fn system_reconciliation_upserts_and_installs_caddy_for_existing_state() -
 }
 
 #[tokio::test]
-async fn system_reconciliation_job_stops_before_gateway_when_caddy_install_fails() -> Result<()> {
+async fn system_reconciliation_job_records_missing_gateway_when_caddy_install_fails() -> Result<()>
+{
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
 
@@ -1368,14 +2750,15 @@ async fn system_reconciliation_job_stops_before_gateway_when_caddy_install_fails
         Some(&catalog),
     )
     .await;
-    let Err(DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
-        ResourcesError::ResourceNotInManifest { resource },
-    ))) = result
-    else {
-        bail!("expected missing Caddy manifest entry to fail system reconciliation job");
+    let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
+        bail!("expected missing Caddy installation to fail system reconciliation job: {result:#?}");
     };
-
-    assert_eq!(resource, "caddy");
+    assert_debug_snapshot!(failures, @r#"
+    [
+        "caddy 2: Managed Resource command failed: artifact manifest does not include Managed Resource `caddy`",
+    ]
+    "#);
+    let error_message = DaemonError::ManagedResourceDefaultInstallFailures { failures }.to_string();
 
     let database = Database::open(&paths)?;
     let job = database
@@ -1384,12 +2767,7 @@ async fn system_reconciliation_job_stops_before_gateway_when_caddy_install_fails
         .find(|job| job.scope == "system")
         .ok_or_else(|| anyhow::anyhow!("missing system reconciliation job"))?;
     assert_eq!(job.status, JobStatus::Failed);
-    assert_eq!(
-        job.error.as_deref(),
-        Some(
-            "Managed Resource command failed: artifact manifest does not include Managed Resource `caddy`"
-        )
-    );
+    assert_eq!(job.error.as_deref(), Some(error_message.as_str()));
 
     let caddy_record = database.managed_resource_track("caddy", SETUP_DEFAULT_CADDY_TRACK)?;
     assert_eq!(
@@ -1398,7 +2776,13 @@ async fn system_reconciliation_job_stops_before_gateway_when_caddy_install_fails
     );
     assert!(caddy_record.installed_version.is_none());
     assert!(caddy_record.current_artifact_path.is_none());
-    assert!(database.runtime_observed_states()?.is_empty());
+    let states = database.runtime_observed_states()?;
+    assert!(
+        states
+            .iter()
+            .any(|state| state.subject == RuntimeSubject::Gateway
+                && state.status == RuntimeObservedStatus::Stopped)
+    );
     assert!(!state::fs::path_entry_exists(&paths.gateway_pid())?);
     assert_eq!(
         database.unresolved_job_failures()?,
@@ -1533,15 +2917,22 @@ async fn system_reconciliation_job_fails_unsupported_manifest_track_without_part
         Some(&catalog),
     )
     .await;
-    let Err(DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
-        ResourcesError::TrackNotFound { resource, track },
-    ))) = result
-    else {
-        bail!("expected unsupported mysql manifest track to fail system reconciliation job");
+    let Err(DaemonError::SystemReconciliationFailures { failures }) = result else {
+        bail!("expected install and Gateway fixture failures: {result:#?}");
     };
-
-    assert_eq!(resource, "mysql");
-    assert_eq!(track, unsupported_track);
+    let [
+        DaemonError::ManagedResourceDefaultInstallFailures { failures: pending },
+        _gateway_failure,
+    ] = failures.as_slice()
+    else {
+        bail!("expected the pending MySQL track before the Gateway failure: {failures:#?}");
+    };
+    assert_debug_snapshot!(pending, @r#"
+    [
+        "mysql 9.9: Managed Resource command failed: artifact manifest resource `mysql` has no track `9.9`",
+    ]
+    "#);
+    let error_message = DaemonError::SystemReconciliationFailures { failures }.to_string();
 
     let database = Database::open(&paths)?;
     let job = database
@@ -1551,12 +2942,7 @@ async fn system_reconciliation_job_fails_unsupported_manifest_track_without_part
         .ok_or_else(|| anyhow::anyhow!("missing system reconciliation job"))?;
 
     assert_eq!(job.status, JobStatus::Failed);
-    assert_eq!(
-        job.error.as_deref(),
-        Some(
-            "Managed Resource command failed: artifact manifest resource `mysql` has no track `9.9`"
-        )
-    );
+    assert_eq!(job.error.as_deref(), Some(error_message.as_str()));
     let tracks = database.managed_resource_tracks()?;
     let record = find_managed_resource_track(&tracks, "mysql", unsupported_track)?;
 
@@ -2133,6 +3519,278 @@ async fn rustfs_allocation_failure_preserves_project_env_and_records_failed_runt
 }
 
 #[tokio::test]
+async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh() -> Result<()> {
+    let mut checks = Vec::new();
+    for mode in ["targeted", "project", "recording"] {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let config = "serve: false\nenv:\n  REVISION: initial\nmailpit:\n  version: '1.0'\n  env:\n    MAIL_HOST: '${smtp_host}'\nrustfs:\n  version: '1.0'\n  allocations:\n    uploads:\n      env:\n        BUCKET: '${bucket}'\n";
+        let broken = link_project(
+            &paths,
+            &tempdir.path().join("broken"),
+            "broken.test",
+            config,
+        )?;
+        let healthy = link_project(
+            &paths,
+            &tempdir.path().join("healthy"),
+            "healthy.test",
+            "serve: false\nmailpit:\n  version: '1.0'\n  env:\n    MAIL_HOST: '${smtp_host}'\nrustfs:\n  version: '1.0'\n  env:\n    ENDPOINT: '${endpoint}'\n",
+        )?;
+        let already_failing = if mode == "recording" {
+            Some(link_project(
+                &paths,
+                &tempdir.path().join("already-failing"),
+                "already-failing.test",
+                config,
+            )?)
+        } else {
+            None
+        };
+        seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
+        seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
+        reserve_available_rustfs_ports(&paths)?;
+        let mut catalog = super::rustfs_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
+        catalog.adapters.insert(
+            "mailpit",
+            Box::new(super::fake::FakeMailpitRuntimeAdapter::new()?),
+        );
+        let mut database = Database::open(&paths)?;
+        let capture = || -> Result<_> {
+            let database = Database::open(&paths)?;
+            Ok((
+                database.resource_allocations(&broken.id, "rustfs")?,
+                read_dotenv(&broken)?,
+                database.project_env_observed_state(&broken.id)?,
+                database.project_env_observed_state(&healthy.id)?,
+                database
+                    .runtime_observed_states()?
+                    .into_iter()
+                    .find(|state| {
+                        state.subject
+                            == RuntimeSubject::Resource {
+                                name: "rustfs".to_owned(),
+                                track: RUSTFS_TRACK.to_owned(),
+                            }
+                    }),
+            ))
+        };
+        let capture_job = |previous_ids: &BTreeSet<String>, scope: &str| -> Result<_> {
+            let mut database = Database::open(&paths)?;
+            let jobs = database
+                .recent_jobs()?
+                .into_iter()
+                .filter(|job| !previous_ids.contains(&job.id))
+                .collect::<Vec<_>>();
+            let [job] = jobs.as_slice() else {
+                bail!("expected one new {scope} job: {jobs:#?}");
+            };
+            if job.scope != scope {
+                bail!("expected {scope} job, got {}", job.scope);
+            }
+            let coverage = state::testing::transaction(&mut database, |transaction| {
+                let mut statement = transaction.prepare("SELECT subject_kind, subject_id FROM job_diagnostic_outcomes WHERE job_id = ?1 AND outcome = 'success' ORDER BY subject_kind, subject_id")?;
+                statement
+                    .query_map([&job.id], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<BTreeSet<_>>>()
+            })?;
+            Ok((job.status, job.error.clone(), coverage))
+        };
+        let verification: Result<_> = async {
+            write_project_config(&broken, &format!("{config}    retired: {{}}\n"))?;
+            crate::project_env::reconcile_project_env_with_catalog(&paths, &mut database, &broken.id, &catalog).await?;
+            write_project_config(&broken, config)?;
+            crate::project_env::reconcile_project_env_with_catalog(&paths, &mut database, &broken.id, &catalog).await?;
+            crate::project_env::reconcile_project_env_with_catalog(&paths, &mut database, &healthy.id, &catalog).await?;
+            if let Some(project) = &already_failing {
+                crate::project_env::reconcile_project_env_with_catalog(&paths, &mut database, &project.id, &catalog).await?;
+            }
+            let already_failing_initial = already_failing.as_ref().map(|project| -> Result<_> {
+                Ok((database.resource_allocations(&project.id, "rustfs")?, read_dotenv(project)?, database.project_env_observed_state(&project.id)?))
+            }).transpose()?;
+            let healthy_env = read_dotenv(&healthy)?;
+            let initial = capture()?;
+            let bucket = initial.0.iter().find(|allocation| allocation.allocation_name == "uploads")
+                .ok_or_else(|| anyhow!("missing uploads allocation"))?.generated_name.clone();
+            stop_recorded_rustfs_runtime(&paths).await?;
+            seed_auth_rejecting_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
+            if mode == "recording" {
+                state::testing::transaction(&mut database, |transaction| transaction.execute_batch(&format!(
+                    "CREATE TRIGGER reject_readiness_invalidation BEFORE UPDATE OF status ON resource_allocations
+                     WHEN OLD.project_id = '{}' AND OLD.status = 'ready' AND NEW.status = 'desired'
+                     BEGIN SELECT RAISE(FAIL, 'fixture rejected allocation readiness invalidation'); END;", broken.id
+                )))?;
+            }
+            let before_ids = database.recent_jobs()?.into_iter().map(|job| job.id).collect();
+            let result = if mode == "project" {
+                crate::project_env::reconcile_project_env_with_catalog(&paths, &mut database, &broken.id, &catalog)
+                    .await.map(|_| ())
+            } else {
+                crate::jobs::run_background_reconciliation_job(paths.clone(), ReconciliationQueue::new(),
+                    ReconciliationScope::resource("rustfs", RUSTFS_TRACK)?, Some(&catalog)).await
+            };
+            let failure = capture()?;
+            let failure_job = if mode == "project" { None } else {
+                Some(capture_job(&before_ids, "resource:rustfs:1.0")?)
+            };
+            let failure_display = result.as_ref().err().map(ToString::to_string);
+            let original_reason = format!("RustFS admin error: failed to create bucket `{bucket}`; service error");
+            let exact_error = match &result {
+                Err(DaemonError::ProjectAllocationFailureRecordingFailed { project_id, allocation, recording }) if mode == "recording" => {
+                    project_id == &broken.id
+                        && matches!(allocation.as_ref(), DaemonError::UnexpectedProtocolResponse { reason } if reason == &original_reason)
+                        && matches!(recording.as_ref(), DaemonError::State(StateError::Sqlite(error)) if error.to_string() == "fixture rejected allocation readiness invalidation")
+                        && failure_display.as_deref() == Some(format!("Project `{}` Managed Resource allocation failed with `daemon protocol error: {original_reason}`; additionally failed to record the Project failure: state error: SQLite error: fixture rejected allocation readiness invalidation", broken.id).as_str())
+                }
+                Err(DaemonError::UnexpectedProtocolResponse { reason }) if mode == "project" => reason == &original_reason,
+                Ok(()) if mode == "targeted" => true,
+                _ => false,
+            };
+            let expected_message = if mode == "recording" { failure_display.clone() } else {
+                Some(format!("daemon protocol error: {original_reason}"))
+            };
+            let mut phase_checks = vec![
+                ("original typed error", exact_error),
+                ("initial verified allocation and inactive history", initial.0.len() == 2 && initial.0.iter().all(|allocation| !allocation.env.is_empty() && allocation.status == if allocation.allocation_name == "uploads" { ResourceAllocationStatus::Ready } else { ResourceAllocationStatus::Inactive })),
+                ("failed check preserves env", failure.1 == initial.1),
+                ("failed check records original Project failure", failure.2.as_ref().is_some_and(|state| state.status == ProjectEnvObservedStatus::Failed && state.message == expected_message)),
+                ("truthful runtime status", failure.4.as_ref().is_some_and(|state| state.status == if mode == "project" { RuntimeObservedStatus::Failed } else { RuntimeObservedStatus::Running })),
+            ];
+            let mut expected_allocations = initial.0.clone();
+            for (expected, actual) in expected_allocations.iter_mut().zip(&failure.0) {
+                if expected.status == ResourceAllocationStatus::Ready && mode != "recording" {
+                    expected.status = ResourceAllocationStatus::Desired;
+                }
+                expected.updated_at.clone_from(&actual.updated_at);
+            }
+            phase_checks.push(("failed check invalidates only active readiness", failure.0 == expected_allocations));
+            if let Some((status, error, coverage)) = failure_job {
+                if mode == "recording" {
+                    phase_checks.push(("recording failure is fatal without success coverage", status == JobStatus::Failed && error == failure_display && coverage.is_empty()));
+                } else {
+                    phase_checks.push(("partial allocation failure has exact healthy coverage", status == JobStatus::Succeeded && coverage == BTreeSet::from([
+                        ("resource".to_owned(), "rustfs:1.0".to_owned()), ("project".to_owned(), healthy.id.clone()),
+                    ])));
+                }
+            }
+            if mode == "recording" {
+                let (Some(project), Some((initial_allocations, initial_env, initial_observed))) = (&already_failing, &already_failing_initial) else {
+                    bail!("expected earlier allocation failure fixture");
+                };
+                let [initial_allocation] = initial_allocations.as_slice() else {
+                    bail!("expected one earlier Ready allocation");
+                };
+                let allocations = database.resource_allocations(&project.id, "rustfs")?;
+                let observed = database.project_env_observed_state(&project.id)?;
+                let mut expected_allocations = initial_allocations.clone();
+                for (expected, actual) in expected_allocations.iter_mut().zip(&allocations) {
+                    expected.status = ResourceAllocationStatus::Desired;
+                    expected.updated_at.clone_from(&actual.updated_at);
+                }
+                phase_checks.extend([
+                    ("earlier Project initially verified its allocation", initial_allocation.status == ResourceAllocationStatus::Ready && !initial_allocation.env.is_empty() && initial_observed.as_ref().is_some_and(|state| state.status == ProjectEnvObservedStatus::Rendered)),
+                    ("earlier ordinary failure invalidates its own readiness", allocations == expected_allocations),
+                    ("earlier ordinary failure retains its own cause", observed.as_ref().is_some_and(|state| state.status == ProjectEnvObservedStatus::Failed && state.message == Some(format!("daemon protocol error: RustFS admin error: failed to create bucket `{}`; service error", initial_allocation.generated_name)))),
+                    ("earlier ordinary failure preserves its env", read_dotenv(project)? == *initial_env),
+                    ("scoped fatal preserves healthy observation and env", failure.3 == initial.3 && read_dotenv(&healthy)? == healthy_env),
+                ]);
+                return Ok(phase_checks);
+            }
+            if mode == "project" {
+                crate::project_env::reconcile_project_env_with_catalog(&paths, &mut database, &healthy.id, &catalog).await?;
+            }
+            let before_mailpit = capture()?;
+            phase_checks.push(("healthy same-track verification restores runtime only", before_mailpit.4.as_ref().is_some_and(|state| state.status == RuntimeObservedStatus::Running)
+                && before_mailpit.3.as_ref().is_some_and(|state| state.status == ProjectEnvObservedStatus::Rendered)));
+            state::testing::transaction(&mut database, |transaction| {
+                transaction.execute_batch(&format!(
+                    "CREATE TRIGGER reject_unrelated_allocation_insert
+                     BEFORE INSERT ON resource_allocations
+                     WHEN NEW.project_id = '{broken_id}' AND NEW.resource_name = 'rustfs'
+                     BEGIN SELECT RAISE(FAIL, 'fixture rejected unrelated RustFS allocation write'); END;
+                     CREATE TRIGGER reject_unrelated_allocation_update
+                     BEFORE UPDATE ON resource_allocations
+                     WHEN OLD.project_id = '{broken_id}' AND OLD.resource_name = 'rustfs'
+                     BEGIN SELECT RAISE(FAIL, 'fixture rejected unrelated RustFS allocation write'); END;
+                     CREATE TRIGGER reject_unrelated_observation_insert
+                     BEFORE INSERT ON observed_states
+                     WHEN NEW.subject_kind = 'project_env' AND NEW.subject_id = '{broken_id}'
+                     BEGIN SELECT RAISE(FAIL, 'fixture rejected unrelated Project observation write'); END;
+                     CREATE TRIGGER reject_unrelated_observation_update
+                     BEFORE UPDATE ON observed_states
+                     WHEN OLD.subject_kind = 'project_env' AND OLD.subject_id = '{broken_id}'
+                     BEGIN SELECT RAISE(FAIL, 'fixture rejected unrelated Project observation write'); END;",
+                    broken_id = broken.id,
+                ))
+            })?;
+            write_project_config(&broken, &config.replace("REVISION: initial", "REVISION: changed"))?;
+            let before_ids = database.recent_jobs()?.into_iter().map(|job| job.id).collect();
+            crate::jobs::run_background_reconciliation_job(paths.clone(), ReconciliationQueue::new(),
+                ReconciliationScope::resource("mailpit", FAKE_MAILPIT_TRACK)?, Some(&catalog)).await?;
+            let mailpit = capture()?;
+            let mailpit_job = capture_job(&before_ids, "resource:mailpit:1.0")?;
+            phase_checks.extend([
+                ("unrelated refresh preserves failed Project and last valid env", mailpit.1 == initial.1 && mailpit.2 == before_mailpit.2),
+                ("unrelated refresh leaves allocations untouched", mailpit.0 == before_mailpit.0),
+                ("unrelated refresh covers only verified subjects", mailpit_job.0 == JobStatus::Succeeded && mailpit_job.2 == BTreeSet::from([
+                    ("resource".to_owned(), "mailpit:1.0".to_owned()), ("project".to_owned(), healthy.id.clone()),
+                ])),
+            ]);
+            state::testing::transaction(&mut database, |transaction| {
+                transaction.execute_batch(
+                    "DROP TRIGGER reject_unrelated_allocation_insert;
+                     DROP TRIGGER reject_unrelated_allocation_update;
+                     DROP TRIGGER reject_unrelated_observation_insert;
+                     DROP TRIGGER reject_unrelated_observation_update;",
+                )
+            })?;
+            stop_recorded_rustfs_runtime(&paths).await?;
+            seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
+            state::fs::delete_dir_all(&rustfs_bucket_path(&paths, RUSTFS_TRACK, &bucket))?;
+            let before_ids = database.recent_jobs()?.into_iter().map(|job| job.id).collect();
+            crate::jobs::run_background_reconciliation_job(paths.clone(), ReconciliationQueue::new(),
+                ReconciliationScope::resource("rustfs", RUSTFS_TRACK)?, Some(&catalog)).await?;
+            let repaired = capture()?;
+            let repaired_job = capture_job(&before_ids, "resource:rustfs:1.0")?;
+            let mut repaired_allocations = initial.0.clone();
+            for (expected, actual) in repaired_allocations.iter_mut().zip(&repaired.0) {
+                expected.updated_at.clone_from(&actual.updated_at);
+            }
+            phase_checks.extend([
+                ("real repair preserves allocation identity and env", repaired.0 == repaired_allocations && read_optional_rustfs_probe(&paths, RUSTFS_TRACK, &bucket)? == Some("pv rustfs probe".to_owned())),
+                ("real repair renders pending env change", repaired.1 == initial.1.replace("REVISION=initial", "REVISION=changed") && repaired.2.as_ref().is_some_and(|state| state.status == ProjectEnvObservedStatus::Rendered)),
+                ("real repair covers both verified Projects", repaired_job.0 == JobStatus::Succeeded && repaired_job.2 == BTreeSet::from([
+                    ("resource".to_owned(), "rustfs:1.0".to_owned()), ("project".to_owned(), healthy.id.clone()), ("project".to_owned(), broken.id.clone()),
+                ])),
+            ]);
+            Ok(phase_checks)
+        }.await;
+        let rustfs_cleanup = stop_recorded_rustfs_runtime(&paths).await;
+        let mailpit_cleanup = async {
+            if let Some(process) = ProcessSupervisor::new(paths.clone()).adopt_recorded(
+                &paths.resource_pid("mailpit", FAKE_MAILPIT_TRACK),
+                &paths.resource_runtime_metadata("mailpit", FAKE_MAILPIT_TRACK),
+            )? {
+                process.stop(Duration::from_secs(1)).await?;
+            }
+            Ok::<_, DaemonError>(())
+        }
+        .await;
+        rustfs_cleanup?;
+        mailpit_cleanup?;
+        checks.extend(
+            verification?
+                .into_iter()
+                .map(|(check, passed)| (mode, check, passed)),
+        );
+    }
+    assert!(checks.iter().all(|(_, _, passed)| *passed), "{checks:#?}");
+    Ok(())
+}
+
+#[tokio::test]
 async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -2154,6 +3812,7 @@ async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -
     )?;
     reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
     delete_optional_file(&rustfs_process_env_path(&paths, RUSTFS_TRACK))?;
+    reserve_available_rustfs_ports(&paths)?;
 
     write_project_config(
         &project,
@@ -2391,6 +4050,103 @@ async fn demanded_resource_cleans_runtime_files_when_process_exits_after_readine
         failure_snapshot,
     )?;
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn system_reconciliation_preserves_removed_demanded_tracks() -> Result<()> {
+    for (resource_name, demanded_resource) in [
+        ("mailpit", "mailpit"),
+        ("php", "frankenphp"),
+        ("frankenphp", "php"),
+    ] {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let caddy_fixture = setup_default_fixture("caddy")?;
+        seed_setup_default_cached_fixture(&paths, tempdir.path(), &[caddy_fixture])?;
+        let mut database = Database::open(&paths)?;
+        let before = database.record_managed_resource_track_removal_intent(
+            resource_name,
+            "1.0",
+            false,
+            true,
+        )?;
+        let catalog = super::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
+        let demands = BTreeSet::from([DemandedResourceTrack::new(demanded_resource, "1.0")]);
+
+        let result = super::reconcile_system_resources_with_catalog_and_progress(
+            &paths,
+            &mut database,
+            &catalog,
+            &demands,
+            DaemonDownloadProgress::disabled(),
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(DaemonError::ManagedResourceTrackRemoved { resource, track })
+                if resource == resource_name && track == "1.0"
+        ));
+        assert_eq!(
+            database.managed_resource_track(resource_name, "1.0")?,
+            before
+        );
+        assert!(database.assigned_ports()?.is_empty());
+        assert!(database.runtime_observed_states()?.is_empty());
+        let caddy = database.managed_resource_track("caddy", "2")?;
+        assert!(caddy.installed_version.is_some());
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn project_reconciliation_rejects_removed_track_without_artifact() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    seed_fake_mailpit_cached_fixture(&paths, tempdir.path())?;
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "project.test",
+        "serve: false\nmailpit:\n  version: \"1.0\"\n",
+    )?;
+    let mut database = Database::open(&paths)?;
+    let before = database.record_managed_resource_track_removal_intent(
+        "mailpit",
+        FAKE_MAILPIT_TRACK,
+        false,
+        true,
+    )?;
+
+    let result = reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
+        &paths,
+        &project.id,
+        OFFLINE_TEST_MANIFEST_URL,
+    )
+    .await;
+
+    let Err(error) = result else {
+        write_project_config(&project, "serve: false\n")?;
+        reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
+        bail!("removed track unexpectedly reconciled");
+    };
+    assert!(
+        matches!(
+            error.downcast_ref::<DaemonError>(),
+            Some(DaemonError::ManagedResourceTrackRemoved { resource, track })
+                if resource == "mailpit" && track == FAKE_MAILPIT_TRACK
+        ),
+        "unexpected reconciliation error: {error:#?}"
+    );
+    let after = database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?;
+    assert_eq!(after.desired_state, before.desired_state);
+    assert_eq!((after.removal_prune, after.removal_force), (false, true));
+    assert!(after.current_artifact_path.is_none());
+    assert!(after.installed_version.is_none());
+    assert!(!project.path.join(".env").exists());
+    assert_failed_mailpit_runtime(&database.runtime_observed_states()?);
     Ok(())
 }
 
@@ -2709,6 +4465,418 @@ async fn demanded_resource_uses_async_readiness_and_allocation_hooks() -> Result
         "demanded_resource_uses_async_readiness_and_allocation_hooks",
         started_snapshot,
     )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn resource_readiness_slots_include_start_and_poll_during_preparation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "env:\n  APP_URL: \"${project_url}\"\n",
+    )?;
+    let tracks = ["8.0", "8.1", "8.2", "8.3", "8.4"];
+    let mut port_guards = Vec::new();
+    for track in tracks {
+        seed_fake_sql_artifact(&paths, "mysql", track)?;
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        Database::open(&paths)?.assign_port(
+            PortRequest::resource_port("mysql", track, "mysql", port, port, port),
+            |candidate| candidate == port,
+        )?;
+        port_guards.push(listener);
+    }
+    drop(port_guards);
+    let gate = Arc::new(ReadinessWaveGate::with_gated_preparation("8.4"));
+    let allocation_events = Arc::new(Mutex::new(Vec::new()));
+    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: resources::default_artifact_manifest_url().to_owned(),
+            target_platform: resources::TargetPlatform::current()?,
+        },
+        GatedSqlRuntimeAdapter::new(Arc::clone(&gate), Arc::clone(&allocation_events))?,
+    );
+    let plan = crate::project_env::ProjectResourcePlan {
+        resources: tracks
+            .into_iter()
+            .map(|track| ProjectManagedResourceInput {
+                resource_name: "mysql".to_owned(),
+                track: track.to_owned(),
+            })
+            .collect(),
+        allocations: BTreeMap::new(),
+    };
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let progress = crate::jobs::DaemonDownloadProgress::disabled();
+    let mut database = Database::open(&paths)?;
+    let mut prefetched_installs = BTreeMap::new();
+    let mut context = super::ResourceTrackReconciliationContext {
+        catalog: &catalog,
+        supervisor: &supervisor,
+        progress: &progress,
+        prefetched_installs: &mut prefetched_installs,
+        artifact_install: super::ArtifactInstall::Allowed,
+    };
+    let reconciliation =
+        super::reconcile_resource_tracks(&paths, &mut database, &mut context, &project, &plan);
+    tokio::pin!(reconciliation);
+
+    timeout(Duration::from_secs(5), async {
+        loop {
+            if gate.started.load(Ordering::SeqCst) == 4 {
+                return Ok(());
+            }
+            tokio::select! {
+                result = &mut reconciliation => return Err(anyhow!("resource reconciliation finished before filling readiness slots: {result:#?}")),
+                () = tokio::task::yield_now() => {}
+            }
+        }
+    })
+    .await??;
+    assert_eq!(gate.preparation_started.load(Ordering::SeqCst), 0);
+    assert_eq!(gate.maximum_active.load(Ordering::SeqCst), 4);
+
+    gate.proceed.add_permits(1);
+    gate.finish.add_permits(1);
+    timeout(Duration::from_secs(5), async {
+        while gate.preparation_started.load(Ordering::SeqCst) == 0 {
+            tokio::select! {
+                result = &mut reconciliation => return Err(anyhow!("resource reconciliation finished before later preparation: {result:#?}")),
+                () = tokio::task::yield_now() => {}
+            }
+        }
+        Ok(())
+    })
+    .await??;
+    assert_eq!(gate.started.load(Ordering::SeqCst), 4);
+
+    gate.preparation.add_permits(1);
+    timeout(Duration::from_secs(5), async {
+        while gate.started.load(Ordering::SeqCst) < tracks.len() {
+            tokio::select! {
+                result = &mut reconciliation => return Err(anyhow!("resource reconciliation finished before final readiness start: {result:#?}")),
+                () = tokio::task::yield_now() => {}
+            }
+        }
+        Ok(())
+    })
+    .await??;
+    gate.proceed.add_permits(tracks.len() - 1);
+    gate.finish.add_permits(tracks.len() - 1);
+    timeout(Duration::from_secs(5), &mut reconciliation).await??;
+
+    assert_eq!(cloned_hook_events(&allocation_events)?.len(), tracks.len());
+    for track in tracks {
+        if let Some(adopted) = supervisor.adopt_recorded(
+            &paths.resource_pid("mysql", track),
+            &paths.resource_runtime_metadata("mysql", track),
+        )? {
+            adopted.stop(Duration::from_secs(1)).await?;
+        }
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "env:\n  APP_URL: \"${project_url}\"\n",
+    )?;
+    let ready_tracks = ["8.0", "8.1"];
+    for track in ready_tracks {
+        seed_fake_sql_artifact(&paths, "mysql", track)?;
+    }
+    let mut port_guards = Vec::new();
+    for track in ready_tracks {
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let port = listener.local_addr()?.port();
+        Database::open(&paths)?.assign_port(
+            PortRequest::resource_port("mysql", track, "mysql", port, port, port),
+            |candidate| candidate == port,
+        )?;
+        port_guards.push(listener);
+    }
+    drop(port_guards);
+    let cancelled_gate = Arc::new(ReadinessWaveGate::new());
+    let allocation_events = Arc::new(Mutex::new(Vec::new()));
+    let cancelled_catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: resources::default_artifact_manifest_url().to_owned(),
+            target_platform: resources::TargetPlatform::current()?,
+        },
+        GatedSqlRuntimeAdapter::new(Arc::clone(&cancelled_gate), Arc::clone(&allocation_events))?,
+    );
+    let plan = crate::project_env::ProjectResourcePlan {
+        resources: vec![
+            ProjectManagedResourceInput {
+                resource_name: "unsupported".to_owned(),
+                track: "1".to_owned(),
+            },
+            ProjectManagedResourceInput {
+                resource_name: "mysql".to_owned(),
+                track: ready_tracks[0].to_owned(),
+            },
+            ProjectManagedResourceInput {
+                resource_name: "mysql".to_owned(),
+                track: ready_tracks[1].to_owned(),
+            },
+        ],
+        allocations: BTreeMap::new(),
+    };
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let progress = crate::jobs::DaemonDownloadProgress::disabled();
+    let mut database = Database::open(&paths)?;
+    {
+        let mut prefetched_installs = BTreeMap::new();
+        let mut context = super::ResourceTrackReconciliationContext {
+            catalog: &cancelled_catalog,
+            supervisor: &supervisor,
+            progress: &progress,
+            prefetched_installs: &mut prefetched_installs,
+            artifact_install: super::ArtifactInstall::Allowed,
+        };
+        let reconciliation =
+            super::reconcile_resource_tracks(&paths, &mut database, &mut context, &project, &plan);
+        tokio::pin!(reconciliation);
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if cancelled_gate.started.load(Ordering::SeqCst) == ready_tracks.len() {
+                    return Ok(());
+                }
+                tokio::select! {
+                    result = &mut reconciliation => {
+                        return Err(anyhow!("resource reconciliation finished before cancellation: {result:#?}"));
+                    }
+                    () = tokio::task::yield_now() => {}
+                }
+            }
+        })
+        .await??;
+        cancelled_gate.proceed.add_permits(1);
+        cancelled_gate.finish.add_permits(1);
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if cloned_hook_events(&allocation_events)?.len() == 1 {
+                    return Ok(());
+                }
+                tokio::select! {
+                    result = &mut reconciliation => {
+                        return Err(anyhow!("resource reconciliation finished with a sibling pending: {result:#?}"));
+                    }
+                    () = tokio::task::yield_now() => {}
+                }
+            }
+        }).await??;
+    }
+    let committed_events = cloned_hook_events(&allocation_events)?;
+    assert_eq!(committed_events.len(), 1);
+    let cancelled_runtime_states = database.runtime_observed_states()?;
+    let mut cancelled_pids = BTreeMap::new();
+    for track in ready_tracks {
+        assert!(paths.resource_pid("mysql", track).exists());
+        assert!(paths.resource_runtime_metadata("mysql", track).exists());
+        assert_eq!(
+            runtime_has_status_for_resource(
+                &cancelled_runtime_states,
+                "mysql",
+                track,
+                RuntimeObservedStatus::Running,
+            ),
+            committed_events.contains(&format!("allocation:{track}"))
+        );
+        let pid = resource_runtime_metadata_pid(&paths, "mysql", track)?;
+        let adopted = supervisor
+            .adopt_recorded(
+                &paths.resource_pid("mysql", track),
+                &paths.resource_runtime_metadata("mysql", track),
+            )?
+            .ok_or_else(|| anyhow!("cancelled mysql {track} runtime was not live"))?;
+        assert_eq!(u64::from(adopted.pid()), pid);
+        cancelled_pids.insert(track, pid);
+    }
+
+    let gate = Arc::new(ReadinessWaveGate::new());
+    let allocation_gate = Arc::new(Semaphore::new(0));
+    let mut adapter =
+        GatedSqlRuntimeAdapter::new(Arc::clone(&gate), Arc::clone(&allocation_events))?;
+    adapter.allocation_gate = Some(Arc::clone(&allocation_gate));
+    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: resources::default_artifact_manifest_url().to_owned(),
+            target_platform: resources::TargetPlatform::current()?,
+        },
+        adapter,
+    );
+    let mut prefetched_installs = BTreeMap::new();
+    let mut context = super::ResourceTrackReconciliationContext {
+        catalog: &catalog,
+        supervisor: &supervisor,
+        progress: &progress,
+        prefetched_installs: &mut prefetched_installs,
+        artifact_install: super::ArtifactInstall::Allowed,
+    };
+    let result = {
+        let reconciliation =
+            super::reconcile_resource_tracks(&paths, &mut database, &mut context, &project, &plan);
+        tokio::pin!(reconciliation);
+
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if gate.started.load(Ordering::SeqCst) == ready_tracks.len() {
+                    return Ok(());
+                }
+                tokio::select! {
+                    result = &mut reconciliation => {
+                        return Err(anyhow!("resource reconciliation finished before the readiness wave: {result:#?}"));
+                    }
+                    () = tokio::task::yield_now() => {}
+                }
+            }
+        })
+        .await??;
+        assert_eq!(gate.active.load(Ordering::SeqCst), 2);
+        assert_eq!(gate.maximum_active.load(Ordering::SeqCst), 2);
+
+        let mut lock_connection = rusqlite::Connection::open(paths.db())?;
+        let write_lock =
+            lock_connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        gate.proceed.add_permits(ready_tracks.len());
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if gate.ready_to_return.load(Ordering::SeqCst) == ready_tracks.len() {
+                    return Ok(());
+                }
+                tokio::select! {
+                    result = &mut reconciliation => {
+                        return Err(anyhow!("resource reconciliation wrote while readiness was pending: {result:#?}"));
+                    }
+                    () = tokio::task::yield_now() => {}
+                }
+            }
+        })
+        .await??;
+        assert_eq!(cloned_hook_events(&allocation_events)?, committed_events);
+
+        drop(write_lock);
+        gate.finish.add_permits(1);
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if cloned_hook_events(&allocation_events)?.len() == committed_events.len() + 1 {
+                    return Ok(());
+                }
+                tokio::select! {
+                    result = &mut reconciliation => return Err(anyhow!("resource allocation was not gated: {result:#?}")),
+                    () = tokio::task::yield_now() => {}
+                }
+            }
+        }).await??;
+        assert_eq!(gate.active.load(Ordering::SeqCst), 1);
+        gate.finish.add_permits(1);
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if gate.active.load(Ordering::SeqCst) == 0 {
+                    return Ok(());
+                }
+                tokio::select! {
+                    result = &mut reconciliation => return Err(anyhow!("resource allocation finished before release: {result:#?}")),
+                    () = tokio::task::yield_now() => {}
+                }
+            }
+        }).await.context("sibling readiness stopped during allocation")??;
+        allocation_gate.add_permits(ready_tracks.len());
+        timeout(Duration::from_secs(5), &mut reconciliation).await?
+    };
+    let runtime_states = database.runtime_observed_states()?;
+    let mut allocation_events = cloned_hook_events(&allocation_events)?;
+
+    for track in ready_tracks {
+        assert_eq!(
+            resource_runtime_metadata_pid(&paths, "mysql", track)?,
+            cancelled_pids[track]
+        );
+    }
+    for track in ready_tracks {
+        if let Some(adopted) = supervisor.adopt_recorded(
+            &paths.resource_pid("mysql", track),
+            &paths.resource_runtime_metadata("mysql", track),
+        )? {
+            adopted.stop(Duration::from_secs(1)).await?;
+        }
+    }
+
+    assert!(matches!(
+        result,
+        Err(DaemonError::UnsupportedManagedResourceRuntime { resource })
+            if resource == "unsupported"
+    ));
+    let mut expected_events = committed_events;
+    expected_events.extend(["allocation:8.0".to_owned(), "allocation:8.1".to_owned()]);
+    allocation_events.sort();
+    expected_events.sort();
+    assert_eq!(allocation_events, expected_events);
+    for track in ready_tracks {
+        assert_runtime_status_for_resource(
+            &runtime_states,
+            "mysql",
+            track,
+            RuntimeObservedStatus::Running,
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn resource_failure_recording_preserves_reconciliation_and_state_errors() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let resource = ProjectManagedResourceInput {
+        resource_name: "mysql".to_owned(),
+        track: "8.0".to_owned(),
+    };
+    let mut lock_connection = rusqlite::Connection::open(paths.db())?;
+    let write_lock = lock_connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+    let error = super::record_resource_runtime_failure(
+        &mut database,
+        &resource,
+        DaemonError::UnexpectedProtocolResponse {
+            reason: "readiness failed".to_owned(),
+        },
+    );
+    drop(write_lock);
+
+    match error {
+        DaemonError::ManagedResourceRuntimeFailureRecordingFailed {
+            resource_name,
+            track,
+            reconciliation,
+            recording,
+        } => {
+            assert_eq!(resource_name, "mysql");
+            assert_eq!(track, "8.0");
+            assert!(matches!(
+                *reconciliation,
+                DaemonError::UnexpectedProtocolResponse { reason }
+                    if reason == "readiness failed"
+            ));
+            assert!(matches!(*recording, DaemonError::State(_)));
+        }
+        error => bail!("expected compound runtime failure, got {error:?}"),
+    }
 
     Ok(())
 }
@@ -3285,7 +5453,7 @@ async fn reconcile_project_env_with_fast_exit_fake_runtime_catalog(
             manifest_url: resources::default_artifact_manifest_url().to_string(),
             target_platform: resources::TargetPlatform::current()?,
         },
-        super::fake::FakeMailpitRuntimeAdapter::exits_after_readiness()?,
+        super::fake::FakeMailpitRuntimeAdapter::new()?,
     );
     let mut database = Database::open(paths)?;
 
@@ -3898,6 +6066,35 @@ fn seed_setup_default_cached_fixture(
     state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
 
     Ok(())
+}
+
+fn remote_setup_default_fixtures(
+    tempdir: &Utf8Path,
+    fixtures: &[SetupDefaultFixture],
+) -> Result<(String, BTreeMap<String, Vec<u8>>)> {
+    let mut manifest_fixtures = Vec::new();
+    let mut archives = BTreeMap::new();
+
+    for fixture in fixtures {
+        let archive_path = tempdir.join(format!("remote-{}", fixture.archive_file_name));
+        create_setup_default_archive(tempdir, &archive_path, fixture)?;
+        let bytes = read_fixture_bytes(&archive_path)?;
+        let sha256 = sha256_file(&archive_path)?;
+        manifest_fixtures.push(CachedSetupDefaultFixture {
+            fixture: *fixture,
+            sha256,
+            size: u64::try_from(bytes.len())?,
+        });
+        archives.insert(
+            format!(
+                "https://artifacts.example.test/{}",
+                fixture.archive_file_name
+            ),
+            bytes,
+        );
+    }
+
+    Ok((setup_default_manifest(&manifest_fixtures), archives))
 }
 
 #[derive(Clone, Debug)]
@@ -4881,7 +7078,7 @@ fn postgres_fixture_manifest(sha256: &str, size: u64) -> String {
 }
 
 fn fake_sql_script() -> &'static str {
-    r#"#!/bin/sh
+    r#"#!/bin/bash
 set -eu
 
 stop() {
@@ -4900,6 +7097,7 @@ done
 struct AsyncSqlHookRuntimeAdapter {
     artifact_adapter: RuntimeArtifactAdapter,
     hook_events: Arc<Mutex<Vec<String>>>,
+    failing_allocation: Option<String>,
 }
 
 impl AsyncSqlHookRuntimeAdapter {
@@ -4910,7 +7108,18 @@ impl AsyncSqlHookRuntimeAdapter {
                 "bin/pv-fake-sql",
             ),
             hook_events,
+            failing_allocation: None,
         })
+    }
+
+    fn failing_allocation(
+        hook_events: Arc<Mutex<Vec<String>>>,
+        allocation_name: &str,
+    ) -> Result<Self> {
+        let mut adapter = Self::new(hook_events)?;
+        adapter.failing_allocation = Some(allocation_name.to_owned());
+
+        Ok(adapter)
     }
 }
 
@@ -5011,6 +7220,14 @@ impl super::ManagedResourceRuntimeAdapter for AsyncSqlHookRuntimeAdapter {
             let port = required_sql_port(context)?;
 
             for allocation in allocations {
+                if self.failing_allocation.as_deref() == Some(allocation.allocation_name.as_str()) {
+                    return Err(crate::DaemonError::UnexpectedProtocolResponse {
+                        reason: format!(
+                            "fixture rejected allocation `{}`",
+                            allocation.allocation_name
+                        ),
+                    });
+                }
                 database.mark_resource_allocation_ready(
                     &allocation.project_id,
                     &allocation.resource_name,
@@ -5036,6 +7253,191 @@ impl super::ManagedResourceRuntimeAdapter for AsyncSqlHookRuntimeAdapter {
             Ok(())
         })
     }
+}
+
+struct ReadinessWaveGate {
+    started: AtomicUsize,
+    active: AtomicUsize,
+    maximum_active: AtomicUsize,
+    ready_to_return: AtomicUsize,
+    proceed: Arc<Semaphore>,
+    finish: Arc<Semaphore>,
+    preparation_track: Option<String>,
+    preparation_started: AtomicUsize,
+    preparation: Arc<Semaphore>,
+}
+
+impl ReadinessWaveGate {
+    fn new() -> Self {
+        Self {
+            started: AtomicUsize::new(0),
+            active: AtomicUsize::new(0),
+            maximum_active: AtomicUsize::new(0),
+            ready_to_return: AtomicUsize::new(0),
+            proceed: Arc::new(Semaphore::new(0)),
+            finish: Arc::new(Semaphore::new(0)),
+            preparation_track: None,
+            preparation_started: AtomicUsize::new(0),
+            preparation: Arc::new(Semaphore::new(0)),
+        }
+    }
+
+    fn with_gated_preparation(track: &str) -> Self {
+        Self {
+            preparation_track: Some(track.to_owned()),
+            ..Self::new()
+        }
+    }
+}
+
+#[derive(Clone)]
+struct GatedSqlRuntimeAdapter {
+    artifact_adapter: RuntimeArtifactAdapter,
+    gate: Arc<ReadinessWaveGate>,
+    allocation_events: Arc<Mutex<Vec<String>>>,
+    allocation_gate: Option<Arc<Semaphore>>,
+}
+
+impl GatedSqlRuntimeAdapter {
+    fn new(
+        gate: Arc<ReadinessWaveGate>,
+        allocation_events: Arc<Mutex<Vec<String>>>,
+    ) -> Result<Self> {
+        Ok(Self {
+            artifact_adapter: RuntimeArtifactAdapter::new(
+                ResourceName::new("mysql")?,
+                "bin/pv-fake-sql",
+            ),
+            gate,
+            allocation_events,
+            allocation_gate: None,
+        })
+    }
+}
+
+impl super::ManagedResourceRuntimeAdapter for GatedSqlRuntimeAdapter {
+    fn resource_name(&self) -> &'static str {
+        "mysql"
+    }
+
+    fn artifact_adapter(&self) -> Result<RuntimeArtifactAdapter, crate::DaemonError> {
+        Ok(self.artifact_adapter.clone())
+    }
+
+    fn port_specs(&self) -> &'static [super::ManagedResourcePortSpec] {
+        &[super::ManagedResourcePortSpec {
+            name: "mysql",
+            preferred_port: 3306,
+        }]
+    }
+
+    fn prepare_runtime<'a>(
+        &'a self,
+        _paths: &'a PvPaths,
+        context: &'a super::ManagedResourceRuntimeContext,
+    ) -> super::ManagedResourcePreparationFuture<'a> {
+        Box::pin(async move {
+            if self.gate.preparation_track.as_deref() == Some(context.track.as_str()) {
+                self.gate.preparation_started.fetch_add(1, Ordering::SeqCst);
+                acquire_test_gate(Arc::clone(&self.gate.preparation)).await?;
+            }
+
+            Ok(())
+        })
+    }
+
+    fn build_process_spec(
+        &self,
+        paths: &PvPaths,
+        context: &super::ManagedResourceRuntimeContext,
+    ) -> Result<crate::ProcessSpec, crate::DaemonError> {
+        let config_path = paths.resource_runtime_config(&context.resource_name, &context.track);
+        state::fs::write_sensitive_file(&config_path, "{}")?;
+
+        Ok(crate::ProcessSpec {
+            name: format!("{}-{}", context.resource_name, context.track),
+            command: self
+                .artifact_adapter
+                .executable_path(&context.artifact_path),
+            arguments: Vec::new(),
+            private_environment: BTreeMap::new(),
+            config_path,
+            config_fingerprint: None,
+            log_path: paths.resource_log(&context.resource_name, &context.track),
+            pid_path: paths.resource_pid(&context.resource_name, &context.track),
+            metadata_path: paths.resource_runtime_metadata(&context.resource_name, &context.track),
+            resource_name: context.resource_name.clone(),
+            track: context.track.clone(),
+        })
+    }
+
+    fn readiness(
+        &self,
+        context: &super::ManagedResourceRuntimeContext,
+    ) -> Result<super::ManagedResourceReadiness, crate::DaemonError> {
+        let gate = Arc::clone(&self.gate);
+        let track = context.track.clone();
+
+        Ok(super::ManagedResourceReadiness::async_check(
+            format!("gated:mysql:{track}"),
+            move || {
+                let gate = Arc::clone(&gate);
+
+                Box::pin(async move {
+                    gate.started.fetch_add(1, Ordering::SeqCst);
+                    let active = gate.active.fetch_add(1, Ordering::SeqCst) + 1;
+                    gate.maximum_active.fetch_max(active, Ordering::SeqCst);
+                    acquire_test_gate(Arc::clone(&gate.proceed)).await?;
+                    gate.ready_to_return.fetch_add(1, Ordering::SeqCst);
+                    acquire_test_gate(Arc::clone(&gate.finish)).await?;
+                    gate.active.fetch_sub(1, Ordering::SeqCst);
+
+                    Ok(())
+                })
+            },
+        ))
+    }
+
+    fn resource_env(
+        &self,
+        context: &super::ManagedResourceRuntimeContext,
+    ) -> Result<EnvContextValues, crate::DaemonError> {
+        Ok(BTreeMap::from([
+            ("host".to_owned(), "127.0.0.1".to_owned()),
+            ("port".to_owned(), required_sql_port(context)?.to_string()),
+        ]))
+    }
+
+    fn reconcile_allocations<'a>(
+        &'a self,
+        _paths: &'a PvPaths,
+        _database: &'a mut Database,
+        context: &'a super::ManagedResourceRuntimeContext,
+        _resource_env: &'a EnvContextValues,
+        _allocations: &'a [ResourceAllocationRecord],
+    ) -> super::ManagedResourceAllocationFuture<'a> {
+        Box::pin(async move {
+            push_hook_event(
+                &self.allocation_events,
+                &format!("allocation:{}", context.track),
+            )?;
+            if let Some(gate) = &self.allocation_gate {
+                acquire_test_gate(Arc::clone(gate)).await?;
+            }
+            Ok(())
+        })
+    }
+}
+
+async fn acquire_test_gate(gate: Arc<Semaphore>) -> Result<(), crate::DaemonError> {
+    let permit = gate.acquire_owned().await.map_err(|error| {
+        crate::DaemonError::UnexpectedProtocolResponse {
+            reason: format!("test readiness gate closed: {error}"),
+        }
+    })?;
+    permit.forget();
+
+    Ok(())
 }
 
 fn rustfs_script() -> Result<String> {
@@ -5397,6 +7799,14 @@ fn copy_file(from: &Utf8Path, to: &Utf8Path) -> Result<()> {
     std::fs::copy(from, to)?;
 
     Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "daemon runtime tests read generated artifact archives into scripted clients"
+)]
+fn read_fixture_bytes(path: &Utf8Path) -> Result<Vec<u8>> {
+    Ok(std::fs::read(path)?)
 }
 
 #[expect(

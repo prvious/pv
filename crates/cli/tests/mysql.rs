@@ -1,9 +1,19 @@
+#[cfg(target_os = "macos")]
+use std::io::{BufRead, BufReader, Write, copy, sink};
+#[cfg(target_os = "macos")]
+use std::net::Shutdown;
+#[cfg(target_os = "macos")]
+use std::os::unix::net::UnixListener;
 use std::process::ExitCode;
+#[cfg(target_os = "macos")]
+use std::thread;
+#[cfg(target_os = "macos")]
+use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
-use state::Database;
+use state::{Database, JobsLock};
 use support::resource_cli::{
     ResourceCliSpec, ScriptedClient, TestEnvironment, create_dir, fixture_artifact,
     managed_resource_records, prepare_existing_release, pv_paths, record_installed_resource,
@@ -20,6 +30,221 @@ const RESOURCE: ResourceCliSpec = ResourceCliSpec {
 const DEFAULT_TRACK: &str = "8.0";
 const OLD_VERSION: &str = "8.0.35-pv1";
 const NEW_VERSION: &str = "8.0.36-pv1";
+
+const DIRECT_ARTIFACT_MUTATIONS: &[&[&str]] = &[
+    &["mysql:install"],
+    &["mysql:update"],
+    &["composer:install"],
+    &["composer:update"],
+    &["php:install"],
+    &["php:update"],
+    &["php:use", "8.4", "--global"],
+];
+
+#[test]
+fn direct_artifact_mutations_reject_active_daemon_jobs_lock() -> anyhow::Result<()> {
+    let mut outputs = Vec::new();
+
+    for command in DIRECT_ARTIFACT_MUTATIONS {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let current_dir = tempdir.path().join("outside");
+        create_dir(&current_dir)?;
+        let paths = pv_paths(&home);
+        let _jobs_lock = JobsLock::acquire(&paths)?;
+        let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+
+        let output = run_pv(command, &environment)?;
+
+        outputs.push((
+            command.join(" "),
+            format!("{output:?}").replace(tempdir.path().as_str(), "<tempdir>"),
+        ));
+        assert_eq!(environment.text_request_count(), 0, "{command:?}");
+        assert_eq!(environment.byte_request_count(), 0, "{command:?}");
+        let database = Database::open(&paths)?;
+        assert!(
+            database.managed_resource_tracks()?.is_empty(),
+            "{command:?}"
+        );
+        assert_eq!(database.global_php_default_track()?, None, "{command:?}");
+    }
+
+    assert_debug_snapshot!(outputs);
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI test runs a bounded fake Unix socket daemon"
+)]
+fn artifact_mutation_releases_jobs_lock_before_daemon_submission() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let paths = pv_paths(&home);
+    let artifact = fixture_artifact(NEW_VERSION);
+    prepare_existing_release(&home, DEFAULT_TRACK, &artifact, RESOURCE)?;
+    state::fs::ensure_layout(&paths)?;
+    let listener = UnixListener::bind(paths.daemon_socket().as_std_path())?;
+    listener.set_nonblocking(true)?;
+    let daemon_paths = paths.clone();
+    let daemon_thread = thread::spawn(move || -> anyhow::Result<serde_json::Value> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (mut stream, _address) = loop {
+            match listener.accept() {
+                Ok(accepted) => break accepted,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        };
+        stream.set_nonblocking(false)?;
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        let mut request = String::new();
+        BufReader::new(stream.try_clone()?).read_line(&mut request)?;
+        let _jobs_lock = JobsLock::acquire(&daemon_paths)?;
+        let mut response = format!(
+            r#"{{"type":"response","protocol_version":{},"status":"accepted","message":"job accepted","job_id":"job_lock_1"}}"#,
+            daemon::PROTOCOL_VERSION
+        );
+        response.push('\n');
+        stream.write_all(response.as_bytes())?;
+        stream.shutdown(Shutdown::Write)?;
+        copy(&mut stream, &mut sink())?;
+
+        Ok(serde_json::from_str(request.trim_end())?)
+    });
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        ScriptedClient::new().with_text(&resource_manifest(DEFAULT_TRACK, &[&artifact], RESOURCE)),
+    );
+
+    let output = run_pv(&["mysql:install"], &environment)?;
+    let request = daemon_thread
+        .join()
+        .map_err(|_error| anyhow::anyhow!("fake daemon thread panicked"))??;
+    let records = managed_resource_records(&Database::open(&paths)?, RESOURCE)?;
+
+    assert_resource_snapshot(
+        "artifact_mutation_releases_jobs_lock_before_daemon_submission",
+        tempdir.path(),
+        &(
+            output,
+            request,
+            resource_record_snapshots(&records, tempdir.path())?,
+        ),
+    );
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI test runs a bounded fake Unix socket daemon"
+)]
+fn artifact_mutation_retries_reconciliation_after_jobs_lock_handoff() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let paths = pv_paths(&home);
+    let artifact = fixture_artifact(NEW_VERSION);
+    prepare_existing_release(&home, DEFAULT_TRACK, &artifact, RESOURCE)?;
+    state::fs::ensure_layout(&paths)?;
+    let listener = UnixListener::bind(paths.daemon_socket().as_std_path())?;
+    listener.set_nonblocking(true)?;
+    let daemon_paths = paths.clone();
+    let daemon_thread = thread::spawn(move || -> anyhow::Result<Vec<serde_json::Value>> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let accept = || -> anyhow::Result<std::os::unix::net::UnixStream> {
+            loop {
+                match listener.accept() {
+                    Ok((stream, _address)) => return Ok(stream),
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            && Instant::now() < deadline =>
+                    {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        };
+        let mut requests = Vec::new();
+
+        let mut stream = accept()?;
+        stream.set_nonblocking(false)?;
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        let mut request = String::new();
+        BufReader::new(stream.try_clone()?).read_line(&mut request)?;
+        requests.push(serde_json::from_str(request.trim_end())?);
+        let jobs_lock = JobsLock::acquire(&daemon_paths)?;
+        let mut response = format!(
+            r#"{{"type":"response","protocol_version":{},"status":"error","message":"state error: PV self-update/daemon mutation coordination is active; the OS lock is held on {}"}}"#,
+            daemon::PROTOCOL_VERSION,
+            daemon_paths.jobs_lock()
+        );
+        response.push('\n');
+        stream.write_all(response.as_bytes())?;
+        stream.shutdown(Shutdown::Write)?;
+        copy(&mut stream, &mut sink())?;
+        drop(jobs_lock);
+
+        let mut stream = accept()?;
+        stream.set_nonblocking(false)?;
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        let mut request = String::new();
+        BufReader::new(stream.try_clone()?).read_line(&mut request)?;
+        requests.push(serde_json::from_str(request.trim_end())?);
+        let mut response = format!(
+            r#"{{"type":"response","protocol_version":{},"status":"accepted","message":"job accepted","job_id":"job_lock_2"}}"#,
+            daemon::PROTOCOL_VERSION
+        );
+        response.push('\n');
+        stream.write_all(response.as_bytes())?;
+        stream.shutdown(Shutdown::Write)?;
+        copy(&mut stream, &mut sink())?;
+
+        Ok(requests)
+    });
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        ScriptedClient::new().with_text(&resource_manifest(DEFAULT_TRACK, &[&artifact], RESOURCE)),
+    );
+
+    let output = run_pv(&["mysql:install"], &environment)?;
+    let requests = daemon_thread
+        .join()
+        .map_err(|_error| anyhow::anyhow!("fake daemon thread panicked"))??;
+    let records = managed_resource_records(&Database::open(&paths)?, RESOURCE)?;
+
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0], requests[1]);
+    assert_resource_snapshot(
+        "artifact_mutation_retries_reconciliation_after_jobs_lock_handoff",
+        tempdir.path(),
+        &(
+            output,
+            requests,
+            resource_record_snapshots(&records, tempdir.path())?,
+        ),
+    );
+
+    Ok(())
+}
 
 #[test]
 fn mysql_install_uses_manifest_default_and_installs_without_network_download() -> anyhow::Result<()>

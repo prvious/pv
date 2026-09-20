@@ -7,8 +7,10 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
+use daemon::gateway::{GatewayPfRoutingState, persisted_gateway_is_ready_with_pf_state_for_test};
 use daemon::{
-    ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_custom_readiness, wait_for_readiness,
+    DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_custom_readiness,
+    wait_for_readiness,
 };
 use insta::{Settings, assert_debug_snapshot};
 use rustix::process::{Pid, test_kill_process};
@@ -90,7 +92,7 @@ async fn readiness_timeout_reports_the_last_probe_failure() -> Result<()> {
             port,
             path: "/health".to_string(),
         },
-        Duration::from_millis(30),
+        Duration::from_secs(1),
     )
     .await;
 
@@ -247,9 +249,10 @@ async fn gateway_https_readiness_accepts_tls_handshake_without_app_response() ->
 }
 
 #[tokio::test]
-async fn gateway_identity_readiness_verifies_http_and_https_response_bodies() -> Result<()> {
+async fn inactive_pf_does_not_make_gateway_identity_readiness_unhealthy() -> Result<()> {
     let tempdir = tempdir()?;
-    let ca_certificate_path = tempdir.path().join("ca.pem");
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let ca_certificate_path = paths.ca_certificate();
     let certified_key =
         rcgen::generate_simple_self_signed(vec!["pv-gateway.localhost".to_owned()])?;
     state::fs::write_sensitive_file(&ca_certificate_path, &certified_key.cert.pem())?;
@@ -268,33 +271,91 @@ async fn gateway_identity_readiness_verifies_http_and_https_response_bodies() ->
     let http_port = http_listener.local_addr()?.port();
     let https_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let https_port = https_listener.local_addr()?.port();
+    let expected_body = format!("pv-gateway-health-v1:{http_port}:{https_port}");
+    let http_body = expected_body.clone();
     let http_server = tokio::spawn(async move {
         let (mut stream, _address) = http_listener.accept().await?;
-        write_gateway_identity_response(&mut stream).await
+        write_gateway_identity_response(&mut stream, &http_body).await
     });
     let https_server = tokio::spawn(async move {
         let (stream, _address) = https_listener.accept().await?;
         let mut stream = acceptor.accept(stream).await?;
 
-        write_gateway_identity_response(&mut stream).await
+        write_gateway_identity_response(&mut stream, &expected_body).await
     });
 
-    wait_for_readiness(
-        ReadinessCheck::GatewayIdentity {
-            http_host: "127.0.0.1".to_owned(),
+    assert!(
+        persisted_gateway_is_ready_with_pf_state_for_test(
+            &paths,
             http_port,
-            https_host: "127.0.0.1".to_owned(),
             https_port,
-            server_name: "pv-gateway.localhost".to_owned(),
-            path: "/__pv/health".to_owned(),
-            expected_body: "pv-gateway-health-v1:48080:48443".to_owned(),
-            ca_certificate_path,
-        },
-        Duration::from_secs(1),
-    )
-    .await?;
+            GatewayPfRoutingState::Inactive,
+        )
+        .await?
+    );
     http_server.await??;
     https_server.await??;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_identity_readiness_preserves_probe_error() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let http_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let http_port = http_listener.local_addr()?.port();
+    let https_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let https_port = https_listener.local_addr()?.port();
+    let http_server = tokio::spawn(async move {
+        let (mut stream, _address) = http_listener.accept().await?;
+        write_gateway_identity_response(&mut stream, "wrong identity").await
+    });
+
+    let result = persisted_gateway_is_ready_with_pf_state_for_test(
+        &paths,
+        http_port,
+        https_port,
+        GatewayPfRoutingState::Inactive,
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(DaemonError::Io(error))
+            if error.to_string() == "Gateway identity readiness returned an unexpected response"
+    ));
+    http_server.await??;
+    drop(https_listener);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_identity_readiness_preserves_timeout_diagnostic() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let http_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let http_port = http_listener.local_addr()?.port();
+    let https_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let https_port = https_listener.local_addr()?.port();
+
+    let result = persisted_gateway_is_ready_with_pf_state_for_test(
+        &paths,
+        http_port,
+        https_port,
+        GatewayPfRoutingState::Inactive,
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(DaemonError::ReadinessTimedOut {
+            timeout_ms: 1_000,
+            last_error: Some(error),
+            ..
+        }) if error == "deadline has elapsed"
+    ));
 
     Ok(())
 }
@@ -330,7 +391,10 @@ async fn gateway_identity_readiness_rejects_generic_tcp_listeners() -> Result<()
     Ok(())
 }
 
-async fn write_gateway_identity_response<Stream>(stream: &mut Stream) -> Result<(), std::io::Error>
+async fn write_gateway_identity_response<Stream>(
+    stream: &mut Stream,
+    body: &str,
+) -> Result<(), std::io::Error>
 where
     Stream: AsyncRead + AsyncWrite + Unpin,
 {
@@ -338,7 +402,11 @@ where
     let _bytes = stream.read(&mut request).await?;
     stream
         .write_all(
-            b"HTTP/1.1 200 OK\r\nContent-Length: 32\r\nConnection: close\r\n\r\npv-gateway-health-v1:48080:48443",
+            format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
         )
         .await?;
     stream.shutdown().await
@@ -568,10 +636,36 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
 
     assert_eq!(owned.pid(), process.pid());
     assert_eq!(adopted.pid(), process.pid());
-    assert!(supervisor.mark_replacement_required(&spec)?);
+    assert!(supervisor.record_applied_config(&spec, "sha256:v1:applied")?);
+    let applied = supervisor
+        .verify_ownership(&spec)?
+        .ok_or_else(|| anyhow!("runtime with applied config lost ownership"))?;
     assert_eq!(
-        runtime_metadata(process.metadata_path())?["replacement_required"],
-        true
+        applied.applied_config_fingerprint(),
+        Some("sha256:v1:applied")
+    );
+    let mut invalid_metadata = runtime_metadata(process.metadata_path())?;
+    invalid_metadata["staged_config_fingerprint"] = json!("sha256:v1:staged");
+    state::fs::write_sensitive_file(
+        process.metadata_path(),
+        &serde_json::to_string(&invalid_metadata)?,
+    )?;
+    let invalid = supervisor
+        .verify_ownership(&spec)?
+        .ok_or_else(|| anyhow!("runtime with invalid config state lost ownership"))?;
+    assert!(invalid.applied_config_fingerprint().is_none());
+    assert!(supervisor.record_applied_config(&spec, "sha256:v1:applied")?);
+    assert!(supervisor.mark_replacement_required(&spec, "sha256:v1:staged")?);
+    let pending_metadata = runtime_metadata(process.metadata_path())?;
+    assert_eq!(pending_metadata["replacement_required"], true);
+    assert!(pending_metadata["applied_config_fingerprint"].is_null());
+    assert_eq!(
+        pending_metadata["staged_config_fingerprint"],
+        "sha256:v1:staged"
+    );
+    assert_eq!(
+        pending_metadata["desired_config_fingerprint"],
+        "sha256:v1:staged"
     );
     let replacement = supervisor
         .verify_ownership(&spec)?
@@ -583,6 +677,12 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
         .ok_or_else(|| anyhow!("replacement-required runtime was not adoptable by its record"))?;
     assert_eq!(replacement.pid(), process.pid());
     assert!(supervisor.clear_replacement_required(&spec)?);
+    let cleared_metadata = runtime_metadata(process.metadata_path())?;
+    assert!(cleared_metadata["staged_config_fingerprint"].is_null());
+    assert_eq!(
+        cleared_metadata["desired_config_fingerprint"],
+        "sha256:v1:staged"
+    );
     assert!(
         !supervisor
             .verify_ownership(&spec)?
@@ -1083,49 +1183,29 @@ async fn supervisor_rejects_reordered_missing_and_duplicated_arguments() -> Resu
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let command = "while true; do sleep 1; done".to_string();
     let actual = supervisor
         .start(process_spec(
             &paths,
             "ordered-argument-runtime",
-            "/bin/sh",
-            vec![
-                "-c".to_string(),
-                command.clone(),
-                "alpha".to_string(),
-                "beta".to_string(),
-            ],
+            "/usr/bin/tail",
+            vec!["-f".to_string(), "/dev/null".to_string()],
         ))
         .await?;
     let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
     let forged_arguments = [
         (
             "reordered-argument-runtime",
-            vec![
-                "-c".to_string(),
-                command.clone(),
-                "beta".to_string(),
-                "alpha".to_string(),
-            ],
+            vec!["/dev/null".to_string(), "-f".to_string()],
         ),
-        (
-            "missing-argument-runtime",
-            vec!["-c".to_string(), command.clone(), "alpha".to_string()],
-        ),
+        ("missing-argument-runtime", vec!["-f".to_string()]),
         (
             "duplicated-argument-runtime",
-            vec![
-                "-c".to_string(),
-                command,
-                "alpha".to_string(),
-                "alpha".to_string(),
-                "beta".to_string(),
-            ],
+            vec!["-f".to_string(), "-f".to_string(), "/dev/null".to_string()],
         ),
     ];
 
     for (name, arguments) in forged_arguments {
-        let forged = process_spec(&paths, name, "/bin/sh", arguments);
+        let forged = process_spec(&paths, name, "/usr/bin/tail", arguments);
         write_forged_runtime_files(&forged, actual.pid(), process_start_identity.clone())?;
 
         assert!(supervisor.verify_ownership(&forged)?.is_none());

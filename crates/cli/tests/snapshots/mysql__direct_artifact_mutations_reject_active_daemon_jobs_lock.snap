@@ -1,0 +1,34 @@
+---
+source: crates/cli/tests/mysql.rs
+expression: outputs
+---
+[
+    (
+        "mysql:install",
+        "RunOutput { exit_code: ExitCode(unix_exit_status(1)), stdout: \"\", stderr: \"error: PV self-update/daemon mutation coordination is active; the OS lock is held on <tempdir>/home/.pv/run/jobs.lock\\n\" }",
+    ),
+    (
+        "mysql:update",
+        "RunOutput { exit_code: ExitCode(unix_exit_status(1)), stdout: \"\", stderr: \"error: PV self-update/daemon mutation coordination is active; the OS lock is held on <tempdir>/home/.pv/run/jobs.lock\\n\" }",
+    ),
+    (
+        "composer:install",
+        "RunOutput { exit_code: ExitCode(unix_exit_status(1)), stdout: \"\", stderr: \"error: PV self-update/daemon mutation coordination is active; the OS lock is held on <tempdir>/home/.pv/run/jobs.lock\\n\" }",
+    ),
+    (
+        "composer:update",
+        "RunOutput { exit_code: ExitCode(unix_exit_status(1)), stdout: \"\", stderr: \"error: PV self-update/daemon mutation coordination is active; the OS lock is held on <tempdir>/home/.pv/run/jobs.lock\\n\" }",
+    ),
+    (
+        "php:install",
+        "RunOutput { exit_code: ExitCode(unix_exit_status(1)), stdout: \"\", stderr: \"error: PV self-update/daemon mutation coordination is active; the OS lock is held on <tempdir>/home/.pv/run/jobs.lock\\n\" }",
+    ),
+    (
+        "php:update",
+        "RunOutput { exit_code: ExitCode(unix_exit_status(1)), stdout: \"\", stderr: \"error: PV self-update/daemon mutation coordination is active; the OS lock is held on <tempdir>/home/.pv/run/jobs.lock\\n\" }",
+    ),
+    (
+        "php:use 8.4 --global",
+        "RunOutput { exit_code: ExitCode(unix_exit_status(1)), stdout: \"\", stderr: \"error: PV self-update/daemon mutation coordination is active; the OS lock is held on <tempdir>/home/.pv/run/jobs.lock\\n\" }",
+    ),
+]

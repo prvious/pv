@@ -215,6 +215,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
         else:
             response_body = b"rejected\n"
         self.send_body(status, response_body)
+        self.wfile.flush()
+        load_accepted_marker = state.consume_value("load_accepted_marker", None)
+        if accepted and isinstance(load_accepted_marker, str):
+            pathlib.Path(load_accepted_marker).write_text(
+                "accepted\n", encoding="utf-8"
+            )
         if accepted and state.consume_value("exit_after_load", False):
             threading.Timer(0.05, os._exit, args=(0,)).start()
 
@@ -246,5 +252,13 @@ for server in [admin_server, *servers[1:]]:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
 
+def stop_service_when_requested():
+    while not state.control().get("stop_service", False):
+        time.sleep(0.01)
+    servers[0].shutdown()
+    servers[0].server_close()
+
+threading.Thread(target=stop_service_when_requested, daemon=True).start()
 with servers[0] as server:
     server.serve_forever()
+threading.Event().wait()

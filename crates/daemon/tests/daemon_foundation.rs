@@ -1,4 +1,5 @@
 use anyhow::{Result, anyhow};
+use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
 use hickory_proto::rr::rdata::{A, AAAA};
@@ -9,15 +10,15 @@ use rcgen::generate_simple_self_signed;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 use state::{
-    AppReleaseLayout, DNS_PREFERRED_PORT, Database, GatewayPort, JobRecord, JobStatus,
+    AppReleaseLayout, DNS_PREFERRED_PORT, Database, GatewayPort, JobRecord, JobStatus, JobsLock,
     LinkProjectInput, PortOwner, PortRequest, PvPaths, RUNTIME_PORT_FALLBACK_END,
-    RUNTIME_PORT_FALLBACK_START, UpdateLock,
+    RUNTIME_PORT_FALLBACK_START, RuntimeObservedStatus, RuntimeSubject, UpdateLock,
 };
 use std::io::{self, ErrorKind, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
 use std::str::FromStr;
-use std::sync::mpsc::{Receiver, TryRecvError};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UdpSocket, UnixListener, UnixStream};
@@ -114,26 +115,147 @@ async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Res
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
 
-    let lines_result = request_lines(
-        &paths,
-        json!({
-            "protocol_version": daemon::PROTOCOL_VERSION,
-            "command": "run_job",
-            "kind": "reconcile",
-            "scope": "system",
-        }),
-    )
+    let lines_result = async {
+        wait_for_succeeded_job_id(&paths, "job_000001").await?;
+        request_lines(
+            &paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "reconcile",
+                "scope": "system",
+            }),
+        )
+        .await
+    }
     .await;
 
     let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
     let lines = propagate_after_cleanup(lines_result, cleanup_result)?;
 
     let database = Database::open(&paths)?;
+    let jobs = database.recent_jobs()?;
+    let job_id = jobs
+        .iter()
+        .find(|job| job.kind == "reconcile" && job.scope == "system")
+        .map(|job| job.id.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing system reconciliation job"))?;
+    let log = state::fs::read_to_string(&paths.daemon_log())?;
+    let mut phase_events = log
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|event| {
+            event["event"] == "reconciliation_phase_completed" && event["job_id"] == job_id
+        })
+        .collect::<Vec<_>>();
+    for event in &mut phase_events {
+        assert!(event["elapsed_ms"].as_u64().is_some());
+        if event["phase"] == "finalization" {
+            assert!(event["total_execution_ms"].as_u64().is_some());
+        }
+        if let Some(record) = event.as_object_mut() {
+            for field in ["timestamp", "job_id", "elapsed_ms", "total_execution_ms"] {
+                record.remove(field);
+            }
+        }
+    }
+    assert_debug_snapshot!("system_reconciliation_phases", phase_events);
 
     assert_with_normalized_timestamps(
         "socket_protocol_streams_job_progress_and_persists_final_status",
-        (lines, database.recent_jobs()?),
+        (lines, jobs),
     )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_lookup_failure_streams_and_records_failed_gateway_phase() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "2.11.4-pv1",
+        &paths.resources().join("caddy/2/releases/missing"),
+    )?;
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
+    let response = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "reconcile",
+            "scope": "resource:caddy:2",
+        }),
+    )
+    .await;
+    daemon.shutdown().await?;
+    let lines = response?;
+
+    let job = database
+        .recent_jobs()?
+        .into_iter()
+        .find(|job| job.scope == "resource:caddy:2")
+        .ok_or_else(|| anyhow!("missing Gateway reconciliation job"))?;
+    assert_eq!(job.status, JobStatus::Failed);
+
+    let selected_events = lines
+        .iter()
+        .filter(|event| {
+            (event["type"] == "progress" && event["message"] == "gateway")
+                || event["type"] == "job_failed"
+        })
+        .collect::<Vec<_>>();
+    let selected_sequence = selected_events
+        .iter()
+        .map(|event| {
+            if event["type"] == "progress" {
+                "gateway"
+            } else {
+                "job_failed"
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(selected_sequence, ["gateway", "job_failed"]);
+    for event in selected_events {
+        assert_eq!(event["job_id"], job.id);
+    }
+
+    let log = state::fs::read_to_string(&paths.daemon_log())?;
+    let phases = log
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|event| {
+            event["event"] == "reconciliation_phase_completed"
+                && event["job_id"] == job.id
+                && event["phase"] == "gateway"
+        })
+        .map(|event| {
+            assert!(event["elapsed_ms"].as_u64().is_some());
+            (
+                event["phase"].clone(),
+                event["subject"].clone(),
+                event["outcome"].clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_debug_snapshot!(phases, @r#"
+    [
+        (
+            String("gateway"),
+            String("gateway"),
+            String("failed"),
+        ),
+    ]
+    "#);
 
     Ok(())
 }
@@ -142,6 +264,7 @@ async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Res
 async fn unsupported_job_streams_failure_event_and_persists_failed_status() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let jobs_lock = JobsLock::acquire(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
 
     let lines = request_lines(
@@ -156,6 +279,7 @@ async fn unsupported_job_streams_failure_event_and_persists_failed_status() -> R
     .await?;
 
     daemon.shutdown().await?;
+    drop(jobs_lock);
 
     let database = Database::open(&paths)?;
 
@@ -171,48 +295,189 @@ async fn unsupported_job_streams_failure_event_and_persists_failed_status() -> R
 async fn valid_reconciliation_scopes_stream_stub_completion() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    seed_foundation_caddy(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
 
-    let resource_lines = request_lines(
-        &paths,
-        json!({
-            "protocol_version": daemon::PROTOCOL_VERSION,
-            "command": "run_job",
-            "kind": "reconcile",
-            "scope": "resource:mysql:8.4",
-        }),
-    )
-    .await?;
+    let result = async {
+        wait_for_succeeded_job_id(&paths, "job_000001").await?;
+        let resource_lines = request_lines(
+            &paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "reconcile",
+                "scope": "resource:mysql:8.4",
+            }),
+        )
+        .await?;
 
-    daemon.shutdown().await?;
-
-    let database = Database::open(&paths)?;
+        Ok::<_, anyhow::Error>((resource_lines, Database::open(&paths)?.recent_jobs()?))
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    let snapshot = propagate_after_cleanup(result, cleanup_result)?;
 
     assert_with_normalized_timestamps(
         "valid_reconciliation_scopes_stream_stub_completion",
-        (resource_lines, database.recent_jobs()?),
+        snapshot,
     )?;
 
     Ok(())
 }
 
 #[tokio::test]
-async fn update_lock_rejects_mutating_jobs_but_keeps_health_available() -> Result<()> {
+async fn update_locks_delay_startup_reconciliation_but_keep_health_available() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    seed_foundation_caddy(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     let update_lock = UpdateLock::acquire(&paths)?;
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let jobs_lock = JobsLock::acquire(&paths)?;
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
 
-    let run_job_lines = request_lines(
-        &paths,
-        json!({
-            "protocol_version": daemon::PROTOCOL_VERSION,
-            "command": "run_job",
-            "kind": "reconcile",
-            "scope": "system",
-        }),
+    let result = async {
+        let run_job_lines = request_lines(
+            &paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "reconcile",
+                "scope": "system",
+            }),
+        )
+        .await?;
+        let health_lines = request_lines(
+            &paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "health",
+            }),
+        )
+        .await?;
+        let update_check_lines = request_lines(
+            &paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "managed_resource_update_check",
+            }),
+        )
+        .await?;
+
+        assert!(Database::open(&paths)?.recent_jobs()?.is_empty());
+
+        drop(jobs_lock);
+        drop(update_lock);
+        wait_for_succeeded_job_scope(&paths, "system").await?;
+
+        let database = Database::open(&paths)?;
+        let run_job_lines =
+            normalize_lock_path(run_job_lines, paths.jobs_lock().as_str(), "<jobs-lock>");
+        let update_check_lines = normalize_lock_path(
+            update_check_lines,
+            paths.update_lock().as_str(),
+            "<update-lock>",
+        );
+
+        Ok::<_, anyhow::Error>((
+            run_job_lines,
+            health_lines,
+            update_check_lines,
+            database.recent_jobs()?,
+        ))
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    let snapshot = propagate_after_cleanup(result, cleanup_result)?;
+
+    assert_with_normalized_timestamps(
+        "update_locks_delay_startup_reconciliation_but_keep_health_available",
+        snapshot,
     )
-    .await?;
+}
+
+#[tokio::test]
+async fn daemon_shutdown_cancels_startup_reconciliation_waiting_for_jobs_lock() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let jobs_lock = JobsLock::acquire(&paths)?;
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+
+    timeout(Duration::from_secs(1), daemon.shutdown()).await??;
+    drop(jobs_lock);
+    sleep(Duration::from_millis(100)).await;
+
+    let _jobs_lock = JobsLock::acquire(&paths)?;
+    assert!(Database::open(&paths)?.recent_jobs()?.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let [validation_started, release_validation] = seed_barrier_foundation_caddy(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+
+    let result = async {
+        let daemon =
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        gateway_guard.attach_daemon(daemon);
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if state::fs::path_entry_exists(&validation_started)? {
+                    return Ok::<(), anyhow::Error>(());
+                }
+                sleep(JOB_STATUS_POLL_INTERVAL).await;
+            }
+        })
+        .await??;
+        wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
+
+        let shutdown_was_pending = {
+            let mut shutdown = Box::pin(gateway_guard.shutdown_daemon());
+            let early_shutdown = timeout(Duration::from_millis(100), &mut shutdown).await;
+            state::fs::write_sensitive_file(&release_validation, "release\n")?;
+            match early_shutdown {
+                Ok(result) => {
+                    result?;
+                    false
+                }
+                Err(_) => {
+                    timeout(Duration::from_secs(5), shutdown).await??;
+                    true
+                }
+            }
+        };
+
+        let job = wait_for_succeeded_job_scope(&paths, "system").await?;
+        assert!(shutdown_was_pending);
+        assert_eq!(job.status, JobStatus::Succeeded);
+        assert_eq!(job.error, None);
+
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    propagate_after_cleanup(result, cleanup_result)
+}
+
+#[tokio::test]
+async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    seed_foundation_caddy(&paths)?;
+    let jobs_lock = JobsLock::acquire(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
     let health_lines = request_lines(
         &paths,
         json!({
@@ -221,34 +486,302 @@ async fn update_lock_rejects_mutating_jobs_but_keeps_health_available() -> Resul
         }),
     )
     .await?;
-    let update_check_lines = request_lines(
+    assert_eq!(health_lines[0]["status"], json!("ok"));
+
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(30)).await;
+    tokio::task::yield_now().await;
+    tokio::time::resume();
+    sleep(Duration::from_millis(1500)).await;
+    let jobs_during_startup = Database::open(&paths)?.recent_jobs()?;
+    drop(jobs_lock);
+
+    let operation_result = async {
+        wait_for_succeeded_job_scope(&paths, "system").await?;
+        sleep(Duration::from_millis(100)).await;
+        let supervisor = daemon::ProcessSupervisor::new(paths.clone());
+        let gateway = supervisor
+            .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+            .ok_or_else(|| anyhow!("Gateway was not running after startup"))?;
+        let gateway_pid = gateway.pid();
+        gateway.stop(Duration::from_secs(1)).await?;
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(29)).await;
+        tokio::task::yield_now().await;
+        tokio::time::resume();
+        sleep(Duration::from_millis(200)).await;
+        let jobs_before_first_scan = Database::open(&paths)?.recent_jobs()?;
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        tokio::time::resume();
+        wait_for_succeeded_job_scope(&paths, "resource:caddy:2").await?;
+        let recovered_gateway = supervisor
+            .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+            .ok_or_else(|| anyhow!("health recovery did not restart the Gateway"))?;
+        let database = Database::open(&paths)?;
+        let http_port = database
+            .assigned_ports()?
+            .into_iter()
+            .find_map(|assignment| {
+                (assignment.owner == PortOwner::Gateway(GatewayPort::Http))
+                    .then_some(assignment.port)
+            })
+            .ok_or_else(|| anyhow!("Gateway HTTP port was not assigned"))?;
+        daemon::wait_for_readiness(
+            daemon::ReadinessCheck::Http {
+                host: "127.0.0.1".to_owned(),
+                port: http_port,
+                path: "/__pv/health".to_owned(),
+            },
+            Duration::from_secs(5),
+        )
+        .await?;
+
+        Ok::<_, anyhow::Error>((
+            jobs_during_startup,
+            jobs_before_first_scan,
+            gateway_pid,
+            recovered_gateway.pid(),
+        ))
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    let (jobs_during_startup, jobs_before_first_scan, gateway_pid, recovered_gateway_pid) =
+        propagate_after_cleanup(operation_result, cleanup_result)?;
+
+    assert!(jobs_during_startup.is_empty());
+    assert_eq!(jobs_before_first_scan.len(), 1);
+    assert_eq!(jobs_before_first_scan[0].scope, "system");
+    assert_ne!(recovered_gateway_pid, gateway_pid);
+
+    Ok(())
+}
+
+struct BlockedStartupDownloadClient {
+    started: Arc<AtomicBool>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl resources::ResourceHttpClient for BlockedStartupDownloadClient {
+    fn get_text(&self, _url: &str) -> resources::Result<String> {
+        Ok(CADDY_ARTIFACT_MANIFEST.to_owned())
+    }
+
+    fn download(&self, url: &str, _writer: &mut dyn io::Write) -> resources::Result<()> {
+        self.started.store(true, Ordering::SeqCst);
+        self.release
+            .lock()
+            .map_err(|error| error.to_string())
+            .and_then(|receiver| {
+                receiver
+                    .recv_timeout(Duration::from_secs(10))
+                    .map_err(|error| error.to_string())
+            })
+            .map_err(|reason| resources::ResourcesError::HttpRequestFailed {
+                url: url.to_owned(),
+                reason,
+            })?;
+        Err(resources::ResourcesError::HttpStatusFailed {
+            url: url.to_owned(),
+            status_code: 404,
+        })
+    }
+}
+
+#[tokio::test]
+async fn daemon_shutdown_keeps_jobs_lock_until_blocking_install_finishes() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let started = Arc::new(AtomicBool::new(false));
+    let (release, blocked) = mpsc::channel();
+    let client = BlockedStartupDownloadClient {
+        started: Arc::clone(&started),
+        release: Mutex::new(blocked),
+    };
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
+            paths.clone(),
+            TEST_ARTIFACT_MANIFEST_URL,
+            client,
+        )
+        .await?;
+    timeout(Duration::from_secs(5), async {
+        while !started.load(Ordering::SeqCst) {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    let mut shutdown = Box::pin(daemon.shutdown());
+    let early_shutdown = timeout(Duration::from_millis(100), &mut shutdown).await;
+    let jobs_lock_held = matches!(
+        JobsLock::acquire(&paths),
+        Err(state::StateError::CoordinationLockHeld { .. })
+    );
+    release.send(())?;
+    let shutdown_was_pending = match early_shutdown {
+        Ok(result) => {
+            result?;
+            false
+        }
+        Err(_) => {
+            timeout(Duration::from_secs(5), shutdown).await??;
+            true
+        }
+    };
+    let job = wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
+    let _jobs_lock = JobsLock::acquire(&paths)?;
+    assert_debug_snapshot!((shutdown_was_pending, jobs_lock_held, job.status, job.error), @r#"
+    (
+        true,
+        true,
+        Failed,
+        Some(
+            "Managed Resource default installs failed: caddy 2: Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/caddy-2.11.4-pv1-any.tar.gz`",
+        ),
+    )
+    "#);
+    Ok(())
+}
+
+#[tokio::test]
+async fn startup_reconciliation_records_non_contention_enqueue_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_user_dir(&paths.jobs_lock())?;
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+
+    let health_lines = request_lines(
         &paths,
         json!({
             "protocol_version": daemon::PROTOCOL_VERSION,
-            "command": "managed_resource_update_check",
+            "command": "health",
         }),
     )
     .await?;
+    let job = wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
 
     daemon.shutdown().await?;
-    drop(update_lock);
 
-    let database = Database::open(&paths)?;
-    let run_job_lines = normalize_update_lock_path(run_job_lines, paths.update_lock().as_str());
-    let update_check_lines =
-        normalize_update_lock_path(update_check_lines, paths.update_lock().as_str());
-
-    assert_with_normalized_timestamps(
-        "update_lock_rejects_mutating_jobs_but_keeps_health_available",
-        (
-            run_job_lines,
-            health_lines,
-            update_check_lines,
-            database.recent_jobs()?,
-        ),
-    )?;
+    assert_eq!(health_lines[0]["status"], json!("ok"));
+    assert_eq!(job.kind, "reconcile");
+    assert!(
+        job.error
+            .as_deref()
+            .is_some_and(|error| error.contains(paths.jobs_lock().as_str()))
+    );
 
     Ok(())
+}
+
+#[tokio::test]
+async fn startup_reconciliation_starts_then_adopts_gateway_across_daemon_restart() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    seed_foundation_caddy(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+
+    let result = async {
+        let daemon =
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        gateway_guard.attach_daemon(daemon);
+        wait_for_succeeded_job_id(&paths, "job_000001").await?;
+        let initial_pid = state::fs::read_to_string(&paths.gateway_pid())?;
+
+        gateway_guard.shutdown_daemon().await?;
+
+        let daemon =
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        gateway_guard.attach_daemon(daemon);
+        wait_for_succeeded_job_id(&paths, "job_000002").await?;
+        let adopted_pid = state::fs::read_to_string(&paths.gateway_pid())?;
+        let jobs = Database::open(&paths)?.recent_jobs()?;
+
+        Ok::<_, anyhow::Error>((initial_pid, adopted_pid, jobs))
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    let (initial_pid, adopted_pid, jobs) = propagate_after_cleanup(result, cleanup_result)?;
+
+    assert_eq!(adopted_pid, initial_pid);
+    assert_eq!(jobs.len(), 2);
+    assert!(jobs.iter().all(|job| {
+        job.kind == "reconcile" && job.scope == "system" && job.status == JobStatus::Succeeded
+    }));
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn repeated_system_requests_during_startup_create_one_trailing_job() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let [validation_started, release_validation] = seed_barrier_foundation_caddy(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+
+    let result = async {
+        let daemon =
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        gateway_guard.attach_daemon(daemon);
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if state::fs::path_entry_exists(&validation_started)? {
+                    return Ok::<(), anyhow::Error>(());
+                }
+                sleep(JOB_STATUS_POLL_INTERVAL).await;
+            }
+        })
+        .await??;
+
+        let request = serde_json::to_string(&json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "reconcile",
+            "scope": "system",
+        }))?;
+        let mut readers = Vec::new();
+        let mut responses = Vec::new();
+        for _ in 0..3 {
+            let mut stream = UnixStream::connect(paths.daemon_socket()).await?;
+            stream.write_all(request.as_bytes()).await?;
+            stream.write_all(b"\n").await?;
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).await?;
+            responses.push(serde_json::from_str::<Value>(line.trim_end())?);
+            readers.push(reader);
+        }
+
+        assert!(responses.iter().all(|response| {
+            response["job_id"] == "job_000002"
+                && response["status"]
+                    .as_str()
+                    .is_some_and(|status| status == "accepted" || status == "coalesced")
+        }));
+        state::fs::write_sensitive_file(&release_validation, "release\n")?;
+
+        for mut reader in readers {
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).await? == 0 {
+                    break;
+                }
+            }
+        }
+        wait_for_succeeded_job_count(&paths, "system", 2).await?;
+
+        let jobs = Database::open(&paths)?.recent_jobs()?;
+        assert_eq!(jobs.len(), 2);
+        assert!(jobs.iter().all(|job| job.status == JobStatus::Succeeded));
+
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    propagate_after_cleanup(result, cleanup_result)
 }
 
 #[tokio::test]
@@ -310,10 +843,12 @@ async fn daemon_start_marks_abandoned_running_jobs_failed() -> Result<()> {
     database.start_job("reconcile", "system")?;
     database.start_job("update", "system")?;
     drop(database);
+    let jobs_lock = JobsLock::acquire(&paths)?;
 
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     daemon.shutdown().await?;
+    drop(jobs_lock);
 
     let database = Database::open(&paths)?;
 
@@ -358,6 +893,7 @@ async fn duplicate_daemon_start_does_not_fail_live_running_jobs() -> Result<()> 
 async fn managed_resource_update_check_returns_success_response() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let jobs_lock = JobsLock::acquire(&paths)?;
     let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
     let manifest_requests = manifest_client.request_count();
     let daemon =
@@ -378,6 +914,7 @@ async fn managed_resource_update_check_returns_success_response() -> Result<()> 
     .await?;
 
     daemon.shutdown().await?;
+    drop(jobs_lock);
 
     assert_with_normalized_timestamps(
         "managed_resource_update_check_returns_success_response",
@@ -449,7 +986,7 @@ async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_suc
     assert_eq!(job.scope, "system");
     assert_eq!(job.status, JobStatus::Succeeded);
     assert_eq!(manifest_request_count(&manifest_requests)?, 1);
-    assert_eq!(database.recent_jobs()?.len(), 1);
+    assert_eq!(database.recent_jobs()?.len(), 2);
     assert_with_normalized_timestamps(
         "update_job_refreshes_manifest_without_installed_tracks_and_persists_success",
         (
@@ -470,10 +1007,10 @@ async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_suc
 }
 
 #[tokio::test]
-async fn update_lock_rejects_update_jobs_before_manifest_refresh() -> Result<()> {
+async fn jobs_lock_rejects_update_jobs_before_manifest_refresh() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let update_lock = UpdateLock::acquire(&paths)?;
+    let jobs_lock = JobsLock::acquire(&paths)?;
     let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
     let manifest_requests = manifest_client.request_count();
     let daemon =
@@ -496,13 +1033,13 @@ async fn update_lock_rejects_update_jobs_before_manifest_refresh() -> Result<()>
     .await?;
 
     daemon.shutdown().await?;
-    drop(update_lock);
+    drop(jobs_lock);
 
-    let lines = normalize_update_lock_path(lines, paths.update_lock().as_str());
+    let lines = normalize_lock_path(lines, paths.jobs_lock().as_str(), "<jobs-lock>");
     let database = Database::open(&paths)?;
 
     assert_with_normalized_timestamps(
-        "update_lock_rejects_update_jobs_before_manifest_refresh",
+        "jobs_lock_rejects_update_jobs_before_manifest_refresh",
         (
             lines,
             database.recent_jobs()?,
@@ -513,7 +1050,7 @@ async fn update_lock_rejects_update_jobs_before_manifest_refresh() -> Result<()>
     Ok(())
 }
 
-fn normalize_update_lock_path(mut lines: Vec<Value>, update_lock_path: &str) -> Vec<Value> {
+fn normalize_lock_path(mut lines: Vec<Value>, lock_path: &str, placeholder: &str) -> Vec<Value> {
     for line in &mut lines {
         let Some(message) = line.get_mut("message") else {
             continue;
@@ -522,7 +1059,7 @@ fn normalize_update_lock_path(mut lines: Vec<Value>, update_lock_path: &str) -> 
             continue;
         };
 
-        *message = json!(message_text.replace(update_lock_path, "<update-lock>"));
+        *message = json!(message_text.replace(lock_path, placeholder));
     }
 
     lines
@@ -562,6 +1099,120 @@ fn seed_foundation_caddy(paths: &PvPaths) -> Result<()> {
         |_port| true,
     )?;
     Ok(())
+}
+
+fn seed_foundation_php_project(
+    paths: &PvPaths,
+    project_path: &Utf8Path,
+    config: &str,
+) -> Result<(String, StdTcpListener)> {
+    seed_foundation_caddy(paths)?;
+    let certified_key = generate_simple_self_signed(vec![
+        "project.test".to_owned(),
+        "pv-gateway.localhost".to_owned(),
+    ])?;
+    state::fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;
+    state::fs::write_sensitive_file(
+        &paths.ca_private_key(),
+        &certified_key.signing_key.serialize_pem(),
+    )?;
+    let manifest_cache = resources::ArtifactManifestCache::new(paths.downloads());
+    let php_track = "8.4";
+    let php_release = paths.home().join("8.4-php-release");
+    state::fs::write_sensitive_file(&php_release.join("bin/php"), "#!/bin/sh\n")?;
+    state::fs::write_sensitive_file(&php_release.join("share/pv/php-extensions.json"), "[]")?;
+
+    let frankenphp_release = paths.home().join("8.4-frankenphp-release");
+    let frankenphp_source = paths.home().join("fake-frankenphp-source");
+    state::fs::write_sensitive_file(
+        &frankenphp_source,
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test-fixtures/gateway/fake-frankenphp.sh"
+        )),
+    )?;
+    state::fs::write_sensitive_file(
+        &frankenphp_release.join("bin/frankenphp.server.py"),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test-fixtures/gateway/fake-frankenphp-server.py"
+        )),
+    )?;
+    let frankenphp_install =
+        AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.0", &frankenphp_source)?;
+    state::fs::rename(
+        frankenphp_install.binary_path(),
+        &frankenphp_release.join("bin/frankenphp"),
+    )?;
+    state::fs::write_sensitive_file(
+        &frankenphp_release.join("share/pv/php-extensions.json"),
+        "[]",
+    )?;
+    state::fs::write_sensitive_file(manifest_cache.path(), CADDY_ARTIFACT_MANIFEST)?;
+
+    let mut database = Database::open(paths)?;
+    database.record_managed_resource_track_installed(
+        "php",
+        php_track,
+        "8.4.8-pv1",
+        &php_release,
+    )?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        php_track,
+        "8.4.8-pv1",
+        &frankenphp_release,
+    )?;
+    let mut worker_port_reservations = reserve_foundation_ports(1, 40_000, 44_999)?;
+    let worker_port_reservation = worker_port_reservations
+        .pop()
+        .ok_or_else(|| anyhow!("expected one reserved worker port"))?;
+    let worker_service_port = worker_port_reservation.local_addr()?.port();
+    database.assign_port(
+        PortRequest::php_worker(
+            php_track,
+            worker_service_port,
+            worker_service_port,
+            worker_service_port,
+        ),
+        |_port| true,
+    )?;
+    let config_path = project_path.join("pv.yml");
+    state::fs::write_sensitive_file(&config_path, config)?;
+    let project = database
+        .link_project(LinkProjectInput {
+            path: project_path.to_owned(),
+            original_path: project_path.to_owned(),
+            primary_hostname: "project.test".to_owned(),
+            config_path,
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+
+    Ok((project.id, worker_port_reservation))
+}
+
+fn seed_barrier_foundation_caddy(paths: &PvPaths) -> Result<[Utf8PathBuf; 2]> {
+    seed_foundation_caddy(paths)?;
+    let executable = paths.home().join("fake-caddy-release/bin/caddy");
+    let validation_started = paths.run().join("startup-validation-started");
+    let release_validation = paths.run().join("release-startup-validation");
+    let wrapper_source = paths.home().join("caddy-startup-barrier");
+    let caddy_script = FOUNDATION_FAKE_CADDY_SCRIPT
+        .strip_prefix("#!/bin/sh\n")
+        .ok_or_else(|| anyhow!("fake Caddy script is missing its shebang"))?;
+    state::fs::write_sensitive_file(
+        &wrapper_source,
+        &format!(
+            "#!/bin/sh\nset -eu\nif [ \"${{1:-}}\" = \"validate\" ]; then\n  : > \"{validation_started}\"\n  while [ ! -f \"{release_validation}\" ]; do sleep 0.01; done\nfi\n{caddy_script}"
+        ),
+    )?;
+    let wrapper_install =
+        AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.1", &wrapper_source)?;
+    state::fs::rename(wrapper_install.binary_path(), &executable)?;
+
+    Ok([validation_started, release_validation])
 }
 
 fn available_foundation_gateway_ports() -> Result<[u16; 2]> {
@@ -629,6 +1280,14 @@ impl SeededGatewayGuard {
 
     fn attach_worker(&mut self, track: &str) {
         self.worker_track = Some(track.to_owned());
+    }
+
+    async fn shutdown_daemon(&mut self) -> Result<()> {
+        let Some(daemon) = self.daemon.take() else {
+            return Ok(());
+        };
+
+        daemon.shutdown().await.map_err(|error| anyhow!(error))
     }
 
     async fn shutdown_and_cleanup(&mut self) -> Result<()> {
@@ -890,6 +1549,7 @@ async fn blocking_client_waits_for_reconciliation_stream_completion() -> Result<
 async fn blocking_client_checks_managed_resource_updates() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let jobs_lock = JobsLock::acquire(&paths)?;
     let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
     let manifest_requests = manifest_client.request_count();
     let daemon =
@@ -906,6 +1566,7 @@ async fn blocking_client_checks_managed_resource_updates() -> Result<()> {
     })
     .await??;
     daemon.shutdown().await?;
+    drop(jobs_lock);
 
     assert!(update_check.managed_resources.is_empty());
     assert_eq!(manifest_request_count(&manifest_requests)?, 1);
@@ -917,91 +1578,20 @@ async fn blocking_client_checks_managed_resource_updates() -> Result<()> {
 async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    seed_foundation_caddy(&paths)?;
-    let manifest_cache = resources::ArtifactManifestCache::new(paths.downloads());
-    let php_track = "8.4";
-    let php_release = paths.home().join("8.4-php-release");
-    state::fs::write_sensitive_file(&php_release.join("bin/php"), "#!/bin/sh\n")?;
-    state::fs::write_sensitive_file(&php_release.join("share/pv/php-extensions.json"), "[]")?;
-
-    let frankenphp_release = paths.home().join("8.4-frankenphp-release");
-    let frankenphp_source = paths.home().join("fake-frankenphp-source");
-    state::fs::write_sensitive_file(
-        &frankenphp_source,
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/test-fixtures/gateway/fake-frankenphp.sh"
-        )),
-    )?;
-    state::fs::write_sensitive_file(
-        &frankenphp_release.join("bin/frankenphp.server.py"),
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/test-fixtures/gateway/fake-frankenphp-server.py"
-        )),
-    )?;
-    let frankenphp_install =
-        AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.0", &frankenphp_source)?;
-    state::fs::rename(
-        frankenphp_install.binary_path(),
-        &frankenphp_release.join("bin/frankenphp"),
-    )?;
-    state::fs::write_sensitive_file(
-        &frankenphp_release.join("share/pv/php-extensions.json"),
-        "[]",
-    )?;
-
-    state::fs::write_sensitive_file(manifest_cache.path(), CADDY_ARTIFACT_MANIFEST)?;
-
-    let mut database = Database::open(&paths)?;
-    database.record_managed_resource_track_installed(
-        "php",
-        php_track,
-        "8.4.8-pv1",
-        &php_release,
-    )?;
-    database.record_managed_resource_track_installed(
-        "frankenphp",
-        php_track,
-        "8.4.8-pv1",
-        &frankenphp_release,
-    )?;
-    let worker_port_reservations = reserve_foundation_ports(1, 40_000, 44_999)?;
-    let worker_service_port = worker_port_reservations[0].local_addr()?.port();
-    database.assign_port(
-        PortRequest::php_worker(
-            php_track,
-            worker_service_port,
-            worker_service_port,
-            worker_service_port,
-        ),
-        |_port| true,
-    )?;
-    drop(database);
-
-    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     let project_path = tempdir.path().join("project");
-    let config_path = project_path.join("pv.yml");
-    state::fs::write_sensitive_file(
-        &config_path,
+    let (_project_id, worker_port_reservation) = seed_foundation_php_project(
+        &paths,
+        &project_path,
         "php: \"8.4\"\nenv:\n  APP_URL: \"${project_url}\"\n  APP_NAME: setup\n",
     )?;
-    let mut database = Database::open(&paths)?;
-    database.link_project(LinkProjectInput {
-        path: project_path.clone(),
-        original_path: project_path.clone(),
-        primary_hostname: "project.test".to_owned(),
-        config_path,
-        desired_php_track: None,
-        additional_hostnames: Vec::new(),
-    })?;
-    drop(database);
+    let php_track = "8.4";
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
 
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
     gateway_guard.attach_worker(php_track);
-    drop(worker_port_reservations);
+    drop(worker_port_reservation);
     let client_paths = paths.clone();
     let completed_result = tokio::task::spawn_blocking(move || {
         daemon::run_job_blocking(client_paths, "reconcile", "system")
@@ -1037,10 +1627,365 @@ async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum TargetedGatewayPhaseScenario {
+    Success,
+    GatewayFailure,
+    StaleWorkerFailure,
+}
+
+#[tokio::test]
+async fn targeted_gateway_phases_are_disjoint() -> Result<()> {
+    for (scenario, expected_status, expected_phases) in [
+        (
+            TargetedGatewayPhaseScenario::Success,
+            JobStatus::Succeeded,
+            vec![
+                ("workers", "target_project", "succeeded"),
+                ("gateway", "target_project", "succeeded"),
+                ("workers", "stale_workers", "succeeded"),
+            ],
+        ),
+        (
+            TargetedGatewayPhaseScenario::GatewayFailure,
+            JobStatus::Failed,
+            vec![
+                ("workers", "target_project", "succeeded"),
+                ("gateway", "target_project", "failed"),
+            ],
+        ),
+        (
+            TargetedGatewayPhaseScenario::StaleWorkerFailure,
+            JobStatus::Failed,
+            vec![
+                ("workers", "target_project", "succeeded"),
+                ("gateway", "target_project", "succeeded"),
+                ("workers", "stale_workers", "failed"),
+            ],
+        ),
+    ] {
+        let (status, phases) = run_targeted_gateway_phase_scenario(scenario).await?;
+
+        assert_eq!(status, expected_status);
+        assert_eq!(
+            phases
+                .iter()
+                .filter(|event| {
+                    event["subject"] == "target_project" || event["subject"] == "stale_workers"
+                })
+                .map(|event| {
+                    (
+                        event["phase"].as_str().unwrap_or_default(),
+                        event["subject"].as_str().unwrap_or_default(),
+                        event["outcome"].as_str().unwrap_or_default(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            expected_phases
+        );
+        let target_workers = phases
+            .iter()
+            .find(|event| event["phase"] == "workers" && event["subject"] == "target_project")
+            .ok_or_else(|| anyhow!("missing target Project Workers phase"))?;
+        assert_eq!(target_workers["worker_count"], 0);
+        assert_eq!(target_workers["project_count"], 0);
+        if matches!(scenario, TargetedGatewayPhaseScenario::Success) {
+            let stale_workers = phases
+                .iter()
+                .find(|event| event["phase"] == "workers" && event["subject"] == "stale_workers")
+                .ok_or_else(|| anyhow!("missing stale Workers phase"))?;
+            assert_eq!(stale_workers["worker_count"], 1);
+            assert_eq!(stale_workers["project_count"], 1);
+        }
+        assert!(
+            phases
+                .iter()
+                .all(|event| event["elapsed_ms"].as_u64().is_some())
+        );
+
+        let phase_total = phases
+            .iter()
+            .filter(|event| event["phase"] != "queue" && event["phase"] != "finalization")
+            .map(|event| event["elapsed_ms"].as_u64().unwrap_or_default())
+            .sum::<u64>();
+        let total_execution = phases
+            .iter()
+            .find(|event| event["phase"] == "finalization")
+            .and_then(|event| event["total_execution_ms"].as_u64())
+            .ok_or_else(|| anyhow!("missing finalization total_execution_ms"))?;
+        assert!(phase_total <= total_execution);
+    }
+
+    Ok(())
+}
+
+async fn run_targeted_gateway_phase_scenario(
+    scenario: TargetedGatewayPhaseScenario,
+) -> Result<(JobStatus, Vec<Value>)> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    seed_foundation_caddy(&paths)?;
+    state::fs::write_sensitive_file(
+        resources::ArtifactManifestCache::new(paths.downloads()).path(),
+        CADDY_ARTIFACT_MANIFEST,
+    )?;
+
+    let php_track = "8.4";
+    let php_release = paths.home().join("8.4-php-release");
+    state::fs::write_sensitive_file(&php_release.join("bin/php"), "#!/bin/sh\n")?;
+    state::fs::write_sensitive_file(&php_release.join("share/pv/php-extensions.json"), "[]")?;
+    let frankenphp_release = paths.home().join("8.4-frankenphp-release");
+    let frankenphp_source = paths.home().join("fake-frankenphp-source");
+    state::fs::write_sensitive_file(
+        &frankenphp_source,
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test-fixtures/gateway/fake-frankenphp.sh"
+        )),
+    )?;
+    state::fs::write_sensitive_file(
+        &frankenphp_release.join("bin/frankenphp.server.py"),
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test-fixtures/gateway/fake-frankenphp-server.py"
+        )),
+    )?;
+    let frankenphp_install =
+        AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.0", &frankenphp_source)?;
+    let frankenphp_executable = frankenphp_release.join("bin/frankenphp");
+    state::fs::rename(frankenphp_install.binary_path(), &frankenphp_executable)?;
+    state::fs::write_sensitive_file(
+        &frankenphp_release.join("share/pv/php-extensions.json"),
+        "[]",
+    )?;
+
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "php",
+        php_track,
+        "8.4.8-pv1",
+        &php_release,
+    )?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        php_track,
+        "8.4.8-pv1",
+        &frankenphp_release,
+    )?;
+    let worker_port_reservations = reserve_foundation_ports(1, 40_000, 44_999)?;
+    let worker_service_port = worker_port_reservations[0].local_addr()?.port();
+    database.assign_port(
+        PortRequest::php_worker(
+            php_track,
+            worker_service_port,
+            worker_service_port,
+            worker_service_port,
+        ),
+        |_port| true,
+    )?;
+
+    let target_path = tempdir.path().join("target-project");
+    let target_config_path = target_path.join("pv.yml");
+    state::fs::write_sensitive_file(&target_config_path, "php: \"8.4\"\n")?;
+    let target = database
+        .link_project(LinkProjectInput {
+            path: target_path.clone(),
+            original_path: target_path,
+            primary_hostname: "target.test".to_owned(),
+            config_path: target_config_path.clone(),
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    let retained_path = tempdir.path().join("retained-project");
+    let retained_config_path = retained_path.join("pv.yml");
+    state::fs::write_sensitive_file(&retained_config_path, "php: \"8.4\"\n")?;
+    database.link_project(LinkProjectInput {
+        path: retained_path.clone(),
+        original_path: retained_path,
+        primary_hostname: "retained.test".to_owned(),
+        config_path: retained_config_path,
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+    drop(database);
+
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    gateway_guard.attach_worker(php_track);
+    drop(worker_port_reservations);
+    let initial_lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "reconcile",
+            "scope": "system",
+        }),
+    )
+    .await?;
+    let initial_job_id = required_response_job_id(&initial_lines)?;
+    wait_for_succeeded_job_id(&paths, initial_job_id).await?;
+
+    state::fs::write_sensitive_file(&target_config_path, "serve: false\n")?;
+    match scenario {
+        TargetedGatewayPhaseScenario::Success => {}
+        TargetedGatewayPhaseScenario::GatewayFailure => {
+            state::fs::write_sensitive_file(
+                &paths.home().join("fake-caddy-release/bin/caddy"),
+                "#!/bin/sh\nexit 2\n",
+            )?;
+        }
+        TargetedGatewayPhaseScenario::StaleWorkerFailure => {
+            state::fs::write_sensitive_file(&frankenphp_executable, "#!/bin/sh\nexit 2\n")?;
+        }
+    }
+
+    let lines = request_lines(
+        &paths,
+        json!({
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "command": "run_job",
+            "kind": "reconcile",
+            "scope": format!("project:{}", target.id),
+        }),
+    )
+    .await?;
+    let job_id = required_response_job_id(&lines)?.to_owned();
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+
+    let database = Database::open(&paths)?;
+    let job = database
+        .recent_jobs()?
+        .into_iter()
+        .find(|job| job.id == job_id)
+        .ok_or_else(|| anyhow!("missing targeted reconciliation job {job_id}"));
+    let log = state::fs::read_to_string(&paths.daemon_log());
+    let job = propagate_after_cleanup(job, cleanup_result)?;
+    let phases = log?
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .filter(|event| {
+            event["event"] == "reconciliation_phase_completed" && event["job_id"] == job_id
+        })
+        .collect();
+
+    Ok((job.status, phases))
+}
+
+fn required_response_job_id(lines: &[Value]) -> Result<&str> {
+    lines
+        .iter()
+        .find_map(|line| line["job_id"].as_str())
+        .ok_or_else(|| anyhow!("daemon response did not include a job id"))
+}
+
+#[tokio::test]
+async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project_config()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    let config_path = project_path.join("pv.yml");
+    let (project_id, worker_port_reservation) =
+        seed_foundation_php_project(&paths, &project_path, "php: \"8.4\"\n")?;
+    let worker_service_port = worker_port_reservation.local_addr()?.port();
+    drop(worker_port_reservation);
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    gateway_guard.attach_worker("8.4");
+
+    let initial_daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    wait_for_succeeded_job_scope(&paths, "system").await?;
+    initial_daemon.shutdown().await?;
+    let supervisor = daemon::ProcessSupervisor::new(paths.clone());
+    let initial_worker = supervisor
+        .adopt_recorded(
+            &paths.worker_pid("8.4"),
+            &paths.worker_runtime_metadata("8.4"),
+        )?
+        .ok_or_else(|| anyhow!("worker was not running before health recovery"))?;
+    let initial_worker_pid = initial_worker.pid();
+    state::fs::write_sensitive_file(&config_path, "php: [\n")?;
+
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    let operation_result = async {
+        wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
+        initial_worker.stop(Duration::from_secs(1)).await?;
+
+        tokio::time::pause();
+        tokio::time::advance(Duration::from_secs(30)).await;
+        tokio::task::yield_now().await;
+        tokio::time::resume();
+        let job =
+            wait_for_job_scope_status(&paths, &format!("project:{project_id}"), JobStatus::Failed)
+                .await?;
+
+        let recovered_worker = supervisor
+            .adopt_recorded(
+                &paths.worker_pid("8.4"),
+                &paths.worker_runtime_metadata("8.4"),
+            )?
+            .ok_or_else(|| anyhow!("health recovery did not restart the worker"))?;
+        daemon::wait_for_readiness(
+            daemon::ReadinessCheck::Tcp {
+                host: "127.0.0.1".to_owned(),
+                port: worker_service_port,
+            },
+            Duration::from_secs(1),
+        )
+        .await?;
+
+        let database = Database::open(&paths)?;
+        let assignments = database.assigned_ports()?;
+        let http_port = assignments
+            .iter()
+            .find_map(|assignment| {
+                (assignment.owner == PortOwner::Gateway(GatewayPort::Http))
+                    .then_some(assignment.port)
+            })
+            .ok_or_else(|| anyhow!("Gateway HTTP port was not assigned"))?;
+        daemon::wait_for_readiness(
+            daemon::ReadinessCheck::Http {
+                host: "127.0.0.1".to_owned(),
+                port: http_port,
+                path: "/__pv/health".to_owned(),
+            },
+            Duration::from_secs(5),
+        )
+        .await?;
+        let runtime_states = database.runtime_observed_states()?;
+
+        assert_ne!(recovered_worker.pid(), initial_worker_pid);
+        assert_eq!(job.status, JobStatus::Failed);
+        assert_eq!(state::fs::read_to_string(&config_path)?, "php: [\n");
+        assert!(runtime_states.iter().any(|state| {
+            state.subject
+                == RuntimeSubject::PhpWorker {
+                    php_track: "8.4".to_owned(),
+                }
+                && state.status == RuntimeObservedStatus::Running
+        }));
+
+        Ok(())
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+
+    propagate_after_cleanup(operation_result, cleanup_result)
+}
+
 #[tokio::test]
 async fn blocking_client_reports_failed_job_streams() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let jobs_lock = JobsLock::acquire(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
     let client_paths = paths.clone();
 
@@ -1049,6 +1994,7 @@ async fn blocking_client_reports_failed_job_streams() -> Result<()> {
     })
     .await?;
     daemon.shutdown().await?;
+    drop(jobs_lock);
     let database = Database::open(&paths)?;
     let jobs = database.recent_jobs()?;
 
@@ -1057,12 +2003,14 @@ async fn blocking_client_reports_failed_job_streams() -> Result<()> {
         Err(daemon::DaemonError::DaemonRejected { message })
             if message == "unsupported daemon job `unsupported` with scope `system`"
     ));
-    assert_eq!(jobs.len(), 1);
-    assert_eq!(jobs[0].kind, "unsupported");
-    assert_eq!(jobs[0].scope, "system");
-    assert_eq!(jobs[0].status, JobStatus::Failed);
+    let job = jobs
+        .iter()
+        .find(|job| job.kind == "unsupported")
+        .ok_or_else(|| anyhow!("missing unsupported job"))?;
+    assert_eq!(job.scope, "system");
+    assert_eq!(job.status, JobStatus::Failed);
     assert_eq!(
-        jobs[0].error.as_deref(),
+        job.error.as_deref(),
         Some("unsupported daemon job `unsupported` with scope `system`")
     );
 
@@ -1153,6 +2101,7 @@ async fn blocking_client_times_out_when_daemon_withholds_response() -> Result<()
 async fn invalid_reconciliation_scope_reports_scope_parse_failure() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let jobs_lock = JobsLock::acquire(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
 
     let lines = request_lines(
@@ -1167,6 +2116,7 @@ async fn invalid_reconciliation_scope_reports_scope_parse_failure() -> Result<()
     .await?;
 
     daemon.shutdown().await?;
+    drop(jobs_lock);
 
     let database = Database::open(&paths)?;
 
@@ -1182,6 +2132,7 @@ async fn invalid_reconciliation_scope_reports_scope_parse_failure() -> Result<()
 async fn protocol_mismatch_returns_restart_guidance_without_creating_a_job() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let _jobs_lock = JobsLock::acquire(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
 
     let lines = request_lines(
@@ -1323,7 +2274,7 @@ async fn disconnected_job_stream_still_persists_final_status() -> Result<()> {
         assert_eq!(health_lines[0]["status"], json!("ok"));
         assert_eq!(health_lines[0]["message"], json!("daemon healthy"));
 
-        wait_for_succeeded_job_id(&paths, "job_000001").await?;
+        wait_for_succeeded_job_count(&paths, "system", 2).await?;
 
         Ok::<(), anyhow::Error>(())
     }
@@ -1390,7 +2341,7 @@ async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> 
 }
 
 #[tokio::test]
-async fn project_config_watcher_survives_disappearing_database_side_files() -> Result<()> {
+async fn daemon_shutdown_cancels_watcher_retry_waiting_for_jobs_lock() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_path = tempdir.path().join("project");
@@ -1414,31 +2365,25 @@ async fn project_config_watcher_survives_disappearing_database_side_files() -> R
         Ok(())
     })?;
     drop(database);
-
+    let jobs_lock = JobsLock::acquire(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
-    sleep(Duration::from_millis(250)).await;
-    let auxiliary_path = paths.root().join("pv.db-wal");
-    state::fs::write_sensitive_file(&auxiliary_path, "")?;
-    let removal = state::testing::remove_database_auxiliary_file_before_hardening(auxiliary_path);
 
-    wait_for_database_auxiliary_hardening(removal).await?;
     write_file_after_modified_time_tick(
         &config_path,
         "env:\n  APP_URL: \"${project_url}\"\n  APP_NAME: watched\n",
     )
     .await?;
-
-    let job = wait_for_succeeded_job_scope(&paths, "project:project_1").await?;
+    // Give the config watcher time to observe the change and enter its jobs-lock retry loop.
+    sleep(Duration::from_secs(1)).await;
+    let jobs_before_shutdown = Database::open(&paths)?.recent_jobs()?.len();
 
     daemon.shutdown().await?;
+    drop(jobs_lock);
+    sleep(Duration::from_millis(300)).await;
 
-    assert_eq!(job.status, JobStatus::Succeeded);
-    assert!(
-        Database::open(&paths)?
-            .recent_jobs()?
-            .into_iter()
-            .all(|job| job.status != JobStatus::Failed)
-    );
+    let database = Database::open(&paths)?;
+    assert_eq!(database.recent_jobs()?.len(), jobs_before_shutdown);
+    assert!(!state::fs::path_entry_exists(&project_path.join(".env"))?);
 
     Ok(())
 }
@@ -1691,6 +2636,14 @@ async fn wait_for_succeeded_job_id(paths: &PvPaths, id: &str) -> Result<JobRecor
 }
 
 async fn wait_for_succeeded_job_scope(paths: &PvPaths, scope: &str) -> Result<JobRecord> {
+    wait_for_job_scope_status(paths, scope, JobStatus::Succeeded).await
+}
+
+async fn wait_for_job_scope_status(
+    paths: &PvPaths,
+    scope: &str,
+    status: JobStatus,
+) -> Result<JobRecord> {
     let deadline = Instant::now() + JOB_STATUS_WAIT_TIMEOUT;
 
     loop {
@@ -1698,7 +2651,7 @@ async fn wait_for_succeeded_job_scope(paths: &PvPaths, scope: &str) -> Result<Jo
         if let Some(job) = database
             .recent_jobs()?
             .into_iter()
-            .find(|job| job.scope == scope && job.status == JobStatus::Succeeded)
+            .find(|job| job.scope == scope && job.status == status)
         {
             return Ok(job);
         }
@@ -1711,24 +2664,37 @@ async fn wait_for_succeeded_job_scope(paths: &PvPaths, scope: &str) -> Result<Jo
     }
 
     Err(anyhow::anyhow!(
-        "succeeded job with scope {scope:?} was not recorded"
+        "{status:?} job with scope {scope:?} was not recorded"
     ))
 }
 
-async fn wait_for_database_auxiliary_hardening(removal: Receiver<()>) -> Result<()> {
-    for _attempt in 0..50 {
-        match removal.try_recv() {
-            Ok(()) => return Ok(()),
-            Err(TryRecvError::Empty) => {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            Err(TryRecvError::Disconnected) => {
-                return Err(anyhow!("database auxiliary hardening hook disconnected"));
-            }
+async fn wait_for_succeeded_job_count(
+    paths: &PvPaths,
+    scope: &str,
+    expected_count: usize,
+) -> Result<()> {
+    let deadline = Instant::now() + JOB_STATUS_WAIT_TIMEOUT;
+
+    loop {
+        let succeeded_count = Database::open(paths)?
+            .recent_jobs()?
+            .into_iter()
+            .filter(|job| job.scope == scope && job.status == JobStatus::Succeeded)
+            .count();
+        if succeeded_count >= expected_count {
+            return Ok(());
         }
+
+        if Instant::now() >= deadline {
+            break;
+        }
+
+        sleep(JOB_STATUS_POLL_INTERVAL).await;
     }
 
-    Err(anyhow!("database auxiliary hardening hook did not run"))
+    Err(anyhow!(
+        "expected {expected_count} succeeded jobs with scope {scope:?}"
+    ))
 }
 
 async fn write_file_after_modified_time_tick(path: &camino::Utf8Path, content: &str) -> Result<()> {

@@ -18,7 +18,6 @@ use crate::output::{Output, OutputMode};
 use crate::progress::DownloadProgressRenderer;
 
 const COMPOSER_TRACK: &str = "2";
-const RECONCILE_KIND: &str = "reconcile";
 const SYSTEM_SCOPE: &str = "system";
 
 pub(crate) fn install(
@@ -27,6 +26,7 @@ pub(crate) fn install(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let commands = resource_commands(&paths, environment)?;
+    let jobs_lock = super::acquire_jobs_lock(&paths)?;
     let database = Database::open(&paths)?;
     let selector = php_selector(&database)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
@@ -34,6 +34,7 @@ pub(crate) fn install(
         commands.install_composer_with_php_pair_and_progress(selector, client, &progress)
     })?;
     drop(progress);
+    drop(jobs_lock);
     let php_pair = installed.php_pair();
     let composer = installed.composer();
     let mut output = Output::new(stdout, OutputMode::plain());
@@ -58,11 +59,13 @@ pub(crate) fn update(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let commands = resource_commands(&paths, environment)?;
+    let jobs_lock = super::acquire_jobs_lock(&paths)?;
     let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
     let updated = with_resource_http_client(environment, |client| {
         commands.update_composer_with_progress(client, &progress)
     })?;
     drop(progress);
+    drop(jobs_lock);
     let mut output = Output::new(stdout, OutputMode::plain());
 
     super::write_revoked_latest_warnings(updated.installs(), &mut output)?;
@@ -236,30 +239,9 @@ fn request_system_reconciliation(
     paths: &PvPaths,
     output: &mut Output<'_, impl Write>,
 ) -> Result<(), ExecuteError> {
-    match daemon::submit_job_blocking(paths.clone(), RECONCILE_KIND, SYSTEM_SCOPE) {
-        Ok(job) => output.line(&format!("System reconciliation requested: {}", job.id))?,
-        Err(daemon::DaemonError::Io(error)) if daemon_is_unavailable(&error) => {
-            write_daemon_unavailable_warning(output)?
-        }
-        Err(error) => return Err(error.into()),
+    if let Some(job) = super::submit_reconciliation(paths, SYSTEM_SCOPE, output)? {
+        output.line(&format!("System reconciliation requested: {}", job.id))?;
     }
 
     Ok(())
-}
-
-fn write_daemon_unavailable_warning(
-    output: &mut Output<'_, impl Write>,
-) -> Result<(), ExecuteError> {
-    output.line(
-        "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it",
-    )?;
-
-    Ok(())
-}
-
-fn daemon_is_unavailable(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-    )
 }

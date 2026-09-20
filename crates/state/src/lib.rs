@@ -12,20 +12,20 @@ pub use database::{
     DNS_PREFERRED_PORT, Database, DatabaseInspection, EnvContextValues,
     GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, GatewayPortAssignments,
     JobDiagnosticSubject, JobRecord, JobStatus, LinkProjectInput, LinkProjectResult,
-    LinkProjectStatus, ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
-    ManagedResourceTrackRecord, ManagedResourceTrackRemovalInput, PortAssignment, PortOwner,
-    PortRequest, PostgresPreloadLibrary, ProjectConfigWatch, ProjectEnvAllocationContext,
-    ProjectEnvObservedStateRecord, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput,
-    ProjectEnvObservedWarningRecord, ProjectEnvResourceContext, ProjectEnvStateContext,
-    ProjectManagedResourceInput, ProjectManagedResourceRecord, ProjectMode, ProjectPhpRuntimeInput,
-    ProjectPhpRuntimeRecord, ProjectReconciliationStateInput, ProjectRecord,
-    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
+    LinkProjectStatus, ManagedResourceDesiredState, ManagedResourceTrackDesiredInput,
+    ManagedResourceTrackInstallInput, ManagedResourceTrackRecord, ManagedResourceTrackRemovalInput,
+    PortAssignment, PortOwner, PortRequest, PostgresPreloadLibrary, ProjectConfigWatch,
+    ProjectEnvAllocationContext, ProjectEnvObservedStateRecord, ProjectEnvObservedStatus,
+    ProjectEnvObservedWarningInput, ProjectEnvObservedWarningRecord, ProjectEnvResourceContext,
+    ProjectEnvStateContext, ProjectManagedResourceInput, ProjectManagedResourceRecord, ProjectMode,
+    ProjectPhpRuntimeInput, ProjectPhpRuntimeRecord, ProjectReconciliationStateInput,
+    ProjectRecord, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
     ResourceAllocationRecord, ResourceAllocationStatus, RuntimeObservedStateRecord,
     RuntimeObservedStatus, RuntimeSubject, UnresolvedJobFailure, php_runtime_key,
 };
 pub use error::{StateCapability, StateError};
 pub use paths::{PathSummaryEntry, PvPaths};
-pub use update_lock::{HelperLifecycleLock, UpdateLock};
+pub use update_lock::{HelperLifecycleLock, JobsLock, UpdateLock};
 
 #[doc(hidden)]
 pub mod testing {
@@ -51,6 +51,11 @@ pub mod testing {
 
     pub fn read_to_string(path: &camino::Utf8Path) -> Result<String, StateError> {
         read_file_to_string(path)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fail_next_sensitive_write(path: camino::Utf8PathBuf) {
+        crate::fs::fail_next_sensitive_write(path);
     }
 
     #[cfg(any(test, feature = "test-support"))]

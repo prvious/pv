@@ -99,6 +99,10 @@ impl PvPaths {
         self.run().join("update.lock")
     }
 
+    pub fn jobs_lock(&self) -> Utf8PathBuf {
+        self.run().join("jobs.lock")
+    }
+
     pub fn helper_lifecycle_lock(&self) -> Utf8PathBuf {
         self.root.with_file_name(".pv-helper-lifecycle.lock")
     }
@@ -166,14 +170,16 @@ impl PvPaths {
         self.config().join("gateway/projects")
     }
 
+    pub fn worker_config_dir(&self, php_runtime: &str) -> Utf8PathBuf {
+        self.config().join(format!("workers/php-{php_runtime}"))
+    }
+
     pub fn worker_root_config(&self, php_runtime: &str) -> Utf8PathBuf {
-        self.config()
-            .join(format!("workers/php-{php_runtime}/Caddyfile"))
+        self.worker_config_dir(php_runtime).join("Caddyfile")
     }
 
     pub fn worker_projects_config_dir(&self, php_runtime: &str) -> Utf8PathBuf {
-        self.config()
-            .join(format!("workers/php-{php_runtime}/projects"))
+        self.worker_config_dir(php_runtime).join("projects")
     }
 
     pub fn resource_runtime_config(&self, resource_name: &str, track: &str) -> Utf8PathBuf {

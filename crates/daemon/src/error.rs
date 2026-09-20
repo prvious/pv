@@ -12,6 +12,63 @@ use tokio::task::JoinError;
 use tokio_util::codec::LinesCodecError;
 
 use crate::caddy_admin::CaddyAdminError;
+use crate::reconciliation::ReconciliationScopeParseError;
+
+#[derive(Debug)]
+pub struct ManagedResourceProjectFailure {
+    resource_name: String,
+    track: String,
+    error: Box<DaemonError>,
+}
+
+impl ManagedResourceProjectFailure {
+    pub(crate) fn new(resource_name: String, track: String, error: DaemonError) -> Self {
+        Self {
+            resource_name,
+            track,
+            error: Box::new(error),
+        }
+    }
+
+    pub fn resource_name(&self) -> &str {
+        &self.resource_name
+    }
+
+    pub fn track(&self) -> &str {
+        &self.track
+    }
+
+    pub fn error(&self) -> &DaemonError {
+        &self.error
+    }
+
+    pub(crate) fn into_error(self) -> DaemonError {
+        *self.error
+    }
+}
+
+#[derive(Debug)]
+pub struct RuntimeReconciliationFailure {
+    runtime_key: String,
+    error: Box<DaemonError>,
+}
+
+impl RuntimeReconciliationFailure {
+    pub(crate) fn new(runtime_key: String, error: DaemonError) -> Self {
+        Self {
+            runtime_key,
+            error: Box::new(error),
+        }
+    }
+
+    pub fn runtime_key(&self) -> &str {
+        &self.runtime_key
+    }
+
+    pub fn error(&self) -> &DaemonError {
+        &self.error
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum DaemonError {
@@ -49,6 +106,13 @@ pub enum DaemonError {
         #[source]
         source: Box<DaemonError>,
         reconciliation: Box<DaemonError>,
+    },
+
+    #[error("Project apply failed with `{source}`; resource repair also failed: {repair}")]
+    ProjectApplyAfterResourceRepairFailed {
+        #[source]
+        source: Box<DaemonError>,
+        repair: Box<DaemonError>,
     },
 
     #[error(
@@ -105,8 +169,45 @@ pub enum DaemonError {
     #[error("state error: {0}")]
     State(#[from] StateError),
 
+    #[error("reconciliation scope error: {0}")]
+    ReconciliationScope(#[from] ReconciliationScopeParseError),
+
     #[error("Project config error: {0}")]
     Config(#[from] ConfigError),
+
+    #[error("Project `{project_id}` env dependencies cannot be refreshed: {reason}")]
+    ProjectEnvDependenciesNotApplied { project_id: String, reason: String },
+
+    #[error(
+        "Project `{project_id}` Managed Resource allocation failed with `{allocation}`; additionally failed to record the Project failure: {recording}"
+    )]
+    ProjectAllocationFailureRecordingFailed {
+        project_id: String,
+        allocation: Box<DaemonError>,
+        #[source]
+        recording: Box<DaemonError>,
+    },
+
+    #[error(
+        "Project `{project_id}` env reconciliation failed with `{reconciliation}`; additionally failed to record the Project failure: {recording}"
+    )]
+    ProjectEnvFailureRecordingFailed {
+        project_id: String,
+        reconciliation: Box<DaemonError>,
+        #[source]
+        recording: Box<DaemonError>,
+    },
+
+    #[error(
+        "Managed Resource `{resource_name}` track `{track}` reconciliation failed with `{reconciliation}`; additionally failed to record the runtime failure: {recording}"
+    )]
+    ManagedResourceRuntimeFailureRecordingFailed {
+        resource_name: String,
+        track: String,
+        reconciliation: Box<DaemonError>,
+        #[source]
+        recording: Box<DaemonError>,
+    },
 
     #[error("Managed Resource error: {0}")]
     Resources(#[from] ResourcesError),
@@ -119,6 +220,31 @@ pub enum DaemonError {
 
     #[error("Managed Resource default installs failed: {}", default_install_failures(.failures))]
     ManagedResourceDefaultInstallFailures { failures: Vec<String> },
+
+    #[error(
+        "Project Managed Resource reconciliation failed: {}",
+        project_resource_failures(.failures)
+    )]
+    ManagedResourceProjectFailures {
+        failures: Vec<ManagedResourceProjectFailure>,
+    },
+
+    #[error(transparent)]
+    ProjectResourceInstallation { source: Box<DaemonError> },
+
+    #[error("{project_label}: {source}")]
+    ProjectReconciliation {
+        project_label: String,
+        source: Box<DaemonError>,
+    },
+
+    #[error("System reconciliation failed: {}", system_reconciliation_failures(.failures))]
+    SystemReconciliationFailures { failures: Vec<DaemonError> },
+
+    #[error("runtime reconciliation failed: {}", runtime_reconciliation_failures(.failures))]
+    RuntimeReconciliationFailures {
+        failures: Vec<RuntimeReconciliationFailure>,
+    },
 
     #[error("Redis readiness failed: {0}")]
     Redis(#[from] redis::RedisError),
@@ -199,6 +325,43 @@ pub enum DaemonError {
 
 fn default_install_failures(failures: &[String]) -> String {
     failures.join("; ")
+}
+
+fn system_reconciliation_failures(failures: &[DaemonError]) -> String {
+    failures
+        .iter()
+        .map(|failure| match failure {
+            DaemonError::ProjectReconciliation {
+                project_label,
+                source,
+            } if matches!(source.as_ref(), DaemonError::ProjectResourceInstallation { .. }) => {
+                format!("{project_label}: Project application stopped after resource installation failed")
+            }
+            _ => failure.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn project_resource_failures(failures: &[ManagedResourceProjectFailure]) -> String {
+    failures
+        .iter()
+        .map(|failure| {
+            format!(
+                "{} {}: {}",
+                failure.resource_name, failure.track, failure.error
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn runtime_reconciliation_failures(failures: &[RuntimeReconciliationFailure]) -> String {
+    failures
+        .iter()
+        .map(|failure| format!("{}: {}", failure.runtime_key, failure.error))
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 fn managed_resource_partial_update_summary(update: &ManagedResourceUpdate) -> String {

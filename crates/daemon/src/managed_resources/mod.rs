@@ -11,7 +11,7 @@ pub(crate) mod sql;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::io;
 use std::net::TcpListener;
@@ -20,11 +20,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use protocol::{
     ManagedResourceUpdateCheck as ProtocolUpdateCheck,
     ManagedResourceUpdateCheckTrack as ProtocolUpdateCheckTrack,
 };
-use resources::{ManagedResourceCommands, ResourceAdapter, TrackName, TrackSelector};
+use resources::{ManagedResourceCommands, ResourceAdapter, TrackName};
 use state::{
     Database, EnvContextValues, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
     PortRequest, PostgresPreloadLibrary, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END,
@@ -34,7 +35,15 @@ use state::{
 use tokio::time::{sleep, timeout};
 
 use crate::jobs::DaemonDownloadProgress;
-use crate::{DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_readiness};
+use crate::project_env::DemandedResourceTrack;
+use crate::supervisor::{
+    ManagedProcess, RUNTIME_READINESS_CONCURRENCY_LIMIT, runtime_exited_before_readiness_error,
+    wait_for_started_runtime_readiness,
+};
+use crate::{
+    DaemonError, ManagedResourceProjectFailure, ProcessSpec, ProcessSupervisor, ReadinessCheck,
+    wait_for_readiness,
+};
 
 const RESOURCE_HOST: &str = "127.0.0.1";
 const RESOURCE_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
@@ -87,6 +96,13 @@ impl ManagedResourceReadiness {
             name: name.into(),
             check: Box::new(check),
         })
+    }
+
+    pub(crate) async fn probe_once(&self) -> Result<(), DaemonError> {
+        match self {
+            Self::TcpHttp(check) => crate::supervisor::probe_readiness_once(check).await,
+            Self::Async(check) => (check.check)().await,
+        }
     }
 }
 
@@ -260,6 +276,61 @@ impl ManagedResourceRuntimeCatalog {
         self.adapters.get(resource_name).map(Box::as_ref)
     }
 
+    /// Whether this catalog contains a runtime adapter for the Managed Resource.
+    pub(crate) fn has_adapter(&self, resource_name: &str) -> bool {
+        self.adapters.contains_key(resource_name)
+    }
+
+    pub(crate) fn persisted_health_probe(
+        &self,
+        paths: &PvPaths,
+        database: &Database,
+        track: &ManagedResourceTrackRecord,
+        assignments: &[state::PortAssignment],
+    ) -> Result<Option<ManagedResourceReadiness>, DaemonError> {
+        let Some(adapter) = self.adapter(&track.resource_name) else {
+            return Ok(None);
+        };
+        let Some(artifact_path) = track.current_artifact_path.clone() else {
+            return Ok(None);
+        };
+        let ports = assignments
+            .iter()
+            .filter_map(|assignment| match &assignment.owner {
+                state::PortOwner::Resource {
+                    name,
+                    track: assigned_track,
+                    port,
+                } if name == &track.resource_name && assigned_track == &track.track => {
+                    Some((port.clone(), assignment.port))
+                }
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        if adapter
+            .port_specs()
+            .iter()
+            .any(|port| !ports.contains_key(port.name))
+        {
+            return Ok(None);
+        }
+        let context = ManagedResourceRuntimeContext {
+            resource_name: track.resource_name.clone(),
+            track: track.track.clone(),
+            artifact_path,
+            data_dir: paths.resource_data_dir(&track.resource_name, &track.track),
+            ports,
+            env: track.env.clone(),
+            postgres_preload_libraries: if track.resource_name == "postgres" {
+                database.postgres_track_preload_libraries(&track.track)?
+            } else {
+                Vec::new()
+            },
+        };
+
+        adapter.readiness(&context).map(Some)
+    }
+
     fn artifact_adapters(&self) -> Result<Vec<resources::RuntimeArtifactAdapter>, DaemonError> {
         self.adapters
             .values()
@@ -268,60 +339,326 @@ impl ManagedResourceRuntimeCatalog {
     }
 }
 
+/// Whether reconciling a Project's resources may install a missing artifact, or must treat it
+/// as a failure because an earlier Resources phase was responsible for installing it.
+///
+/// Only direct test helpers apply without a preceding Resources phase, so
+/// [`ArtifactInstall::Allowed`] is constructed solely by those test-only callers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ArtifactInstall {
+    #[cfg(test)]
+    Allowed,
+    Forbidden,
+}
+
 pub(crate) async fn reconcile_project_resources_with_progress(
     paths: &PvPaths,
     database: &mut Database,
     project: &ProjectRecord,
     plan: &crate::project_env::ProjectResourcePlan,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
+    artifact_install: ArtifactInstall,
 ) -> Result<(), DaemonError> {
     let catalog = ManagedResourceRuntimeCatalog::production()?;
 
     reconcile_project_resources_with_catalog_and_progress(
-        paths, database, project, plan, &catalog, progress,
+        paths,
+        database,
+        project,
+        plan,
+        &catalog,
+        demanded_tracks,
+        progress,
+        artifact_install,
     )
     .await
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "`demanded_tracks` is the system-wide union that decides which runtimes stay, while \
+              `artifact_install` is this stage's install permission. Neither is derivable from the \
+              Project's own plan, so bundling them would hide two independent inputs."
+)]
 pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
     paths: &PvPaths,
     database: &mut Database,
     project: &ProjectRecord,
     plan: &crate::project_env::ProjectResourcePlan,
     catalog: &ManagedResourceRuntimeCatalog,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
+    artifact_install: ArtifactInstall,
 ) -> Result<(), DaemonError> {
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let demanded_tracks = plan
-        .resources
-        .iter()
-        .map(|resource| (resource.resource_name.clone(), resource.track.clone()))
-        .collect::<BTreeSet<_>>();
+    let mut demanded_tracks = demanded_tracks.clone();
+    demanded_tracks.extend(plan.resources.iter().map(|resource| {
+        DemandedResourceTrack::new(resource.resource_name.clone(), resource.track.clone())
+    }));
 
     stop_undemanded_catalog_runtimes(paths, database, catalog, &supervisor, &demanded_tracks)
         .await?;
-    let context = ResourceTrackReconciliationContext {
+    let install_requests = missing_project_install_requests(database, plan, catalog);
+    let mut prefetched_installs =
+        prefetch_missing_project_installs(paths, catalog, install_requests, progress.clone())
+            .await?;
+    let mut context = ResourceTrackReconciliationContext {
         catalog,
         supervisor: &supervisor,
         progress: &progress,
+        prefetched_installs: &mut prefetched_installs,
+        artifact_install,
     };
 
-    for resource in &plan.resources {
-        reconcile_resource_track(paths, database, project, plan, &context, resource).await?;
+    reconcile_resource_tracks(paths, database, &mut context, project, plan).await
+}
+
+/// Reconciles one resource track for the Projects demanding it, including runtime
+/// readiness and allocation reconciliation. Only tests exercise this entry point
+/// directly now; the resource scope passes its dependents explicitly.
+#[cfg(test)]
+pub(crate) async fn reconcile_persisted_resource_track_with_progress(
+    paths: &PvPaths,
+    resource_name: &str,
+    track: &str,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    progress: DaemonDownloadProgress,
+) -> Result<(Vec<ProjectRecord>, BTreeMap<String, DaemonError>), DaemonError> {
+    let projects =
+        Database::open(paths)?.projects_demanding_managed_resource_track(resource_name, track)?;
+    let (_, failures) = reconcile_persisted_resource_track_for_projects_with_progress(
+        paths,
+        resource_name,
+        track,
+        runtime_catalog,
+        &projects,
+        progress,
+    )
+    .await?;
+
+    Ok((projects, failures))
+}
+
+/// Reconciles one resource track for an explicit set of dependent Projects, installing
+/// a missing artifact first when the catalog provides a runtime adapter. Returns
+/// whether an install ran alongside any per-Project allocation failures.
+pub(crate) async fn reconcile_persisted_resource_track_for_projects_with_progress(
+    paths: &PvPaths,
+    resource_name: &str,
+    track: &str,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    projects: &[ProjectRecord],
+    progress: DaemonDownloadProgress,
+) -> Result<(bool, BTreeMap<String, DaemonError>), DaemonError> {
+    use crate::project_env::record_project_env_failure;
+    use state::ResourceAllocationStatus;
+    let production_catalog;
+    let catalog = if let Some(catalog) = runtime_catalog {
+        catalog
+    } else {
+        production_catalog = ManagedResourceRuntimeCatalog::production()?;
+        &production_catalog
+    };
+    let mut database = Database::open(paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+
+    if projects.is_empty() {
+        let track_record = database
+            .managed_resource_tracks()?
+            .into_iter()
+            .find(|record| record.resource_name == resource_name && record.track == track);
+        if let Some(track_record) = track_record {
+            if track_record.usage_count > 0 {
+                return Err(DaemonError::UnexpectedProtocolResponse {
+                    reason: format!(
+                        "resource {resource_name} track {track} has usage without dependent Projects"
+                    ),
+                });
+            }
+            if catalog.adapter(resource_name).is_some() {
+                stop_resource_runtime(paths, &mut database, &supervisor, &track_record).await?;
+            }
+        }
+
+        return Ok((false, BTreeMap::new()));
     }
 
-    Ok(())
+    let mut project_failures = BTreeMap::new();
+    let result: Result<bool, DaemonError> = async {
+        let installed = if catalog.adapter(resource_name).is_some() {
+            let scoped_track = BTreeSet::from([DemandedResourceTrack::new(
+                resource_name.to_owned(),
+                track.to_owned(),
+            )]);
+            install_missing_resource_tracks(paths, Some(catalog), &scoped_track, progress.clone())
+                .await?
+        } else {
+            false
+        };
+        let resource = state::ProjectManagedResourceInput {
+            resource_name: resource_name.to_owned(),
+            track: track.to_owned(),
+        };
+        let plan = crate::project_env::ProjectResourcePlan {
+            resources: vec![resource.clone()],
+            allocations: BTreeMap::new(),
+        };
+        let install_requests = missing_project_install_requests(&database, &plan, catalog);
+        let mut prefetched_installs =
+            prefetch_missing_project_installs(paths, catalog, install_requests, progress.clone())
+                .await?;
+        let mut context = ResourceTrackReconciliationContext {
+            catalog,
+            supervisor: &supervisor,
+            progress: &progress,
+            prefetched_installs: &mut prefetched_installs,
+            artifact_install: ArtifactInstall::Forbidden,
+        };
+
+        reconcile_resource_track(paths, &mut database, &mut context, &resource, &[]).await?;
+
+        if let Some(adapter) = catalog.adapter(resource_name) {
+            let runtime_context =
+                persisted_resource_runtime_context(paths, &mut database, adapter, &resource)?;
+            for project in projects {
+                let allocations = database
+                    .resource_allocations(&project.id, resource_name)?
+                    .into_iter()
+                    .filter(|allocation| {
+                        allocation.track == track
+                            && allocation.status != ResourceAllocationStatus::Inactive
+                    })
+                    .collect::<Vec<_>>();
+                if let Err(error) = adapter
+                    .reconcile_allocations(
+                        paths,
+                        &mut database,
+                        &runtime_context,
+                        &runtime_context.env,
+                        &allocations,
+                    )
+                    .await
+                {
+                    let error = record_allocation_reconciliation_failure(
+                        &mut database,
+                        &allocations,
+                        error,
+                    );
+                    if matches!(
+                        &error,
+                        DaemonError::ProjectAllocationFailureRecordingFailed { .. }
+                    ) {
+                        return Err(error);
+                    }
+                    project_failures.insert(project.id.clone(), error);
+                }
+            }
+        }
+
+        Ok(installed)
+    }
+    .await;
+
+    match result {
+        Ok(installed) => Ok((installed, project_failures)),
+        Err(reconciliation) => {
+            for project in projects {
+                let message = if let Some(error) = project_failures.get(&project.id) {
+                    error.to_string()
+                } else {
+                    if let DaemonError::ProjectAllocationFailureRecordingFailed {
+                        project_id, ..
+                    } = &reconciliation
+                        && project_id != &project.id
+                    {
+                        continue;
+                    }
+                    reconciliation.to_string()
+                };
+                if let Err(recording) =
+                    record_project_env_failure(&mut database, &project.id, &message)
+                {
+                    return Err(DaemonError::ProjectEnvFailureRecordingFailed {
+                        project_id: project.id.clone(),
+                        reconciliation: Box::new(reconciliation),
+                        recording: Box::new(recording),
+                    });
+                }
+            }
+            Err(reconciliation)
+        }
+    }
+}
+
+fn record_allocation_reconciliation_failure(
+    database: &mut Database,
+    allocations: &[ResourceAllocationRecord],
+    error: DaemonError,
+) -> DaemonError {
+    if let Some(allocation) = allocations.first()
+        && let Err(recording) = database.invalidate_project_resource_allocation_readiness(
+            &allocation.project_id,
+            &allocation.resource_name,
+            &allocation.track,
+        )
+    {
+        return DaemonError::ProjectAllocationFailureRecordingFailed {
+            project_id: allocation.project_id.clone(),
+            allocation: Box::new(error),
+            recording: Box::new(recording.into()),
+        };
+    }
+    error
+}
+
+/// Builds the runtime context for persisted allocation reconciliation.
+fn persisted_resource_runtime_context(
+    paths: &PvPaths,
+    database: &mut Database,
+    adapter: &dyn ManagedResourceRuntimeAdapter,
+    resource: &state::ProjectManagedResourceInput,
+) -> Result<ManagedResourceRuntimeContext, DaemonError> {
+    let track = database.managed_resource_track(&resource.resource_name, &resource.track)?;
+    let Some(artifact_path) = track.current_artifact_path else {
+        return Err(DaemonError::ManagedResourceArtifactMissing {
+            resource: resource.resource_name.clone(),
+            track: resource.track.clone(),
+        });
+    };
+    let ports = assign_named_ports(database, adapter, &resource.resource_name, &resource.track)?;
+
+    Ok(ManagedResourceRuntimeContext {
+        resource_name: resource.resource_name.clone(),
+        track: resource.track.clone(),
+        artifact_path,
+        data_dir: paths.resource_data_dir(&resource.resource_name, &resource.track),
+        ports,
+        env: track.env,
+        postgres_preload_libraries: if resource.resource_name == "postgres" {
+            database.postgres_track_preload_libraries(&resource.track)?
+        } else {
+            Vec::new()
+        },
+    })
 }
 
 pub(crate) async fn reconcile_system_resources_with_progress(
     paths: &PvPaths,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     let catalog = ManagedResourceRuntimeCatalog::production()?;
     let mut database = Database::open(paths)?;
 
-    reconcile_system_resources_with_catalog_and_progress(paths, &mut database, &catalog, progress)
-        .await
+    reconcile_system_resources_with_catalog_and_progress(
+        paths,
+        &mut database,
+        &catalog,
+        demanded_tracks,
+        progress,
+    )
+    .await
 }
 
 pub(crate) fn update_check(
@@ -368,7 +705,7 @@ fn update_check_with_catalog(
 pub(crate) fn update_installed_with_progress(
     paths: PvPaths,
     catalog: Option<&ManagedResourceRuntimeCatalog>,
-    progress: &impl resources::DownloadProgress,
+    progress: &DaemonDownloadProgress,
 ) -> Result<ManagedResourceUpdateReport, DaemonError> {
     match catalog {
         Some(catalog) => update_installed_with_catalog(paths, catalog, progress),
@@ -383,7 +720,7 @@ pub(crate) fn update_installed_with_progress(
 fn update_installed_with_catalog(
     paths: PvPaths,
     catalog: &ManagedResourceRuntimeCatalog,
-    progress: &impl resources::DownloadProgress,
+    progress: &DaemonDownloadProgress,
 ) -> Result<ManagedResourceUpdateReport, DaemonError> {
     let commands = ManagedResourceCommands::new(
         paths,
@@ -397,11 +734,22 @@ fn update_installed_with_catalog(
         .map(|adapter| adapter as &dyn resources::ResourceAdapter)
         .collect::<Vec<_>>();
     let update_result = if let Some(client) = catalog.http_client.as_deref() {
-        commands.update_all_installed_with_progress(&resource_adapters, client, progress)
+        let snapshot = progress.latest_manifest_snapshot(&commands, client)?;
+        commands.update_all_installed_from_manifest_prefetched_with_progress(
+            &resource_adapters,
+            &snapshot,
+            client,
+            progress,
+        )
     } else {
         let client = resources::UreqResourceHttpClient::default();
-
-        commands.update_all_installed_with_progress(&resource_adapters, &client, progress)
+        let snapshot = progress.latest_manifest_snapshot(&commands, &client)?;
+        commands.update_all_installed_from_manifest_prefetched_with_progress(
+            &resource_adapters,
+            &snapshot,
+            &client,
+            progress,
+        )
     };
     let (update, failure) = match update_result {
         Ok(update) => (update, None),
@@ -444,6 +792,7 @@ pub(crate) async fn reconcile_system_resources_with_catalog(
         paths,
         database,
         catalog,
+        &BTreeSet::new(),
         DaemonDownloadProgress::disabled(),
     )
     .await
@@ -453,6 +802,7 @@ pub(crate) async fn reconcile_system_resources_with_catalog_and_progress(
     paths: &PvPaths,
     database: &mut Database,
     catalog: &ManagedResourceRuntimeCatalog,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     database.record_managed_resource_track_desired(
@@ -461,11 +811,32 @@ pub(crate) async fn reconcile_system_resources_with_catalog_and_progress(
         ManagedResourceDesiredState::Installed,
     )?;
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let demanded_tracks = BTreeSet::new();
 
-    stop_undemanded_catalog_runtimes(paths, database, catalog, &supervisor, &demanded_tracks)
+    stop_undemanded_catalog_runtimes(paths, database, catalog, &supervisor, demanded_tracks)
         .await?;
-    let installs = missing_desired_resource_installs(database, catalog)?;
+
+    let installs =
+        missing_desired_resource_installs_with_demands(database, catalog, demanded_tracks)?;
+    install_missing_desired_resource_tracks(
+        paths,
+        catalog.install_options.clone(),
+        catalog.http_client.clone(),
+        installs,
+        progress,
+    )
+    .await
+}
+
+pub(crate) async fn install_missing_resource_demands_with_catalog_and_progress(
+    paths: &PvPaths,
+    catalog: &ManagedResourceRuntimeCatalog,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
+    progress: DaemonDownloadProgress,
+) -> Result<(), DaemonError> {
+    let installs = {
+        let database = Database::open(paths)?;
+        missing_resource_installs(&database, catalog, demanded_tracks)?
+    };
 
     install_missing_desired_resource_tracks(
         paths,
@@ -475,6 +846,74 @@ pub(crate) async fn reconcile_system_resources_with_catalog_and_progress(
         progress,
     )
     .await
+}
+
+pub(crate) fn verify_system_resource_installations(
+    paths: &PvPaths,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    mut demanded_tracks: BTreeSet<DemandedResourceTrack>,
+    progress: &DaemonDownloadProgress,
+) -> Result<(), DaemonError> {
+    let production_catalog;
+    let catalog = if let Some(catalog) = runtime_catalog {
+        catalog
+    } else {
+        production_catalog = ManagedResourceRuntimeCatalog::production()?;
+        &production_catalog
+    };
+    let database = Database::open(paths)?;
+    demanded_tracks.insert(DemandedResourceTrack::new("caddy", "2"));
+    let plan =
+        missing_desired_resource_installs_with_demands(&database, catalog, &demanded_tracks)?;
+    if !plan.is_empty() {
+        let failures = plan
+            .installs
+            .iter()
+            .map(|install| {
+                let label = install.label();
+                let cause = progress
+                    .install_failure(&label)
+                    .unwrap_or_else(|| "installation is still pending".to_owned());
+                format!("{label}: {cause}")
+            })
+            .chain(
+                plan.failures
+                    .iter()
+                    .map(DesiredResourceInstallFailure::message),
+            )
+            .collect();
+        return Err(DaemonError::ManagedResourceDefaultInstallFailures { failures });
+    }
+
+    let commands = ManagedResourceCommands::new(
+        paths.clone(),
+        catalog.install_options.manifest_url.clone(),
+        catalog.install_options.target_platform,
+    );
+    for installed in commands.list(None)? {
+        commands.validate_installed_track(&installed)?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn stop_undemanded_system_resource_runtimes(
+    paths: &PvPaths,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+) -> Result<(), DaemonError> {
+    // Post-apply usage supersedes conservative discovery demand while Projects with invalid config
+    // retain their last-valid usage protection.
+    let production_catalog;
+    let catalog = if let Some(catalog) = runtime_catalog {
+        catalog
+    } else {
+        production_catalog = ManagedResourceRuntimeCatalog::production()?;
+        &production_catalog
+    };
+    let mut database = Database::open(paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+
+    stop_undemanded_catalog_runtimes(paths, &mut database, catalog, &supervisor, &BTreeSet::new())
+        .await
 }
 
 async fn install_missing_desired_resource_tracks(
@@ -529,13 +968,18 @@ impl DesiredResourceInstallPlan {
 
 #[derive(Debug)]
 struct DesiredResourceInstallFailure {
+    order: usize,
     label: String,
     error: DaemonError,
 }
 
 impl DesiredResourceInstallFailure {
-    fn new(label: String, error: DaemonError) -> Self {
-        Self { label, error }
+    fn new(order: usize, label: String, error: DaemonError) -> Self {
+        Self {
+            order,
+            label,
+            error,
+        }
     }
 
     fn message(&self) -> String {
@@ -561,9 +1005,86 @@ impl DesiredResourceInstall {
     }
 }
 
+/// Installs the missing artifacts of the named Managed Resource tracks, and reports whether any
+/// install ran. Unlike the system pass this records no defaults and stops no runtimes.
+/// Tracks with no runtime adapter have no artifact to install and are skipped.
+pub(crate) async fn install_missing_resource_tracks(
+    paths: &PvPaths,
+    catalog: Option<&ManagedResourceRuntimeCatalog>,
+    tracks: &BTreeSet<DemandedResourceTrack>,
+    progress: DaemonDownloadProgress,
+) -> Result<bool, DaemonError> {
+    if tracks.is_empty() {
+        return Ok(false);
+    }
+
+    let production_catalog;
+    let catalog = match catalog {
+        Some(catalog) => catalog,
+        None => {
+            production_catalog = ManagedResourceRuntimeCatalog::production()?;
+            &production_catalog
+        }
+    };
+    let tracks = tracks
+        .iter()
+        .filter(|track| catalog.has_adapter(track.resource_name.as_str()))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    if tracks.is_empty() {
+        return Ok(false);
+    }
+
+    let installs = {
+        let database = Database::open(paths)?;
+
+        missing_resource_installs(&database, catalog, &tracks)?
+    };
+    if installs.is_empty() {
+        return Ok(false);
+    }
+
+    install_missing_desired_resource_tracks(
+        paths,
+        catalog.install_options.clone(),
+        catalog.http_client.clone(),
+        installs,
+        progress,
+    )
+    .await?;
+
+    Ok(true)
+}
+
+#[cfg(test)]
 fn missing_desired_resource_installs(
     database: &Database,
     catalog: &ManagedResourceRuntimeCatalog,
+) -> Result<DesiredResourceInstallPlan, DaemonError> {
+    missing_desired_resource_installs_with_demands(database, catalog, &BTreeSet::new())
+}
+
+fn missing_desired_resource_installs_with_demands(
+    database: &Database,
+    catalog: &ManagedResourceRuntimeCatalog,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
+) -> Result<DesiredResourceInstallPlan, DaemonError> {
+    let mut demanded_tracks = demanded_tracks.clone();
+    demanded_tracks.extend(
+        database
+            .managed_resource_tracks()?
+            .into_iter()
+            .filter(|record| record.desired_state == ManagedResourceDesiredState::Installed)
+            .map(|record| DemandedResourceTrack::new(record.resource_name, record.track)),
+    );
+
+    missing_resource_installs(database, catalog, &demanded_tracks)
+}
+
+fn missing_resource_installs(
+    database: &Database,
+    catalog: &ManagedResourceRuntimeCatalog,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
 ) -> Result<DesiredResourceInstallPlan, DaemonError> {
     let mut php_pair_tracks = BTreeSet::new();
     let mut caddy_tracks = BTreeSet::new();
@@ -571,43 +1092,79 @@ fn missing_desired_resource_installs(
     let mut runtime_installs = Vec::new();
     let mut failures = Vec::new();
 
-    for record in database.managed_resource_tracks()? {
-        if record.desired_state != ManagedResourceDesiredState::Installed
-            || record.current_artifact_path.is_some()
-        {
+    let records = database.managed_resource_tracks()?;
+    let installed_tracks = records
+        .iter()
+        .filter(|record| {
+            record.desired_state == ManagedResourceDesiredState::Installed
+                && record.current_artifact_path.is_some()
+        })
+        .map(|record| {
+            DemandedResourceTrack::new(record.resource_name.clone(), record.track.clone())
+        })
+        .collect::<BTreeSet<_>>();
+    let missing_tracks = demanded_tracks.difference(&installed_tracks).cloned();
+
+    for demanded_track in missing_tracks {
+        let DemandedResourceTrack {
+            resource_name,
+            track,
+        } = demanded_track;
+        if let Some(removed) = records.iter().find(|record| {
+            record.track == track
+                && record.desired_state == ManagedResourceDesiredState::Removed
+                && (record.resource_name == resource_name
+                    || (matches!(resource_name.as_str(), "php" | "frankenphp")
+                        && matches!(record.resource_name.as_str(), "php" | "frankenphp")))
+        }) {
+            let label = format!("{} {track}", removed.resource_name);
+            if !failures
+                .iter()
+                .any(|failure: &DesiredResourceInstallFailure| failure.label == label)
+            {
+                failures.push(DesiredResourceInstallFailure::new(
+                    failures.len(),
+                    label,
+                    DaemonError::ManagedResourceTrackRemoved {
+                        resource: removed.resource_name.clone(),
+                        track,
+                    },
+                ));
+            }
             continue;
         }
-
-        match record.resource_name.as_str() {
+        match resource_name.as_str() {
             "caddy" => {
-                caddy_tracks.insert(record.track);
+                caddy_tracks.insert(track);
             }
             "php" | "frankenphp" => {
-                php_pair_tracks.insert(record.track);
+                php_pair_tracks.insert(track);
             }
             "composer" => {
-                if record.track != "2" {
+                if track != "2" {
                     let error = DaemonError::UnexpectedProtocolResponse {
                         reason: format!(
                             "Composer setup default expected track `2`, got `{}`",
-                            record.track
+                            track
                         ),
                     };
                     failures.push(DesiredResourceInstallFailure::new(
-                        format!("composer {}", record.track),
+                        failures.len(),
+                        format!("composer {track}"),
                         error,
                     ));
                     continue;
                 }
                 composer_missing = true;
             }
-            resource_name => {
-                let Some(adapter) = catalog.adapter(resource_name) else {
+            _ => {
+                let Some(adapter) = catalog.adapter(&resource_name) else {
                     let error = DaemonError::UnsupportedManagedResourceRuntime {
-                        resource: resource_name.to_string(),
+                        resource: resource_name.clone(),
                     };
                     failures.push(DesiredResourceInstallFailure::new(
-                        format!("{} {}", record.resource_name, record.track),
+                        failures.len(),
+                        format!("{resource_name} {track}"),
                         error,
                     ));
                     continue;
@@ -616,7 +1173,8 @@ fn missing_desired_resource_installs(
                     Ok(adapter) => adapter,
                     Err(error) => {
                         failures.push(DesiredResourceInstallFailure::new(
-                            format!("{} {}", record.resource_name, record.track),
+                            failures.len(),
+                            format!("{resource_name} {track}"),
                             error,
                         ));
                         continue;
@@ -624,8 +1182,8 @@ fn missing_desired_resource_installs(
                 };
                 runtime_installs.push(DesiredResourceInstall::Runtime {
                     adapter: artifact_adapter,
-                    resource_name: record.resource_name,
-                    track: record.track,
+                    resource_name,
+                    track,
                 });
             }
         }
@@ -665,6 +1223,7 @@ fn install_missing_desired_resource_tracks_blocking(
     installs: DesiredResourceInstallPlan,
     progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
+    let downloads_dir = paths.downloads().to_path_buf();
     let commands = ManagedResourceCommands::new(
         paths,
         install_options.manifest_url,
@@ -677,49 +1236,89 @@ fn install_missing_desired_resource_tracks_blocking(
         installs,
         mut failures,
     } = installs;
+    if installs.is_empty() {
+        return finish_desired_resource_install_failures(failures);
+    }
+    for install in &installs {
+        progress.set_install_failure(install.label(), None);
+    }
+    let manifest_snapshot = match progress.manifest_snapshot(&commands, client) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            for install in &installs {
+                progress.set_install_failure(install.label(), Some(error.to_string()));
+            }
+            if failures.is_empty() {
+                return Err(error);
+            }
+            failures.push(DesiredResourceInstallFailure::new(
+                failures.len(),
+                "artifact manifest".to_owned(),
+                error,
+            ));
 
-    for install in installs {
+            return finish_desired_resource_install_failures(failures);
+        }
+    };
+    let mut resolved_installs = Vec::new();
+    let first_install_order = failures.len();
+    for (index, install) in installs.into_iter().enumerate() {
+        let order = first_install_order + index;
         let label = install.label();
-        let result = match install {
-            DesiredResourceInstall::PhpPair { track } => TrackName::new(track)
-                .map_err(DaemonError::from)
-                .and_then(|track| {
-                    commands
-                        .install_php_pair_with_progress(
-                            TrackSelector::Track(track),
-                            client,
-                            &progress,
-                        )
-                        .map(|_install| ())
-                        .map_err(DaemonError::from)
-                }),
-            DesiredResourceInstall::Composer => commands
-                .install_composer_with_progress(client, &progress)
-                .map(|_install| ())
-                .map_err(DaemonError::from),
-            DesiredResourceInstall::Runtime {
-                adapter,
-                resource_name,
-                track,
-            } => TrackName::new(track)
-                .map_err(DaemonError::from)
-                .and_then(|track| {
-                    install_runtime_resource_track_with_progress(
-                        &commands,
-                        client,
-                        &adapter,
-                        &resource_name,
-                        track,
-                        &progress,
-                    )
-                }),
-        };
-
-        if let Err(error) = result {
-            failures.push(DesiredResourceInstallFailure::new(label, error));
+        match resolve_desired_resource_install(&commands, &manifest_snapshot, install) {
+            Ok(install) => resolved_installs.push(ResolvedDesiredResourceInstall {
+                order,
+                label,
+                install,
+            }),
+            Err(error) => {
+                progress.set_install_failure(label.clone(), Some(error.to_string()));
+                failures.push(DesiredResourceInstallFailure::new(order, label, error));
+            }
         }
     }
+    let artifacts = unique_resolved_artifacts(&resolved_installs);
+    let downloads = prefetch_artifacts(&downloads_dir, client, artifacts, &progress);
 
+    for resolved in resolved_installs {
+        let download_failures =
+            resolved_download_failures(&downloads, &resolved.install, resolved.label.as_str());
+        if !download_failures.is_empty() {
+            let cause = download_failures
+                .iter()
+                .map(|(label, error)| {
+                    if label == &resolved.label {
+                        error.to_string()
+                    } else {
+                        format!("{label}: {error}")
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            progress.set_install_failure(resolved.label.clone(), Some(cause));
+            failures.extend(download_failures.into_iter().map(|(label, error)| {
+                DesiredResourceInstallFailure::new(resolved.order, label, error)
+            }));
+            continue;
+        }
+        if let Err(error) =
+            install_resolved_desired_resource(&commands, &downloads, &progress, &resolved.install)
+        {
+            progress.set_install_failure(resolved.label.clone(), Some(error.to_string()));
+            failures.push(DesiredResourceInstallFailure::new(
+                resolved.order,
+                resolved.label,
+                error,
+            ));
+        }
+    }
+    finish_desired_resource_install_failures(failures)
+}
+
+fn finish_desired_resource_install_failures(
+    mut failures: Vec<DesiredResourceInstallFailure>,
+) -> Result<(), DaemonError> {
+    failures.sort_by_key(|failure| failure.order);
     match failures.len() {
         0 => Ok(()),
         1 => Err(failures.remove(0).error),
@@ -732,169 +1331,583 @@ fn install_missing_desired_resource_tracks_blocking(
     }
 }
 
+#[derive(Debug)]
+struct ResolvedDesiredResourceInstall {
+    order: usize,
+    label: String,
+    install: ResolvedDesiredResourceInstallKind,
+}
+
+#[derive(Debug)]
+enum ResolvedDesiredResourceInstallKind {
+    PhpPair {
+        php: resources::ManagedResourceInstallArtifact,
+        frankenphp: Box<resources::ManagedResourceInstallArtifact>,
+    },
+    Composer {
+        adapter: resources::RuntimeArtifactAdapter,
+        artifact: resources::ManagedResourceInstallArtifact,
+    },
+    Runtime {
+        adapter: resources::RuntimeArtifactAdapter,
+        artifact: resources::ManagedResourceInstallArtifact,
+    },
+}
+
+type ArtifactDownloadKey = (String, String, String);
+
+fn resolve_desired_resource_install(
+    commands: &ManagedResourceCommands,
+    manifest: &resources::ArtifactManifestRefresh,
+    install: DesiredResourceInstall,
+) -> Result<ResolvedDesiredResourceInstallKind, DaemonError> {
+    match install {
+        DesiredResourceInstall::PhpPair { track } => {
+            let track = TrackName::new(track)?;
+            let php_adapter = resources::php_adapter()?;
+            let frankenphp_adapter = resources::frankenphp_adapter()?;
+            let php = commands.resolve_install_artifact(&php_adapter, track.clone(), manifest)?;
+            let frankenphp =
+                commands.resolve_install_artifact(&frankenphp_adapter, track, manifest)?;
+
+            Ok(ResolvedDesiredResourceInstallKind::PhpPair {
+                php,
+                frankenphp: Box::new(frankenphp),
+            })
+        }
+        DesiredResourceInstall::Composer => {
+            let adapter = resources::composer_adapter()?;
+            let artifact =
+                commands.resolve_install_artifact(&adapter, TrackName::new("2")?, manifest)?;
+
+            Ok(ResolvedDesiredResourceInstallKind::Composer { adapter, artifact })
+        }
+        DesiredResourceInstall::Runtime {
+            adapter,
+            resource_name,
+            track,
+        } => {
+            if adapter.resource_name().as_str() != resource_name {
+                return Err(DaemonError::UnexpectedProtocolResponse {
+                    reason: format!(
+                        "runtime adapter resolved `{}` while reconciling `{resource_name}`",
+                        adapter.resource_name()
+                    ),
+                });
+            }
+            let artifact =
+                commands.resolve_install_artifact(&adapter, TrackName::new(track)?, manifest)?;
+
+            Ok(ResolvedDesiredResourceInstallKind::Runtime { adapter, artifact })
+        }
+    }
+}
+
+fn unique_resolved_artifacts(
+    installs: &[ResolvedDesiredResourceInstall],
+) -> BTreeMap<ArtifactDownloadKey, resources::ManifestArtifact> {
+    let mut artifacts = BTreeMap::new();
+    for resolved in installs {
+        match &resolved.install {
+            ResolvedDesiredResourceInstallKind::PhpPair { php, frankenphp } => {
+                insert_required_artifact(&mut artifacts, php);
+                insert_required_artifact(&mut artifacts, frankenphp);
+            }
+            ResolvedDesiredResourceInstallKind::Composer { artifact, .. }
+            | ResolvedDesiredResourceInstallKind::Runtime { artifact, .. } => {
+                insert_required_artifact(&mut artifacts, artifact);
+            }
+        }
+    }
+
+    artifacts
+}
+
+fn insert_required_artifact(
+    artifacts: &mut BTreeMap<ArtifactDownloadKey, resources::ManifestArtifact>,
+    resolved: &resources::ManagedResourceInstallArtifact,
+) {
+    if !resolved.download_required() {
+        return;
+    }
+    let artifact = resolved.artifact();
+    artifacts
+        .entry(artifact_download_key(artifact))
+        .or_insert_with(|| artifact.clone());
+}
+
+fn artifact_download_key(artifact: &resources::ManifestArtifact) -> ArtifactDownloadKey {
+    (
+        artifact.resource_name().as_str().to_owned(),
+        artifact.artifact_version().as_str().to_owned(),
+        artifact.sha256().as_str().to_owned(),
+    )
+}
+
+fn prefetch_artifacts(
+    downloads_dir: &Utf8Path,
+    client: &(impl resources::ResourceHttpClient + Sync + ?Sized),
+    artifacts: BTreeMap<ArtifactDownloadKey, resources::ManifestArtifact>,
+    progress: &(impl resources::DownloadProgress + Sync),
+) -> BTreeMap<ArtifactDownloadKey, resources::Result<resources::ArtifactDownload>> {
+    let (keys, artifacts): (Vec<_>, Vec<_>) = artifacts.into_iter().unzip();
+    let downloads = resources::ArtifactDownloader::new(downloads_dir)
+        .download_many_with_progress(&artifacts, client, progress);
+
+    keys.into_iter().zip(downloads).collect()
+}
+
+fn install_resolved_desired_resource(
+    commands: &ManagedResourceCommands,
+    downloads: &BTreeMap<ArtifactDownloadKey, resources::Result<resources::ArtifactDownload>>,
+    progress: &DaemonDownloadProgress,
+    install: &ResolvedDesiredResourceInstallKind,
+) -> Result<(), DaemonError> {
+    match install {
+        ResolvedDesiredResourceInstallKind::PhpPair { php, frankenphp } => {
+            let php_download = prefetched_download(downloads, php)?;
+            let frankenphp_download = prefetched_download(downloads, frankenphp)?;
+            commands.install_resolved_php_pair_with_progress(
+                php.clone(),
+                php_download,
+                frankenphp.as_ref().clone(),
+                frankenphp_download,
+                progress,
+            )?;
+        }
+        ResolvedDesiredResourceInstallKind::Composer { adapter, artifact } => {
+            let download = prefetched_download(downloads, artifact)?;
+            commands.install_resolved_artifact_with_progress(
+                adapter,
+                artifact.clone(),
+                download,
+                progress,
+            )?;
+        }
+        ResolvedDesiredResourceInstallKind::Runtime { adapter, artifact } => {
+            let download = prefetched_download(downloads, artifact)?;
+            commands.install_resolved_artifact_with_progress(
+                adapter,
+                artifact.clone(),
+                download,
+                progress,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn prefetched_download<'downloads>(
+    downloads: &'downloads BTreeMap<
+        ArtifactDownloadKey,
+        resources::Result<resources::ArtifactDownload>,
+    >,
+    resolved: &resources::ManagedResourceInstallArtifact,
+) -> Result<Option<&'downloads resources::ArtifactDownload>, DaemonError> {
+    if !resolved.download_required() {
+        return Ok(None);
+    }
+    let artifact = resolved.artifact();
+    let result = downloads
+        .get(&artifact_download_key(artifact))
+        .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+            reason: format!(
+                "missing prefetched artifact for {} {}",
+                artifact.resource_name(),
+                artifact.artifact_version()
+            ),
+        })?;
+
+    result
+        .as_ref()
+        .map(Some)
+        .map_err(|error| resources::ManagedResourceCommandError::from(error.clone()).into())
+}
+
+fn resolved_download_failures(
+    downloads: &BTreeMap<ArtifactDownloadKey, resources::Result<resources::ArtifactDownload>>,
+    install: &ResolvedDesiredResourceInstallKind,
+    label: &str,
+) -> Vec<(String, DaemonError)> {
+    let mut failures = Vec::new();
+    match install {
+        ResolvedDesiredResourceInstallKind::PhpPair { php, frankenphp } => {
+            for (resource_name, resolved) in [("php", php), ("frankenphp", frankenphp.as_ref())] {
+                if let Err(error) = prefetched_download(downloads, resolved) {
+                    failures.push((
+                        format!("{resource_name} {}", resolved.artifact().track()),
+                        error,
+                    ));
+                }
+            }
+        }
+        ResolvedDesiredResourceInstallKind::Composer { artifact, .. }
+        | ResolvedDesiredResourceInstallKind::Runtime { artifact, .. } => {
+            if let Err(error) = prefetched_download(downloads, artifact) {
+                failures.push((label.to_owned(), error));
+            }
+        }
+    }
+
+    failures
+}
+
 struct ResourceTrackReconciliationContext<'context> {
     catalog: &'context ManagedResourceRuntimeCatalog,
     supervisor: &'context ProcessSupervisor,
     progress: &'context DaemonDownloadProgress,
+    prefetched_installs: &'context mut BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>,
+    artifact_install: ArtifactInstall,
+}
+
+type ProjectTrackKey = (String, String);
+
+enum PrefetchedProjectInstall {
+    Ready {
+        adapter: resources::RuntimeArtifactAdapter,
+        resolved: Box<resources::ManagedResourceInstallArtifact>,
+        download: Option<resources::ArtifactDownload>,
+    },
+    Failed(DaemonError),
+}
+
+struct ResolvedProjectInstall {
+    key: ProjectTrackKey,
+    adapter: resources::RuntimeArtifactAdapter,
+    resolved: resources::ManagedResourceInstallArtifact,
+}
+
+enum ProjectInstallRequest {
+    Resolve {
+        key: ProjectTrackKey,
+        adapter: resources::RuntimeArtifactAdapter,
+    },
+    Failed {
+        key: ProjectTrackKey,
+        error: DaemonError,
+    },
 }
 
 async fn reconcile_resource_track(
     paths: &PvPaths,
     database: &mut Database,
+    reconciliation: &mut ResourceTrackReconciliationContext<'_>,
+    resource: &state::ProjectManagedResourceInput,
+    allocations: &[ResourceAllocationRecord],
+) -> Result<(), DaemonError> {
+    let Some(prepared) =
+        prepare_resource_track(paths, database, reconciliation, resource, allocations)
+            .await
+            .map_err(|error| record_resource_runtime_failure(database, resource, error))?
+    else {
+        return Ok(());
+    };
+    let completed = prepared.wait().await;
+    match finish_resource_track(paths, database, reconciliation.catalog, completed).await {
+        Ok(()) => Ok(()),
+        Err(error) => Err(record_resource_runtime_failure(database, resource, error)),
+    }
+}
+
+async fn reconcile_resource_tracks(
+    paths: &PvPaths,
+    database: &mut Database,
+    reconciliation: &mut ResourceTrackReconciliationContext<'_>,
     project: &ProjectRecord,
     plan: &crate::project_env::ProjectResourcePlan,
-    reconciliation: &ResourceTrackReconciliationContext<'_>,
-    resource: &state::ProjectManagedResourceInput,
 ) -> Result<(), DaemonError> {
-    let subject = RuntimeSubject::Resource {
-        name: resource.resource_name.clone(),
-        track: resource.track.clone(),
-    };
+    let mut pending = FuturesUnordered::new();
+    let mut ready = VecDeque::new();
+    let mut failures = Vec::new();
+    for resource in &plan.resources {
+        if pending.len() == RUNTIME_READINESS_CONCURRENCY_LIMIT
+            && let Some(runtime) = pending.next().await
+        {
+            ready.push_back(runtime);
+        }
+        let allocations = match desired_allocations(database, project, plan, resource) {
+            Ok(allocations) => allocations,
+            Err(error) => {
+                failures.push((resource_key(resource), error));
+                continue;
+            }
+        };
+        let result = {
+            let preparation =
+                prepare_resource_track(paths, database, reconciliation, resource, &allocations);
+            tokio::pin!(preparation);
+            loop {
+                tokio::select! {
+                    result = &mut preparation => break result,
+                    Some(runtime) = pending.next(), if !pending.is_empty() => {
+                        ready.push_back(runtime);
+                    }
+                }
+            }
+        };
+        match result {
+            Ok(Some(runtime)) => pending.push(runtime.wait()),
+            Ok(None) => {}
+            Err(error) => {
+                let error = record_resource_runtime_failure(database, resource, error);
+                failures.push((resource_key(resource), error));
+            }
+        }
+    }
+
+    loop {
+        let runtime = if let Some(runtime) = ready.pop_front() {
+            runtime
+        } else if let Some(runtime) = pending.next().await {
+            runtime
+        } else {
+            break;
+        };
+        let key = runtime.key();
+        let result = {
+            let finalization =
+                finish_resource_track(paths, database, reconciliation.catalog, runtime);
+            tokio::pin!(finalization);
+            loop {
+                tokio::select! {
+                    result = &mut finalization => break result,
+                    Some(runtime) = pending.next() => ready.push_back(runtime),
+                }
+            }
+        };
+        if let Err(error) = result {
+            let resource = state::ProjectManagedResourceInput {
+                resource_name: key.0.clone(),
+                track: key.1.clone(),
+            };
+            let error = record_resource_runtime_failure(database, &resource, error);
+            failures.push((key, error));
+        }
+    }
+
+    failures.sort_by(|left, right| left.0.cmp(&right.0));
+    if failures.is_empty() {
+        return Ok(());
+    }
+
+    Err(combined_project_resource_error(
+        failures
+            .into_iter()
+            .map(|((resource_name, track), error)| {
+                ManagedResourceProjectFailure::new(resource_name, track, error)
+            })
+            .collect(),
+    ))
+}
+
+struct PreparedResourceRuntime {
+    context: ManagedResourceRuntimeContext,
+    allocations: Vec<ResourceAllocationRecord>,
+    readiness: PendingManagedResourceReadiness,
+}
+
+struct CompletedResourceRuntime {
+    context: ManagedResourceRuntimeContext,
+    allocations: Vec<ResourceAllocationRecord>,
+    readiness: Result<(), DaemonError>,
+}
+
+impl PreparedResourceRuntime {
+    async fn wait(self) -> CompletedResourceRuntime {
+        let Self {
+            context,
+            allocations,
+            readiness,
+        } = self;
+        let readiness = readiness.wait().await;
+
+        CompletedResourceRuntime {
+            context,
+            allocations,
+            readiness,
+        }
+    }
+}
+
+impl CompletedResourceRuntime {
+    fn key(&self) -> ProjectTrackKey {
+        (
+            self.context.resource_name.clone(),
+            self.context.track.clone(),
+        )
+    }
+}
+
+async fn prepare_resource_track(
+    paths: &PvPaths,
+    database: &mut Database,
+    reconciliation: &mut ResourceTrackReconciliationContext<'_>,
+    resource: &state::ProjectManagedResourceInput,
+    allocations: &[ResourceAllocationRecord],
+) -> Result<Option<PreparedResourceRuntime>, DaemonError> {
     let Some(adapter) = reconciliation.catalog.adapter(&resource.resource_name) else {
         if unsupported_resource_has_seeded_env_context(database, resource)? {
-            return Ok(());
+            return Ok(None);
         }
 
-        let error = DaemonError::UnsupportedManagedResourceRuntime {
+        return Err(DaemonError::UnsupportedManagedResourceRuntime {
             resource: resource.resource_name.clone(),
-        };
-        database.record_runtime_observed_snapshot(
-            subject,
-            RuntimeObservedStatus::Failed,
-            Some(&error.to_string()),
-        )?;
-
-        return Err(error);
+        });
     };
-    let result = async {
-        let track_record = ensure_track_artifact(
+    let track_record = ensure_track_artifact(
+        paths,
+        database,
+        resource,
+        reconciliation.progress,
+        reconciliation.prefetched_installs,
+        reconciliation.artifact_install,
+    )
+    .await?;
+    let Some(artifact_path) = track_record.current_artifact_path else {
+        return Err(DaemonError::ManagedResourceArtifactMissing {
+            resource: resource.resource_name.clone(),
+            track: resource.track.clone(),
+        });
+    };
+    let mut attempt = 0;
+
+    loop {
+        attempt += 1;
+        let ports =
+            assign_named_ports(database, adapter, &resource.resource_name, &resource.track)?;
+        if ports_occupied_without_recorded_runtime(
+            paths,
+            reconciliation.supervisor,
+            resource,
+            &ports,
+        )? && attempt < RESOURCE_START_ATTEMPTS
+        {
+            cleanup_resource_runtime_files(paths, resource)?;
+            release_resource_track_ports(database, &resource.resource_name, &resource.track)?;
+
+            continue;
+        }
+        let context = ManagedResourceRuntimeContext {
+            resource_name: resource.resource_name.clone(),
+            track: resource.track.clone(),
+            artifact_path: artifact_path.clone(),
+            data_dir: paths.resource_data_dir(&resource.resource_name, &resource.track),
+            ports,
+            env: track_record.env.clone(),
+            postgres_preload_libraries: if resource.resource_name == "postgres" {
+                database.postgres_track_preload_libraries(&resource.track)?
+            } else {
+                Vec::new()
+            },
+        };
+        let env = adapter.resource_env(&context)?;
+        let context = ManagedResourceRuntimeContext { env, ..context };
+        database.record_managed_resource_track_env_context(
+            &resource.resource_name,
+            &resource.track,
+            &context.env,
+        )?;
+        let spec = adapter.build_process_spec(paths, &context)?;
+        adapter.prepare_runtime(paths, &context).await?;
+        let readiness = adapter.readiness(&context)?;
+        let readiness_timeout = adapter_readiness_timeout(adapter);
+        match start_or_adopt_runtime(
+            reconciliation.supervisor,
+            spec,
+            readiness,
+            readiness_timeout,
+        )
+        .await
+        {
+            Ok(readiness) => {
+                return Ok(Some(PreparedResourceRuntime {
+                    context,
+                    allocations: allocations.to_vec(),
+                    readiness,
+                }));
+            }
+            Err(DaemonError::NonPvManagedResourceRuntimeListener { .. })
+                if attempt < RESOURCE_START_ATTEMPTS =>
+            {
+                cleanup_resource_runtime_files(paths, resource)?;
+                release_resource_track_ports(database, &resource.resource_name, &resource.track)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+async fn finish_resource_track(
+    paths: &PvPaths,
+    database: &mut Database,
+    catalog: &ManagedResourceRuntimeCatalog,
+    completed: CompletedResourceRuntime,
+) -> Result<(), DaemonError> {
+    completed.readiness?;
+    let Some(adapter) = catalog.adapter(&completed.context.resource_name) else {
+        return Err(DaemonError::UnsupportedManagedResourceRuntime {
+            resource: completed.context.resource_name,
+        });
+    };
+    if let Err(error) = adapter
+        .reconcile_allocations(
             paths,
             database,
-            reconciliation.catalog,
-            adapter,
-            resource,
-            reconciliation.progress,
+            &completed.context,
+            &completed.context.env,
+            &completed.allocations,
         )
-        .await?;
-        let Some(artifact_path) = track_record.current_artifact_path else {
-            return Err(DaemonError::ManagedResourceArtifactMissing {
-                resource: resource.resource_name.clone(),
-                track: resource.track.clone(),
-            });
-        };
-        let mut attempt = 0;
-
-        loop {
-            attempt += 1;
-            let ports =
-                assign_named_ports(database, adapter, &resource.resource_name, &resource.track)?;
-            if ports_occupied_without_recorded_runtime(
-                paths,
-                reconciliation.supervisor,
-                resource,
-                &ports,
-            )? && attempt < RESOURCE_START_ATTEMPTS
-            {
-                cleanup_resource_runtime_files(paths, resource)?;
-                release_resource_track_ports(database, &resource.resource_name, &resource.track)?;
-
-                continue;
-            }
-            let context = ManagedResourceRuntimeContext {
-                resource_name: resource.resource_name.clone(),
-                track: resource.track.clone(),
-                artifact_path: artifact_path.clone(),
-                data_dir: paths.resource_data_dir(&resource.resource_name, &resource.track),
-                ports,
-                env: track_record.env.clone(),
-                postgres_preload_libraries: if resource.resource_name == "postgres" {
-                    database.postgres_track_preload_libraries(&resource.track)?
-                } else {
-                    Vec::new()
-                },
-            };
-            let mut runtime_attempt = ResourceRuntimeAttempt {
-                paths,
-                database,
-                project,
-                plan,
-                adapter,
-                supervisor: reconciliation.supervisor,
-                resource,
-                subject: &subject,
-            };
-            let result = runtime_attempt.run(&context).await;
-
-            if matches!(
-                result,
-                Err(DaemonError::NonPvManagedResourceRuntimeListener { .. })
-            ) && attempt < RESOURCE_START_ATTEMPTS
-            {
-                cleanup_resource_runtime_files(paths, resource)?;
-                release_resource_track_ports(database, &resource.resource_name, &resource.track)?;
-
-                continue;
-            }
-
-            break result;
-        }
+        .await
+    {
+        return Err(record_allocation_reconciliation_failure(
+            database,
+            &completed.allocations,
+            error,
+        ));
     }
-    .await;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::Resource {
+            name: completed.context.resource_name,
+            track: completed.context.track,
+        },
+        RuntimeObservedStatus::Running,
+        Some("Managed Resource runtime is ready"),
+    )?;
 
-    if let Err(error) = &result {
-        database.record_runtime_observed_snapshot(
-            subject,
-            RuntimeObservedStatus::Failed,
-            Some(&error.to_string()),
-        )?;
-    }
-
-    result
+    Ok(())
 }
 
-struct ResourceRuntimeAttempt<'a> {
-    paths: &'a PvPaths,
-    database: &'a mut Database,
-    project: &'a ProjectRecord,
-    plan: &'a crate::project_env::ProjectResourcePlan,
-    adapter: &'a dyn ManagedResourceRuntimeAdapter,
-    supervisor: &'a ProcessSupervisor,
-    resource: &'a state::ProjectManagedResourceInput,
-    subject: &'a RuntimeSubject,
+fn record_resource_runtime_failure(
+    database: &mut Database,
+    resource: &state::ProjectManagedResourceInput,
+    reconciliation: DaemonError,
+) -> DaemonError {
+    let message = reconciliation.to_string();
+    match database.record_runtime_observed_snapshot(
+        runtime_subject(resource),
+        RuntimeObservedStatus::Failed,
+        Some(&message),
+    ) {
+        Ok(_observed) => reconciliation,
+        Err(recording) => DaemonError::ManagedResourceRuntimeFailureRecordingFailed {
+            resource_name: resource.resource_name.clone(),
+            track: resource.track.clone(),
+            reconciliation: Box::new(reconciliation),
+            recording: Box::new(recording.into()),
+        },
+    }
 }
 
-impl ResourceRuntimeAttempt<'_> {
-    async fn run(&mut self, context: &ManagedResourceRuntimeContext) -> Result<(), DaemonError> {
-        let env = self.adapter.resource_env(context)?;
-        let context = ManagedResourceRuntimeContext {
-            env: env.clone(),
-            ..context.clone()
-        };
-        self.database.record_managed_resource_track_env_context(
-            &self.resource.resource_name,
-            &self.resource.track,
-            &env,
-        )?;
-        let spec = self.adapter.build_process_spec(self.paths, &context)?;
-        self.adapter.prepare_runtime(self.paths, &context).await?;
-        let readiness = self.adapter.readiness(&context)?;
-        let readiness_timeout = adapter_readiness_timeout(self.adapter);
-
-        start_or_adopt_runtime(self.supervisor, spec, &readiness, readiness_timeout).await?;
-
-        let allocations =
-            desired_allocations(self.database, self.project, self.plan, self.resource)?;
-        self.adapter
-            .reconcile_allocations(self.paths, self.database, &context, &env, &allocations)
-            .await?;
-        self.database.record_runtime_observed_snapshot(
-            self.subject.clone(),
-            RuntimeObservedStatus::Running,
-            Some("Managed Resource runtime is ready"),
-        )?;
-
-        Ok(())
+fn runtime_subject(resource: &state::ProjectManagedResourceInput) -> RuntimeSubject {
+    RuntimeSubject::Resource {
+        name: resource.resource_name.clone(),
+        track: resource.track.clone(),
     }
+}
+
+fn resource_key(resource: &state::ProjectManagedResourceInput) -> ProjectTrackKey {
+    (resource.resource_name.clone(), resource.track.clone())
 }
 
 fn unsupported_resource_has_seeded_env_context(
@@ -913,34 +1926,251 @@ fn unsupported_resource_has_seeded_env_context(
     Ok(has_context)
 }
 
+fn missing_project_install_requests(
+    database: &Database,
+    plan: &crate::project_env::ProjectResourcePlan,
+    catalog: &ManagedResourceRuntimeCatalog,
+) -> Vec<ProjectInstallRequest> {
+    let mut requests = Vec::new();
+    for resource in &plan.resources {
+        let key = (resource.resource_name.clone(), resource.track.clone());
+        match installed_track(database, &resource.resource_name, &resource.track) {
+            Ok(Some(_installed)) => continue,
+            Ok(None) => {}
+            Err(error) => {
+                requests.push(ProjectInstallRequest::Failed { key, error });
+                continue;
+            }
+        }
+        let Some(adapter) = catalog.adapter(&resource.resource_name) else {
+            match unsupported_resource_has_seeded_env_context(database, resource) {
+                Ok(true) => continue,
+                Ok(false) => {
+                    requests.push(ProjectInstallRequest::Failed {
+                        key,
+                        error: DaemonError::UnsupportedManagedResourceRuntime {
+                            resource: resource.resource_name.clone(),
+                        },
+                    });
+                    continue;
+                }
+                Err(error) => {
+                    requests.push(ProjectInstallRequest::Failed { key, error });
+                    continue;
+                }
+            }
+        };
+        match adapter.artifact_adapter() {
+            Ok(adapter) => requests.push(ProjectInstallRequest::Resolve { key, adapter }),
+            Err(error) => {
+                requests.push(ProjectInstallRequest::Failed { key, error });
+                continue;
+            }
+        }
+    }
+
+    requests
+}
+
+fn combined_project_resource_error(
+    mut failures: Vec<ManagedResourceProjectFailure>,
+) -> DaemonError {
+    if failures.len() == 1 {
+        return failures.remove(0).into_error();
+    }
+
+    DaemonError::ManagedResourceProjectFailures { failures }
+}
+
+async fn prefetch_missing_project_installs(
+    paths: &PvPaths,
+    catalog: &ManagedResourceRuntimeCatalog,
+    requests: Vec<ProjectInstallRequest>,
+    progress: DaemonDownloadProgress,
+) -> Result<BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>, DaemonError> {
+    if requests.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let install_paths = paths.clone();
+    let install_options = catalog.install_options.clone();
+    let http_client = catalog.http_client.clone();
+    tokio::task::spawn_blocking(move || {
+        prefetch_missing_project_installs_blocking(
+            install_paths,
+            install_options,
+            http_client,
+            requests,
+            progress,
+        )
+    })
+    .await?
+}
+
+fn prefetch_missing_project_installs_blocking(
+    paths: PvPaths,
+    install_options: ManagedResourceInstallOptions,
+    http_client: Option<Arc<dyn resources::ResourceHttpClient + Send + Sync>>,
+    requests: Vec<ProjectInstallRequest>,
+    progress: DaemonDownloadProgress,
+) -> Result<BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>, DaemonError> {
+    let downloads_dir = paths.downloads().to_path_buf();
+    let commands = ManagedResourceCommands::new(
+        paths,
+        install_options.manifest_url,
+        install_options.target_platform,
+    );
+    let default_client = resources::UreqResourceHttpClient::default();
+    let client: &(dyn resources::ResourceHttpClient + Send + Sync) =
+        http_client.as_deref().unwrap_or(&default_client);
+    let mut prefetched = BTreeMap::new();
+    let mut resolve_requests = Vec::new();
+    for request in requests {
+        match request {
+            ProjectInstallRequest::Resolve { key, adapter } => {
+                resolve_requests.push((key, adapter));
+            }
+            ProjectInstallRequest::Failed { key, error } => {
+                prefetched.insert(key, PrefetchedProjectInstall::Failed(error));
+            }
+        }
+    }
+    if resolve_requests.is_empty() {
+        return Ok(prefetched);
+    }
+    let mut resolved_installs = Vec::new();
+    for (key, adapter) in resolve_requests {
+        let manifest_snapshot = match progress.manifest_snapshot(&commands, client) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                prefetched.insert(key, PrefetchedProjectInstall::Failed(error));
+                continue;
+            }
+        };
+        let (resource_name, track) = (&key.0, &key.1);
+        if adapter.resource_name().as_str() != resource_name {
+            let reason = format!(
+                "runtime adapter resolved `{}` while reconciling `{resource_name}`",
+                adapter.resource_name()
+            );
+            prefetched.insert(
+                key,
+                PrefetchedProjectInstall::Failed(DaemonError::UnexpectedProtocolResponse {
+                    reason,
+                }),
+            );
+            continue;
+        }
+        let resolved = match TrackName::new(track)
+            .map_err(DaemonError::from)
+            .and_then(|track| {
+                commands
+                    .resolve_install_artifact(&adapter, track, &manifest_snapshot)
+                    .map_err(Into::into)
+            }) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                prefetched.insert(key, PrefetchedProjectInstall::Failed(error));
+                continue;
+            }
+        };
+        resolved_installs.push(ResolvedProjectInstall {
+            key,
+            adapter,
+            resolved,
+        });
+    }
+
+    let mut artifacts = BTreeMap::new();
+    for install in &resolved_installs {
+        insert_required_artifact(&mut artifacts, &install.resolved);
+    }
+    let downloads = prefetch_artifacts(&downloads_dir, client, artifacts, &progress);
+    for install in resolved_installs {
+        let download = if install.resolved.download_required() {
+            downloads
+                .get(&artifact_download_key(install.resolved.artifact()))
+                .cloned()
+                .unwrap_or_else(|| {
+                    Err(resources::ResourcesError::MissingArtifactDownload {
+                        resource: install
+                            .resolved
+                            .artifact()
+                            .resource_name()
+                            .as_str()
+                            .to_string(),
+                        artifact_version: install
+                            .resolved
+                            .artifact()
+                            .artifact_version()
+                            .as_str()
+                            .to_string(),
+                    })
+                })
+                .map(Some)
+        } else {
+            Ok(None)
+        };
+        let prefetched_install = match download {
+            Ok(download) => PrefetchedProjectInstall::Ready {
+                adapter: install.adapter,
+                resolved: Box::new(install.resolved),
+                download,
+            },
+            Err(error) => PrefetchedProjectInstall::Failed(
+                resources::ManagedResourceCommandError::from(error).into(),
+            ),
+        };
+        prefetched.insert(install.key, prefetched_install);
+    }
+
+    Ok(prefetched)
+}
+
 async fn ensure_track_artifact(
     paths: &PvPaths,
     database: &mut Database,
-    catalog: &ManagedResourceRuntimeCatalog,
-    adapter: &dyn ManagedResourceRuntimeAdapter,
     resource: &state::ProjectManagedResourceInput,
     progress: &DaemonDownloadProgress,
+    prefetched_installs: &mut BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>,
+    artifact_install: ArtifactInstall,
 ) -> Result<ManagedResourceTrackRecord, DaemonError> {
     if let Some(record) = installed_track(database, &resource.resource_name, &resource.track)? {
         return Ok(record);
     }
+    if artifact_install == ArtifactInstall::Forbidden {
+        return Err(DaemonError::ManagedResourceArtifactMissing {
+            resource: resource.resource_name.clone(),
+            track: resource.track.clone(),
+        });
+    }
 
-    let artifact_adapter = adapter.artifact_adapter()?;
-    let install_options = catalog.install_options.clone();
     let install_paths = paths.clone();
-    let resource_name = resource.resource_name.clone();
-    let track = resource.track.clone();
-    let http_client = catalog.http_client.clone();
     let progress = progress.clone();
+    let key = (resource.resource_name.clone(), resource.track.clone());
+    let prefetched = prefetched_installs.remove(&key).ok_or_else(|| {
+        DaemonError::UnexpectedProtocolResponse {
+            reason: format!(
+                "missing prefetched install for {} track {}",
+                resource.resource_name, resource.track
+            ),
+        }
+    })?;
+    let (artifact_adapter, resolved, download) = match prefetched {
+        PrefetchedProjectInstall::Ready {
+            adapter,
+            resolved,
+            download,
+        } => (adapter, *resolved, download),
+        PrefetchedProjectInstall::Failed(error) => return Err(error),
+    };
 
     tokio::task::spawn_blocking(move || {
-        install_missing_track_blocking(
+        install_prefetched_project_track_blocking(
             install_paths,
-            install_options,
-            http_client,
             artifact_adapter,
-            resource_name,
-            track,
+            resolved,
+            download,
             progress,
         )
     })
@@ -954,7 +2184,7 @@ async fn ensure_track_artifact(
     })
 }
 
-fn installed_track(
+pub(crate) fn installed_track(
     database: &Database,
     resource_name: &str,
     track: &str,
@@ -967,65 +2197,55 @@ fn installed_track(
         return Ok(None);
     };
 
-    if record.current_artifact_path.is_none() {
-        return Ok(None);
-    }
     if record.desired_state == ManagedResourceDesiredState::Removed {
         return Err(DaemonError::ManagedResourceTrackRemoved {
             resource: resource_name.to_string(),
             track: track.to_string(),
         });
     }
+    if record.current_artifact_path.is_none() {
+        return Ok(None);
+    }
 
     Ok(Some(record))
 }
 
-fn install_missing_track_blocking(
+/// Requires both sides of an installed PHP pair. The Resources phase owns every install, so an
+/// apply that follows one only reports a pair it did not provide.
+pub(crate) fn ensure_installed_php_pair(
+    database: &Database,
+    track: &str,
+) -> Result<(), DaemonError> {
+    for resource_name in ["php", "frankenphp"] {
+        if installed_track(database, resource_name, track)?.is_none() {
+            return Err(DaemonError::ManagedResourceArtifactMissing {
+                resource: resource_name.to_owned(),
+                track: track.to_owned(),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn install_prefetched_project_track_blocking(
     paths: PvPaths,
-    install_options: ManagedResourceInstallOptions,
-    http_client: Option<Arc<dyn resources::ResourceHttpClient + Send + Sync>>,
     adapter: resources::RuntimeArtifactAdapter,
-    resource_name: String,
-    track: String,
+    resolved: resources::ManagedResourceInstallArtifact,
+    download: Option<resources::ArtifactDownload>,
     progress: DaemonDownloadProgress,
 ) -> Result<(), DaemonError> {
     let commands = ManagedResourceCommands::new(
         paths,
-        install_options.manifest_url,
-        install_options.target_platform,
+        resources::default_artifact_manifest_url(),
+        resolved.target_platform(),
     );
-    let default_client = resources::UreqResourceHttpClient::default();
-    let client: &(dyn resources::ResourceHttpClient + Send + Sync) =
-        http_client.as_deref().unwrap_or(&default_client);
-    let track = TrackName::new(track)?;
-
-    install_runtime_resource_track_with_progress(
-        &commands,
-        client,
+    commands.install_resolved_artifact_with_progress(
         &adapter,
-        &resource_name,
-        track,
+        resolved,
+        download.as_ref(),
         &progress,
-    )
-}
-
-fn install_runtime_resource_track_with_progress(
-    commands: &ManagedResourceCommands,
-    client: &(impl resources::ResourceHttpClient + ?Sized),
-    adapter: &resources::RuntimeArtifactAdapter,
-    resource_name: &str,
-    track: TrackName,
-    progress: &DaemonDownloadProgress,
-) -> Result<(), DaemonError> {
-    commands.install_with_progress(adapter, TrackSelector::Track(track), client, progress)?;
-    if adapter.resource_name().as_str() != resource_name {
-        return Err(DaemonError::UnexpectedProtocolResponse {
-            reason: format!(
-                "runtime adapter installed `{}` while reconciling `{resource_name}`",
-                adapter.resource_name()
-            ),
-        });
-    }
+    )?;
 
     Ok(())
 }
@@ -1103,74 +2323,72 @@ fn ports_occupied_without_recorded_runtime(
 async fn start_or_adopt_runtime(
     supervisor: &ProcessSupervisor,
     spec: ProcessSpec,
-    readiness: &ManagedResourceReadiness,
+    readiness: ManagedResourceReadiness,
     readiness_timeout: Duration,
-) -> Result<(), DaemonError> {
+) -> Result<PendingManagedResourceReadiness, DaemonError> {
     if supervisor.adopt(&spec)?.is_some() {
-        wait_for_managed_resource_readiness(readiness, readiness_timeout).await?;
-
-        return Ok(());
+        return Ok(PendingManagedResourceReadiness {
+            spec,
+            readiness,
+            readiness_timeout,
+            process: None,
+        });
     }
     if let Some(adopted) = supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)? {
         adopted.stop(RESOURCE_STOP_GRACE_PERIOD).await?;
         delete_optional_file(&spec.pid_path)?;
         delete_optional_file(&spec.metadata_path)?;
-    } else if let ManagedResourceReadiness::TcpHttp(check) = readiness
+    } else if let ManagedResourceReadiness::TcpHttp(check) = &readiness
         && crate::supervisor::probe_readiness_once(check).await.is_ok()
     {
         return Err(DaemonError::NonPvManagedResourceRuntimeListener { name: spec.name });
     }
 
-    let mut process = supervisor.start(spec.clone()).await?;
-    if let Err(error) =
-        wait_for_started_runtime_readiness(&mut process, &spec.name, readiness, readiness_timeout)
-            .await
-    {
-        process.stop(RESOURCE_STOP_GRACE_PERIOD).await?;
-        cleanup_started_runtime_files(&spec)?;
+    let process = supervisor.start(spec.clone()).await?;
 
-        return Err(error);
-    }
-    tokio::time::sleep(RESOURCE_PROCESS_EXIT_POLL_INTERVAL).await;
-    if process.has_exited()? {
-        cleanup_started_runtime_files(&spec)?;
-
-        return Err(runtime_exited_before_readiness_error(&spec.name));
-    }
-
-    Ok(())
+    Ok(PendingManagedResourceReadiness {
+        spec,
+        readiness,
+        readiness_timeout,
+        process: Some(process),
+    })
 }
 
-async fn wait_for_started_runtime_readiness(
-    process: &mut crate::supervisor::ManagedProcess,
-    runtime_name: &str,
-    readiness: &ManagedResourceReadiness,
+struct PendingManagedResourceReadiness {
+    spec: ProcessSpec,
+    readiness: ManagedResourceReadiness,
     readiness_timeout: Duration,
-) -> Result<(), DaemonError> {
-    let readiness_wait = wait_for_managed_resource_readiness(readiness, readiness_timeout);
-    tokio::pin!(readiness_wait);
-
-    loop {
-        tokio::select! {
-            result = &mut readiness_wait => {
-                if result.is_err() && process.has_exited()? {
-                    return Err(runtime_exited_before_readiness_error(runtime_name));
-                }
-
-                return result;
-            }
-            () = sleep(RESOURCE_PROCESS_EXIT_POLL_INTERVAL) => {
-                if process.has_exited()? {
-                    return Err(runtime_exited_before_readiness_error(runtime_name));
-                }
-            }
-        }
-    }
+    process: Option<ManagedProcess>,
 }
 
-fn runtime_exited_before_readiness_error(runtime_name: &str) -> DaemonError {
-    DaemonError::UnexpectedProtocolResponse {
-        reason: format!("runtime `{runtime_name}` exited before readiness was verified"),
+impl PendingManagedResourceReadiness {
+    async fn wait(mut self) -> Result<(), DaemonError> {
+        let readiness_wait =
+            wait_for_managed_resource_readiness(&self.readiness, self.readiness_timeout);
+        let Some(mut process) = self.process.take() else {
+            return readiness_wait.await;
+        };
+        if let Err(error) = wait_for_started_runtime_readiness(
+            &mut process,
+            &self.spec.name,
+            readiness_wait,
+            RESOURCE_PROCESS_EXIT_POLL_INTERVAL,
+        )
+        .await
+        {
+            process.stop(RESOURCE_STOP_GRACE_PERIOD).await?;
+            cleanup_started_runtime_files(&self.spec)?;
+
+            return Err(error);
+        }
+        tokio::time::sleep(RESOURCE_PROCESS_EXIT_POLL_INTERVAL).await;
+        if process.has_exited()? {
+            cleanup_started_runtime_files(&self.spec)?;
+
+            return Err(runtime_exited_before_readiness_error(&self.spec.name));
+        }
+
+        Ok(())
     }
 }
 
@@ -1275,7 +2493,7 @@ async fn stop_undemanded_catalog_runtimes(
     database: &mut Database,
     catalog: &ManagedResourceRuntimeCatalog,
     supervisor: &ProcessSupervisor,
-    demanded_tracks: &BTreeSet<(String, String)>,
+    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
 ) -> Result<(), DaemonError> {
     let tracks = database.managed_resource_tracks()?;
 
@@ -1284,7 +2502,10 @@ async fn stop_undemanded_catalog_runtimes(
             continue;
         };
         if track.usage_count > 0
-            || demanded_tracks.contains(&(track.resource_name.clone(), track.track.clone()))
+            || demanded_tracks.contains(&DemandedResourceTrack::new(
+                track.resource_name.clone(),
+                track.track.clone(),
+            ))
         {
             continue;
         }

@@ -1,0 +1,22 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: snapshot
+---
+[
+    (
+        "postgres",
+        "18",
+        "Managed Resource command failed: artifact manifest is unavailable from `https://artifacts.example.test/manifest.json` and cache `<tempdir>/home/.pv/downloads/manifest.json`: HTTP request failed for `https://artifacts.example.test/manifest.json`: no scripted manifest response; cache fallback failed: filesystem error at `<tempdir>/home/.pv/downloads/manifest.json`: No such file or directory (os error <code>)",
+        Some(
+            "Managed Resource command failed: artifact manifest is unavailable from `https://artifacts.example.test/manifest.json` and cache `<tempdir>/home/.pv/downloads/manifest.json`: HTTP request failed for `https://artifacts.example.test/manifest.json`: no scripted manifest response; cache fallback failed: filesystem error at `<tempdir>/home/.pv/downloads/manifest.json`: No such file or directory (os error <code>)",
+        ),
+    ),
+    (
+        "redis",
+        "8.8",
+        "Managed Resource command failed: artifact manifest is unavailable from `https://artifacts.example.test/manifest.json` and cache `<tempdir>/home/.pv/downloads/manifest.json`: HTTP request failed for `https://artifacts.example.test/manifest.json`: no scripted manifest response; cache fallback failed: filesystem error at `<tempdir>/home/.pv/downloads/manifest.json`: No such file or directory (os error <code>)",
+        Some(
+            "Managed Resource command failed: artifact manifest is unavailable from `https://artifacts.example.test/manifest.json` and cache `<tempdir>/home/.pv/downloads/manifest.json`: HTTP request failed for `https://artifacts.example.test/manifest.json`: no scripted manifest response; cache fallback failed: filesystem error at `<tempdir>/home/.pv/downloads/manifest.json`: No such file or directory (os error <code>)",
+        ),
+    ),
+]

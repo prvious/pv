@@ -1,8 +1,9 @@
 use std::future::Future;
+use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use state::fs;
+use state::{StateError, fs};
 use thiserror::Error;
 
 use crate::{CaddyAdminError, CaddyAdminOperation, DaemonError};
@@ -208,10 +209,17 @@ where
     Promote: FnOnce() -> Result<PromotedConfigDir, DaemonError>,
 {
     let candidate_path = candidate_path_for(path);
-    let previous_root_content = if path.exists() {
-        Some(fs::read_to_string(path)?)
-    } else {
-        None
+    let previous_root_content = match fs::read_to_string(path) {
+        Ok(content) => Some(content),
+        Err(StateError::Filesystem { source, .. })
+            if matches!(
+                source.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::InvalidData
+            ) =>
+        {
+            None
+        }
+        Err(error) => return Err(error.into()),
     };
     write_candidate_config(&candidate_path, candidate_content)?;
 
@@ -255,13 +263,48 @@ pub(crate) struct PromotedConfigTree {
     previous_root_content: Option<String>,
 }
 
+pub(crate) type ConfigTreeContents = (String, Vec<(String, String)>);
+
 impl PromotedConfigTree {
     pub(crate) fn previous_root_content(&self) -> Option<&str> {
-        self.previous_root_content.as_deref()
+        if self.fragments.previous_contents_readable {
+            self.previous_root_content.as_deref()
+        } else {
+            None
+        }
     }
 
     pub(crate) fn previous_fragment_contents(&self) -> &[String] {
         self.fragments.previous_contents()
+    }
+
+    pub(crate) fn previous_tree_contents(&self) -> Result<Option<ConfigTreeContents>, DaemonError> {
+        if !self.root.active_existed {
+            return Ok(None);
+        }
+
+        let root = fs::read_to_string(&self.root.backup_path)?;
+        let mut fragments = if self.fragments.active_existed {
+            fs::read_dir_paths(&self.fragments.backup_dir)?
+                .into_iter()
+                .filter(|path| path.as_str().ends_with(".Caddyfile"))
+                .map(|path| {
+                    let file_name = path.file_name().ok_or_else(|| {
+                        DaemonError::UnexpectedProtocolResponse {
+                            reason: format!("config fragment path `{path}` has no file name"),
+                        }
+                    })?;
+                    let content = fs::read_to_string(&path)?;
+
+                    Ok((file_name.to_owned(), content))
+                })
+                .collect::<Result<Vec<_>, DaemonError>>()?
+        } else {
+            Vec::new()
+        };
+        fragments.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+
+        Ok(Some((root, fragments)))
     }
 
     pub(crate) fn cleanup(self) -> Result<(), ConfigBackupCleanupError> {
@@ -353,6 +396,7 @@ pub(crate) struct PromotedConfigDir {
     backup_dir: Utf8PathBuf,
     active_existed: bool,
     previous_contents: Vec<String>,
+    previous_contents_readable: bool,
 }
 
 impl PromotedConfigDir {
@@ -525,14 +569,24 @@ pub(crate) fn promote_config_dir(
 ) -> Result<PromotedConfigDir, DaemonError> {
     let backup_dir = backup_path_for(active_dir);
     let active_existed = active_dir.exists();
-    let previous_contents = if active_existed {
-        fs::read_dir_paths(active_dir)?
-            .into_iter()
-            .map(|path| fs::read_to_string(&path).map_err(DaemonError::from))
-            .collect::<Result<Vec<_>, _>>()?
-    } else {
-        Vec::new()
-    };
+    let mut previous_contents = Vec::new();
+    let mut previous_contents_readable = true;
+    if active_existed {
+        for path in fs::read_dir_paths(active_dir)? {
+            if !path.as_str().ends_with(".Caddyfile") {
+                continue;
+            }
+            match fs::read_to_string(&path) {
+                Ok(content) => previous_contents.push(content),
+                Err(StateError::Filesystem { source, .. })
+                    if source.kind() == io::ErrorKind::InvalidData =>
+                {
+                    previous_contents_readable = false;
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
     delete_optional_dir(&backup_dir)?;
     if active_existed {
         rename_config_dir(active_dir, &backup_dir)?;
@@ -551,6 +605,7 @@ pub(crate) fn promote_config_dir(
         backup_dir,
         active_existed,
         previous_contents,
+        previous_contents_readable,
     })
 }
 
@@ -629,6 +684,44 @@ mod tests {
     use super::*;
 
     use camino_tempfile::tempdir;
+
+    #[tokio::test]
+    async fn previous_fragment_snapshot_ignores_non_caddy_files()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let tempdir = tempdir()?;
+        let root_config = tempdir.path().join("Caddyfile");
+        let active_dir = tempdir.path().join("active-fragments");
+        let candidate_dir = tempdir.path().join("candidate-fragments");
+        let previous_fragment = "http://project.test:9001 {\n}\n";
+        create_dir_all(&active_dir)?;
+        create_dir_all(&candidate_dir)?;
+        state::fs::write_sensitive_file(&root_config, "previous root\n")?;
+        state::fs::write_sensitive_file(&active_dir.join("project.Caddyfile"), previous_fragment)?;
+        state::fs::write_sensitive_file(
+            &active_dir.join("notes.txt"),
+            "rollback notes: http://127.0.0.1:6553\n",
+        )?;
+        state::fs::write_sensitive_file(
+            &candidate_dir.join("project.Caddyfile"),
+            "new fragment\n",
+        )?;
+
+        let promoted = promote_validated_config_tree_async(
+            &root_config,
+            "candidate root\n",
+            "active root\n",
+            |_candidate_path| async { Ok(()) },
+            || promote_config_dir(&active_dir, &candidate_dir),
+        )
+        .await?;
+
+        assert_eq!(
+            promoted.previous_fragment_contents(),
+            &[previous_fragment.to_owned()]
+        );
+
+        Ok(())
+    }
 
     #[tokio::test]
     async fn promotion_reports_restore_failure_when_fragment_promotion_rollback_fails()
