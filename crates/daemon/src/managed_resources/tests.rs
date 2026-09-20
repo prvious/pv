@@ -1,10 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Debug;
+use std::io::Write as _;
 use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Condvar, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::{
     DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck,
@@ -17,7 +18,7 @@ use crate::{
     reconciliation::{ReconciliationQueue, ReconciliationScope},
 };
 use anyhow::{Context, Result, anyhow, bail};
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use rcgen::{
@@ -29,6 +30,7 @@ use resources::{
     RuntimeArtifactAdapter,
 };
 use rusqlite::{TransactionBehavior, params};
+use rustix::process::{Pid, test_kill_process, test_kill_process_group};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use state::{
@@ -74,6 +76,8 @@ const SETUP_DEFAULT_MAILPIT_ARTIFACT_VERSION: &str = "1.27.0-pv1";
 const SETUP_DEFAULT_RUSTFS_TRACK: &str = "1";
 const SETUP_DEFAULT_RUSTFS_ARTIFACT_VERSION: &str = "1.0.0-pv1";
 const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
+const FIXTURE_RUNTIME_PUBLICATION_TIMEOUT: Duration = Duration::from_millis(500);
+const FIXTURE_RUNTIME_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const TEST_ARTIFACT_MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
 const FAKE_MAILPIT_SCRIPT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -129,6 +133,247 @@ const INVALID_DEFAULT_PORT_SPECS: &[super::ManagedResourcePortSpec] = &[
         preferred_port: 8025,
     },
 ];
+
+#[derive(Clone)]
+struct RegisteredFixtureRuntime {
+    name: String,
+    resource_name: String,
+    track: String,
+    pid_path: Utf8PathBuf,
+    metadata_path: Utf8PathBuf,
+    config_path: Utf8PathBuf,
+    log_path: Utf8PathBuf,
+    root_path: Utf8PathBuf,
+}
+
+pub(super) struct ManagedResourceFixtureGuard {
+    paths: PvPaths,
+    runtimes: Vec<RegisteredFixtureRuntime>,
+}
+
+impl ManagedResourceFixtureGuard {
+    pub(super) fn new(paths: &PvPaths) -> Self {
+        Self {
+            paths: paths.clone(),
+            runtimes: Vec::new(),
+        }
+    }
+
+    pub(super) fn register(&mut self, resource_name: &str, track: &str) {
+        let pid_path = self.paths.resource_pid(resource_name, track);
+        if self
+            .runtimes
+            .iter()
+            .any(|runtime| runtime.pid_path == pid_path)
+        {
+            return;
+        }
+
+        self.runtimes.push(RegisteredFixtureRuntime {
+            name: format!("{resource_name} {track}"),
+            resource_name: resource_name.to_owned(),
+            track: track.to_owned(),
+            pid_path,
+            metadata_path: self.paths.resource_runtime_metadata(resource_name, track),
+            config_path: self.paths.resource_runtime_config(resource_name, track),
+            log_path: self.paths.resource_log(resource_name, track),
+            root_path: self.paths.root().to_path_buf(),
+        });
+    }
+
+    pub(super) async fn cleanup(&mut self) -> Result<()> {
+        let result = cleanup_registered_fixture_runtimes(&self.paths, &self.runtimes).await;
+        if result.is_ok() {
+            self.runtimes.clear();
+        }
+        result
+    }
+}
+
+impl Drop for ManagedResourceFixtureGuard {
+    fn drop(&mut self) {
+        if self.runtimes.is_empty() {
+            return;
+        }
+
+        let paths = self.paths.clone();
+        let runtimes = self.runtimes.clone();
+        let cleanup_thread = std::thread::Builder::new()
+            .name("pv-resource-fixture-cleanup".to_owned())
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(anyhow::Error::from)?;
+                runtime.block_on(cleanup_registered_fixture_runtimes(&paths, &runtimes))
+            });
+        let cleanup_result = match cleanup_thread {
+            Ok(cleanup_thread) => cleanup_thread
+                .join()
+                .map_err(|_panic| "cleanup thread panicked".to_owned())
+                .and_then(|result| result.map_err(|error| format!("{error:#}"))),
+            Err(error) => Err(format!("cleanup thread construction failed: {error}")),
+        };
+
+        let failure = match cleanup_result {
+            Ok(()) => return,
+            Err(failure) => failure,
+        };
+        let mut standard_error = std::io::stderr().lock();
+        let _write_result = writeln!(
+            standard_error,
+            "managed resource fixture cleanup failed: {failure}"
+        );
+    }
+}
+
+async fn cleanup_registered_fixture_runtimes(
+    paths: &PvPaths,
+    runtimes: &[RegisteredFixtureRuntime],
+) -> Result<()> {
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let mut failures = Vec::new();
+
+    for runtime in runtimes {
+        if let Err(error) = cleanup_registered_fixture_runtime(&supervisor, runtime).await {
+            failures.push(format!("{}: {error:#}", runtime.name));
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        bail!("{}", failures.join("; "))
+    }
+}
+
+async fn cleanup_registered_fixture_runtime(
+    supervisor: &ProcessSupervisor,
+    runtime: &RegisteredFixtureRuntime,
+) -> Result<()> {
+    let publication_deadline = Instant::now() + FIXTURE_RUNTIME_PUBLICATION_TIMEOUT;
+    loop {
+        let pid_exists = path_exists(&runtime.pid_path)?;
+        let metadata_exists = path_exists(&runtime.metadata_path)?;
+
+        if pid_exists && !metadata_exists && Instant::now() < publication_deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            continue;
+        }
+        if pid_exists && !metadata_exists {
+            if !recorded_fixture_pid_is_absent(&runtime.pid_path)? {
+                bail!(
+                    "pid file `{}` was published without metadata `{}` while its recorded process group is still alive",
+                    runtime.pid_path,
+                    runtime.metadata_path
+                );
+            }
+            state::fs::remove_file_if_exists(&runtime.pid_path)?;
+            state::fs::remove_file_if_exists(&runtime.config_path)?;
+            return Ok(());
+        }
+        if metadata_exists {
+            validate_registered_fixture_metadata(runtime)?;
+        }
+        if !pid_exists
+            && metadata_exists
+            && !recorded_fixture_metadata_pid_is_absent(&runtime.metadata_path)?
+        {
+            bail!(
+                "refused to remove `{}` metadata because its recorded process is still alive",
+                runtime.name
+            );
+        }
+        if pid_exists {
+            let process = supervisor
+                .adopt_recorded(&runtime.pid_path, &runtime.metadata_path)
+                .with_context(|| format!("failed to verify `{}` ownership", runtime.name))?;
+            if let Some(process) = process {
+                process.stop(FIXTURE_RUNTIME_STOP_TIMEOUT).await?;
+            } else {
+                let pid_absent = recorded_fixture_pid_is_absent(&runtime.pid_path)?;
+                let metadata_pid_absent =
+                    recorded_fixture_metadata_pid_is_absent(&runtime.metadata_path)?;
+                if !pid_absent || !metadata_pid_absent {
+                    bail!(
+                        "refused to stop `{}` because its recorded ownership did not match and at least one recorded process is still alive",
+                        runtime.name
+                    );
+                }
+            }
+        }
+
+        state::fs::remove_file_if_exists(&runtime.pid_path)?;
+        state::fs::remove_file_if_exists(&runtime.metadata_path)?;
+        state::fs::remove_file_if_exists(&runtime.config_path)?;
+        return Ok(());
+    }
+}
+
+fn validate_registered_fixture_metadata(runtime: &RegisteredFixtureRuntime) -> Result<()> {
+    let contents = state::fs::read_to_string(&runtime.metadata_path)?;
+    let metadata: Value = serde_json::from_str(&contents)?;
+    let matches_registration = metadata["resource_name"].as_str()
+        == Some(runtime.resource_name.as_str())
+        && metadata["track"].as_str() == Some(runtime.track.as_str())
+        && metadata["config_path"].as_str() == Some(runtime.config_path.as_str())
+        && metadata["log_path"].as_str() == Some(runtime.log_path.as_str())
+        && metadata["command"]
+            .as_str()
+            .is_some_and(|command| Utf8Path::new(command).starts_with(&runtime.root_path));
+
+    if !matches_registration {
+        bail!(
+            "runtime metadata `{}` does not match registered fixture `{}`",
+            runtime.metadata_path,
+            runtime.name
+        );
+    }
+
+    Ok(())
+}
+
+fn recorded_fixture_pid_is_absent(pid_path: &Utf8Path) -> Result<bool> {
+    let contents = state::fs::read_to_string(pid_path)?;
+    let pid = contents
+        .trim()
+        .parse::<u64>()
+        .with_context(|| format!("invalid fixture pid in `{pid_path}`"))?;
+
+    fixture_identity_is_absent(pid)
+}
+
+fn recorded_fixture_metadata_pid_is_absent(metadata_path: &Utf8Path) -> Result<bool> {
+    let contents = state::fs::read_to_string(metadata_path)?;
+    let metadata: Value = serde_json::from_str(&contents)?;
+    let pid = metadata
+        .get("pid")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| anyhow!("fixture metadata `{metadata_path}` has no valid pid"))?;
+
+    fixture_identity_is_absent(pid)
+}
+
+fn fixture_identity_is_absent(pid: u64) -> Result<bool> {
+    let raw_pid =
+        i32::try_from(pid).with_context(|| format!("fixture pid `{pid}` is too large"))?;
+    let process_pid =
+        Pid::from_raw(raw_pid).ok_or_else(|| anyhow!("invalid fixture pid `{pid}`"))?;
+
+    let leader_absent = match test_kill_process(process_pid) {
+        Ok(()) => false,
+        Err(rustix::io::Errno::SRCH) => true,
+        Err(error) => bail!("failed to inspect fixture pid {pid}: {error}"),
+    };
+    let group_absent = match test_kill_process_group(process_pid) {
+        Ok(()) => false,
+        Err(rustix::io::Errno::SRCH) => true,
+        Err(error) => bail!("failed to inspect fixture process group {pid}: {error}"),
+    };
+
+    Ok(leader_absent && group_absent)
+}
+
 const SETUP_DEFAULT_POSTGRES_SUPPORT_FILES: &[(&str, &str)] = &[
     ("bin/initdb", "#!/bin/sh\nexit 0\n"),
     ("share/postgres.bki", "postgres catalog"),
@@ -604,6 +849,7 @@ async fn postgres_reconciliation_writes_tcp_only_runtime_config() -> Result<()> 
         runtime_config.contains("unix_socket_directories = ''"),
         "expected recorded Postgres runtime config to disable Unix socket listeners"
     );
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -1499,6 +1745,8 @@ async fn targeted_resource_preparation_failure_replaces_running_observation() ->
 async fn targeted_resource_reconciliation_isolates_project_allocation_failures() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mysql", FAKE_SQL_TRACK);
     let broken = link_project(
         &paths,
         &tempdir.path().join("broken"),
@@ -1639,6 +1887,7 @@ async fn targeted_resource_reconciliation_isolates_project_allocation_failures()
     assert_eq!(healthy_status, ResourceAllocationStatus::Ready);
     assert_eq!(broken_env, "EXISTING=broken\n");
     assert!(healthy_env.contains("DATABASE_URL=mysql://"));
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -1647,6 +1896,8 @@ async fn targeted_resource_reconciliation_isolates_project_allocation_failures()
 async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mailpit", FAKE_MAILPIT_TRACK);
     let project = link_project(
         &paths,
         &tempdir.path().join("project"),
@@ -1751,6 +2002,7 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
         "system_resource_reconciliation_stops_unlinked_project_runtime",
         cleanup_snapshot,
     )?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -2313,6 +2565,8 @@ async fn project_php_demand_does_not_overwrite_concurrent_pair_removal() -> Resu
 async fn project_manifest_failure_preserves_earlier_installed_resource_work() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mailpit", FAKE_MAILPIT_TRACK);
     let project = link_project(
         &paths,
         &tempdir.path().join("project"),
@@ -2427,6 +2681,7 @@ async fn project_manifest_failure_preserves_earlier_installed_resource_work() ->
         };
         assert_eq!(url, TEST_ARTIFACT_MANIFEST_URL);
     }
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -3146,6 +3401,7 @@ async fn demanded_resource_reassigns_persisted_port_when_non_pv_listener_occupie
         "demanded_resource_reassigns_persisted_port_when_non_pv_listener_occupies_it",
         reassign_snapshot,
     )?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -3514,6 +3770,7 @@ async fn rustfs_allocation_failure_preserves_project_env_and_records_failed_runt
         "rustfs_allocation_failure_preserves_project_env_and_records_failed_runtime",
         snapshot,
     )?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -4401,6 +4658,7 @@ async fn demand_change_stops_previous_runtime_when_new_runtime_readiness_fails()
         "demand_change_stops_previous_runtime_when_new_runtime_readiness_fails",
         failure_snapshot,
     )?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -4421,6 +4679,8 @@ async fn demanded_resource_uses_async_readiness_and_allocation_hooks() -> Result
         DATABASE_URL: "${url}"
 "#,
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mysql", FAKE_SQL_TRACK);
     seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
     let hook_events = Arc::new(Mutex::new(Vec::new()));
     let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
@@ -4459,6 +4719,7 @@ async fn demanded_resource_uses_async_readiness_and_allocation_hooks() -> Result
         &catalog,
     )
     .await?;
+    runtimes.cleanup().await?;
 
     assert_with_normalized_runtime(
         tempdir.path(),
@@ -4480,8 +4741,10 @@ async fn resource_readiness_slots_include_start_and_poll_during_preparation() ->
         "env:\n  APP_URL: \"${project_url}\"\n",
     )?;
     let tracks = ["8.0", "8.1", "8.2", "8.3", "8.4"];
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
     let mut port_guards = Vec::new();
     for track in tracks {
+        runtimes.register("mysql", track);
         seed_fake_sql_artifact(&paths, "mysql", track)?;
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
@@ -4571,14 +4834,7 @@ async fn resource_readiness_slots_include_start_and_poll_during_preparation() ->
     timeout(Duration::from_secs(5), &mut reconciliation).await??;
 
     assert_eq!(cloned_hook_events(&allocation_events)?.len(), tracks.len());
-    for track in tracks {
-        if let Some(adopted) = supervisor.adopt_recorded(
-            &paths.resource_pid("mysql", track),
-            &paths.resource_runtime_metadata("mysql", track),
-        )? {
-            adopted.stop(Duration::from_secs(1)).await?;
-        }
-    }
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -4594,7 +4850,9 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
         "env:\n  APP_URL: \"${project_url}\"\n",
     )?;
     let ready_tracks = ["8.0", "8.1"];
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
     for track in ready_tracks {
+        runtimes.register("mysql", track);
         seed_fake_sql_artifact(&paths, "mysql", track)?;
     }
     let mut port_guards = Vec::new();
@@ -4807,15 +5065,6 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
             cancelled_pids[track]
         );
     }
-    for track in ready_tracks {
-        if let Some(adopted) = supervisor.adopt_recorded(
-            &paths.resource_pid("mysql", track),
-            &paths.resource_runtime_metadata("mysql", track),
-        )? {
-            adopted.stop(Duration::from_secs(1)).await?;
-        }
-    }
-
     assert!(matches!(
         result,
         Err(DaemonError::UnsupportedManagedResourceRuntime { resource })
@@ -4834,6 +5083,7 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
             RuntimeObservedStatus::Running,
         );
     }
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -4881,6 +5131,340 @@ fn resource_failure_recording_preserves_reconciliation_and_state_errors() -> Res
     Ok(())
 }
 
+#[derive(Clone, Copy, Debug)]
+enum FixtureGuardExit {
+    Normal,
+    DeadPidOnly,
+    PublicationWindow,
+    EarlyError,
+    Panic,
+    Cancellation,
+}
+
+#[test]
+fn managed_resource_fixture_guard_cleans_every_exit_path() -> Result<()> {
+    for exit in [
+        FixtureGuardExit::Normal,
+        FixtureGuardExit::DeadPidOnly,
+        FixtureGuardExit::PublicationWindow,
+        FixtureGuardExit::EarlyError,
+        FixtureGuardExit::Panic,
+        FixtureGuardExit::Cancellation,
+    ] {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project = link_project(
+            &paths,
+            &tempdir.path().join("project"),
+            "acme.test",
+            r#"mysql:
+  version: "8.0"
+  allocations:
+    app-db:
+      env:
+        DATABASE_URL: "${url}"
+"#,
+        )?;
+        seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
+        let (pid_sender, pid_receiver) = mpsc::channel();
+        let (cancel_sender, cancel_receiver) = tokio::sync::oneshot::channel();
+        let thread_paths = paths.clone();
+        let thread_project = project.clone();
+
+        let outcome = std::thread::scope(|scope| {
+            let scenario_thread = scope.spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()?;
+                let scenario = managed_resource_fixture_guard_scenario(
+                    &thread_paths,
+                    &thread_project,
+                    exit,
+                    pid_sender,
+                );
+                if matches!(exit, FixtureGuardExit::Cancellation) {
+                    return runtime.block_on(async {
+                        tokio::select! {
+                            result = scenario => result,
+                            result = cancel_receiver => {
+                                result.map_err(|_closed| anyhow!("cancellation sender closed"))?;
+                                Err(anyhow!("controlled cancellation sentinel"))
+                            }
+                        }
+                    });
+                }
+                runtime.block_on(scenario)
+            });
+            let pid = pid_receiver.recv_timeout(Duration::from_secs(5))?;
+            if matches!(exit, FixtureGuardExit::Cancellation) {
+                cancel_sender
+                    .send(())
+                    .map_err(|()| anyhow!("fixture guard scenario stopped before cancellation"))?;
+            }
+
+            Ok::<_, anyhow::Error>((scenario_thread.join(), pid))
+        });
+        let (outcome, pid) = outcome?;
+
+        match (exit, outcome) {
+            (FixtureGuardExit::Normal, Ok(Ok(())))
+            | (FixtureGuardExit::DeadPidOnly, Ok(Ok(())))
+            | (FixtureGuardExit::PublicationWindow, Ok(Ok(()))) => {}
+            (FixtureGuardExit::EarlyError, Ok(Err(error)))
+                if error.to_string() == "early sentinel error" => {}
+            (FixtureGuardExit::Panic, Err(payload))
+                if payload.downcast_ref::<&str>() == Some(&"fixture guard panic sentinel") => {}
+            (FixtureGuardExit::Cancellation, Ok(Err(error)))
+                if error.to_string() == "controlled cancellation sentinel" => {}
+            (_exit, _outcome) => bail!("unexpected fixture guard outcome"),
+        }
+        assert_eq!(
+            runtime_files_exist_for_resource(&paths, "mysql", FAKE_SQL_TRACK)?,
+            RuntimeFilePresence {
+                pid: false,
+                metadata: false,
+                config: false,
+            },
+            "fixture guard left runtime files after {exit:?}"
+        );
+        let raw_pid = i32::try_from(pid)?;
+        let process_pid = Pid::from_raw(raw_pid)
+            .ok_or_else(|| anyhow!("fixture returned invalid pid {raw_pid}"))?;
+        assert!(
+            matches!(test_kill_process(process_pid), Err(rustix::io::Errno::SRCH)),
+            "fixture guard left pid {pid} alive after {exit:?}"
+        );
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn managed_resource_fixture_guard_rejects_another_homes_runtime_records() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths_a = PvPaths::for_home(tempdir.path().join("home-a"));
+    let paths_b = PvPaths::for_home(tempdir.path().join("home-b"));
+    let mut guard_a = ManagedResourceFixtureGuard::new(&paths_a);
+    let mut guard_b = ManagedResourceFixtureGuard::new(&paths_b);
+    guard_a.register("mysql", FAKE_SQL_TRACK);
+    guard_b.register("mysql", FAKE_SQL_TRACK);
+
+    for (paths, project_name) in [(&paths_a, "project-a"), (&paths_b, "project-b")] {
+        let project = link_project(
+            paths,
+            &tempdir.path().join(project_name),
+            &format!("{project_name}.test"),
+            r#"mysql:
+  version: "8.0"
+  allocations:
+    app-db:
+      env:
+        DATABASE_URL: "${url}"
+"#,
+        )?;
+        seed_fake_sql_artifact(paths, "mysql", FAKE_SQL_TRACK)?;
+        let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+            super::ManagedResourceInstallOptions {
+                manifest_url: resources::default_artifact_manifest_url().to_string(),
+                target_platform: resources::TargetPlatform::current()?,
+            },
+            AsyncSqlHookRuntimeAdapter::new(Arc::new(Mutex::new(Vec::new())))?,
+        );
+        let mut database = Database::open(paths)?;
+        crate::project_env::reconcile_project_env_with_catalog(
+            paths,
+            &mut database,
+            &project.id,
+            &catalog,
+        )
+        .await?;
+    }
+
+    let pid_path_a = paths_a.resource_pid("mysql", FAKE_SQL_TRACK);
+    let metadata_path_a = paths_a.resource_runtime_metadata("mysql", FAKE_SQL_TRACK);
+    let pid_record_a = state::fs::read_to_string(&pid_path_a)?;
+    let metadata_record_a = state::fs::read_to_string(&metadata_path_a)?;
+    let pid_record_b = state::fs::read_to_string(&paths_b.resource_pid("mysql", FAKE_SQL_TRACK))?;
+    let metadata_record_b =
+        state::fs::read_to_string(&paths_b.resource_runtime_metadata("mysql", FAKE_SQL_TRACK))?;
+    let pid_b = resource_runtime_metadata_pid(&paths_b, "mysql", FAKE_SQL_TRACK)?;
+    let pid_b_u32 = u32::try_from(pid_b)?;
+    let identity_b = platform::inspect_process_identity(pid_b_u32)?
+        .ok_or_else(|| anyhow!("home B runtime {pid_b} was not running"))?;
+
+    state::fs::write_sensitive_file(&pid_path_a, &pid_record_b)?;
+    state::fs::write_sensitive_file(&metadata_path_a, &metadata_record_b)?;
+    assert!(guard_a.cleanup().await.is_err());
+    assert_eq!(
+        ProcessSupervisor::new(paths_b.clone())
+            .adopt_recorded(
+                &paths_b.resource_pid("mysql", FAKE_SQL_TRACK),
+                &paths_b.resource_runtime_metadata("mysql", FAKE_SQL_TRACK),
+            )?
+            .map(|process| u64::from(process.pid())),
+        Some(pid_b)
+    );
+
+    state::fs::write_sensitive_file(&pid_path_a, &pid_record_a)?;
+    state::fs::write_sensitive_file(&metadata_path_a, &metadata_record_a)?;
+    guard_a.cleanup().await?;
+    assert_eq!(
+        platform::inspect_process_identity(pid_b_u32)?.as_ref(),
+        Some(&identity_b)
+    );
+    guard_b.cleanup().await?;
+    assert!(
+        platform::inspect_process_identity(pid_b_u32)?
+            .is_none_or(|identity| identity.start_identity != identity_b.start_identity)
+    );
+
+    Ok(())
+}
+
+async fn managed_resource_fixture_guard_scenario(
+    paths: &PvPaths,
+    project: &ProjectRecord,
+    exit: FixtureGuardExit,
+    pid_sender: mpsc::Sender<u64>,
+) -> Result<()> {
+    let mut runtimes = ManagedResourceFixtureGuard::new(paths);
+    runtimes.register("mysql", FAKE_SQL_TRACK);
+    let hook_events = Arc::new(Mutex::new(Vec::new()));
+    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: resources::default_artifact_manifest_url().to_string(),
+            target_platform: resources::TargetPlatform::current()?,
+        },
+        AsyncSqlHookRuntimeAdapter::new(hook_events)?,
+    );
+    let mut database = Database::open(paths)?;
+    crate::project_env::reconcile_project_env_with_catalog(
+        paths,
+        &mut database,
+        &project.id,
+        &catalog,
+    )
+    .await?;
+    let pid = resource_runtime_metadata_pid(paths, "mysql", FAKE_SQL_TRACK)?;
+    pid_sender
+        .send(pid)
+        .map_err(|_pid| anyhow!("fixture guard test stopped receiving the runtime pid"))?;
+
+    match exit {
+        FixtureGuardExit::Normal => {
+            let process = ProcessSupervisor::new(paths.clone())
+                .adopt_recorded(
+                    &paths.resource_pid("mysql", FAKE_SQL_TRACK),
+                    &paths.resource_runtime_metadata("mysql", FAKE_SQL_TRACK),
+                )?
+                .ok_or_else(|| anyhow!("fixture runtime was not adoptable"))?;
+            process.stop(FIXTURE_RUNTIME_STOP_TIMEOUT).await?;
+            runtimes.cleanup().await
+        }
+        FixtureGuardExit::DeadPidOnly => {
+            let process = ProcessSupervisor::new(paths.clone())
+                .adopt_recorded(
+                    &paths.resource_pid("mysql", FAKE_SQL_TRACK),
+                    &paths.resource_runtime_metadata("mysql", FAKE_SQL_TRACK),
+                )?
+                .ok_or_else(|| anyhow!("fixture runtime was not adoptable"))?;
+            process.stop(FIXTURE_RUNTIME_STOP_TIMEOUT).await?;
+            state::fs::delete_file(&paths.resource_runtime_metadata("mysql", FAKE_SQL_TRACK))?;
+            runtimes.cleanup().await
+        }
+        FixtureGuardExit::PublicationWindow => {
+            let metadata_path = paths.resource_runtime_metadata("mysql", FAKE_SQL_TRACK);
+            let metadata = state::fs::read_to_string(&metadata_path)?;
+            state::fs::delete_file(&metadata_path)?;
+            let publisher = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                state::fs::write_sensitive_file(&metadata_path, &metadata)?;
+                Ok::<_, anyhow::Error>(())
+            });
+            let cleanup = runtimes.cleanup().await;
+            publisher
+                .await
+                .map_err(|error| anyhow!("metadata publisher failed: {error}"))??;
+            cleanup
+        }
+        FixtureGuardExit::EarlyError => Err(anyhow!("early sentinel error")),
+        FixtureGuardExit::Panic => {
+            std::panic::resume_unwind(Box::new("fixture guard panic sentinel"))
+        }
+        FixtureGuardExit::Cancellation => std::future::pending().await,
+    }
+}
+
+#[tokio::test]
+async fn managed_resource_fixture_guard_continues_after_cleanup_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        r#"mysql:
+  version: "8.0"
+  allocations:
+    app-db:
+      env:
+        DATABASE_URL: "${url}"
+"#,
+    )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mysql", "broken");
+    runtimes.register("mysql", FAKE_SQL_TRACK);
+    let broken_pid_path = paths.resource_pid("mysql", "broken");
+    let broken_metadata_path = paths.resource_runtime_metadata("mysql", "broken");
+    state::fs::write_sensitive_file(&broken_pid_path, "not-a-pid")?;
+    state::fs::write_sensitive_file(&broken_metadata_path, "{}")?;
+    seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
+    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
+        super::ManagedResourceInstallOptions {
+            manifest_url: resources::default_artifact_manifest_url().to_string(),
+            target_platform: resources::TargetPlatform::current()?,
+        },
+        AsyncSqlHookRuntimeAdapter::new(Arc::new(Mutex::new(Vec::new())))?,
+    );
+    let mut database = Database::open(&paths)?;
+    crate::project_env::reconcile_project_env_with_catalog(
+        &paths,
+        &mut database,
+        &project.id,
+        &catalog,
+    )
+    .await?;
+    let live_pid = resource_runtime_metadata_pid(&paths, "mysql", FAKE_SQL_TRACK)?;
+
+    let error = match runtimes.cleanup().await {
+        Ok(()) => bail!("expected the malformed first fixture record to fail cleanup"),
+        Err(error) => error,
+    };
+    assert!(
+        error.to_string().contains("mysql broken"),
+        "cleanup error omitted the failed runtime: {error:#}"
+    );
+    assert_eq!(
+        runtime_files_exist_for_resource(&paths, "mysql", FAKE_SQL_TRACK)?,
+        RuntimeFilePresence {
+            pid: false,
+            metadata: false,
+            config: false,
+        },
+        "cleanup stopped after the malformed first record"
+    );
+    assert!(
+        fixture_identity_is_absent(live_pid)?,
+        "cleanup left the later registered runtime alive"
+    );
+
+    state::fs::remove_file_if_exists(&broken_pid_path)?;
+    state::fs::remove_file_if_exists(&broken_metadata_path)?;
+    runtimes.cleanup().await?;
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn demanded_resource_persists_env_before_runtime_side_effects() -> Result<()> {
     let tempdir = tempdir()?;
@@ -4897,6 +5481,8 @@ async fn demanded_resource_persists_env_before_runtime_side_effects() -> Result<
         DATABASE_URL: "${url}"
 "#,
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mysql", FAKE_SQL_TRACK);
     seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
     let hook_events = Arc::new(Mutex::new(Vec::new()));
     let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
@@ -4916,6 +5502,7 @@ async fn demanded_resource_persists_env_before_runtime_side_effects() -> Result<
     )
     .await?;
     let hook_events = cloned_hook_events(&hook_events)?;
+    runtimes.cleanup().await?;
 
     assert!(
         hook_events.contains(&"build_process_spec:persisted_env".to_string()),
@@ -4942,6 +5529,8 @@ async fn async_readiness_reassigns_unowned_persisted_port_before_resource_readin
         DATABASE_URL: "${url}"
 "#,
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mysql", FAKE_SQL_TRACK);
     seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
     let external_listener = TcpListener::bind(("127.0.0.1", 0))?;
     let occupied_port = external_listener.local_addr()?.port();
@@ -4978,6 +5567,7 @@ async fn async_readiness_reassigns_unowned_persisted_port_before_resource_readin
     let assigned_mysql_port = assigned_mysql_port(&assigned_ports)?;
     let dotenv = read_dotenv(&project)?;
     let uses_occupied_port = dotenv.contains(&format!(":{occupied_port}/"));
+    runtimes.cleanup().await?;
 
     assert_ne!(
         assigned_mysql_port, occupied_port,
