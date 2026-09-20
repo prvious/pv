@@ -3569,6 +3569,8 @@ async fn rustfs_reconciliation_creates_bucket_and_renders_env() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("rustfs", RUSTFS_TRACK);
     seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
     reserve_rustfs_ports(&paths, 19_000, 19_001)?;
 
@@ -3596,8 +3598,7 @@ async fn rustfs_reconciliation_creates_bucket_and_renders_env() -> Result<()> {
   APP_URL: "${project_url}"
 "#,
     )?;
-    let _cleanup_result =
-        reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await;
+    runtimes.cleanup().await?;
 
     assert_with_normalized_runtime(
         tempdir.path(),
@@ -3613,6 +3614,8 @@ async fn rustfs_project_demand_installs_missing_fixture_track_before_start() -> 
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("rustfs", RUSTFS_TRACK);
     seed_rustfs_cached_fixture(&paths, tempdir.path())?;
     reserve_rustfs_ports(&paths, 19_010, 19_011)?;
 
@@ -3640,12 +3643,7 @@ async fn rustfs_project_demand_installs_missing_fixture_track_before_start() -> 
   APP_URL: "${project_url}"
 "#,
     )?;
-    let _cleanup_result = reconcile_project_env_with_rustfs_runtime_catalog_and_manifest_url(
-        &paths,
-        &project.id,
-        OFFLINE_TEST_MANIFEST_URL,
-    )
-    .await;
+    runtimes.cleanup().await?;
 
     assert_with_normalized_runtime(
         tempdir.path(),
@@ -3662,6 +3660,8 @@ async fn rustfs_ready_allocation_reconciliation_repairs_missing_bucket_and_prese
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("rustfs", RUSTFS_TRACK);
     seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
     reserve_rustfs_ports(&paths, 19_020, 19_021)?;
 
@@ -3710,8 +3710,7 @@ async fn rustfs_ready_allocation_reconciliation_repairs_missing_bucket_and_prese
   APP_URL: "${project_url}"
 "#,
     )?;
-    let _cleanup_result =
-        reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await;
+    runtimes.cleanup().await?;
 
     assert_with_normalized_runtime(
         tempdir.path(),
@@ -3727,6 +3726,8 @@ async fn rustfs_port_reassignment_renders_current_endpoint_for_ready_allocation(
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("rustfs", RUSTFS_TRACK);
     seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
     reserve_rustfs_ports(&paths, 19_030, 19_031)?;
 
@@ -3795,8 +3796,7 @@ async fn rustfs_port_reassignment_renders_current_endpoint_for_ready_allocation(
   APP_URL: "${project_url}"
 "#,
     )?;
-    let _cleanup_result =
-        reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await;
+    runtimes.cleanup().await?;
 
     assert_with_normalized_runtime(
         tempdir.path(),
@@ -3813,6 +3813,8 @@ async fn rustfs_allocation_failure_preserves_project_env_and_records_failed_runt
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("rustfs", RUSTFS_TRACK);
     state::fs::write_sensitive_file(&project.path.join(".env"), "EXISTING=value\n")?;
     seed_auth_rejecting_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
     reserve_available_rustfs_ports(&paths)?;
@@ -3829,7 +3831,6 @@ async fn rustfs_allocation_failure_preserves_project_env_and_records_failed_runt
             database.project_env_observed_state(&project.id)?,
         )
     };
-    stop_recorded_rustfs_runtime(&paths).await?;
     assert!(
         result.is_err(),
         "expected RustFS allocation failure, got {result:#?}"
@@ -3864,6 +3865,9 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
     for mode in ["targeted", "project", "recording"] {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+        runtimes.register("rustfs", RUSTFS_TRACK);
+        runtimes.register("mailpit", FAKE_MAILPIT_TRACK);
         let config = "serve: false\nenv:\n  REVISION: initial\nmailpit:\n  version: '1.0'\n  env:\n    MAIL_HOST: '${smtp_host}'\nrustfs:\n  version: '1.0'\n  allocations:\n    uploads:\n      env:\n        BUCKET: '${bucket}'\n";
         let broken = link_project(
             &paths,
@@ -4107,21 +4111,19 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
             ]);
             Ok(phase_checks)
         }.await;
-        let rustfs_cleanup = stop_recorded_rustfs_runtime(&paths).await;
-        let mailpit_cleanup = async {
-            if let Some(process) = ProcessSupervisor::new(paths.clone()).adopt_recorded(
-                &paths.resource_pid("mailpit", FAKE_MAILPIT_TRACK),
-                &paths.resource_runtime_metadata("mailpit", FAKE_MAILPIT_TRACK),
-            )? {
-                process.stop(Duration::from_secs(1)).await?;
+        let cleanup_result = runtimes.cleanup().await;
+        let phase_checks = match (verification, cleanup_result) {
+            (Ok(phase_checks), Ok(())) => phase_checks,
+            (Err(operation_error), Ok(())) => return Err(operation_error),
+            (Ok(_), Err(cleanup_error)) => return Err(cleanup_error),
+            (Err(operation_error), Err(cleanup_error)) => {
+                bail!(
+                    "operation failed: {operation_error:#}; fixture cleanup failed: {cleanup_error:#}"
+                )
             }
-            Ok::<_, DaemonError>(())
-        }
-        .await;
-        rustfs_cleanup?;
-        mailpit_cleanup?;
+        };
         checks.extend(
-            verification?
+            phase_checks
                 .into_iter()
                 .map(|(check, passed)| (mode, check, passed)),
         );
@@ -4135,6 +4137,8 @@ async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("rustfs", RUSTFS_TRACK);
     seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
     reserve_available_rustfs_ports(&paths)?;
 
@@ -4192,8 +4196,7 @@ async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -
   APP_URL: "${project_url}"
 "#,
     )?;
-    let _cleanup_result =
-        reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await;
+    runtimes.cleanup().await?;
 
     assert_with_normalized_runtime(
         tempdir.path(),
