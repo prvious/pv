@@ -3704,6 +3704,27 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
             let before_mailpit = capture()?;
             phase_checks.push(("healthy same-track verification restores runtime only", before_mailpit.4.as_ref().is_some_and(|state| state.status == RuntimeObservedStatus::Running)
                 && before_mailpit.3.as_ref().is_some_and(|state| state.status == ProjectEnvObservedStatus::Rendered)));
+            state::testing::transaction(&mut database, |transaction| {
+                transaction.execute_batch(&format!(
+                    "CREATE TRIGGER reject_unrelated_allocation_insert
+                     BEFORE INSERT ON resource_allocations
+                     WHEN NEW.project_id = '{broken_id}' AND NEW.resource_name = 'rustfs'
+                     BEGIN SELECT RAISE(FAIL, 'fixture rejected unrelated RustFS allocation write'); END;
+                     CREATE TRIGGER reject_unrelated_allocation_update
+                     BEFORE UPDATE ON resource_allocations
+                     WHEN OLD.project_id = '{broken_id}' AND OLD.resource_name = 'rustfs'
+                     BEGIN SELECT RAISE(FAIL, 'fixture rejected unrelated RustFS allocation write'); END;
+                     CREATE TRIGGER reject_unrelated_observation_insert
+                     BEFORE INSERT ON observed_states
+                     WHEN NEW.subject_kind = 'project_env' AND NEW.subject_id = '{broken_id}'
+                     BEGIN SELECT RAISE(FAIL, 'fixture rejected unrelated Project observation write'); END;
+                     CREATE TRIGGER reject_unrelated_observation_update
+                     BEFORE UPDATE ON observed_states
+                     WHEN OLD.subject_kind = 'project_env' AND OLD.subject_id = '{broken_id}'
+                     BEGIN SELECT RAISE(FAIL, 'fixture rejected unrelated Project observation write'); END;",
+                    broken_id = broken.id,
+                ))
+            })?;
             write_project_config(&broken, &config.replace("REVISION: initial", "REVISION: changed"))?;
             let before_ids = database.recent_jobs()?.into_iter().map(|job| job.id).collect();
             crate::jobs::run_background_reconciliation_job(paths.clone(), ReconciliationQueue::new(),
@@ -3717,6 +3738,14 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
                     ("resource".to_owned(), "mailpit:1.0".to_owned()), ("project".to_owned(), healthy.id.clone()),
                 ])),
             ]);
+            state::testing::transaction(&mut database, |transaction| {
+                transaction.execute_batch(
+                    "DROP TRIGGER reject_unrelated_allocation_insert;
+                     DROP TRIGGER reject_unrelated_allocation_update;
+                     DROP TRIGGER reject_unrelated_observation_insert;
+                     DROP TRIGGER reject_unrelated_observation_update;",
+                )
+            })?;
             stop_recorded_rustfs_runtime(&paths).await?;
             seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
             state::fs::delete_dir_all(&rustfs_bucket_path(&paths, RUSTFS_TRACK, &bucket))?;
