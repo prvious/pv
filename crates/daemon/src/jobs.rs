@@ -27,8 +27,9 @@ use crate::reconciliation::{
 use crate::structured_log::{self, PhaseOutcome, ReconciliationPhase, ReconciliationPhaseLog};
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
 use state::{
-    Database, JobDiagnosticSubject, ManagedResourceDesiredState, ProjectRecord, PvPaths,
-    ResourceAllocationStatus, RuntimeObservedStatus, RuntimeSubject, StateError,
+    Database, JobDiagnosticSubject, ManagedResourceDesiredState, ProjectEnvObservedStatus,
+    ProjectRecord, PvPaths, ResourceAllocationStatus, RuntimeObservedStatus, RuntimeSubject,
+    StateError,
 };
 use tokio::io::AsyncWrite;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
@@ -1307,13 +1308,17 @@ fn unchanged_update_summary(report: &ManagedResourceUpdateReport) -> String {
 /// Projects with recorded backing-resource demands must not render environments
 /// from changed or failed runtimes. Drifted demands and changed PHP identities are
 /// refused outright; unready demands are refused once they are established through
-/// allocations or provisioned track env contexts. Projects without any recorded
+/// active allocations or provisioned track env contexts. The track a scope reconciles
+/// is left to its Resources phase, which repairs those allocations before the staged
+/// apply and skips the Project when the repair fails. Projects without any recorded
 /// demand are tolerated until the Resources phase provisions them. Only the given
 /// Projects are examined, so a scope never records failures for Projects it does
 /// not apply.
 fn unready_established_resource_projects(
     paths: &PvPaths,
     projects: &[ProjectRecord],
+    reconciled_resource: &str,
+    reconciled_track: &str,
 ) -> Result<BTreeMap<String, DaemonError>, DaemonError> {
     let database = Database::open(paths)?;
     let tracks = database.managed_resource_tracks()?;
@@ -1353,8 +1358,36 @@ fn unready_established_resource_projects(
                     && track.track == demand.track
                     && !track.env.is_empty()
             });
-            if allocations.is_empty() && !has_env_context {
+            let has_active_allocations = allocations
+                .iter()
+                .any(|allocation| allocation.status != ResourceAllocationStatus::Inactive);
+            if !has_active_allocations && !has_env_context {
                 continue;
+            }
+            // A running shared runtime cannot vouch for a Project-specific allocation that is
+            // still Desired or Failed, so unready allocations decide before runtime observations.
+            // Demand for the (resource, track) this scope reconciles is exempt: the scope's
+            // Resources phase repairs those allocations first and, when they are still unready,
+            // records a Project failure that skips the Project from the staged apply.
+            let reconciled_by_this_scope =
+                demand.resource_name == reconciled_resource && demand.track == reconciled_track;
+            if !reconciled_by_this_scope
+                && let Some(allocation) = allocations.iter().find(|allocation| {
+                    !matches!(
+                        allocation.status,
+                        ResourceAllocationStatus::Ready | ResourceAllocationStatus::Inactive
+                    )
+                })
+            {
+                failures.insert(
+                    project.id.clone(),
+                    config::ConfigError::MissingAllocationEnvContext {
+                        resource: demand.resource_name.clone(),
+                        allocation: allocation.allocation_name.clone(),
+                    }
+                    .into(),
+                );
+                break;
             }
             let observed = observations.iter().find(|observed| {
                 matches!(
@@ -1364,30 +1397,13 @@ fn unready_established_resource_projects(
                 )
             });
             let failure = match observed {
-                None => {
-                    let unready = allocations
-                        .iter()
-                        .find(|allocation| allocation.status != ResourceAllocationStatus::Ready);
-                    if let Some(allocation) = unready {
-                        // The env context cannot be built without a ready allocation;
-                        // report that before the missing observation behind it.
-                        Some(
-                            config::ConfigError::MissingAllocationEnvContext {
-                                resource: demand.resource_name.clone(),
-                                allocation: allocation.allocation_name.clone(),
-                            }
-                            .into(),
-                        )
-                    } else {
-                        Some(DaemonError::ProjectEnvDependenciesNotApplied {
-                            project_id: project.id.clone(),
-                            reason: format!(
-                                "required resource {} track {} has no observed state",
-                                demand.resource_name, demand.track
-                            ),
-                        })
-                    }
-                }
+                None => Some(DaemonError::ProjectEnvDependenciesNotApplied {
+                    project_id: project.id.clone(),
+                    reason: format!(
+                        "required resource {} track {} has no observed state",
+                        demand.resource_name, demand.track
+                    ),
+                }),
                 Some(observed) => match observed.status {
                     RuntimeObservedStatus::Running => None,
                     failed => {
@@ -1432,12 +1448,23 @@ async fn complete_managed_resource_reconciliation_with_progress(
 ) -> Result<CompletedReconciliationJob, DaemonError> {
     let dependent_projects = Database::open(paths)?
         .projects_demanding_managed_resource_track(name.as_str(), track.as_str())?;
-    let strict_failures = unready_established_resource_projects(paths, &dependent_projects)?;
+    let strict_failures = unready_established_resource_projects(
+        paths,
+        &dependent_projects,
+        name.as_str(),
+        track.as_str(),
+    )?;
     let mut skip_projects: BTreeSet<String> = BTreeSet::new();
     if !strict_failures.is_empty() {
         let mut database = Database::open(paths)?;
         for (project_id, error) in &strict_failures {
-            record_project_env_failure(&mut database, project_id, &error.to_string())?;
+            // Keep an existing failure cause rather than replacing it with this recheck's refusal.
+            let has_existing_failure = database
+                .project_env_observed_state(project_id)?
+                .is_some_and(|observed| observed.status == ProjectEnvObservedStatus::Failed);
+            if !has_existing_failure {
+                record_project_env_failure(&mut database, project_id, &error.to_string())?;
+            }
             skip_projects.insert(project_id.clone());
         }
     }
@@ -2850,8 +2877,8 @@ mod tests {
         record_background_reconciliation_error, run_background_reconciliation_job,
         run_startup_reconciliation_job, start_reconciliation_job, start_update_job,
         stop_undemanded_system_resource_runtimes, stream_started_reconciliation_job,
-        stream_started_update_job, system_project_summary, wait_for_startup_reconciliation_turn,
-        write_coalesced_update_response,
+        stream_started_update_job, system_project_summary, unready_established_resource_projects,
+        wait_for_startup_reconciliation_turn, write_coalesced_update_response,
     };
     use crate::project_env::ProjectApplyStage;
     use crate::reconciliation::{
@@ -4439,6 +4466,104 @@ mod tests {
                 .all(|(_, checks)| checks.iter().all(|passed| *passed)),
             "dependency outcomes: {checks:#?}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn unready_resource_projects_ignores_historical_inactive_allocations() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut database = Database::open(&paths)?;
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(
+            &config_path,
+            "mailpit:\n  version: \"1.0\"\nmysql:\n  version: \"8.0\"\nrustfs:\n  version: \"1.0\"\n",
+        )?;
+        let project = database
+            .link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path,
+                primary_hostname: "project.test".to_owned(),
+                config_path,
+                desired_php_track: None,
+                additional_hostnames: Vec::new(),
+            })?
+            .project;
+        database.replace_project_managed_resources(
+            &project.id,
+            &[
+                ProjectManagedResourceInput {
+                    resource_name: "mailpit".to_owned(),
+                    track: "1.0".to_owned(),
+                },
+                ProjectManagedResourceInput {
+                    resource_name: "mysql".to_owned(),
+                    track: "8.0".to_owned(),
+                },
+                ProjectManagedResourceInput {
+                    resource_name: "rustfs".to_owned(),
+                    track: "1.0".to_owned(),
+                },
+            ],
+        )?;
+        let mysql_allocation = resources::generated_allocation_name("mysql", &project.slug, "app")?;
+        database.replace_project_resource_allocations(
+            &project.id,
+            "mysql",
+            "8.0",
+            &[ResourceAllocationInput {
+                allocation_name: "app".to_owned(),
+                generated_name: mysql_allocation.generated_name().to_owned(),
+            }],
+        )?;
+        database.replace_project_resource_allocations(&project.id, "mysql", "8.0", &[])?;
+        let retired_allocation =
+            resources::generated_allocation_name("rustfs", &project.slug, "retired")?;
+        database.replace_project_resource_allocations(
+            &project.id,
+            "rustfs",
+            "1.0",
+            &[ResourceAllocationInput {
+                allocation_name: "retired".to_owned(),
+                generated_name: retired_allocation.generated_name().to_owned(),
+            }],
+        )?;
+        let uploads_allocation =
+            resources::generated_allocation_name("rustfs", &project.slug, "uploads")?;
+        database.replace_project_resource_allocations(
+            &project.id,
+            "rustfs",
+            "1.0",
+            &[ResourceAllocationInput {
+                allocation_name: "uploads".to_owned(),
+                generated_name: uploads_allocation.generated_name().to_owned(),
+            }],
+        )?;
+        database.mark_resource_allocation_ready(
+            &project.id,
+            "rustfs",
+            "1.0",
+            "uploads",
+            &BTreeMap::new(),
+        )?;
+        database.record_runtime_observed_snapshot(
+            RuntimeSubject::Resource {
+                name: "rustfs".to_owned(),
+                track: "1.0".to_owned(),
+            },
+            RuntimeObservedStatus::Running,
+            Some("fixture rustfs readiness diagnostic"),
+        )?;
+
+        let failures = unready_established_resource_projects(
+            &paths,
+            std::slice::from_ref(&project),
+            "mailpit",
+            "1.0",
+        )?;
+
+        assert!(failures.is_empty(), "{failures:#?}");
         Ok(())
     }
 
