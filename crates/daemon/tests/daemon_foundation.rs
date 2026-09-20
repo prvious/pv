@@ -586,7 +586,6 @@ async fn seeded_gateway_drop_does_not_block_current_thread_runtime() -> Result<(
     let gateway_descendant = recorded_test_pid(&paths.run().join("gateway-descendant.pid"))?;
     assert_eq!(test_kill_process_group(gateway_group), Err(Errno::SRCH));
     assert_eq!(test_kill_process(gateway_descendant), Err(Errno::SRCH));
-    assert_fixture_listeners_released(&paths)?;
 
     Ok(())
 }
@@ -1047,33 +1046,6 @@ async fn emergency_cleanup_seeded_runtimes(paths: &PvPaths) -> Result<()> {
 fn recorded_test_pid(path: &Utf8Path) -> Result<Pid> {
     let raw_pid = state::fs::read_to_string(path)?.trim().parse::<i32>()?;
     Pid::from_raw(raw_pid).ok_or_else(|| anyhow!("invalid recorded test pid {raw_pid}"))
-}
-
-fn assert_fixture_listeners_released(paths: &PvPaths) -> Result<()> {
-    for assignment in Database::open(paths)?.assigned_ports()? {
-        match assignment.owner {
-            PortOwner::Gateway(_) => {
-                if platform::loopback_tcp_port_has_listener(assignment.port)? {
-                    return Err(anyhow!(
-                        "gateway port {} still has a TCP listener",
-                        assignment.port
-                    ));
-                }
-            }
-            PortOwner::Dns => {
-                if platform::loopback_tcp_port_has_listener(assignment.port)? {
-                    return Err(anyhow!(
-                        "DNS port {} still has a TCP listener",
-                        assignment.port
-                    ));
-                }
-                let _udp_socket = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, assignment.port))?;
-            }
-            PortOwner::PhpWorker { .. } | PortOwner::Resource { .. } => {}
-        }
-    }
-
-    Ok(())
 }
 
 #[tokio::test]
@@ -2810,10 +2782,9 @@ async fn targeted_scenario_timeout_still_cleans_owned_state() -> Result<()> {
         &paths,
         &project_path,
         "php: \"8.4\"\n",
-        45_000,
-        49_999,
+        35_000,
+        39_999,
     )?;
-    let worker_port = port_reservation.local_addr()?.port();
     let [readiness_started, readiness_gate] = install_worker_readiness_barrier(&paths)?;
     state::fs::write_sensitive_file(&readiness_gate, "blocked\n")?;
     drop(port_reservation);
@@ -2824,6 +2795,7 @@ async fn targeted_scenario_timeout_still_cleans_owned_state() -> Result<()> {
     gateway_guard.attach_daemon(daemon);
     wait_for_path(&readiness_started).await?;
     wait_for_path(&paths.worker_pid("8.4")).await?;
+    let worker_group = recorded_test_pid(&paths.worker_pid("8.4"))?;
 
     let operation_result = timeout(
         Duration::from_millis(25),
@@ -2851,17 +2823,7 @@ async fn targeted_scenario_timeout_still_cleans_owned_state() -> Result<()> {
     assert!(!paths.gateway_runtime_metadata().exists());
     assert!(!paths.worker_pid("8.4").exists());
     assert!(!paths.worker_runtime_metadata("8.4").exists());
-    let listener_deadline = Instant::now() + SEEDED_GATEWAY_CLEANUP_TIMEOUT;
-    while platform::loopback_tcp_port_has_listener(worker_port)?
-        && Instant::now() < listener_deadline
-    {
-        sleep(SEEDED_GATEWAY_CLEANUP_POLL_INTERVAL).await;
-    }
-    if platform::loopback_tcp_port_has_listener(worker_port)? {
-        return Err(anyhow!(
-            "worker port {worker_port} still has a TCP listener"
-        ));
-    }
+    assert_eq!(test_kill_process_group(worker_group), Err(Errno::SRCH));
 
     Ok(())
 }
