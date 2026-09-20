@@ -718,6 +718,8 @@ async fn postgres_reconciliation_creates_database_allocation_and_renders_env() -
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("postgres", POSTGRES_TRACK);
     seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
     reserve_postgres_port(&paths, 19_060)?;
 
@@ -739,7 +741,7 @@ async fn postgres_reconciliation_creates_database_allocation_and_renders_env() -
         "postgres_reconciliation_creates_database_allocation_and_renders_env",
         snapshot,
     )?;
-    stop_postgres_runtime(&paths, &project).await?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -749,6 +751,8 @@ async fn postgres_project_demand_installs_missing_fixture_track_before_start() -
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("postgres", POSTGRES_TRACK);
     seed_postgres_cached_fixture(&paths, tempdir.path())?;
     reserve_postgres_port(&paths, 19_061)?;
 
@@ -775,7 +779,7 @@ async fn postgres_project_demand_installs_missing_fixture_track_before_start() -
         "postgres_project_demand_installs_missing_fixture_track_before_start",
         snapshot,
     )?;
-    stop_postgres_runtime_with_manifest_url(&paths, &project, OFFLINE_TEST_MANIFEST_URL).await?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -827,6 +831,8 @@ async fn postgres_reconciliation_writes_tcp_only_runtime_config() -> Result<()> 
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("postgres", POSTGRES_TRACK);
     seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
     reserve_postgres_port(&paths, 19_064)?;
 
@@ -839,7 +845,7 @@ async fn postgres_reconciliation_writes_tcp_only_runtime_config() -> Result<()> 
     let runtime_config =
         state::fs::read_to_string(&paths.resource_runtime_config("postgres", POSTGRES_TRACK))?;
 
-    stop_postgres_runtime(&paths, &project).await?;
+    runtimes.cleanup().await?;
 
     assert!(
         data_config.contains("unix_socket_directories = ''"),
@@ -849,7 +855,6 @@ async fn postgres_reconciliation_writes_tcp_only_runtime_config() -> Result<()> 
         runtime_config.contains("unix_socket_directories = ''"),
         "expected recorded Postgres runtime config to disable Unix socket listeners"
     );
-    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -857,7 +862,12 @@ async fn postgres_reconciliation_writes_tcp_only_runtime_config() -> Result<()> 
 #[tokio::test]
 async fn postgres_preload_configuration_reconciles_tracks_17_and_18() -> Result<()> {
     let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("postgres", "17");
+    runtimes.register("postgres", "18");
     let mut snapshots = Vec::new();
+    let mut runtime_pids = Vec::new();
 
     for (track, port, requested) in [
         (
@@ -871,10 +881,11 @@ async fn postgres_preload_configuration_reconciles_tracks_17_and_18() -> Result<
             vec!["pg_duckdb", "pg_stat_statements", "pg_duckdb"],
         ),
     ] {
-        let paths = PvPaths::for_home(tempdir.path().join(format!("home-{track}")));
+        let primary_hostname = format!("postgres-{track}.test");
         let project = link_project_with_postgres_track(
             &paths,
             &tempdir.path().join(format!("project-{track}")),
+            &primary_hostname,
             track,
         )?;
         seed_postgres_fixture_artifact_for_track(&paths, track)?;
@@ -949,7 +960,39 @@ async fn postgres_preload_configuration_reconciles_tracks_17_and_18() -> Result<
                 && cleared_config == stable_cleared_config,
             cleared_data_config_matches_runtime_config: data_config == stable_cleared_config,
         });
-        stop_postgres_runtime(&paths, &project).await?;
+        runtime_pids.push((track, port, stable_cleared_pid));
+    }
+
+    for (track, port, pid) in &runtime_pids {
+        assert!(
+            !fixture_identity_is_absent(*pid)?,
+            "expected PostgreSQL {track} process group to remain live before shared cleanup"
+        );
+        assert!(
+            TcpListener::bind(("127.0.0.1", *port)).is_err(),
+            "expected PostgreSQL {track} listener to remain live before shared cleanup"
+        );
+    }
+
+    runtimes.cleanup().await?;
+
+    for (track, port, pid) in runtime_pids {
+        assert_eq!(
+            runtime_files_exist_for_resource(&paths, "postgres", track)?,
+            RuntimeFilePresence {
+                pid: false,
+                metadata: false,
+                config: false,
+            },
+            "expected PostgreSQL {track} runtime records to be removed",
+        );
+        assert!(
+            fixture_identity_is_absent(pid)?,
+            "expected PostgreSQL {track} process group to be gone"
+        );
+        let _listener = TcpListener::bind(("127.0.0.1", port)).with_context(|| {
+            format!("expected PostgreSQL {track} listener port {port} to be released")
+        })?;
     }
 
     assert_with_normalized_postgres_runtime(
@@ -965,7 +1008,14 @@ async fn postgres_preload_configuration_reconciles_tracks_17_and_18() -> Result<
 async fn postgres_preload_configuration_rejects_missing_library() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project_with_postgres_track(&paths, &tempdir.path().join("project"), "17")?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("postgres", "17");
+    let project = link_project_with_postgres_track(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "17",
+    )?;
     seed_postgres_fixture_artifact_for_track(&paths, "17")?;
     reserve_postgres_track_port(&paths, "17", 19_069)?;
     {
@@ -1005,6 +1055,7 @@ async fn postgres_preload_configuration_rejects_missing_library() -> Result<()> 
             ),
         ),
     )?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -1013,7 +1064,14 @@ async fn postgres_preload_configuration_rejects_missing_library() -> Result<()> 
 async fn postgres_preload_configuration_rejects_unsafe_combination() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project_with_postgres_track(&paths, &tempdir.path().join("project"), "18")?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("postgres", "18");
+    let project = link_project_with_postgres_track(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "18",
+    )?;
     seed_postgres_fixture_artifact_for_track(&paths, "18")?;
     seed_postgres_preload_modules(
         &paths,
@@ -1056,6 +1114,7 @@ async fn postgres_preload_configuration_rejects_unsafe_combination() -> Result<(
             ),
         ),
     )?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -1065,6 +1124,8 @@ async fn postgres_reconciliation_replaces_stale_admin_username_from_track_env() 
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("postgres", POSTGRES_TRACK);
     seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
     reserve_postgres_port(&paths, 19_062)?;
     {
@@ -1100,7 +1161,7 @@ async fn postgres_reconciliation_replaces_stale_admin_username_from_track_env() 
             database.runtime_observed_states()?,
         )
     };
-    stop_postgres_runtime(&paths, &project).await?;
+    runtimes.cleanup().await?;
 
     assert_eq!(
         snapshot.1.env.get("username").map(String::as_str),
@@ -1122,6 +1183,8 @@ async fn postgres_reconciliation_retries_with_initialized_password_after_config_
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("postgres", POSTGRES_TRACK);
     seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
     reserve_postgres_port(&paths, 19_065)?;
     let config_parent_blocker = paths.config().join("resources");
@@ -1166,7 +1229,7 @@ async fn postgres_reconciliation_retries_with_initialized_password_after_config_
             database.runtime_observed_states()?,
         )
     };
-    stop_postgres_runtime(&paths, &project).await?;
+    runtimes.cleanup().await?;
 
     assert!(
         recovered_dotenv.contains(&format!("DB_PASSWORD={initdb_password}\n")),
@@ -1203,6 +1266,8 @@ async fn postgres_reconciliation_records_generated_env_when_readiness_fails_afte
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("postgres", POSTGRES_TRACK);
     seed_unready_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
     reserve_postgres_port(&paths, 19_063)?;
 
@@ -1259,6 +1324,7 @@ async fn postgres_reconciliation_records_generated_env_when_readiness_fails_afte
         "postgres_reconciliation_records_generated_env_when_readiness_fails_after_initdb",
         snapshot,
     )?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -6166,12 +6232,13 @@ fn link_project_with_postgres_database_env(
     paths: &PvPaths,
     project_path: &Utf8Path,
 ) -> Result<ProjectRecord> {
-    link_project_with_postgres_track(paths, project_path, POSTGRES_TRACK)
+    link_project_with_postgres_track(paths, project_path, "acme.test", POSTGRES_TRACK)
 }
 
 fn link_project_with_postgres_track(
     paths: &PvPaths,
     project_path: &Utf8Path,
+    primary_hostname: &str,
     track: &str,
 ) -> Result<ProjectRecord> {
     let config = format!(
@@ -6194,7 +6261,7 @@ fn link_project_with_postgres_track(
 "#
     );
 
-    link_project(paths, project_path, "acme.test", &config)
+    link_project(paths, project_path, primary_hostname, &config)
 }
 
 fn write_project_config(project: &ProjectRecord, config_source: &str) -> Result<()> {
@@ -6235,39 +6302,6 @@ fn write_expiring_project_certificate(
         &paths.project_tls_private_key(&project.id),
         &key_pair.serialize_pem(),
     )?;
-
-    Ok(())
-}
-
-async fn stop_postgres_runtime(paths: &PvPaths, project: &ProjectRecord) -> Result<()> {
-    write_project_config(
-        project,
-        r#"env:
-  APP_URL: "${project_url}"
-"#,
-    )?;
-    let _summary = crate::project_env::reconcile_project_env(paths, &project.id).await?;
-
-    Ok(())
-}
-
-async fn stop_postgres_runtime_with_manifest_url(
-    paths: &PvPaths,
-    project: &ProjectRecord,
-    manifest_url: &str,
-) -> Result<()> {
-    write_project_config(
-        project,
-        r#"env:
-  APP_URL: "${project_url}"
-"#,
-    )?;
-    reconcile_project_env_with_postgres_runtime_catalog_and_manifest_url(
-        paths,
-        &project.id,
-        manifest_url,
-    )
-    .await?;
 
     Ok(())
 }
