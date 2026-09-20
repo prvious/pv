@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 use std::{fmt, future::Future, io};
 
@@ -16,7 +16,6 @@ use state::{PvPaths, StateError, fs};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::process::Child;
-use tokio::runtime::Handle;
 use tokio::time::{Instant, sleep, timeout};
 use tokio_rustls::TlsConnector;
 
@@ -943,22 +942,19 @@ fn signal_process_group(_pid: u32, _signal: ProcessSignal) -> Result<(), DaemonE
 
 /// Owns a freshly spawned process group until its runtime files are durably committed.
 ///
-/// Every release path runs [`terminate_spawned_child`], so a failed or cancelled
-/// [`ProcessSupervisor::start`] cannot orphan the leader or its descendants.
+/// Explicit startup failures terminate and await the child on the current runtime. If cancellation
+/// drops the guard, it synchronously requests group and leader termination, then transfers leader
+/// reaping to an independent thread so Tokio runtime teardown cannot leave a zombie.
 struct SpawnedProcessGroup {
     pid: u32,
     child: Option<Child>,
-    runtime: Handle,
 }
 
 impl SpawnedProcessGroup {
-    /// Arming captures the current runtime, so cancellation still reaps the group no matter
-    /// which thread or context finally drops the guard.
     fn armed(pid: u32, child: Child) -> Self {
         Self {
             pid,
             child: Some(child),
-            runtime: Handle::current(),
         }
     }
 
@@ -985,10 +981,37 @@ impl Drop for SpawnedProcessGroup {
         let Some(mut child) = self.child.take() else {
             return;
         };
-        let pid = self.pid;
 
-        self.runtime
-            .spawn(async move { terminate_spawned_child(pid, &mut child).await });
+        #[cfg(target_os = "macos")]
+        let _group_kill_result = signal_process_group(self.pid, ProcessSignal::Kill);
+        let _child_kill_result = child.start_kill();
+        reap_spawned_child(child);
+    }
+}
+
+fn reap_spawned_child(child: Child) {
+    let (child_sender, child_receiver) = mpsc::channel();
+    let reaper = std::thread::Builder::new()
+        .name("pv-process-reaper".to_string())
+        .spawn(move || {
+            if let Ok(child) = child_receiver.recv() {
+                wait_for_spawned_child(child);
+            }
+        });
+
+    match reaper {
+        Ok(_reaper) => {
+            if let Err(error) = child_sender.send(child) {
+                wait_for_spawned_child(error.0);
+            }
+        }
+        Err(_error) => wait_for_spawned_child(child),
+    }
+}
+
+fn wait_for_spawned_child(mut child: Child) {
+    while matches!(child.try_wait(), Ok(None)) {
+        std::thread::sleep(READINESS_POLL_INTERVAL);
     }
 }
 
@@ -1482,17 +1505,18 @@ mod bounded_readiness_tests {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use std::future::pending;
+    use std::net::TcpListener;
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
-    use anyhow::{Result, anyhow};
+    use anyhow::{Result, anyhow, bail};
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
-    use rustix::process::{Pid, Signal, kill_process, test_kill_process};
+    use rustix::process::{Pid, Signal, kill_process, kill_process_group, test_kill_process};
     use tokio::sync::oneshot;
     use tokio::time::sleep;
 
-    use super::{ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint};
+    use super::{ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint, process_group_exists};
     use state::PvPaths;
 
     /// Shorter than the script identity stabilization window, so cancellation lands while
@@ -1509,6 +1533,7 @@ mod tests {
         state::fs::write_sensitive_file(&metadata_parent_blocker, "not a directory")?;
         let descendant_pid_path_for_command = descendant_pid_path.clone();
         let descendant_pid_path_for_hook = descendant_pid_path.clone();
+        let (leader_sender, leader_receiver) = oneshot::channel();
         let result = ProcessSupervisor::new(paths.clone())
             .start_inner(
                 ProcessSpec {
@@ -1529,21 +1554,47 @@ mod tests {
                     resource_name: "startup-descendant".to_string(),
                     track: "test".to_string(),
                 },
-                move |_pid| async move {
+                move |pid| async move {
+                    let _delivered = leader_sender.send(pid);
                     wait_for_test_path(&descendant_pid_path_for_hook).await;
                 },
             )
             .await;
 
         assert!(result.is_err());
+        let leader_pid = leader_receiver.await?;
         let descendant_pid = state::fs::read_to_string(&descendant_pid_path)?
             .trim()
             .parse::<u32>()?;
+        let group_exited = wait_for_test_process_group_exit_synchronously(leader_pid)?;
+        let leader_exited = wait_for_test_process_exit(leader_pid).await?;
         let descendant_exited = wait_for_test_process_exit(descendant_pid).await?;
-        if !descendant_exited {
+        let emergency_cleanup = if group_exited {
+            "not needed".to_owned()
+        } else {
+            match kill_process_group(test_pid(leader_pid)?, Signal::KILL) {
+                Ok(()) => match wait_for_test_process_group_exit_synchronously(leader_pid) {
+                    Ok(true) => "sent KILL and the process group exited".to_owned(),
+                    Ok(false) => "sent KILL but the process group remained alive".to_owned(),
+                    Err(error) => format!("sent KILL but the follow-up probe failed: {error}"),
+                },
+                Err(error) => format!("failed to send KILL: {error}"),
+            }
+        };
+
+        if !descendant_exited && group_exited {
             kill_test_process(descendant_pid)?;
             let _cleanup_complete = wait_for_test_process_exit(descendant_pid).await?;
         }
+
+        assert!(
+            group_exited,
+            "startup persistence failure left process group {leader_pid} alive; emergency cleanup: {emergency_cleanup}"
+        );
+        assert!(
+            leader_exited,
+            "startup persistence failure left leader process {leader_pid} alive"
+        );
 
         assert!(
             descendant_exited,
@@ -1642,6 +1693,89 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn runtime_teardown_reaps_uncommitted_process_group() -> Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::ensure_layout(&paths)?;
+        let descendant_pid_path = paths.run().join("runtime-teardown-descendant.pid");
+        let listener_ready_path = paths.run().join("runtime-teardown-listener.ready");
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let listener_port = listener.local_addr()?.port();
+        drop(listener);
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let spec = descendant_spec(
+            &paths,
+            "runtime-teardown",
+            "/bin/sh".into(),
+            listener_descendant_arguments(
+                listener_port,
+                &listener_ready_path,
+                &descendant_pid_path,
+            ),
+        );
+        let supervisor = ProcessSupervisor::new(paths);
+        let descendant_pid_path_for_hook = descendant_pid_path.clone();
+        let listener_ready_path_for_hook = listener_ready_path.clone();
+        let (pid_sender, pid_receiver) = oneshot::channel();
+        let startup_task = runtime.spawn(async move {
+            supervisor
+                .start_inner(spec, move |pid| async move {
+                    wait_for_test_path(&descendant_pid_path_for_hook).await;
+                    wait_for_test_path(&listener_ready_path_for_hook).await;
+                    let _delivered = pid_sender.send(pid);
+                    pending::<()>().await;
+                })
+                .await
+        });
+        let leader_pid = runtime.block_on(pid_receiver)?;
+        drop(runtime);
+        drop(startup_task);
+
+        let descendant_pid = state::fs::read_to_string(&descendant_pid_path)?
+            .trim()
+            .parse::<u32>()?;
+        let group_exited = wait_for_test_process_group_exit_synchronously(leader_pid)?;
+        let leader_exited = wait_for_test_process_exit_synchronously(leader_pid)?;
+        let descendant_exited = wait_for_test_process_exit_synchronously(descendant_pid)?;
+        let listener_released = wait_for_test_listener_release(listener_port);
+
+        let emergency_cleanup = if group_exited {
+            "not needed".to_owned()
+        } else {
+            match kill_process_group(test_pid(leader_pid)?, Signal::KILL) {
+                Ok(()) => match wait_for_test_process_group_exit_synchronously(leader_pid) {
+                    Ok(true) => "sent KILL and the process group exited".to_owned(),
+                    Ok(false) => "sent KILL but the process group remained alive".to_owned(),
+                    Err(error) => format!("sent KILL but the follow-up probe failed: {error}"),
+                },
+                Err(error) => format!("failed to send KILL: {error}"),
+            }
+        };
+
+        assert!(
+            group_exited,
+            "runtime teardown left process group {leader_pid} alive; emergency cleanup: {emergency_cleanup}"
+        );
+        assert!(
+            leader_exited,
+            "runtime teardown left leader process {leader_pid} unreaped"
+        );
+        assert!(
+            descendant_exited,
+            "runtime teardown left descendant process {descendant_pid} alive"
+        );
+        assert!(
+            listener_released,
+            "runtime teardown left listener port {listener_port} occupied"
+        );
+
+        Ok(())
+    }
+
     #[tokio::test]
     async fn recorded_fingerprint_accepts_prior_proof_only_while_process_is_live() -> Result<()> {
         let tempdir = tempdir()?;
@@ -1713,6 +1847,21 @@ mod tests {
         )
     }
 
+    fn listener_descendant_arguments(
+        port: u16,
+        listener_ready_path: &Utf8Path,
+        descendant_pid_path: &Utf8Path,
+    ) -> Vec<String> {
+        vec![
+            "-c".to_string(),
+            "python3 -c 'import socket, sys, time; listener = socket.socket(); listener.bind((\"127.0.0.1\", int(sys.argv[1]))); listener.listen(); open(sys.argv[2], \"w\").close(); time.sleep(60)' \"$1\" \"$2\" & echo $! > \"$3\"; while true; do sleep 1; done".to_string(),
+            "runtime-teardown".to_string(),
+            port.to_string(),
+            listener_ready_path.to_string(),
+            descendant_pid_path.to_string(),
+        ]
+    }
+
     #[expect(
         clippy::disallowed_methods,
         reason = "supervisor cancellation test sets its fixture executable bit directly"
@@ -1771,14 +1920,55 @@ mod tests {
     async fn wait_for_test_process_exit(pid: u32) -> Result<bool> {
         let pid = test_pid(pid)?;
         for _attempt in 0..50 {
-            if test_kill_process(pid).is_err() {
-                return Ok(true);
+            match test_kill_process(pid) {
+                Err(rustix::io::Errno::SRCH) => return Ok(true),
+                Ok(()) => {}
+                Err(error) => bail!("failed to inspect process {pid}: {error}"),
             }
 
             sleep(Duration::from_millis(20)).await;
         }
 
         Ok(false)
+    }
+
+    fn wait_for_test_process_group_exit_synchronously(pid: u32) -> Result<bool> {
+        for _attempt in 0..100 {
+            if !process_group_exists(pid)? {
+                return Ok(true);
+            }
+
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        Ok(false)
+    }
+
+    fn wait_for_test_process_exit_synchronously(pid: u32) -> Result<bool> {
+        let pid = test_pid(pid)?;
+        for _attempt in 0..100 {
+            match test_kill_process(pid) {
+                Err(rustix::io::Errno::SRCH) => return Ok(true),
+                Ok(()) => {}
+                Err(error) => bail!("failed to inspect process {pid}: {error}"),
+            }
+
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        Ok(false)
+    }
+
+    fn wait_for_test_listener_release(port: u16) -> bool {
+        for _attempt in 0..100 {
+            if TcpListener::bind(("127.0.0.1", port)).is_ok() {
+                return true;
+            }
+
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        false
     }
 
     fn kill_test_process(pid: u32) -> Result<()> {
