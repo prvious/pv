@@ -1345,6 +1345,8 @@ async fn mailpit_reconciliation_records_smtp_and_dashboard_env() -> Result<()> {
     MAILPIT_DASHBOARD: "${dashboard_url}"
 "#,
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mailpit", FAKE_MAILPIT_TRACK);
     seed_mailpit_fixture_artifact(&paths, FAKE_MAILPIT_TRACK)?;
     let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
@@ -1384,6 +1386,7 @@ async fn mailpit_reconciliation_records_smtp_and_dashboard_env() -> Result<()> {
 "#,
     )?;
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -1404,6 +1407,8 @@ async fn mailpit_project_demand_installs_missing_fixture_track_before_start() ->
     MAILPIT_DASHBOARD: "${dashboard_url}"
 "#,
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mailpit", FAKE_MAILPIT_TRACK);
     seed_mailpit_cached_fixture(&paths, tempdir.path())?;
     let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
@@ -1453,6 +1458,7 @@ async fn mailpit_project_demand_installs_missing_fixture_track_before_start() ->
         OFFLINE_TEST_MANIFEST_URL,
     )
     .await?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -1522,6 +1528,8 @@ async fn demanded_resource_starts_fake_multi_port_runtime_before_env_rendering()
     MAILPIT_DASHBOARD: "${dashboard_url}"
 "#,
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mailpit", FAKE_MAILPIT_TRACK);
     seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
     let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
@@ -1555,6 +1563,7 @@ async fn demanded_resource_starts_fake_multi_port_runtime_before_env_rendering()
             database.runtime_observed_states()?,
         )
     };
+    runtimes.cleanup().await?;
 
     assert_with_normalized_runtime(
         tempdir.path(),
@@ -1609,6 +1618,9 @@ async fn targeted_resource_reconciliation_preserves_other_tracks_and_stops_final
 -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mailpit", FAKE_MAILPIT_TRACK);
+    runtimes.register("mailpit", FAKE_MAILPIT_NEXT_TRACK);
     let first = link_project(
         &paths,
         &tempdir.path().join("first"),
@@ -1742,6 +1754,7 @@ async fn targeted_resource_reconciliation_preserves_other_tracks_and_stops_final
                 if name == "mailpit" && track == FAKE_MAILPIT_TRACK
         )
     }));
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -3411,6 +3424,8 @@ async fn demanded_resource_reassigns_persisted_port_when_non_pv_listener_occupie
     MAILPIT_DASHBOARD: "${dashboard_url}"
 "#,
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mailpit", FAKE_MAILPIT_TRACK);
     seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
     let stale_smtp_guard = seed_mailpit_runtime_port(&paths, FAKE_MAILPIT_TRACK, "smtp")?;
     let stale_smtp_port = stale_smtp_guard.local_addr()?.port();
@@ -3439,14 +3454,15 @@ async fn demanded_resource_reassigns_persisted_port_when_non_pv_listener_occupie
         )
     });
 
-    if result.is_ok() {
-        write_project_config(
-            &project,
-            r#"env:
-  APP_URL: "${project_url}"
-"#,
-        )?;
-        let _cleanup = reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await;
+    let cleanup_result = runtimes.cleanup().await;
+    match (result.as_ref(), cleanup_result) {
+        (Err(operation_error), Err(cleanup_error)) => {
+            bail!(
+                "operation failed: {operation_error:#}; fixture cleanup failed: {cleanup_error:#}"
+            )
+        }
+        (_, Err(cleanup_error)) => return Err(cleanup_error),
+        _ => {}
     }
 
     assert!(
@@ -3467,7 +3483,6 @@ async fn demanded_resource_reassigns_persisted_port_when_non_pv_listener_occupie
         "demanded_resource_reassigns_persisted_port_when_non_pv_listener_occupies_it",
         reassign_snapshot,
     )?;
-    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -3489,6 +3504,8 @@ async fn demanded_resource_installs_fake_multi_port_runtime_from_cached_fixture_
     MAILPIT_DASHBOARD: "${dashboard_url}"
 "#,
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mailpit", FAKE_MAILPIT_TRACK);
     seed_fake_mailpit_cached_fixture(&paths, tempdir.path())?;
     let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
@@ -3531,6 +3548,7 @@ async fn demanded_resource_installs_fake_multi_port_runtime_from_cached_fixture_
             database.runtime_observed_states()?,
         )
     };
+    runtimes.cleanup().await?;
 
     assert_with_normalized_runtime(
         tempdir.path(),
@@ -3812,7 +3830,6 @@ async fn rustfs_allocation_failure_preserves_project_env_and_records_failed_runt
         )
     };
     stop_recorded_rustfs_runtime(&paths).await?;
-
     assert!(
         result.is_err(),
         "expected RustFS allocation failure, got {result:#?}"
@@ -4204,6 +4221,8 @@ async fn demanded_resource_records_failed_runtime_when_readiness_fails_before_en
     MAILPIT_DASHBOARD: "${dashboard_url}"
 "#,
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mailpit", FAKE_MAILPIT_TRACK);
     seed_unready_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
 
     let result = reconcile_project_env_with_unready_fake_runtime_catalog(&paths, &project.id).await;
@@ -4242,6 +4261,7 @@ async fn demanded_resource_records_failed_runtime_when_readiness_fails_before_en
         "demanded_resource_records_failed_runtime_when_readiness_fails_before_env_rendering",
         failure_snapshot,
     )?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -4266,6 +4286,8 @@ mailpit:
     MAILPIT_DASHBOARD: "${dashboard_url}"
 "#,
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mailpit", FAKE_MAILPIT_TRACK);
     let dotenv_before = "USER_VALUE=preserved\n";
     state::fs::write_sensitive_file(&project.path.join(".env"), dotenv_before)?;
     let config_before = state::fs::read_to_string(&project.config_path)?;
@@ -4295,6 +4317,7 @@ mailpit:
         &project,
         &local_ca.certificate_pem,
     )?);
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -4315,6 +4338,8 @@ async fn demanded_resource_cleans_runtime_files_when_process_exits_after_readine
     MAILPIT_DASHBOARD: "${dashboard_url}"
 "#,
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mailpit", FAKE_MAILPIT_TRACK);
     seed_fast_exit_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
     let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
@@ -4343,16 +4368,6 @@ async fn demanded_resource_cleans_runtime_files_when_process_exits_after_readine
         )
     };
 
-    if result.is_ok() {
-        write_project_config(
-            &project,
-            r#"env:
-  APP_URL: "${project_url}"
-"#,
-        )?;
-        let _cleanup = reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await;
-    }
-
     assert!(
         result.is_err(),
         "expected fast-exit runtime failure, got {result:#?}"
@@ -4372,6 +4387,7 @@ async fn demanded_resource_cleans_runtime_files_when_process_exits_after_readine
         "demanded_resource_cleans_runtime_files_when_process_exits_after_readiness",
         failure_snapshot,
     )?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -4656,6 +4672,9 @@ async fn demand_change_stops_previous_runtime_when_new_runtime_readiness_fails()
     MAILPIT_DASHBOARD: "${dashboard_url}"
 "#,
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mailpit", FAKE_MAILPIT_TRACK);
+    runtimes.register("mailpit", FAKE_MAILPIT_NEXT_TRACK);
     seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
     let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
@@ -4688,23 +4707,6 @@ async fn demand_change_stops_previous_runtime_when_new_runtime_readiness_fails()
             runtime_states.clone(),
         )
     };
-    let previous_runtime_stopped = runtime_has_status(
-        &failure_snapshot.5,
-        FAKE_MAILPIT_TRACK,
-        RuntimeObservedStatus::Stopped,
-    );
-
-    if !previous_runtime_stopped {
-        write_project_config(
-            &project,
-            r#"env:
-  APP_URL: "${project_url}"
-"#,
-        )?;
-        let _cleanup_result =
-            reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await;
-    }
-
     assert!(
         result.is_err(),
         "expected readiness failure, got {result:#?}"
@@ -8309,14 +8311,6 @@ fn assert_runtime_status_for_resource(
         found,
         "expected {resource_name} track {track:?} runtime status {status:?}, got {states:#?}"
     );
-}
-
-fn runtime_has_status(
-    states: &[state::RuntimeObservedStateRecord],
-    track: &str,
-    status: RuntimeObservedStatus,
-) -> bool {
-    runtime_has_status_for_resource(states, "mailpit", track, status)
 }
 
 fn runtime_has_status_for_resource(
