@@ -5675,6 +5675,8 @@ async fn redis_reconciliation_marks_prefix_allocation_ready_and_renders_env() ->
         "acme.test",
         redis_project_config(),
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("redis", REDIS_TRACK);
     seed_redis_fixture_artifact(&paths, REDIS_TRACK)?;
     let redis_port_guard = seed_redis_runtime_port(&paths)?;
 
@@ -5699,6 +5701,7 @@ async fn redis_reconciliation_marks_prefix_allocation_ready_and_renders_env() ->
 "#,
     )?;
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    runtimes.cleanup().await?;
 
     assert_with_normalized_runtime(
         tempdir.path(),
@@ -5882,6 +5885,8 @@ async fn redis_port_reassignment_refreshes_ready_allocation_env() -> Result<()> 
         "acme.test",
         redis_project_config(),
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("redis", REDIS_TRACK);
     seed_redis_fixture_artifact(&paths, REDIS_TRACK)?;
     let redis_port_guard = seed_redis_runtime_port(&paths)?;
 
@@ -5949,6 +5954,7 @@ async fn redis_port_reassignment_refreshes_ready_allocation_env() -> Result<()> 
 "#,
     )?;
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    runtimes.cleanup().await?;
 
     assert_with_normalized_runtime(
         tempdir.path(),
@@ -5969,6 +5975,8 @@ async fn redis_project_demand_installs_missing_fixture_track_before_start() -> R
         "acme.test",
         redis_project_config(),
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("redis", REDIS_TRACK);
     seed_redis_cached_fixture(&paths, tempdir.path())?;
     let redis_port_guard = seed_redis_runtime_port(&paths)?;
 
@@ -5993,6 +6001,7 @@ async fn redis_project_demand_installs_missing_fixture_track_before_start() -> R
 "#,
     )?;
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    runtimes.cleanup().await?;
 
     assert_with_normalized_runtime(
         tempdir.path(),
