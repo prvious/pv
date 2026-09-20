@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
@@ -26,11 +26,13 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UdpSocket, UnixListener, UnixStream};
-use tokio::time::{sleep, timeout};
+use tokio::time::{Instant as TokioInstant, sleep, timeout, timeout_at};
 
 const EXPECTED_DNS_TTL_SECONDS: u32 = 5;
 const JOB_STATUS_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const JOB_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const REQUEST_LINES_TIMEOUT: Duration = Duration::from_secs(30);
+const TARGETED_SCENARIO_TIMEOUT: Duration = Duration::from_secs(60);
 const TEST_ARTIFACT_MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
 const FAKE_CADDY_SCRIPT: &str = r#"#!/bin/sh
 set -eu
@@ -1478,13 +1480,50 @@ async fn repeated_system_requests_during_startup_create_one_trailing_job() -> Re
         }))?;
         let mut readers = Vec::new();
         let mut responses = Vec::new();
-        for _ in 0..3 {
-            let mut stream = UnixStream::connect(paths.daemon_socket()).await?;
-            stream.write_all(request.as_bytes()).await?;
-            stream.write_all(b"\n").await?;
+        let exchange_deadline = TokioInstant::now() + REQUEST_LINES_TIMEOUT;
+        for reader_index in 0..3 {
+            let mut stream = request_step(
+                exchange_deadline,
+                UnixStream::connect(paths.daemon_socket()),
+                &paths.daemon_socket(),
+                &request,
+                &format!("connect for reader {reader_index}"),
+                REQUEST_LINES_TIMEOUT,
+                &responses,
+            )
+            .await?;
+            request_step(
+                exchange_deadline,
+                stream.write_all(request.as_bytes()),
+                &paths.daemon_socket(),
+                &request,
+                &format!("request write for reader {reader_index}"),
+                REQUEST_LINES_TIMEOUT,
+                &responses,
+            )
+            .await?;
+            request_step(
+                exchange_deadline,
+                stream.write_all(b"\n"),
+                &paths.daemon_socket(),
+                &request,
+                &format!("newline write for reader {reader_index}"),
+                REQUEST_LINES_TIMEOUT,
+                &responses,
+            )
+            .await?;
             let mut reader = BufReader::new(stream);
             let mut line = String::new();
-            reader.read_line(&mut line).await?;
+            request_step(
+                exchange_deadline,
+                reader.read_line(&mut line),
+                &paths.daemon_socket(),
+                &request,
+                &format!("initial response read for reader {reader_index}"),
+                REQUEST_LINES_TIMEOUT,
+                &responses,
+            )
+            .await?;
             responses.push(serde_json::from_str::<Value>(line.trim_end())?);
             readers.push(reader);
         }
@@ -1497,10 +1536,20 @@ async fn repeated_system_requests_during_startup_create_one_trailing_job() -> Re
         }));
         state::fs::write_sensitive_file(&release_validation, "release\n")?;
 
-        for mut reader in readers {
+        for (reader_index, mut reader) in readers.into_iter().enumerate() {
             loop {
                 let mut line = String::new();
-                if reader.read_line(&mut line).await? == 0 {
+                let bytes = request_step(
+                    exchange_deadline,
+                    reader.read_line(&mut line),
+                    &paths.daemon_socket(),
+                    &request,
+                    &format!("response drain for reader {reader_index}"),
+                    REQUEST_LINES_TIMEOUT,
+                    &responses,
+                )
+                .await?;
+                if bytes == 0 {
                     break;
                 }
             }
@@ -2182,6 +2231,18 @@ impl SeededGatewayGuard {
 
         result
     }
+
+    async fn shutdown_without_waiting_and_cleanup(&mut self) -> Result<()> {
+        let shutdown_result = self.shutdown_daemon_without_waiting();
+        let cleanup_result =
+            cleanup_seeded_runtimes(&self.paths, self.worker_track.as_deref()).await;
+        let result = combine_cleanup_results(shutdown_result, cleanup_result);
+        if result.is_ok() {
+            self.cleanup_complete = true;
+        }
+
+        result
+    }
 }
 
 impl Drop for SeededGatewayGuard {
@@ -2632,6 +2693,71 @@ async fn targeted_gateway_phases_are_disjoint() -> Result<()> {
     Ok(())
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn targeted_scenario_timeout_still_cleans_owned_state() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    let (_project_id, port_reservation) = seed_foundation_php_project_in_range(
+        &paths,
+        &project_path,
+        "php: \"8.4\"\n",
+        45_000,
+        49_999,
+    )?;
+    let worker_port = port_reservation.local_addr()?.port();
+    let [readiness_started, readiness_gate] = install_worker_readiness_barrier(&paths)?;
+    state::fs::write_sensitive_file(&readiness_gate, "blocked\n")?;
+    drop(port_reservation);
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    gateway_guard.attach_worker("8.4");
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    gateway_guard.attach_daemon(daemon);
+    wait_for_path(&readiness_started).await?;
+    wait_for_path(&paths.worker_pid("8.4")).await?;
+
+    let operation_result = timeout(
+        Duration::from_millis(25),
+        std::future::pending::<Result<()>>(),
+    )
+    .await
+    .map_err(|_elapsed| anyhow!("targeted gateway scenario timed out after 25ms"))
+    .and_then(|result| result);
+    let cleanup_result = timeout(
+        Duration::from_secs(5),
+        gateway_guard.shutdown_without_waiting_and_cleanup(),
+    )
+    .await
+    .map_err(|_elapsed| anyhow!("nonwaiting targeted scenario cleanup timed out"))?;
+    let error = propagate_after_cleanup(operation_result, cleanup_result)
+        .err()
+        .ok_or_else(|| anyhow!("pending scenario unexpectedly completed"))?;
+
+    assert_eq!(
+        error.to_string(),
+        "targeted gateway scenario timed out after 25ms"
+    );
+    assert!(!paths.daemon_socket().exists());
+    assert!(!paths.gateway_pid().exists());
+    assert!(!paths.gateway_runtime_metadata().exists());
+    assert!(!paths.worker_pid("8.4").exists());
+    assert!(!paths.worker_runtime_metadata("8.4").exists());
+    let listener_deadline = Instant::now() + SEEDED_GATEWAY_CLEANUP_TIMEOUT;
+    while platform::loopback_tcp_port_has_listener(worker_port)?
+        && Instant::now() < listener_deadline
+    {
+        sleep(SEEDED_GATEWAY_CLEANUP_POLL_INTERVAL).await;
+    }
+    if platform::loopback_tcp_port_has_listener(worker_port)? {
+        return Err(anyhow!(
+            "worker port {worker_port} still has a TCP listener"
+        ));
+    }
+
+    Ok(())
+}
+
 async fn run_targeted_gateway_phase_scenario(
     scenario: TargetedGatewayPhaseScenario,
 ) -> Result<(JobStatus, Vec<Value>)> {
@@ -2685,7 +2811,7 @@ async fn run_targeted_gateway_phase_scenario(
         "8.4.8-pv1",
         &frankenphp_release,
     )?;
-    let worker_port_reservations = reserve_foundation_ports(1, 40_000, 44_999)?;
+    let worker_port_reservations = reserve_foundation_ports(1, 25_000, 29_999)?;
     let worker_service_port = worker_port_reservations[0].local_addr()?.port();
     database.assign_port(
         PortRequest::php_worker(
@@ -2728,46 +2854,58 @@ async fn run_targeted_gateway_phase_scenario(
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
     gateway_guard.attach_worker(php_track);
-    drop(worker_port_reservations);
-    let initial_lines = request_lines(
-        &paths,
-        json!({
-            "protocol_version": daemon::PROTOCOL_VERSION,
-            "command": "run_job",
-            "kind": "reconcile",
-            "scope": "system",
-        }),
-    )
-    .await?;
-    let initial_job_id = required_response_job_id(&initial_lines)?;
-    wait_for_succeeded_job_id(&paths, initial_job_id).await?;
+    let operation_result = timeout(TARGETED_SCENARIO_TIMEOUT, async {
+        drop(worker_port_reservations);
+        let initial_lines = request_lines(
+            &paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "reconcile",
+                "scope": "system",
+            }),
+        )
+        .await?;
+        let initial_job_id = required_response_job_id(&initial_lines)?;
+        wait_for_succeeded_job_id(&paths, initial_job_id).await?;
 
-    state::fs::write_sensitive_file(&target_config_path, "serve: false\n")?;
-    match scenario {
-        TargetedGatewayPhaseScenario::Success => {}
-        TargetedGatewayPhaseScenario::GatewayFailure => {
-            state::fs::write_sensitive_file(
-                &paths.home().join("fake-caddy-release/bin/caddy"),
-                "#!/bin/sh\nexit 2\n",
-            )?;
+        state::fs::write_sensitive_file(&target_config_path, "serve: false\n")?;
+        match scenario {
+            TargetedGatewayPhaseScenario::Success => {}
+            TargetedGatewayPhaseScenario::GatewayFailure => {
+                state::fs::write_sensitive_file(
+                    &paths.home().join("fake-caddy-release/bin/caddy"),
+                    "#!/bin/sh\nexit 2\n",
+                )?;
+            }
+            TargetedGatewayPhaseScenario::StaleWorkerFailure => {
+                state::fs::write_sensitive_file(&frankenphp_executable, "#!/bin/sh\nexit 2\n")?;
+            }
         }
-        TargetedGatewayPhaseScenario::StaleWorkerFailure => {
-            state::fs::write_sensitive_file(&frankenphp_executable, "#!/bin/sh\nexit 2\n")?;
-        }
-    }
 
-    let lines = request_lines(
-        &paths,
-        json!({
-            "protocol_version": daemon::PROTOCOL_VERSION,
-            "command": "run_job",
-            "kind": "reconcile",
-            "scope": format!("project:{}", target.id),
-        }),
-    )
-    .await?;
-    let job_id = required_response_job_id(&lines)?.to_owned();
-    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+        let lines = request_lines(
+            &paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "reconcile",
+                "scope": format!("project:{}", target.id),
+            }),
+        )
+        .await?;
+        required_response_job_id(&lines).map(str::to_owned)
+    })
+    .await
+    .map_err(|_elapsed| {
+        anyhow!("targeted gateway scenario timed out after {TARGETED_SCENARIO_TIMEOUT:?}")
+    })
+    .and_then(|result| result);
+    let cleanup_result = if operation_result.is_err() {
+        gateway_guard.shutdown_without_waiting_and_cleanup().await
+    } else {
+        gateway_guard.shutdown_and_cleanup().await
+    };
+    let job_id = propagate_after_cleanup(operation_result, cleanup_result)?;
 
     let database = Database::open(&paths)?;
     let job = database
@@ -2776,7 +2914,7 @@ async fn run_targeted_gateway_phase_scenario(
         .find(|job| job.id == job_id)
         .ok_or_else(|| anyhow!("missing targeted reconciliation job {job_id}"));
     let log = state::fs::read_to_string(&paths.daemon_log());
-    let job = propagate_after_cleanup(job, cleanup_result)?;
+    let job = job?;
     let phases = log?
         .lines()
         .map(serde_json::from_str::<Value>)
@@ -3503,17 +3641,62 @@ async fn send_raw_request(paths: &PvPaths, request: &str) -> Result<()> {
 }
 
 async fn request_lines(paths: &PvPaths, request: Value) -> Result<Vec<Value>> {
-    let mut stream = UnixStream::connect(paths.daemon_socket()).await?;
-    let request = serde_json::to_string(&request)?;
-    stream.write_all(request.as_bytes()).await?;
-    stream.write_all(b"\n").await?;
+    request_lines_with_timeout(paths, request, REQUEST_LINES_TIMEOUT).await
+}
+
+async fn request_lines_with_timeout(
+    paths: &PvPaths,
+    request: Value,
+    limit: Duration,
+) -> Result<Vec<Value>> {
+    let deadline = TokioInstant::now() + limit;
+    let request_payload = serde_json::to_string(&request)?;
+    let mut lines = Vec::new();
+    let mut stream = request_step(
+        deadline,
+        UnixStream::connect(paths.daemon_socket()),
+        &paths.daemon_socket(),
+        &request_payload,
+        "connect",
+        limit,
+        &lines,
+    )
+    .await?;
+    request_step(
+        deadline,
+        stream.write_all(request_payload.as_bytes()),
+        &paths.daemon_socket(),
+        &request_payload,
+        "request write",
+        limit,
+        &lines,
+    )
+    .await?;
+    request_step(
+        deadline,
+        stream.write_all(b"\n"),
+        &paths.daemon_socket(),
+        &request_payload,
+        "newline write",
+        limit,
+        &lines,
+    )
+    .await?;
 
     let mut reader = BufReader::new(stream);
-    let mut lines = Vec::new();
 
     loop {
         let mut line = String::new();
-        let bytes = reader.read_line(&mut line).await?;
+        let bytes = request_step(
+            deadline,
+            reader.read_line(&mut line),
+            &paths.daemon_socket(),
+            &request_payload,
+            "response read",
+            limit,
+            &lines,
+        )
+        .await?;
 
         if bytes == 0 {
             break;
@@ -3523,6 +3706,68 @@ async fn request_lines(paths: &PvPaths, request: Value) -> Result<Vec<Value>> {
     }
 
     Ok(lines)
+}
+
+#[tokio::test]
+async fn request_lines_timeout_reports_stage_request_and_partial_responses() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let listener = UnixListener::bind(paths.daemon_socket())?;
+    let peer = tokio::spawn(async move {
+        let (stream, _address) = listener.accept().await?;
+        let mut reader = BufReader::new(stream);
+        let mut request = String::new();
+        reader.read_line(&mut request).await?;
+        reader
+            .get_mut()
+            .write_all(b"{\"status\":\"accepted\"}\n")
+            .await?;
+        std::future::pending::<()>().await;
+        Ok::<(), io::Error>(())
+    });
+
+    let error = request_lines_with_timeout(
+        &paths,
+        json!({"command": "pending"}),
+        Duration::from_millis(50),
+    )
+    .await
+    .err()
+    .ok_or_else(|| anyhow!("request unexpectedly completed"))?;
+    peer.abort();
+    let _peer_result = peer.await;
+
+    assert_debug_snapshot!(error.to_string());
+
+    Ok(())
+}
+
+async fn request_step<T, E>(
+    deadline: TokioInstant,
+    operation: impl Future<Output = std::result::Result<T, E>>,
+    endpoint: &Utf8Path,
+    request_payload: &str,
+    stage: &str,
+    limit: Duration,
+    partial_responses: &[Value],
+) -> Result<T>
+where
+    E: Into<anyhow::Error>,
+{
+    match timeout_at(deadline, operation).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(error.into()).with_context(|| {
+            format!(
+                "daemon request {request_payload} failed during {stage} at {endpoint}; partial responses: {}",
+                Value::Array(partial_responses.to_vec())
+            )
+        }),
+        Err(_elapsed) => Err(anyhow!(
+            "daemon request {request_payload} exceeded its {limit:?} deadline during {stage}; partial responses: {}",
+            Value::Array(partial_responses.to_vec())
+        )),
+    }
 }
 
 async fn wait_for_succeeded_job_id(paths: &PvPaths, id: &str) -> Result<JobRecord> {
