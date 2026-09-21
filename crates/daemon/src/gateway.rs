@@ -7,6 +7,7 @@ use std::process::{ExitStatus, Stdio};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
+    mpsc,
 };
 use std::time::{Duration, Instant};
 
@@ -56,6 +57,8 @@ type RuntimeProcessCommand = tokio::process::Command;
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
 const CONFIG_VALIDATION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
+#[cfg(target_os = "macos")]
+const CONFIG_VALIDATION_GROUP_ANCHOR: &str = "while IFS= read -r _line; do :; done\nkill -KILL 0\n";
 const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
 const PF_PUBLIC_READINESS_TIMEOUT: Duration = Duration::from_secs(2);
 const FOREIGN_LISTENER_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
@@ -1920,23 +1923,45 @@ struct ValidationOutput {
 struct ValidationProcess {
     pid: u32,
     child: Option<tokio::process::Child>,
-    group_owned: bool,
+    group_pid: Option<i32>,
+    group_anchor: Option<tokio::process::Child>,
+    group_signal_pending: bool,
+    group_wait_pending: bool,
     cleanup_diagnostics: Option<(PvPaths, String)>,
+    fallback_reaper: mpsc::Sender<ValidationProcessReap>,
+}
+
+struct ValidationProcessReap {
+    pid: u32,
+    child: Option<tokio::process::Child>,
+    group_pid: Option<i32>,
+    group_anchor: Option<tokio::process::Child>,
+    group_signal_pending: bool,
+    group_wait_pending: bool,
+    cleanup_diagnostics: Option<(PvPaths, String)>,
+    failures: Vec<String>,
 }
 
 impl ValidationProcess {
     fn new(
         pid: u32,
         child: tokio::process::Child,
+        group_pid: Option<i32>,
+        group_anchor: Option<tokio::process::Child>,
         cleanup_paths: Option<&PvPaths>,
         runtime_label: &str,
+        fallback_reaper: mpsc::Sender<ValidationProcessReap>,
     ) -> Self {
         Self {
             pid,
             child: Some(child),
-            group_owned: true,
+            group_pid,
+            group_anchor,
+            group_signal_pending: group_pid.is_some(),
+            group_wait_pending: group_pid.is_some(),
             cleanup_diagnostics: cleanup_paths
                 .map(|paths| (paths.clone(), format!("{runtime_label} config validation"))),
+            fallback_reaper,
         }
     }
 
@@ -1956,107 +1981,343 @@ impl ValidationProcess {
     }
 
     async fn terminate(&mut self) -> Result<(), DaemonError> {
-        let group_result = if self.group_owned {
-            signal_validation_process_group(self.pid)
-        } else {
+        let group_result = self.signal_group_before_reap();
+        let child_result = kill_and_wait_validation_child(&mut self.child).await;
+        let anchor_result = if self.group_signal_pending {
             Ok(())
+        } else {
+            kill_and_wait_validation_child(&mut self.group_anchor).await
         };
-        let child_result = if let Some(child) = self.child.as_mut() {
-            let kill_result = child.start_kill().map_err(DaemonError::from);
-            let wait_result = child
-                .wait()
-                .await
-                .map(|_status| ())
-                .map_err(DaemonError::from);
-            if wait_result.is_ok() {
-                self.child = None;
+        let group_wait_result = if self.group_wait_pending && !self.group_signal_pending {
+            let result = wait_for_validation_process_group_exit(self.group_pid).await;
+            if result.is_ok() {
+                self.group_wait_pending = false;
             }
-
-            combine_validation_cleanup_results(kill_result, wait_result)
+            result
         } else {
             Ok(())
         };
-        let group_wait_result = if self.group_owned {
-            wait_for_validation_process_group_exit(self.pid).await
-        } else {
-            Ok(())
-        };
-        if group_wait_result.is_ok() {
-            self.group_owned = false;
-        }
 
         combine_validation_cleanup_results(
-            combine_validation_cleanup_results(group_result, child_result),
+            combine_validation_cleanup_results(
+                combine_validation_cleanup_results(group_result, child_result),
+                anchor_result,
+            ),
             group_wait_result,
         )
     }
 
-    fn log_cleanup_failure(&self, error: &str) {
-        if let Some((paths, runtime)) = &self.cleanup_diagnostics {
-            structured_log::runtime_config_cleanup_failed(paths, runtime, error);
+    fn signal_group_before_reap(&mut self) -> Result<(), DaemonError> {
+        if !self.group_signal_pending {
+            return Ok(());
         }
+
+        if self.group_anchor.is_none() {
+            return Err(io::Error::other(
+                "config validation process-group ownership was lost before signaling",
+            )
+            .into());
+        }
+
+        signal_validation_process_group(self.group_pid)?;
+        self.group_signal_pending = false;
+
+        Ok(())
     }
 }
 
 impl Drop for ValidationProcess {
     fn drop(&mut self) {
-        let mut child = self.child.take();
-        let mut failures = Vec::new();
-        if self.group_owned
-            && let Err(error) = signal_validation_process_group(self.pid)
-        {
-            failures.push(error.to_string());
-        }
-        if let Some(child) = child.as_mut()
-            && let Err(error) = child.start_kill()
-        {
-            failures.push(error.to_string());
-        }
-        let deadline = Instant::now() + Duration::from_secs(1);
+        let cleanup = ValidationProcessReap {
+            pid: self.pid,
+            child: self.child.take(),
+            group_pid: self.group_pid,
+            group_anchor: self.group_anchor.take(),
+            group_signal_pending: self.group_signal_pending,
+            group_wait_pending: self.group_wait_pending,
+            cleanup_diagnostics: self.cleanup_diagnostics.take(),
+            failures: Vec::new(),
+        };
+        let _cleanup_result = dispatch_validation_process_reap(&self.fallback_reaper, cleanup);
+    }
+}
+
+impl ValidationProcessReap {
+    fn reap(mut self) {
+        let mut deadline = Instant::now() + Duration::from_secs(1);
+        let mut pending_signal_failure_logged = false;
         loop {
-            let child_exited = match child.as_mut().map(tokio::process::Child::try_wait) {
-                Some(Ok(Some(_))) | None => true,
-                Some(Ok(None)) => false,
-                Some(Err(error)) => {
-                    failures.push(error.to_string());
-                    true
+            if self.group_signal_pending {
+                match signal_validation_process_group(self.group_pid) {
+                    Ok(()) => {
+                        self.group_signal_pending = false;
+                        let _kill_result = start_kill_validation_child(
+                            &mut self.group_anchor,
+                            "validation process-group anchor",
+                            &mut self.failures,
+                        );
+                        deadline = Instant::now() + Duration::from_secs(1);
+                    }
+                    Err(error) if self.failures.is_empty() => {
+                        self.failures.push(error.to_string());
+                    }
+                    Err(_error) => {}
                 }
+            }
+            let child_exited = validation_child_exited(
+                &mut self.child,
+                "validation process",
+                self.pid,
+                &mut self.failures,
+            );
+            let anchor_exited = if self.group_signal_pending {
+                false
+            } else {
+                validation_child_exited(
+                    &mut self.group_anchor,
+                    "validation process-group anchor",
+                    self.group_pid.unwrap_or_default(),
+                    &mut self.failures,
+                )
             };
-            let group_exited = if self.group_owned {
-                match validation_process_group_exists(self.pid) {
+            let group_exited = if self.group_wait_pending && !self.group_signal_pending {
+                match validation_process_group_exists(self.group_pid) {
                     Ok(exists) => !exists,
                     Err(error) => {
-                        failures.push(error.to_string());
+                        self.failures.push(error.to_string());
                         true
                     }
                 }
             } else {
                 true
             };
-            if child_exited && group_exited {
+            if child_exited && anchor_exited && group_exited {
                 break;
             }
             if Instant::now() >= deadline {
+                if self.group_signal_pending {
+                    if !pending_signal_failure_logged {
+                        self.log_cleanup_failures();
+                        self.failures.clear();
+                        pending_signal_failure_logged = true;
+                    }
+                    std::thread::sleep(OWNED_READINESS_POLL_INTERVAL);
+                    continue;
+                }
                 if !child_exited {
-                    failures.push(format!(
+                    self.failures.push(format!(
                         "validation process {} was not reaped within one second",
                         self.pid
                     ));
                 }
+                if !anchor_exited {
+                    self.failures.push(format!(
+                        "validation process-group anchor {} was not reaped within one second",
+                        self.group_pid.unwrap_or_default()
+                    ));
+                }
                 if !group_exited {
-                    failures.push(format!(
+                    self.failures.push(format!(
                         "validation process group {} did not exit within one second",
-                        self.pid
+                        self.group_pid.unwrap_or_default()
                     ));
                 }
                 break;
             }
             std::thread::sleep(OWNED_READINESS_POLL_INTERVAL);
         }
-        if !failures.is_empty() {
-            self.log_cleanup_failure(&failures.join("; "));
+        self.log_cleanup_failures();
+    }
+
+    fn log_cleanup_failures(&self) {
+        if !self.failures.is_empty()
+            && let Some((paths, runtime)) = &self.cleanup_diagnostics
+        {
+            structured_log::runtime_config_cleanup_failed(
+                paths,
+                runtime,
+                &self.failures.join("; "),
+            );
         }
     }
+}
+
+fn start_validation_process_reaper() -> Result<mpsc::Sender<ValidationProcessReap>, DaemonError> {
+    let (sender, receiver) = mpsc::channel::<ValidationProcessReap>();
+    std::thread::Builder::new()
+        .name("pv-config-validation-reaper".to_owned())
+        .spawn(move || {
+            if let Ok(cleanup) = receiver.recv() {
+                cleanup.reap();
+            }
+        })?;
+
+    Ok(sender)
+}
+
+fn dispatch_validation_process_reap(
+    fallback_reaper: &mpsc::Sender<ValidationProcessReap>,
+    mut cleanup: ValidationProcessReap,
+) -> Result<(), DaemonError> {
+    let group_result = if cleanup.group_signal_pending {
+        let result = signal_validation_process_group(cleanup.group_pid);
+        if result.is_ok() {
+            cleanup.group_signal_pending = false;
+        }
+        result
+    } else {
+        Ok(())
+    };
+    if let Err(error) = &group_result {
+        cleanup.failures.push(error.to_string());
+    }
+
+    let child_result = start_kill_validation_child(
+        &mut cleanup.child,
+        "validation process",
+        &mut cleanup.failures,
+    );
+    let anchor_result = if cleanup.group_signal_pending {
+        Ok(())
+    } else {
+        start_kill_validation_child(
+            &mut cleanup.group_anchor,
+            "validation process-group anchor",
+            &mut cleanup.failures,
+        )
+    };
+    let result = combine_validation_cleanup_results(
+        combine_validation_cleanup_results(group_result, child_result),
+        anchor_result,
+    );
+
+    if let Err(error) = fallback_reaper.send(cleanup) {
+        error.0.reap();
+    }
+
+    result
+}
+
+fn validation_child_exited(
+    child: &mut Option<tokio::process::Child>,
+    description: &str,
+    pid: impl std::fmt::Display,
+    failures: &mut Vec<String>,
+) -> bool {
+    match child.as_mut().map(tokio::process::Child::try_wait) {
+        Some(Ok(Some(_))) | None => true,
+        Some(Ok(None)) => false,
+        Some(Err(error)) => {
+            failures.push(format!("failed to reap {description} {pid}: {error}"));
+            true
+        }
+    }
+}
+
+fn start_kill_validation_child(
+    child: &mut Option<tokio::process::Child>,
+    description: &str,
+    failures: &mut Vec<String>,
+) -> Result<(), DaemonError> {
+    let result = child
+        .as_mut()
+        .map(tokio::process::Child::start_kill)
+        .transpose()
+        .map(|_result| ())
+        .map_err(DaemonError::from);
+    if let Err(error) = &result {
+        failures.push(format!("failed to kill {description}: {error}"));
+    }
+
+    result
+}
+
+async fn kill_and_wait_validation_child(
+    child: &mut Option<tokio::process::Child>,
+) -> Result<(), DaemonError> {
+    let Some(child_process) = child.as_mut() else {
+        return Ok(());
+    };
+    let kill_result = child_process.start_kill().map_err(DaemonError::from);
+    let wait_result = child_process
+        .wait()
+        .await
+        .map(|_status| ())
+        .map_err(DaemonError::from);
+    if wait_result.is_ok() {
+        *child = None;
+    }
+
+    combine_validation_cleanup_results(kill_result, wait_result)
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_validation_process_group_anchor(
+    fallback_reaper: &mpsc::Sender<ValidationProcessReap>,
+) -> Result<(Option<i32>, Option<tokio::process::Child>), DaemonError> {
+    let mut command = RuntimeProcessCommand::new("/bin/sh");
+    command
+        .args(["-c", CONFIG_VALIDATION_GROUP_ANCHOR])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .process_group(0);
+    let anchor = Some(command.spawn()?);
+    let Some(pid) = anchor.as_ref().and_then(tokio::process::Child::id) else {
+        let error = DaemonError::MissingProcessId {
+            name: "config validation process-group anchor".to_owned(),
+        };
+        let cleanup = dispatch_validation_process_reap(
+            fallback_reaper,
+            ValidationProcessReap {
+                pid: 0,
+                child: None,
+                group_pid: None,
+                group_anchor: anchor,
+                group_signal_pending: false,
+                group_wait_pending: false,
+                cleanup_diagnostics: None,
+                failures: Vec::new(),
+            },
+        );
+
+        return Err(preserve_validation_error(error, cleanup));
+    };
+    let group_pid = match i32::try_from(pid) {
+        Ok(group_pid) => group_pid,
+        Err(_source) => {
+            let error = io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("config validation process-group id {pid} is invalid"),
+            )
+            .into();
+            let cleanup = dispatch_validation_process_reap(
+                fallback_reaper,
+                ValidationProcessReap {
+                    pid: 0,
+                    child: None,
+                    group_pid: None,
+                    group_anchor: anchor,
+                    group_signal_pending: false,
+                    group_wait_pending: false,
+                    cleanup_diagnostics: None,
+                    failures: Vec::new(),
+                },
+            );
+
+            return Err(preserve_validation_error(error, cleanup));
+        }
+    };
+
+    Ok((Some(group_pid), anchor))
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn spawn_validation_process_group_anchor(
+    _fallback_reaper: &mpsc::Sender<ValidationProcessReap>,
+) -> Result<(Option<i32>, Option<tokio::process::Child>), DaemonError> {
+    Ok((None, None))
 }
 
 async fn run_validation_command(
@@ -2079,18 +2340,75 @@ async fn run_validation_command(
         command_process.env_remove(key);
     }
     command_process.envs(private_environment);
+    let fallback_reaper = start_validation_process_reaper()?;
+    let (group_pid, group_anchor) = spawn_validation_process_group_anchor(&fallback_reaper)?;
     #[cfg(target_os = "macos")]
-    command_process.process_group(0);
+    if let Some(group_pid) = group_pid {
+        command_process.process_group(group_pid);
+    }
 
-    let mut child = command_process.spawn()?;
+    let mut child = match command_process.spawn() {
+        Ok(child) => child,
+        Err(source) => {
+            let error = DaemonError::from(source);
+            let cleanup = dispatch_validation_process_reap(
+                &fallback_reaper,
+                ValidationProcessReap {
+                    pid: 0,
+                    child: None,
+                    group_pid,
+                    group_anchor,
+                    group_signal_pending: group_pid.is_some(),
+                    group_wait_pending: group_pid.is_some(),
+                    cleanup_diagnostics: cleanup_paths.map(|paths| {
+                        (
+                            paths.clone(),
+                            format!("{} config validation", command.runtime_label()),
+                        )
+                    }),
+                    failures: Vec::new(),
+                },
+            );
+
+            return Err(preserve_validation_error(error, cleanup));
+        }
+    };
     let Some(pid) = child.id() else {
-        return Err(DaemonError::MissingProcessId {
+        let error = DaemonError::MissingProcessId {
             name: format!("{} config validation", command.runtime_label()),
-        });
+        };
+        let cleanup = dispatch_validation_process_reap(
+            &fallback_reaper,
+            ValidationProcessReap {
+                pid: 0,
+                child: Some(child),
+                group_pid,
+                group_anchor,
+                group_signal_pending: group_pid.is_some(),
+                group_wait_pending: group_pid.is_some(),
+                cleanup_diagnostics: cleanup_paths.map(|paths| {
+                    (
+                        paths.clone(),
+                        format!("{} config validation", command.runtime_label()),
+                    )
+                }),
+                failures: Vec::new(),
+            },
+        );
+
+        return Err(preserve_validation_error(error, cleanup));
     };
     let stdout = tokio::spawn(read_child_output(child.stdout.take()));
     let stderr = tokio::spawn(read_child_output(child.stderr.take()));
-    let mut process = ValidationProcess::new(pid, child, cleanup_paths, command.runtime_label());
+    let mut process = ValidationProcess::new(
+        pid,
+        child,
+        group_pid,
+        group_anchor,
+        cleanup_paths,
+        command.runtime_label(),
+        fallback_reaper,
+    );
     let status = match wait_for_transaction_step(
         Box::pin(timeout(CONFIG_VALIDATION_TIMEOUT, process.wait())),
         shutdown,
@@ -2207,9 +2525,9 @@ fn combine_validation_cleanup_results(
     }
 }
 
-fn preserve_validation_error(
+fn preserve_validation_error<T>(
     error: DaemonError,
-    cleanup: Result<(Vec<u8>, Vec<u8>), DaemonError>,
+    cleanup: Result<T, DaemonError>,
 ) -> DaemonError {
     match cleanup {
         Ok(_output) => error,
@@ -2232,7 +2550,7 @@ where
 }
 
 #[cfg(target_os = "macos")]
-fn signal_validation_process_group(pid: u32) -> Result<(), DaemonError> {
+fn signal_validation_process_group(pid: Option<i32>) -> Result<(), DaemonError> {
     let process_group = validation_process_group(pid).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2246,16 +2564,16 @@ fn signal_validation_process_group(pid: u32) -> Result<(), DaemonError> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn signal_validation_process_group(_pid: u32) -> Result<(), DaemonError> {
+fn signal_validation_process_group(_pid: Option<i32>) -> Result<(), DaemonError> {
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn validation_process_group(pid: u32) -> Option<Pid> {
-    i32::try_from(pid).ok().and_then(Pid::from_raw)
+fn validation_process_group(pid: Option<i32>) -> Option<Pid> {
+    pid.and_then(Pid::from_raw)
 }
 
-async fn wait_for_validation_process_group_exit(pid: u32) -> Result<(), DaemonError> {
+async fn wait_for_validation_process_group_exit(pid: Option<i32>) -> Result<(), DaemonError> {
     let deadline = Instant::now() + CONFIG_VALIDATION_CLEANUP_TIMEOUT;
     while validation_process_group_exists(pid)? {
         if Instant::now() >= deadline {
@@ -2270,7 +2588,7 @@ async fn wait_for_validation_process_group_exit(pid: u32) -> Result<(), DaemonEr
 }
 
 #[cfg(target_os = "macos")]
-fn validation_process_group_exists(pid: u32) -> Result<bool, DaemonError> {
+fn validation_process_group_exists(pid: Option<i32>) -> Result<bool, DaemonError> {
     let process_group = validation_process_group(pid).ok_or_else(|| {
         io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -2285,7 +2603,7 @@ fn validation_process_group_exists(pid: u32) -> Result<bool, DaemonError> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn validation_process_group_exists(_pid: u32) -> Result<bool, DaemonError> {
+fn validation_process_group_exists(_pid: Option<i32>) -> Result<bool, DaemonError> {
     Ok(false)
 }
 
@@ -5425,6 +5743,8 @@ fn worker_config_private_environment(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    #[cfg(target_os = "macos")]
+    use std::process::Stdio;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -5434,6 +5754,8 @@ mod tests {
     use platform::{ActivePfRedirectInspection, PfRedirectConfig};
     use state::{Database, LinkProjectInput, PvPaths};
     use tokio::sync::watch;
+    #[cfg(target_os = "macos")]
+    use tokio::time::timeout;
 
     use crate::gateway_config::GatewayProjectRoute;
     use crate::{DaemonError, ReadinessCheck};
@@ -5447,6 +5769,11 @@ mod tests {
         gateway_readiness_hostname, gateway_readiness_plan, gateway_readiness_ports,
         previous_runtime_readiness_from_parts, project_config_file_name, run_validation_command,
         spawn_gateway_pf_inspection, wait_for_transaction_step,
+    };
+    #[cfg(target_os = "macos")]
+    use super::{
+        RuntimeProcessCommand, spawn_validation_process_group_anchor,
+        start_validation_process_reaper, wait_for_validation_process_group_exit,
     };
 
     #[test]
@@ -5543,6 +5870,39 @@ mod tests {
         .await?;
 
         assert!(matches!(outcome, ReconciliationOutcome::Cancelled));
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn validation_group_anchor_stops_group_when_owner_pipe_closes() -> Result<()> {
+        let fallback_reaper = start_validation_process_reaper()?;
+        let (group_pid, group_anchor) = spawn_validation_process_group_anchor(&fallback_reaper)?;
+        let Some(group_pid) = group_pid else {
+            anyhow::bail!("validation process-group anchor did not publish its group id");
+        };
+        let Some(mut group_anchor) = group_anchor else {
+            anyhow::bail!("validation process-group anchor was missing");
+        };
+
+        let mut member_command = RuntimeProcessCommand::new("/bin/sleep");
+        member_command
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .process_group(group_pid);
+        let mut member = member_command.spawn()?;
+        let Some(owner_pipe) = group_anchor.stdin.take() else {
+            anyhow::bail!("validation process-group anchor owner pipe was missing");
+        };
+        drop(owner_pipe);
+
+        timeout(Duration::from_secs(5), member.wait()).await??;
+        timeout(Duration::from_secs(5), group_anchor.wait()).await??;
+        wait_for_validation_process_group_exit(Some(group_pid)).await?;
 
         Ok(())
     }

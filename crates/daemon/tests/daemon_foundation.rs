@@ -11,6 +11,8 @@ use rusqlite::{Connection, params};
 #[cfg(unix)]
 use rustix::fs::FlockOperation;
 use rustix::io::Errno;
+#[cfg(target_os = "macos")]
+use rustix::process::getpgid;
 use rustix::process::{Pid, test_kill_process, test_kill_process_group};
 use serde_json::{Value, json};
 use state::{
@@ -541,10 +543,16 @@ async fn seeded_gateway_drop_does_not_block_current_thread_runtime() -> Result<(
     while !fallback_ready_path.exists() && !child.has_exited()? {
         if TokioInstant::now() >= setup_deadline {
             let cleanup_result = async {
-                child.stop(Duration::from_millis(100)).await?;
-                state::fs::remove_file_if_exists(&nested_pid_path)?;
-                state::fs::remove_file_if_exists(&nested_metadata_path)?;
-                emergency_cleanup_seeded_runtimes(&paths).await
+                let child_cleanup = async {
+                    child.stop(Duration::from_millis(100)).await?;
+                    state::fs::remove_file_if_exists(&nested_pid_path)?;
+                    state::fs::remove_file_if_exists(&nested_metadata_path)?;
+                    Ok(())
+                }
+                .await;
+                let runtime_cleanup = emergency_cleanup_seeded_runtimes(&paths).await;
+
+                combine_cleanup_results(child_cleanup, runtime_cleanup)
             }
             .await;
             return propagate_after_cleanup(
@@ -605,7 +613,7 @@ async fn seeded_gateway_drop_does_not_block_current_thread_runtime() -> Result<(
     assert!(!paths.gateway_runtime_metadata().exists());
     let gateway_group = recorded_test_pid(&paths.run().join("captured-gateway-leader.pid"))?;
     let gateway_descendant = recorded_test_pid(&paths.run().join("gateway-descendant.pid"))?;
-    let validation_group = recorded_test_pid(&paths.run().join("worker-validation-leader.pid"))?;
+    let validation_group = recorded_test_pid(&paths.run().join("worker-validation-group.pid"))?;
     let validation_descendant =
         recorded_test_pid(&paths.run().join("worker-validation-descendant.pid"))?;
     let root_candidate = Utf8PathBuf::from(
@@ -688,6 +696,12 @@ async fn seeded_gateway_drop_current_thread_inner() -> Result<()> {
     wait_for_path(&validation_started).await?;
     wait_for_path(&paths.run().join("worker-validation-leader.pid")).await?;
     wait_for_path(&paths.run().join("worker-validation-descendant.pid")).await?;
+    let validation_leader = recorded_test_pid(&paths.run().join("worker-validation-leader.pid"))?;
+    let validation_group = captured_validation_process_group(validation_leader)?;
+    state::fs::write_sensitive_file(
+        &paths.run().join("worker-validation-group.pid"),
+        &validation_group.as_raw_pid().to_string(),
+    )?;
     wait_for_path(&paths.run().join("worker-validation-root-candidate.path")).await?;
     wait_for_path(
         &paths
@@ -759,6 +773,7 @@ async fn fallback_shutdown_prevents_late_worker_startup() -> Result<()> {
     wait_for_path(&validation_leader_path).await?;
     wait_for_path(&validation_descendant_path).await?;
     let validation_leader = recorded_test_pid(&validation_leader_path)?;
+    let validation_group = captured_validation_process_group(validation_leader)?;
     let validation_descendant = recorded_test_pid(&validation_descendant_path)?;
     let job = wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
 
@@ -769,7 +784,7 @@ async fn fallback_shutdown_prevents_late_worker_startup() -> Result<()> {
         Some("reconciliation was abandoned before completion")
     );
     assert_job_has_no_coverage(&paths, &job.id)?;
-    assert_eq!(test_kill_process_group(validation_leader), Err(Errno::SRCH));
+    assert_eq!(test_kill_process_group(validation_group), Err(Errno::SRCH));
     assert_eq!(test_kill_process(validation_descendant), Err(Errno::SRCH));
     assert!(!runtime_started.exists());
     assert!(!paths.worker_root_config("8.4").exists());
@@ -1145,6 +1160,16 @@ async fn emergency_cleanup_seeded_runtimes(paths: &PvPaths) -> Result<()> {
 fn recorded_test_pid(path: &Utf8Path) -> Result<Pid> {
     let raw_pid = state::fs::read_to_string(path)?.trim().parse::<i32>()?;
     Pid::from_raw(raw_pid).ok_or_else(|| anyhow!("invalid recorded test pid {raw_pid}"))
+}
+
+#[cfg(target_os = "macos")]
+fn captured_validation_process_group(leader: Pid) -> Result<Pid> {
+    Ok(getpgid(Some(leader))?)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn captured_validation_process_group(leader: Pid) -> Result<Pid> {
+    Ok(leader)
 }
 
 #[tokio::test]
