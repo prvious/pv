@@ -6,7 +6,8 @@ use std::pin::Pin;
 use std::process::{ExitStatus, Stdio};
 use std::sync::{
     Arc,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
+    mpsc,
 };
 use std::time::{Duration, Instant};
 
@@ -15,7 +16,7 @@ use config::{ProjectConfig, ProjectConfigFile};
 use futures_util::StreamExt;
 use resources::{ResourceAdapter, caddy_adapter, frankenphp_adapter};
 #[cfg(target_os = "macos")]
-use rustix::process::{Pid, Signal, kill_process_group};
+use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
 use sha2::{Digest, Sha256};
 use state::{
     Database, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
@@ -24,6 +25,7 @@ use state::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::watch;
+use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
 use crate::gateway_config::{
@@ -54,6 +56,9 @@ type RuntimeProcessCommand = tokio::process::Command;
 
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
+const CONFIG_VALIDATION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
+#[cfg(target_os = "macos")]
+const CONFIG_VALIDATION_GROUP_ANCHOR: &str = "while IFS= read -r _line; do :; done\nkill -KILL 0\n";
 const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
 const PF_PUBLIC_READINESS_TIMEOUT: Duration = Duration::from_secs(2);
 const FOREIGN_LISTENER_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
@@ -70,6 +75,7 @@ static CANDIDATE_CONFIG_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 ///
 /// [`Self::Cancelled`] is emitted only by the nonblocking test fallback. Ordinary daemon
 /// shutdown keeps its separate task-specific drain and abort behavior.
+#[derive(Debug)]
 pub(crate) enum ReconciliationOutcome<T> {
     Completed(T),
     Cancelled,
@@ -764,14 +770,14 @@ async fn reconcile_gateway_runtimes_with_pf_state(
                 shutdown,
             )
             .await;
-            if matches!(recovery, Ok(ReconciliationOutcome::Cancelled)) {
-                return Ok(ReconciliationOutcome::Cancelled);
-            }
-            let recovery = recovery.err();
             let mut failures = vec![("gateway".to_owned(), error)];
             if let Some(recording) = recording {
                 failures.push(("gateway".to_owned(), recording));
             }
+            if matches!(recovery, Ok(ReconciliationOutcome::Cancelled)) {
+                return cancel_or_preserve_runtime_reconciliation_errors(failures);
+            }
+            let recovery = recovery.err();
             if let Some(recovery) = recovery {
                 failures.push(("gateway".to_owned(), recovery));
             }
@@ -904,7 +910,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         }
     }
     if cancelled {
-        return Ok(ReconciliationOutcome::Cancelled);
+        return cancel_or_preserve_runtime_reconciliation_errors(worker_failures);
     }
     if !worker_failures.is_empty() {
         let recovery = recover_previous_gateway(
@@ -919,7 +925,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         .await;
         match recovery {
             Ok(ReconciliationOutcome::Cancelled) => {
-                return Ok(ReconciliationOutcome::Cancelled);
+                return cancel_or_preserve_runtime_reconciliation_errors(worker_failures);
             }
             Ok(ReconciliationOutcome::Completed(())) => {}
             Err(error) => worker_failures.push(("gateway".to_owned(), error)),
@@ -997,7 +1003,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         }
     }
     if cleanup_cancelled {
-        return Ok(ReconciliationOutcome::Cancelled);
+        return cancel_or_preserve_runtime_reconciliation_errors(cleanup_failures);
     }
     let mut cleanup_timer = cleanup_timer;
     if let Err(error) = stop_stale_worker_runtimes(paths, &supervisor, &plan)
@@ -1018,6 +1024,9 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             },
             &[],
         );
+    }
+    if reconciliation_cancelled(shutdown) {
+        return cancel_or_preserve_runtime_reconciliation_errors(cleanup_failures);
     }
     if !cleanup_failures.is_empty() {
         return Err(combined_runtime_reconciliation_error(cleanup_failures));
@@ -1191,8 +1200,13 @@ async fn reconcile_gateway_config(
             paths.gateway_root_config(),
             caddy_xdg_environment(paths),
             &desired_gateway_config.tree,
+            shutdown,
         )
         .await?;
+        let promoted_config = match promoted_config {
+            ReconciliationOutcome::Completed(promoted_config) => promoted_config,
+            ReconciliationOutcome::Cancelled => return Ok(ReconciliationOutcome::Cancelled),
+        };
         if reconciliation_cancelled(shutdown) {
             promoted_config
                 .rollback()
@@ -1339,8 +1353,15 @@ async fn prepare_planned_worker(
         paths.worker_root_config(&worker.runtime_key),
         private_environment,
         &desired_config,
+        shutdown,
     )
     .await?;
+    let promoted_config = match promoted_config {
+        ReconciliationOutcome::Completed(promoted_config) => promoted_config,
+        ReconciliationOutcome::Cancelled => {
+            return Ok(PreparedWorkerReconciliation::Cancelled);
+        }
+    };
     if reconciliation_cancelled(shutdown) {
         promoted_config
             .rollback()
@@ -1397,6 +1418,16 @@ fn combined_runtime_reconciliation_error(mut failures: Vec<(String, DaemonError)
             .into_iter()
             .map(|(runtime_key, error)| RuntimeReconciliationFailure::new(runtime_key, error))
             .collect(),
+    }
+}
+
+fn cancel_or_preserve_runtime_reconciliation_errors<T>(
+    failures: Vec<(String, DaemonError)>,
+) -> Result<ReconciliationOutcome<T>, DaemonError> {
+    if failures.is_empty() {
+        Ok(ReconciliationOutcome::Cancelled)
+    } else {
+        Err(combined_runtime_reconciliation_error(failures))
     }
 }
 
@@ -1842,10 +1873,33 @@ pub async fn validate_config(
     config_path: &Utf8Path,
     private_environment: &BTreeMap<String, String>,
 ) -> Result<(), DaemonError> {
-    let output = run_validation_command(command, config_path, private_environment).await?;
+    validate_config_with_shutdown(command, config_path, private_environment, None, None)
+        .await?
+        .into_completed()
+}
+
+async fn validate_config_with_shutdown(
+    command: &CaddyCliCommand,
+    config_path: &Utf8Path,
+    private_environment: &BTreeMap<String, String>,
+    shutdown: Option<&watch::Receiver<bool>>,
+    cleanup_paths: Option<&PvPaths>,
+) -> Result<ReconciliationOutcome<()>, DaemonError> {
+    let output = match run_validation_command(
+        command,
+        config_path,
+        private_environment,
+        shutdown,
+        cleanup_paths,
+    )
+    .await?
+    {
+        ReconciliationOutcome::Completed(output) => output,
+        ReconciliationOutcome::Cancelled => return Ok(ReconciliationOutcome::Cancelled),
+    };
 
     if output.status.success() {
-        return Ok(());
+        return Ok(ReconciliationOutcome::Completed(()));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1866,11 +1920,416 @@ struct ValidationOutput {
     stderr: Vec<u8>,
 }
 
+struct ValidationProcess {
+    pid: u32,
+    child: Option<tokio::process::Child>,
+    group_pid: Option<i32>,
+    group_anchor: Option<tokio::process::Child>,
+    group_signal_pending: bool,
+    group_wait_pending: bool,
+    cleanup_diagnostics: Option<(PvPaths, String)>,
+    fallback_reaper: mpsc::Sender<ValidationProcessReap>,
+}
+
+struct ValidationProcessReap {
+    pid: u32,
+    child: Option<tokio::process::Child>,
+    group_pid: Option<i32>,
+    group_anchor: Option<tokio::process::Child>,
+    group_signal_pending: bool,
+    group_wait_pending: bool,
+    cleanup_diagnostics: Option<(PvPaths, String)>,
+    failures: Vec<String>,
+}
+
+impl ValidationProcess {
+    fn new(
+        pid: u32,
+        child: tokio::process::Child,
+        group_pid: Option<i32>,
+        group_anchor: Option<tokio::process::Child>,
+        cleanup_paths: Option<&PvPaths>,
+        runtime_label: &str,
+        fallback_reaper: mpsc::Sender<ValidationProcessReap>,
+    ) -> Self {
+        Self {
+            pid,
+            child: Some(child),
+            group_pid,
+            group_anchor,
+            group_signal_pending: group_pid.is_some(),
+            group_wait_pending: group_pid.is_some(),
+            cleanup_diagnostics: cleanup_paths
+                .map(|paths| (paths.clone(), format!("{runtime_label} config validation"))),
+            fallback_reaper,
+        }
+    }
+
+    fn child_mut(&mut self) -> Result<&mut tokio::process::Child, DaemonError> {
+        self.child
+            .as_mut()
+            .ok_or_else(|| DaemonError::MissingProcessId {
+                name: "config validation".to_owned(),
+            })
+    }
+
+    async fn wait(&mut self) -> Result<ExitStatus, DaemonError> {
+        let status = self.child_mut()?.wait().await?;
+        self.child = None;
+
+        Ok(status)
+    }
+
+    async fn terminate(&mut self) -> Result<(), DaemonError> {
+        let group_result = self.signal_group_before_reap();
+        let child_result = kill_and_wait_validation_child(&mut self.child).await;
+        let anchor_result = if self.group_signal_pending {
+            Ok(())
+        } else {
+            kill_and_wait_validation_child(&mut self.group_anchor).await
+        };
+        let group_wait_result = if self.group_wait_pending && !self.group_signal_pending {
+            let result = wait_for_validation_process_group_exit(self.group_pid).await;
+            if result.is_ok() {
+                self.group_wait_pending = false;
+            }
+            result
+        } else {
+            Ok(())
+        };
+
+        combine_validation_cleanup_results(
+            combine_validation_cleanup_results(
+                combine_validation_cleanup_results(group_result, child_result),
+                anchor_result,
+            ),
+            group_wait_result,
+        )
+    }
+
+    fn signal_group_before_reap(&mut self) -> Result<(), DaemonError> {
+        if !self.group_signal_pending {
+            return Ok(());
+        }
+
+        if self.group_anchor.is_none() {
+            return Err(io::Error::other(
+                "config validation process-group ownership was lost before signaling",
+            )
+            .into());
+        }
+
+        signal_validation_process_group(self.group_pid)?;
+        self.group_signal_pending = false;
+
+        Ok(())
+    }
+}
+
+impl Drop for ValidationProcess {
+    fn drop(&mut self) {
+        let cleanup = ValidationProcessReap {
+            pid: self.pid,
+            child: self.child.take(),
+            group_pid: self.group_pid,
+            group_anchor: self.group_anchor.take(),
+            group_signal_pending: self.group_signal_pending,
+            group_wait_pending: self.group_wait_pending,
+            cleanup_diagnostics: self.cleanup_diagnostics.take(),
+            failures: Vec::new(),
+        };
+        let _cleanup_result = dispatch_validation_process_reap(&self.fallback_reaper, cleanup);
+    }
+}
+
+impl ValidationProcessReap {
+    fn reap(mut self) {
+        let mut deadline = Instant::now() + Duration::from_secs(1);
+        let mut pending_signal_failure_logged = false;
+        loop {
+            if self.group_signal_pending {
+                match signal_validation_process_group(self.group_pid) {
+                    Ok(()) => {
+                        self.group_signal_pending = false;
+                        let _kill_result = start_kill_validation_child(
+                            &mut self.group_anchor,
+                            "validation process-group anchor",
+                            &mut self.failures,
+                        );
+                        deadline = Instant::now() + Duration::from_secs(1);
+                    }
+                    Err(error) if self.failures.is_empty() => {
+                        self.failures.push(error.to_string());
+                    }
+                    Err(_error) => {}
+                }
+            }
+            let child_exited = validation_child_exited(
+                &mut self.child,
+                "validation process",
+                self.pid,
+                &mut self.failures,
+            );
+            let anchor_exited = if self.group_signal_pending {
+                false
+            } else {
+                validation_child_exited(
+                    &mut self.group_anchor,
+                    "validation process-group anchor",
+                    self.group_pid.unwrap_or_default(),
+                    &mut self.failures,
+                )
+            };
+            let group_exited = if self.group_wait_pending && !self.group_signal_pending {
+                match validation_process_group_exists(self.group_pid) {
+                    Ok(exists) => !exists,
+                    Err(error) => {
+                        self.failures.push(error.to_string());
+                        true
+                    }
+                }
+            } else {
+                true
+            };
+            if child_exited && anchor_exited && group_exited {
+                break;
+            }
+            if Instant::now() >= deadline {
+                if self.group_signal_pending {
+                    if !pending_signal_failure_logged {
+                        self.log_cleanup_failures();
+                        self.failures.clear();
+                        pending_signal_failure_logged = true;
+                    }
+                    std::thread::sleep(OWNED_READINESS_POLL_INTERVAL);
+                    continue;
+                }
+                if !child_exited {
+                    self.failures.push(format!(
+                        "validation process {} was not reaped within one second",
+                        self.pid
+                    ));
+                }
+                if !anchor_exited {
+                    self.failures.push(format!(
+                        "validation process-group anchor {} was not reaped within one second",
+                        self.group_pid.unwrap_or_default()
+                    ));
+                }
+                if !group_exited {
+                    self.failures.push(format!(
+                        "validation process group {} did not exit within one second",
+                        self.group_pid.unwrap_or_default()
+                    ));
+                }
+                break;
+            }
+            std::thread::sleep(OWNED_READINESS_POLL_INTERVAL);
+        }
+        self.log_cleanup_failures();
+    }
+
+    fn log_cleanup_failures(&self) {
+        if !self.failures.is_empty()
+            && let Some((paths, runtime)) = &self.cleanup_diagnostics
+        {
+            structured_log::runtime_config_cleanup_failed(
+                paths,
+                runtime,
+                &self.failures.join("; "),
+            );
+        }
+    }
+}
+
+fn start_validation_process_reaper() -> Result<mpsc::Sender<ValidationProcessReap>, DaemonError> {
+    let (sender, receiver) = mpsc::channel::<ValidationProcessReap>();
+    std::thread::Builder::new()
+        .name("pv-config-validation-reaper".to_owned())
+        .spawn(move || {
+            if let Ok(cleanup) = receiver.recv() {
+                cleanup.reap();
+            }
+        })?;
+
+    Ok(sender)
+}
+
+fn dispatch_validation_process_reap(
+    fallback_reaper: &mpsc::Sender<ValidationProcessReap>,
+    mut cleanup: ValidationProcessReap,
+) -> Result<(), DaemonError> {
+    let group_result = if cleanup.group_signal_pending {
+        let result = signal_validation_process_group(cleanup.group_pid);
+        if result.is_ok() {
+            cleanup.group_signal_pending = false;
+        }
+        result
+    } else {
+        Ok(())
+    };
+    if let Err(error) = &group_result {
+        cleanup.failures.push(error.to_string());
+    }
+
+    let child_result = start_kill_validation_child(
+        &mut cleanup.child,
+        "validation process",
+        &mut cleanup.failures,
+    );
+    let anchor_result = if cleanup.group_signal_pending {
+        Ok(())
+    } else {
+        start_kill_validation_child(
+            &mut cleanup.group_anchor,
+            "validation process-group anchor",
+            &mut cleanup.failures,
+        )
+    };
+    let result = combine_validation_cleanup_results(
+        combine_validation_cleanup_results(group_result, child_result),
+        anchor_result,
+    );
+
+    if let Err(error) = fallback_reaper.send(cleanup) {
+        error.0.reap();
+    }
+
+    result
+}
+
+fn validation_child_exited(
+    child: &mut Option<tokio::process::Child>,
+    description: &str,
+    pid: impl std::fmt::Display,
+    failures: &mut Vec<String>,
+) -> bool {
+    match child.as_mut().map(tokio::process::Child::try_wait) {
+        Some(Ok(Some(_))) | None => true,
+        Some(Ok(None)) => false,
+        Some(Err(error)) => {
+            failures.push(format!("failed to reap {description} {pid}: {error}"));
+            true
+        }
+    }
+}
+
+fn start_kill_validation_child(
+    child: &mut Option<tokio::process::Child>,
+    description: &str,
+    failures: &mut Vec<String>,
+) -> Result<(), DaemonError> {
+    let result = child
+        .as_mut()
+        .map(tokio::process::Child::start_kill)
+        .transpose()
+        .map(|_result| ())
+        .map_err(DaemonError::from);
+    if let Err(error) = &result {
+        failures.push(format!("failed to kill {description}: {error}"));
+    }
+
+    result
+}
+
+async fn kill_and_wait_validation_child(
+    child: &mut Option<tokio::process::Child>,
+) -> Result<(), DaemonError> {
+    let Some(child_process) = child.as_mut() else {
+        return Ok(());
+    };
+    let kill_result = child_process.start_kill().map_err(DaemonError::from);
+    let wait_result = child_process
+        .wait()
+        .await
+        .map(|_status| ())
+        .map_err(DaemonError::from);
+    if wait_result.is_ok() {
+        *child = None;
+    }
+
+    combine_validation_cleanup_results(kill_result, wait_result)
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_validation_process_group_anchor(
+    fallback_reaper: &mpsc::Sender<ValidationProcessReap>,
+) -> Result<(Option<i32>, Option<tokio::process::Child>), DaemonError> {
+    let mut command = RuntimeProcessCommand::new("/bin/sh");
+    command
+        .args(["-c", CONFIG_VALIDATION_GROUP_ANCHOR])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .process_group(0);
+    let anchor = Some(command.spawn()?);
+    let Some(pid) = anchor.as_ref().and_then(tokio::process::Child::id) else {
+        let error = DaemonError::MissingProcessId {
+            name: "config validation process-group anchor".to_owned(),
+        };
+        let cleanup = dispatch_validation_process_reap(
+            fallback_reaper,
+            ValidationProcessReap {
+                pid: 0,
+                child: None,
+                group_pid: None,
+                group_anchor: anchor,
+                group_signal_pending: false,
+                group_wait_pending: false,
+                cleanup_diagnostics: None,
+                failures: Vec::new(),
+            },
+        );
+
+        return Err(preserve_validation_error(error, cleanup));
+    };
+    let group_pid = match i32::try_from(pid) {
+        Ok(group_pid) => group_pid,
+        Err(_source) => {
+            let error = io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("config validation process-group id {pid} is invalid"),
+            )
+            .into();
+            let cleanup = dispatch_validation_process_reap(
+                fallback_reaper,
+                ValidationProcessReap {
+                    pid: 0,
+                    child: None,
+                    group_pid: None,
+                    group_anchor: anchor,
+                    group_signal_pending: false,
+                    group_wait_pending: false,
+                    cleanup_diagnostics: None,
+                    failures: Vec::new(),
+                },
+            );
+
+            return Err(preserve_validation_error(error, cleanup));
+        }
+    };
+
+    Ok((Some(group_pid), anchor))
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn spawn_validation_process_group_anchor(
+    _fallback_reaper: &mpsc::Sender<ValidationProcessReap>,
+) -> Result<(Option<i32>, Option<tokio::process::Child>), DaemonError> {
+    Ok((None, None))
+}
+
 async fn run_validation_command(
     command: &CaddyCliCommand,
     config_path: &Utf8Path,
     private_environment: &BTreeMap<String, String>,
-) -> Result<ValidationOutput, DaemonError> {
+    shutdown: Option<&watch::Receiver<bool>>,
+    cleanup_paths: Option<&PvPaths>,
+) -> Result<ReconciliationOutcome<ValidationOutput>, DaemonError> {
+    if reconciliation_cancelled(shutdown) {
+        return Ok(ReconciliationOutcome::Cancelled);
+    }
     let mut command_process = RuntimeProcessCommand::new(command.executable());
     command_process
         .args(command.validate_arguments(config_path))
@@ -1881,35 +2340,199 @@ async fn run_validation_command(
         command_process.env_remove(key);
     }
     command_process.envs(private_environment);
+    let fallback_reaper = start_validation_process_reaper()?;
+    let (group_pid, group_anchor) = spawn_validation_process_group_anchor(&fallback_reaper)?;
     #[cfg(target_os = "macos")]
-    command_process.process_group(0);
+    if let Some(group_pid) = group_pid {
+        command_process.process_group(group_pid);
+    }
 
-    let mut child = command_process.spawn()?;
+    let mut child = match command_process.spawn() {
+        Ok(child) => child,
+        Err(source) => {
+            let error = DaemonError::from(source);
+            let cleanup = dispatch_validation_process_reap(
+                &fallback_reaper,
+                ValidationProcessReap {
+                    pid: 0,
+                    child: None,
+                    group_pid,
+                    group_anchor,
+                    group_signal_pending: group_pid.is_some(),
+                    group_wait_pending: group_pid.is_some(),
+                    cleanup_diagnostics: cleanup_paths.map(|paths| {
+                        (
+                            paths.clone(),
+                            format!("{} config validation", command.runtime_label()),
+                        )
+                    }),
+                    failures: Vec::new(),
+                },
+            );
+
+            return Err(preserve_validation_error(error, cleanup));
+        }
+    };
     let Some(pid) = child.id() else {
-        return Err(DaemonError::MissingProcessId {
+        let error = DaemonError::MissingProcessId {
             name: format!("{} config validation", command.runtime_label()),
-        });
+        };
+        let cleanup = dispatch_validation_process_reap(
+            &fallback_reaper,
+            ValidationProcessReap {
+                pid: 0,
+                child: Some(child),
+                group_pid,
+                group_anchor,
+                group_signal_pending: group_pid.is_some(),
+                group_wait_pending: group_pid.is_some(),
+                cleanup_diagnostics: cleanup_paths.map(|paths| {
+                    (
+                        paths.clone(),
+                        format!("{} config validation", command.runtime_label()),
+                    )
+                }),
+                failures: Vec::new(),
+            },
+        );
+
+        return Err(preserve_validation_error(error, cleanup));
     };
     let stdout = tokio::spawn(read_child_output(child.stdout.take()));
     let stderr = tokio::spawn(read_child_output(child.stderr.take()));
-    let status = match timeout(CONFIG_VALIDATION_TIMEOUT, child.wait()).await {
-        Ok(result) => result?,
-        Err(_elapsed) => {
-            terminate_validation_process(pid, &mut child).await;
+    let mut process = ValidationProcess::new(
+        pid,
+        child,
+        group_pid,
+        group_anchor,
+        cleanup_paths,
+        command.runtime_label(),
+        fallback_reaper,
+    );
+    let status = match wait_for_transaction_step(
+        Box::pin(timeout(CONFIG_VALIDATION_TIMEOUT, process.wait())),
+        shutdown,
+    )
+    .await
+    {
+        ReconciliationOutcome::Completed(Ok(Ok(status))) => status,
+        ReconciliationOutcome::Completed(Ok(Err(error))) => {
+            let cleanup_result = cleanup_validation_process(process, stdout, stderr).await;
 
-            return Err(DaemonError::ProtocolTimedOut {
+            return Err(preserve_validation_error(error, cleanup_result));
+        }
+        ReconciliationOutcome::Completed(Err(_elapsed)) => {
+            let error = DaemonError::ProtocolTimedOut {
                 phase: command.validation_phase(),
-            });
+            };
+            let cleanup_result = cleanup_validation_process(process, stdout, stderr).await;
+
+            return Err(preserve_validation_error(error, cleanup_result));
+        }
+        ReconciliationOutcome::Cancelled => {
+            cleanup_validation_process(process, stdout, stderr).await?;
+
+            return Ok(ReconciliationOutcome::Cancelled);
         }
     };
-    let stdout = stdout.await.map_err(io::Error::other)??;
-    let stderr = stderr.await.map_err(io::Error::other)??;
+    let (stdout, stderr) = cleanup_validation_process(process, stdout, stderr).await?;
 
-    Ok(ValidationOutput {
+    Ok(ReconciliationOutcome::Completed(ValidationOutput {
         status,
         stdout,
         stderr,
+    }))
+}
+
+async fn cleanup_validation_process(
+    mut process: ValidationProcess,
+    mut stdout: JoinHandle<io::Result<Vec<u8>>>,
+    mut stderr: JoinHandle<io::Result<Vec<u8>>>,
+) -> Result<(Vec<u8>, Vec<u8>), DaemonError> {
+    let process_cleanup = timeout(CONFIG_VALIDATION_CLEANUP_TIMEOUT, process.terminate())
+        .await
+        .map_err(|_| DaemonError::ProtocolTimedOut {
+            phase: "config validation process cleanup",
+        })
+        .and_then(|result| result);
+    drop(process);
+
+    let output_cleanup = timeout(CONFIG_VALIDATION_CLEANUP_TIMEOUT, async {
+        let (stdout_result, stderr_result) = tokio::join!(&mut stdout, &mut stderr);
+        let stdout_result = stdout_result
+            .map_err(io::Error::other)
+            .map_err(DaemonError::from)
+            .and_then(|result| result.map_err(DaemonError::from));
+        let stderr_result = stderr_result
+            .map_err(io::Error::other)
+            .map_err(DaemonError::from)
+            .and_then(|result| result.map_err(DaemonError::from));
+
+        combine_validation_output_results(stdout_result, stderr_result)
     })
+    .await;
+    let output_cleanup = match output_cleanup {
+        Ok(result) => result,
+        Err(_elapsed) => {
+            stdout.abort();
+            stderr.abort();
+            let (_stdout_result, _stderr_result) = tokio::join!(stdout, stderr);
+
+            Err(DaemonError::ProtocolTimedOut {
+                phase: "config validation output cleanup",
+            })
+        }
+    };
+
+    match (process_cleanup, output_cleanup) {
+        (Ok(()), Ok(output)) => Ok(output),
+        (Err(error), Ok(_)) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(runtime_cleanup_failed_error(
+            "config validation",
+            error,
+            cleanup,
+        )),
+    }
+}
+
+fn combine_validation_output_results(
+    stdout: Result<Vec<u8>, DaemonError>,
+    stderr: Result<Vec<u8>, DaemonError>,
+) -> Result<(Vec<u8>, Vec<u8>), DaemonError> {
+    match (stdout, stderr) {
+        (Ok(stdout), Ok(stderr)) => Ok((stdout, stderr)),
+        (Err(error), Ok(_)) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(runtime_cleanup_failed_error(
+            "config validation output",
+            error,
+            cleanup,
+        )),
+    }
+}
+
+fn combine_validation_cleanup_results(
+    first: Result<(), DaemonError>,
+    second: Result<(), DaemonError>,
+) -> Result<(), DaemonError> {
+    match (first, second) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(runtime_cleanup_failed_error(
+            "config validation",
+            error,
+            cleanup,
+        )),
+    }
+}
+
+fn preserve_validation_error<T>(
+    error: DaemonError,
+    cleanup: Result<T, DaemonError>,
+) -> DaemonError {
+    match cleanup {
+        Ok(_output) => error,
+        Err(cleanup) => runtime_cleanup_failed_error("config validation", error, cleanup),
+    }
 }
 
 async fn read_child_output<Output>(output: Option<Output>) -> io::Result<Vec<u8>>
@@ -1926,24 +2549,62 @@ where
     Ok(content)
 }
 
-async fn terminate_validation_process(pid: u32, child: &mut tokio::process::Child) {
-    #[cfg(not(target_os = "macos"))]
-    let _ = pid;
-
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(process_group) = validation_process_group(pid) {
-            let _result = kill_process_group(process_group, Signal::KILL);
-        }
+#[cfg(target_os = "macos")]
+fn signal_validation_process_group(pid: Option<i32>) -> Result<(), DaemonError> {
+    let process_group = validation_process_group(pid).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "validation process id must be positive",
+        )
+    })?;
+    match kill_process_group(process_group, Signal::KILL) {
+        Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+        Err(error) => Err(io::Error::from(error).into()),
     }
+}
 
-    let _result = child.kill().await;
-    let _result = child.wait().await;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn signal_validation_process_group(_pid: Option<i32>) -> Result<(), DaemonError> {
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
-fn validation_process_group(pid: u32) -> Option<Pid> {
-    i32::try_from(pid).ok().and_then(Pid::from_raw)
+fn validation_process_group(pid: Option<i32>) -> Option<Pid> {
+    pid.and_then(Pid::from_raw)
+}
+
+async fn wait_for_validation_process_group_exit(pid: Option<i32>) -> Result<(), DaemonError> {
+    let deadline = Instant::now() + CONFIG_VALIDATION_CLEANUP_TIMEOUT;
+    while validation_process_group_exists(pid)? {
+        if Instant::now() >= deadline {
+            return Err(DaemonError::ProtocolTimedOut {
+                phase: "config validation process-group cleanup",
+            });
+        }
+        sleep(OWNED_READINESS_POLL_INTERVAL).await;
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn validation_process_group_exists(pid: Option<i32>) -> Result<bool, DaemonError> {
+    let process_group = validation_process_group(pid).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "validation process id must be positive",
+        )
+    })?;
+    match test_kill_process_group(process_group) {
+        Ok(()) => Ok(true),
+        Err(rustix::io::Errno::SRCH | rustix::io::Errno::PERM) => Ok(false),
+        Err(error) => Err(io::Error::from(error).into()),
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn validation_process_group_exists(_pid: Option<i32>) -> Result<bool, DaemonError> {
+    Ok(false)
 }
 
 pub fn gateway_process_spec(paths: &PvPaths, command: &CaddyCliCommand) -> ProcessSpec {
@@ -3037,17 +3698,40 @@ async fn promote_runtime_config_tree(
     config_path: Utf8PathBuf,
     private_environment: BTreeMap<String, String>,
     desired: &DesiredRuntimeConfigTree,
-) -> Result<PromotedConfigTree, DaemonError> {
-    let result = delete_optional_dir(&desired.candidate_dir)
+    shutdown: Option<&watch::Receiver<bool>>,
+) -> Result<ReconciliationOutcome<PromotedConfigTree>, DaemonError> {
+    let validation_cancelled = Arc::new(AtomicBool::new(false));
+    let mut candidate_dir = CandidateConfigDirGuard::new(paths, desired.candidate_dir.clone());
+    let result = candidate_dir
+        .delete_current()
         .and_then(|()| write_project_config_fragments(&desired.candidate_dir, &desired.fragments));
     let result = match result {
         Ok(()) => {
+            let validation_cancelled_for_command = Arc::clone(&validation_cancelled);
             promote_validated_config_tree_async(
                 &config_path,
                 &desired.candidate_content,
                 &desired.active_content,
                 |candidate_path| async move {
-                    validate_config(command, &candidate_path, &private_environment).await
+                    match validate_config_with_shutdown(
+                        command,
+                        &candidate_path,
+                        &private_environment,
+                        shutdown,
+                        Some(paths),
+                    )
+                    .await?
+                    {
+                        ReconciliationOutcome::Completed(()) => Ok(()),
+                        ReconciliationOutcome::Cancelled => {
+                            delete_optional_file(&candidate_path)?;
+                            validation_cancelled_for_command.store(true, Ordering::SeqCst);
+
+                            Err(DaemonError::UnexpectedProtocolResponse {
+                                reason: "config validation was cancelled".to_owned(),
+                            })
+                        }
+                    }
                 },
                 || promote_config_dir(&desired.active_dir, &desired.candidate_dir),
             )
@@ -3055,9 +3739,18 @@ async fn promote_runtime_config_tree(
         }
         Err(error) => Err(error),
     };
+    if validation_cancelled.load(Ordering::SeqCst) {
+        return match candidate_dir.cleanup() {
+            Ok(()) => Ok(ReconciliationOutcome::Cancelled),
+            Err(error) => Err(record_primary_error(paths, subject, error)),
+        };
+    }
     let result = match result {
-        Ok(promoted_config) => Ok(promoted_config),
-        Err(error) => match delete_optional_dir(&desired.candidate_dir) {
+        Ok(promoted_config) => {
+            candidate_dir.disarm();
+            Ok(promoted_config)
+        }
+        Err(error) => match candidate_dir.cleanup() {
             Ok(()) => Err(error),
             Err(cleanup_error) => Err(runtime_cleanup_failed_error(
                 desired.candidate_dir.as_str(),
@@ -3068,8 +3761,54 @@ async fn promote_runtime_config_tree(
     };
 
     match result {
-        Ok(promoted_config) => Ok(promoted_config),
+        Ok(promoted_config) => Ok(ReconciliationOutcome::Completed(promoted_config)),
         Err(error) => Err(record_primary_error(paths, subject, error)),
+    }
+}
+
+struct CandidateConfigDirGuard {
+    paths: PvPaths,
+    path: Utf8PathBuf,
+    armed: bool,
+}
+
+impl CandidateConfigDirGuard {
+    fn new(paths: &PvPaths, path: Utf8PathBuf) -> Self {
+        Self {
+            paths: paths.clone(),
+            path,
+            armed: true,
+        }
+    }
+
+    fn delete_current(&self) -> Result<(), DaemonError> {
+        delete_optional_dir(&self.path)
+    }
+
+    fn cleanup(&mut self) -> Result<(), DaemonError> {
+        delete_optional_dir(&self.path)?;
+        self.disarm();
+
+        Ok(())
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for CandidateConfigDirGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        if let Err(error) = delete_optional_dir(&self.path) {
+            structured_log::runtime_config_cleanup_failed(
+                &self.paths,
+                &format!("candidate config directory `{}`", self.path),
+                &error.to_string(),
+            );
+        }
     }
 }
 
@@ -3590,14 +4329,25 @@ async fn begin_runtime_transaction(
         let active_content = read_config_bytes(&spec.config_path)?;
         let client = CaddyAdminClient::new().with_timeout(readiness.timeout);
         mark_runtime_config_pending(supervisor, spec, desired_fingerprint, false)?;
-        load_runtime_config(
-            paths,
-            spec,
-            client,
-            &readiness.admin_endpoint,
-            active_content,
+        let load_result = wait_for_transaction_step(
+            Box::pin(load_runtime_config(
+                paths,
+                spec,
+                client,
+                &readiness.admin_endpoint,
+                active_content,
+            )),
+            shutdown,
         )
-        .await?;
+        .await;
+        match load_result {
+            ReconciliationOutcome::Completed(result) => result?,
+            ReconciliationOutcome::Cancelled => {
+                return Ok(ReconciliationOutcome::Completed(
+                    StartedRuntimeTransaction::Matching,
+                ));
+            }
+        }
         verify_runtime_ownership(supervisor, spec)
             .map_err(RuntimeTransactionError::pending_preserve)?;
 
@@ -3900,6 +4650,7 @@ async fn wait_for_transaction_step<Output>(
     shutdown: Option<&watch::Receiver<bool>>,
 ) -> ReconciliationOutcome<Output> {
     tokio::select! {
+        biased;
         output = step.as_mut() => ReconciliationOutcome::Completed(output),
         () = wait_for_reconciliation_cancellation(shutdown) => ReconciliationOutcome::Cancelled,
     }
@@ -4992,6 +5743,8 @@ fn worker_config_private_environment(
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    #[cfg(target_os = "macos")]
+    use std::process::Stdio;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -5000,18 +5753,27 @@ mod tests {
     use camino_tempfile::tempdir;
     use platform::{ActivePfRedirectInspection, PfRedirectConfig};
     use state::{Database, LinkProjectInput, PvPaths};
+    use tokio::sync::watch;
+    #[cfg(target_os = "macos")]
+    use tokio::time::timeout;
 
     use crate::gateway_config::GatewayProjectRoute;
     use crate::{DaemonError, ReadinessCheck};
 
     use super::{
-        GatewayPfRoutingState, GatewayReadinessPorts, GatewayRuntimePlan, ReadinessFailurePolicy,
-        RuntimePlan, build_target_runtime_plan, classify_gateway_pf_routing_state,
+        CaddyCliCommand, GatewayPfRoutingState, GatewayReadinessPorts, GatewayRuntimePlan,
+        ReadinessFailurePolicy, ReconciliationOutcome, RuntimePlan, build_target_runtime_plan,
+        cancel_or_preserve_runtime_reconciliation_errors, classify_gateway_pf_routing_state,
         combined_runtime_reconciliation_error, gateway_project_config_fragments,
         gateway_public_readiness_check, gateway_readiness_check_for_ports,
         gateway_readiness_hostname, gateway_readiness_plan, gateway_readiness_ports,
-        previous_runtime_readiness_from_parts, project_config_file_name,
-        spawn_gateway_pf_inspection,
+        previous_runtime_readiness_from_parts, project_config_file_name, run_validation_command,
+        spawn_gateway_pf_inspection, wait_for_transaction_step,
+    };
+    #[cfg(target_os = "macos")]
+    use super::{
+        RuntimeProcessCommand, spawn_validation_process_group_anchor,
+        start_validation_process_reaper, wait_for_validation_process_group_exit,
     };
 
     #[test]
@@ -5047,6 +5809,100 @@ mod tests {
             }
             error => anyhow::bail!("expected aggregate runtime failure, got {error:?}"),
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn runtime_reconciliation_errors_outrank_cancellation() -> Result<()> {
+        assert!(matches!(
+            cancel_or_preserve_runtime_reconciliation_errors::<()>(Vec::new()),
+            Ok(super::ReconciliationOutcome::Cancelled)
+        ));
+        let error = cancel_or_preserve_runtime_reconciliation_errors::<()>(vec![(
+            "gateway".to_owned(),
+            DaemonError::UnexpectedProtocolResponse {
+                reason: "sentinel failure".to_owned(),
+            },
+        )])
+        .err()
+        .ok_or_else(|| anyhow::anyhow!("cancellation replaced the sentinel failure"))?;
+        assert_eq!(error.to_string(), "daemon protocol error: sentinel failure");
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn completed_transaction_step_outranks_ready_cancellation() -> Result<()> {
+        let (_fallback_sender, fallback_receiver) = watch::channel(true);
+        let outcome = wait_for_transaction_step(
+            Box::pin(async {
+                Err::<(), DaemonError>(DaemonError::UnexpectedProtocolResponse {
+                    reason: "transaction sentinel".to_owned(),
+                })
+            }),
+            Some(&fallback_receiver),
+        )
+        .await;
+        let ReconciliationOutcome::Completed(Err(error)) = outcome else {
+            anyhow::bail!("ready cancellation replaced a completed transaction error");
+        };
+        assert_eq!(
+            error.to_string(),
+            "daemon protocol error: transaction sentinel"
+        );
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn pre_signalled_fallback_does_not_spawn_config_validator() -> Result<()> {
+        let tempdir = tempdir()?;
+        let (_fallback_sender, fallback_receiver) = watch::channel(true);
+
+        let outcome = run_validation_command(
+            &CaddyCliCommand::caddy(tempdir.path().join("missing-validator")),
+            &tempdir.path().join("Caddyfile"),
+            &Default::default(),
+            Some(&fallback_receiver),
+            None,
+        )
+        .await?;
+
+        assert!(matches!(outcome, ReconciliationOutcome::Cancelled));
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn validation_group_anchor_stops_group_when_owner_pipe_closes() -> Result<()> {
+        let fallback_reaper = start_validation_process_reaper()?;
+        let (group_pid, group_anchor) = spawn_validation_process_group_anchor(&fallback_reaper)?;
+        let Some(group_pid) = group_pid else {
+            anyhow::bail!("validation process-group anchor did not publish its group id");
+        };
+        let Some(mut group_anchor) = group_anchor else {
+            anyhow::bail!("validation process-group anchor was missing");
+        };
+
+        let mut member_command = RuntimeProcessCommand::new("/bin/sleep");
+        member_command
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .process_group(group_pid);
+        let mut member = member_command.spawn()?;
+        let Some(owner_pipe) = group_anchor.stdin.take() else {
+            anyhow::bail!("validation process-group anchor owner pipe was missing");
+        };
+        drop(owner_pipe);
+
+        timeout(Duration::from_secs(5), member.wait()).await??;
+        timeout(Duration::from_secs(5), group_anchor.wait()).await??;
+        wait_for_validation_process_group_exit(Some(group_pid)).await?;
 
         Ok(())
     }

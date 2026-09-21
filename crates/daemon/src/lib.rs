@@ -17,7 +17,7 @@ mod watcher;
 
 use std::future::Future;
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 
 use managed_resources::ManagedResourceRuntimeCatalog;
 use platform::PlatformTarget;
@@ -56,7 +56,7 @@ pub struct RunningDaemon {
     fallback_shutdown: watch::Sender<bool>,
     task: JoinHandle<Result<(), DaemonError>>,
     dns: dns::RunningDnsResolver,
-    blocked_request_release_signal: Option<std::sync::mpsc::Sender<()>>,
+    blocked_request_release_signal: Option<mpsc::Sender<()>>,
 }
 
 impl RunningDaemon {
@@ -105,7 +105,7 @@ impl RunningDaemon {
         paths: PvPaths,
         manifest_url: impl Into<String>,
         client: impl resources::ResourceHttpClient + Send + Sync + 'static,
-        blocked_request_release_signal: std::sync::mpsc::Sender<()>,
+        blocked_request_release_signal: mpsc::Sender<()>,
     ) -> Result<Self, DaemonError> {
         ipc::require_ipc_for(PlatformTarget::current()?)?;
         Self::start_with_runtime_catalog_and_blocked_request_release(
@@ -132,7 +132,7 @@ impl RunningDaemon {
     async fn start_with_runtime_catalog_and_blocked_request_release(
         paths: PvPaths,
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
-        blocked_request_release_signal: Option<std::sync::mpsc::Sender<()>>,
+        blocked_request_release_signal: Option<mpsc::Sender<()>>,
     ) -> Result<Self, DaemonError> {
         match Self::start_with_runtime_catalog_inner(
             paths.clone(),
@@ -153,7 +153,7 @@ impl RunningDaemon {
     async fn start_with_runtime_catalog_inner(
         paths: PvPaths,
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
-        blocked_request_release_signal: Option<std::sync::mpsc::Sender<()>>,
+        blocked_request_release_signal: Option<mpsc::Sender<()>>,
     ) -> Result<Self, DaemonError> {
         let mut database = Database::open(&paths)?;
         ipc::prepare_endpoint(&paths).await?;
