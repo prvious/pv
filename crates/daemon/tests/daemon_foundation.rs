@@ -1363,6 +1363,58 @@ async fn daemon_shutdown_keeps_jobs_lock_until_blocking_install_finishes() -> Re
     Ok(())
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn fallback_shutdown_wakes_blocked_resource_request() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let started = Arc::new(AtomicBool::new(false));
+    let (cancel, blocked) = mpsc::channel();
+    let client = BlockedStartupDownloadClient {
+        started: Arc::clone(&started),
+        release: Mutex::new(blocked),
+    };
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client_and_blocked_request_release(
+                paths.clone(),
+                TEST_ARTIFACT_MANIFEST_URL,
+                client,
+                cancel,
+            )
+            .await?;
+    timeout(Duration::from_secs(5), async {
+        while !started.load(Ordering::SeqCst) {
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await?;
+    let job = wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
+    assert!(matches!(
+        JobsLock::acquire(&paths),
+        Err(state::StateError::CoordinationLockHeld { .. })
+    ));
+
+    daemon.shutdown_without_waiting_for_test()?;
+
+    let job = timeout(
+        Duration::from_secs(5),
+        wait_for_job_id_status(&paths, &job.id, JobStatus::Failed),
+    )
+    .await??;
+    assert!(
+        job.error
+            .as_deref()
+            .is_some_and(|error| error.contains("HTTP status 404")),
+        "resource error was not preserved: {:?}",
+        job.error
+    );
+    let _jobs_lock = JobsLock::acquire(&paths)?;
+    assert!(!paths.daemon_socket().exists());
+    assert!(!paths.gateway_pid().exists());
+    assert!(!paths.gateway_runtime_metadata().exists());
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn startup_reconciliation_records_non_contention_enqueue_failure() -> Result<()> {
     let tempdir = tempdir()?;

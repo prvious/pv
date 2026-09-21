@@ -56,6 +56,7 @@ pub struct RunningDaemon {
     fallback_shutdown: watch::Sender<bool>,
     task: JoinHandle<Result<(), DaemonError>>,
     dns: dns::RunningDnsResolver,
+    blocked_request_release_signal: Option<std::sync::mpsc::Sender<()>>,
 }
 
 impl RunningDaemon {
@@ -99,11 +100,47 @@ impl RunningDaemon {
         .await
     }
 
+    #[doc(hidden)]
+    pub async fn start_without_managed_resource_adapters_with_manifest_client_and_blocked_request_release(
+        paths: PvPaths,
+        manifest_url: impl Into<String>,
+        client: impl resources::ResourceHttpClient + Send + Sync + 'static,
+        blocked_request_release_signal: std::sync::mpsc::Sender<()>,
+    ) -> Result<Self, DaemonError> {
+        ipc::require_ipc_for(PlatformTarget::current()?)?;
+        Self::start_with_runtime_catalog_and_blocked_request_release(
+            paths,
+            Some(
+                ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+                    manifest_url,
+                    client,
+                )?,
+            ),
+            Some(blocked_request_release_signal),
+        )
+        .await
+    }
+
     async fn start_with_runtime_catalog(
         paths: PvPaths,
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
     ) -> Result<Self, DaemonError> {
-        match Self::start_with_runtime_catalog_inner(paths.clone(), runtime_catalog).await {
+        Self::start_with_runtime_catalog_and_blocked_request_release(paths, runtime_catalog, None)
+            .await
+    }
+
+    async fn start_with_runtime_catalog_and_blocked_request_release(
+        paths: PvPaths,
+        runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
+        blocked_request_release_signal: Option<std::sync::mpsc::Sender<()>>,
+    ) -> Result<Self, DaemonError> {
+        match Self::start_with_runtime_catalog_inner(
+            paths.clone(),
+            runtime_catalog,
+            blocked_request_release_signal,
+        )
+        .await
+        {
             Ok(daemon) => Ok(daemon),
             Err(error) => {
                 write_startup_failure_marker(&paths, &error);
@@ -116,6 +153,7 @@ impl RunningDaemon {
     async fn start_with_runtime_catalog_inner(
         paths: PvPaths,
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
+        blocked_request_release_signal: Option<std::sync::mpsc::Sender<()>>,
     ) -> Result<Self, DaemonError> {
         let mut database = Database::open(&paths)?;
         ipc::prepare_endpoint(&paths).await?;
@@ -153,6 +191,7 @@ impl RunningDaemon {
             fallback_shutdown,
             task,
             dns,
+            blocked_request_release_signal,
         })
     }
 
@@ -186,8 +225,12 @@ impl RunningDaemon {
             fallback_shutdown,
             task,
             mut dns,
+            blocked_request_release_signal,
         } = self;
         let _ = fallback_shutdown.send(true);
+        if let Some(signal) = blocked_request_release_signal {
+            let _sent = signal.send(());
+        }
         let _ = shutdown.send(());
         dns.signal_shutdown();
         drop(task);
@@ -279,6 +322,7 @@ async fn wait_for_shutdown(
         fallback_shutdown: _fallback_shutdown,
         mut task,
         mut dns,
+        blocked_request_release_signal: _blocked_request_release_signal,
     } = daemon;
     tokio::pin!(shutdown_signal);
 
@@ -455,6 +499,7 @@ mod tests {
             fallback_shutdown,
             task,
             dns: super::dns::RunningDnsResolver::pending_for_test(),
+            blocked_request_release_signal: None,
         };
 
         let result = wait_for_shutdown(daemon, future::pending::<io::Result<()>>()).await;
@@ -486,6 +531,7 @@ mod tests {
             dns: super::dns::RunningDnsResolver::failed_for_test(io::Error::other(
                 "dns stopped early",
             )),
+            blocked_request_release_signal: None,
         };
 
         let result = timeout(
@@ -520,6 +566,7 @@ mod tests {
             fallback_shutdown,
             task,
             dns: super::dns::RunningDnsResolver::aborted_for_test(),
+            blocked_request_release_signal: None,
         };
 
         let result = daemon.shutdown().await;
