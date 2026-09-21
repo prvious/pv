@@ -609,7 +609,11 @@ async fn gateway_fixture_cleanup_keeps_records_while_group_descendants_remain() 
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let release_path = paths.home().join("leader-exit-caddy-release");
     let executable = release_path.join("bin/caddy");
-    fs::write_sensitive_file(&executable, "#!/bin/sh\nset -eu\nsleep 30 &\nsleep 1\n")?;
+    let descendant_pid_path = paths.run().join("leader-exit-caddy-descendant.pid");
+    fs::write_sensitive_file(
+        &executable,
+        "#!/bin/sh\nset -eu\nsleep 30 &\nprintf '%s\\n' \"$!\" > \"$PV_TEST_DESCENDANT_PID_PATH\"\nsleep 1\n",
+    )?;
     set_executable(&executable)?;
     fs::write_sensitive_file(&paths.gateway_root_config(), "fixture")?;
     let mut database = Database::open(&paths)?;
@@ -621,42 +625,61 @@ async fn gateway_fixture_cleanup_keeps_records_while_group_descendants_remain() 
     )?;
 
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let spec = gateway_process_spec(&paths, &CaddyCliCommand::caddy(executable));
+    let mut spec = gateway_process_spec(&paths, &CaddyCliCommand::caddy(executable));
+    spec.private_environment.insert(
+        "PV_TEST_DESCENDANT_PID_PATH".to_owned(),
+        descendant_pid_path.to_string(),
+    );
     let mut process = supervisor.start(spec).await?;
     let pid = process.pid();
-    timeout(Duration::from_secs(5), async {
-        loop {
-            if process.has_exited()? {
-                return Ok::<_, anyhow::Error>(());
-            }
-            sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await??;
-    assert!(process_group_is_alive(pid)?);
-
-    let cleanup = stop_recorded_runtime(
-        &paths,
-        &paths.gateway_pid(),
-        &paths.gateway_runtime_metadata(),
-    )
-    .await;
-    let records_remained =
-        paths.gateway_pid().exists() && paths.gateway_runtime_metadata().exists();
-
     let process_group = Pid::from_raw(i32::try_from(pid)?)
         .ok_or_else(|| anyhow::anyhow!("invalid process id {pid}"))?;
+    let test_result = async {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if process.has_exited()? {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await??;
+        let descendant_pid = fs::read_to_string(&descendant_pid_path)?
+            .trim()
+            .parse::<u32>()?;
+        if !process_is_alive(descendant_pid)? {
+            bail!("gateway descendant {descendant_pid} exited before cleanup");
+        }
+
+        let pid_record = fs::read_to_string(&paths.gateway_pid())?;
+        let metadata_record = fs::read_to_string(&paths.gateway_runtime_metadata())?;
+        let cleanup = stop_recorded_runtime(
+            &paths,
+            &paths.gateway_pid(),
+            &paths.gateway_runtime_metadata(),
+        )
+        .await;
+        let records_unchanged = fs::read_to_string(&paths.gateway_pid())? == pid_record
+            && fs::read_to_string(&paths.gateway_runtime_metadata())? == metadata_record;
+
+        Ok::<_, anyhow::Error>((cleanup, records_unchanged))
+    }
+    .await;
+
     match kill_process_group(process_group, Signal::KILL) {
         Ok(()) | Err(rustix::io::Errno::SRCH) => {}
         Err(error) => return Err(error.into()),
     }
-    let group_absent = process_and_group_are_absent(pid, Duration::from_secs(5)).await?;
+    let descendant_pid = fs::read_to_string(&descendant_pid_path)?
+        .trim()
+        .parse::<u32>()?;
+    wait_for_process_exit(descendant_pid).await?;
     fs::remove_file_if_exists(&paths.gateway_pid())?;
     fs::remove_file_if_exists(&paths.gateway_runtime_metadata())?;
 
+    let (cleanup, records_unchanged) = test_result?;
     assert!(cleanup.is_err());
-    assert!(records_remained);
-    assert!(group_absent);
+    assert!(records_unchanged);
 
     Ok(())
 }
