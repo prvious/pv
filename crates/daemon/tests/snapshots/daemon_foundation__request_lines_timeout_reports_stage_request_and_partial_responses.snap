@@ -1,0 +1,6 @@
+---
+source: crates/daemon/tests/daemon_foundation.rs
+assertion_line: 2900
+expression: error.to_string()
+---
+"daemon request {\"command\":\"pending\"} exceeded its 50ms deadline during response read; partial responses: [{\"status\":\"accepted\"}]"

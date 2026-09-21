@@ -51,7 +51,7 @@ impl RunningDnsResolver {
         (&mut self.task).await?
     }
 
-    fn signal_shutdown(&mut self) {
+    pub(crate) fn signal_shutdown(&mut self) {
         if let Some(shutdown) = self.shutdown.take() {
             let _ = shutdown.send(());
         }

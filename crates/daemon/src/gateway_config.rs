@@ -209,6 +209,7 @@ where
     Promote: FnOnce() -> Result<PromotedConfigDir, DaemonError>,
 {
     let candidate_path = candidate_path_for(path);
+    let mut candidate = CandidateConfigGuard::new(candidate_path.clone());
     let previous_root_content = match fs::read_to_string(path) {
         Ok(content) => Some(content),
         Err(StateError::Filesystem { source, .. })
@@ -221,22 +222,23 @@ where
         }
         Err(error) => return Err(error.into()),
     };
-    write_candidate_config(&candidate_path, candidate_content)?;
-
-    if let Err(error) = validate(candidate_path.clone()).await {
-        let _cleanup_result = remove_candidate_config(&candidate_path);
-
-        return Err(error);
+    if let Err(error) = write_candidate_config(&candidate_path, candidate_content) {
+        return Err(candidate.preserve_error(error));
     }
 
-    write_candidate_config(&candidate_path, active_content)?;
-    let root = match promote_config_file(path, &candidate_path) {
-        Ok(root) => root,
-        Err(error) => {
-            let _cleanup_result = remove_candidate_config(&candidate_path);
+    if let Err(error) = validate(candidate_path.clone()).await {
+        return Err(candidate.preserve_error(error));
+    }
 
-            return Err(error);
+    if let Err(error) = write_candidate_config(&candidate_path, active_content) {
+        return Err(candidate.preserve_error(error));
+    }
+    let root = match promote_config_file(path, &candidate_path) {
+        Ok(root) => {
+            candidate.disarm();
+            root
         }
+        Err(error) => return Err(candidate.preserve_error(error)),
     };
     let fragments = match promote_fragments() {
         Ok(fragments) => fragments,
@@ -428,15 +430,19 @@ pub(crate) fn promote_validated_config(
     validate: impl FnOnce(&Utf8Path) -> Result<(), DaemonError>,
 ) -> Result<(), DaemonError> {
     let candidate_path = candidate_path_for(path);
-    write_candidate_config(&candidate_path, content)?;
-
-    if let Err(error) = validate(&candidate_path) {
-        let _cleanup_result = remove_candidate_config(&candidate_path);
-
-        return Err(error);
+    let mut candidate = CandidateConfigGuard::new(candidate_path.clone());
+    if let Err(error) = write_candidate_config(&candidate_path, content) {
+        return Err(candidate.preserve_error(error));
     }
 
-    rename_candidate_config(&candidate_path, path)?;
+    if let Err(error) = validate(&candidate_path) {
+        return Err(candidate.preserve_error(error));
+    }
+
+    if let Err(error) = rename_candidate_config(&candidate_path, path) {
+        return Err(candidate.preserve_error(error));
+    }
+    candidate.disarm();
 
     Ok(())
 }
@@ -519,6 +525,43 @@ fn candidate_path_for(path: &Utf8Path) -> Utf8PathBuf {
     let counter = CANDIDATE_CONFIG_COUNTER.fetch_add(1, Ordering::Relaxed);
 
     path.with_file_name(format!("{file_name}.candidate.{process_id}.{counter}.tmp"))
+}
+
+struct CandidateConfigGuard {
+    path: Utf8PathBuf,
+    armed: bool,
+}
+
+impl CandidateConfigGuard {
+    fn new(path: Utf8PathBuf) -> Self {
+        Self { path, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+
+    fn preserve_error(mut self, error: DaemonError) -> DaemonError {
+        match delete_optional_config(&self.path) {
+            Ok(()) => {
+                self.disarm();
+                error
+            }
+            Err(cleanup) => DaemonError::RuntimeCleanupFailed {
+                runtime: format!("candidate config `{}`", self.path),
+                source: Box::new(error),
+                cleanup: Box::new(cleanup),
+            },
+        }
+    }
+}
+
+impl Drop for CandidateConfigGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            let _cleanup_result = delete_optional_config(&self.path);
+        }
+    }
 }
 
 fn backup_path_for(path: &Utf8Path) -> Utf8PathBuf {
@@ -615,12 +658,6 @@ pub(crate) fn promote_config_dir(
 )]
 fn rename_candidate_config(from: &Utf8Path, to: &Utf8Path) -> Result<(), DaemonError> {
     std::fs::rename(from, to)?;
-
-    Ok(())
-}
-
-fn remove_candidate_config(path: &Utf8Path) -> Result<(), DaemonError> {
-    fs::delete_file(path)?;
 
     Ok(())
 }

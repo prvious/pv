@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::io;
 use std::net::{Ipv4Addr, TcpListener, UdpSocket};
 use std::os::unix::fs::PermissionsExt;
+use std::time::Duration as StdDuration;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
@@ -22,6 +24,9 @@ use state::{
 use time::{Duration, OffsetDateTime};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
+use tokio::time::{Instant as TokioInstant, timeout_at};
+
+const REQUEST_LINES_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 
 #[tokio::test]
 async fn resource_only_project_uses_custom_env_file_and_no_php_worker() -> Result<()> {
@@ -2063,17 +2068,55 @@ fn bind_loopback_tcp_udp_pair() -> Result<(u16, TcpListener, UdpSocket)> {
 }
 
 async fn request_lines(paths: &PvPaths, request: Value) -> Result<Vec<Value>> {
-    let mut stream = UnixStream::connect(paths.daemon_socket()).await?;
-    let request = serde_json::to_string(&request)?;
-    stream.write_all(request.as_bytes()).await?;
-    stream.write_all(b"\n").await?;
+    let limit = REQUEST_LINES_TIMEOUT;
+    let deadline = TokioInstant::now() + limit;
+    let request_payload = serde_json::to_string(&request)?;
+    let mut lines = Vec::new();
+    let mut stream = request_step(
+        deadline,
+        UnixStream::connect(paths.daemon_socket()),
+        &paths.daemon_socket(),
+        &request_payload,
+        "connect",
+        limit,
+        &lines,
+    )
+    .await?;
+    request_step(
+        deadline,
+        stream.write_all(request_payload.as_bytes()),
+        &paths.daemon_socket(),
+        &request_payload,
+        "request write",
+        limit,
+        &lines,
+    )
+    .await?;
+    request_step(
+        deadline,
+        stream.write_all(b"\n"),
+        &paths.daemon_socket(),
+        &request_payload,
+        "newline write",
+        limit,
+        &lines,
+    )
+    .await?;
 
     let mut reader = BufReader::new(stream);
-    let mut lines = Vec::new();
 
     loop {
         let mut line = String::new();
-        let bytes = reader.read_line(&mut line).await?;
+        let bytes = request_step(
+            deadline,
+            reader.read_line(&mut line),
+            &paths.daemon_socket(),
+            &request_payload,
+            "response read",
+            limit,
+            &lines,
+        )
+        .await?;
 
         if bytes == 0 {
             break;
@@ -2083,6 +2126,33 @@ async fn request_lines(paths: &PvPaths, request: Value) -> Result<Vec<Value>> {
     }
 
     Ok(lines)
+}
+
+async fn request_step<T, E>(
+    deadline: TokioInstant,
+    operation: impl Future<Output = std::result::Result<T, E>>,
+    endpoint: &Utf8Path,
+    request_payload: &str,
+    stage: &str,
+    limit: StdDuration,
+    partial_responses: &[Value],
+) -> Result<T>
+where
+    E: Into<anyhow::Error>,
+{
+    match timeout_at(deadline, operation).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(error.into()).with_context(|| {
+            format!(
+                "daemon request {request_payload} failed during {stage} at {endpoint}; partial responses: {}",
+                Value::Array(partial_responses.to_vec())
+            )
+        }),
+        Err(_elapsed) => Err(anyhow!(
+            "daemon request {request_payload} exceeded its {limit:?} deadline during {stage}; partial responses: {}",
+            Value::Array(partial_responses.to_vec())
+        )),
+    }
 }
 
 fn link_project(

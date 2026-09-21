@@ -310,6 +310,37 @@ pub(crate) fn job_failure_recording_failed(
     }
 }
 
+pub(crate) fn job_completion_recording_failed(
+    paths: &PvPaths,
+    job_id: &str,
+    kind: &str,
+    scope: &str,
+    summary: &str,
+    recording_error: &str,
+) {
+    let result = append(
+        paths,
+        "error",
+        "reconciliation",
+        "job_completion_recording_failed",
+        "failed to persist job completion",
+        &[
+            ("job_id", job_id),
+            ("kind", kind),
+            ("scope", scope),
+            ("summary", summary),
+            ("recording_error", recording_error),
+        ],
+    );
+    if let Err(log_error) = result {
+        let mut standard_error = io::stderr().lock();
+        let _fallback_result = writeln!(
+            standard_error,
+            "PV {kind} job {job_id} completed with {summary}; failed to persist the completion with {recording_error} and to write the daemon log with {log_error}"
+        );
+    }
+}
+
 pub(crate) fn job_abandonment_failed(paths: &PvPaths, job_id: &str, kind: &str, error: &str) {
     let result = append(
         paths,

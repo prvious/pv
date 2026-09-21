@@ -17,14 +17,14 @@ mod watcher;
 
 use std::future::Future;
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 
 use managed_resources::ManagedResourceRuntimeCatalog;
 use platform::PlatformTarget;
 use serde::Serialize;
 use state::{Database, PvPaths, StateError};
 use tokio::runtime::Runtime;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 
 pub use caddy_admin::{
@@ -53,8 +53,10 @@ pub use supervisor::{
 pub struct RunningDaemon {
     paths: PvPaths,
     shutdown: oneshot::Sender<()>,
+    fallback_shutdown: watch::Sender<bool>,
     task: JoinHandle<Result<(), DaemonError>>,
     dns: dns::RunningDnsResolver,
+    blocked_request_release_signal: Option<mpsc::Sender<()>>,
 }
 
 impl RunningDaemon {
@@ -98,11 +100,47 @@ impl RunningDaemon {
         .await
     }
 
+    #[doc(hidden)]
+    pub async fn start_without_managed_resource_adapters_with_manifest_client_and_blocked_request_release(
+        paths: PvPaths,
+        manifest_url: impl Into<String>,
+        client: impl resources::ResourceHttpClient + Send + Sync + 'static,
+        blocked_request_release_signal: mpsc::Sender<()>,
+    ) -> Result<Self, DaemonError> {
+        ipc::require_ipc_for(PlatformTarget::current()?)?;
+        Self::start_with_runtime_catalog_and_blocked_request_release(
+            paths,
+            Some(
+                ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+                    manifest_url,
+                    client,
+                )?,
+            ),
+            Some(blocked_request_release_signal),
+        )
+        .await
+    }
+
     async fn start_with_runtime_catalog(
         paths: PvPaths,
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
     ) -> Result<Self, DaemonError> {
-        match Self::start_with_runtime_catalog_inner(paths.clone(), runtime_catalog).await {
+        Self::start_with_runtime_catalog_and_blocked_request_release(paths, runtime_catalog, None)
+            .await
+    }
+
+    async fn start_with_runtime_catalog_and_blocked_request_release(
+        paths: PvPaths,
+        runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
+        blocked_request_release_signal: Option<mpsc::Sender<()>>,
+    ) -> Result<Self, DaemonError> {
+        match Self::start_with_runtime_catalog_inner(
+            paths.clone(),
+            runtime_catalog,
+            blocked_request_release_signal,
+        )
+        .await
+        {
             Ok(daemon) => Ok(daemon),
             Err(error) => {
                 write_startup_failure_marker(&paths, &error);
@@ -115,6 +153,7 @@ impl RunningDaemon {
     async fn start_with_runtime_catalog_inner(
         paths: PvPaths,
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
+        blocked_request_release_signal: Option<mpsc::Sender<()>>,
     ) -> Result<Self, DaemonError> {
         let mut database = Database::open(&paths)?;
         ipc::prepare_endpoint(&paths).await?;
@@ -135,20 +174,24 @@ impl RunningDaemon {
         };
         structured_log::daemon_started(&paths);
         let (shutdown, shutdown_receiver) = oneshot::channel();
+        let (fallback_shutdown, fallback_shutdown_receiver) = watch::channel(false);
         let server_paths = paths.clone();
         let runtime_catalog = runtime_catalog.map(Arc::new);
         let task = tokio::spawn(server::serve(
             server_paths,
             listener,
             shutdown_receiver,
+            fallback_shutdown_receiver,
             runtime_catalog,
         ));
 
         Ok(Self {
             paths,
             shutdown,
+            fallback_shutdown,
             task,
             dns,
+            blocked_request_release_signal,
         })
     }
 
@@ -165,6 +208,35 @@ impl RunningDaemon {
         structured_log::daemon_stopped(&self.paths);
 
         Ok(())
+    }
+
+    /// Signals shutdown and removes the IPC endpoint without waiting for daemon tasks.
+    ///
+    /// This is a test-only escape hatch for a fixture whose owning Tokio runtime cannot
+    /// continue driving those tasks during fallback cleanup. It requests cooperative cancellation
+    /// but does not wait for it to finish. A matching reload that may already have been sent keeps
+    /// its promoted files and pending marker instead of issuing a competing load. The fixture must
+    /// still clean up the exact established and partially started runtimes it owns.
+    #[doc(hidden)]
+    pub fn shutdown_without_waiting_for_test(self) -> Result<(), DaemonError> {
+        let Self {
+            paths,
+            shutdown,
+            fallback_shutdown,
+            task,
+            mut dns,
+            blocked_request_release_signal,
+        } = self;
+        let _ = fallback_shutdown.send(true);
+        if let Some(signal) = blocked_request_release_signal {
+            let _sent = signal.send(());
+        }
+        let _ = shutdown.send(());
+        dns.signal_shutdown();
+        drop(task);
+        drop(dns);
+
+        ipc::remove_endpoint(&paths)
     }
 }
 
@@ -247,8 +319,10 @@ async fn wait_for_shutdown(
     let RunningDaemon {
         paths,
         shutdown,
+        fallback_shutdown: _fallback_shutdown,
         mut task,
         mut dns,
+        blocked_request_release_signal: _blocked_request_release_signal,
     } = daemon;
     tokio::pin!(shutdown_signal);
 
@@ -323,7 +397,7 @@ mod tests {
     use insta::assert_debug_snapshot;
     use platform::{PlatformCapability, PlatformError, PlatformTarget};
     use state::PvPaths;
-    use tokio::sync::oneshot;
+    use tokio::sync::{oneshot, watch};
     use tokio::time::timeout;
 
     use super::{
@@ -416,13 +490,16 @@ mod tests {
     async fn shutdown_wait_returns_when_server_task_fails_before_signal() {
         let paths = PvPaths::for_home("/tmp/pv-daemon-test-home");
         let (shutdown, _shutdown_receiver) = oneshot::channel();
+        let (fallback_shutdown, _fallback_shutdown_receiver) = watch::channel(false);
         let task =
             tokio::spawn(async { Err(DaemonError::Io(io::Error::other("server stopped early"))) });
         let daemon = RunningDaemon {
             paths,
             shutdown,
+            fallback_shutdown,
             task,
             dns: super::dns::RunningDnsResolver::pending_for_test(),
+            blocked_request_release_signal: None,
         };
 
         let result = wait_for_shutdown(daemon, future::pending::<io::Result<()>>()).await;
@@ -441,6 +518,7 @@ mod tests {
         let stale_listener = tokio::net::UnixListener::bind(paths.daemon_socket())?;
         drop(stale_listener);
         let (shutdown, shutdown_receiver) = oneshot::channel();
+        let (fallback_shutdown, _fallback_shutdown_receiver) = watch::channel(false);
         let task = tokio::spawn(async {
             let _ = shutdown_receiver.await;
             Ok(())
@@ -448,10 +526,12 @@ mod tests {
         let daemon = RunningDaemon {
             paths: paths.clone(),
             shutdown,
+            fallback_shutdown,
             task,
             dns: super::dns::RunningDnsResolver::failed_for_test(io::Error::other(
                 "dns stopped early",
             )),
+            blocked_request_release_signal: None,
         };
 
         let result = timeout(
@@ -477,13 +557,16 @@ mod tests {
         let stale_listener = tokio::net::UnixListener::bind(paths.daemon_socket())?;
         drop(stale_listener);
         let (shutdown, _shutdown_receiver) = oneshot::channel();
+        let (fallback_shutdown, _fallback_shutdown_receiver) = watch::channel(false);
         let task = tokio::spawn(future::pending::<Result<(), DaemonError>>());
         task.abort();
         let daemon = RunningDaemon {
             paths: paths.clone(),
             shutdown,
+            fallback_shutdown,
             task,
             dns: super::dns::RunningDnsResolver::aborted_for_test(),
+            blocked_request_release_signal: None,
         };
 
         let result = daemon.shutdown().await;

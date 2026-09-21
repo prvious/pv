@@ -3624,6 +3624,52 @@ async fn frankenphp_config_validation_timeout_stops_validator_process_group() ->
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn config_validation_stops_descendant_that_retains_output_after_leader_exit() -> Result<()> {
+    let tempdir = tempdir()?;
+    let validator = tempdir.path().join("detached-output-validator");
+    let validator_child_pid = tempdir.path().join("validator-child.pid");
+    let config_path = tempdir.path().join("Caddyfile");
+
+    fs::write_sensitive_file(
+        &validator,
+        &format!(
+            r#"#!/bin/sh
+set -eu
+
+if [ "$1" = "validate" ]; then
+  sleep 30 &
+  echo "$!" > {}
+  exit 0
+fi
+
+exit 2
+"#,
+            shell_single_quoted(validator_child_pid.as_str())
+        ),
+    )?;
+    set_executable(&validator)?;
+    fs::write_sensitive_file(&config_path, "{}\n")?;
+
+    timeout(
+        Duration::from_secs(5),
+        validate_config(
+            &CaddyCliCommand::frankenphp(&validator),
+            &config_path,
+            &BTreeMap::new(),
+        ),
+    )
+    .await??;
+
+    let child_pid = state::testing::read_to_string(&validator_child_pid)?
+        .trim()
+        .parse::<u32>()?;
+    wait_for_process_exit(child_pid).await?;
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn retired_worker_cleanup_removes_runtime_identity() -> Result<()> {
     let tempdir = tempdir()?;
