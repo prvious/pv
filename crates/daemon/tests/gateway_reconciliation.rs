@@ -7618,8 +7618,7 @@ impl GatewayRuntimeGuard {
     }
 
     async fn cleanup(&mut self) -> Result<()> {
-        let result =
-            cleanup_gateway_runtimes(&self.paths, self.adopted.clone(), &self.runtimes).await;
+        let result = cleanup_gateway_runtimes(&self.paths, &self.adopted, &self.runtimes).await;
         if result.is_ok() {
             self.adopted.clear();
         }
@@ -7638,43 +7637,144 @@ impl Drop for GatewayRuntimeGuard {
             return;
         }
 
-        let paths = self.paths.clone();
-        let diagnostic_paths = paths.clone();
-        let runtimes = self.runtimes.clone();
-        let adopted = std::mem::take(&mut self.adopted);
-        let cleanup_thread = std::thread::Builder::new().spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-            {
-                Ok(runtime) => runtime,
-                Err(error) => {
-                    report_gateway_cleanup_failure(
-                        &paths,
-                        &format!("cleanup runtime construction failed: {error}"),
-                    );
-                    return;
-                }
-            };
+        let paths = &self.paths;
+        let runtimes = &self.runtimes;
+        let adopted = &self.adopted;
+        let cleanup_result = std::thread::scope(|scope| {
+            let cleanup_thread = std::thread::Builder::new().spawn_scoped(scope, || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| {
+                        anyhow::anyhow!("cleanup runtime construction failed: {error}")
+                    })?;
 
-            if let Err(error) =
-                runtime.block_on(cleanup_gateway_runtimes(&paths, adopted, &runtimes))
-            {
-                report_gateway_cleanup_failure(&paths, &format!("cleanup failed: {error}"));
+                runtime.block_on(cleanup_gateway_runtimes(paths, adopted, runtimes))
+            });
+            match cleanup_thread {
+                Ok(cleanup_thread) => match cleanup_thread.join() {
+                    Ok(result) => result.map_err(|error| format!("cleanup failed: {error:#}")),
+                    Err(_panic) => Err("cleanup thread panicked".to_owned()),
+                },
+                Err(error) => Err(format!("cleanup thread construction failed: {error}")),
             }
         });
-        let cleanup_panicked = match cleanup_thread {
-            Ok(cleanup_thread) => cleanup_thread.join().is_err(),
-            Err(error) => {
-                report_gateway_cleanup_failure(
-                    &diagnostic_paths,
-                    &format!("cleanup thread construction failed: {error}"),
-                );
-                false
+        if let Err(failure) = cleanup_result {
+            let failure = gateway_cleanup_failure_with_emergency(
+                failure,
+                emergency_cleanup_gateway_runtimes(paths, adopted, runtimes),
+            );
+            report_gateway_cleanup_failure(paths, &failure);
+        }
+    }
+}
+
+fn gateway_cleanup_failure_with_emergency(primary: String, emergency: Result<()>) -> String {
+    match emergency {
+        Ok(()) => primary,
+        Err(error) => format!("{primary}; emergency cleanup failed: {error:#}"),
+    }
+}
+
+fn emergency_cleanup_gateway_runtimes(
+    paths: &PvPaths,
+    adopted: &[(RecordedRuntime, AdoptedProcess)],
+    runtimes: &[RecordedRuntime],
+) -> Result<()> {
+    let mut failures = Vec::new();
+    let mut cleaned_captured = Vec::new();
+    for (record, process) in adopted {
+        if let Err(error) = process.kill_and_wait_for_test(Duration::from_secs(1)) {
+            failures.push(format!("{}: {error}", record.pid_path));
+            continue;
+        }
+        cleaned_captured.push((record.clone(), process.pid()));
+    }
+
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let publication_deadline = Instant::now() + Duration::from_millis(500);
+    for runtime in runtimes {
+        let captured_pid = cleaned_captured
+            .iter()
+            .find(|(record, _pid)| record.pid_path == runtime.pid_path)
+            .map(|(_record, pid)| *pid);
+        if let Err(error) = emergency_cleanup_recorded_gateway_runtime(
+            paths,
+            &supervisor,
+            runtime,
+            captured_pid,
+            publication_deadline,
+        ) {
+            failures.push(format!("{}: {error}", runtime.pid_path));
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        bail!(failures.join("; "))
+    }
+}
+
+fn emergency_cleanup_recorded_gateway_runtime(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    runtime: &RecordedRuntime,
+    captured_pid: Option<u32>,
+    publication_deadline: Instant,
+) -> Result<()> {
+    loop {
+        match (runtime.pid_path.exists(), runtime.metadata_path.exists()) {
+            (false, false) if Instant::now() >= publication_deadline => return Ok(()),
+            (false, false) => {}
+            (true, true) => {
+                let pid_snapshot = fs::read_to_string(&runtime.pid_path)?;
+                let metadata_snapshot = fs::read_to_string(&runtime.metadata_path)?;
+                let captured_record = captured_pid.is_some_and(|pid| {
+                    pid_snapshot
+                        .trim()
+                        .parse::<u32>()
+                        .is_ok_and(|recorded_pid| recorded_pid == pid)
+                });
+                if !captured_record {
+                    if !runtime_record_matches_expected_spec(
+                        paths,
+                        &runtime.pid_path,
+                        &runtime.metadata_path,
+                    )? {
+                        bail!("runtime metadata does not match its registered runtime");
+                    }
+                    if let Some(process) =
+                        supervisor.adopt_recorded(&runtime.pid_path, &runtime.metadata_path)?
+                    {
+                        process.kill_and_wait_for_test(Duration::from_secs(1))?;
+                    } else if Instant::now() >= publication_deadline {
+                        bail!("runtime was not adoptable through its recorded identity");
+                    } else {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                }
+
+                let records_unchanged = fs::read_to_string(&runtime.pid_path)
+                    .is_ok_and(|contents| contents == pid_snapshot)
+                    && fs::read_to_string(&runtime.metadata_path)
+                        .is_ok_and(|contents| contents == metadata_snapshot);
+                if records_unchanged {
+                    fs::remove_file_if_exists(&runtime.pid_path)?;
+                    fs::remove_file_if_exists(&runtime.metadata_path)?;
+                } else if Instant::now() >= publication_deadline {
+                    bail!("runtime records changed during emergency cleanup");
+                }
             }
-        };
-        if cleanup_panicked {
-            report_gateway_cleanup_failure(&diagnostic_paths, "cleanup thread panicked");
+            _ if Instant::now() >= publication_deadline => {
+                bail!("runtime has incomplete ownership records");
+            }
+            _ => {}
+        }
+
+        if Instant::now() < publication_deadline {
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 }
@@ -7711,13 +7811,13 @@ async fn cleanup_recorded_runtimes(paths: &PvPaths, runtimes: &[RecordedRuntime]
 
 async fn cleanup_gateway_runtimes(
     paths: &PvPaths,
-    adopted: Vec<(RecordedRuntime, AdoptedProcess)>,
+    adopted: &[(RecordedRuntime, AdoptedProcess)],
     runtimes: &[RecordedRuntime],
 ) -> Result<()> {
     let mut failures = Vec::new();
     for (record, process) in adopted {
         let pid = process.pid();
-        if let Err(error) = process.stop(Duration::from_secs(1)).await {
+        if let Err(error) = process.clone().stop(Duration::from_secs(1)).await {
             failures.push(format!("{}: {error}", record.pid_path));
             continue;
         }

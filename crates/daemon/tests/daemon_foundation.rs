@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
@@ -2376,45 +2376,123 @@ impl Drop for SeededGatewayGuard {
             return;
         }
 
-        let paths = self.paths.clone();
-        let diagnostic_paths = paths.clone();
-        let daemon_shutdown_result = self.daemon.take().map_or(Ok(()), |daemon| {
-            daemon
+        let paths = &self.paths;
+        let daemon_shutdown_result = match self.daemon.take() {
+            Some(daemon) => daemon
                 .shutdown_without_waiting_for_test()
-                .map_err(anyhow::Error::from)
-        });
-        let worker_track = self.worker_track.clone();
-        let cleanup_panicked = std::thread::scope(|scope| {
-            let cleanup_thread = scope.spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread()
+                .map_err(anyhow::Error::from),
+            None => Ok(()),
+        };
+        let worker_track = self.worker_track.as_deref();
+        let runtime_cleanup_result = std::thread::scope(|scope| {
+            let cleanup_thread = std::thread::Builder::new().spawn_scoped(scope, || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(error) => {
-                        report_seeded_gateway_cleanup_failure(
-                            &paths,
-                            &format!("cleanup runtime construction failed: {error}"),
-                        );
-                        return;
-                    }
-                };
+                    .map_err(|error| format!("cleanup runtime construction failed: {error}"))?;
 
-                let runtime_cleanup_result =
-                    runtime.block_on(cleanup_seeded_runtimes(&paths, worker_track.as_deref()));
-                if let Err(error) =
-                    combine_cleanup_results(daemon_shutdown_result, runtime_cleanup_result)
-                {
-                    report_seeded_gateway_cleanup_failure(
-                        &paths,
-                        &format!("cleanup failed: {error}"),
-                    );
-                }
+                runtime
+                    .block_on(cleanup_seeded_runtimes(paths, worker_track))
+                    .map_err(|error| format!("cleanup failed: {error:#}"))
             });
-            cleanup_thread.join().is_err()
+            match cleanup_thread {
+                Ok(cleanup_thread) => match cleanup_thread.join() {
+                    Ok(result) => result,
+                    Err(_panic) => Err("cleanup thread panicked".to_owned()),
+                },
+                Err(error) => Err(format!("cleanup thread construction failed: {error}")),
+            }
         });
-        if cleanup_panicked {
-            report_seeded_gateway_cleanup_failure(&diagnostic_paths, "cleanup thread panicked");
+        let runtime_cleanup_result = runtime_cleanup_result.map_err(|failure| {
+            seeded_gateway_cleanup_failure_with_emergency(
+                failure,
+                emergency_cleanup_guard_runtimes(paths, worker_track),
+            )
+        });
+        let cleanup_result = combine_cleanup_results(
+            daemon_shutdown_result,
+            runtime_cleanup_result.map_err(anyhow::Error::msg),
+        );
+        if let Err(failure) = cleanup_result {
+            report_seeded_gateway_cleanup_failure(paths, &format!("{failure:#}"));
+        }
+    }
+}
+
+fn seeded_gateway_cleanup_failure_with_emergency(primary: String, emergency: Result<()>) -> String {
+    match emergency {
+        Ok(()) => primary,
+        Err(error) => format!("{primary}; emergency cleanup failed: {error:#}"),
+    }
+}
+
+fn emergency_cleanup_guard_runtimes(paths: &PvPaths, worker_track: Option<&str>) -> Result<()> {
+    let supervisor = daemon::ProcessSupervisor::new(paths.clone());
+    let publication_deadline = Instant::now() + SEEDED_GATEWAY_CLEANUP_TIMEOUT;
+    let mut failures = Vec::new();
+    if let Some(worker_track) = worker_track
+        && let Err(error) = emergency_cleanup_recorded_runtime(
+            &supervisor,
+            &paths.worker_pid(worker_track),
+            &paths.worker_runtime_metadata(worker_track),
+            publication_deadline,
+        )
+    {
+        failures.push(format!("seeded FrankenPHP cleanup failed: {error:#}"));
+    }
+    if let Err(error) = emergency_cleanup_recorded_runtime(
+        &supervisor,
+        &paths.gateway_pid(),
+        &paths.gateway_runtime_metadata(),
+        publication_deadline,
+    ) {
+        failures.push(format!("seeded Caddy cleanup failed: {error:#}"));
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        bail!(failures.join("; "))
+    }
+}
+
+fn emergency_cleanup_recorded_runtime(
+    supervisor: &daemon::ProcessSupervisor,
+    pid_path: &Utf8Path,
+    metadata_path: &Utf8Path,
+    publication_deadline: Instant,
+) -> Result<()> {
+    loop {
+        match (pid_path.exists(), metadata_path.exists()) {
+            (false, false) if Instant::now() >= publication_deadline => return Ok(()),
+            (false, false) => {}
+            (true, true) => {
+                let pid_snapshot = state::fs::read_to_string(pid_path)?;
+                let metadata_snapshot = state::fs::read_to_string(metadata_path)?;
+                if let Some(process) = supervisor.adopt_recorded(pid_path, metadata_path)? {
+                    process.kill_and_wait_for_test(Duration::from_secs(1))?;
+                    let records_unchanged = state::fs::read_to_string(pid_path)
+                        .is_ok_and(|contents| contents == pid_snapshot)
+                        && state::fs::read_to_string(metadata_path)
+                            .is_ok_and(|contents| contents == metadata_snapshot);
+                    if records_unchanged {
+                        state::fs::remove_file_if_exists(pid_path)?;
+                        state::fs::remove_file_if_exists(metadata_path)?;
+                    } else if Instant::now() >= publication_deadline {
+                        bail!("runtime records changed during emergency cleanup");
+                    }
+                } else if Instant::now() >= publication_deadline {
+                    bail!("runtime was not adoptable through its recorded identity");
+                }
+            }
+            _ if Instant::now() >= publication_deadline => {
+                bail!("runtime has incomplete ownership records");
+            }
+            _ => {}
+        }
+
+        if Instant::now() < publication_deadline {
+            std::thread::sleep(SEEDED_GATEWAY_CLEANUP_POLL_INTERVAL);
         }
     }
 }

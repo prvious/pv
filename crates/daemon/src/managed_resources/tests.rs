@@ -134,7 +134,6 @@ const INVALID_DEFAULT_PORT_SPECS: &[super::ManagedResourcePortSpec] = &[
     },
 ];
 
-#[derive(Clone)]
 struct RegisteredFixtureRuntime {
     name: String,
     resource_name: String,
@@ -196,34 +195,115 @@ impl Drop for ManagedResourceFixtureGuard {
             return;
         }
 
-        let paths = self.paths.clone();
-        let runtimes = self.runtimes.clone();
-        let cleanup_thread = std::thread::Builder::new()
-            .name("pv-resource-fixture-cleanup".to_owned())
-            .spawn(move || {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(anyhow::Error::from)?;
-                runtime.block_on(cleanup_registered_fixture_runtimes(&paths, &runtimes))
-            });
-        let cleanup_result = match cleanup_thread {
-            Ok(cleanup_thread) => cleanup_thread
-                .join()
-                .map_err(|_panic| "cleanup thread panicked".to_owned())
-                .and_then(|result| result.map_err(|error| format!("{error:#}"))),
-            Err(error) => Err(format!("cleanup thread construction failed: {error}")),
-        };
+        let paths = &self.paths;
+        let runtimes = &self.runtimes;
+        let cleanup_result = std::thread::scope(|scope| {
+            let cleanup_thread = std::thread::Builder::new()
+                .name("pv-resource-fixture-cleanup".to_owned())
+                .spawn_scoped(scope, || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|error| anyhow!("cleanup runtime construction failed: {error}"))?;
+                    runtime.block_on(cleanup_registered_fixture_runtimes(paths, runtimes))
+                });
+            match cleanup_thread {
+                Ok(cleanup_thread) => match cleanup_thread.join() {
+                    Ok(result) => result.map_err(|error| format!("{error:#}")),
+                    Err(_panic) => Err("cleanup thread panicked".to_owned()),
+                },
+                Err(error) => Err(format!("cleanup thread construction failed: {error}")),
+            }
+        });
 
         let failure = match cleanup_result {
             Ok(()) => return,
-            Err(failure) => failure,
+            Err(failure) => cleanup_failure_with_emergency(
+                failure,
+                emergency_cleanup_registered_fixture_runtimes(paths, runtimes),
+            ),
         };
         let mut standard_error = std::io::stderr().lock();
         let _write_result = writeln!(
             standard_error,
             "managed resource fixture cleanup failed: {failure}"
         );
+    }
+}
+
+fn cleanup_failure_with_emergency(primary: String, emergency: Result<()>) -> String {
+    match emergency {
+        Ok(()) => primary,
+        Err(error) => format!("{primary}; emergency cleanup failed: {error:#}"),
+    }
+}
+
+fn emergency_cleanup_registered_fixture_runtimes(
+    paths: &PvPaths,
+    runtimes: &[RegisteredFixtureRuntime],
+) -> Result<()> {
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let publication_deadline = Instant::now() + FIXTURE_RUNTIME_PUBLICATION_TIMEOUT;
+    let mut failures = Vec::new();
+
+    for runtime in runtimes {
+        if let Err(error) =
+            emergency_cleanup_registered_fixture_runtime(&supervisor, runtime, publication_deadline)
+        {
+            failures.push(format!("{}: {error:#}", runtime.name));
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        bail!(failures.join("; "))
+    }
+}
+
+fn emergency_cleanup_registered_fixture_runtime(
+    supervisor: &ProcessSupervisor,
+    runtime: &RegisteredFixtureRuntime,
+    publication_deadline: Instant,
+) -> Result<()> {
+    loop {
+        let pid_exists = path_exists(&runtime.pid_path)?;
+        let metadata_exists = path_exists(&runtime.metadata_path)?;
+        match (pid_exists, metadata_exists) {
+            (false, false) if Instant::now() >= publication_deadline => return Ok(()),
+            (false, false) => {}
+            (true, true) => {
+                validate_registered_fixture_metadata(runtime)?;
+                let pid_snapshot = state::fs::read_to_string(&runtime.pid_path)?;
+                let metadata_snapshot = state::fs::read_to_string(&runtime.metadata_path)?;
+                if let Some(process) =
+                    supervisor.adopt_recorded(&runtime.pid_path, &runtime.metadata_path)?
+                {
+                    process.kill_and_wait_for_test(FIXTURE_RUNTIME_STOP_TIMEOUT)?;
+                    let records_unchanged = state::fs::read_to_string(&runtime.pid_path)
+                        .is_ok_and(|contents| contents == pid_snapshot)
+                        && state::fs::read_to_string(&runtime.metadata_path)
+                            .is_ok_and(|contents| contents == metadata_snapshot);
+                    if records_unchanged {
+                        state::fs::remove_file_if_exists(&runtime.pid_path)?;
+                        state::fs::remove_file_if_exists(&runtime.metadata_path)?;
+                        state::fs::remove_file_if_exists(&runtime.config_path)?;
+                    } else if Instant::now() >= publication_deadline {
+                        bail!("runtime records changed during emergency cleanup");
+                    }
+                } else if Instant::now() >= publication_deadline {
+                    bail!("runtime was not adoptable through its recorded identity");
+                }
+            }
+            _ if Instant::now() >= publication_deadline => {
+                bail!("runtime has incomplete ownership records");
+            }
+            _ => {}
+        }
+
+        if Instant::now() < publication_deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
 

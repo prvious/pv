@@ -1,14 +1,17 @@
 use std::collections::BTreeMap;
 use std::process::Stdio;
 use std::sync::{Arc, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant as StdInstant};
 use std::{fmt, future::Future, io};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::{Stream, StreamExt, stream};
 use platform::PlatformCapability;
 #[cfg(target_os = "macos")]
-use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
+use rustix::process::{
+    Pid, Signal, WaitOptions, kill_process_group, test_kill_process, test_kill_process_group,
+    waitpid,
+};
 use rustls::pki_types::ServerName;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -620,6 +623,43 @@ impl AdoptedProcess {
 
     pub(crate) fn has_applied_desired_config(&self) -> bool {
         self.owned.has_applied_desired_config()
+    }
+
+    /// Kills a still-matching test process group and synchronously verifies its exit.
+    #[doc(hidden)]
+    pub fn kill_and_wait_for_test(&self, timeout: Duration) -> Result<(), DaemonError> {
+        require_process_containment()?;
+        if !self.owned.matches_live()? {
+            reap_process_if_child(self.owned.pid)?;
+            if process_group_exists(self.owned.pid)? || process_exists(self.owned.pid)? {
+                return Err(io::Error::other(format!(
+                    "process {} remained after its recorded identity stopped matching",
+                    self.owned.pid
+                ))
+                .into());
+            }
+            return Ok(());
+        }
+
+        signal_process_group(self.owned.pid, ProcessSignal::Kill)?;
+        let deadline = StdInstant::now() + timeout;
+        loop {
+            reap_process_if_child(self.owned.pid)?;
+            if !process_group_exists(self.owned.pid)? && !process_exists(self.owned.pid)? {
+                return Ok(());
+            }
+            if StdInstant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!(
+                        "process group {} did not exit and reap after kill signal",
+                        self.owned.pid
+                    ),
+                )
+                .into());
+            }
+            std::thread::sleep(READINESS_POLL_INTERVAL);
+        }
     }
 
     pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
@@ -1269,11 +1309,47 @@ fn process_group_exists(pid: u32) -> Result<bool, DaemonError> {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn process_exists(pid: u32) -> Result<bool, DaemonError> {
+    let process = process_group_pid(pid)?;
+    match test_kill_process(process) {
+        Ok(()) => Ok(true),
+        Err(source) => {
+            let error = io::Error::from(source);
+            if process_not_found(&error) || error.kind() == io::ErrorKind::PermissionDenied {
+                return Ok(false);
+            }
+            Err(error.into())
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn reap_process_if_child(pid: u32) -> Result<(), DaemonError> {
+    let process = process_group_pid(pid)?;
+    match waitpid(Some(process), WaitOptions::NOHANG) {
+        Ok(_) | Err(rustix::io::Errno::CHILD) => Ok(()),
+        Err(error) => Err(io::Error::from(error).into()),
+    }
+}
+
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn process_group_exists(_pid: u32) -> Result<bool, DaemonError> {
     require_process_containment()?;
 
     Ok(false)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn process_exists(_pid: u32) -> Result<bool, DaemonError> {
+    require_process_containment()?;
+
+    Ok(false)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn reap_process_if_child(_pid: u32) -> Result<(), DaemonError> {
+    require_process_containment()
 }
 
 fn live_process_matches(
@@ -1509,14 +1585,17 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
-    use anyhow::{Result, anyhow, bail};
+    use anyhow::{Context, Result, anyhow, bail};
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
     use rustix::process::{Pid, Signal, kill_process, kill_process_group, test_kill_process};
     use tokio::sync::oneshot;
     use tokio::time::sleep;
 
-    use super::{ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint, process_group_exists};
+    use super::{
+        ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint, process_exists,
+        process_group_exists,
+    };
     use state::PvPaths;
 
     /// Shorter than the script identity stabilization window, so cancellation lands while
@@ -1812,6 +1891,70 @@ mod tests {
                 .recorded_config_fingerprint(&changed_spec)?
                 .is_none()
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn adopted_process_kill_waits_for_group_and_listener_exit_without_runtime() -> Result<()> {
+        let tempdir = tempdir().context("create temp directory")?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::ensure_layout(&paths).context("create test layout")?;
+        let descendant_pid_path = paths.run().join("adopted-kill-descendant.pid");
+        let listener_ready_path = paths.run().join("adopted-kill-listener.ready");
+        let listener = TcpListener::bind(("127.0.0.1", 0)).context("reserve listener port")?;
+        let listener_port = listener.local_addr().context("read listener port")?.port();
+        drop(listener);
+
+        let spec = descendant_spec(
+            &paths,
+            "adopted-kill",
+            "/bin/sh".into(),
+            listener_descendant_arguments(
+                listener_port,
+                &listener_ready_path,
+                &descendant_pid_path,
+            ),
+        );
+        let pid_path = spec.pid_path.clone();
+        let metadata_path = spec.metadata_path.clone();
+        let supervisor = ProcessSupervisor::new(paths);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("build startup runtime")?;
+        let process = runtime
+            .block_on(supervisor.start(spec))
+            .context("start recorded process")?;
+        let leader_pid = process.pid();
+        runtime.block_on(wait_for_test_path(&descendant_pid_path));
+        runtime.block_on(wait_for_test_path(&listener_ready_path));
+        let descendant_pid = state::fs::read_to_string(&descendant_pid_path)
+            .context("read descendant pid")?
+            .trim()
+            .parse::<u32>()?;
+        drop(process);
+        drop(runtime);
+
+        let cleanup_result: Result<()> = (|| {
+            let process = supervisor
+                .adopt_recorded(&pid_path, &metadata_path)?
+                .ok_or_else(|| anyhow!("recorded process was not adoptable"))?;
+            process
+                .kill_and_wait_for_test(Duration::from_secs(1))
+                .context("kill and wait for adopted process")?;
+            Ok(())
+        })();
+        if cleanup_result.is_err() {
+            let _kill_result = kill_process_group(test_pid(leader_pid)?, Signal::KILL);
+            let _group_exited = wait_for_test_process_group_exit_synchronously(leader_pid)?;
+        }
+        cleanup_result?;
+
+        assert!(!process_group_exists(leader_pid)?);
+        assert!(!process_exists(leader_pid)?);
+        assert!(wait_for_test_process_exit_synchronously(descendant_pid)?);
+        assert!(wait_for_test_listener_release(listener_port));
 
         Ok(())
     }

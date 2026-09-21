@@ -10556,7 +10556,7 @@ mod tests {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_installed_caddy(&paths)?;
-        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let _caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
         let (client, _archive_size) = scripted_artifact_client(
             tempdir.path(),
             "composer",
@@ -11370,45 +11370,117 @@ mod tests {
 
     impl Drop for SeededRuntimeGuard {
         fn drop(&mut self) {
-            let Some(paths) = self.paths.take() else {
+            let Some(paths) = self.paths.as_ref() else {
                 return;
             };
-            let runtimes = std::mem::take(&mut self.runtimes);
-            let diagnostic_paths = paths.clone();
-            let cleanup_thread = std::thread::Builder::new().spawn(move || {
-                let runtime = match tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                {
-                    Ok(runtime) => runtime,
-                    Err(error) => {
-                        report_seeded_runtime_cleanup_failure(
-                            &paths,
-                            &format!("cleanup runtime construction failed: {error}"),
-                        );
-                        return;
-                    }
-                };
+            let runtimes = &self.runtimes;
+            let cleanup_result = std::thread::scope(|scope| {
+                let cleanup_thread = std::thread::Builder::new().spawn_scoped(scope, || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|error| {
+                            anyhow::anyhow!("cleanup runtime construction failed: {error}")
+                        })?;
 
-                if let Err(error) = runtime.block_on(stop_seeded_runtimes(&paths, &runtimes)) {
-                    report_seeded_runtime_cleanup_failure(
-                        &paths,
-                        &format!("cleanup failed: {error}"),
-                    );
+                    runtime.block_on(stop_seeded_runtimes(paths, runtimes))
+                });
+                match cleanup_thread {
+                    Ok(cleanup_thread) => match cleanup_thread.join() {
+                        Ok(result) => result.map_err(|error| format!("cleanup failed: {error:#}")),
+                        Err(_panic) => Err("cleanup thread panicked".to_owned()),
+                    },
+                    Err(error) => Err(format!("cleanup thread construction failed: {error}")),
                 }
             });
-            let cleanup_panicked = match cleanup_thread {
-                Ok(cleanup_thread) => cleanup_thread.join().is_err(),
-                Err(error) => {
-                    report_seeded_runtime_cleanup_failure(
-                        &diagnostic_paths,
-                        &format!("cleanup thread construction failed: {error}"),
-                    );
-                    false
+            if let Err(failure) = cleanup_result {
+                let failure = seeded_cleanup_failure_with_emergency(
+                    failure,
+                    emergency_cleanup_seeded_runtimes(paths, runtimes),
+                );
+                report_seeded_runtime_cleanup_failure(paths, &failure);
+            }
+        }
+    }
+
+    fn seeded_cleanup_failure_with_emergency(
+        primary: String,
+        emergency: anyhow::Result<()>,
+    ) -> String {
+        match emergency {
+            Ok(()) => primary,
+            Err(error) => format!("{primary}; emergency cleanup failed: {error:#}"),
+        }
+    }
+
+    fn emergency_cleanup_seeded_runtimes(
+        paths: &PvPaths,
+        runtimes: &[SeededRuntimeRecord],
+    ) -> anyhow::Result<()> {
+        let supervisor = ProcessSupervisor::new(paths.clone());
+        let publication_deadline = std::time::Instant::now() + Duration::from_millis(500);
+        let mut failures = Vec::new();
+
+        for runtime in runtimes {
+            if let Err(error) =
+                emergency_cleanup_seeded_runtime(&supervisor, runtime, publication_deadline)
+            {
+                failures.push(format!("{}: {error:#}", runtime.label));
+            }
+        }
+
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(failures.join("; "))
+        }
+    }
+
+    fn emergency_cleanup_seeded_runtime(
+        supervisor: &ProcessSupervisor,
+        runtime: &SeededRuntimeRecord,
+        publication_deadline: std::time::Instant,
+    ) -> anyhow::Result<()> {
+        loop {
+            let pid_exists = runtime.pid_path.exists();
+            let metadata_exists = runtime.metadata_path.exists();
+            match (pid_exists, metadata_exists) {
+                (false, false) if std::time::Instant::now() >= publication_deadline => {
+                    return Ok(());
                 }
-            };
-            if cleanup_panicked {
-                report_seeded_runtime_cleanup_failure(&diagnostic_paths, "cleanup thread panicked");
+                (false, false) => {}
+                (true, true) => {
+                    if !seeded_runtime_record_matches_expected(runtime)? {
+                        anyhow::bail!("runtime metadata does not match its registered identity");
+                    }
+                    let pid_snapshot = state::fs::read_to_string(&runtime.pid_path)?;
+                    let metadata_snapshot = state::fs::read_to_string(&runtime.metadata_path)?;
+                    if let Some(process) =
+                        supervisor.adopt_recorded(&runtime.pid_path, &runtime.metadata_path)?
+                    {
+                        process.kill_and_wait_for_test(Duration::from_secs(1))?;
+                        let records_unchanged = state::fs::read_to_string(&runtime.pid_path)
+                            .is_ok_and(|contents| contents == pid_snapshot)
+                            && state::fs::read_to_string(&runtime.metadata_path)
+                                .is_ok_and(|contents| contents == metadata_snapshot);
+                        if records_unchanged {
+                            state::fs::remove_file_if_exists(&runtime.pid_path)?;
+                            state::fs::remove_file_if_exists(&runtime.metadata_path)?;
+                        } else if std::time::Instant::now() >= publication_deadline {
+                            anyhow::bail!("runtime records changed during emergency cleanup");
+                        }
+                    } else if std::time::Instant::now() >= publication_deadline {
+                        anyhow::bail!("runtime was not adoptable through its recorded identity");
+                    }
+                }
+                _ if std::time::Instant::now() >= publication_deadline => {
+                    anyhow::bail!("runtime has incomplete ownership records");
+                }
+                _ => {}
+            }
+
+            if std::time::Instant::now() < publication_deadline {
+                std::thread::sleep(Duration::from_millis(10));
             }
         }
     }
