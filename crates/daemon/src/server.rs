@@ -293,7 +293,9 @@ pub(crate) async fn serve(
     let _send_result = background_shutdown.send(true);
     let startup_result =
         stop_startup_task(&paths, startup_shutdown.take(), startup_task.take()).await;
-    connections.abort_all();
+    if !*fallback_shutdown.borrow() {
+        connections.abort_all();
+    }
     while background_tasks.join_next().await.is_some() {}
     while connections.join_next().await.is_some() {}
 
@@ -449,10 +451,15 @@ async fn handle_connection(
     queue: ReconciliationQueue,
     stream: LocalStream,
     runtime_catalog: Option<Arc<ManagedResourceRuntimeCatalog>>,
-    fallback_shutdown: watch::Receiver<bool>,
+    mut fallback_shutdown: watch::Receiver<bool>,
 ) -> Result<(), DaemonError> {
     let mut transport = protocol::transport(stream);
-    let Some(line) = read_request_line(&mut transport, REQUEST_LINE_TIMEOUT).await? else {
+    let line = tokio::select! {
+        biased;
+        _ = wait_for_fallback_shutdown(&mut fallback_shutdown) => return Ok(()),
+        line = read_request_line(&mut transport, REQUEST_LINE_TIMEOUT) => line?,
+    };
+    let Some(line) = line else {
         return Ok(());
     };
     let request = serde_json::from_str::<DaemonRequest>(&line)?;
@@ -510,6 +517,12 @@ async fn handle_connection(
 
             Ok(())
         }
+    }
+}
+
+async fn wait_for_fallback_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    if shutdown.wait_for(|requested| *requested).await.is_err() {
+        std::future::pending::<()>().await;
     }
 }
 
