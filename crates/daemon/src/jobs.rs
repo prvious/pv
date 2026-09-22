@@ -12016,33 +12016,34 @@ mod tests {
             };
             let pid = process.pid();
             let stop_result = process.stop(Duration::from_secs(1)).await;
-            let absent = match seeded_runtime_process_and_group_are_absent(pid) {
-                Ok(absent) => absent,
-                Err(inspection_error) => {
-                    if let Err(stop_error) = &stop_result {
-                        anyhow::bail!(
-                            "stop failed: {stop_error}; process-group inspection failed: {inspection_error}"
-                        );
-                    }
-                    return Err(inspection_error);
-                }
-            };
-            if !absent {
-                if let Err(stop_error) = &stop_result {
-                    anyhow::bail!(
+            if let Err(stop_error) = &stop_result {
+                match seeded_runtime_process_and_group_are_absent(pid) {
+                    Ok(true) => {}
+                    Ok(false) => anyhow::bail!(
                         "stop failed: {stop_error}; process group remained after verified cleanup"
-                    );
+                    ),
+                    Err(inspection_error) => anyhow::bail!(
+                        "stop failed: {stop_error}; process-group inspection failed: {inspection_error}"
+                    ),
                 }
-                anyhow::bail!("process group remained after verified cleanup");
             }
-            state::fs::remove_file_if_exists(pid_path)?;
-            state::fs::remove_file_if_exists(metadata_path)?;
-            if pid_path.exists() || metadata_path.exists() {
-                anyhow::bail!("runtime files remained after cleanup");
-            }
-            stop_result?;
+            let record_cleanup = (|| {
+                state::fs::remove_file_if_exists(pid_path)?;
+                state::fs::remove_file_if_exists(metadata_path)?;
+                if pid_path.exists() || metadata_path.exists() {
+                    anyhow::bail!("runtime files remained after cleanup");
+                }
+                Ok::<_, anyhow::Error>(())
+            })();
 
-            return Ok(());
+            return match (stop_result, record_cleanup) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(stop_error), Ok(())) => Err(stop_error.into()),
+                (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
+                (Err(stop_error), Err(cleanup_error)) => anyhow::bail!(
+                    "stop failed: {stop_error}; record cleanup failed: {cleanup_error:#}"
+                ),
+            };
         }
     }
 

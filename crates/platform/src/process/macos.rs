@@ -21,6 +21,18 @@ pub(super) fn inspect_process_identity(pid: u32) -> Result<Option<ProcessIdentit
     })
 }
 
+pub(super) fn inspect_process_start_identity(
+    pid: u32,
+) -> Result<Option<ProcessStartIdentity>, PlatformError> {
+    let native_pid =
+        i32::try_from(pid).map_err(|_source| PlatformError::ProcessIdentityInspection {
+            source: Box::new(InspectionError::InvalidPid { pid }),
+        })?;
+    process_start_identity(native_pid).map_err(|source| PlatformError::ProcessIdentityInspection {
+        source: Box::new(source),
+    })
+}
+
 fn inspect_process_identity_inner(pid: u32) -> Result<Option<ProcessIdentity>, InspectionError> {
     let native_pid = i32::try_from(pid).map_err(|_source| InspectionError::InvalidPid { pid })?;
 

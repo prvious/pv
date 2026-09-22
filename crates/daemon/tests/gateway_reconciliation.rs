@@ -10,11 +10,12 @@ use daemon::{
     AdoptedProcess, CaddyAdminError, CaddyAdminOperation, DaemonError, ProcessSupervisor,
 };
 use insta::{Settings, allow_duplicates, assert_debug_snapshot};
+use platform::ProcessStartIdentity;
 use rcgen::generate_simple_self_signed;
 use resources::{PHP_TRACK_DEFAULT_INI, php_track_defaults};
 use rusqlite::Connection;
 use rustix::process::{
-    Pid, Signal, kill_process_group, test_kill_process, test_kill_process_group,
+    Pid, Signal, getpgid, kill_process_group, test_kill_process, test_kill_process_group,
 };
 use serde_json::{Value, json};
 use state::{
@@ -610,9 +611,10 @@ async fn gateway_fixture_cleanup_keeps_records_while_group_descendants_remain() 
     let release_path = paths.home().join("leader-exit-caddy-release");
     let executable = release_path.join("bin/caddy");
     let descendant_pid_path = paths.run().join("leader-exit-caddy-descendant.pid");
+    let leader_release_path = paths.run().join("leader-exit-caddy.release");
     fs::write_sensitive_file(
         &executable,
-        "#!/bin/sh\nset -eu\nsleep 30 &\nprintf '%s\\n' \"$!\" > \"$PV_TEST_DESCENDANT_PID_PATH\"\nsleep 1\n",
+        "#!/bin/sh\nset -eu\nsleep 30 &\nprintf '%s\\n' \"$!\" > \"$PV_TEST_DESCENDANT_PID_PATH\"\nwhile [ ! -e \"$PV_TEST_LEADER_RELEASE_PATH\" ]; do sleep 0.01; done\n",
     )?;
     set_executable(&executable)?;
     fs::write_sensitive_file(&paths.gateway_root_config(), "fixture")?;
@@ -630,11 +632,39 @@ async fn gateway_fixture_cleanup_keeps_records_while_group_descendants_remain() 
         "PV_TEST_DESCENDANT_PID_PATH".to_owned(),
         descendant_pid_path.to_string(),
     );
+    spec.private_environment.insert(
+        "PV_TEST_LEADER_RELEASE_PATH".to_owned(),
+        leader_release_path.to_string(),
+    );
     let mut process = supervisor.start(spec).await?;
     let pid = process.pid();
-    let process_group = Pid::from_raw(i32::try_from(pid)?)
-        .ok_or_else(|| anyhow::anyhow!("invalid process id {pid}"))?;
-    let test_result = async {
+    let mut process_group_guard = match CapturedProcessGroupGuard::new(pid) {
+        Ok(guard) => guard,
+        Err(capture_error) => {
+            return match process.stop(Duration::from_secs(1)).await {
+                Ok(()) => Err(capture_error),
+                Err(cleanup_error) => Err(anyhow::anyhow!(
+                    "identity capture failed: {capture_error:#}; fixture cleanup failed: {cleanup_error:#}"
+                )),
+            };
+        }
+    };
+    let adopted = supervisor
+        .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("Gateway fixture was not adoptable before leader exit"))?;
+    let operation_result = async {
+        timeout(Duration::from_secs(5), async {
+            while !descendant_pid_path.exists() {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .context("timed out waiting for the Gateway descendant PID")?;
+        let descendant_pid = fs::read_to_string(&descendant_pid_path)?
+            .trim()
+            .parse::<u32>()?;
+        process_group_guard.capture(descendant_pid)?;
+        fs::write_sensitive_file(&leader_release_path, "release\n")?;
         timeout(Duration::from_secs(5), async {
             loop {
                 if process.has_exited()? {
@@ -644,44 +674,89 @@ async fn gateway_fixture_cleanup_keeps_records_while_group_descendants_remain() 
             }
         })
         .await??;
-        let descendant_pid = fs::read_to_string(&descendant_pid_path)?
-            .trim()
-            .parse::<u32>()?;
-        if !process_is_alive(descendant_pid)? {
+        if !process_group_guard.member_is_live()? {
             bail!("gateway descendant {descendant_pid} exited before cleanup");
         }
 
         let pid_record = fs::read_to_string(&paths.gateway_pid())?;
         let metadata_record = fs::read_to_string(&paths.gateway_runtime_metadata())?;
-        let cleanup = stop_recorded_runtime(
+        let adopted_cleanup = adopted.stop(Duration::from_secs(1)).await;
+        if !matches!(
+            &adopted_cleanup,
+            Err(DaemonError::RuntimeProcessIdentityChanged { pid: error_pid })
+                if *error_pid == pid
+        ) {
+            bail!("captured cleanup did not report the exited group leader: {adopted_cleanup:?}");
+        }
+        if !process_group_guard.member_is_live()? {
+            bail!("captured cleanup signaled gateway descendant {descendant_pid} without current ownership proof");
+        }
+        let recorded_cleanup = stop_recorded_runtime(
             &paths,
             &paths.gateway_pid(),
             &paths.gateway_runtime_metadata(),
         )
         .await;
+        let Err(recorded_cleanup) = recorded_cleanup else {
+            bail!("recorded cleanup accepted records for an exited group leader");
+        };
+        if !matches!(
+            recorded_cleanup.downcast_ref::<DaemonError>(),
+            Some(DaemonError::RuntimeProcessIdentityChanged { pid: error_pid })
+                if *error_pid == pid
+        ) {
+            bail!("recorded cleanup did not report the exited group leader: {recorded_cleanup:#}");
+        }
         let records_unchanged = fs::read_to_string(&paths.gateway_pid())? == pid_record
             && fs::read_to_string(&paths.gateway_runtime_metadata())? == metadata_record;
+        if !records_unchanged {
+            bail!("cleanup changed records after it could no longer verify their leader");
+        }
+        if !process_group_guard.member_is_live()? {
+            bail!("cleanup signaled gateway descendant {descendant_pid} without current ownership proof");
+        }
 
-        Ok::<_, anyhow::Error>((cleanup, records_unchanged))
+        Ok::<_, anyhow::Error>(())
     }
     .await;
 
-    match kill_process_group(process_group, Signal::KILL) {
-        Ok(()) | Err(rustix::io::Errno::SRCH) => {}
-        Err(error) => return Err(error.into()),
+    let process_group_cleanup = process_group_guard.cleanup();
+    let leader_cleanup = timeout(Duration::from_secs(1), async {
+        loop {
+            if process.has_exited()? {
+                return Ok::<_, anyhow::Error>(());
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let leader_cleanup = match leader_cleanup {
+        Ok(result) => result,
+        Err(_elapsed) => Err(anyhow::anyhow!(
+            "timed out reaping Gateway fixture leader {pid}"
+        )),
+    };
+    let cleanup_result = match (process_group_cleanup, leader_cleanup) {
+        (Ok(()), Ok(())) => (|| {
+            fs::remove_file_if_exists(&paths.gateway_pid())?;
+            fs::remove_file_if_exists(&paths.gateway_runtime_metadata())?;
+            Ok(())
+        })(),
+        (Err(group_error), Ok(())) => Err(group_error),
+        (Ok(()), Err(leader_error)) => Err(leader_error),
+        (Err(group_error), Err(leader_error)) => Err(anyhow::anyhow!(
+            "process-group cleanup failed: {group_error:#}; leader cleanup failed: {leader_error:#}"
+        )),
+    };
+
+    match (operation_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(operation_error), Ok(())) => Err(operation_error),
+        (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(operation_error), Err(cleanup_error)) => Err(anyhow::anyhow!(
+            "operation failed: {operation_error:#}; fixture cleanup failed: {cleanup_error:#}"
+        )),
     }
-    let descendant_pid = fs::read_to_string(&descendant_pid_path)?
-        .trim()
-        .parse::<u32>()?;
-    wait_for_process_exit(descendant_pid).await?;
-    fs::remove_file_if_exists(&paths.gateway_pid())?;
-    fs::remove_file_if_exists(&paths.gateway_runtime_metadata())?;
-
-    let (cleanup, records_unchanged) = test_result?;
-    assert!(cleanup.is_err());
-    assert!(records_unchanged);
-
-    Ok(())
 }
 
 #[tokio::test]
@@ -1267,7 +1342,7 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
     ));
     let failed_replacement_pid =
         required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?;
-    assert!(!process_is_alive(failed_replacement_pid)?);
+    wait_for_process_exit(failed_replacement_pid).await?;
     let failed_replacement_metadata: Value =
         serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata("8.4"))?)?;
     assert_eq!(failed_replacement_metadata["replacement_required"], true);
@@ -1670,7 +1745,7 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
         unverified_failure,
         Err(DaemonError::UnexpectedProtocolResponse { .. })
     ));
-    assert!(!process_is_alive(gateway_pid)?);
+    wait_for_process_exit(gateway_pid).await?;
     // A failed worker with unprovable prior bytes and no live Gateway restarts the Gateway
     // from the desired plan instead of leaving it dead; the tampered bytes are never loaded.
     let restarted_gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
@@ -3724,7 +3799,7 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
     legacy_spec.track = "core".to_owned();
     let supervisor = ProcessSupervisor::new(paths.clone());
     drop(port_reservations);
-    let legacy_process = supervisor.start(legacy_spec).await?;
+    let mut legacy_process = supervisor.start(legacy_spec).await?;
     assert!(
         supervisor
             .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata(),)?
@@ -3739,7 +3814,16 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
     )
     .await?;
     assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
-    legacy_process.stop(Duration::from_secs(1)).await?;
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if legacy_process.has_exited()? {
+                return Ok::<(), DaemonError>(());
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_elapsed| anyhow::anyhow!("legacy Gateway was not reaped after replacement"))??;
 
     let replacement_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
         .ok_or_else(|| anyhow::anyhow!("expected replacement gateway metadata"))?;
@@ -5098,7 +5182,7 @@ hostnames:
 
     assert!(!paths.worker_pid("8.3").exists());
     assert!(!paths.worker_runtime_metadata("8.3").exists());
-    assert!(!process_is_alive(stale_worker_pid)?);
+    wait_for_process_exit(stale_worker_pid).await?;
     let stale_status = Database::open(&paths)?
         .runtime_observed_states()?
         .into_iter()
@@ -7614,6 +7698,120 @@ struct RecordedRuntime {
     metadata_path: Utf8PathBuf,
 }
 
+#[derive(Clone, Copy)]
+struct CapturedProcessGroupMember {
+    pid: Pid,
+    start_identity: ProcessStartIdentity,
+}
+
+struct CapturedProcessGroupGuard {
+    process_group: Pid,
+    member: CapturedProcessGroupMember,
+    armed: bool,
+}
+
+impl CapturedProcessGroupGuard {
+    fn new(leader_pid: u32) -> Result<Self> {
+        let leader = Pid::from_raw(i32::try_from(leader_pid)?)
+            .ok_or_else(|| anyhow::anyhow!("invalid process id {leader_pid}"))?;
+        let process_group = getpgid(Some(leader))?;
+        if process_group != leader {
+            bail!("fixture leader {leader} did not own process group {process_group}");
+        }
+        let leader = capture_process_group_member(leader, process_group)?;
+
+        Ok(Self {
+            process_group,
+            member: leader,
+            armed: true,
+        })
+    }
+
+    fn capture(&mut self, pid: u32) -> Result<()> {
+        let pid = Pid::from_raw(i32::try_from(pid)?)
+            .ok_or_else(|| anyhow::anyhow!("invalid process id {pid}"))?;
+        self.member = capture_process_group_member(pid, self.process_group)?;
+
+        Ok(())
+    }
+
+    fn member_is_live(&self) -> Result<bool> {
+        captured_process_group_member_is_live(self.member, self.process_group)
+    }
+
+    fn cleanup(&mut self) -> Result<()> {
+        if !self.armed {
+            return Ok(());
+        }
+
+        if self.member_is_live()? {
+            match kill_process_group(self.process_group, Signal::KILL) {
+                Ok(()) | Err(rustix::io::Errno::SRCH) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if !self.member_is_live()? {
+                self.armed = false;
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                bail!(
+                    "fixture process group {} retained captured member {}",
+                    self.process_group,
+                    self.member.pid
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for CapturedProcessGroupGuard {
+    fn drop(&mut self) {
+        if let Err(error) = self.cleanup() {
+            let _write_result = writeln!(
+                std::io::stderr().lock(),
+                "Gateway fixture process-group cleanup failed: {error:#}"
+            );
+        }
+    }
+}
+
+fn capture_process_group_member(
+    pid: Pid,
+    expected_process_group: Pid,
+) -> Result<CapturedProcessGroupMember> {
+    let process_group = getpgid(Some(pid))?;
+    if process_group != expected_process_group {
+        bail!("fixture member {pid} joined process group {process_group}");
+    }
+    let raw_pid = u32::try_from(pid.as_raw_pid())?;
+    let start_identity = platform::inspect_process_start_identity(raw_pid)?
+        .ok_or_else(|| anyhow::anyhow!("fixture member {pid} exited before identity capture"))?;
+
+    Ok(CapturedProcessGroupMember {
+        pid,
+        start_identity,
+    })
+}
+
+fn captured_process_group_member_is_live(
+    member: CapturedProcessGroupMember,
+    expected_process_group: Pid,
+) -> Result<bool> {
+    match getpgid(Some(member.pid)) {
+        Ok(process_group) if process_group == expected_process_group => {}
+        Ok(_) | Err(rustix::io::Errno::SRCH) => return Ok(false),
+        Err(error) => return Err(error.into()),
+    }
+    let raw_pid = u32::try_from(member.pid.as_raw_pid())?;
+
+    Ok(platform::inspect_process_start_identity(raw_pid)? == Some(member.start_identity))
+}
+
 struct GatewayRuntimeGuard {
     paths: PvPaths,
     runtimes: Vec<RecordedRuntime>,
@@ -7890,20 +8088,6 @@ async fn cleanup_gateway_runtimes(
             failures.push(format!("{}: {error}", record.pid_path));
             continue;
         }
-        match process_and_group_are_absent(pid, Duration::from_secs(1)).await {
-            Ok(true) => {}
-            Ok(false) => {
-                failures.push(format!(
-                    "{}: process group {pid} remained after verified cleanup",
-                    record.pid_path
-                ));
-                continue;
-            }
-            Err(error) => {
-                failures.push(format!("{}: {error}", record.pid_path));
-                continue;
-            }
-        }
 
         let supervisor = ProcessSupervisor::new(paths.clone());
         match supervisor.adopt_recorded(&record.pid_path, &record.metadata_path) {
@@ -8014,22 +8198,19 @@ async fn stop_recorded_runtime(
         let supervisor = ProcessSupervisor::new(paths.clone());
         let Some(runtime) = supervisor.adopt_recorded(pid_path, metadata_path)? else {
             let pid = fs::read_to_string(pid_path)?.trim().parse::<u32>()?;
-            if runtime_metadata_pid(metadata_path)? == Some(pid)
-                && process_and_group_are_absent(pid, Duration::from_secs(1)).await?
-            {
+            if runtime_metadata_pid(metadata_path)? != Some(pid) {
+                bail!("runtime at {pid_path} had inconsistent ownership records");
+            }
+            if process_and_group_are_absent(pid, Duration::from_secs(1)).await? {
                 fs::remove_file_if_exists(pid_path)?;
                 fs::remove_file_if_exists(metadata_path)?;
                 return Ok(());
             }
 
-            bail!("runtime at {pid_path} was not adoptable through {metadata_path}");
+            return Err(DaemonError::RuntimeProcessIdentityChanged { pid }.into());
         };
 
-        let pid = runtime.pid();
         runtime.stop(Duration::from_secs(1)).await?;
-        if !process_and_group_are_absent(pid, Duration::from_secs(1)).await? {
-            bail!("runtime process group {pid} remained after verified cleanup");
-        }
         fs::remove_file_if_exists(pid_path)?;
         fs::remove_file_if_exists(metadata_path)?;
 

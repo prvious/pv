@@ -40,7 +40,7 @@ pub use pf::{
 };
 pub use process::{
     ProcessIdentity, ProcessStartIdentity, exec_replace, exec_replace_with_env,
-    inspect_process_identity,
+    inspect_process_identity, inspect_process_start_identity,
 };
 pub use resolver::{
     ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH, inspect_resolver_file,

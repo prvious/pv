@@ -40,6 +40,12 @@ pub fn inspect_process_identity(pid: u32) -> Result<Option<ProcessIdentity>, cra
     implementation::inspect_process_identity(pid)
 }
 
+pub fn inspect_process_start_identity(
+    pid: u32,
+) -> Result<Option<ProcessStartIdentity>, crate::PlatformError> {
+    implementation::inspect_process_start_identity(pid)
+}
+
 #[cfg(unix)]
 pub fn exec_replace(program: &Path, args: &[String]) -> io::Result<ExitCode> {
     exec_replace_with_env(program, args, &[])

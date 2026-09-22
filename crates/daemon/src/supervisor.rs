@@ -665,7 +665,12 @@ impl AdoptedProcess {
     pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
         require_process_containment()?;
         if !self.owned.matches_live()? {
-            return Ok(());
+            if process_and_group_are_absent(self.owned.pid)? {
+                return Ok(());
+            }
+            return Err(DaemonError::RuntimeProcessIdentityChanged {
+                pid: self.owned.pid,
+            });
         }
 
         stop_process_group_by_pid(self.owned.pid, grace_period).await
@@ -1300,6 +1305,8 @@ fn process_group_exists(pid: u32) -> Result<bool, DaemonError> {
         Ok(()) => Ok(true),
         Err(source) => {
             let error = io::Error::from(source);
+            // PV runtimes run as the current user. EPERM therefore cannot identify the
+            // still-owned group and must not authorize another signal to this numeric PGID.
             if process_not_found(&error) || error.kind() == io::ErrorKind::PermissionDenied {
                 return Ok(false);
             }
@@ -1316,12 +1323,30 @@ fn process_exists(pid: u32) -> Result<bool, DaemonError> {
         Ok(()) => Ok(true),
         Err(source) => {
             let error = io::Error::from(source);
+            // See process_group_exists: a permission-denied PID is no longer provably ours.
             if process_not_found(&error) || error.kind() == io::ErrorKind::PermissionDenied {
                 return Ok(false);
             }
             Err(error.into())
         }
     }
+}
+
+#[cfg(target_os = "macos")]
+fn process_and_group_are_absent(pid: u32) -> Result<bool, DaemonError> {
+    let process = process_group_pid(pid)?;
+    let process_absent = match test_kill_process(process) {
+        Err(rustix::io::Errno::SRCH) => true,
+        Ok(()) | Err(rustix::io::Errno::PERM) => false,
+        Err(source) => return Err(io::Error::from(source).into()),
+    };
+    let group_absent = match test_kill_process_group(process) {
+        Err(rustix::io::Errno::SRCH) => true,
+        Ok(()) | Err(rustix::io::Errno::PERM) => false,
+        Err(source) => return Err(io::Error::from(source).into()),
+    };
+
+    Ok(process_absent && group_absent)
 }
 
 #[cfg(target_os = "macos")]
@@ -1342,6 +1367,13 @@ fn process_group_exists(_pid: u32) -> Result<bool, DaemonError> {
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn process_exists(_pid: u32) -> Result<bool, DaemonError> {
+    require_process_containment()?;
+
+    Ok(false)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn process_and_group_are_absent(_pid: u32) -> Result<bool, DaemonError> {
     require_process_containment()?;
 
     Ok(false)

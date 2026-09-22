@@ -628,10 +628,10 @@ async fn seeded_gateway_drop_does_not_block_current_thread_runtime() -> Result<(
         )?
         .trim(),
     );
-    assert_eq!(test_kill_process_group(gateway_group), Err(Errno::SRCH));
-    assert_eq!(test_kill_process(gateway_descendant), Err(Errno::SRCH));
-    assert_eq!(test_kill_process_group(validation_group), Err(Errno::SRCH));
-    assert_eq!(test_kill_process(validation_descendant), Err(Errno::SRCH));
+    wait_for_test_process_group_exit(gateway_group).await?;
+    wait_for_test_process_exit(gateway_descendant).await?;
+    wait_for_test_process_group_exit(validation_group).await?;
+    wait_for_test_process_exit(validation_descendant).await?;
     assert!(!root_candidate.exists());
     assert!(!fragment_candidate.exists());
 
@@ -784,8 +784,8 @@ async fn fallback_shutdown_prevents_late_worker_startup() -> Result<()> {
         Some("reconciliation was abandoned before completion")
     );
     assert_job_has_no_coverage(&paths, &job.id)?;
-    assert_eq!(test_kill_process_group(validation_group), Err(Errno::SRCH));
-    assert_eq!(test_kill_process(validation_descendant), Err(Errno::SRCH));
+    wait_for_test_process_group_exit(validation_group).await?;
+    wait_for_test_process_exit(validation_descendant).await?;
     assert!(!runtime_started.exists());
     assert!(!paths.worker_root_config("8.4").exists());
     state::fs::write_sensitive_file(&release_validation, "release\n")?;
@@ -866,7 +866,7 @@ async fn fallback_shutdown_cancels_fresh_worker_readiness() -> Result<()> {
         Some("reconciliation was abandoned before completion")
     );
     assert_job_has_no_coverage(&paths, &job.id)?;
-    assert_eq!(test_kill_process_group(worker_pid), Err(Errno::SRCH));
+    wait_for_test_process_group_exit(worker_pid).await?;
     assert!(!paths.worker_pid("8.4").exists());
     assert!(!paths.worker_runtime_metadata("8.4").exists());
     assert!(!worker_root_config.exists());
@@ -1160,6 +1160,34 @@ async fn emergency_cleanup_seeded_runtimes(paths: &PvPaths) -> Result<()> {
 fn recorded_test_pid(path: &Utf8Path) -> Result<Pid> {
     let raw_pid = state::fs::read_to_string(path)?.trim().parse::<i32>()?;
     Pid::from_raw(raw_pid).ok_or_else(|| anyhow!("invalid recorded test pid {raw_pid}"))
+}
+
+async fn wait_for_test_process_exit(process: Pid) -> Result<()> {
+    timeout(Duration::from_secs(5), async {
+        loop {
+            match test_kill_process(process) {
+                Err(Errno::SRCH) => return Ok(()),
+                Ok(()) => sleep(Duration::from_millis(10)).await,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    })
+    .await
+    .map_err(|_elapsed| anyhow!("process {process} remained after cleanup"))?
+}
+
+async fn wait_for_test_process_group_exit(process_group: Pid) -> Result<()> {
+    timeout(Duration::from_secs(5), async {
+        loop {
+            match test_kill_process_group(process_group) {
+                Err(Errno::SRCH) => return Ok(()),
+                Ok(()) => sleep(Duration::from_millis(10)).await,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    })
+    .await
+    .map_err(|_elapsed| anyhow!("process group {process_group} remained after cleanup"))?
 }
 
 #[cfg(target_os = "macos")]
@@ -3227,7 +3255,7 @@ async fn targeted_scenario_timeout_still_cleans_owned_state() -> Result<()> {
     assert!(!paths.gateway_runtime_metadata().exists());
     assert!(!paths.worker_pid("8.4").exists());
     assert!(!paths.worker_runtime_metadata("8.4").exists());
-    assert_eq!(test_kill_process_group(worker_group), Err(Errno::SRCH));
+    wait_for_test_process_group_exit(worker_group).await?;
 
     Ok(())
 }
