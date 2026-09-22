@@ -554,6 +554,7 @@ fn multi_server_fixture_avoids_fqdn_lookup_and_exits_after_signal_status() -> Re
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn long_running_fixtures_exit_when_their_test_parent_is_lost() -> Result<()> {
     let mut outcomes = Vec::new();

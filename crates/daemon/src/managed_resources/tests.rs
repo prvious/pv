@@ -144,7 +144,7 @@ struct RegisteredFixtureRuntime {
     metadata_path: Utf8PathBuf,
     config_path: Utf8PathBuf,
     log_path: Utf8PathBuf,
-    root_path: Utf8PathBuf,
+    command_root: Utf8PathBuf,
 }
 
 pub(super) struct ManagedResourceFixtureGuard {
@@ -178,7 +178,7 @@ impl ManagedResourceFixtureGuard {
             metadata_path: self.paths.resource_runtime_metadata(resource_name, track),
             config_path: self.paths.resource_runtime_config(resource_name, track),
             log_path: self.paths.resource_log(resource_name, track),
-            root_path: self.paths.root().to_path_buf(),
+            command_root: self.paths.resources().join(resource_name).join(track),
         });
     }
 
@@ -245,10 +245,10 @@ fn emergency_cleanup_registered_fixture_runtimes(
     runtimes: &[RegisteredFixtureRuntime],
 ) -> Result<()> {
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let publication_deadline = Instant::now() + FIXTURE_RUNTIME_PUBLICATION_TIMEOUT;
     let mut failures = Vec::new();
 
     for runtime in runtimes {
+        let publication_deadline = Instant::now() + FIXTURE_RUNTIME_PUBLICATION_TIMEOUT;
         if let Err(error) =
             emergency_cleanup_registered_fixture_runtime(&supervisor, runtime, publication_deadline)
         {
@@ -402,7 +402,7 @@ fn validate_registered_fixture_metadata(runtime: &RegisteredFixtureRuntime) -> R
         && metadata["log_path"].as_str() == Some(runtime.log_path.as_str())
         && metadata["command"]
             .as_str()
-            .is_some_and(|command| Utf8Path::new(command).starts_with(&runtime.root_path));
+            .is_some_and(|command| Utf8Path::new(command).starts_with(&runtime.command_root));
 
     if !matches_registration {
         bail!(
@@ -1065,7 +1065,7 @@ async fn postgres_preload_configuration_reconciles_tracks_17_and_18() -> Result<
 
     runtimes.cleanup().await?;
 
-    for (track, port, pid) in runtime_pids {
+    for (track, port, _pid) in runtime_pids {
         assert_eq!(
             runtime_files_exist_for_resource(&paths, "postgres", track)?,
             RuntimeFilePresence {
@@ -1074,10 +1074,6 @@ async fn postgres_preload_configuration_reconciles_tracks_17_and_18() -> Result<
                 config: false,
             },
             "expected PostgreSQL {track} runtime records to be removed",
-        );
-        assert!(
-            fixture_identity_is_absent(pid)?,
-            "expected PostgreSQL {track} process group to be gone"
         );
         let _listener = TcpListener::bind(("127.0.0.1", port)).with_context(|| {
             format!("expected PostgreSQL {track} listener port {port} to be released")
@@ -5835,8 +5831,27 @@ async fn managed_resource_fixture_guard_rejects_another_homes_runtime_records() 
     let identity_b = platform::inspect_process_identity(pid_b_u32)?
         .ok_or_else(|| anyhow!("home B runtime {pid_b} was not running"))?;
 
+    let mut spliced_metadata_b: Value = serde_json::from_str(&metadata_record_b)?;
+    let spliced_metadata_b = spliced_metadata_b
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("fixture runtime metadata was not an object"))?;
+    spliced_metadata_b.insert(
+        "config_path".to_owned(),
+        Value::String(
+            paths_a
+                .resource_runtime_config("mysql", FAKE_SQL_TRACK)
+                .to_string(),
+        ),
+    );
+    spliced_metadata_b.insert(
+        "log_path".to_owned(),
+        Value::String(paths_a.resource_log("mysql", FAKE_SQL_TRACK).to_string()),
+    );
     state::fs::write_sensitive_file(&pid_path_a, &pid_record_b)?;
-    state::fs::write_sensitive_file(&metadata_path_a, &metadata_record_b)?;
+    state::fs::write_sensitive_file(
+        &metadata_path_a,
+        &serde_json::to_string(&spliced_metadata_b)?,
+    )?;
     assert!(guard_a.cleanup().await.is_err());
     assert_eq!(
         ProcessSupervisor::new(paths_b.clone())

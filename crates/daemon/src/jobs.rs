@@ -11838,10 +11838,10 @@ mod tests {
         runtimes: &[SeededRuntimeRecord],
     ) -> anyhow::Result<()> {
         let supervisor = ProcessSupervisor::new(paths.clone());
-        let publication_deadline = std::time::Instant::now() + Duration::from_millis(500);
         let mut failures = Vec::new();
 
         for runtime in runtimes {
+            let publication_deadline = std::time::Instant::now() + Duration::from_millis(500);
             if let Err(error) =
                 emergency_cleanup_seeded_runtime(&supervisor, runtime, publication_deadline)
             {
@@ -11862,8 +11862,8 @@ mod tests {
         publication_deadline: std::time::Instant,
     ) -> anyhow::Result<()> {
         loop {
-            let pid_exists = runtime.pid_path.exists();
-            let metadata_exists = runtime.metadata_path.exists();
+            let pid_exists = state::fs::path_entry_exists(&runtime.pid_path)?;
+            let metadata_exists = state::fs::path_entry_exists(&runtime.metadata_path)?;
             match (pid_exists, metadata_exists) {
                 (false, false) if std::time::Instant::now() >= publication_deadline => {
                     return Ok(());
@@ -11951,8 +11951,8 @@ mod tests {
         let deadline = Instant::now() + Duration::from_millis(500);
 
         loop {
-            let has_pid = pid_path.exists();
-            let has_metadata = metadata_path.exists();
+            let has_pid = state::fs::path_entry_exists(pid_path)?;
+            let has_metadata = state::fs::path_entry_exists(metadata_path)?;
             if !has_pid && !has_metadata {
                 if Instant::now() >= deadline {
                     return Ok(());
@@ -12006,22 +12006,32 @@ mod tests {
                 continue;
             };
             let pid = process.pid();
-            let stop_result = process.stop(Duration::from_secs(1)).await;
-            if let Err(stop_error) = &stop_result {
-                match seeded_runtime_process_and_group_are_absent(pid) {
-                    Ok(true) => {}
+            let stop_result = match process.stop(Duration::from_secs(1)).await {
+                Ok(()) => Ok(()),
+                Err(stop_error) => match seeded_runtime_process_and_group_are_absent(pid) {
+                    Ok(true)
+                        if matches!(
+                            stop_error,
+                            DaemonError::RuntimeProcessIdentityChanged { .. }
+                        ) =>
+                    {
+                        Ok(())
+                    }
+                    Ok(true) => Err(stop_error),
                     Ok(false) => anyhow::bail!(
                         "stop failed: {stop_error}; process group remained after verified cleanup"
                     ),
                     Err(inspection_error) => anyhow::bail!(
                         "stop failed: {stop_error}; process-group inspection failed: {inspection_error}"
                     ),
-                }
-            }
+                },
+            };
             let record_cleanup = (|| {
                 state::fs::remove_file_if_exists(pid_path)?;
                 state::fs::remove_file_if_exists(metadata_path)?;
-                if pid_path.exists() || metadata_path.exists() {
+                if state::fs::path_entry_exists(pid_path)?
+                    || state::fs::path_entry_exists(metadata_path)?
+                {
                     anyhow::bail!("runtime files remained after cleanup");
                 }
                 Ok::<_, anyhow::Error>(())
@@ -12060,7 +12070,9 @@ mod tests {
 
         state::fs::remove_file_if_exists(&runtime.pid_path)?;
         state::fs::remove_file_if_exists(&runtime.metadata_path)?;
-        if runtime.pid_path.exists() || runtime.metadata_path.exists() {
+        if state::fs::path_entry_exists(&runtime.pid_path)?
+            || state::fs::path_entry_exists(&runtime.metadata_path)?
+        {
             anyhow::bail!("runtime files remained after cleanup");
         }
 

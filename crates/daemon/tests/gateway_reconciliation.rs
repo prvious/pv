@@ -526,6 +526,16 @@ document_root: public
         "log_path".to_owned(),
         Value::String(paths_a.gateway_supervisor_log().to_string()),
     );
+    spliced_object.insert(
+        "arguments".to_owned(),
+        json!([
+            "run",
+            "--config",
+            paths_a.gateway_root_config().as_str(),
+            "--adapter",
+            "caddyfile"
+        ]),
+    );
     fs::write_sensitive_file(
         &paths_a.gateway_runtime_metadata(),
         &serde_json::to_string(&spliced_metadata)?,
@@ -7895,12 +7905,11 @@ impl GatewayRuntimeGuard {
 
 impl Drop for GatewayRuntimeGuard {
     fn drop(&mut self) {
-        if !self
-            .runtimes
-            .iter()
-            .any(|runtime| runtime.pid_path.exists() || runtime.metadata_path.exists())
-            && self.adopted.is_empty()
-        {
+        let runtime_files_absent = self.runtimes.iter().all(|runtime| {
+            matches!(fs::path_entry_exists(&runtime.pid_path), Ok(false))
+                && matches!(fs::path_entry_exists(&runtime.metadata_path), Ok(false))
+        });
+        if runtime_files_absent && self.adopted.is_empty() {
             return;
         }
 
@@ -7959,8 +7968,8 @@ fn emergency_cleanup_gateway_runtimes(
     }
 
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let publication_deadline = Instant::now() + Duration::from_millis(500);
     for runtime in runtimes {
+        let publication_deadline = Instant::now() + Duration::from_millis(500);
         let captured_pid = cleaned_captured
             .iter()
             .find(|(record, _pid)| record.pid_path == runtime.pid_path)
@@ -7991,7 +8000,10 @@ fn emergency_cleanup_recorded_gateway_runtime(
     publication_deadline: Instant,
 ) -> Result<()> {
     loop {
-        match (runtime.pid_path.exists(), runtime.metadata_path.exists()) {
+        match (
+            fs::path_entry_exists(&runtime.pid_path)?,
+            fs::path_entry_exists(&runtime.metadata_path)?,
+        ) {
             (false, false) if Instant::now() >= publication_deadline => return Ok(()),
             (false, false) => {}
             (true, true) => {
@@ -8162,8 +8174,8 @@ async fn stop_recorded_runtime(
 ) -> Result<()> {
     let publication_deadline = Instant::now() + Duration::from_millis(500);
     loop {
-        let pid_exists = pid_path.exists();
-        let metadata_exists = metadata_path.exists();
+        let pid_exists = fs::path_entry_exists(pid_path)?;
+        let metadata_exists = fs::path_entry_exists(metadata_path)?;
         if !pid_exists && !metadata_exists {
             return Ok(());
         }
@@ -8214,7 +8226,7 @@ async fn stop_recorded_runtime(
         fs::remove_file_if_exists(pid_path)?;
         fs::remove_file_if_exists(metadata_path)?;
 
-        if pid_path.exists() || metadata_path.exists() {
+        if fs::path_entry_exists(pid_path)? || fs::path_entry_exists(metadata_path)? {
             bail!("runtime files remained after cleanup: {pid_path}, {metadata_path}");
         }
 
@@ -8265,7 +8277,6 @@ fn runtime_record_matches_expected_spec(
         "--adapter",
         "caddyfile"
     ]);
-
     Ok(metadata["resource_name"] == resource_name
         && metadata["track"] == track
         && metadata["config_path"] == config_path.as_str()
