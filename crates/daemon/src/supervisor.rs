@@ -1829,13 +1829,11 @@ mod tests {
             ),
         );
         let supervisor = ProcessSupervisor::new(paths);
-        let descendant_pid_path_for_hook = descendant_pid_path.clone();
         let listener_ready_path_for_hook = listener_ready_path.clone();
         let (pid_sender, pid_receiver) = oneshot::channel();
         let startup_task = runtime.spawn(async move {
             supervisor
                 .start_inner(spec, move |pid| async move {
-                    wait_for_test_path(&descendant_pid_path_for_hook).await;
                     wait_for_test_path(&listener_ready_path_for_hook).await;
                     let _delivered = pid_sender.send(pid);
                     pending::<()>().await;
@@ -2029,7 +2027,7 @@ mod tests {
     ) -> Vec<String> {
         vec![
             "-c".to_string(),
-            "python3 -c 'import socket, sys, time; listener = socket.socket(); listener.bind((\"127.0.0.1\", int(sys.argv[1]))); listener.listen(); open(sys.argv[2], \"w\").close(); time.sleep(60)' \"$1\" \"$2\" & echo $! > \"$3\"; while true; do sleep 1; done".to_string(),
+            "python3 -c 'import os, pathlib, socket, sys, time; pathlib.Path(sys.argv[3]).write_text(str(os.getpid()) + \"\\n\"); listener = socket.socket(); listener.bind((\"127.0.0.1\", int(sys.argv[1]))); listener.listen(); open(sys.argv[2], \"w\").close(); time.sleep(60)' \"$1\" \"$2\" \"$3\" & while true; do sleep 1; done".to_string(),
             "runtime-teardown".to_string(),
             port.to_string(),
             listener_ready_path.to_string(),

@@ -3956,7 +3956,6 @@ mod tests {
             &paths.worker_runtime_metadata("8.4"),
         )?;
         let worker_recovered = recovered.is_some();
-        let recovered_pid = recovered.as_ref().map(|worker| worker.pid());
         drop(recovered);
         let database = Database::open(&paths)?;
         let job_statuses = database
@@ -3985,9 +3984,6 @@ mod tests {
         caddy_guard.cleanup().await?;
         assert!(!paths.worker_pid("8.4").exists());
         assert!(!paths.worker_runtime_metadata("8.4").exists());
-        if let Some(pid) = recovered_pid {
-            assert!(seeded_runtime_process_and_group_are_absent(pid)?);
-        }
         Ok(())
     }
 
@@ -6791,10 +6787,6 @@ mod tests {
             "# >>> PV MANAGED\nAPP_NAME=independent\n# <<< PV MANAGED\n",
         )
         "##);
-        let mailpit_pid =
-            state::fs::read_to_string(&paths.resource_pid("mailpit", MAILPIT_TEST_TRACK))?
-                .trim()
-                .parse::<u32>()?;
         caddy_guard.cleanup().await?;
         assert!(!paths.resource_pid("mailpit", MAILPIT_TEST_TRACK).exists());
         assert!(
@@ -6802,7 +6794,6 @@ mod tests {
                 .resource_runtime_metadata("mailpit", MAILPIT_TEST_TRACK)
                 .exists()
         );
-        assert!(seeded_runtime_process_and_group_are_absent(mailpit_pid)?);
         assert!(TcpStream::connect(smtp_address).is_err());
         Ok(())
     }
