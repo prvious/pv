@@ -1,4 +1,4 @@
-use anyhow::{Context, Error, Result, bail};
+use anyhow::{Context, Error, Result, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::{tempdir, tempdir_in};
 use daemon::gateway::{
@@ -870,51 +870,68 @@ async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled(
         )
         .await
     });
-    tokio::select! {
-        result = &mut reconciliation => {
-            bail!("worker readiness reconciliation finished before the first wave was gated: {result:#?}");
+    let mut reconciliation_completed = false;
+    let inspection = async {
+        tokio::select! {
+            result = &mut reconciliation => {
+                reconciliation_completed = true;
+                bail!("worker readiness reconciliation finished before the first wave was gated: {result:#?}");
+            }
+            result = wait_for_existing_path_count(&probes, 4) => result?,
         }
-        result = wait_for_existing_path_count(&probes, 4) => result?,
-    }
 
-    assert!(
-        runtime_keys[..4]
+        ensure!(
+            runtime_keys[..4]
+                .iter()
+                .all(|runtime_key| paths.worker_pid(runtime_key).exists()),
+            "first worker wave did not publish all runtime records"
+        );
+        ensure!(
+            !paths.worker_pid(&runtime_keys[4]).exists(),
+            "fifth worker started before a first-wave slot opened"
+        );
+        ensure!(!probes[4].exists(), "fifth worker probed too early");
+        ensure!(!paths.gateway_pid().exists(), "Gateway started before workers");
+        fs::remove_file(&gates[0])?;
+        tokio::select! {
+            result = &mut reconciliation => {
+                reconciliation_completed = true;
+                bail!("worker reconciliation finished with siblings still gated: {result:#?}");
+            }
+            result = wait_for_existing_path_count(&probes, 5) => result?,
+        }
+        let worker_pids = runtime_keys
             .iter()
-            .all(|runtime_key| paths.worker_pid(runtime_key).exists())
-    );
-    assert!(!paths.worker_pid(&runtime_keys[4]).exists());
-    assert!(!probes[4].exists());
-    assert!(!paths.gateway_pid().exists());
-    fs::remove_file(&gates[0])?;
-    tokio::select! {
-        result = &mut reconciliation => {
-            bail!("worker reconciliation finished with siblings still gated: {result:#?}");
+            .map(|runtime_key| {
+                required_runtime_metadata_pid(&paths.worker_runtime_metadata(runtime_key))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (index, runtime_key) in runtime_keys.iter().enumerate() {
+            let metadata: Value = serde_json::from_str(&fs::read_to_string(
+                &paths.worker_runtime_metadata(runtime_key),
+            )?)?;
+            if index == 0 {
+                ensure!(metadata["replacement_required"] != true);
+                ensure!(metadata["applied_config_fingerprint"].is_string());
+                ensure!(metadata["staged_config_fingerprint"].is_null());
+            } else {
+                ensure!(metadata["replacement_required"] == true);
+                ensure!(metadata["applied_config_fingerprint"].is_null());
+                ensure!(metadata["staged_config_fingerprint"].is_string());
+            }
         }
-        result = wait_for_existing_path_count(&probes, 5) => result?,
-    }
-    let worker_pids = runtime_keys
-        .iter()
-        .map(|runtime_key| {
-            required_runtime_metadata_pid(&paths.worker_runtime_metadata(runtime_key))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    for (index, runtime_key) in runtime_keys.iter().enumerate() {
-        let metadata: Value = serde_json::from_str(&fs::read_to_string(
-            &paths.worker_runtime_metadata(runtime_key),
-        )?)?;
-        if index == 0 {
-            assert_ne!(metadata["replacement_required"], true);
-            assert!(metadata["applied_config_fingerprint"].is_string());
-            assert!(metadata["staged_config_fingerprint"].is_null());
-        } else {
-            assert_eq!(metadata["replacement_required"], true);
-            assert!(metadata["applied_config_fingerprint"].is_null());
-            assert!(metadata["staged_config_fingerprint"].is_string());
-        }
-    }
 
+        Ok::<_, anyhow::Error>(worker_pids)
+    }
+    .await;
+    if reconciliation_completed {
+        inspection?;
+        bail!("worker readiness reconciliation finished before inspection completed");
+    }
     reconciliation.abort();
-    let cancellation = match reconciliation.await {
+    let cancellation = reconciliation.await;
+    let worker_pids = inspection?;
+    let cancellation = match cancellation {
         Ok(result) => bail!("worker readiness reconciliation was not cancelled: {result:?}"),
         Err(error) => error,
     };
@@ -1027,31 +1044,41 @@ async fn matching_worker_recovers_after_post_load_readiness_is_cancelled() -> Re
         )
         .await
     });
-    tokio::select! {
-        result = &mut reconciliation => {
-            let requests = fake_admin_requests(&paths.worker_root_config(track))?;
-            bail!("matching worker reconciliation finished before post-load readiness was gated: result={result:#?}, requests={requests:#?}");
+    let mut reconciliation_completed = false;
+    let inspection = async {
+        tokio::select! {
+            result = &mut reconciliation => {
+                reconciliation_completed = true;
+                let requests = fake_admin_requests(&paths.worker_root_config(track))?;
+                bail!("matching worker reconciliation finished before post-load readiness was gated: result={result:#?}, requests={requests:#?}");
+            }
+            result = wait_for_existing_path_count(std::slice::from_ref(&load_accepted_marker), 1) => result?,
         }
-        result = wait_for_existing_path_count(std::slice::from_ref(&load_accepted_marker), 1) => result?,
+
+        let pending_metadata: Value =
+            serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata(track))?)?;
+        ensure!(pending_metadata["replacement_required"] == true);
+        ensure!(pending_metadata["applied_config_fingerprint"].is_null());
+        ensure!(process_is_alive(worker_pid)?);
+        ensure!(
+            required_runtime_metadata_pid(&paths.gateway_runtime_metadata())? == gateway_pid
+        );
+        ensure!(read_test_bytes(paths.gateway_root_config())? == gateway_root);
+        ensure!(
+            fake_admin_load_bodies(&paths.gateway_root_config())?.len() == gateway_load_count
+        );
+
+        Ok::<_, anyhow::Error>(())
     }
-
-    let pending_metadata: Value =
-        serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata(track))?)?;
-    assert_eq!(pending_metadata["replacement_required"], true);
-    assert!(pending_metadata["applied_config_fingerprint"].is_null());
-    assert!(process_is_alive(worker_pid)?);
-    assert_eq!(
-        required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?,
-        gateway_pid
-    );
-    assert_eq!(read_test_bytes(paths.gateway_root_config())?, gateway_root);
-    assert_eq!(
-        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
-        gateway_load_count
-    );
-
+    .await;
+    if reconciliation_completed {
+        inspection?;
+        bail!("matching worker reconciliation finished before inspection completed");
+    }
     reconciliation.abort();
-    let cancellation = match reconciliation.await {
+    let cancellation = reconciliation.await;
+    inspection?;
+    let cancellation = match cancellation {
         Ok(result) => bail!("matching worker reconciliation was not cancelled: {result:?}"),
         Err(error) => error,
     };

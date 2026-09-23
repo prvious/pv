@@ -30,10 +30,12 @@ if [ "$1" = "run" ]; then
     if [ -n "$child" ]; then
       kill "$child" 2>/dev/null || :
       wait "$child" 2>/dev/null || :
+      child=""
     fi
     if [ -n "$watcher" ]; then
       kill "$watcher" 2>/dev/null || :
       wait "$watcher" 2>/dev/null || :
+      watcher=""
     fi
     exit 0
   }
@@ -58,8 +60,10 @@ if [ "$1" = "run" ]; then
   else
     child_status="$?"
   fi
+  child=""
   kill "$watcher" 2>/dev/null || :
   wait "$watcher" 2>/dev/null || :
+  watcher=""
   exit "$child_status"
 fi
 

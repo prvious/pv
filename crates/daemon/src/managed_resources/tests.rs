@@ -5831,6 +5831,23 @@ async fn managed_resource_fixture_guard_rejects_another_homes_runtime_records() 
     let identity_b = platform::inspect_process_identity(pid_b_u32)?
         .ok_or_else(|| anyhow!("home B runtime {pid_b} was not running"))?;
 
+    let mut wrong_track_metadata: Value = serde_json::from_str(&metadata_record_a)?;
+    wrong_track_metadata["command"] = Value::String(
+        paths_a
+            .resources()
+            .join("mysql")
+            .join("another-track")
+            .join("bin/mysql")
+            .to_string(),
+    );
+    state::fs::write_sensitive_file(
+        &metadata_path_a,
+        &serde_json::to_string(&wrong_track_metadata)?,
+    )?;
+    let wrong_track_validation = validate_registered_fixture_metadata(&guard_a.runtimes[0]);
+    state::fs::write_sensitive_file(&metadata_path_a, &metadata_record_a)?;
+    assert!(wrong_track_validation.is_err());
+
     let mut spliced_metadata_b: Value = serde_json::from_str(&metadata_record_b)?;
     let spliced_metadata_b = spliced_metadata_b
         .as_object_mut()
