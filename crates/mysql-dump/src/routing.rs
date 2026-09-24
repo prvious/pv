@@ -36,11 +36,17 @@ pub enum RoutingError {
 ///
 /// Other statement kinds return `None`; this does not authorize them for import.
 pub fn routing_reference(source: &str) -> Result<Option<RoutingReference>, RoutingError> {
-    let parsed = squonk::parse_with(source, squonk::ParseConfig::new(MySql)).map_err(|error| {
-        RoutingError::UnsupportedSyntax {
-            message: error.to_string(),
+    let parsed = match squonk::parse_with(source, squonk::ParseConfig::new(MySql)) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            if let Some(reference) = generated_create_database_reference(source)? {
+                return Ok(Some(reference));
+            }
+            return Err(RoutingError::UnsupportedSyntax {
+                message: error.to_string(),
+            });
         }
-    })?;
+    };
     let [statement] = parsed.statements() else {
         return Err(RoutingError::MultipleStatements);
     };
@@ -72,6 +78,63 @@ pub fn routing_reference(source: &str) -> Result<Option<RoutingReference>, Routi
         action,
         name: name.to_owned(),
         span: start..end,
+    }))
+}
+
+/// `mysqldump` wraps database options in versioned comments that squonk does
+/// not accept. Strip only those comments for routing inspection, keeping byte
+/// offsets stable. The original statement must still pass import policy and is
+/// never authorized by this function.
+fn generated_create_database_reference(
+    source: &str,
+) -> Result<Option<RoutingReference>, RoutingError> {
+    let mut normalized = source.as_bytes().to_vec();
+    let mut cursor = 0;
+    let mut found = false;
+    while let Some(relative_start) = source[cursor..].find("/*!") {
+        let start = cursor + relative_start;
+        let Some(relative_end) = source[start + 3..].find("*/") else {
+            return Err(RoutingError::UnsupportedSyntax {
+                message: "unterminated versioned comment in CREATE DATABASE".to_owned(),
+            });
+        };
+        let end = start + 3 + relative_end + 2;
+        for byte in &mut normalized[start..end] {
+            if *byte != b'\n' && *byte != b'\r' {
+                *byte = b' ';
+            }
+        }
+        cursor = end;
+        found = true;
+    }
+    if !found {
+        return Ok(None);
+    }
+    let normalized =
+        String::from_utf8(normalized).map_err(|error| RoutingError::UnsupportedSyntax {
+            message: error.to_string(),
+        })?;
+    let parsed =
+        squonk::parse_with(&normalized, squonk::ParseConfig::new(MySql)).map_err(|error| {
+            RoutingError::UnsupportedSyntax {
+                message: error.to_string(),
+            }
+        })?;
+    let [Statement::CreateDatabase { create, .. }] = parsed.statements() else {
+        return Err(RoutingError::MultipleStatements);
+    };
+    let identifier = only_identifier(&create.name)?;
+    let span = identifier.meta.span.start() as usize..identifier.meta.span.end() as usize;
+    if span.start >= span.end || source.get(span.clone()).is_none() {
+        return Err(RoutingError::InvalidSpan);
+    }
+    let Some(name) = parsed.resolver().try_resolve(identifier.sym) else {
+        return Err(RoutingError::InvalidSpan);
+    };
+    Ok(Some(RoutingReference {
+        action: RoutingAction::Create,
+        name: name.to_owned(),
+        span,
     }))
 }
 
