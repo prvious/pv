@@ -252,6 +252,8 @@ pub(crate) enum Mark {
     Running,
     /// A completed flow step or answered prompt.
     Done,
+    /// The flow step in progress.
+    Active,
 }
 
 impl Mark {
@@ -263,6 +265,7 @@ impl Mark {
             Self::Idle => "○",
             Self::Running => "●",
             Self::Done => "◇",
+            Self::Active => "◆",
         }
     }
 
@@ -272,6 +275,7 @@ impl Mark {
             Self::Failure => Tone::Failure,
             Self::Warning => Tone::Warning,
             Self::Idle => Tone::Dim,
+            Self::Active => Tone::Accent,
         }
     }
 
@@ -292,6 +296,8 @@ pub struct Output<'writer> {
     gutter: bool,
     /// The prefix that aligns details and quotes under the latest row.
     continuation: String,
+    /// The open flow's title, for closing it when the command stops early.
+    flow_title: String,
 }
 
 impl<'writer> Output<'writer> {
@@ -301,6 +307,7 @@ impl<'writer> Output<'writer> {
             surface,
             gutter: false,
             continuation: INDENT.to_string(),
+            flow_title: String::new(),
         }
     }
 
@@ -523,10 +530,39 @@ impl<'writer> Output<'writer> {
             Tone::Dim.paint("┌", color),
             Tone::Strong.paint(title, color)
         )?;
-        self.gutter = true;
-        self.continuation = format!("{}  ", self.gutter_prefix());
+        self.flow_resume(title);
 
         Ok(())
+    }
+
+    /// Continues a flow that an earlier process opened, such as the
+    /// continuation `pv update` re-execs after activating a new release:
+    /// later rows carry the gutter without a second opener.
+    pub(crate) fn flow_resume(&mut self, title: &str) {
+        if self.surface.decorated {
+            self.gutter = true;
+            self.continuation = format!("{}  ", self.gutter_prefix());
+            self.flow_title = title.to_string();
+        }
+    }
+
+    /// Shows the step that is about to run, such as one that waits for an
+    /// administrator password. Plain output has no in-progress steps.
+    pub(crate) fn flow_active(&mut self, line: impl Into<Line>) -> io::Result<()> {
+        if !self.surface.decorated {
+            return Ok(());
+        }
+        self.flow_step(Mark::Active, line)
+    }
+
+    /// Closes a flow that a failing command left open, before its error.
+    /// Plain output has no flow to close.
+    pub(crate) fn flow_stopped(&mut self) -> io::Result<()> {
+        if !self.gutter {
+            return Ok(());
+        }
+        let stopped = format!("{} stopped", self.flow_title);
+        self.flow_end(Mark::Failure, stopped)
     }
 
     /// A flow step. Rows written after it render inside the gutter.

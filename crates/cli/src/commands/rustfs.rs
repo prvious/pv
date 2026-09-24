@@ -9,7 +9,7 @@ use crate::args::{ListArgs, RustfsInstallArgs, RustfsUninstallArgs};
 use crate::commands::artifact_resource::{self, ArtifactResourceCommandSpec};
 use crate::environment::Environment;
 use crate::error::ExecuteError;
-use crate::output::Streams;
+use crate::output::{Line, Streams};
 
 const NOT_RUNNING_MESSAGE: &str = "RustFS is not running for any linked Project";
 const CONSOLE_LIVENESS_TIMEOUT: Duration = Duration::from_millis(250);
@@ -61,12 +61,12 @@ pub(crate) fn open(
     let output = &mut streams.out;
 
     let Some(url) = running_console_url(&database)? else {
-        output.line(NOT_RUNNING_MESSAGE)?;
+        output.note(NOT_RUNNING_MESSAGE)?;
         return Ok(ExitCode::SUCCESS);
     };
 
     environment.open_url(&url)?;
-    output.line(&format!("Opened RustFS console at {url}"))?;
+    output.success(Line::field("Opened RustFS console at ", &url))?;
 
     Ok(ExitCode::SUCCESS)
 }

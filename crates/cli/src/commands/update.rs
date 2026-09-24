@@ -21,11 +21,12 @@ use crate::args::UpdateArgs;
 use crate::environment::{Environment, app_update_manifest_url};
 use crate::error::{CliError, ExecuteError};
 use crate::helper_release::{HelperReleaseMetadata, metadata_path as helper_metadata_path};
-use crate::output::{Output, Streams};
+use crate::output::{Mark, Output, Streams};
 use crate::progress::DownloadProgressRenderer;
 
 static APP_DOWNLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 const MANAGED_RESOURCE_UPDATE_CONTINUATION: &str = "internal:update-managed-resources";
+const UPDATE_TITLE: &str = "PV update";
 
 #[expect(
     clippy::disallowed_types,
@@ -59,7 +60,7 @@ pub(crate) fn run(
         return Ok(ExitCode::SUCCESS);
     }
 
-    check.write_plain(&mut streams.out)?;
+    check.write(&mut streams.out)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -68,6 +69,8 @@ pub(crate) fn run_managed_resource_continuation(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
+    // This process continues the flow the updating `pv update` opened.
+    streams.out.flow_resume(UPDATE_TITLE);
     let paths = pv_paths(environment)?;
     let layout = state::AppReleaseLayout::new(paths.clone());
     let current_version = AppUpdateVersion::current()?;
@@ -86,8 +89,13 @@ fn run_update(
         AppUpdateOutcome::Current { paths } => run_managed_resource_update_phase(paths, streams),
         AppUpdateOutcome::Updated { paths } => {
             let active_pv_binary = paths.active_pv_binary();
+            // `--no-color` reaches the continuation only as an argument;
+            // `NO_COLOR` is inherited with the environment.
+            let no_color = [streams.out.surface(), streams.err.surface()]
+                .iter()
+                .any(|surface| surface.decorated() && !surface.color());
 
-            reexec_managed_resource_update(environment, &active_pv_binary)
+            reexec_managed_resource_update(environment, &active_pv_binary, no_color)
         }
     }
 }
@@ -108,8 +116,12 @@ fn run_managed_resource_update_phase(
 fn reexec_managed_resource_update(
     environment: &impl Environment,
     active_pv_binary: &Utf8Path,
+    no_color: bool,
 ) -> Result<ExitCode, ExecuteError> {
-    let args = vec![MANAGED_RESOURCE_UPDATE_CONTINUATION.to_string()];
+    let mut args = vec![MANAGED_RESOURCE_UPDATE_CONTINUATION.to_string()];
+    if no_color {
+        args.push("--no-color".to_string());
+    }
     environment
         .exec(active_pv_binary.as_std_path(), &args)
         .map_err(|error| CliError::ManagedResourceUpdateContinuationFailed {
@@ -123,13 +135,16 @@ fn write_managed_resource_update_summary(
     summary: &str,
 ) -> Result<(), ExecuteError> {
     if let Some((updated, reconciled)) = summary.split_once("; reconciled: ") {
-        output.line(&format!("Managed Resources: {updated}"))?;
-        output.line(&format!("Managed Resources reconciled: {reconciled}"))?;
+        output.flow_step(Mark::Done, format!("Managed Resources: {updated}"))?;
+        output.flow_end(
+            Mark::Done,
+            format!("Managed Resources reconciled: {reconciled}"),
+        )?;
 
         return Ok(());
     }
 
-    output.line(&format!("Managed Resources: {summary}"))?;
+    output.flow_end(Mark::Done, format!("Managed Resources: {summary}"))?;
 
     Ok(())
 }
@@ -515,7 +530,7 @@ fn run_app_update_phase(
         err: stderr,
         ..
     } = streams;
-    output.line("PV update")?;
+    output.flow_start("update", UPDATE_TITLE, None)?;
 
     let _update_lock = state::UpdateLock::acquire(&paths).map_err(update_state_error)?;
     let _jobs_lock = state::JobsLock::acquire(&paths).map_err(update_state_error)?;
@@ -544,10 +559,13 @@ fn run_app_update_phase(
     let helper_update_required = matches!(plan.helper, HelperUpdatePlan::Update);
 
     if !app_update_required && !helper_update_required {
-        output.line(&format!("PV application: current {current_version}"))?;
+        output.flow_step(
+            Mark::Done,
+            format!("PV application: current {current_version}"),
+        )?;
         match &installed_helper {
             InstalledHelperState::Ready(status) if manifest.version() < &current_version => {
-                output.line(&format!(
+                output.flow_step(Mark::Done, format!(
                     "Privileged helper: retained {} (protocol {}); app manifest {} is older than current PV {}",
                     status.version,
                     status.protocol_version,
@@ -555,14 +573,19 @@ fn run_app_update_phase(
                     current_version
                 ))?
             }
-            InstalledHelperState::Ready(status) => output.line(&format!(
-                "Privileged helper: current {} (protocol {})",
-                status.version, status.protocol_version
-            ))?,
-            InstalledHelperState::Missing => output.line(
+            InstalledHelperState::Ready(status) => output.flow_step(
+                Mark::Done,
+                format!(
+                    "Privileged helper: current {} (protocol {})",
+                    status.version, status.protocol_version
+                ),
+            )?,
+            InstalledHelperState::Missing => output.flow_step(
+                Mark::Warning,
                 "Privileged helper: unavailable; the older app manifest has no applicable repair",
             )?,
-            InstalledHelperState::ProtocolMismatch => output.line(
+            InstalledHelperState::ProtocolMismatch => output.flow_step(
+                Mark::Warning,
                 "Privileged helper: protocol mismatch; the older app manifest has no applicable repair",
             )?,
         }
@@ -687,6 +710,12 @@ fn run_app_update_phase(
 
     let mut helper_install_cleanup_warning = None;
     if helper_update_required {
+        // macOS asks for an administrator password while this step runs.
+        output.flow_active(format!(
+            "Installing privileged helper {} (protocol {})",
+            asset.helper().version(),
+            asset.helper().protocol_version()
+        ))?;
         let prepared_directory = paths.config().join("helper");
         let install_result = environment.install_privileged_helper(
             &helper_candidate,
@@ -836,19 +865,28 @@ fn run_app_update_phase(
             stderr,
             cleanup_helper_rollback(helper_rollback.as_ref()).err(),
         )?;
-        output.line(&format!(
-            "Privileged helper: updated to {} (protocol {})",
-            asset.helper().version(),
-            asset.helper().protocol_version()
-        ))?;
+        output.flow_step(
+            Mark::Done,
+            format!(
+                "Privileged helper: updated to {} (protocol {})",
+                asset.helper().version(),
+                asset.helper().protocol_version()
+            ),
+        )?;
         write_privileged_helper_cleanup_warning(stderr, helper_install_cleanup_warning.as_deref())?;
         if manifest.version() < &current_version {
-            output.line(&format!(
-                "PV application: current {current_version}; app manifest {} is older",
-                manifest.version()
-            ))?;
+            output.flow_step(
+                Mark::Done,
+                format!(
+                    "PV application: current {current_version}; app manifest {} is older",
+                    manifest.version()
+                ),
+            )?;
         } else {
-            output.line(&format!("PV application: current {current_version}"))?;
+            output.flow_step(
+                Mark::Done,
+                format!("PV application: current {current_version}"),
+            )?;
         }
 
         return Ok(AppUpdateOutcome::Current { paths });
@@ -886,23 +924,32 @@ fn run_app_update_phase(
     }
 
     if helper_update_required {
-        output.line(&format!(
-            "Privileged helper: updated to {} (protocol {})",
-            asset.helper().version(),
-            asset.helper().protocol_version()
-        ))?;
+        output.flow_step(
+            Mark::Done,
+            format!(
+                "Privileged helper: updated to {} (protocol {})",
+                asset.helper().version(),
+                asset.helper().protocol_version()
+            ),
+        )?;
         write_privileged_helper_cleanup_warning(stderr, helper_install_cleanup_warning.as_deref())?;
     } else if let InstalledHelperState::Ready(status) = &installed_helper {
-        output.line(&format!(
-            "Privileged helper: current {} (protocol {})",
-            status.version, status.protocol_version
-        ))?;
+        output.flow_step(
+            Mark::Done,
+            format!(
+                "Privileged helper: current {} (protocol {})",
+                status.version, status.protocol_version
+            ),
+        )?;
     }
-    output.line(&format!(
-        "PV application: updated {previous_version} -> {}",
-        manifest.version()
-    ))?;
-    output.line("Daemon restarted and healthy")?;
+    output.flow_step(
+        Mark::Done,
+        format!(
+            "PV application: updated {previous_version} -> {}",
+            manifest.version()
+        ),
+    )?;
+    output.flow_step(Mark::Done, "Daemon restarted and healthy")?;
     write_helper_rollback_cleanup_warning(
         stderr,
         cleanup_helper_rollback(helper_rollback.as_ref()).err(),
@@ -1189,7 +1236,10 @@ fn rollback_app_update(
                 helper_rollback.release_candidate
             ));
         }
-        if let Err(error) = output.line("PV application: update failed; rollback failed") {
+        if let Err(error) = output.flow_end(
+            Mark::Failure,
+            "PV application: update failed; rollback failed",
+        ) {
             rollback_errors.push(format!("failed to report rollback status: {error}"));
         }
         if let Err(error) = write_privileged_helper_cleanup_warning(
@@ -1216,10 +1266,13 @@ fn rollback_app_update(
         DaemonHealthCheck::RequireCompatibleProtocol,
     ) {
         let mut rollback_message = rollback_error.to_string();
-        if let Err(error) = output.line(&format!(
-            "PV application: update failed; restored {}",
-            versions.previous
-        )) {
+        if let Err(error) = output.flow_end(
+            Mark::Failure,
+            format!(
+                "PV application: update failed; restored {}",
+                versions.previous
+            ),
+        ) {
             rollback_message.push_str(&format!("; failed to report rollback status: {error}"));
         }
         if let Err(error) = write_helper_rollback_cleanup_warning(stderr, helper_cleanup_error) {
@@ -1247,10 +1300,13 @@ fn rollback_app_update(
     }
 
     let mut failure_message = original_message;
-    if let Err(error) = output.line(&format!(
-        "PV application: update failed; rolled back to {}",
-        versions.previous
-    )) {
+    if let Err(error) = output.flow_end(
+        Mark::Failure,
+        format!(
+            "PV application: update failed; rolled back to {}",
+            versions.previous
+        ),
+    ) {
         failure_message.push_str(&format!("; failed to report rollback status: {error}"));
     }
     if let Err(error) = write_helper_rollback_cleanup_warning(stderr, helper_cleanup_error) {
@@ -1369,8 +1425,28 @@ struct UpdateCheckOutput {
 }
 
 impl UpdateCheckOutput {
+    fn write(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
+        if !output.surface().decorated() {
+            return self.write_plain(output);
+        }
+        output.heading("update --check", None)?;
+        self.app.write(output)?;
+        output.section("Managed Resources")?;
+        if self.managed_resources.is_empty() {
+            output.note("none installed")?;
+        }
+        for resource in &self.managed_resources {
+            output.status(
+                resource_update_mark(resource.status),
+                managed_resource_line(resource),
+            )?;
+        }
+
+        Ok(())
+    }
+
     fn write_plain(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
-        self.app.write_plain(output)?;
+        self.app.write(output)?;
         output.line("Managed Resources:")?;
         if self.managed_resources.is_empty() {
             output.line("  none installed")?;
@@ -1378,10 +1454,22 @@ impl UpdateCheckOutput {
         }
 
         for resource in &self.managed_resources {
-            output.line(&format!("  {}", managed_resource_plain(resource)))?;
+            output.line(&format!("  {}", managed_resource_line(resource)))?;
         }
 
         Ok(())
+    }
+}
+
+/// Every non-current state needs attention but none fails the check, so
+/// only current is a success; failures are left to `pv update` itself.
+fn resource_update_mark(status: ResourceUpdateStatus) -> Mark {
+    match status {
+        ResourceUpdateStatus::Current => Mark::Success,
+        ResourceUpdateStatus::UpdateAvailable
+        | ResourceUpdateStatus::Blocked
+        | ResourceUpdateStatus::Revoked
+        | ResourceUpdateStatus::Unavailable => Mark::Warning,
     }
 }
 
@@ -1397,26 +1485,27 @@ struct AppUpdateStatus {
 }
 
 impl AppUpdateStatus {
-    fn write_plain(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
-        match self.status {
+    fn write(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
+        let line = match self.status {
             AppUpdateStatusValue::Current => {
-                output.line(&format!("PV application: current {}", self.current_version))?
+                format!("PV application: current {}", self.current_version)
             }
-            AppUpdateStatusValue::UpdateAvailable => output.line(&format!(
+            AppUpdateStatusValue::UpdateAvailable => format!(
                 "PV application: update available {} -> {} ({})",
                 self.current_version,
                 self.latest_version.as_deref().unwrap_or("unknown"),
                 self.platform,
-            ))?,
-            AppUpdateStatusValue::Unavailable => output.line(&format!(
+            ),
+            AppUpdateStatusValue::Unavailable => format!(
                 "PV application: unavailable {} ({})",
                 self.current_version,
                 self.reason.as_deref().unwrap_or("unknown reason"),
-            ))?,
-        }
+            ),
+        };
+        output.status(self.status.mark(), line)?;
 
         if let Some(helper) = &self.helper {
-            helper.write_plain(output)?;
+            helper.write(output)?;
         }
 
         Ok(())
@@ -1429,6 +1518,15 @@ enum AppUpdateStatusValue {
     Current,
     UpdateAvailable,
     Unavailable,
+}
+
+impl AppUpdateStatusValue {
+    const fn mark(&self) -> Mark {
+        match self {
+            Self::Current => Mark::Success,
+            Self::UpdateAvailable | Self::Unavailable => Mark::Warning,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -1452,25 +1550,26 @@ struct PrivilegedHelperUpdateStatus {
 }
 
 impl PrivilegedHelperUpdateStatus {
-    fn write_plain(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
-        match self.status {
-            AppUpdateStatusValue::Current => output.line(&format!(
+    fn write(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
+        let line = match self.status {
+            AppUpdateStatusValue::Current => format!(
                 "Privileged helper: current {} (protocol {})",
                 self.current_version.as_deref().unwrap_or("unknown"),
                 self.current_protocol_version
                     .map_or_else(|| "unknown".to_string(), |version| version.to_string())
-            ))?,
-            AppUpdateStatusValue::UpdateAvailable => output.line(&format!(
+            ),
+            AppUpdateStatusValue::UpdateAvailable => format!(
                 "Privileged helper: update required {} -> {} (protocol {})",
                 self.current_version.as_deref().unwrap_or("not installed"),
                 self.latest_version,
                 self.latest_protocol_version
-            ))?,
-            AppUpdateStatusValue::Unavailable => output.line(&format!(
+            ),
+            AppUpdateStatusValue::Unavailable => format!(
                 "Privileged helper: unavailable ({})",
                 self.reason.as_deref().unwrap_or("unknown reason")
-            ))?,
-        }
+            ),
+        };
+        output.status(self.status.mark(), line)?;
 
         Ok(())
     }
@@ -1617,7 +1716,7 @@ fn privileged_helper_version_is_older(
         .unwrap_or(true)
 }
 
-fn managed_resource_plain(resource: &ManagedResourceUpdateCheckTrack) -> String {
+fn managed_resource_line(resource: &ManagedResourceUpdateCheckTrack) -> String {
     let mut line = match resource.status {
         ResourceUpdateStatus::Current => format!(
             "{} {}: current {}",

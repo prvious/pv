@@ -10,7 +10,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use config::ProjectConfigFile;
-use insta::assert_debug_snapshot;
+use insta::{assert_debug_snapshot, assert_snapshot};
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use state::{
     Database, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackRecord,
@@ -27,6 +27,7 @@ struct TestEnvironment {
     target_platform: Option<TargetPlatform>,
     target_platform_resolution_fails: bool,
     exec_calls: RefCell<Vec<ExecCall>>,
+    terminal_width: Cell<Option<usize>>,
 }
 
 impl TestEnvironment {
@@ -38,6 +39,7 @@ impl TestEnvironment {
             target_platform: Some(TargetPlatform::DarwinArm64),
             target_platform_resolution_fails: false,
             exec_calls: RefCell::new(Vec::new()),
+            terminal_width: Cell::new(None),
         }
     }
 
@@ -109,6 +111,14 @@ impl Environment for TestEnvironment {
 
     fn current_exe(&self) -> io::Result<PathBuf> {
         Ok(PathBuf::from("/bin/pv"))
+    }
+
+    fn stdout_is_terminal(&self) -> bool {
+        self.terminal_width.get().is_some()
+    }
+
+    fn terminal_width(&self) -> Option<usize> {
+        self.terminal_width.get()
     }
 
     fn stdin_is_terminal(&self) -> bool {
@@ -1711,12 +1721,16 @@ fn php_list_marks_global_default_track() -> anyhow::Result<()> {
     }
 
     let list = run_pv(&["php:list"], &environment)?;
+    environment.terminal_width.set(Some(200));
+    let decorated = run_pv(&["php:list", "--no-color"], &environment)?;
 
     assert_eq!(install.exit_code, ExitCode::SUCCESS);
     assert_eq!(list.exit_code, ExitCode::SUCCESS);
     assert!(list.stderr.is_empty());
+    assert_eq!(decorated.exit_code, ExitCode::SUCCESS);
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!(list);
+        assert_snapshot!("php_list_on_a_terminal", decorated.stdout);
         Ok(())
     })?;
 

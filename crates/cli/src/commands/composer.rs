@@ -13,7 +13,7 @@ use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
 use crate::args::{ComposerUninstallArgs, ShimArgs};
 use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
-use crate::output::Streams;
+use crate::output::{Line, Streams};
 use crate::progress::DownloadProgressRenderer;
 
 const COMPOSER_TRACK: &str = "2";
@@ -39,7 +39,7 @@ pub(crate) fn install(
     super::write_revoked_latest_warning(composer, &mut streams.err)?;
     streams
         .out
-        .line(&format!("Installed Composer track {}", composer.track()))?;
+        .success(Line::field("Installed Composer track ", composer.track()))?;
     super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
@@ -61,10 +61,7 @@ pub(crate) fn update(
     let output = &mut streams.out;
 
     super::write_revoked_latest_warnings(updated.installs(), &mut streams.err)?;
-    output.line(&format!(
-        "Updated {} Composer track(s)",
-        updated.installs().len()
-    ))?;
+    super::write_updated(output, updated.installs().len(), "Composer track(s)")?;
     super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
@@ -83,9 +80,9 @@ pub(crate) fn uninstall(
     let removal = commands.uninstall_composer(options)?;
     let output = &mut streams.out;
 
-    output.line(&format!(
-        "Queued removal for Composer track {}",
-        removal.track()
+    output.success(Line::field(
+        "Queued removal for Composer track ",
+        removal.track(),
     ))?;
     super::request_system_reconciliation(&paths, streams)?;
 

@@ -69,13 +69,19 @@ where
     let mut streams = Streams::new(stdout, stderr, presentation);
     let result = commands::execute(cli, environment, &mut streams);
 
-    finish_execution(result, &mut streams.err)
+    finish_execution(result, &mut streams)
 }
 
 fn finish_execution(
     result: Result<ExitCode, ExecuteError>,
-    stderr: &mut Output<'_>,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode> {
+    // A cancelled prompt has already closed the flow with its own footer.
+    let cancelled = matches!(result, Err(ExecuteError::User(CliError::PromptCancelled)));
+    let succeeded = matches!(result, Ok(exit_code) if exit_code == ExitCode::SUCCESS);
+    if !cancelled && !succeeded {
+        streams.out.flow_stopped()?;
+    }
     let message = match result {
         Ok(exit_code) => return Ok(exit_code),
         // The prompt has already drawn its cancelled state.
@@ -84,7 +90,7 @@ fn finish_execution(
         Err(ExecuteError::State(error)) => return Err(error.into()),
         Err(error) => error.to_string(),
     };
-    stderr.error(&message)?;
+    streams.err.error(&message)?;
 
     Ok(ExitCode::FAILURE)
 }
@@ -130,17 +136,19 @@ mod tests {
 
     use super::finish_execution;
     use crate::error::ExecuteError;
-    use crate::output::{Output, Surface};
+    use crate::output::{Presentation, Streams};
 
     #[test]
     fn finish_execution_formats_io_errors() -> anyhow::Result<()> {
+        let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let exit_code = finish_execution(
             Err(ExecuteError::Io(io::Error::other("stdout closed"))),
-            &mut Output::new(&mut stderr, Surface::plain()),
+            &mut Streams::new(&mut stdout, &mut stderr, Presentation::plain()),
         )?;
 
         assert_eq!(exit_code, ExitCode::FAILURE);
+        assert!(stdout.is_empty());
         assert_eq!(String::from_utf8(stderr)?, "error: stdout closed\n");
 
         Ok(())

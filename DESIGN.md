@@ -1661,7 +1661,7 @@ Every terminal row in `design.pen` maps to one command state. "Stream" names whe
 | `r692j` | `pv php:list`, `php:update`, `php:uninstall` | stdout, stderr error | Table and status rows | Version deltas |
 | `O5ORTC` | `pv composer:*` | stdout | Status rows | PATH note |
 | `wiFpO` | `pv <resource>:install` / `:update` | stdout | Status rows | "starts when" note |
-| `I2QUwp` | `pv <resource>:list` | stdout | Report table, stacked rows when narrow | — |
+| `I2QUwp` | `pv <resource>:list` | stdout | Report table, stacked rows when narrow | Path as a line under each row (PATH stays a column, as in `hTBHd` and `r692j`) |
 | `wbsN6` | `pv <resource>:uninstall --prune` confirmation | stderr | Confirm, default No | Typed `yes`, data size |
 | `MveUZ` | `pv <resource>:uninstall` outcomes | stdout, stderr error | Status rows | — |
 | `BIc96` | `pv mailpit:open`, `pv rustfs:open` | stdout | Status rows | "it starts when" note |

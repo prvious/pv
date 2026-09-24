@@ -14,7 +14,7 @@ use state::{Database, ManagedResourceDesiredState, ProjectRecord, PvPaths, State
 use crate::args::{ListArgs, PhpInstallArgs, PhpUninstallArgs, PhpUseArgs, ShimArgs};
 use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
-use crate::output::Streams;
+use crate::output::{Line, Mark, Streams, Table};
 use crate::progress::DownloadProgressRenderer;
 
 pub(crate) fn use_track(
@@ -40,7 +40,7 @@ pub(crate) fn use_track(
         database.record_global_php_default_track(&track)?;
         drop(jobs_lock);
 
-        output.line(&format!("Set global PHP track to {track}"))?;
+        output.success(Line::field("Set global PHP track to ", track))?;
         super::write_php_pair_install_lines(&installed, streams)?;
         super::request_system_reconciliation(&paths, streams)?;
 
@@ -60,11 +60,14 @@ pub(crate) fn use_track(
     let project = database.replace_project_desired_php_track(&project.id, Some(&track))?;
     drop(jobs_lock);
 
-    output.line(&format!(
-        "Set {} PHP track to {track}",
-        super::project_display_name(&project)
+    output.success(Line::field(
+        &format!(
+            "Set {} PHP track to ",
+            super::project_display_name(&project)
+        ),
+        track,
     ))?;
-    output.line(&format!("Updated Project config: {}", config_file.path))?;
+    output.detail(Line::field("Updated Project config: ", config_file.path))?;
     super::write_php_pair_install_lines(&installed, streams)?;
     super::request_project_reconciliation(&paths, &project, streams)?;
 
@@ -112,10 +115,7 @@ pub(crate) fn update(
     let output = &mut streams.out;
 
     super::write_revoked_latest_warnings(updated.installs(), &mut streams.err)?;
-    output.line(&format!(
-        "Updated {} PHP runtime artifact(s)",
-        updated.installs().len()
-    ))?;
+    super::write_updated(output, updated.installs().len(), "PHP runtime artifact(s)")?;
     super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
@@ -149,13 +149,13 @@ pub(crate) fn uninstall(
     let removal = commands.uninstall_php_pair(&track, options)?;
     let output = &mut streams.out;
 
-    output.line(&format!(
-        "Queued removal for PHP track {}",
-        removal.php().track()
+    output.success(Line::field(
+        "Queued removal for PHP track ",
+        removal.php().track(),
     ))?;
-    output.line(&format!(
-        "Queued removal for FrankenPHP track {}",
-        removal.frankenphp().track()
+    output.success(Line::field(
+        "Queued removal for FrankenPHP track ",
+        removal.frankenphp().track(),
     ))?;
     super::request_system_reconciliation(&paths, streams)?;
 
@@ -180,7 +180,7 @@ pub(crate) fn list(
             return Ok(ExitCode::SUCCESS);
         }
 
-        streams.out.line("No PHP tracks installed")?;
+        streams.out.note("No PHP tracks installed")?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -206,28 +206,26 @@ pub(crate) fn list(
         return Ok(ExitCode::SUCCESS);
     }
 
-    let output = &mut streams.out;
-    output.line("Track  Default  Projects  Version  Path")?;
+    let mut table = Table::new(&["Track", "Default", "Projects", "Version", "Path"]);
     for track in tracks {
-        let default_marker = if default_track.as_deref() == Some(track.track().as_str()) {
-            "yes"
+        let default = if default_track.as_deref() == Some(track.track().as_str()) {
+            Line::marked(Mark::Running, "yes")
         } else {
-            "no"
+            Line::marked(Mark::Idle, "no")
         };
-        let project_count = if let Some(count) = project_counts.get(track.track().as_str()) {
-            *count
-        } else {
-            0
-        };
-        output.line(&format!(
-            "{}  {}  {}  {}  {}",
-            track.track(),
-            default_marker,
-            project_count,
-            track.installed_version(),
-            track.current_artifact_path()
-        ))?;
+        let project_count = project_counts
+            .get(track.track().as_str())
+            .copied()
+            .unwrap_or(0);
+        table.row(vec![
+            Line::from(track.track().as_str()),
+            default,
+            Line::from(project_count.to_string()),
+            Line::default().value(track.installed_version().as_str()),
+            Line::from(track.current_artifact_path().as_str()),
+        ]);
     }
+    streams.out.table(&table)?;
 
     Ok(ExitCode::SUCCESS)
 }

@@ -295,16 +295,6 @@ impl StatusSnapshot {
     }
 }
 
-/// A runtime's mark. Status counts a degraded runtime as a failure, so it is
-/// marked as one, as doctor does.
-fn runtime_mark(status: Option<RuntimeObservedStatus>) -> Mark {
-    match status {
-        Some(RuntimeObservedStatus::Running) => Mark::Running,
-        Some(RuntimeObservedStatus::Degraded | RuntimeObservedStatus::Failed) => Mark::Failure,
-        Some(RuntimeObservedStatus::Pending | RuntimeObservedStatus::Stopped) | None => Mark::Idle,
-    }
-}
-
 #[derive(Serialize)]
 struct DaemonStatus {
     state: &'static str,
@@ -513,7 +503,7 @@ fn managed_resource_status(
     let status = runtime_status
         .map(runtime_status_label)
         .unwrap_or("not-running");
-    let mark = runtime_mark(runtime_status);
+    let mark = super::runtime_mark(runtime_status);
 
     ManagedResourceStatus {
         name: track.resource_name,
@@ -534,7 +524,7 @@ fn runtime_statuses(runtime_states: &[RuntimeObservedStateRecord]) -> Vec<Runtim
             RuntimeSubject::Gateway
             | RuntimeSubject::PhpWorker { .. }
             | RuntimeSubject::PhpRuntimeWorker { .. } => {
-                let mark = runtime_mark(Some(state.status));
+                let mark = super::runtime_mark(Some(state.status));
                 Some(RuntimeStatus {
                     subject: runtime_subject_label(&state.subject),
                     status: runtime_status_label(state.status),

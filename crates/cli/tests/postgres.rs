@@ -156,16 +156,30 @@ fn postgres_list_reports_running_state_ports_and_usage() -> anyhow::Result<()> {
     let artifact = fixture_artifact(NEW_VERSION);
     record_installed_resource(&home, DEFAULT_TRACK, &artifact, RESOURCE)?;
     seed_running_resource(&paths, DEFAULT_TRACK, "tcp", 5432, RESOURCE)?;
-    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+    let mut environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
 
     let output = run_pv(&["pg:list"], &environment)?;
+    environment.terminal_width = Some(200);
+    let decorated = run_pv(&["pg:list", "--no-color"], &environment)?;
+    // A real path makes each row wider than a standard terminal, so the
+    // records stack.
+    environment.terminal_width = Some(80);
+    let stacked = run_pv(&["pg:list", "--no-color"], &environment)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
+    assert_eq!(decorated.exit_code, ExitCode::SUCCESS);
+    assert_eq!(stacked.exit_code, ExitCode::SUCCESS);
     assert_resource_snapshot(
         "postgres_list_reports_running_state_ports_and_usage",
         tempdir.path(),
         &output,
+    );
+    assert_resource_snapshot("postgres_list_on_a_terminal", tempdir.path(), &decorated);
+    assert_resource_snapshot(
+        "postgres_list_on_an_80_column_terminal",
+        tempdir.path(),
+        &stacked,
     );
 
     Ok(())

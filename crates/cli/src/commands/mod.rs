@@ -4,12 +4,12 @@ use std::time::Duration;
 
 use camino::Utf8PathBuf;
 use platform::PlatformCapability;
-use state::{PvPaths, StateError};
+use state::{PvPaths, RuntimeObservedStatus, StateError};
 
 use crate::args::{Cli, Command};
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Line, Output, Streams};
+use crate::output::{Line, Mark, Output, Streams};
 
 mod artifact_resource;
 mod ca;
@@ -417,13 +417,33 @@ fn write_php_pair_install_lines(
     write_revoked_latest_warning(installed.frankenphp(), &mut streams.err)?;
     streams
         .out
-        .line(&format!("Installed PHP track {}", installed.php().track()))?;
-    streams.out.line(&format!(
-        "Installed FrankenPHP track {}",
-        installed.frankenphp().track()
+        .success(Line::field("Installed PHP track ", installed.php().track()))?;
+    streams.out.success(Line::field(
+        "Installed FrankenPHP track ",
+        installed.frankenphp().track(),
     ))?;
 
     Ok(())
+}
+
+/// A runtime's mark. A degraded runtime is a failure, as `pv status` and
+/// `pv doctor` count it.
+fn runtime_mark(status: Option<RuntimeObservedStatus>) -> Mark {
+    match status {
+        Some(RuntimeObservedStatus::Running) => Mark::Running,
+        Some(RuntimeObservedStatus::Degraded | RuntimeObservedStatus::Failed) => Mark::Failure,
+        Some(RuntimeObservedStatus::Pending | RuntimeObservedStatus::Stopped) | None => Mark::Idle,
+    }
+}
+
+/// Reports how many tracks an update changed; nothing changed is a no-op.
+fn write_updated(output: &mut Output<'_>, count: usize, what: &str) -> io::Result<()> {
+    let mark = if count == 0 {
+        Mark::Idle
+    } else {
+        Mark::Success
+    };
+    output.status(mark, format!("Updated {count} {what}"))
 }
 
 fn daemon_is_unavailable(error: &io::Error) -> bool {

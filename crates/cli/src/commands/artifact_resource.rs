@@ -13,7 +13,7 @@ use state::{PortAssignment, PortOwner, PvPaths, RuntimeObservedStatus, StateErro
 use crate::args::ListArgs;
 use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, Streams};
+use crate::output::{Line, Output, Streams, Table};
 use crate::progress::DownloadProgressRenderer;
 use crate::prompt;
 
@@ -46,10 +46,9 @@ pub(crate) fn install(
     let output = &mut streams.out;
 
     super::write_revoked_latest_warning(&installed, &mut streams.err)?;
-    output.line(&format!(
-        "Installed {} track {}",
-        spec.display_name,
-        installed.track()
+    output.success(Line::field(
+        &format!("Installed {} track ", spec.display_name),
+        installed.track(),
     ))?;
     super::request_system_reconciliation(&paths, streams)?;
 
@@ -74,11 +73,11 @@ pub(crate) fn update(
     let output = &mut streams.out;
 
     super::write_revoked_latest_warnings(updated.installs(), &mut streams.err)?;
-    output.line(&format!(
-        "Updated {} {} track(s)",
+    super::write_updated(
+        output,
         updated.installs().len(),
-        spec.display_name
-    ))?;
+        &format!("{} track(s)", spec.display_name),
+    )?;
     super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
@@ -107,7 +106,7 @@ pub(crate) fn uninstall(
             spec.display_name
         );
         if !prompt::confirm_or(environment, streams, refusal, &message, false)? {
-            streams.out.line("Prune cancelled.")?;
+            streams.out.note("Prune cancelled.")?;
             return Ok(ExitCode::SUCCESS);
         }
     }
@@ -117,10 +116,9 @@ pub(crate) fn uninstall(
     let removal = commands.uninstall(&resource_name, &track, options)?;
     let output = &mut streams.out;
 
-    output.line(&format!(
-        "Queued removal for {} track {}",
-        spec.display_name,
-        removal.track()
+    output.success(Line::field(
+        &format!("Queued removal for {} track ", spec.display_name),
+        removal.track(),
     ))?;
     super::request_system_reconciliation(&paths, streams)?;
 
@@ -153,7 +151,7 @@ pub(crate) fn list(
     let output = &mut streams.out;
 
     if tracks.is_empty() {
-        output.line(&format!("No {} tracks installed", spec.display_name))?;
+        output.note(format!("No {} tracks installed", spec.display_name))?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -162,16 +160,16 @@ pub(crate) fn list(
         return Ok(ExitCode::SUCCESS);
     }
 
-    output.line("Track  Projects  Version  Path")?;
+    let mut table = Table::new(&["Track", "Projects", "Version", "Path"]);
     for track in tracks {
-        output.line(&format!(
-            "{}  {}  {}  {}",
-            track.track(),
-            track.usage_count(),
-            track.installed_version(),
-            track.current_artifact_path()
-        ))?;
+        table.row(vec![
+            Line::from(track.track().as_str()),
+            Line::from(track.usage_count().to_string()),
+            Line::default().value(track.installed_version().as_str()),
+            Line::from(track.current_artifact_path().as_str()),
+        ]);
     }
+    output.table(&table)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -184,7 +182,7 @@ fn write_backing_resource_list(
 ) -> Result<(), ExecuteError> {
     let observation = backing_resource_observation(paths, resource_name)?;
 
-    output.line("Track  Status  Ports  Projects  Version  Path")?;
+    let mut table = Table::new(&["Track", "Status", "Ports", "Projects", "Version", "Path"]);
     for track in tracks {
         let track_name = track.track().as_str();
         let status = observation.runtime_statuses.get(track_name).copied();
@@ -195,16 +193,16 @@ fn write_backing_resource_list(
             "-".to_string()
         };
 
-        output.line(&format!(
-            "{}  {}  {}  {}  {}  {}",
-            track.track(),
-            runtime_status_label(status),
-            ports,
-            track.usage_count(),
-            track.installed_version(),
-            track.current_artifact_path()
-        ))?;
+        table.row(vec![
+            Line::from(track.track().as_str()),
+            Line::marked(super::runtime_mark(status), runtime_status_label(status)),
+            Line::default().value(ports),
+            Line::from(track.usage_count().to_string()),
+            Line::default().value(track.installed_version().as_str()),
+            Line::from(track.current_artifact_path().as_str()),
+        ]);
     }
+    output.table(&table)?;
 
     Ok(())
 }

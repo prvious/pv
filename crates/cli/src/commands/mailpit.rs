@@ -7,7 +7,7 @@ use state::{Database, PvPaths, RuntimeObservedStatus, RuntimeSubject, StateError
 use crate::args::{ListArgs, MailpitInstallArgs, MailpitUninstallArgs};
 use crate::environment::Environment;
 use crate::error::ExecuteError;
-use crate::output::Streams;
+use crate::output::{Line, Streams};
 
 const NOT_RUNNING_MESSAGE: &str = "Mailpit is not running for any linked Project";
 
@@ -63,12 +63,15 @@ pub(crate) fn open(
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
     let Some(url) = running_dashboard_url(&database)? else {
-        streams.out.line(NOT_RUNNING_MESSAGE)?;
+        streams.out.note(NOT_RUNNING_MESSAGE)?;
 
         return Ok(ExitCode::SUCCESS);
     };
 
     environment.open_url(&url)?;
+    streams
+        .out
+        .success(Line::field("Opened Mailpit dashboard at ", &url))?;
 
     Ok(ExitCode::SUCCESS)
 }
