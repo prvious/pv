@@ -103,10 +103,6 @@ impl Environment for TestEnvironment {
         false
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(String::new())
-    }
-
     fn open_url(&self, _url: &str) -> io::Result<()> {
         Ok(())
     }

@@ -28,7 +28,7 @@ expression: "(link_resource_only, explicit_open, current_open, link_served, pick
             ),
         ),
         stdout: "",
-        stderr: "\u{1b}[31m✗\u{1b}[0m  \u{1b}[31merror:\u{1b}[0m \u{1b}[1mcould not resolve a linked Project; pass a Project slug or hostname\u{1b}[0m\n",
+        stderr: "\u{1b}[31m✗\u{1b}[0m  \u{1b}[31merror:\u{1b}[0m \u{1b}[1mthis directory is not inside a linked Project\u{1b}[0m\n   \u{1b}[2mPass a Project slug or hostname, or run `pv list` to see linked Projects.\u{1b}[0m\n",
     },
     RunOutput {
         exit_code: ExitCode(
@@ -45,7 +45,7 @@ expression: "(link_resource_only, explicit_open, current_open, link_served, pick
                 0,
             ),
         ),
-        stdout: "Select a Project:\n1. web.test  <tempdir>/web\nEnter selection:\nOpened https://web.test for web.test\n",
+        stdout: "Opened https://web.test for web.test\n",
         stderr: "",
     },
     [

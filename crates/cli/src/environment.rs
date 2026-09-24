@@ -33,8 +33,6 @@ pub trait Environment {
         None
     }
 
-    fn read_line(&self) -> io::Result<String>;
-
     /// Asks a keyboard prompt. Callers check `Streams::interactive` first.
     fn prompt(&self, prompt: &Prompt<'_>) -> io::Result<Answer> {
         Err(io::Error::new(
@@ -309,13 +307,6 @@ impl Environment for ProcessEnvironment {
             .map(|(_rows, columns)| usize::from(columns))
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        let mut line = String::new();
-        io::stdin().read_line(&mut line)?;
-
-        Ok(line)
-    }
-
     fn prompt(&self, prompt: &Prompt<'_>) -> io::Result<Answer> {
         crate::prompt::interact(prompt)
     }
@@ -425,10 +416,6 @@ mod tests {
 
         fn stdin_is_terminal(&self) -> bool {
             false
-        }
-
-        fn read_line(&self) -> io::Result<String> {
-            Ok(String::new())
         }
 
         fn open_url(&self, _url: &str) -> io::Result<()> {

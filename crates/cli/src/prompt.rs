@@ -10,7 +10,7 @@ use std::io;
 
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::Output;
+use crate::output::{Output, Streams};
 
 mod theme;
 
@@ -139,6 +139,22 @@ pub(crate) fn text(
         Answer::Text(text) => Ok(text.trim().to_string()),
         answer => Err(unexpected(&answer)),
     }
+}
+
+/// Asks a confirmation, or fails with `refusal` when stdin and stderr are not
+/// both terminals. Each command chooses a refusal that names its rerun flag.
+pub(crate) fn confirm_or(
+    environment: &impl Environment,
+    streams: &Streams<'_>,
+    refusal: CliError,
+    message: &str,
+    default: bool,
+) -> Result<bool, ExecuteError> {
+    if !streams.interactive {
+        return Err(refusal.into());
+    }
+
+    confirm(environment, &streams.out, message, default)
 }
 
 fn ask(

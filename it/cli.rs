@@ -8,7 +8,7 @@ use insta::{assert_debug_snapshot, assert_snapshot};
 use state::{
     Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths, UpdateLock,
 };
-use support::{create_dir, create_laravel_init_fixture, write_file};
+use support::{create_dir, create_laravel_init_fixture, run_pv_in, write_file};
 
 mod support;
 
@@ -45,11 +45,7 @@ fn run_pv_in_dir_with_home(
     current_dir: &Utf8Path,
     home: &Utf8Path,
 ) -> Result<CommandOutput> {
-    let mut command = Command::cargo_bin("pv")?;
-    command.env_remove("NO_COLOR");
-    command.env("HOME", home.as_str());
-    command.current_dir(current_dir);
-    let output = command.args(args).output()?;
+    let output = run_pv_in(args, current_dir, home)?;
 
     Ok(CommandOutput {
         code: status_code(output.status),

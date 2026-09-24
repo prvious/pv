@@ -38,8 +38,6 @@ struct TestEnvironment {
     certificates: Mutex<Vec<KeychainCertificate>>,
     active_pf_config: Mutex<Option<PfRedirectConfig>>,
     operations: Mutex<Vec<String>>,
-    stdin_terminal: bool,
-    input: Mutex<VecDeque<String>>,
     client: ScriptedClient,
     target_platform: TargetPlatform,
     helper_status: Mutex<Option<PrivilegedHelperStatus>>,
@@ -63,8 +61,6 @@ impl TestEnvironment {
             certificates: Mutex::new(Vec::new()),
             active_pf_config: Mutex::new(None),
             operations: Mutex::new(Vec::new()),
-            stdin_terminal: false,
-            input: Mutex::new(VecDeque::new()),
             client: ScriptedClient::new(),
             target_platform,
             helper_status: Mutex::new(Some(PrivilegedHelperStatus {
@@ -187,11 +183,7 @@ impl Environment for TestEnvironment {
     }
 
     fn stdin_is_terminal(&self) -> bool {
-        self.stdin_terminal
-    }
-
-    fn read_line(&self) -> io::Result<String> {
-        Ok(lock(&self.input).pop_front().unwrap_or_default())
+        false
     }
 
     fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -708,7 +700,7 @@ fn setup_non_interactive_fails_before_privileged_system_changes() -> anyhow::Res
     )?;
 
     assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stdout.contains("requires macOS authentication"));
+    assert!(output.stderr.contains("requires macOS authentication"));
     assert!(fixture.environment.operations().is_empty());
     assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
     assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
@@ -831,7 +823,7 @@ fn setup_requires_confirmation_before_installing_missing_helper() -> anyhow::Res
     let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
 
     assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stdout.contains("requires confirmation"));
+    assert!(output.stderr.contains("requires confirmation"));
     assert!(fixture.environment.operations().is_empty());
 
     Ok(())
@@ -877,7 +869,7 @@ fn setup_non_interactive_fails_before_shell_profile_mutation() -> anyhow::Result
     assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert!(
         output
-            .stdout
+            .stderr
             .contains("Shell profile integration requires update")
     );
     assert_eq!(profile_after_setup, "export EXISTING=1\n");

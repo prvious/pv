@@ -1,6 +1,6 @@
 ---
 source: crates/cli/tests/project_open.rs
-expression: "(link_zeta, link_alpha, open, opened_urls)"
+expression: "(link_zeta, link_alpha, open, opened_urls, environment.prompts.transcript())"
 ---
 (
     RunOutput {
@@ -27,10 +27,13 @@ expression: "(link_zeta, link_alpha, open, opened_urls)"
                 0,
             ),
         ),
-        stdout: "Select a Project:\n1. alpha.test  <tempdir>/zeta-project\n2. zeta.test  <tempdir>/alpha-project\nEnter selection:\nOpened https://zeta.test for zeta.test\n",
+        stdout: "Opened https://zeta.test for zeta.test\n",
         stderr: "",
     },
     [
         "https://zeta.test",
+    ],
+    [
+        "Select a Project -> Selected(1)",
     ],
 )

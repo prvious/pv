@@ -1,0 +1,8 @@
+---
+source: it/terminal.rs
+expression: session.screen()
+---
+◆  Select a Project
+│  ○ alpha.test  <tempdir>/alpha-project
+│  ● zeta.test  <tempdir>/zeta-project
+└  ↑↓ move · enter confirm

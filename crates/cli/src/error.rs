@@ -10,6 +10,36 @@ pub enum CliError {
     #[error("pv init requires an interactive terminal; rerun with --yes or --print.")]
     InitRequiresTerminal,
 
+    #[error(
+        "pv setup --non-interactive requires macOS authentication to install or replace the privileged helper.\nRun `pv setup` interactively, then rerun with `--non-interactive`."
+    )]
+    SetupHelperRequiresAuthentication,
+
+    #[error("Privileged helper installation requires confirmation; rerun with --yes.")]
+    HelperConfirmationRequired,
+
+    #[error(
+        "Shell profile integration requires {action}; rerun without --non-interactive or use --no-path: {path}"
+    )]
+    ShellProfileChangeNonInteractive { action: &'static str, path: String },
+
+    #[error("Shell profile integration requires {action}; rerun with --yes or --no-path: {path}")]
+    ShellProfileConfirmationRequired { action: &'static str, path: String },
+
+    #[error(
+        "Refusing to prune PV state without an interactive confirmation.\nRerun with `pv uninstall --prune --force` to remove ~/.pv non-interactively."
+    )]
+    PruneRequiresTerminal,
+
+    #[error(
+        "Refusing to prune {display_name} track {track} without an interactive confirmation.\nRerun with `pv {resource_name}:uninstall {track} --prune --force` to prune non-interactively."
+    )]
+    ResourcePruneRequiresTerminal {
+        display_name: &'static str,
+        resource_name: &'static str,
+        track: String,
+    },
+
     #[error("could not detect the current shell; pass --shell zsh, --shell bash, or --shell fish")]
     MissingShell,
 
@@ -24,7 +54,9 @@ pub enum CliError {
     #[error("path is not valid UTF-8: {path:?}")]
     NonUtf8Path { path: std::path::PathBuf },
 
-    #[error("could not resolve a linked Project; pass a Project slug or hostname")]
+    #[error(
+        "this directory is not inside a linked Project\nPass a Project slug or hostname, or run `pv list` to see linked Projects."
+    )]
     ProjectNotResolved,
 
     #[error(
@@ -34,9 +66,6 @@ pub enum CliError {
 
     #[error("Project `{project}` is resource-only and cannot be opened")]
     ResourceOnlyProjectCannotOpen { project: String },
-
-    #[error("invalid Project picker selection `{selection}`; enter a number from 1 to {count}")]
-    InvalidProjectSelection { selection: String, count: usize },
 
     #[error(
         "artifact manifest cache is unavailable at `{path}`; setup cannot plan default Managed Resources"

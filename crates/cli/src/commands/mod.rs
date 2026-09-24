@@ -689,11 +689,6 @@ mod tests {
             false
         }
 
-        fn read_line(&self) -> io::Result<String> {
-            self.record_access();
-            Err(io::Error::other("unexpected input access"))
-        }
-
         fn open_url(&self, _url: &str) -> io::Result<()> {
             self.record_access();
             Err(io::Error::other("unexpected browser access"))

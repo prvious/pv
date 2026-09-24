@@ -17,6 +17,7 @@ use crate::error::{CliError, ExecuteError};
 use crate::helper_release::{HelperReleaseMetadata, metadata_path as helper_metadata_path};
 use crate::output::{Output, Streams};
 use crate::progress::DownloadProgressRenderer;
+use crate::prompt;
 use crate::shell::Shell;
 
 const PV_ENV_START: &str = "# >>> PV ENV";
@@ -100,17 +101,17 @@ pub(crate) fn setup(
     let helper_installation_required =
         privileged_helper_installation_required(environment, &helper_candidate)?;
     if args.non_interactive && helper_installation_required {
-        let output = &mut streams.out;
-        output.line(
-            "pv setup --non-interactive requires macOS authentication to install or replace the privileged helper.",
-        )?;
-        output.line("Run `pv setup` interactively, then rerun with `--non-interactive`.")?;
-
-        return Ok(ExitCode::FAILURE);
+        return Err(CliError::SetupHelperRequiresAuthentication.into());
     }
     if helper_installation_required
         && !args.yes
-        && !confirm_privileged_helper_installation(environment, streams)?
+        && !prompt::confirm_or(
+            environment,
+            streams,
+            CliError::HelperConfirmationRequired,
+            "Install or replace the PV privileged helper?\nmacOS will request administrator authentication.",
+            true,
+        )?
     {
         return Ok(ExitCode::FAILURE);
     }
@@ -328,7 +329,16 @@ pub(crate) fn uninstall(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
 
-    if args.prune && !args.force && !confirm_prune(environment, streams)? {
+    if args.prune
+        && !args.force
+        && !prompt::confirm_or(
+            environment,
+            streams,
+            CliError::PruneRequiresTerminal,
+            "Permanently remove all PV-owned state under ~/.pv?",
+            false,
+        )?
+    {
         return Ok(ExitCode::FAILURE);
     }
 
@@ -483,28 +493,6 @@ fn privileged_helper_candidate(
     Ok(PrivilegedHelperCandidate { path, metadata })
 }
 
-fn confirm_privileged_helper_installation(
-    environment: &impl Environment,
-    streams: &mut Streams<'_>,
-) -> Result<bool, ExecuteError> {
-    let output = &mut streams.out;
-    if !streams.interactive {
-        output.line("Privileged helper installation requires confirmation; rerun with --yes.")?;
-
-        return Ok(false);
-    }
-
-    output.line(
-        "Install or replace the PV privileged helper? macOS will request administrator authentication. [y/N]",
-    )?;
-    let response = environment.read_line()?;
-
-    Ok(matches!(
-        response.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
-}
-
 fn record_default_resource_desired_state(
     paths: &PvPaths,
     default_resource_plan: &[SetupResourcePlan],
@@ -587,14 +575,25 @@ fn configure_shell_integration(
     };
 
     if args.non_interactive {
-        output.line(&format!(
-            "Shell profile integration requires {action}; rerun without --non-interactive or use --no-path: {profile_path}"
-        ))?;
-
-        return Ok(ExitCode::FAILURE);
+        return Err(CliError::ShellProfileChangeNonInteractive {
+            action,
+            path: profile_path.to_string(),
+        }
+        .into());
     }
 
-    if !args.yes && !confirm_shell_profile_update(environment, streams, &profile_path, action)? {
+    if !args.yes
+        && !prompt::confirm_or(
+            environment,
+            streams,
+            CliError::ShellProfileConfirmationRequired {
+                action,
+                path: profile_path.to_string(),
+            },
+            &format!("Update shell profile for PV ENV integration ({action})?\n{profile_path}"),
+            true,
+        )?
+    {
         return Ok(ExitCode::FAILURE);
     }
 
@@ -666,58 +665,6 @@ fn remove_shell_integration(
     ))?;
 
     Ok(ExitCode::SUCCESS)
-}
-
-fn confirm_shell_profile_update(
-    environment: &impl Environment,
-    streams: &mut Streams<'_>,
-    profile_path: &Utf8Path,
-    action: &str,
-) -> Result<bool, ExecuteError> {
-    let output = &mut streams.out;
-
-    if !streams.interactive {
-        output.line(&format!(
-            "Shell profile integration requires {action}; rerun with --yes or --no-path: {profile_path}"
-        ))?;
-
-        return Ok(false);
-    }
-
-    output.line(&format!(
-        "Update shell profile for PV ENV integration ({action})? {profile_path}"
-    ))?;
-    output.line("Enter y to continue:")?;
-    let answer = environment.read_line()?;
-
-    Ok(matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
-}
-
-fn confirm_prune(
-    environment: &impl Environment,
-    streams: &mut Streams<'_>,
-) -> Result<bool, ExecuteError> {
-    let output = &mut streams.out;
-
-    if !streams.interactive {
-        output.line("Refusing to prune PV state without an interactive confirmation.")?;
-        output
-            .line("Rerun with `pv uninstall --prune --force` to remove ~/.pv non-interactively.")?;
-
-        return Ok(false);
-    }
-
-    output.line("This will permanently remove all PV-owned state under ~/.pv.")?;
-    output.line("Enter y to continue:")?;
-    let answer = environment.read_line()?;
-
-    Ok(matches!(
-        answer.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
 }
 
 fn untrust_ca_for_uninstall(

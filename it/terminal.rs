@@ -11,7 +11,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use insta::assert_snapshot;
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
-use support::create_laravel_init_fixture;
+use support::{create_dir, create_laravel_init_fixture, run_pv_in};
 
 mod support;
 
@@ -30,6 +30,7 @@ const BACKSPACE: &str = "\u{7f}";
 // frame has been drawn.
 const SELECT_HINT: &str = "↑↓ move · enter confirm";
 const MULTISELECT_HINT: &str = "space toggle · enter confirm";
+const CONFIRM_HINT: &str = "enter accepts the highlighted answer";
 
 #[test]
 fn init_prompts_accept_defaults_and_collapse_after_answers() -> Result<()> {
@@ -140,6 +141,61 @@ fn init_ctrl_c_cancels_like_escape() -> Result<()> {
 
     session.wait_for(SELECT_HINT)?;
     session.press(CTRL_C)?;
+    session.wait_for("Cancelled.")?;
+    let exit_code = session.wait_for_exit()?;
+
+    assert_eq!(exit_code, 130);
+    assert!(session.cursor_visible());
+
+    Ok(())
+}
+
+#[test]
+fn prune_confirmation_declines_with_n_or_the_default_answer() -> Result<()> {
+    for (key, snapshot) in [
+        ("n", "prune_declined_with_n"),
+        (ENTER, "prune_declined_by_default"),
+    ] {
+        let tempdir = tempdir()?;
+        let mut session = Session::spawn(
+            &["redis:uninstall", "8.8", "--prune"],
+            tempdir.path(),
+            tempdir.path(),
+        )?;
+
+        session.wait_for(CONFIRM_HINT)?;
+        session.press(key)?;
+        session.wait_for("Prune cancelled.")?;
+        let exit_code = session.wait_for_exit()?;
+
+        assert_eq!(exit_code, 0);
+        assert!(session.cursor_visible());
+        assert_screen_snapshot(snapshot, tempdir.path(), &session);
+    }
+
+    Ok(())
+}
+
+#[test]
+fn open_picker_lists_served_projects_and_escape_cancels() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let outside = tempdir.path().join("outside");
+    create_dir(&outside)?;
+    for (directory, hostname) in [("zeta-project", "zeta"), ("alpha-project", "alpha")] {
+        let project = tempdir.path().join(directory);
+        create_dir(&project)?;
+        let link = run_pv_in(&["link", "--hostname", hostname], &project, &home)?;
+        assert!(link.status.success());
+    }
+    let mut session = Session::spawn(&["open"], &outside, &home)?;
+
+    session.wait_for(SELECT_HINT)?;
+    session.press("j")?;
+    session.wait_for("● zeta.test")?;
+    assert_screen_snapshot("open_picker_active", tempdir.path(), &session);
+
+    session.press(ESCAPE)?;
     session.wait_for("Cancelled.")?;
     let exit_code = session.wait_for_exit()?;
 

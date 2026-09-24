@@ -18,7 +18,7 @@ expression: "(link, open, opened_urls)"
                 0,
             ),
         ),
-        stdout: "Select a Project:\n1. acme.test  <tempdir>/acme\nEnter selection:\nOpened https://acme.test for acme.test\n",
+        stdout: "Opened https://acme.test for acme.test\n",
         stderr: "",
     },
     [

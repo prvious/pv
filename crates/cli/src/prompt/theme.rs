@@ -71,6 +71,31 @@ impl Theme for PvTheme {
         }
     }
 
+    /// Shows every choice's hint, not just the highlighted one's, so a picker
+    /// lists each Project's path beside its hostname. Answered and cancelled
+    /// prompts keep Cliclack's own label styling.
+    fn radio_item(&self, state: &ThemeState, selected: bool, label: &str, hint: &str) -> String {
+        match state {
+            ThemeState::Cancel | ThemeState::Submit if !selected => return String::new(),
+            ThemeState::Cancel | ThemeState::Submit => {
+                return self.input_style(state).apply_to(label).to_string();
+            }
+            ThemeState::Active | ThemeState::Error(_) => {}
+        }
+        let label = if selected {
+            self.input_style(state).apply_to(label)
+        } else {
+            self.placeholder_style(state).apply_to(label)
+        };
+        let hint = if hint.is_empty() {
+            String::new()
+        } else {
+            format!("  {}", self.placeholder_style(state).apply_to(hint))
+        };
+
+        format!("{} {label}{hint}", self.radio_symbol(state, selected))
+    }
+
     fn checkbox_symbol(&self, state: &ThemeState, selected: bool, active: bool) -> String {
         let (tone, symbol) = match state {
             ThemeState::Submit | ThemeState::Cancel => return String::new(),

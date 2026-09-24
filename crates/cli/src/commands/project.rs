@@ -18,6 +18,7 @@ use crate::args::{LinkArgs, ListArgs, OpenArgs, ProjectEnvArgs, UnlinkArgs};
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, Streams};
+use crate::prompt::{self, Choice};
 
 pub(crate) fn link(
     args: LinkArgs,
@@ -320,51 +321,20 @@ fn resolve_open_project(
 }
 
 fn select_project(
-    projects: Vec<ProjectRecord>,
+    mut projects: Vec<ProjectRecord>,
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ProjectRecord, ExecuteError> {
     if projects.is_empty() {
         return Err(CliError::ProjectNotResolved.into());
     }
+    let choices = projects
+        .iter()
+        .map(|project| Choice::new(super::project_display_name(project), project.path.as_str()))
+        .collect::<Vec<_>>();
+    let index = prompt::select(environment, &streams.out, "Select a Project", &choices, 0)?;
 
-    let output = &mut streams.out;
-    output.line("Select a Project:")?;
-    for (index, project) in projects.iter().enumerate() {
-        output.line(&format!(
-            "{}. {}  {}",
-            index + 1,
-            super::project_display_name(project),
-            project.path
-        ))?;
-    }
-    output.line("Enter selection:")?;
-
-    let selection = environment.read_line()?;
-    let selected_index =
-        selection
-            .trim()
-            .parse::<usize>()
-            .map_err(|_| CliError::InvalidProjectSelection {
-                selection: selection.trim().to_string(),
-                count: projects.len(),
-            })?;
-    let Some(index) = selected_index.checked_sub(1) else {
-        return Err(CliError::InvalidProjectSelection {
-            selection: selection.trim().to_string(),
-            count: projects.len(),
-        }
-        .into());
-    };
-    let Some(project) = projects.get(index).cloned() else {
-        return Err(CliError::InvalidProjectSelection {
-            selection: selection.trim().to_string(),
-            count: projects.len(),
-        }
-        .into());
-    };
-
-    Ok(project)
+    Ok(projects.swap_remove(index))
 }
 
 fn project_env_context(

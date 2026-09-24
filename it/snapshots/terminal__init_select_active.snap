@@ -24,7 +24,7 @@ expression: session.screen()
 │  [x] RustFS/S3
 │
 ◆  Use these selections?
-│  ● Yes (preview the config)
-│  ○ No
-│  ○ Edit
+│  ● Yes  preview the config
+│  ○ No  cancel
+│  ○ Edit  change selections
 └  ↑↓ move · enter confirm

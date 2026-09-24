@@ -12,9 +12,10 @@ use state::{PortAssignment, PortOwner, PvPaths, RuntimeObservedStatus, StateErro
 
 use crate::args::ListArgs;
 use crate::environment::{Environment, artifact_manifest_url};
-use crate::error::ExecuteError;
+use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, Streams};
 use crate::progress::DownloadProgressRenderer;
+use crate::prompt;
 
 pub(crate) struct ArtifactResourceCommandSpec {
     pub resource_name: &'static str,
@@ -95,8 +96,20 @@ pub(crate) fn uninstall(
     let resource_name = ResourceName::new(spec.resource_name)?;
     let track = TrackName::new(track)?;
     let commands = resource_commands(&paths, environment)?;
-    if prune && !force && !confirm_prune(&spec, track.as_str(), environment, streams)? {
-        return Ok(ExitCode::SUCCESS);
+    if prune && !force {
+        let refusal = CliError::ResourcePruneRequiresTerminal {
+            display_name: spec.display_name,
+            resource_name: spec.resource_name,
+            track: track.to_string(),
+        };
+        let message = format!(
+            "Prune PV-owned data for {} track {track}?",
+            spec.display_name
+        );
+        if !prompt::confirm_or(environment, streams, refusal, &message, false)? {
+            streams.out.line("Prune cancelled.")?;
+            return Ok(ExitCode::SUCCESS);
+        }
     }
     let options = ManagedResourceUninstallOptions::new()
         .prune(prune)
@@ -161,42 +174,6 @@ pub(crate) fn list(
     }
 
     Ok(ExitCode::SUCCESS)
-}
-
-fn confirm_prune(
-    spec: &ArtifactResourceCommandSpec,
-    track: &str,
-    environment: &impl Environment,
-    streams: &mut Streams<'_>,
-) -> Result<bool, ExecuteError> {
-    let output = &mut streams.out;
-
-    if !streams.interactive {
-        output.line(&format!(
-            "Refusing to prune {} track {track} without an interactive confirmation.",
-            spec.display_name
-        ))?;
-        output.line(&format!(
-            "Rerun with `pv {}:uninstall {track} --prune --force` to prune non-interactively.",
-            spec.resource_name
-        ))?;
-
-        return Ok(false);
-    }
-
-    output.line(&format!(
-        "Prune PV-owned data for {} track {track}?",
-        spec.display_name
-    ))?;
-    output.line("Type `yes` to continue.")?;
-
-    if environment.read_line()?.trim() == "yes" {
-        return Ok(true);
-    }
-
-    output.line("Prune cancelled.")?;
-
-    Ok(false)
 }
 
 fn write_backing_resource_list(
@@ -399,8 +376,6 @@ fn with_resource_http_client<T>(
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::collections::VecDeque;
     use std::ffi::OsString;
     use std::io;
     use std::path::PathBuf;
@@ -409,8 +384,8 @@ mod tests {
     use camino_tempfile::tempdir;
     use insta::{Settings, assert_debug_snapshot};
     use state::{
-        Database, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackRecord,
-        PortRequest, ProjectManagedResourceInput, PvPaths, RuntimeObservedStatus, RuntimeSubject,
+        Database, LinkProjectInput, ManagedResourceDesiredState, PortRequest,
+        ProjectManagedResourceInput, PvPaths, RuntimeObservedStatus, RuntimeSubject,
     };
 
     use super::*;
@@ -419,14 +394,12 @@ mod tests {
     #[derive(Debug)]
     struct TestEnvironment {
         home: PathBuf,
-        lines: RefCell<VecDeque<String>>,
     }
 
     impl TestEnvironment {
         fn new(home: &Utf8Path) -> Self {
             Self {
                 home: home.as_std_path().to_path_buf(),
-                lines: RefCell::new(VecDeque::new()),
             }
         }
     }
@@ -450,10 +423,6 @@ mod tests {
 
         fn stdin_is_terminal(&self) -> bool {
             false
-        }
-
-        fn read_line(&self) -> io::Result<String> {
-            Ok(self.lines.borrow_mut().pop_front().unwrap_or_default())
         }
 
         fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -480,29 +449,28 @@ mod tests {
 
         database.record_managed_resource_track_installed("redis", "7.2", "7.2.5-pv1", &release)?;
         let mut stdout = Vec::new();
-
         let mut stderr = Vec::new();
-        let exit_code = uninstall(
+
+        let result = uninstall(
             redis_spec(),
             "7.2",
             true,
             false,
             &environment,
             &mut Streams::new(&mut stdout, &mut stderr, Presentation::plain()),
-        )?;
+        );
         let record = database.managed_resource_track("redis", "7.2")?;
 
-        assert_eq!(exit_code, ExitCode::SUCCESS);
+        assert!(matches!(
+            result,
+            Err(ExecuteError::User(
+                CliError::ResourcePruneRequiresTerminal { .. }
+            ))
+        ));
+        assert!(stdout.is_empty());
         assert_eq!(record.desired_state, ManagedResourceDesiredState::Installed);
         assert!(!record.removal_prune);
         assert!(!record.removal_force);
-        with_tempdir_filters(tempdir.path(), || {
-            assert_debug_snapshot!((
-                RunOutput::from_stdout(exit_code, stdout)?,
-                resource_record_snapshot(&record, tempdir.path())?,
-            ));
-            Ok(())
-        })?;
 
         Ok(())
     }
@@ -591,42 +559,6 @@ mod tests {
                 stdout: String::from_utf8(stdout)?,
             })
         }
-    }
-
-    #[derive(Debug)]
-    #[expect(
-        dead_code,
-        reason = "snapshot-only structure is read through derived Debug"
-    )]
-    struct ResourceRecordSnapshot {
-        resource_name: String,
-        track: String,
-        desired_state: String,
-        installed_version: Option<String>,
-        current_artifact_path: Option<String>,
-        usage_count: i64,
-        removal_prune: bool,
-        removal_force: bool,
-    }
-
-    fn resource_record_snapshot(
-        record: &ManagedResourceTrackRecord,
-        root: &Utf8Path,
-    ) -> anyhow::Result<ResourceRecordSnapshot> {
-        Ok(ResourceRecordSnapshot {
-            resource_name: record.resource_name.clone(),
-            track: record.track.clone(),
-            desired_state: format!("{:?}", record.desired_state),
-            installed_version: record.installed_version.clone(),
-            current_artifact_path: record
-                .current_artifact_path
-                .as_ref()
-                .map(|path| path.strip_prefix(root).map(Utf8Path::to_string))
-                .transpose()?,
-            usage_count: record.usage_count,
-            removal_prune: record.removal_prune,
-            removal_force: record.removal_force,
-        })
     }
 
     fn redis_spec() -> ArtifactResourceCommandSpec {

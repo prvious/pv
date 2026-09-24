@@ -82,10 +82,6 @@ impl Environment for TestEnvironment {
         Some(80)
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(String::new())
-    }
-
     fn prompt(&self, prompt: &Prompt<'_>) -> io::Result<Answer> {
         self.prompts.ask(prompt)
     }
