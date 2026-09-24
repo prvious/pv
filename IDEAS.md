@@ -642,7 +642,6 @@ Possible future commands:
 
 ```sh
 pv mysql:export
-pv mysql:import
 pv mysql:snapshot
 pv mysql:restore
 pv mysql:backups
@@ -662,6 +661,10 @@ pv pg:restore
 pv pg:backups
 pv pg:clone
 ```
+
+`pv mysql:import` is specified in issue #350 as an explicit, confirmed import of
+SQL dumps into a linked Project's MySQL track. It is no longer part of this
+deferred list. The other resource-data commands remain future work.
 
 These should stay under explicit resource namespaces. Do not use `db:*`.
 

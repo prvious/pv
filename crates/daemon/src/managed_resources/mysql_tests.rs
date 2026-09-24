@@ -72,6 +72,13 @@ fn mysql_runtime_arguments_disable_x_protocol() -> Result<()> {
         "MySQL runtime args must disable X Protocol: {:#?}",
         spec.arguments
     );
+    assert!(
+        spec.arguments
+            .iter()
+            .any(|argument| argument == "--skip-log-bin"),
+        "MySQL runtime args must disable binary logging: {:#?}",
+        spec.arguments
+    );
     assert_mysql_snapshot(
         tempdir.path(),
         "mysql_runtime_arguments_disable_x_protocol",

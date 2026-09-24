@@ -166,6 +166,7 @@ impl ManagedResourceRuntimeAdapter for MysqlRuntimeAdapter {
                 "--port".to_string(),
                 mysql_port.to_string(),
                 "--mysqlx=0".to_string(),
+                "--skip-log-bin".to_string(),
                 "--socket".to_string(),
                 socket_path.to_string(),
                 "--init-file".to_string(),

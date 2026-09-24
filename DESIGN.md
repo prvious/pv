@@ -1152,6 +1152,12 @@ SQL database creation uses the database provider defaults in v1. PV does not cus
 
 For SQL Resource allocations, PV only ensures the database exists and is reachable. PV does not inspect schemas, run migrations, or manage application database contents. Application schema and framework setup are user-owned.
 
+An explicit, confirmed `pv mysql:import` command may import user-supplied SQL dumps into a linked Project's declared MySQL track. It preflights and transforms the complete dump before starting the `mysql` client. Ordinary reconciliation still neither inspects nor changes application schemas or data.
+
+MySQL import accepts multi-database dumps. A source database matching a declared allocation uses that allocation's persisted `generated_name`. An undeclared user database is created with the normal Project-namespaced allocation naming rule, while `pv.yml` and `pv.db` remain unchanged; the plan warns that it is unmanaged and shows the allocation snippet for later adoption. Known system-schema sections are skipped explicitly, and server-scoped statements outside those sections fail preflight.
+
+PV starts its local MySQL tracks with binary logging disabled. This lets a database-scoped import account create triggers and stored functions without granting it server-wide privileges or temporarily changing a global trust setting. PV does not provide MySQL replication or binary-log backup commands.
+
 PV creates and checks SQL Resource allocation databases through `sqlx` for MySQL and Postgres rather than shelling out to managed `mysql` or `psql` binaries. PV uses `sqlx` only for PV-owned admin operations such as readiness checks and database creation, not for application schema or migrations.
 
 PV uses runtime/dynamic `sqlx` queries for these admin operations. It does not require `sqlx` offline query metadata in v1.
