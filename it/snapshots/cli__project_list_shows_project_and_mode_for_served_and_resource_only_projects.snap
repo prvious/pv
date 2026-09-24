@@ -21,7 +21,7 @@ expression: "(link_served, link_resource_only, list)"
         code: Some(
             0,
         ),
-        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nalpha.test  served  default  unknown  unknown  none  <tempdir>/Zulu Web\nbeta-data  resource-only  default  unknown  unknown  none  <tempdir>/Beta Data\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nalpha.test  served  default  unknown  0  none  <tempdir>/Zulu Web\nbeta-data  resource-only  default  unknown  0  none  <tempdir>/Beta Data\n",
         stderr: "",
     },
 )

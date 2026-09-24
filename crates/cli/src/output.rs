@@ -7,6 +7,10 @@ use textwrap::{Options, WordSeparator, WordSplitter};
 
 use crate::environment::Environment;
 
+mod table;
+
+pub(crate) use table::Table;
+
 const DEFAULT_WIDTH: usize = 80;
 /// Wrapped text never gets narrower than this, even in a tiny terminal.
 const MIN_TEXT_WIDTH: usize = 20;
@@ -157,7 +161,14 @@ impl Tone {
 /// A line of text made of toned spans, such as a message with a cyan value.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct Line {
-    spans: Vec<(Tone, String)>,
+    spans: Vec<Span>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Span {
+    Text(Tone, String),
+    /// A glyph shown only when decorated, such as a table status cell's `✗`.
+    Mark(Mark),
 }
 
 impl Line {
@@ -166,20 +177,34 @@ impl Line {
         Self::from(label).value(value.to_string())
     }
 
-    pub(crate) fn text(mut self, text: impl Into<String>) -> Self {
-        self.spans.push((Tone::Plain, text.into()));
+    pub(crate) fn text(self, text: impl Into<String>) -> Self {
+        self.toned(Tone::Plain, text)
+    }
+
+    pub(crate) fn value(self, text: impl Into<String>) -> Self {
+        self.toned(Tone::Value, text)
+    }
+
+    pub(crate) fn toned(mut self, tone: Tone, text: impl Into<String>) -> Self {
+        self.spans.push(Span::Text(tone, text.into()));
         self
     }
 
-    pub(crate) fn value(mut self, text: impl Into<String>) -> Self {
-        self.spans.push((Tone::Value, text.into()));
-        self
+    /// A status word in its mark's tone, led by the mark's glyph when
+    /// decorated. Plain output omits the glyph, so plain words stay unchanged.
+    pub(crate) fn marked(mark: Mark, text: impl Into<String>) -> Self {
+        Self {
+            spans: vec![Span::Mark(mark), Span::Text(mark.tone(), text.into())],
+        }
     }
 
     pub(crate) fn plain(&self) -> String {
         self.spans
             .iter()
-            .map(|(_tone, text)| text.as_str())
+            .filter_map(|span| match span {
+                Span::Text(_tone, text) => Some(text.as_str()),
+                Span::Mark(_mark) => None,
+            })
             .collect()
     }
 
@@ -187,9 +212,12 @@ impl Line {
     fn paint(&self, base: Tone, color: bool) -> String {
         self.spans
             .iter()
-            .map(|(tone, text)| {
-                let tone = if *tone == Tone::Plain { base } else { *tone };
-                tone.paint(text, color)
+            .map(|span| match span {
+                Span::Text(tone, text) => {
+                    let tone = if *tone == Tone::Plain { base } else { *tone };
+                    tone.paint(text, color)
+                }
+                Span::Mark(mark) => format!("{} ", mark.paint(color)),
             })
             .collect()
     }

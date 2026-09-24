@@ -1,5 +1,5 @@
 ---
-source: crates/cli/tests/list_json.rs
+source: crates/cli/tests/list.rs
 expression: snapshot
 ---
 {

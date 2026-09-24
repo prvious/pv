@@ -17,7 +17,7 @@ use state::{
 use crate::args::{LinkArgs, ListArgs, OpenArgs, ProjectEnvArgs, UnlinkArgs};
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, Streams};
+use crate::output::{Line, Mark, Output, Streams, Table, Tone};
 use crate::prompt::{self, Choice};
 
 pub(crate) fn link(
@@ -74,19 +74,15 @@ pub(crate) fn link(
     } else {
         super::project_display_name(&result.project).to_string()
     };
-    match result.status {
-        LinkProjectStatus::Created => {
-            output.line(&format!("Linked {project_name} -> {}", result.project.path,))?
-        }
-        LinkProjectStatus::Updated => output.line(&format!(
-            "Updated {project_name} -> {}",
-            result.project.path,
-        ))?,
-        LinkProjectStatus::Unchanged => output.line(&format!(
-            "Already linked {project_name} -> {}",
-            result.project.path,
-        ))?,
-    }
+    let (mark, verb) = match result.status {
+        LinkProjectStatus::Created => (Mark::Success, "Linked"),
+        LinkProjectStatus::Updated => (Mark::Success, "Updated"),
+        LinkProjectStatus::Unchanged => (Mark::Idle, "Already linked"),
+    };
+    output.status(
+        mark,
+        Line::field(&format!("{verb} {project_name} -> "), &result.project.path),
+    )?;
     super::request_project_reconciliation(&paths, &result.project, streams)?;
 
     Ok(ExitCode::SUCCESS)
@@ -127,12 +123,9 @@ pub(crate) fn unlink(
     let project = resolve_project(&database, args.hostname.as_deref(), environment)?;
     delete_optional_project_tls_dir(&paths, &project)?;
     let project = database.unlink_project(&project.id)?;
-    let output = &mut streams.out;
-
-    output.line(&format!(
-        "Unlinked {} -> {}",
-        super::project_display_name(&project),
-        project.path
+    streams.out.success(Line::field(
+        &format!("Unlinked {} -> ", super::project_display_name(&project)),
+        &project.path,
     ))?;
     super::request_system_reconciliation(&paths, streams)?;
 
@@ -174,11 +167,11 @@ pub(crate) fn open(
 
     environment.open_url(&url)?;
 
-    streams.out.line(&format!(
-        "Opened {} for {}",
-        url,
-        super::project_display_name(&project)
-    ))?;
+    streams.out.success(
+        Line::from("Opened ")
+            .value(url)
+            .text(format!(" for {}", super::project_display_name(&project))),
+    )?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -259,32 +252,40 @@ pub(crate) fn list(
         return Ok(ExitCode::SUCCESS);
     }
 
-    let output = &mut streams.out;
-
     if projects.is_empty() {
-        output.line("No linked Projects")?;
+        streams.out.note("No linked Projects")?;
         return Ok(ExitCode::SUCCESS);
     }
 
-    output.line("Project  Mode  PHP  Status  Resources  Env  Path")?;
+    let mut table = Table::new(&[
+        "Project",
+        "Mode",
+        "PHP",
+        "Status",
+        "Resources",
+        "Env",
+        "Path",
+    ]);
     for project in projects {
         let status = project_list_status(&database, &project)?;
-        output.line(&format!(
-            "{}  {}  {}  {}  unknown  {}  {}",
-            super::project_display_name(&project),
-            project.mode.as_str(),
-            project.desired_php_track.as_deref().unwrap_or("default"),
-            status.project.as_str(),
-            status.env.as_str(),
-            project.path
-        ))?;
+        let resources = database.project_managed_resources(&project.id)?.len();
+        table.row(vec![
+            Line::from(super::project_display_name(&project)),
+            Line::from(project.mode.as_str()),
+            Line::from(project.desired_php_track.as_deref().unwrap_or("default")),
+            status.project.cell(),
+            Line::from(resources.to_string()),
+            status.env.cell(),
+            Line::default().value(project.path.to_string()),
+        ]);
         if let Some(error) = status.config_error {
-            output.line(&format!("  config: {error}"))?;
+            table.detail(format!("config: {error}"));
         }
         if let Some(detail) = status.env_detail {
-            output.line(&format!("  env: {detail}"))?;
+            table.detail(format!("env: {detail}"));
         }
     }
+    streams.out.table(&table)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -599,6 +600,15 @@ impl ProjectStatus {
             Self::Unknown => "unknown",
         }
     }
+
+    fn cell(&self) -> Line {
+        let mark = match self {
+            Self::ConfigInvalid => Mark::Failure,
+            Self::Unknown => Mark::Idle,
+        };
+
+        Line::marked(mark, self.as_str())
+    }
 }
 
 enum ProjectEnvStatus {
@@ -620,6 +630,17 @@ impl ProjectEnvStatus {
             Self::Rendered => "rendered",
             Self::Warning => "warning",
         }
+    }
+
+    fn cell(&self) -> Line {
+        let tone = match self {
+            Self::Failed | Self::Invalid => Tone::Failure,
+            Self::Warning => Tone::Warning,
+            Self::Rendered => Tone::Success,
+            Self::None | Self::Pending => Tone::Dim,
+        };
+
+        Line::default().toned(tone, self.as_str())
     }
 }
 

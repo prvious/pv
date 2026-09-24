@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
@@ -7,16 +8,18 @@ use std::process::ExitCode;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
-use insta::{Settings, assert_debug_snapshot};
+use insta::{Settings, assert_debug_snapshot, assert_snapshot};
 use state::{
     Database, LinkProjectInput, ManagedResourceTrackInstallInput, PortRequest,
-    ProjectManagedResourceInput, ProjectMode, PvPaths, RuntimeObservedStatus, RuntimeSubject,
+    ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
+    ProjectMode, PvPaths, RuntimeObservedStatus, RuntimeSubject,
 };
 
 #[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
     current_dir: PathBuf,
+    terminal_width: Cell<Option<usize>>,
 }
 
 impl TestEnvironment {
@@ -24,6 +27,7 @@ impl TestEnvironment {
         Self {
             home: home.as_std_path().to_path_buf(),
             current_dir: current_dir.as_std_path().to_path_buf(),
+            terminal_width: Cell::new(None),
         }
     }
 }
@@ -43,6 +47,14 @@ impl Environment for TestEnvironment {
 
     fn current_exe(&self) -> io::Result<PathBuf> {
         Ok(PathBuf::from("/bin/pv"))
+    }
+
+    fn stdout_is_terminal(&self) -> bool {
+        self.terminal_width.get().is_some()
+    }
+
+    fn terminal_width(&self) -> Option<usize> {
+        self.terminal_width.get()
     }
 
     fn stdin_is_terminal(&self) -> bool {
@@ -170,6 +182,82 @@ fn list_json_sorts_projects_by_displayed_value() -> anyhow::Result<()> {
 }
 
 #[test]
+fn list_on_a_terminal_aligns_columns_or_stacks_records_by_width() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let served = tempdir.path().join("acme");
+    let resource_only = tempdir.path().join("Billing Worker");
+    create_dir(&served)?;
+    create_dir(&resource_only)?;
+    write_file(
+        &served.join("pv.yml"),
+        "env:\n  APP_URL: \"${project_url}\"\n",
+    )?;
+    write_file(&resource_only.join("pv.yml"), "unexpected: true\n")?;
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home, &served);
+    let empty = render_list_on_terminal(&environment, 80)?;
+    let mut database = Database::open(&paths)?;
+    let project = database
+        .link_project(LinkProjectInput {
+            path: served.clone(),
+            original_path: served.clone(),
+            primary_hostname: "acme.test".to_string(),
+            config_path: served.join("pv.yml"),
+            desired_php_track: Some("8.4".to_string()),
+            additional_hostnames: Vec::new(),
+        })?
+        .project;
+    database.record_project_env_observed_snapshot(
+        &project.id,
+        ProjectEnvObservedStatus::Warning,
+        Some("rendered with warnings"),
+        &[ProjectEnvObservedWarningInput {
+            kind: "duplicate_key".to_string(),
+            message: "APP_URL already exists outside the PV block".to_string(),
+        }],
+    )?;
+    database.replace_project_managed_resources(
+        &project.id,
+        &[
+            ProjectManagedResourceInput {
+                resource_name: "mysql".to_string(),
+                track: "8.0".to_string(),
+            },
+            ProjectManagedResourceInput {
+                resource_name: "redis".to_string(),
+                track: "7.4".to_string(),
+            },
+        ],
+    )?;
+    database.link_project_with_mode(
+        LinkProjectInput {
+            path: resource_only.clone(),
+            original_path: resource_only.clone(),
+            primary_hostname: "ignored.test".to_string(),
+            config_path: resource_only.join("pv.yml"),
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        },
+        ProjectMode::ResourceOnly,
+    )?;
+    drop(database);
+
+    // Temp paths differ in length across machines, so the aligned render uses
+    // a width every path fits in and the stacked renders one none fits in.
+    let wide = render_list_on_terminal(&environment, 200)?;
+    let narrow = render_list_on_terminal(&environment, 60)?;
+
+    tempdir_settings(tempdir.path()).bind(|| {
+        assert_snapshot!("list_on_a_terminal_empty", empty);
+        assert_snapshot!("list_on_a_terminal_at_200_columns", wide);
+        assert_snapshot!("list_on_a_terminal_at_60_columns", narrow);
+    });
+
+    Ok(())
+}
+
+#[test]
 fn resource_list_json_outputs_installed_tracks_and_aliases() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -268,6 +356,17 @@ fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOu
     })
 }
 
+fn render_list_on_terminal(environment: &TestEnvironment, width: usize) -> anyhow::Result<String> {
+    environment.terminal_width.set(Some(width));
+    let output = run_pv(&["list", "--no-color"], environment);
+    environment.terminal_width.set(None);
+    let output = output?;
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stderr.is_empty());
+
+    Ok(output.stdout)
+}
+
 fn parse_json_output(output: RunOutput) -> anyhow::Result<serde_json::Value> {
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
@@ -359,7 +458,7 @@ fn collect_listed_resources(json: &serde_json::Value, listed_resources: &mut Vec
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "CLI list JSON tests create fixture directories"
+    reason = "CLI list tests create fixture directories"
 )]
 fn create_dir(path: &Utf8Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(path)?;
@@ -369,7 +468,7 @@ fn create_dir(path: &Utf8Path) -> anyhow::Result<()> {
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "CLI list JSON tests write fixture config files"
+    reason = "CLI list tests write fixture config files"
 )]
 fn write_file(path: &Utf8Path, contents: &str) -> anyhow::Result<()> {
     std::fs::write(path, contents)?;
@@ -377,14 +476,19 @@ fn write_file(path: &Utf8Path, contents: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn tempdir_settings(tempdir: &Utf8Path) -> Settings {
+    let mut settings = Settings::clone_current();
+    settings.add_filter(tempdir.as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings
+}
+
 fn assert_list_json_snapshot(
     name: &'static str,
     tempdir: &Utf8Path,
     snapshot: &impl std::fmt::Debug,
 ) {
-    let mut settings = Settings::clone_current();
-    settings.add_filter(tempdir.as_str(), "<tempdir>");
-    settings.add_filter("/private<tempdir>", "<tempdir>");
+    let mut settings = tempdir_settings(tempdir);
     settings.add_filter(r#"String\("[a-z0-9]{10}"\)"#, r#"String("<project-id>")"#);
     settings.bind(|| {
         assert_debug_snapshot!(name, snapshot);
