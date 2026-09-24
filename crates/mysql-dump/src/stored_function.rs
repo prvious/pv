@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use squonk::dialect::{BuiltinDialect, tokenize_with_builtin};
 use squonk::tokenizer::{Punctuation, Token, TokenKind};
+use squonk::{ParseConfig, ast::Statement, dialect::MySql};
 use thiserror::Error;
 
 const MAX_FUNCTION_BYTES: usize = 8 * 1024 * 1024;
@@ -20,11 +21,14 @@ pub enum StoredFunctionError {
     UnsupportedSelectInto,
     #[error("stored function analysis changed UTF-8 boundaries")]
     InvalidNormalization,
+    #[error("unsupported stored function syntax: {message}")]
+    UnsupportedSyntax { message: String },
 }
 
 /// Make a generated MySQL function parseable for analysis while keeping every
-/// byte offset unchanged. Only a `SELECT … INTO <declared-local-variable>` clause
-/// is masked; the original SQL must be retained for output. This does not by
+/// byte offset unchanged. Only `INTO <declared-local-variable>` is masked;
+/// the SELECT expression remains visible for safety checks. The original SQL
+/// must be retained for output. This does not by
 /// itself authorize the function's effects or database references.
 pub fn normalize_stored_function_for_analysis(
     source: &str,
@@ -108,7 +112,17 @@ pub fn normalize_stored_function_for_analysis(
             }
         }
     }
-    String::from_utf8(normalized).map_err(|_| StoredFunctionError::InvalidNormalization)
+    let normalized =
+        String::from_utf8(normalized).map_err(|_| StoredFunctionError::InvalidNormalization)?;
+    let parsed = squonk::parse_with(&normalized, ParseConfig::new(MySql)).map_err(|error| {
+        StoredFunctionError::UnsupportedSyntax {
+            message: error.to_string(),
+        }
+    })?;
+    if !matches!(parsed.statements(), [Statement::CreateFunction { .. }]) {
+        return Err(StoredFunctionError::WrongStatement);
+    }
+    Ok(normalized)
 }
 
 fn token_text(source: &str, token: Token) -> Option<&str> {

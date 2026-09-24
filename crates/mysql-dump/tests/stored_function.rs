@@ -59,3 +59,9 @@ fn dollar_delimiter_and_select_expression_remain_visible() -> Result<(), Box<dyn
     assert!(squonk::parse_with(&normalized, squonk::ParseConfig::new(MySql)).is_ok());
     Ok(())
 }
+
+#[test]
+fn extra_statement_in_function_frame_is_rejected() {
+    let source = "CREATE FUNCTION f() RETURNS int RETURN 1; DROP DATABASE other;;";
+    assert!(normalize_stored_function_for_analysis(source, b";;").is_err());
+}
