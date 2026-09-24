@@ -10,6 +10,7 @@ expression: snapshot
     "--port",
     "3307",
     "--mysqlx=0",
+    "--skip-log-bin",
     "--socket",
     "<tempdir>/home/.pv/run/resources/mysql-8.0.sock",
     "--init-file",
