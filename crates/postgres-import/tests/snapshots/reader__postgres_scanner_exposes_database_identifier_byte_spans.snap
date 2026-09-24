@@ -1,0 +1,51 @@
+---
+source: crates/postgres-import/tests/reader.rs
+expression: "(database_name, tokens)"
+---
+(
+    Some(
+        "Mixed-Name",
+    ),
+    [
+        (
+            0,
+            6,
+            "CREATE",
+        ),
+        (
+            7,
+            15,
+            "DATABASE",
+        ),
+        (
+            16,
+            28,
+            "\"Mixed-Name\"",
+        ),
+        (
+            29,
+            33,
+            "WITH",
+        ),
+        (
+            34,
+            42,
+            "TEMPLATE",
+        ),
+        (
+            43,
+            44,
+            "=",
+        ),
+        (
+            45,
+            54,
+            "template0",
+        ),
+        (
+            54,
+            55,
+            ";",
+        ),
+    ],
+)

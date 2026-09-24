@@ -1,0 +1,30 @@
+---
+source: crates/postgres-import/tests/reader.rs
+expression: results
+---
+[
+    (
+        "17.11 plain",
+        Plain,
+    ),
+    (
+        "17.11 custom",
+        Custom,
+    ),
+    (
+        "17.11 tar",
+        Tar,
+    ),
+    (
+        "18.6 plain",
+        Plain,
+    ),
+    (
+        "18.6 custom",
+        Custom,
+    ),
+    (
+        "18.6 tar",
+        Tar,
+    ),
+]

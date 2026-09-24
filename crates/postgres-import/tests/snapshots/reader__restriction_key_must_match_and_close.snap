@@ -1,0 +1,18 @@
+---
+source: crates/postgres-import/tests/reader.rs
+expression: errors
+---
+[
+    Some(
+        "psql restriction key on line 2 is missing or mismatched",
+    ),
+    Some(
+        "psql restriction beginning before line 2 is not closed",
+    ),
+    Some(
+        "psql restriction key on line 1 is missing or mismatched",
+    ),
+    Some(
+        "psql restriction key on line 2 is missing or mismatched",
+    ),
+]
