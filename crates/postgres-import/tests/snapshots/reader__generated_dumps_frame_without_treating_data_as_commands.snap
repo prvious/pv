@@ -1,0 +1,90 @@
+---
+source: crates/postgres-import/tests/reader.rs
+expression: results
+---
+[
+    (
+        "17.11 plain",
+        DumpSummary {
+            statements: 37,
+            meta_commands: 2,
+            copy_rows: 2,
+            connections: [],
+            encodings: [],
+        },
+    ),
+    (
+        "17.11 create",
+        DumpSummary {
+            statements: 62,
+            meta_commands: 8,
+            copy_rows: 2,
+            connections: [
+                "admin",
+                "admin",
+            ],
+            encodings: [],
+        },
+    ),
+    (
+        "17.11 all",
+        DumpSummary {
+            statements: 162,
+            meta_commands: 27,
+            copy_rows: 5,
+            connections: [
+                "template1",
+                "Mixed-Name",
+                "admin",
+                "admin",
+                "analytics",
+                "postgres",
+            ],
+            encodings: [
+                "SQL_ASCII",
+            ],
+        },
+    ),
+    (
+        "18.6 plain",
+        DumpSummary {
+            statements: 37,
+            meta_commands: 2,
+            copy_rows: 2,
+            connections: [],
+            encodings: [],
+        },
+    ),
+    (
+        "18.6 create",
+        DumpSummary {
+            statements: 62,
+            meta_commands: 8,
+            copy_rows: 2,
+            connections: [
+                "admin",
+                "admin",
+            ],
+            encodings: [],
+        },
+    ),
+    (
+        "18.6 all",
+        DumpSummary {
+            statements: 162,
+            meta_commands: 27,
+            copy_rows: 5,
+            connections: [
+                "template1",
+                "Mixed-Name",
+                "admin",
+                "admin",
+                "analytics",
+                "postgres",
+            ],
+            encodings: [
+                "SQL_ASCII",
+            ],
+        },
+    ),
+]

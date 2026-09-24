@@ -1152,6 +1152,12 @@ SQL database creation uses the database provider defaults in v1. PV does not cus
 
 For SQL Resource allocations, PV only ensures the database exists and is reachable. PV does not inspect schemas, run migrations, or manage application database contents. Application schema and framework setup are user-owned.
 
+An explicit `pv postgres:import` or `pv pg:import` command may import user-supplied database contents into a linked Project's Postgres track after complete preflight and confirmation. This is a user-initiated data operation; ordinary reconciliation still neither inspects nor changes application schemas or data.
+
+Postgres import accepts multi-database `pg_dumpall` scripts. Its plan explicitly lists cluster-global roles, memberships, and tablespaces that it skips; it also skips contents of the `postgres` maintenance database unless the user explicitly maps that source database. Dump SQL runs under a temporary restricted PostgreSQL login role, never under `pv_root`. During execution, temporary PV-owned `pg_hba.conf` rules permit that role to connect only to mapped targets. PV verifies the rules before executing dump SQL and removes the role and rules after import. A preflight or isolation setup failure executes no dump SQL.
+
+Postgres import rejects `SECURITY DEFINER` functions and procedures during preflight. The temporary import role cannot be removed while it owns imported objects, and reassigning such functions to the track-wide `pv_root` superuser would increase their execution privileges.
+
 PV creates and checks SQL Resource allocation databases through `sqlx` for MySQL and Postgres rather than shelling out to managed `mysql` or `psql` binaries. PV uses `sqlx` only for PV-owned admin operations such as readiness checks and database creation, not for application schema or migrations.
 
 PV uses runtime/dynamic `sqlx` queries for these admin operations. It does not require `sqlx` offline query metadata in v1.

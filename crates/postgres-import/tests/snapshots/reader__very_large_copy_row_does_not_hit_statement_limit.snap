@@ -1,0 +1,11 @@
+---
+source: crates/postgres-import/tests/reader.rs
+expression: inspect_plain_dump(header.chain(row).chain(end))?
+---
+DumpSummary {
+    statements: 2,
+    meta_commands: 0,
+    copy_rows: 1,
+    connections: [],
+    encodings: [],
+}

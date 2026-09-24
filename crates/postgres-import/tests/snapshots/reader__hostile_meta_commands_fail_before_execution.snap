@@ -1,0 +1,27 @@
+---
+source: crates/postgres-import/tests/reader.rs
+expression: errors
+---
+[
+    Some(
+        "unsupported psql command on line 1: \\! touch /tmp/should-not-run",
+    ),
+    Some(
+        "unsupported psql command on line 1: \\include /tmp/should-not-run",
+    ),
+    Some(
+        "unsupported psql command on line 1: \\include_relative other.sql",
+    ),
+    Some(
+        "unsupported psql command on line 1: \\copy public.proof FROM PROGRAM 'touch /tmp/should-not-run'",
+    ),
+    Some(
+        "unsupported psql command on line 1: \\connect admin host=other",
+    ),
+    Some(
+        "unsupported psql command on line 1: \\connect postgresql://other/db",
+    ),
+    Some(
+        "unsupported psql command on line 1: \\connect -reuse-previous=on \"dbname='admin' host=other\"",
+    ),
+]

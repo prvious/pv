@@ -11,6 +11,7 @@ members = [
     "crates/config",
     "crates/daemon",
     "crates/platform",
+    "crates/postgres-import",
     "crates/privileged-helper",
     "crates/protocol",
     "crates/pv-release",
@@ -51,6 +52,7 @@ libc = "0.2"
 linemux = "0.3.0"
 nix = { version = "0.31.3", features = ["socket", "user"] }
 object_store = { version = "0.13.2", default-features = false, features = ["aws"] }
+pg_query = "=6.2.0"
 rcgen = { version = "0.14.8", features = ["x509-parser"] }
 redis = { version = "1.2.2", default-features = false, features = ["tokio-comp"] }
 rusqlite = { version = "0", features = ["bundled"] }
