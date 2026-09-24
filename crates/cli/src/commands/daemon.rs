@@ -160,7 +160,9 @@ pub(crate) fn run() -> Result<ExitCode, ExecuteError> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Refuses to touch a LaunchAgent file PV does not own or cannot read.
+/// Returns success when PV may touch the LaunchAgent file; otherwise writes
+/// the refusal to stderr and returns failure, for a file PV does not own or
+/// cannot read.
 fn refuse_launch_agent(
     stderr: &mut Output<'_>,
     state: &LaunchAgentFileState,
@@ -209,10 +211,7 @@ fn submit_system_reconciliation(
     output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     let submitted = ::daemon::submit_job_blocking(paths, RECONCILE_KIND, super::SYSTEM_SCOPE)?;
-    output.follow_up(Line::field(
-        "System reconciliation requested: ",
-        &submitted.id,
-    ))?;
+    super::write_reconciliation_requested(output, &submitted.id)?;
 
     Ok(())
 }

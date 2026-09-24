@@ -1,7 +1,7 @@
 //! Keyboard prompts behind a PV-owned adapter.
 //!
-//! Commands describe a [`Prompt`] and receive a PV [`Answer`]; only
-//! [`interact`] knows about Cliclack. Prompts render on stderr and require
+//! Commands describe a [`Prompt`] and receive a PV [`Answer`]; only this
+//! module knows about Cliclack. Prompts render on stderr and require
 //! stdin and stderr to be terminals, which callers check through
 //! `Streams::interactive` before prompting, because each command documents
 //! its own non-interactive behavior.
@@ -122,7 +122,7 @@ pub(crate) fn multiselect(
     }
 }
 
-/// Asks for text; an empty answer returns `default`. The answer is trimmed.
+/// Asks for text. The answer is trimmed, and a blank one returns `default`.
 pub(crate) fn text(
     environment: &impl Environment,
     output: &Output<'_>,
@@ -136,6 +136,9 @@ pub(crate) fn text(
         message,
         PromptKind::Text { default, validator },
     )? {
+        // Cliclack fills in the default only for an empty answer, not a
+        // blank one.
+        Answer::Text(text) if text.trim().is_empty() => Ok(default.to_string()),
         Answer::Text(text) => Ok(text.trim().to_string()),
         answer => Err(unexpected(&answer)),
     }
@@ -165,7 +168,7 @@ fn ask(
 ) -> Result<Answer, ExecuteError> {
     let prompt = Prompt {
         message,
-        joined: output.surface().decorated() && output.in_flow(),
+        joined: output.in_flow(),
         kind,
     };
     match environment.prompt(&prompt)? {
@@ -215,7 +218,8 @@ pub(crate) fn interact(prompt: &Prompt<'_>) -> io::Result<Answer> {
                 input.default_input(default)
             };
             if let Some(validator) = validator {
-                input = input.validate(move |value: &String| validator(value));
+                // The answer is trimmed, so validate what will be used.
+                input = input.validate(move |value: &String| validator(value.trim()));
             }
             input.interact::<String>().map(Answer::Text)
         }

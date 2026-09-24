@@ -49,8 +49,9 @@ impl Output<'_> {
     ///
     /// A plain surface gets the header and rows joined by two spaces. A
     /// decorated surface gets aligned borderless columns, or, when those do
-    /// not fit the width, one stacked block of `label value` lines per record
-    /// so no field is dropped and nothing scrolls horizontally.
+    /// not fit the width, one stacked block per record: the first cell as its
+    /// title, then a `label  value` line per remaining column, so no field is
+    /// dropped and nothing scrolls horizontally.
     pub(crate) fn table(&mut self, table: &Table) -> io::Result<()> {
         self.continuation = INDENT.to_string();
         if !self.surface.decorated {

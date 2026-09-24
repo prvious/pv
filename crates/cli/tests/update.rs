@@ -1966,7 +1966,9 @@ mod update_tests {
             })]
         );
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        // Only progress reaches stderr: no warning and no error.
         assert!(!output.stderr.contains("error:"));
+        assert!(!output.stderr.contains("warning:"));
         assert_eq!(
             layout.active_release()?,
             Some(CURRENT_APP_VERSION.to_string())

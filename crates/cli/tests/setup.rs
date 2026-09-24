@@ -188,6 +188,10 @@ impl Environment for TestEnvironment {
         lock(&self.terminal_width).is_some()
     }
 
+    fn stderr_is_terminal(&self) -> bool {
+        lock(&self.terminal_width).is_some()
+    }
+
     fn terminal_width(&self) -> Option<usize> {
         *lock(&self.terminal_width)
     }
@@ -1121,6 +1125,7 @@ fn setup_and_uninstall_on_a_terminal_render_flows() -> anyhow::Result<()> {
     with_normalized_tempdir(tempdir.path(), || {
         assert_snapshot!("setup_on_a_terminal", setup.stdout);
         assert_snapshot!("uninstall_on_a_terminal", uninstall.stdout);
+        assert_snapshot!("uninstall_on_a_terminal_stderr", uninstall.stderr);
     });
 
     Ok(())
@@ -1143,11 +1148,13 @@ fn setup_stops_at_a_failed_required_step_on_both_surfaces() -> anyhow::Result<()
 
     assert_eq!(plain.exit_code, ExitCode::FAILURE);
     assert_eq!(decorated.exit_code, ExitCode::FAILURE);
-    assert!(!plain.stderr.contains("error:"));
-    assert!(!decorated.stderr.contains("error:"));
     with_normalized_tempdir(tempdir.path(), || {
         assert_snapshot!("setup_stops_at_a_failed_required_step_plain", plain.stdout);
         assert_snapshot!("setup_stops_at_a_failed_required_step", decorated.stdout);
+        assert_snapshot!(
+            "setup_stops_at_a_failed_required_step_stderr",
+            format!("plain:\n{}decorated:\n{}", plain.stderr, decorated.stderr)
+        );
     });
 
     Ok(())

@@ -436,17 +436,14 @@ fn runtime_mark(status: Option<RuntimeObservedStatus>) -> Mark {
     }
 }
 
-/// Announces the helper installation that macOS will ask an administrator
-/// password for. It is a stderr row, like the prompt it introduces.
-fn write_installing_helper(
-    stderr: &mut Output<'_>,
-    version: impl std::fmt::Display,
-    protocol_version: u32,
-) -> io::Result<()> {
-    stderr.flow_label(
-        Mark::Active,
-        format!("Installing privileged helper {version} (protocol {protocol_version})"),
-    )
+/// Announces a step that sudo will ask an administrator password for, as an
+/// active stderr step like the prompt it introduces. The step must then run
+/// live, without a spinner or captured rows, so the prompt stays visible.
+fn write_administrator_step(stderr: &mut Output<'_>, line: String) -> io::Result<()> {
+    if !stderr.surface().decorated() {
+        return Ok(());
+    }
+    stderr.flow_step(Mark::Active, line)
 }
 
 /// Reports how many tracks an update changed; nothing changed is a no-op.

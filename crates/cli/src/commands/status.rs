@@ -319,21 +319,20 @@ impl DaemonStatus {
         } else {
             "unhealthy"
         };
-        let state = match &launch_agent {
-            LaunchAgentFileState::Missing { .. } if socket == "missing" => "disabled",
-            LaunchAgentFileState::Missing { .. } if socket == "healthy" => "socket-only",
-            LaunchAgentFileState::Missing { .. } => "socket-stale",
-            LaunchAgentFileState::Current { .. } if socket == "healthy" => "running",
-            LaunchAgentFileState::Current { .. } => "down",
-            LaunchAgentFileState::Stale { .. } => "repair-required",
-            LaunchAgentFileState::Conflict { .. } => "repair-required",
-            LaunchAgentFileState::Unreadable { .. } => "unknown",
-        };
-        let mark = match state {
-            "running" => Mark::Running,
-            "disabled" => Mark::Idle,
-            "down" | "repair-required" | "socket-stale" => Mark::Failure,
-            _ => Mark::Warning,
+        let (state, mark) = match &launch_agent {
+            LaunchAgentFileState::Missing { .. } if socket == "missing" => ("disabled", Mark::Idle),
+            LaunchAgentFileState::Missing { .. } if socket == "healthy" => {
+                ("socket-only", Mark::Warning)
+            }
+            LaunchAgentFileState::Missing { .. } => ("socket-stale", Mark::Failure),
+            LaunchAgentFileState::Current { .. } if socket == "healthy" => {
+                ("running", Mark::Running)
+            }
+            LaunchAgentFileState::Current { .. } => ("down", Mark::Failure),
+            LaunchAgentFileState::Stale { .. } | LaunchAgentFileState::Conflict { .. } => {
+                ("repair-required", Mark::Failure)
+            }
+            LaunchAgentFileState::Unreadable { .. } => ("unknown", Mark::Warning),
         };
 
         Ok(Self {

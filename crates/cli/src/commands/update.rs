@@ -710,10 +710,13 @@ fn run_app_update_phase(
 
     let mut helper_install_cleanup_warning = None;
     if helper_update_required {
-        super::write_installing_helper(
+        super::write_administrator_step(
             stderr,
-            asset.helper().version(),
-            asset.helper().protocol_version(),
+            format!(
+                "Installing privileged helper {} (protocol {})",
+                asset.helper().version(),
+                asset.helper().protocol_version()
+            ),
         )?;
         let prepared_directory = paths.config().join("helper");
         let install_result = environment.install_privileged_helper(

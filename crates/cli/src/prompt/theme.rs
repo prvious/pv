@@ -6,8 +6,9 @@ use crate::output::Tone;
 
 /// The terminal design's prompt treatment: `◆` active and `◇` answered
 /// markers, a dim `│` gutter, `●`/`○` radios, `[x]`/`[ ]` checkboxes, and a
-/// key hint in the footer. Colors share the output rows' tones; `console`
-/// disables them for `NO_COLOR` and `--no-color`.
+/// key hint in the footer. Colors share the output rows' tones;
+/// `Environment::set_terminal_colors` disables them when stderr has no color
+/// (`NO_COLOR`, `--no-color`, or no terminal).
 pub(super) struct PvTheme {
     hint: &'static str,
     /// Whether the prompt continues an open flow and opens with a `│` line.

@@ -327,7 +327,7 @@ fn select_project(
     streams: &mut Streams<'_>,
 ) -> Result<ProjectRecord, ExecuteError> {
     if projects.is_empty() {
-        return Err(CliError::ProjectNotResolved.into());
+        return Err(CliError::NoServedProjects.into());
     }
     let choices = projects
         .iter()
@@ -455,9 +455,11 @@ fn resolve_project_selector(
 ) -> Result<ResolvedProjectSelector, ExecuteError> {
     if selector.contains('.') {
         let hostname = config::normalize_primary_hostname(selector)?;
-        let project = database
-            .project_by_hostname(&hostname)?
-            .ok_or(CliError::ProjectNotResolved)?;
+        let project = database.project_by_hostname(&hostname)?.ok_or_else(|| {
+            CliError::ProjectSelectorNotFound {
+                selector: selector.to_string(),
+            }
+        })?;
 
         return Ok(ResolvedProjectSelector {
             project,
@@ -492,7 +494,10 @@ fn resolve_project_selector(
         });
     }
 
-    Err(CliError::ProjectNotResolved.into())
+    Err(CliError::ProjectSelectorNotFound {
+        selector: selector.to_string(),
+    }
+    .into())
 }
 
 fn served_project_hostname(project: &ProjectRecord) -> Result<&str, ExecuteError> {

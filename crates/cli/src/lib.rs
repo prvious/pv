@@ -19,8 +19,7 @@ use clap::{CommandFactory, FromArgMatches};
 pub use environment::{Environment, ProcessEnvironment};
 pub use error::CliError;
 use error::ExecuteError;
-pub use output::{Output, Surface};
-use output::{Presentation, Streams};
+use output::{Presentation, Streams, Surface};
 pub use prompt::{Answer, Choice, Prompt, PromptKind, Validator};
 
 pub fn run<I, Argument>(
@@ -76,21 +75,28 @@ fn finish_execution(
     result: Result<ExitCode, ExecuteError>,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode> {
-    // A cancelled prompt has already closed the flow with its own footer.
-    let cancelled = matches!(result, Err(ExecuteError::User(CliError::PromptCancelled)));
-    let succeeded = matches!(result, Ok(exit_code) if exit_code == ExitCode::SUCCESS);
-    if !cancelled && !succeeded {
-        streams.out.flow_stopped()?;
-    }
+    // A failed command's open flow closes before its error. A cancelled
+    // prompt has already closed it with its own footer. The close is reported
+    // after the error, so a broken stdout never hides the real failure.
+    let closed = match &result {
+        Ok(exit_code) if *exit_code == ExitCode::SUCCESS => Ok(()),
+        Err(ExecuteError::User(CliError::PromptCancelled)) => Ok(()),
+        _ => streams.out.flow_stopped(),
+    };
     let message = match result {
-        Ok(exit_code) => return Ok(exit_code),
-        // The prompt has already drawn its cancelled state.
+        Ok(exit_code) => {
+            closed?;
+            return Ok(exit_code);
+        }
         Err(ExecuteError::User(CliError::PromptCancelled)) => return Ok(ExitCode::from(130)),
-        Err(ExecuteError::Daemon(error)) => return Err(error.into()),
-        Err(ExecuteError::State(error)) => return Err(error.into()),
+        // Daemon and state errors keep their cause chain, as `main` prints
+        // them.
+        Err(ExecuteError::Daemon(error)) => format!("{:#}", anyhow::Error::from(error)),
+        Err(ExecuteError::State(error)) => format!("{:#}", anyhow::Error::from(error)),
         Err(error) => error.to_string(),
     };
     streams.err.error(&message)?;
+    closed?;
 
     Ok(ExitCode::FAILURE)
 }

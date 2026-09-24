@@ -1575,11 +1575,17 @@ Each human-facing stream is rendered in one of two forms, chosen independently f
 - **Decorated** when the stream is a terminal: the glyph column, `┌ │ └` gutter flows for multi-step commands, command headings, section headings, report tables, repair hints, and semantic color, as in the terminal designs.
 - **Plain** when the stream is not a terminal: the plain lines documented throughout this document, with no glyphs, ANSI escapes, spinners, or bars.
 
+Plain output keeps each command's words and follows the same order as its decorated form:
+
+- Lines that explain the row above them, such as a refusal's `Leaving it in place.` or the fields of `pv ports:status`, are indented two spaces like other sub-lines, and repair commands read `  repair: `<command>``.
+- `pv doctor` lists its checks grouped as System, Routing, and Daemon & jobs, in plain and JSON output alike.
+- A flow's plain output starts with its title (`PV setup`, `PV update`, `PV init`) and reports its outcome last. `pv init` prints its detection summary before `Wrote Project config: <path>`.
+
 Decorated output uses color only when neither `NO_COLOR` nor the global `--no-color` flag is set; without color it keeps its layout and glyphs. Color never carries meaning alone: every glyph accompanies a status word or outcome text. PV uses the terminal's default foreground for ordinary text plus a small ANSI palette (success green, warning yellow, error red, values cyan, active/prompt magenta, labels dim). PV does not detect the terminal background and does not offer user themes.
 
 Glyph vocabulary: `✓` success, `✗` failure, `⚠` warning, `○` no-op or idle, `●` running or default, `◇` completed flow step or answered prompt, `◆` active step or prompt, `│` gutter (`┌` opens, `└` closes a flow), `↳` hint or repair command, `◐` spinner. When a command's outcome depends on the states it reports, such as `pv status`, `pv doctor`, and `pv ports:status` exiting non-zero, each row's glyph agrees with that outcome: `✗` marks exactly what fails the command, and `⚠` marks something worth attention that does not.
 
-Decorated output reflows to the terminal width (80 columns when the width is unknown) and never needs horizontal scrolling. A table that does not fit reflows each record into stacked `label: value` rows without dropping fields. Secondary prose wraps at word boundaries; paths, hostnames, URLs, versions, and identifiers are never split. Plain output does not depend on width.
+Decorated output reflows to the terminal width (80 columns when the width is unknown) and never needs horizontal scrolling. A table that does not fit reflows each record into a stacked block, the first field as its title and then one `label  value` line per remaining field, without dropping fields. Secondary prose wraps at word boundaries; paths, hostnames, URLs, versions, and identifiers are never split. Plain output does not depend on width.
 
 ### Flows
 
@@ -1590,7 +1596,7 @@ Multi-step commands (`pv setup`, `pv uninstall`, `pv update`, and `pv init`) ren
 - **A command that fails with its flow still open** closes it with `└ ✗ <title> stopped` before the error is printed on stderr. A cancelled prompt closes the flow with its own cancelled state instead.
 - **`pv update`'s re-executed continuation** resumes the flow the updating process opened instead of starting a new one.
 
-Plain output prints only the documented lines: flow titles, steps, and outcomes that have plain text keep it, and decorated-only titles, spinners, and stopped markers are omitted.
+Plain output prints only the documented lines: flow titles, steps, and outcomes that have plain text keep it, while decorated-only step titles, spinners, and the `<title> stopped` closer are omitted. A failed required step still prints `PV stopped during <step>.`
 
 ### Raw output
 
@@ -1604,11 +1610,11 @@ PV styles only structure it owns. These payloads are never decorated, wrapped, m
 
 PV prompts only when the command contract permits it, stdin and stderr are both terminals, and `--non-interactive` (where the command supports it) is not active. Otherwise the command takes its documented non-interactive path or refuses with an error on stderr that names the flag to rerun with. Prompts render on stderr.
 
-- **Confirm:** `y` and `n` answer immediately; Enter accepts the highlighted default; arrow keys and `h`/`j`/`k`/`l` move between Yes and No. Confirmations for the action the user just asked for (installing the privileged helper, updating the shell profile, writing `pv init` config) default to Yes.
-- **Select:** Up/Down or `j`/`k` move; Enter submits the highlighted choice.
-- **Multi-select:** Up/Down or `j`/`k` move; Space toggles; Enter submits.
+- **Confirm:** `y` and `n` answer immediately; Enter accepts the highlighted answer, initially the default; arrow keys and `h`/`j`/`k`/`l` move between Yes and No. Confirmations for the action the user just asked for (installing the privileged helper, updating the shell profile, writing `pv init` config) default to Yes.
+- **Select:** Up/Down (also Left/Right, `j`/`k`, `h`/`l`) move; Enter submits the highlighted choice.
+- **Multi-select:** Up/Down (also Left/Right, `j`/`k`, `h`/`l`) move; Space toggles; Enter submits.
 - **Text:** Enter submits; an empty answer keeps the shown default; an invalid value is explained inline and asked again.
-- **Destructive confirmation** (`--prune`): the same confirm prompt, defaulting to No, so Enter alone never deletes data. `--force` skips it.
+- **Destructive confirmation** (`pv uninstall --prune` and `pv <resource>:uninstall --prune`): the same confirm prompt, defaulting to No, so Enter alone never deletes data. `--force` skips it.
 - **Cancellation:** Escape or Ctrl-C cancels the prompt, restores the terminal, shows the prompt as cancelled, and exits with status 130 without a panic or backtrace. Steps that completed before the prompt stay completed.
 - **Completed prompt:** once answered, a prompt collapses to its question and the chosen value instead of leaving the full list behind.
 

@@ -28,7 +28,7 @@ pub(crate) fn run(
         yaml_serde::to_string(&config).map_err(|source| config::ConfigError::Parse { source })?;
 
     if args.print {
-        streams.out.raw(&content)?;
+        write!(streams.out.writer(), "{content}")?;
         return Ok(ExitCode::SUCCESS);
     }
 

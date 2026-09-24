@@ -378,11 +378,16 @@ pub(crate) fn uninstall(
     })? {
         return Ok(ExitCode::FAILURE);
     }
-    if !run_required_step("privileged helper removal", streams, |streams| {
-        remove_helper_for_uninstall(environment, streams)
-    })? {
-        return Ok(ExitCode::FAILURE);
+    // sudo asks for the password in this terminal, so the step runs live
+    // and is titled once it finishes, like the captured steps.
+    super::write_administrator_step(&mut streams.err, "Removing privileged helper".to_string())?;
+    environment.remove_privileged_helper()?;
+    if streams.out.surface().decorated() {
+        streams
+            .out
+            .flow_step(Mark::Done, "privileged helper removal")?;
     }
+    streams.out.success("Privileged helper removed")?;
     if remove_shell_integration(environment, &paths, streams)? != ExitCode::SUCCESS {
         return Ok(ExitCode::FAILURE);
     }
@@ -402,10 +407,12 @@ pub(crate) fn uninstall(
     Ok(ExitCode::SUCCESS)
 }
 
-/// Runs one required setup or uninstall step. On a terminal a spinner names
-/// the step while it runs, then its rows appear under a title marked with
-/// its outcome; plain output streams the rows as they happen. Either way a
-/// failed step ends with the stop line.
+/// Runs one required setup or uninstall step. When stdout is decorated, a
+/// stderr spinner names the step while it runs, then its rows appear under a
+/// title marked with its outcome, and a failure closes the flow with the stop
+/// line. Plain output streams the rows as they happen and writes the stop
+/// line when the step returns a failing exit code. A step that needs sudo or
+/// a prompt must not run here.
 fn run_required_step(
     label: &str,
     streams: &mut Streams<'_>,
@@ -427,17 +434,24 @@ fn run_required_step(
     spinner.finish_and_clear();
     let succeeded = matches!(result, Ok(exit_code) if exit_code == ExitCode::SUCCESS);
     let mark = if succeeded { Mark::Done } else { Mark::Failure };
-    streams.out.flow_step(mark, label)?;
-    streams.out.writer().write_all(&out)?;
-    streams.err.writer().write_all(&err)?;
+    // The step's own error outranks a failure to replay its rows.
+    let replayed = streams
+        .out
+        .flow_step(mark, label)
+        .and_then(|()| streams.out.writer().write_all(&out))
+        .and_then(|()| streams.err.writer().write_all(&err));
     if succeeded {
+        replayed?;
         return Ok(true);
     }
-    streams
+    let stopped = streams
         .out
-        .flow_end(Mark::Failure, format!("PV stopped during {label}."))?;
+        .flow_end(Mark::Failure, format!("PV stopped during {label}."));
+    result?;
+    replayed?;
+    stopped?;
 
-    result.map(|_exit_code| false)
+    Ok(false)
 }
 
 fn privileged_helper_installation_required(
@@ -492,10 +506,13 @@ fn ensure_privileged_helper(
         )
         .into());
     }
-    super::write_installing_helper(
+    super::write_administrator_step(
         &mut streams.err,
-        candidate.metadata.version(),
-        candidate.metadata.protocol_version(),
+        format!(
+            "Installing privileged helper {} (protocol {})",
+            candidate.metadata.version(),
+            candidate.metadata.protocol_version()
+        ),
     )?;
     let prepared_directory = paths.config().join("helper");
     let install_outcome = environment.install_privileged_helper(
@@ -780,16 +797,6 @@ fn untrust_ca_for_uninstall(
     }
 
     ca::untrust(environment, streams)
-}
-
-fn remove_helper_for_uninstall(
-    environment: &impl Environment,
-    streams: &mut Streams<'_>,
-) -> Result<ExitCode, ExecuteError> {
-    environment.remove_privileged_helper()?;
-    streams.out.success("Privileged helper removed")?;
-
-    Ok(ExitCode::SUCCESS)
 }
 
 fn remove_default_state(paths: &PvPaths, streams: &mut Streams<'_>) -> Result<(), ExecuteError> {

@@ -114,6 +114,26 @@ fn unlink_resolves_resource_only_slug_and_leaves_managed_env_block() -> anyhow::
     Ok(())
 }
 
+#[test]
+fn unlink_names_an_unknown_selector_instead_of_the_directory() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project_path = tempdir.path().join("acme");
+    let paths = PvPaths::for_home(home.clone());
+    seed_project(&paths, &project_path)?;
+    let environment = TestEnvironment::new(&home, &project_path);
+
+    let hostname = run_pv(&["unlink", "typo.test"], &environment)?;
+    let slug = run_pv(&["unlink", "typo"], &environment)?;
+
+    assert_eq!(hostname.exit_code, ExitCode::FAILURE);
+    assert_eq!(slug.exit_code, ExitCode::FAILURE);
+    assert_eq!(Database::open(&paths)?.projects()?.len(), 1);
+    assert_debug_snapshot!((hostname.stderr, slug.stderr));
+
+    Ok(())
+}
+
 fn seed_project(paths: &PvPaths, project_path: &Utf8Path) -> anyhow::Result<ProjectRecord> {
     state::fs::write_sensitive_file(&project_path.join("pv.yml"), "php: 8.4\n")?;
 

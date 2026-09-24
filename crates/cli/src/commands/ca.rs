@@ -42,8 +42,7 @@ pub(crate) fn trust(
     output.success("Prepared PV local CA")?;
     match generated {
         Some(generated) => {
-            output.detail(Line::field("certificate: ", paths.ca_certificate()))?;
-            output.detail(Line::field("private key: ", paths.ca_private_key()))?;
+            write_ca_paths(output, &paths.ca_certificate(), &paths.ca_private_key())?;
             output.detail(Line::field(
                 "fingerprint: ",
                 &generated.metadata.fingerprint,

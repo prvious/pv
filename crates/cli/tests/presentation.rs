@@ -1,8 +1,9 @@
-//! Presentation contracts that hold for every command: machine output is
-//! never decorated, raw payloads are identical on and off a terminal, color
+//! Presentation contracts shared by all commands, checked against
+//! representative ones: machine output is never decorated, raw payloads are identical on and off a terminal, color
 //! follows `NO_COLOR` and `--no-color`, and stdout and stderr keep their
 //! roles, each rendered for its own destination.
 
+use std::cell::RefCell;
 use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
@@ -10,7 +11,7 @@ use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::{Answer, Environment, Prompt, PromptKind, run_with_environment};
 use insta::{Settings, assert_debug_snapshot};
 
 const ESCAPE: char = '\u{1b}';
@@ -18,17 +19,20 @@ const ESCAPE: char = '\u{1b}';
 /// Which streams are terminals, and whether `NO_COLOR` is set.
 #[derive(Clone, Copy, Debug)]
 struct Terminals {
+    stdin: bool,
     stdout: bool,
     stderr: bool,
     no_color_env: bool,
 }
 
 const PIPED: Terminals = Terminals {
+    stdin: false,
     stdout: false,
     stderr: false,
     no_color_env: false,
 };
 const TERMINAL: Terminals = Terminals {
+    stdin: false,
     stdout: true,
     stderr: true,
     no_color_env: false,
@@ -39,6 +43,8 @@ struct TestEnvironment {
     home: PathBuf,
     current_dir: PathBuf,
     terminals: Terminals,
+    /// Every confirmation asked, with the answer Enter would give.
+    confirmations: RefCell<Vec<(String, bool)>>,
 }
 
 impl TestEnvironment {
@@ -47,6 +53,7 @@ impl TestEnvironment {
             home: home.as_std_path().to_path_buf(),
             current_dir: current_dir.as_std_path().to_path_buf(),
             terminals,
+            confirmations: RefCell::default(),
         }
     }
 }
@@ -81,7 +88,19 @@ impl Environment for TestEnvironment {
     }
 
     fn stdin_is_terminal(&self) -> bool {
-        false
+        self.terminals.stdin
+    }
+
+    /// Presses Enter on every confirmation, taking its default.
+    fn prompt(&self, prompt: &Prompt<'_>) -> io::Result<Answer> {
+        let PromptKind::Confirm { default } = prompt.kind else {
+            return Err(io::Error::other("only confirmations are scripted"));
+        };
+        self.confirmations
+            .borrow_mut()
+            .push((prompt.message.to_string(), default));
+
+        Ok(Answer::Confirmed(default))
     }
 
     fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -287,6 +306,66 @@ fn stdout_carries_results_and_stderr_carries_diagnostics_on_a_terminal() -> anyh
     settings.bind(|| {
         assert_debug_snapshot!((link, unlink));
     });
+
+    Ok(())
+}
+
+#[test]
+fn state_errors_render_through_the_terminal_surface() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    create_dir(&home.join(".pv"))?;
+    write_file(&home.join(".pv/pv.db"), "not a database\n")?;
+    let uncolored = Terminals {
+        no_color_env: true,
+        ..TERMINAL
+    };
+
+    let decorated = run_pv(
+        &["jobs"],
+        &TestEnvironment::new(&home, tempdir.path(), uncolored),
+    )?;
+    let plain = run_pv(
+        &["jobs"],
+        &TestEnvironment::new(&home, tempdir.path(), PIPED),
+    )?;
+
+    assert_eq!(decorated.exit_code, ExitCode::FAILURE);
+    assert!(decorated.stdout.is_empty());
+    assert!(decorated.stderr.starts_with("✗  error: "));
+    assert_eq!(plain.exit_code, ExitCode::FAILURE);
+    assert!(plain.stderr.starts_with("error: "));
+
+    Ok(())
+}
+
+#[test]
+fn enter_on_a_destructive_confirmation_deletes_nothing() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let marker = home.join(".pv/logs/daemon.log");
+    create_dir(&home.join(".pv/logs"))?;
+    write_file(&marker, "kept\n")?;
+    let environment = TestEnvironment::new(
+        &home,
+        tempdir.path(),
+        Terminals {
+            stdin: true,
+            ..TERMINAL
+        },
+    );
+
+    let output = run_pv(&["uninstall", "--prune"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(
+        *environment.confirmations.borrow(),
+        [(
+            "Permanently remove all PV-owned state under ~/.pv?".to_string(),
+            false
+        )]
+    );
+    assert!(marker.as_std_path().exists());
 
     Ok(())
 }

@@ -244,7 +244,7 @@ fn list_on_a_terminal_aligns_columns_or_stacks_records_by_width() -> anyhow::Res
     drop(database);
 
     // Temp paths differ in length across machines, so the aligned render uses
-    // a width every path fits in and the stacked renders one none fits in.
+    // a width every path fits in, and the stacked render one that none does.
     let wide = render_list_on_terminal(&environment, 200)?;
     let narrow = render_list_on_terminal(&environment, 60)?;
 

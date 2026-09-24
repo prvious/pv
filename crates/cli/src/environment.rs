@@ -41,8 +41,8 @@ pub trait Environment {
         ))
     }
 
-    /// Sets whether libraries that draw on stderr by themselves, such as
-    /// prompts and progress bars, may use color.
+    /// Sets whether libraries that draw on the terminal by themselves, such
+    /// as prompts and progress bars, may use color.
     fn set_terminal_colors(&self, enabled: bool) {
         let _enabled = enabled;
     }

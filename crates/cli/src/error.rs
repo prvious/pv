@@ -60,6 +60,14 @@ pub enum CliError {
     ProjectNotResolved,
 
     #[error(
+        "no linked Project matches `{selector}`\nRun `pv list` to see linked Projects and their hostnames."
+    )]
+    ProjectSelectorNotFound { selector: String },
+
+    #[error("no linked Project serves HTTP, so there is nothing to open")]
+    NoServedProjects,
+
+    #[error(
         "Project selector `{selector}` matches slug `{selector}` and hostname `{hostname}` on different Projects; pass the full `{hostname}` hostname"
     )]
     AmbiguousProjectSelector { selector: String, hostname: String },

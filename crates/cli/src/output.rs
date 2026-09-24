@@ -25,14 +25,15 @@ const GUTTER: &str = "│";
 /// not disabled by `NO_COLOR` or `--no-color`. A plain stream receives the
 /// documented plain text only.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub struct Surface {
+pub(crate) struct Surface {
     decorated: bool,
     color: bool,
     width: usize,
 }
 
 impl Surface {
-    pub fn plain() -> Self {
+    #[cfg(test)]
+    pub(crate) fn plain() -> Self {
         Self {
             decorated: false,
             color: false,
@@ -172,7 +173,8 @@ enum Span {
 }
 
 impl Line {
-    /// A `label` followed by a value, such as `path: /etc/resolver/test`.
+    /// A label span followed by a value span. The label carries its own
+    /// separator, as in `Line::field("path: ", path)`.
     pub(crate) fn field(label: &str, value: impl std::fmt::Display) -> Self {
         Self::from(label).value(value.to_string())
     }
@@ -289,25 +291,23 @@ impl Mark {
 /// Row methods write documented plain text on a plain surface and the
 /// terminal-design treatment (glyph column, gutter, color, wrapping) on a
 /// decorated one.
-pub struct Output<'writer> {
+pub(crate) struct Output<'writer> {
     writer: &'writer mut dyn Write,
     surface: Surface,
-    /// Whether rows are inside a `┌ │ └` flow and carry the gutter.
-    gutter: bool,
+    /// The open `┌ │ └` flow's title. Rows inside a flow carry the gutter;
+    /// only a decorated surface opens one.
+    flow: Option<String>,
     /// The prefix that aligns details and quotes under the latest row.
     continuation: String,
-    /// The open flow's title, for closing it when the command stops early.
-    flow_title: String,
 }
 
 impl<'writer> Output<'writer> {
-    pub fn new(writer: &'writer mut dyn Write, surface: Surface) -> Self {
+    pub(crate) fn new(writer: &'writer mut dyn Write, surface: Surface) -> Self {
         Self {
             writer,
             surface,
-            gutter: false,
+            flow: None,
             continuation: INDENT.to_string(),
-            flow_title: String::new(),
         }
     }
 
@@ -317,7 +317,7 @@ impl<'writer> Output<'writer> {
 
     /// Whether a flow is open, so a prompt shown now joins its gutter.
     pub(crate) fn in_flow(&self) -> bool {
-        self.gutter
+        self.flow.is_some()
     }
 
     /// The underlying writer, for raw payloads that must not be rendered.
@@ -331,13 +331,8 @@ impl<'writer> Output<'writer> {
         writeln!(self.writer)
     }
 
-    /// Writes a raw payload byte for byte, never decorated.
-    pub(crate) fn raw(&mut self, payload: &str) -> io::Result<()> {
-        self.writer.write_all(payload.as_bytes())
-    }
-
     /// Writes one line as-is on both surfaces.
-    pub fn line(&mut self, line: &str) -> io::Result<()> {
+    pub(crate) fn line(&mut self, line: &str) -> io::Result<()> {
         writeln!(self.writer, "{line}")
     }
 
@@ -367,7 +362,7 @@ impl<'writer> Output<'writer> {
             Tone::Plain
         };
         let body = line.paint(body_tone, self.surface.color);
-        let (first, rest) = if self.gutter {
+        let (first, rest) = if self.flow.is_some() {
             let gutter = self.gutter_prefix();
             (format!("{gutter}  {glyph} "), format!("{gutter}    "))
         } else {
@@ -440,7 +435,7 @@ impl<'writer> Output<'writer> {
 
     /// An error, normally written to stderr. Lines after the first are cause
     /// and repair details.
-    pub fn error(&mut self, message: &str) -> io::Result<()> {
+    pub(crate) fn error(&mut self, message: &str) -> io::Result<()> {
         if !self.surface.decorated {
             return writeln!(self.writer, "error: {message}");
         }
@@ -540,29 +535,18 @@ impl<'writer> Output<'writer> {
     /// later rows carry the gutter without a second opener.
     pub(crate) fn flow_resume(&mut self, title: &str) {
         if self.surface.decorated {
-            self.gutter = true;
+            self.flow = Some(title.to_string());
             self.continuation = format!("{}  ", self.gutter_prefix());
-            self.flow_title = title.to_string();
         }
-    }
-
-    /// A flow step only terminals show, such as the step about to wait for
-    /// an administrator password or the title over a finished step's rows.
-    /// Plain output keeps just the rows the step itself writes.
-    pub(crate) fn flow_label(&mut self, mark: Mark, line: impl Into<Line>) -> io::Result<()> {
-        if !self.surface.decorated {
-            return Ok(());
-        }
-        self.flow_step(mark, line)
     }
 
     /// Closes a flow that a failing command left open, before its error.
     /// Plain output has no flow to close.
     pub(crate) fn flow_stopped(&mut self) -> io::Result<()> {
-        if !self.gutter {
+        let Some(title) = &self.flow else {
             return Ok(());
-        }
-        let stopped = format!("{} stopped", self.flow_title);
+        };
+        let stopped = format!("{title} stopped");
         self.flow_end(Mark::Failure, stopped)
     }
 
@@ -585,7 +569,7 @@ impl<'writer> Output<'writer> {
     /// Closes a flow with its outcome.
     pub(crate) fn flow_end(&mut self, mark: Mark, line: impl Into<Line>) -> io::Result<()> {
         let line = line.into();
-        self.gutter = false;
+        self.flow = None;
         self.continuation = INDENT.to_string();
         if !self.surface.decorated {
             return self.line(&line.plain());
@@ -667,8 +651,8 @@ impl<'writer> Streams<'writer> {
 
     /// Runs `step` with its stdout and stderr captured into `out` and `err`,
     /// so the caller can title the rows once the outcome is known. Captured
-    /// rows keep the current flow state. Never capture a step that prompts:
-    /// its prompt would show above rows that are still held back.
+    /// stdout keeps its open flow. A captured step cannot prompt: its prompt
+    /// would show above rows that are still held back, so prompts refuse.
     pub(crate) fn capture<T>(
         &mut self,
         out: &mut Vec<u8>,
@@ -678,10 +662,10 @@ impl<'writer> Streams<'writer> {
         let mut captured = Streams {
             out: Output::new(out, self.out.surface),
             err: Output::new(err, self.err.surface),
-            interactive: self.interactive,
+            interactive: false,
         };
-        if self.out.gutter {
-            captured.out.flow_resume(&self.out.flow_title);
+        if let Some(title) = &self.out.flow {
+            captured.out.flow_resume(title);
         }
 
         step(&mut captured)
