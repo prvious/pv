@@ -110,6 +110,7 @@ camino = { workspace = true }
 camino-tempfile = { workspace = true }
 insta = { workspace = true }
 portable-pty = { workspace = true }
+serde_json = { workspace = true }
 state = { path = "crates/state" }
 vt100 = { workspace = true }
 

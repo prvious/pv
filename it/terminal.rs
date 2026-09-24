@@ -205,12 +205,50 @@ fn open_picker_lists_served_projects_and_escape_cancels() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn json_on_a_real_terminal_parses_and_is_never_decorated() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+
+    // `pv jobs --json` writes nothing to stderr, so the merged terminal
+    // stream is exactly its stdout.
+    let mut session = Session::spawn(&["jobs", "--json"], tempdir.path(), &home)?;
+    session.wait_for("}")?;
+
+    assert_eq!(session.wait_for_exit()?, 0);
+    assert!(!session.raw().contains(ESCAPE));
+    serde_json::from_str::<serde_json::Value>(&session.raw())?;
+
+    Ok(())
+}
+
+#[test]
+fn human_output_on_a_real_terminal_is_decorated_and_honors_no_color() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+
+    let mut colored = Session::spawn(&["jobs"], tempdir.path(), &home)?;
+    colored.wait_for("No recent daemon jobs")?;
+    let mut uncolored = Session::spawn(&["jobs", "--no-color"], tempdir.path(), &home)?;
+    uncolored.wait_for("No recent daemon jobs")?;
+
+    assert_eq!(colored.wait_for_exit()?, 0);
+    assert_eq!(uncolored.wait_for_exit()?, 0);
+    assert!(colored.raw().contains(ESCAPE));
+    assert!(!uncolored.raw().contains(ESCAPE));
+    assert!(uncolored.screen().starts_with('○'));
+
+    Ok(())
+}
+
 /// A `pv` process attached to a pseudo-terminal, with its screen emulated.
 struct Session {
     child: Box<dyn Child + Send + Sync>,
     writer: Box<dyn Write + Send>,
     output: Receiver<Vec<u8>>,
     parser: vt100::Parser,
+    /// Every byte the terminal received, for escape-sequence assertions.
+    raw: Vec<u8>,
 }
 
 impl Session {
@@ -237,6 +275,7 @@ impl Session {
             writer,
             output: spawn_reader(reader),
             parser: vt100::Parser::new(ROWS, COLUMNS, 0),
+            raw: Vec::new(),
         })
     }
 
@@ -262,7 +301,7 @@ impl Session {
                 );
             };
             match self.output.recv_timeout(remaining) {
-                Ok(bytes) => self.parser.process(&bytes),
+                Ok(bytes) => self.receive(bytes),
                 Err(error) => {
                     bail!(
                         "{error} while waiting for {text:?}; screen:\n{}",
@@ -295,14 +334,24 @@ impl Session {
                 );
             }
             if let Ok(bytes) = self.output.recv_timeout(Duration::from_millis(20)) {
-                self.parser.process(&bytes);
+                self.receive(bytes);
             }
         };
         while let Ok(bytes) = self.output.recv_timeout(Duration::from_millis(50)) {
-            self.parser.process(&bytes);
+            self.receive(bytes);
         }
 
         Ok(status.exit_code())
+    }
+
+    fn receive(&mut self, bytes: Vec<u8>) {
+        self.parser.process(&bytes);
+        self.raw.extend(bytes);
+    }
+
+    /// Everything the terminal received, including escape sequences.
+    fn raw(&self) -> String {
+        String::from_utf8_lossy(&self.raw).into_owned()
     }
 
     fn contents(&self) -> String {

@@ -1566,7 +1566,7 @@ PV is a persistent, composable command-line application. Output stays in shell h
 
 stdout carries durable results that callers may redirect or pipe: completed human reports, JSON, `pv env` and `pv project:env` output, generated completions, and generated config explicitly requested with `pv init --print`.
 
-stderr carries transient interaction and diagnostics: prompts, spinners and progress bars, sparse non-terminal progress lines, warnings, refusals, and errors. `pv setup > result.txt` therefore shows prompts and progress in the terminal while `result.txt` receives only the durable result.
+stderr carries transient interaction and diagnostics: prompts, spinners and progress bars, sparse non-terminal progress lines, warnings, refusals, and errors. Command-line usage errors keep clap's own format, styled only when stderr allows color; `--help` and `--version` output go to stdout the same way. `pv setup > result.txt` therefore shows prompts and progress in the terminal while `result.txt` receives only the durable result.
 
 ### Decorated and plain rendering
 
@@ -1580,6 +1580,17 @@ Decorated output uses color only when neither `NO_COLOR` nor the global `--no-co
 Glyph vocabulary: `✓` success, `✗` failure, `⚠` warning, `○` no-op or idle, `●` running or default, `◇` completed flow step or answered prompt, `◆` active step or prompt, `│` gutter (`┌` opens, `└` closes a flow), `↳` hint or repair command, `◐` spinner. When a command's outcome depends on the states it reports, such as `pv status`, `pv doctor`, and `pv ports:status` exiting non-zero, each row's glyph agrees with that outcome: `✗` marks exactly what fails the command, and `⚠` marks something worth attention that does not.
 
 Decorated output reflows to the terminal width (80 columns when the width is unknown) and never needs horizontal scrolling. A table that does not fit reflows each record into stacked `label: value` rows without dropping fields. Secondary prose wraps at word boundaries; paths, hostnames, URLs, versions, and identifiers are never split. Plain output does not depend on width.
+
+### Flows
+
+Multi-step commands (`pv setup`, `pv uninstall`, `pv update`, and `pv init`) render as a `┌ │ └` flow on a decorated stdout. Each completed milestone is a `◇` step, prompts join the gutter, and the command's outcome closes the flow.
+
+- **Required steps** whose output is only meaningful once they finish, such as setup's DNS, port-redirect, CA, and daemon steps, show a stderr spinner naming the step while it runs. When the step finishes, its title appears marked `◇` or `✗`, with the step's own rows beneath it. A failed required step closes the flow with `└ ✗ PV stopped during <step>.`
+- **The helper installation** is announced as an active `◆` step on stderr just before macOS asks for an administrator password.
+- **A command that fails with its flow still open** closes it with `└ ✗ <title> stopped` before the error is printed on stderr. A cancelled prompt closes the flow with its own cancelled state instead.
+- **`pv update`'s re-executed continuation** resumes the flow the updating process opened instead of starting a new one.
+
+Plain output prints only the documented lines: flow titles, steps, and outcomes that have plain text keep it, and decorated-only titles, spinners, and stopped markers are omitted.
 
 ### Raw output
 

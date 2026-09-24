@@ -47,12 +47,12 @@ where
 {
     let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
     let presentation = Presentation::detect(&args, environment);
-    let mut clap_command = Cli::command().color(clap_color(presentation));
+    let mut clap_command = Cli::command();
     let matches = match clap_command.try_get_matches_from_mut(&args) {
         Ok(matches) => matches,
         Err(error) => {
             let status_code = error.exit_code();
-            write_clap_error(error, stdout, stderr)?;
+            write_clap_error(error, presentation, stdout, stderr)?;
             return Ok(exit_code(status_code));
         }
     };
@@ -60,7 +60,7 @@ where
         Ok(cli) => cli,
         Err(error) => {
             let status_code = error.exit_code();
-            write_clap_error(error, stdout, stderr)?;
+            write_clap_error(error, presentation, stdout, stderr)?;
             return Ok(exit_code(status_code));
         }
     };
@@ -95,14 +95,6 @@ fn finish_execution(
     Ok(ExitCode::FAILURE)
 }
 
-fn clap_color(presentation: Presentation) -> clap::ColorChoice {
-    if !presentation.stderr.color() {
-        clap::ColorChoice::Never
-    } else {
-        clap::ColorChoice::Auto
-    }
-}
-
 fn exit_code(code: i32) -> ExitCode {
     if code == 0 {
         return ExitCode::SUCCESS;
@@ -114,18 +106,26 @@ fn exit_code(code: i32) -> ExitCode {
     }
 }
 
+/// Writes help and version to stdout and usage errors to stderr, in clap's
+/// own format, styled when that stream allows color.
 fn write_clap_error(
     error: clap::Error,
+    presentation: Presentation,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> std::io::Result<()> {
-    if matches!(
+    let (writer, surface): (&mut dyn Write, Surface) = if matches!(
         error.kind(),
         ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
     ) {
-        write!(stdout, "{error}")
+        (stdout, presentation.stdout)
     } else {
-        write!(stderr, "{error}")
+        (stderr, presentation.stderr)
+    };
+    if surface.color() {
+        write!(writer, "{}", error.render().ansi())
+    } else {
+        write!(writer, "{error}")
     }
 }
 
