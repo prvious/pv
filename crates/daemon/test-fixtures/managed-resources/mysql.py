@@ -4,6 +4,7 @@ import signal
 import socketserver
 import sys
 import threading
+import time
 
 
 arguments = list(sys.argv[1:])
@@ -33,6 +34,21 @@ if initialize:
         sys.exit(64)
     os.makedirs(f"{data_dir}/mysql", exist_ok=True)
     sys.exit(0)
+
+
+parent_pid = os.getppid()
+if parent_pid == 1:
+    os._exit(0)
+
+
+def monitor_parent():
+    while True:
+        time.sleep(0.1)
+        if os.getppid() != parent_pid:
+            os._exit(0)
+
+
+threading.Thread(target=monitor_parent, daemon=True).start()
 
 
 class Handler(socketserver.BaseRequestHandler):

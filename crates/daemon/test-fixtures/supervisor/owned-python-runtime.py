@@ -1,6 +1,24 @@
 #!/usr/bin/env python3
+import os
 import signal
 import sys
+import threading
+import time
+
+
+parent_pid = os.getppid()
+if parent_pid == 1:
+    os._exit(0)
+
+
+def monitor_parent():
+    while True:
+        time.sleep(0.1)
+        if os.getppid() != parent_pid:
+            os._exit(0)
+
+
+threading.Thread(target=monitor_parent, daemon=True).start()
 
 
 def stop(_signum, _frame):

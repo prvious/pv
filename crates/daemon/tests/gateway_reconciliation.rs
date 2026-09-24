@@ -1,17 +1,22 @@
-use anyhow::{Context, Error, Result, bail};
+use anyhow::{Context, Error, Result, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
-use camino_tempfile::tempdir;
+use camino_tempfile::{tempdir, tempdir_in};
 use daemon::gateway::{
     CaddyCliCommand, GatewayPfRoutingState, build_runtime_plan, gateway_process_spec,
     promote_validated_config_for_test, reconcile_gateway_runtimes_with_pf_state_for_test,
     reconcile_project_gateway_runtimes_for_test, validate_config, worker_process_spec,
 };
-use daemon::{CaddyAdminError, CaddyAdminOperation, DaemonError, ProcessSupervisor};
+use daemon::{
+    AdoptedProcess, CaddyAdminError, CaddyAdminOperation, DaemonError, ProcessSupervisor,
+};
 use insta::{Settings, allow_duplicates, assert_debug_snapshot};
+use platform::ProcessStartIdentity;
 use rcgen::generate_simple_self_signed;
 use resources::{PHP_TRACK_DEFAULT_INI, php_track_defaults};
 use rusqlite::Connection;
-use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
+use rustix::process::{
+    Pid, Signal, getpgid, kill_process_group, test_kill_process, test_kill_process_group,
+};
 use serde_json::{Value, json};
 use state::{
     Database, GatewayPort, LinkProjectInput, PortOwner, PortRequest, ProjectMode,
@@ -20,7 +25,7 @@ use state::{
 };
 use std::collections::BTreeMap;
 use std::ffi::OsString;
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Write};
 use std::net::TcpListener;
 use std::process::Output;
 use std::time::{Duration, Instant};
@@ -112,6 +117,7 @@ async fn reconcile_gateway_runtimes_with_readiness_timeout(
 async fn gateway_reconciliation_stops_before_workers_when_caddy_is_missing() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let release_path = tempdir.path().join("fake-frankenphp-release");
     let fake_frankenphp = release_path.join("bin/frankenphp");
 
@@ -139,6 +145,8 @@ async fn gateway_reconciliation_stops_before_workers_when_caddy_is_missing() -> 
     assert!(!paths.gateway_pid().exists());
     assert!(!paths.worker_pid("8.4").exists());
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -146,6 +154,7 @@ async fn gateway_reconciliation_stops_before_workers_when_caddy_is_missing() -> 
 async fn gateway_reconciliation_does_not_fallback_to_another_caddy_track() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-3-release");
     let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
 
@@ -180,6 +189,8 @@ async fn gateway_reconciliation_does_not_fallback_to_another_caddy_track() -> Re
     assert!(!paths.gateway_pid().exists());
     assert!(!paths.worker_pid("8.4").exists());
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -187,6 +198,7 @@ async fn gateway_reconciliation_does_not_fallback_to_another_caddy_track() -> Re
 async fn gateway_reconciliation_rejects_invalid_caddy_two_without_fallback() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-3-release");
     let invalid_caddy_release = tempdir.path().join("invalid-caddy-2-release");
     let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
@@ -233,6 +245,8 @@ async fn gateway_reconciliation_rejects_invalid_caddy_two_without_fallback() -> 
     assert!(!paths.gateway_pid().exists());
     assert!(!paths.worker_pid("8.4").exists());
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -240,6 +254,7 @@ async fn gateway_reconciliation_rejects_invalid_caddy_two_without_fallback() -> 
 async fn gateway_reconciliation_rolls_back_after_fresh_admin_startup_failure() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-no-admin-release");
     let fake_caddy = caddy_release.join("bin/caddy");
     let previous_root_config = "previous gateway config\n";
@@ -277,6 +292,8 @@ async fn gateway_reconciliation_rolls_back_after_fresh_admin_startup_failure() -
     assert!(!paths.gateway_pid().exists());
     assert!(!paths.gateway_runtime_metadata().exists());
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -284,6 +301,7 @@ async fn gateway_reconciliation_rolls_back_after_fresh_admin_startup_failure() -
 async fn gateway_reconciliation_rolls_back_after_fresh_service_readiness_failure() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-admin-only-release");
     let fake_caddy = caddy_release.join("bin/caddy");
     let previous_root_config = "previous gateway config\n";
@@ -316,6 +334,8 @@ async fn gateway_reconciliation_rolls_back_after_fresh_service_readiness_failure
     assert!(!paths.gateway_pid().exists());
     assert!(!paths.gateway_runtime_metadata().exists());
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -329,6 +349,7 @@ type TestProcessCommand = std::process::Command;
 async fn gateway_reconciliation_starts_gateway_and_one_worker_per_php_track() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     let release_path = tempdir.path().join("fake-frankenphp-release");
     let decoy_release_path = tempdir.path().join("fake-frankenphp-83-release");
@@ -391,13 +412,368 @@ document_root: public
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
+}
+
+#[tokio::test]
+async fn gateway_fixture_cleanup_is_scoped_to_recorded_home_and_process_groups() -> Result<()> {
+    // Keep both homes short enough for macOS Unix-domain worker socket paths.
+    let tempdir = tempdir_in("/tmp")?;
+    let paths_a = PvPaths::for_home(tempdir.path().join("home-a"));
+    let paths_b = PvPaths::for_home(tempdir.path().join("home-b"));
+    let ports = available_loopback_ports(6)?;
+
+    for (paths, project_name, hostname, assigned_ports) in [
+        (&paths_a, "project-a", "acme.test", &ports[0..3]),
+        (&paths_b, "project-b", "other.test", &ports[3..6]),
+    ] {
+        let project_root = tempdir.path().join(project_name);
+        let release_path = paths.home().join("fake-frankenphp-release");
+        write_fake_frankenphp(&release_path.join("bin/frankenphp"))?;
+        create_project(
+            &project_root,
+            r#"php: "8.4"
+document_root: public
+"#,
+        )?;
+        let mut database = Database::open(paths)?;
+        database.link_project(LinkProjectInput {
+            path: project_root.clone(),
+            original_path: project_root.clone(),
+            primary_hostname: hostname.to_owned(),
+            config_path: project_root.join("pv.yml"),
+            desired_php_track: None,
+            additional_hostnames: Vec::new(),
+        })?;
+        database.record_managed_resource_track_installed(
+            "frankenphp",
+            "8.4",
+            "fake-frankenphp-pv1",
+            &release_path,
+        )?;
+        seed_runtime_ports(
+            paths,
+            &mut database,
+            assigned_ports[0],
+            assigned_ports[1],
+            &[("8.4", assigned_ports[2])],
+        )?;
+    }
+
+    let mut guard_a = GatewayRuntimeGuard::new(paths_a.clone(), &["8.4"]);
+    let mut guard_b = GatewayRuntimeGuard::new(paths_b.clone(), &["8.4"]);
+    assert_eq!(
+        reconcile_gateway_runtimes(&paths_a)
+            .await
+            .context("home A reconciliation failed")?,
+        GATEWAY_RECONCILIATION_SUMMARY
+    );
+    assert_eq!(
+        reconcile_gateway_runtimes(&paths_b)
+            .await
+            .context("home B reconciliation failed")?,
+        GATEWAY_RECONCILIATION_SUMMARY
+    );
+
+    let gateway_a_pid =
+        guard_a.capture(paths_a.gateway_pid(), paths_a.gateway_runtime_metadata())?;
+    let worker_a_pid = guard_a.capture(
+        paths_a.worker_pid("8.4"),
+        paths_a.worker_runtime_metadata("8.4"),
+    )?;
+
+    let supervisor_b = ProcessSupervisor::new(paths_b.clone());
+    let gateway_b = supervisor_b
+        .adopt_recorded(&paths_b.gateway_pid(), &paths_b.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("home B Gateway was not adoptable"))?;
+    let gateway_b_pid = gateway_b.pid();
+    let worker_b_pid = supervisor_b
+        .adopt_recorded(
+            &paths_b.worker_pid("8.4"),
+            &paths_b.worker_runtime_metadata("8.4"),
+        )?
+        .ok_or_else(|| anyhow::anyhow!("home B worker was not adoptable"))?
+        .pid();
+    let gateway_a_pid_record = fs::read_to_string(&paths_a.gateway_pid())?;
+    let gateway_b_pid_record = fs::read_to_string(&paths_b.gateway_pid())?;
+    let gateway_b_metadata_record = fs::read_to_string(&paths_b.gateway_runtime_metadata())?;
+
+    fs::write_sensitive_file(&paths_a.gateway_pid(), &gateway_b_pid_record)?;
+    fs::write_sensitive_file(
+        &paths_a.gateway_runtime_metadata(),
+        &gateway_b_metadata_record,
+    )?;
+    let stale_cleanup = stop_recorded_runtime(
+        &paths_a,
+        &paths_a.gateway_pid(),
+        &paths_a.gateway_runtime_metadata(),
+    )
+    .await;
+    assert!(stale_cleanup.is_err());
+    assert_gateway_home_unchanged(&paths_b, gateway_b_pid, worker_b_pid, &ports[3..6]).await?;
+
+    let mut spliced_metadata: Value = serde_json::from_str(&gateway_b_metadata_record)?;
+    let Some(spliced_object) = spliced_metadata.as_object_mut() else {
+        bail!("Gateway metadata was not an object");
+    };
+    spliced_object.insert(
+        "config_path".to_owned(),
+        Value::String(paths_a.gateway_root_config().to_string()),
+    );
+    spliced_object.insert(
+        "log_path".to_owned(),
+        Value::String(paths_a.gateway_supervisor_log().to_string()),
+    );
+    spliced_object.insert(
+        "arguments".to_owned(),
+        json!([
+            "run",
+            "--config",
+            paths_a.gateway_root_config().as_str(),
+            "--adapter",
+            "caddyfile"
+        ]),
+    );
+    fs::write_sensitive_file(
+        &paths_a.gateway_runtime_metadata(),
+        &serde_json::to_string(&spliced_metadata)?,
+    )?;
+    let spliced_cleanup = stop_recorded_runtime(
+        &paths_a,
+        &paths_a.gateway_pid(),
+        &paths_a.gateway_runtime_metadata(),
+    )
+    .await;
+    assert!(spliced_cleanup.is_err());
+    assert_gateway_home_unchanged(&paths_b, gateway_b_pid, worker_b_pid, &ports[3..6]).await?;
+
+    fs::write_sensitive_file(&paths_a.gateway_runtime_metadata(), "{")?;
+    let corrupt_cleanup = stop_recorded_runtime(
+        &paths_a,
+        &paths_a.gateway_pid(),
+        &paths_a.gateway_runtime_metadata(),
+    )
+    .await;
+    assert!(corrupt_cleanup.is_err());
+    assert_gateway_home_unchanged(&paths_b, gateway_b_pid, worker_b_pid, &ports[3..6]).await?;
+
+    fs::write_sensitive_file(&paths_a.gateway_pid(), &gateway_a_pid_record)?;
+    // The captured handles remain authoritative even though the local metadata is malformed.
+    guard_a.cleanup().await?;
+
+    assert_process_group_absent(gateway_a_pid)?;
+    assert_process_group_absent(worker_a_pid)?;
+    let _gateway_http = TcpListener::bind(("127.0.0.1", ports[0]))?;
+    let _gateway_https = TcpListener::bind(("127.0.0.1", ports[1]))?;
+    let _worker = TcpListener::bind(("127.0.0.1", ports[2]))?;
+    assert_gateway_home_unchanged(&paths_b, gateway_b_pid, worker_b_pid, &ports[3..6]).await?;
+
+    let mut database_b = Database::open(&paths_b)?;
+    state::testing::transaction(&mut database_b, |transaction| {
+        transaction.execute_batch(
+            "DELETE FROM managed_resource_tracks
+             WHERE resource_name IN ('caddy', 'frankenphp');",
+        )
+    })?;
+    drop(database_b);
+    guard_b.cleanup().await?;
+    assert_process_group_absent(gateway_b_pid)?;
+    assert_process_group_absent(worker_b_pid)?;
+
+    Ok(())
+}
+
+async fn assert_gateway_home_unchanged(
+    paths: &PvPaths,
+    gateway_pid: u32,
+    worker_pid: u32,
+    ports: &[u16],
+) -> Result<()> {
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    assert_eq!(
+        supervisor
+            .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+            .map(|runtime| runtime.pid()),
+        Some(gateway_pid)
+    );
+    assert_eq!(
+        supervisor
+            .adopt_recorded(
+                &paths.worker_pid("8.4"),
+                &paths.worker_runtime_metadata("8.4")
+            )?
+            .map(|runtime| runtime.pid()),
+        Some(worker_pid)
+    );
+    for port in ports {
+        TcpStream::connect(("127.0.0.1", *port)).await?;
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn gateway_fixture_cleanup_keeps_records_while_group_descendants_remain() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let release_path = paths.home().join("leader-exit-caddy-release");
+    let executable = release_path.join("bin/caddy");
+    let descendant_pid_path = paths.run().join("leader-exit-caddy-descendant.pid");
+    let leader_release_path = paths.run().join("leader-exit-caddy.release");
+    fs::write_sensitive_file(
+        &executable,
+        "#!/bin/sh\nset -eu\nsleep 30 &\nprintf '%s\\n' \"$!\" > \"$PV_TEST_DESCENDANT_PID_PATH\"\nwhile [ ! -e \"$PV_TEST_LEADER_RELEASE_PATH\" ]; do sleep 0.01; done\n",
+    )?;
+    set_executable(&executable)?;
+    fs::write_sensitive_file(&paths.gateway_root_config(), "fixture")?;
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "leader-exit-caddy-pv1",
+        &release_path,
+    )?;
+
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let mut spec = gateway_process_spec(&paths, &CaddyCliCommand::caddy(executable));
+    spec.private_environment.insert(
+        "PV_TEST_DESCENDANT_PID_PATH".to_owned(),
+        descendant_pid_path.to_string(),
+    );
+    spec.private_environment.insert(
+        "PV_TEST_LEADER_RELEASE_PATH".to_owned(),
+        leader_release_path.to_string(),
+    );
+    let mut process = supervisor.start(spec).await?;
+    let pid = process.pid();
+    let mut process_group_guard = match CapturedProcessGroupGuard::new(pid) {
+        Ok(guard) => guard,
+        Err(capture_error) => {
+            return match process.stop(Duration::from_secs(1)).await {
+                Ok(()) => Err(capture_error),
+                Err(cleanup_error) => Err(anyhow::anyhow!(
+                    "identity capture failed: {capture_error:#}; fixture cleanup failed: {cleanup_error:#}"
+                )),
+            };
+        }
+    };
+    let adopted = supervisor
+        .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("Gateway fixture was not adoptable before leader exit"))?;
+    let operation_result = async {
+        timeout(Duration::from_secs(5), async {
+            while !descendant_pid_path.exists() {
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .context("timed out waiting for the Gateway descendant PID")?;
+        let descendant_pid = fs::read_to_string(&descendant_pid_path)?
+            .trim()
+            .parse::<u32>()?;
+        process_group_guard.capture(descendant_pid)?;
+        fs::write_sensitive_file(&leader_release_path, "release\n")?;
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if process.has_exited()? {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await??;
+        if !process_group_guard.member_is_live()? {
+            bail!("gateway descendant {descendant_pid} exited before cleanup");
+        }
+
+        let pid_record = fs::read_to_string(&paths.gateway_pid())?;
+        let metadata_record = fs::read_to_string(&paths.gateway_runtime_metadata())?;
+        let adopted_cleanup = adopted.stop(Duration::from_secs(1)).await;
+        if !matches!(
+            &adopted_cleanup,
+            Err(DaemonError::RuntimeProcessIdentityChanged { pid: error_pid })
+                if *error_pid == pid
+        ) {
+            bail!("captured cleanup did not report the exited group leader: {adopted_cleanup:?}");
+        }
+        if !process_group_guard.member_is_live()? {
+            bail!("captured cleanup signaled gateway descendant {descendant_pid} without current ownership proof");
+        }
+        let recorded_cleanup = stop_recorded_runtime(
+            &paths,
+            &paths.gateway_pid(),
+            &paths.gateway_runtime_metadata(),
+        )
+        .await;
+        let Err(recorded_cleanup) = recorded_cleanup else {
+            bail!("recorded cleanup accepted records for an exited group leader");
+        };
+        if !matches!(
+            recorded_cleanup.downcast_ref::<DaemonError>(),
+            Some(DaemonError::RuntimeProcessIdentityChanged { pid: error_pid })
+                if *error_pid == pid
+        ) {
+            bail!("recorded cleanup did not report the exited group leader: {recorded_cleanup:#}");
+        }
+        let records_unchanged = fs::read_to_string(&paths.gateway_pid())? == pid_record
+            && fs::read_to_string(&paths.gateway_runtime_metadata())? == metadata_record;
+        if !records_unchanged {
+            bail!("cleanup changed records after it could no longer verify their leader");
+        }
+        if !process_group_guard.member_is_live()? {
+            bail!("cleanup signaled gateway descendant {descendant_pid} without current ownership proof");
+        }
+
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    let process_group_cleanup = process_group_guard.cleanup();
+    let leader_cleanup = timeout(Duration::from_secs(1), async {
+        loop {
+            if process.has_exited()? {
+                return Ok::<_, anyhow::Error>(());
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let leader_cleanup = match leader_cleanup {
+        Ok(result) => result,
+        Err(_elapsed) => Err(anyhow::anyhow!(
+            "timed out reaping Gateway fixture leader {pid}"
+        )),
+    };
+    let cleanup_result = match (process_group_cleanup, leader_cleanup) {
+        (Ok(()), Ok(())) => (|| {
+            fs::remove_file_if_exists(&paths.gateway_pid())?;
+            fs::remove_file_if_exists(&paths.gateway_runtime_metadata())?;
+            Ok(())
+        })(),
+        (Err(group_error), Ok(())) => Err(group_error),
+        (Ok(()), Err(leader_error)) => Err(leader_error),
+        (Err(group_error), Err(leader_error)) => Err(anyhow::anyhow!(
+            "process-group cleanup failed: {group_error:#}; leader cleanup failed: {leader_error:#}"
+        )),
+    };
+
+    match (operation_result, cleanup_result) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(operation_error), Ok(())) => Err(operation_error),
+        (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(operation_error), Err(cleanup_error)) => Err(anyhow::anyhow!(
+            "operation failed: {operation_error:#}; fixture cleanup failed: {cleanup_error:#}"
+        )),
+    }
 }
 
 #[tokio::test]
 async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let track = "8.4";
     let extension_sets = [
         Vec::new(),
@@ -494,51 +870,68 @@ async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled(
         )
         .await
     });
-    tokio::select! {
-        result = &mut reconciliation => {
-            bail!("worker readiness reconciliation finished before the first wave was gated: {result:#?}");
+    let mut reconciliation_completed = false;
+    let inspection = async {
+        tokio::select! {
+            result = &mut reconciliation => {
+                reconciliation_completed = true;
+                bail!("worker readiness reconciliation finished before the first wave was gated: {result:#?}");
+            }
+            result = wait_for_existing_path_count(&probes, 4) => result?,
         }
-        result = wait_for_existing_path_count(&probes, 4) => result?,
-    }
 
-    assert!(
-        runtime_keys[..4]
+        ensure!(
+            runtime_keys[..4]
+                .iter()
+                .all(|runtime_key| paths.worker_pid(runtime_key).exists()),
+            "first worker wave did not publish all runtime records"
+        );
+        ensure!(
+            !paths.worker_pid(&runtime_keys[4]).exists(),
+            "fifth worker started before a first-wave slot opened"
+        );
+        ensure!(!probes[4].exists(), "fifth worker probed too early");
+        ensure!(!paths.gateway_pid().exists(), "Gateway started before workers");
+        fs::remove_file(&gates[0])?;
+        tokio::select! {
+            result = &mut reconciliation => {
+                reconciliation_completed = true;
+                bail!("worker reconciliation finished with siblings still gated: {result:#?}");
+            }
+            result = wait_for_existing_path_count(&probes, 5) => result?,
+        }
+        let worker_pids = runtime_keys
             .iter()
-            .all(|runtime_key| paths.worker_pid(runtime_key).exists())
-    );
-    assert!(!paths.worker_pid(&runtime_keys[4]).exists());
-    assert!(!probes[4].exists());
-    assert!(!paths.gateway_pid().exists());
-    fs::remove_file(&gates[0])?;
-    tokio::select! {
-        result = &mut reconciliation => {
-            bail!("worker reconciliation finished with siblings still gated: {result:#?}");
+            .map(|runtime_key| {
+                required_runtime_metadata_pid(&paths.worker_runtime_metadata(runtime_key))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        for (index, runtime_key) in runtime_keys.iter().enumerate() {
+            let metadata: Value = serde_json::from_str(&fs::read_to_string(
+                &paths.worker_runtime_metadata(runtime_key),
+            )?)?;
+            if index == 0 {
+                ensure!(metadata["replacement_required"] != true);
+                ensure!(metadata["applied_config_fingerprint"].is_string());
+                ensure!(metadata["staged_config_fingerprint"].is_null());
+            } else {
+                ensure!(metadata["replacement_required"] == true);
+                ensure!(metadata["applied_config_fingerprint"].is_null());
+                ensure!(metadata["staged_config_fingerprint"].is_string());
+            }
         }
-        result = wait_for_existing_path_count(&probes, 5) => result?,
-    }
-    let worker_pids = runtime_keys
-        .iter()
-        .map(|runtime_key| {
-            required_runtime_metadata_pid(&paths.worker_runtime_metadata(runtime_key))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    for (index, runtime_key) in runtime_keys.iter().enumerate() {
-        let metadata: Value = serde_json::from_str(&fs::read_to_string(
-            &paths.worker_runtime_metadata(runtime_key),
-        )?)?;
-        if index == 0 {
-            assert_ne!(metadata["replacement_required"], true);
-            assert!(metadata["applied_config_fingerprint"].is_string());
-            assert!(metadata["staged_config_fingerprint"].is_null());
-        } else {
-            assert_eq!(metadata["replacement_required"], true);
-            assert!(metadata["applied_config_fingerprint"].is_null());
-            assert!(metadata["staged_config_fingerprint"].is_string());
-        }
-    }
 
+        Ok::<_, anyhow::Error>(worker_pids)
+    }
+    .await;
+    if reconciliation_completed {
+        inspection?;
+        bail!("worker readiness reconciliation finished before inspection completed");
+    }
     reconciliation.abort();
-    let cancellation = match reconciliation.await {
+    let cancellation = reconciliation.await;
+    let worker_pids = inspection?;
+    let cancellation = match cancellation {
         Ok(result) => bail!("worker readiness reconciliation was not cancelled: {result:?}"),
         Err(error) => error,
     };
@@ -576,6 +969,8 @@ async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled(
         stop_runtime_from_pid_file(&paths.worker_pid(&runtime_key)).await?;
     }
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -583,6 +978,7 @@ async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled(
 async fn matching_worker_recovers_after_post_load_readiness_is_cancelled() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let track = "8.4";
     let project_root = create_project_with_config(
         tempdir.path(),
@@ -648,31 +1044,41 @@ async fn matching_worker_recovers_after_post_load_readiness_is_cancelled() -> Re
         )
         .await
     });
-    tokio::select! {
-        result = &mut reconciliation => {
-            let requests = fake_admin_requests(&paths.worker_root_config(track))?;
-            bail!("matching worker reconciliation finished before post-load readiness was gated: result={result:#?}, requests={requests:#?}");
+    let mut reconciliation_completed = false;
+    let inspection = async {
+        tokio::select! {
+            result = &mut reconciliation => {
+                reconciliation_completed = true;
+                let requests = fake_admin_requests(&paths.worker_root_config(track))?;
+                bail!("matching worker reconciliation finished before post-load readiness was gated: result={result:#?}, requests={requests:#?}");
+            }
+            result = wait_for_existing_path_count(std::slice::from_ref(&load_accepted_marker), 1) => result?,
         }
-        result = wait_for_existing_path_count(std::slice::from_ref(&load_accepted_marker), 1) => result?,
+
+        let pending_metadata: Value =
+            serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata(track))?)?;
+        ensure!(pending_metadata["replacement_required"] == true);
+        ensure!(pending_metadata["applied_config_fingerprint"].is_null());
+        ensure!(process_is_alive(worker_pid)?);
+        ensure!(
+            required_runtime_metadata_pid(&paths.gateway_runtime_metadata())? == gateway_pid
+        );
+        ensure!(read_test_bytes(paths.gateway_root_config())? == gateway_root);
+        ensure!(
+            fake_admin_load_bodies(&paths.gateway_root_config())?.len() == gateway_load_count
+        );
+
+        Ok::<_, anyhow::Error>(())
     }
-
-    let pending_metadata: Value =
-        serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata(track))?)?;
-    assert_eq!(pending_metadata["replacement_required"], true);
-    assert!(pending_metadata["applied_config_fingerprint"].is_null());
-    assert!(process_is_alive(worker_pid)?);
-    assert_eq!(
-        required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?,
-        gateway_pid
-    );
-    assert_eq!(read_test_bytes(paths.gateway_root_config())?, gateway_root);
-    assert_eq!(
-        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
-        gateway_load_count
-    );
-
+    .await;
+    if reconciliation_completed {
+        inspection?;
+        bail!("matching worker reconciliation finished before inspection completed");
+    }
     reconciliation.abort();
-    let cancellation = match reconciliation.await {
+    let cancellation = reconciliation.await;
+    inspection?;
+    let cancellation = match cancellation {
         Ok(result) => bail!("matching worker reconciliation was not cancelled: {result:?}"),
         Err(error) => error,
     };
@@ -708,6 +1114,8 @@ async fn matching_worker_recovers_after_post_load_readiness_is_cancelled() -> Re
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     stop_runtime_from_pid_file(&paths.worker_pid(track)).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -715,6 +1123,7 @@ async fn matching_worker_recovers_after_post_load_readiness_is_cancelled() -> Re
 async fn runtime_move_accepts_prior_proof_after_artifact_change() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let moving_root = create_project_with_config(tempdir.path(), "moving", "php: \"8.4\"\n")?;
     let peer_root = create_project_with_config(tempdir.path(), "peer", "php: \"8.4\"\n")?;
     link_project_record(&paths, &moving_root, "acme.test", Some("8.4"))?;
@@ -789,6 +1198,8 @@ async fn runtime_move_accepts_prior_proof_after_artifact_change() -> Result<()> 
     stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
     stop_runtime_from_pid_file(&paths.worker_pid("8.5")).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -796,6 +1207,7 @@ async fn runtime_move_accepts_prior_proof_after_artifact_change() -> Result<()> 
 async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let moving_root = create_project_with_config(tempdir.path(), "moving", "php: \"8.4\"\n")?;
     let peer_root = create_project_with_config(tempdir.path(), "peer", "php: \"8.4\"\n")?;
     link_project_record(&paths, &moving_root, "acme.test", Some("8.4"))?;
@@ -967,7 +1379,7 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
     ));
     let failed_replacement_pid =
         required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?;
-    assert!(!process_is_alive(failed_replacement_pid)?);
+    wait_for_process_exit(failed_replacement_pid).await?;
     let failed_replacement_metadata: Value =
         serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata("8.4"))?)?;
     assert_eq!(failed_replacement_metadata["replacement_required"], true);
@@ -1089,6 +1501,8 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
     stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
     stop_runtime_from_pid_file(&paths.worker_pid("8.5")).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -1097,6 +1511,7 @@ async fn worker_failure_starts_missing_gateway_without_reloading_live_gateway() 
     for live_gateway in [false, true] {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
         let track = "8.4";
         let base_project =
             create_project_with_config(tempdir.path(), "base", "php:\n  version: \"8.4\"\n")?;
@@ -1143,7 +1558,12 @@ async fn worker_failure_starts_missing_gateway_without_reloading_live_gateway() 
         )?;
         link_project_record(&paths, &redis_project, "api.acme.test", Some(track))?;
         if !live_gateway {
-            stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+            stop_recorded_runtime_preserving_files(
+                &paths,
+                &paths.gateway_pid(),
+                &paths.gateway_runtime_metadata(),
+            )
+            .await?;
             let tampered = format!(
                 "{}# tampered Gateway root\n",
                 fs::read_to_string(&paths.gateway_root_config())?
@@ -1184,6 +1604,7 @@ async fn worker_failure_starts_missing_gateway_without_reloading_live_gateway() 
         if paths.worker_pid(&redis_runtime_key).exists() {
             stop_runtime_from_pid_file(&paths.worker_pid(&redis_runtime_key)).await?;
         }
+        runtime_guard.cleanup().await?;
     }
 
     Ok(())
@@ -1193,6 +1614,7 @@ async fn worker_failure_starts_missing_gateway_without_reloading_live_gateway() 
 async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let track = "8.4";
     let base_project =
         create_project_with_config(tempdir.path(), "base", "php:\n  version: \"8.4\"\n")?;
@@ -1344,7 +1766,12 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
         None
     };
     let peer_content_after_failure = fs::read_to_string(&peer_fragment)?;
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_recorded_runtime_preserving_files(
+        &paths,
+        &paths.gateway_pid(),
+        &paths.gateway_runtime_metadata(),
+    )
+    .await?;
     let verified_gateway_root = fs::read_to_string(&paths.gateway_root_config())?;
     fs::write_sensitive_file(
         &paths.gateway_root_config(),
@@ -1355,7 +1782,7 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
         unverified_failure,
         Err(DaemonError::UnexpectedProtocolResponse { .. })
     ));
-    assert!(!process_is_alive(gateway_pid)?);
+    wait_for_process_exit(gateway_pid).await?;
     // A failed worker with unprovable prior bytes and no live Gateway restarts the Gateway
     // from the desired plan instead of leaving it dead; the tampered bytes are never loaded.
     let restarted_gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
@@ -1435,6 +1862,8 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
     assert!(!committed_peer_content.contains("old.acme.test"));
     assert!(committed_peer_content.contains("new.acme.test"));
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -1442,6 +1871,7 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
 async fn gateway_reconciliation_starts_gateway_without_linked_projects() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let release_path = tempdir.path().join("fake-frankenphp-release");
     let fake_frankenphp = release_path.join("bin/frankenphp");
 
@@ -1465,6 +1895,8 @@ async fn gateway_reconciliation_starts_gateway_without_linked_projects() -> Resu
     assert!(!paths.worker_pid("8.4").exists());
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+
+    runtime_guard.cleanup().await?;
 
     Ok(())
 }
@@ -1493,6 +1925,7 @@ async fn assert_uncertain_pf_state_preserves_gateway(
 ) -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let release_path = tempdir.path().join("fake-frankenphp-release");
     let fake_frankenphp = release_path.join("bin/frankenphp");
 
@@ -1528,6 +1961,8 @@ async fn assert_uncertain_pf_state_preserves_gateway(
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -1535,6 +1970,7 @@ async fn assert_uncertain_pf_state_preserves_gateway(
 async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-release");
     write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
 
@@ -1567,9 +2003,13 @@ async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() 
                 if let Some(gateway_pid) = gateway_pid
                     && admin_ready
                 {
+                    let supervisor = ProcessSupervisor::new(paths.clone());
+                    let gateway = supervisor
+                        .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+                        .ok_or_else(|| anyhow::anyhow!("fresh Gateway was not adoptable"))?;
                     fs::write_sensitive_file(&paths.gateway_runtime_metadata(), "{")?;
                     fs::write_sensitive_file(&admin_response_gate, "")?;
-                    return Ok::<u32, Error>(gateway_pid);
+                    return Ok::<_, Error>((gateway_pid, gateway));
                 }
                 sleep(Duration::from_millis(10)).await;
             }
@@ -1577,7 +2017,7 @@ async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() 
         .await
         .map_err(|_error| anyhow::anyhow!("fresh Gateway did not reach gated admin readiness"))?
     };
-    let (result, gateway_pid) = tokio::join!(
+    let (result, gateway) = tokio::join!(
         reconcile_gateway_runtimes_with_pf_state_for_test(
             &paths,
             Duration::from_secs(5),
@@ -1585,11 +2025,13 @@ async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() 
         ),
         corrupt_runtime_metadata,
     );
-    let gateway_pid = gateway_pid?;
+    let (gateway_pid, gateway) = gateway?;
+    runtime_guard.capture_adopted(
+        paths.gateway_pid(),
+        paths.gateway_runtime_metadata(),
+        gateway,
+    );
     let gateway_was_alive = process_is_alive(gateway_pid)?;
-    if gateway_was_alive {
-        stop_runtime_pid(gateway_pid).await?;
-    }
 
     assert!(matches!(result, Err(DaemonError::Json(_))));
     assert!(!gateway_was_alive);
@@ -1599,6 +2041,7 @@ async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() 
         fs::read_to_string(&paths.gateway_root_config())?,
         previous_root
     );
+    runtime_guard.cleanup().await?;
 
     Ok(())
 }
@@ -1607,6 +2050,7 @@ async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() 
 async fn fresh_gateway_exit_is_reported_before_the_readiness_timeout() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fast-exit-caddy-release");
     write_fast_exit_runtime(&caddy_release.join("bin/caddy"))?;
 
@@ -1639,6 +2083,8 @@ async fn fresh_gateway_exit_is_reported_before_the_readiness_timeout() -> Result
     assert!(!paths.gateway_pid().exists());
     assert!(!paths.gateway_runtime_metadata().exists());
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -1646,6 +2092,7 @@ async fn fresh_gateway_exit_is_reported_before_the_readiness_timeout() -> Result
 async fn fresh_worker_exit_is_reported_before_the_readiness_timeout() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     let frankenphp_release = tempdir.path().join("fast-exit-frankenphp-release");
     write_fast_exit_runtime(&frankenphp_release.join("bin/frankenphp"))?;
@@ -1701,6 +2148,8 @@ document_root: public
     assert!(!paths.worker_runtime_metadata("8.4").exists());
     assert!(!paths.gateway_pid().exists());
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -1708,6 +2157,7 @@ document_root: public
 async fn gateway_reconciliation_restores_generated_files_after_env_only_edit() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     let caddy_release = tempdir.path().join("fake-caddy-release");
     let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
@@ -1858,6 +2308,8 @@ env:
         .map(|record| record.status);
     assert_eq!(worker_status, Some(RuntimeObservedStatus::Failed));
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -1866,6 +2318,7 @@ env:
 async fn unchanged_gateway_config_is_rehardened() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     let caddy_release = tempdir.path().join("fake-caddy-release");
     let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
@@ -1955,6 +2408,8 @@ async fn unchanged_gateway_config_is_rehardened() -> Result<()> {
     assert_eq!(validations_after, validation_count);
     assert!(admin_loads.is_empty());
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -1962,6 +2417,7 @@ async fn unchanged_gateway_config_is_rehardened() -> Result<()> {
 async fn targeted_project_reconciliation_touches_only_old_and_new_workers() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let acme = create_project_with_config(
         tempdir.path(),
         "acme",
@@ -2393,6 +2849,8 @@ env:
         stop_runtime_from_pid_file(&paths.worker_pid(track)).await?;
     }
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -2401,6 +2859,7 @@ async fn targeted_project_reconciliation_does_not_activate_tampered_unrelated_fr
 -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let target = create_project_with_config(tempdir.path(), "target", "php: \"8.4\"\n")?;
     let peer = create_project_with_config(tempdir.path(), "peer", "php: \"8.4\"\n")?;
     let caddy_release = tempdir.path().join("fake-caddy-release");
@@ -2528,6 +2987,8 @@ async fn targeted_project_reconciliation_does_not_activate_tampered_unrelated_fr
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -2535,6 +2996,7 @@ async fn targeted_project_reconciliation_does_not_activate_tampered_unrelated_fr
 async fn targeted_project_reconciliation_promotes_split_peer_runtime_state() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let target = create_project_with_config(tempdir.path(), "target", "php: \"8.4\"\n")?;
     let peer = create_project_with_config(tempdir.path(), "peer", "php: \"8.4\"\n")?;
     let caddy_release = tempdir.path().join("fake-caddy-release");
@@ -2672,6 +3134,8 @@ async fn targeted_project_reconciliation_promotes_split_peer_runtime_state() -> 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -2679,6 +3143,7 @@ async fn targeted_project_reconciliation_promotes_split_peer_runtime_state() -> 
 async fn targeted_project_reconciliation_uses_verified_fragment_snapshot() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let target = create_project_with_config(tempdir.path(), "target", "php: \"8.4\"\n")?;
     let peer = create_project_with_config(tempdir.path(), "peer", "php: \"8.4\"\n")?;
     let caddy_release = tempdir.path().join("fake-caddy-release");
@@ -2789,6 +3254,8 @@ async fn targeted_project_reconciliation_uses_verified_fragment_snapshot() -> Re
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -2797,6 +3264,7 @@ async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is
 -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = create_project_with_config(
         tempdir.path(),
         "acme",
@@ -2990,6 +3458,8 @@ async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -2998,6 +3468,7 @@ async fn gateway_reconciliation_takes_full_path_when_applied_fingerprint_is_miss
 {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-release");
     write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
 
@@ -3047,6 +3518,8 @@ async fn gateway_reconciliation_takes_full_path_when_applied_fingerprint_is_miss
     assert!(metadata["applied_config_fingerprint"].is_string());
     assert_ne!(metadata["replacement_required"], true);
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -3054,6 +3527,7 @@ async fn gateway_reconciliation_takes_full_path_when_applied_fingerprint_is_miss
 async fn gateway_reconciliation_validates_changed_or_missing_ca_key() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-release");
     let executable = caddy_release.join("bin/caddy");
     write_stateful_fake_caddy(&executable)?;
@@ -3143,6 +3617,8 @@ async fn gateway_reconciliation_validates_changed_or_missing_ca_key() -> Result<
         assert!(loads.is_empty());
     }
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -3151,6 +3627,7 @@ async fn gateway_reconciliation_keeps_pending_state_when_applied_fingerprint_com
 -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-release");
     let admin_response_gate = tempdir.path().join("admin-response-release");
     write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
@@ -3236,6 +3713,8 @@ async fn gateway_reconciliation_keeps_pending_state_when_applied_fingerprint_com
     assert_ne!(replacement_metadata["replacement_required"], true);
     assert!(replacement_metadata["applied_config_fingerprint"].is_string());
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -3243,6 +3722,7 @@ async fn gateway_reconciliation_keeps_pending_state_when_applied_fingerprint_com
 async fn gateway_reconciliation_replaces_legacy_runtime_identities_once() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     let release_path = tempdir.path().join("fake-frankenphp-release");
     let fake_frankenphp = release_path.join("bin/frankenphp");
@@ -3281,10 +3761,12 @@ document_root: public
     drop(database);
 
     reconcile_gateway_runtimes(&paths).await?;
-    let first_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
-        .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
-    let first_worker_pid = runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?
-        .ok_or_else(|| anyhow::anyhow!("expected worker runtime metadata"))?;
+    let first_gateway_pid =
+        runtime_guard.capture(paths.gateway_pid(), paths.gateway_runtime_metadata())?;
+    let first_worker_pid = runtime_guard.capture(
+        paths.worker_pid("8.4"),
+        paths.worker_runtime_metadata("8.4"),
+    )?;
     replace_runtime_metadata_identity(&paths.gateway_runtime_metadata(), "gateway", "core")?;
     replace_runtime_metadata_identity(&paths.worker_runtime_metadata("8.4"), "php-worker", "8.4")?;
 
@@ -3302,13 +3784,14 @@ document_root: public
 
     wait_for_process_exit(first_gateway_pid).await?;
     wait_for_process_exit(first_worker_pid).await?;
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
-
     assert_ne!(second_gateway_pid, first_gateway_pid);
     assert_ne!(second_worker_pid, first_worker_pid);
     assert_eq!(stable_gateway_pid, second_gateway_pid);
     assert_eq!(stable_worker_pid, second_worker_pid);
+
+    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    runtime_guard.cleanup().await?;
 
     Ok(())
 }
@@ -3318,6 +3801,7 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
 -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-release");
     let legacy_release = tempdir.path().join("fake-caddy-legacy-release");
     let caddy_executable = caddy_release.join("bin/caddy");
@@ -3352,8 +3836,7 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
     legacy_spec.track = "core".to_owned();
     let supervisor = ProcessSupervisor::new(paths.clone());
     drop(port_reservations);
-    let legacy_process = supervisor.start(legacy_spec).await?;
-    let legacy_pid = legacy_process.pid();
+    let mut legacy_process = supervisor.start(legacy_spec).await?;
     assert!(
         supervisor
             .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata(),)?
@@ -3368,8 +3851,16 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
     )
     .await?;
     assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
-    legacy_process.stop(Duration::from_secs(1)).await?;
-    wait_for_process_exit(legacy_pid).await?;
+    timeout(Duration::from_secs(1), async {
+        loop {
+            if legacy_process.has_exited()? {
+                return Ok::<(), DaemonError>(());
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .map_err(|_elapsed| anyhow::anyhow!("legacy Gateway was not reaped after replacement"))??;
 
     let replacement_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
         .ok_or_else(|| anyhow::anyhow!("expected replacement gateway metadata"))?;
@@ -3392,6 +3883,8 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -3399,6 +3892,7 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
 async fn gateway_reconciliation_replaces_dead_gateway_process() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     let release_path = tempdir.path().join("fake-frankenphp-release");
     let fake_frankenphp = release_path.join("bin/frankenphp");
@@ -3440,7 +3934,11 @@ document_root: public
     let first_metadata = state::testing::read_to_string(&paths.gateway_runtime_metadata())?;
     let first_metadata_json: serde_json::Value = serde_json::from_str(&first_metadata)?;
     let first_gateway_pid = metadata_pid(&first_metadata_json)?;
-    stop_runtime_pid(first_gateway_pid).await?;
+    let first_gateway = ProcessSupervisor::new(paths.clone())
+        .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("first Gateway was not adoptable"))?;
+    assert_eq!(first_gateway.pid(), first_gateway_pid);
+    first_gateway.stop(Duration::from_secs(1)).await?;
 
     reconcile_gateway_runtimes(&paths).await?;
     let second_metadata = state::testing::read_to_string(&paths.gateway_runtime_metadata())?;
@@ -3450,6 +3948,8 @@ document_root: public
 
     assert_ne!(first_metadata, second_metadata);
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -3457,6 +3957,7 @@ document_root: public
 async fn gateway_reconciliation_rejects_unverified_live_gateway_listener() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     let release_path = tempdir.path().join("fake-frankenphp-release");
     let fake_frankenphp = release_path.join("bin/frankenphp");
@@ -3498,18 +3999,20 @@ document_root: public
     let first_metadata = state::testing::read_to_string(&paths.gateway_runtime_metadata())?;
     let first_metadata_json: serde_json::Value = serde_json::from_str(&first_metadata)?;
     let first_gateway_pid = metadata_pid(&first_metadata_json)?;
+    assert_eq!(
+        runtime_guard.capture(paths.gateway_pid(), paths.gateway_runtime_metadata())?,
+        first_gateway_pid
+    );
     fs::delete_file(&paths.gateway_runtime_metadata())?;
 
     let result = reconcile_gateway_runtimes(&paths).await;
-
-    stop_runtime_pid(first_gateway_pid).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
-
     assert!(matches!(
         result,
         Err(DaemonError::UnexpectedProtocolResponse { reason })
             if reason.contains("is listening but no PV-owned process could be verified")
     ));
+
+    runtime_guard.cleanup().await?;
 
     Ok(())
 }
@@ -3518,6 +4021,7 @@ document_root: public
 async fn gateway_reconciliation_bounds_foreign_https_listener_probe() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     let release_path = tempdir.path().join("fake-frankenphp-release");
     let fake_frankenphp = release_path.join("bin/frankenphp");
@@ -3588,6 +4092,8 @@ document_root: public
         result.is_ok(),
         "foreign Gateway listener probe should be bounded"
     );
+
+    runtime_guard.cleanup().await?;
 
     Ok(())
 }
@@ -3674,6 +4180,7 @@ exit 2
 async fn retired_worker_cleanup_removes_runtime_identity() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     let surviving_project_root = tempdir.path().join("other");
     let release_path = tempdir.path().join("fake-frankenphp-release");
@@ -3817,6 +4324,8 @@ document_root: public
         PortOwner::PhpWorker { php_runtime_key } if php_runtime_key == "8.4"
     )));
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -3825,6 +4334,7 @@ async fn gateway_reconciliation_preserves_project_fragments_for_invalid_project_
 -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     let caddy_release = tempdir.path().join("fake-caddy-release");
     let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
@@ -3933,6 +4443,8 @@ hostnames:
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -3940,6 +4452,7 @@ hostnames:
 async fn gateway_reconciliation_skips_invalid_project_without_preserved_fragments() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let acme_root = tempdir.path().join("acme");
     let broken_root = tempdir.path().join("broken");
     let release_path = tempdir.path().join("fake-frankenphp-release");
@@ -4013,6 +4526,8 @@ document_root: public
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -4020,6 +4535,7 @@ document_root: public
 async fn gateway_reconciliation_uses_persisted_track_after_config_becomes_invalid() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     let release_84_path = tempdir.path().join("fake-frankenphp-84-release");
     let release_83_path = tempdir.path().join("fake-frankenphp-83-release");
@@ -4105,14 +4621,17 @@ document_root: public
     assert!(worker_83_alive);
     assert!(!worker_84_alive);
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
-#[test]
-fn gateway_runtime_plan_fails_when_persisted_extension_runtime_cannot_be_reconstructed()
+#[tokio::test]
+async fn gateway_runtime_plan_fails_when_persisted_extension_runtime_cannot_be_reconstructed()
 -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
 
     create_project(&project_root, "php: [\n")?;
@@ -4160,13 +4679,16 @@ fn gateway_runtime_plan_fails_when_persisted_extension_runtime_cannot_be_reconst
             .is_some_and(|message| { message.contains("persisted PHP extension `redis`") })
     );
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
-#[test]
-fn gateway_runtime_plan_recovers_preserved_worker_tree_without_metadata() -> Result<()> {
+#[tokio::test]
+async fn gateway_runtime_plan_recovers_preserved_worker_tree_without_metadata() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
 
     create_project(&project_root, "php: [\n")?;
@@ -4217,6 +4739,8 @@ fn gateway_runtime_plan_recovers_preserved_worker_tree_without_metadata() -> Res
     assert_eq!(planned_project.id, project.id);
     assert!(!planned_project.render_config);
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -4225,6 +4749,7 @@ async fn gateway_reconciliation_preserves_fragments_for_parseable_invalid_projec
 -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let acme_root = tempdir.path().join("acme");
     let other_root = tempdir.path().join("other");
     let release_84_path = tempdir.path().join("fake-frankenphp-84-release");
@@ -4336,6 +4861,8 @@ hostnames:
     stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
     stop_runtime_from_pid_file(&paths.worker_pid("8.3")).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -4343,6 +4870,7 @@ hostnames:
 async fn gateway_reconciliation_preserves_active_fragments_when_validation_fails() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     let release_path = tempdir.path().join("fake-frankenphp-release");
     let fake_frankenphp = release_path.join("bin/frankenphp");
@@ -4418,6 +4946,8 @@ hostnames:
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -4425,6 +4955,7 @@ hostnames:
 async fn retained_hostname_uses_previous_document_root() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     create_project(
         &project_root,
@@ -4533,6 +5064,8 @@ hostnames:
     stop_runtime_from_pid_file(&paths.worker_pid(&base_runtime_key)).await?;
     stop_runtime_from_pid_file(&paths.worker_pid(&redis_runtime_key)).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -4550,6 +5083,7 @@ fn fragment_site_blocks(fragment: &str) -> Vec<(&str, &str)> {
 async fn post_commit_cleanup_continues_after_worker_failure() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_a_root = tempdir.path().join("a");
     let project_b_root = tempdir.path().join("b");
     let project_c_root = tempdir.path().join("c");
@@ -4685,7 +5219,7 @@ hostnames:
 
     assert!(!paths.worker_pid("8.3").exists());
     assert!(!paths.worker_runtime_metadata("8.3").exists());
-    assert!(!process_is_alive(stale_worker_pid)?);
+    wait_for_process_exit(stale_worker_pid).await?;
     let stale_status = Database::open(&paths)?
         .runtime_observed_states()?
         .into_iter()
@@ -4717,6 +5251,8 @@ hostnames:
         }
     }
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -4725,6 +5261,7 @@ async fn gateway_reconciliation_loads_exact_gateway_and_worker_roots_without_res
 -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     let other_project_root = tempdir.path().join("other");
     let caddy_release = tempdir.path().join("fake-caddy-release");
@@ -4881,6 +5418,8 @@ hostnames:
             .any(|request| { request["method"] == "GET" && request["path"] == "/config/" })
     );
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -4889,6 +5428,7 @@ async fn worker_reconciliation_restores_previous_service_port_after_readiness_fa
 {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
     write_stateful_fake_frankenphp(&frankenphp_release.join("bin/frankenphp"))?;
@@ -5006,6 +5546,8 @@ document_root: public
             .any(|request| { request["method"] == "GET" && request["path"] == "/config/" })
     );
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -5013,6 +5555,7 @@ document_root: public
 async fn gateway_reconciliation_rejection_keeps_old_runtime_and_disk_state() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-release");
     write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
 
@@ -5088,6 +5631,8 @@ async fn gateway_reconciliation_rejection_keeps_old_runtime_and_disk_state() -> 
 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -5095,6 +5640,7 @@ async fn gateway_reconciliation_rejection_keeps_old_runtime_and_disk_state() -> 
 async fn gateway_reconciliation_confirms_reverted_desired_config_without_reload() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-release");
     write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
 
@@ -5138,6 +5684,8 @@ async fn gateway_reconciliation_confirms_reverted_desired_config_without_reload(
         final_metadata["applied_config_fingerprint"]
     );
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -5145,6 +5693,7 @@ async fn gateway_reconciliation_confirms_reverted_desired_config_without_reload(
 async fn gateway_reconciliation_rejects_load_error_reported_with_success_status() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-release");
     write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
 
@@ -5204,6 +5753,8 @@ async fn gateway_reconciliation_rejects_load_error_reported_with_success_status(
     assert_eq!(root_after, previous_root);
     assert_eq!(current_config, previous_root);
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -5211,6 +5762,7 @@ async fn gateway_reconciliation_rejects_load_error_reported_with_success_status(
 async fn gateway_reconciliation_replaces_runtime_before_newer_desired_state() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-release");
     write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
 
@@ -5316,6 +5868,8 @@ async fn gateway_reconciliation_replaces_runtime_before_newer_desired_state() ->
         vec![Some(200)]
     );
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -5336,6 +5890,7 @@ async fn gateway_reconciliation_preserves_accepted_config_for_pf_state(
 ) -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-release");
     write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
 
@@ -5400,6 +5955,8 @@ async fn gateway_reconciliation_preserves_accepted_config_for_pf_state(
     );
     assert!(metadata["applied_config_fingerprint"].is_string());
     assert_ne!(metadata["replacement_required"], true);
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -5407,6 +5964,7 @@ async fn gateway_reconciliation_preserves_accepted_config_for_pf_state(
 async fn gateway_reconciliation_does_not_reload_after_runtime_exits_after_load() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-release");
     write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
     let old_ports = available_loopback_ports(2)?;
@@ -5423,6 +5981,20 @@ async fn gateway_reconciliation_does_not_reload_after_runtime_exits_after_load()
     drop(database);
 
     reconcile_gateway_runtimes(&paths).await?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let captured_gateway = supervisor
+        .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("Gateway was not adoptable before its forced exit"))?;
+    let gateway_pid = captured_gateway.pid();
+    let runtime_directory = paths
+        .gateway_root_config()
+        .parent()
+        .unwrap_or_else(|| Utf8Path::new("."))
+        .to_path_buf();
+    let runtime_reaped_marker =
+        runtime_directory.join(format!("fake-runtime-reaped-{gateway_pid}"));
+    let watcher_stop_path =
+        runtime_directory.join(format!("fake-runtime-watcher-stop-{gateway_pid}"));
     let previous_root = read_test_bytes(paths.gateway_root_config())?;
     write_fake_admin_control(
         &paths.gateway_root_config(),
@@ -5441,10 +6013,64 @@ async fn gateway_reconciliation_does_not_reload_after_runtime_exits_after_load()
     let load_bodies = fake_admin_load_bodies(&paths.gateway_root_config())?;
     let metadata: Value =
         serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
-    if let Some(pid) = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
-        && process_is_alive(pid)?
-    {
-        stop_runtime_pid(pid).await?;
+
+    let cleanup_result: Result<()> = async {
+        timeout(Duration::from_secs(5), async {
+            loop {
+                match fs::read_to_string(&runtime_reaped_marker) {
+                    Ok(contents) if contents == "reaped\n" => {
+                        return Ok::<_, anyhow::Error>(());
+                    }
+                    Ok(_) => {}
+                    Err(StateError::Filesystem { source, .. })
+                        if source.kind() == ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .with_context(|| {
+            format!("timed out waiting for Gateway fixture {gateway_pid} to reap its children")
+        })??;
+        timeout(Duration::from_secs(5), async {
+            loop {
+                if supervisor
+                    .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+                    .is_none()
+                {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .with_context(|| format!("Gateway fixture {gateway_pid} remained adoptable"))??;
+
+        if !pid_path_is_absent_or_matches(&paths.gateway_pid(), gateway_pid)?
+            || runtime_metadata_pid(&paths.gateway_runtime_metadata())? != Some(gateway_pid)
+        {
+            bail!("Gateway runtime records changed after fixture {gateway_pid} exited");
+        }
+        let _released_ports = old_ports
+            .iter()
+            .chain(&new_ports)
+            .map(|port| TcpListener::bind(("127.0.0.1", *port)))
+            .collect::<std::io::Result<Vec<_>>>()?;
+        fs::remove_file_if_exists(&paths.gateway_pid())?;
+        fs::remove_file_if_exists(&paths.gateway_runtime_metadata())?;
+        fs::remove_file_if_exists(&runtime_reaped_marker)?;
+        fs::remove_file_if_exists(&watcher_stop_path)?;
+        runtime_guard.cleanup().await
+    }
+    .await;
+    if let Err(cleanup_error) = cleanup_result {
+        return match &result {
+            Err(operation_error) => Err(anyhow::anyhow!(
+                "operation failed: {operation_error:#}; fixture cleanup failed: {cleanup_error:#}"
+            )),
+            Ok(_) => Err(cleanup_error),
+        };
     }
 
     assert!(result.is_err());
@@ -5460,6 +6086,7 @@ async fn gateway_reconciliation_does_not_reload_after_runtime_exits_after_load()
 async fn gateway_reconciliation_reports_compound_restore_failure() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-release");
     write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
     let old_ports = available_loopback_ports(2)?;
@@ -5517,6 +6144,8 @@ async fn gateway_reconciliation_reports_compound_restore_failure() -> Result<()>
     assert_eq!(metadata["replacement_required"], true);
     assert!(metadata["applied_config_fingerprint"].is_null());
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -5524,6 +6153,7 @@ async fn gateway_reconciliation_reports_compound_restore_failure() -> Result<()>
 async fn gateway_reconciliation_refuses_to_load_tampered_rollback_fragment_backup() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("acme");
     let caddy_release = tempdir.path().join("fake-caddy-release");
     let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
@@ -5637,6 +6267,8 @@ document_root: public
     assert_eq!(metadata["replacement_required"], true);
     assert!(metadata["applied_config_fingerprint"].is_null());
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -5644,6 +6276,7 @@ document_root: public
 async fn gateway_reconciliation_reports_compound_restored_readiness_failure() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let caddy_release = tempdir.path().join("fake-caddy-release");
     write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
     let old_ports = available_loopback_ports(2)?;
@@ -5723,6 +6356,8 @@ async fn gateway_reconciliation_reports_compound_restored_readiness_failure() ->
     assert_eq!(metadata["replacement_required"], true);
     assert!(metadata["applied_config_fingerprint"].is_null());
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -5730,6 +6365,7 @@ async fn gateway_reconciliation_reports_compound_restored_readiness_failure() ->
 async fn gateway_reconciliation_rolls_back_config_when_runtime_readiness_fails() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let release_path = tempdir.path().join("fake-caddy-release");
     let fake_caddy = release_path.join("bin/caddy");
     let ports = available_loopback_ports(4)?;
@@ -5756,6 +6392,10 @@ async fn gateway_reconciliation_rolls_back_config_when_runtime_readiness_fails()
     let previous_root_config = fs::read_to_string(&paths.gateway_root_config())?;
     let previous_metadata: Value =
         serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
+    let first_gateway = ProcessSupervisor::new(paths.clone())
+        .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+        .ok_or_else(|| anyhow::anyhow!("first Gateway was not adoptable"))?;
+    assert_eq!(first_gateway.pid(), first_gateway_pid);
 
     let mut database = Database::open(&paths)?;
     database.release_port(PortOwner::Gateway(GatewayPort::Http))?;
@@ -5772,7 +6412,9 @@ async fn gateway_reconciliation_rolls_back_config_when_runtime_readiness_fails()
         serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
     let first_gateway_is_alive = process_is_alive(first_gateway_pid)?;
     if first_gateway_is_alive {
-        stop_runtime_pid(first_gateway_pid).await?;
+        first_gateway.stop(Duration::from_secs(1)).await?;
+        fs::remove_file_if_exists(&paths.gateway_pid())?;
+        fs::remove_file_if_exists(&paths.gateway_runtime_metadata())?;
     } else if paths.gateway_pid().exists() {
         stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     }
@@ -5809,6 +6451,8 @@ async fn gateway_reconciliation_rolls_back_config_when_runtime_readiness_fails()
             .any(|request| { request["method"] == "GET" && request["path"] == "/config/" })
     );
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -5821,10 +6465,11 @@ fn assert_worker_command(paths: &PvPaths, php_track: &str, expected: &Utf8Path) 
     Ok(())
 }
 
-#[test]
-fn runtime_plan_groups_linked_projects_by_php_track() -> Result<()> {
+#[tokio::test]
+async fn runtime_plan_groups_linked_projects_by_php_track() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let acme = tempdir.path().join("acme");
     let other = tempdir.path().join("other/api");
 
@@ -5867,13 +6512,16 @@ document_root: public
 
     assert_runtime_plan_snapshot("runtime_plan_groups_linked_projects_by_php_track", plan);
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
-#[test]
-fn runtime_plan_excludes_resource_only_project_with_explicit_php() -> Result<()> {
+#[tokio::test]
+async fn runtime_plan_excludes_resource_only_project_with_explicit_php() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let served = tempdir.path().join("served");
     let resource_only = tempdir.path().join("resource-only");
     create_project(&served, "php: \"8.4\"\n")?;
@@ -5917,13 +6565,17 @@ fn runtime_plan_excludes_resource_only_project_with_explicit_php() -> Result<()>
     assert_eq!(project_ids, [served.id.as_str()]);
     assert!(!project_ids.contains(&resource_only.id.as_str()));
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
-#[test]
-fn runtime_plan_preserves_served_project_while_resource_only_transition_is_pending() -> Result<()> {
+#[tokio::test]
+async fn runtime_plan_preserves_served_project_while_resource_only_transition_is_pending()
+-> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("served");
     create_project(&project_root, "php: \"8.4\"\n")?;
 
@@ -5953,13 +6605,16 @@ fn runtime_plan_preserves_served_project_while_resource_only_transition_is_pendi
     assert!(!planned_project.render_config);
     assert_eq!(planned_project.primary_hostname, "served.test");
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
-#[test]
-fn gateway_runtime_plan_groups_projects_by_php_track_and_extensions() -> Result<()> {
+#[tokio::test]
+async fn gateway_runtime_plan_groups_projects_by_php_track_and_extensions() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let acme = create_project_with_config(
         tempdir.path(),
         "acme",
@@ -5984,13 +6639,16 @@ fn gateway_runtime_plan_groups_projects_by_php_track_and_extensions() -> Result<
 
     assert_eq!(runtime_keys, ["8.4+redis", "8.4+redis+xdebug"]);
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
-#[test]
-fn runtime_plan_resolves_latest_php_track_from_cached_manifest() -> Result<()> {
+#[tokio::test]
+async fn runtime_plan_resolves_latest_php_track_from_cached_manifest() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("latest-project");
     seed_php_manifest(&paths, "8.4")?;
     create_project(
@@ -6019,13 +6677,16 @@ document_root: public
         plan,
     );
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
-#[test]
-fn runtime_plan_defaults_document_root_to_public_directory_without_config() -> Result<()> {
+#[tokio::test]
+async fn runtime_plan_defaults_document_root_to_public_directory_without_config() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("configless-project");
     seed_php_manifest(&paths, "8.4")?;
     create_project_without_config(&project_root, true)?;
@@ -6049,13 +6710,17 @@ fn runtime_plan_defaults_document_root_to_public_directory_without_config() -> R
         plan,
     );
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
-#[test]
-fn runtime_plan_defaults_document_root_to_project_root_without_public_directory() -> Result<()> {
+#[tokio::test]
+async fn runtime_plan_defaults_document_root_to_project_root_without_public_directory() -> Result<()>
+{
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("configless-static-project");
     seed_php_manifest(&paths, "8.4")?;
     create_project_without_config(&project_root, false)?;
@@ -6079,13 +6744,16 @@ fn runtime_plan_defaults_document_root_to_project_root_without_public_directory(
         plan,
     );
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
-#[test]
-fn runtime_plan_uses_project_root_not_original_or_config_path() -> Result<()> {
+#[tokio::test]
+async fn runtime_plan_uses_project_root_not_original_or_config_path() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = tempdir.path().join("canonical-project");
     let original_path = tempdir.path().join("typed-project-path");
     let stored_config_path = tempdir.path().join("stale-config-location/pv.yml");
@@ -6122,13 +6790,17 @@ document_root: other-public
         plan,
     );
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
-#[test]
-fn gateway_config_validation_failure_preserves_active_config_and_cleans_candidate() -> Result<()> {
+#[tokio::test]
+async fn gateway_config_validation_failure_preserves_active_config_and_cleans_candidate()
+-> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     fs::ensure_layout(&paths)?;
     fs::write_sensitive_file(&paths.gateway_root_config(), "previous config\n")?;
     let mut candidate_path = None;
@@ -6156,6 +6828,8 @@ fn gateway_config_validation_failure_preserves_active_config_and_cleans_candidat
         .as_ref()
         .is_some_and(|candidate| !candidate.exists());
     assert!(candidate_removed);
+
+    runtime_guard.cleanup().await?;
 
     Ok(())
 }
@@ -6207,10 +6881,11 @@ async fn caddy_config_validation_reports_the_caddy_runtime_label() -> Result<()>
     Ok(())
 }
 
-#[test]
-fn caddy_cli_command_and_process_specs_are_stable() -> Result<()> {
+#[tokio::test]
+async fn caddy_cli_command_and_process_specs_are_stable() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let gateway_command = CaddyCliCommand::caddy(tempdir.path().join("caddy"));
     let worker_command = CaddyCliCommand::frankenphp(tempdir.path().join("frankenphp"));
     let gateway = gateway_process_spec(&paths, &gateway_command);
@@ -6273,6 +6948,8 @@ fn caddy_cli_command_and_process_specs_are_stable() -> Result<()> {
             worker,
         ),
     );
+
+    runtime_guard.cleanup().await?;
 
     Ok(())
 }
@@ -6390,12 +7067,15 @@ exit 0
     fs::write_sensitive_file(&config_path, "{}\n")?;
     let command = CaddyCliCommand::caddy(&validator);
     let paths = PvPaths::for_home(root.join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let private_environment = gateway_process_spec(&paths, &command).private_environment;
 
     validate_config(&command, &config_path, &private_environment).await?;
 
     assert_eq!(state::testing::read_to_string(&observed_phprc)?, "");
     assert_eq!(state::testing::read_to_string(&observed_scan_dir)?, "");
+
+    runtime_guard.cleanup().await?;
 
     Ok(())
 }
@@ -6437,6 +7117,7 @@ exit 0
     fs::write_sensitive_file(&config_path, "{}\n")?;
     let command = CaddyCliCommand::frankenphp(&validator);
     let paths = PvPaths::for_home(root.join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let expected_phprc = paths.resources().join("php/8.4/etc").to_string();
     let expected_scan_dir = paths.resources().join("php/8.4/etc/conf.d").to_string();
     let worker_plan = php_worker_plan("8.4");
@@ -6453,6 +7134,8 @@ exit 0
         state::testing::read_to_string(&observed_scan_dir)?,
         expected_scan_dir
     );
+
+    runtime_guard.cleanup().await?;
 
     Ok(())
 }
@@ -7046,41 +7729,603 @@ fn set_executable(path: &Utf8Path) -> Result<()> {
     Ok(())
 }
 
-async fn stop_runtime_from_pid_file(path: &Utf8Path) -> Result<()> {
-    let pid = state::testing::read_to_string(path)?
-        .trim()
-        .parse::<u32>()?;
-
-    stop_runtime_pid(pid).await
+#[derive(Clone)]
+struct RecordedRuntime {
+    pid_path: Utf8PathBuf,
+    metadata_path: Utf8PathBuf,
 }
 
-async fn stop_runtime_pid(pid: u32) -> Result<()> {
-    let raw_pid = i32::try_from(pid)?;
-    let process_group =
-        Pid::from_raw(raw_pid).ok_or_else(|| anyhow::anyhow!("invalid process id {pid}"))?;
+#[derive(Clone, Copy)]
+struct CapturedProcessGroupMember {
+    pid: Pid,
+    start_identity: ProcessStartIdentity,
+}
 
-    let _term_result = kill_process_group(process_group, Signal::TERM);
-    for _attempt in 0..50 {
-        if test_kill_process(process_group).is_err() {
+struct CapturedProcessGroupGuard {
+    process_group: Pid,
+    member: CapturedProcessGroupMember,
+    armed: bool,
+}
+
+impl CapturedProcessGroupGuard {
+    fn new(leader_pid: u32) -> Result<Self> {
+        let leader = Pid::from_raw(i32::try_from(leader_pid)?)
+            .ok_or_else(|| anyhow::anyhow!("invalid process id {leader_pid}"))?;
+        let process_group = getpgid(Some(leader))?;
+        if process_group != leader {
+            bail!("fixture leader {leader} did not own process group {process_group}");
+        }
+        let leader = capture_process_group_member(leader, process_group)?;
+
+        Ok(Self {
+            process_group,
+            member: leader,
+            armed: true,
+        })
+    }
+
+    fn capture(&mut self, pid: u32) -> Result<()> {
+        let pid = Pid::from_raw(i32::try_from(pid)?)
+            .ok_or_else(|| anyhow::anyhow!("invalid process id {pid}"))?;
+        self.member = capture_process_group_member(pid, self.process_group)?;
+
+        Ok(())
+    }
+
+    fn member_is_live(&self) -> Result<bool> {
+        captured_process_group_member_is_live(self.member, self.process_group)
+    }
+
+    fn cleanup(&mut self) -> Result<()> {
+        if !self.armed {
             return Ok(());
         }
 
-        sleep(Duration::from_millis(20)).await;
+        if self.member_is_live()? {
+            match kill_process_group(self.process_group, Signal::KILL) {
+                Ok(()) | Err(rustix::io::Errno::SRCH) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            if !self.member_is_live()? {
+                self.armed = false;
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                bail!(
+                    "fixture process group {} retained captured member {}",
+                    self.process_group,
+                    self.member.pid
+                );
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+impl Drop for CapturedProcessGroupGuard {
+    fn drop(&mut self) {
+        if let Err(error) = self.cleanup() {
+            let _write_result = writeln!(
+                std::io::stderr().lock(),
+                "Gateway fixture process-group cleanup failed: {error:#}"
+            );
+        }
+    }
+}
+
+fn capture_process_group_member(
+    pid: Pid,
+    expected_process_group: Pid,
+) -> Result<CapturedProcessGroupMember> {
+    let process_group = getpgid(Some(pid))?;
+    if process_group != expected_process_group {
+        bail!("fixture member {pid} joined process group {process_group}");
+    }
+    let raw_pid = u32::try_from(pid.as_raw_pid())?;
+    let start_identity = platform::inspect_process_start_identity(raw_pid)?
+        .ok_or_else(|| anyhow::anyhow!("fixture member {pid} exited before identity capture"))?;
+
+    Ok(CapturedProcessGroupMember {
+        pid,
+        start_identity,
+    })
+}
+
+fn captured_process_group_member_is_live(
+    member: CapturedProcessGroupMember,
+    expected_process_group: Pid,
+) -> Result<bool> {
+    match getpgid(Some(member.pid)) {
+        Ok(process_group) if process_group == expected_process_group => {}
+        Ok(_) | Err(rustix::io::Errno::SRCH) => return Ok(false),
+        Err(error) => return Err(error.into()),
+    }
+    let raw_pid = u32::try_from(member.pid.as_raw_pid())?;
+
+    Ok(platform::inspect_process_start_identity(raw_pid)? == Some(member.start_identity))
+}
+
+struct GatewayRuntimeGuard {
+    paths: PvPaths,
+    runtimes: Vec<RecordedRuntime>,
+    adopted: Vec<(RecordedRuntime, AdoptedProcess)>,
+}
+
+impl GatewayRuntimeGuard {
+    fn standard(paths: PvPaths) -> Self {
+        Self::new(
+            paths,
+            &[
+                "8.3",
+                "8.4",
+                "8.5",
+                "8.4+apcu",
+                "8.4+redis",
+                "8.4+xdebug",
+                "8.4+redis+xdebug",
+            ],
+        )
     }
 
-    kill_process_group(process_group, Signal::KILL)?;
+    fn new(paths: PvPaths, worker_runtime_keys: &[&str]) -> Self {
+        let mut runtimes = worker_runtime_keys
+            .iter()
+            .map(|runtime_key| RecordedRuntime {
+                pid_path: paths.worker_pid(runtime_key),
+                metadata_path: paths.worker_runtime_metadata(runtime_key),
+            })
+            .collect::<Vec<_>>();
+        runtimes.push(RecordedRuntime {
+            pid_path: paths.gateway_pid(),
+            metadata_path: paths.gateway_runtime_metadata(),
+        });
 
-    for _attempt in 0..50 {
-        if test_kill_process(process_group).is_err() {
+        Self {
+            paths,
+            runtimes,
+            adopted: Vec::new(),
+        }
+    }
+
+    fn capture(&mut self, pid_path: Utf8PathBuf, metadata_path: Utf8PathBuf) -> Result<u32> {
+        let process = ProcessSupervisor::new(self.paths.clone())
+            .adopt_recorded(&pid_path, &metadata_path)?
+            .ok_or_else(|| anyhow::anyhow!("runtime at {pid_path} was not adoptable"))?;
+        let pid = process.pid();
+        self.adopted.push((
+            RecordedRuntime {
+                pid_path,
+                metadata_path,
+            },
+            process,
+        ));
+        Ok(pid)
+    }
+
+    fn capture_adopted(
+        &mut self,
+        pid_path: Utf8PathBuf,
+        metadata_path: Utf8PathBuf,
+        process: AdoptedProcess,
+    ) {
+        self.adopted.push((
+            RecordedRuntime {
+                pid_path,
+                metadata_path,
+            },
+            process,
+        ));
+    }
+
+    async fn cleanup(&mut self) -> Result<()> {
+        let result = cleanup_gateway_runtimes(&self.paths, &self.adopted, &self.runtimes).await;
+        if result.is_ok() {
+            self.adopted.clear();
+        }
+        result
+    }
+}
+
+impl Drop for GatewayRuntimeGuard {
+    fn drop(&mut self) {
+        let runtime_files_absent = self.runtimes.iter().all(|runtime| {
+            matches!(fs::path_entry_exists(&runtime.pid_path), Ok(false))
+                && matches!(fs::path_entry_exists(&runtime.metadata_path), Ok(false))
+        });
+        if runtime_files_absent && self.adopted.is_empty() {
+            return;
+        }
+
+        let paths = &self.paths;
+        let runtimes = &self.runtimes;
+        let adopted = &self.adopted;
+        let cleanup_result = std::thread::scope(|scope| {
+            let cleanup_thread = std::thread::Builder::new().spawn_scoped(scope, || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| {
+                        anyhow::anyhow!("cleanup runtime construction failed: {error}")
+                    })?;
+
+                runtime.block_on(cleanup_gateway_runtimes(paths, adopted, runtimes))
+            });
+            match cleanup_thread {
+                Ok(cleanup_thread) => match cleanup_thread.join() {
+                    Ok(result) => result.map_err(|error| format!("cleanup failed: {error:#}")),
+                    Err(_panic) => Err("cleanup thread panicked".to_owned()),
+                },
+                Err(error) => Err(format!("cleanup thread construction failed: {error}")),
+            }
+        });
+        if let Err(failure) = cleanup_result {
+            let failure = gateway_cleanup_failure_with_emergency(
+                failure,
+                emergency_cleanup_gateway_runtimes(paths, adopted, runtimes),
+            );
+            report_gateway_cleanup_failure(paths, &failure);
+        }
+    }
+}
+
+fn gateway_cleanup_failure_with_emergency(primary: String, emergency: Result<()>) -> String {
+    match emergency {
+        Ok(()) => primary,
+        Err(error) => format!("{primary}; emergency cleanup failed: {error:#}"),
+    }
+}
+
+fn emergency_cleanup_gateway_runtimes(
+    paths: &PvPaths,
+    adopted: &[(RecordedRuntime, AdoptedProcess)],
+    runtimes: &[RecordedRuntime],
+) -> Result<()> {
+    let mut failures = Vec::new();
+    let mut cleaned_captured = Vec::new();
+    for (record, process) in adopted {
+        if let Err(error) = process.kill_and_wait_for_test(Duration::from_secs(1)) {
+            failures.push(format!("{}: {error}", record.pid_path));
+            continue;
+        }
+        cleaned_captured.push((record.clone(), process.pid()));
+    }
+
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    for runtime in runtimes {
+        let publication_deadline = Instant::now() + Duration::from_millis(500);
+        let captured_pid = cleaned_captured
+            .iter()
+            .find(|(record, _pid)| record.pid_path == runtime.pid_path)
+            .map(|(_record, pid)| *pid);
+        if let Err(error) = emergency_cleanup_recorded_gateway_runtime(
+            paths,
+            &supervisor,
+            runtime,
+            captured_pid,
+            publication_deadline,
+        ) {
+            failures.push(format!("{}: {error}", runtime.pid_path));
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        bail!(failures.join("; "))
+    }
+}
+
+fn emergency_cleanup_recorded_gateway_runtime(
+    paths: &PvPaths,
+    supervisor: &ProcessSupervisor,
+    runtime: &RecordedRuntime,
+    captured_pid: Option<u32>,
+    publication_deadline: Instant,
+) -> Result<()> {
+    loop {
+        match (
+            fs::path_entry_exists(&runtime.pid_path)?,
+            fs::path_entry_exists(&runtime.metadata_path)?,
+        ) {
+            (false, false) if Instant::now() >= publication_deadline => return Ok(()),
+            (false, false) => {}
+            (true, true) => {
+                let pid_snapshot = fs::read_to_string(&runtime.pid_path)?;
+                let metadata_snapshot = fs::read_to_string(&runtime.metadata_path)?;
+                let captured_record = captured_pid.is_some_and(|pid| {
+                    pid_snapshot
+                        .trim()
+                        .parse::<u32>()
+                        .is_ok_and(|recorded_pid| recorded_pid == pid)
+                });
+                if !captured_record {
+                    if !runtime_record_matches_expected_spec(
+                        paths,
+                        &runtime.pid_path,
+                        &runtime.metadata_path,
+                    )? {
+                        bail!("runtime metadata does not match its registered runtime");
+                    }
+                    if let Some(process) =
+                        supervisor.adopt_recorded(&runtime.pid_path, &runtime.metadata_path)?
+                    {
+                        process.kill_and_wait_for_test(Duration::from_secs(1))?;
+                    } else if Instant::now() >= publication_deadline {
+                        bail!("runtime was not adoptable through its recorded identity");
+                    } else {
+                        std::thread::sleep(Duration::from_millis(10));
+                        continue;
+                    }
+                }
+
+                let records_unchanged = fs::read_to_string(&runtime.pid_path)
+                    .is_ok_and(|contents| contents == pid_snapshot)
+                    && fs::read_to_string(&runtime.metadata_path)
+                        .is_ok_and(|contents| contents == metadata_snapshot);
+                if records_unchanged {
+                    fs::remove_file_if_exists(&runtime.pid_path)?;
+                    fs::remove_file_if_exists(&runtime.metadata_path)?;
+                } else if Instant::now() >= publication_deadline {
+                    bail!("runtime records changed during emergency cleanup");
+                }
+            }
+            _ if Instant::now() >= publication_deadline => {
+                bail!("runtime has incomplete ownership records");
+            }
+            _ => {}
+        }
+
+        if Instant::now() < publication_deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+fn report_gateway_cleanup_failure(paths: &PvPaths, message: &str) {
+    let record = json!({
+        "level": "error",
+        "target": "gateway_reconciliation",
+        "event": "fixture_runtime_cleanup_failed",
+        "message": message,
+    });
+    if let Ok(mut log) = fs::open_append_file(&paths.daemon_log()) {
+        let _write_result = log.write_all(format!("{record}\n").as_bytes());
+    }
+    let _write_result = writeln!(std::io::stderr().lock(), "{record}");
+}
+
+async fn cleanup_recorded_runtimes(paths: &PvPaths, runtimes: &[RecordedRuntime]) -> Result<()> {
+    let mut failures = Vec::new();
+    for runtime in runtimes {
+        if let Err(error) =
+            stop_recorded_runtime(paths, &runtime.pid_path, &runtime.metadata_path).await
+        {
+            failures.push(format!("{}: {error}", runtime.pid_path));
+        }
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        bail!("{}", failures.join("; "))
+    }
+}
+
+async fn cleanup_gateway_runtimes(
+    paths: &PvPaths,
+    adopted: &[(RecordedRuntime, AdoptedProcess)],
+    runtimes: &[RecordedRuntime],
+) -> Result<()> {
+    let mut failures = Vec::new();
+    for (record, process) in adopted {
+        let pid = process.pid();
+        if let Err(error) = process.clone().stop(Duration::from_secs(1)).await {
+            failures.push(format!("{}: {error}", record.pid_path));
+            continue;
+        }
+
+        let supervisor = ProcessSupervisor::new(paths.clone());
+        match supervisor.adopt_recorded(&record.pid_path, &record.metadata_path) {
+            Ok(Some(_replacement)) => {}
+            Ok(None) => match pid_path_is_absent_or_matches(&record.pid_path, pid) {
+                Ok(true) => {
+                    if let Err(error) = fs::remove_file_if_exists(&record.pid_path) {
+                        failures.push(format!("{}: {error}", record.pid_path));
+                    }
+                    if let Err(error) = fs::remove_file_if_exists(&record.metadata_path) {
+                        failures.push(format!("{}: {error}", record.metadata_path));
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => failures.push(format!("{}: {error}", record.pid_path)),
+            },
+            Err(error) => match pid_path_is_absent_or_matches(&record.pid_path, pid) {
+                Ok(true) => {
+                    if let Err(remove_error) = fs::remove_file_if_exists(&record.pid_path) {
+                        failures.push(format!("{}: {remove_error}", record.pid_path));
+                    }
+                    if let Err(remove_error) = fs::remove_file_if_exists(&record.metadata_path) {
+                        failures.push(format!("{}: {remove_error}", record.metadata_path));
+                    }
+                }
+                Ok(false) => failures.push(format!("{}: {error}", record.pid_path)),
+                Err(inspect_error) => failures.push(format!(
+                    "{}: {error}; additionally failed to inspect captured pid: {inspect_error}",
+                    record.pid_path
+                )),
+            },
+        }
+    }
+
+    if let Err(error) = cleanup_recorded_runtimes(paths, runtimes).await {
+        failures.push(error.to_string());
+    }
+
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        bail!("{}", failures.join("; "))
+    }
+}
+
+fn pid_path_is_absent_or_matches(pid_path: &Utf8Path, expected_pid: u32) -> Result<bool> {
+    match fs::read_to_string(pid_path) {
+        Ok(contents) => Ok(contents.trim().parse::<u32>()? == expected_pid),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == ErrorKind::NotFound => {
+            Ok(true)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn stop_runtime_from_pid_file(path: &Utf8Path) -> Result<()> {
+    let metadata_path = path.with_extension("json");
+    let pv_root = path
+        .ancestors()
+        .find(|ancestor| ancestor.file_name() == Some(".pv"))
+        .ok_or_else(|| anyhow::anyhow!("runtime path is outside a PV home: {path}"))?;
+    let home = pv_root
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("PV root has no home directory: {pv_root}"))?;
+    stop_recorded_runtime(&PvPaths::for_home(home), path, &metadata_path).await
+}
+
+async fn stop_recorded_runtime(
+    paths: &PvPaths,
+    pid_path: &Utf8Path,
+    metadata_path: &Utf8Path,
+) -> Result<()> {
+    let publication_deadline = Instant::now() + Duration::from_millis(500);
+    loop {
+        let pid_exists = fs::path_entry_exists(pid_path)?;
+        let metadata_exists = fs::path_entry_exists(metadata_path)?;
+        if !pid_exists && !metadata_exists {
+            return Ok(());
+        }
+        if pid_exists && !metadata_exists && Instant::now() < publication_deadline {
+            sleep(Duration::from_millis(10)).await;
+            continue;
+        }
+        if pid_exists && !metadata_exists {
+            let pid = fs::read_to_string(pid_path)?.trim().parse::<u32>()?;
+            if !process_and_group_are_absent(pid, Duration::from_secs(1)).await? {
+                bail!(
+                    "runtime pid at {pid_path} was published without metadata while its process group is still alive"
+                );
+            }
+            fs::remove_file_if_exists(pid_path)?;
+            return Ok(());
+        }
+        if !runtime_record_matches_expected_spec(paths, pid_path, metadata_path)? {
+            bail!("runtime metadata at {metadata_path} does not match its registered runtime");
+        }
+        if !pid_exists {
+            let Some(pid) = runtime_metadata_pid(metadata_path)? else {
+                bail!("runtime metadata at {metadata_path} has no recorded pid");
+            };
+            if !process_and_group_are_absent(pid, Duration::from_secs(1)).await? {
+                bail!("runtime metadata at {metadata_path} still names a live process group");
+            }
+            fs::remove_file_if_exists(metadata_path)?;
             return Ok(());
         }
 
-        sleep(Duration::from_millis(20)).await;
-    }
+        let supervisor = ProcessSupervisor::new(paths.clone());
+        let Some(runtime) = supervisor.adopt_recorded(pid_path, metadata_path)? else {
+            let pid = fs::read_to_string(pid_path)?.trim().parse::<u32>()?;
+            if runtime_metadata_pid(metadata_path)? != Some(pid) {
+                bail!("runtime at {pid_path} had inconsistent ownership records");
+            }
+            if process_and_group_are_absent(pid, Duration::from_secs(1)).await? {
+                fs::remove_file_if_exists(pid_path)?;
+                fs::remove_file_if_exists(metadata_path)?;
+                return Ok(());
+            }
 
-    Err(anyhow::anyhow!(
-        "process {process_group:?} was still running"
-    ))
+            return Err(DaemonError::RuntimeProcessIdentityChanged { pid }.into());
+        };
+
+        runtime.stop(Duration::from_secs(1)).await?;
+        fs::remove_file_if_exists(pid_path)?;
+        fs::remove_file_if_exists(metadata_path)?;
+
+        if fs::path_entry_exists(pid_path)? || fs::path_entry_exists(metadata_path)? {
+            bail!("runtime files remained after cleanup: {pid_path}, {metadata_path}");
+        }
+
+        return Ok(());
+    }
+}
+
+fn runtime_record_matches_expected_spec(
+    paths: &PvPaths,
+    pid_path: &Utf8Path,
+    metadata_path: &Utf8Path,
+) -> Result<bool> {
+    let metadata: Value = serde_json::from_str(&fs::read_to_string(metadata_path)?)?;
+    let (resource_name, track, config_path, log_path) =
+        if pid_path == paths.gateway_pid() && metadata_path == paths.gateway_runtime_metadata() {
+            (
+                "caddy",
+                "2",
+                paths.gateway_root_config(),
+                paths.gateway_supervisor_log(),
+            )
+        } else {
+            let workers_path = paths.run().join("workers");
+            if pid_path.parent() != Some(workers_path.as_path()) {
+                return Ok(false);
+            }
+            let Some(runtime_key) = pid_path
+                .file_name()
+                .and_then(|file_name| file_name.strip_prefix("php-"))
+                .and_then(|file_name| file_name.strip_suffix(".pid"))
+            else {
+                return Ok(false);
+            };
+            if metadata_path != paths.worker_runtime_metadata(runtime_key) {
+                return Ok(false);
+            }
+            (
+                "frankenphp",
+                runtime_key,
+                paths.worker_root_config(runtime_key),
+                paths.worker_log(runtime_key),
+            )
+        };
+    let expected_arguments = json!([
+        "run",
+        "--config",
+        config_path.as_str(),
+        "--adapter",
+        "caddyfile"
+    ]);
+    Ok(metadata["resource_name"] == resource_name
+        && metadata["track"] == track
+        && metadata["config_path"] == config_path.as_str()
+        && metadata["log_path"] == log_path.as_str()
+        && metadata["command"]
+            .as_str()
+            .is_some_and(|command| !command.is_empty())
+        && metadata["arguments"] == expected_arguments)
+}
+
+async fn stop_recorded_runtime_preserving_files(
+    paths: &PvPaths,
+    pid_path: &Utf8Path,
+    metadata_path: &Utf8Path,
+) -> Result<()> {
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let runtime = supervisor
+        .adopt_recorded(pid_path, metadata_path)?
+        .ok_or_else(|| anyhow::anyhow!("runtime at {pid_path} was not adoptable"))?;
+    runtime.stop(Duration::from_secs(1)).await?;
+
+    Ok(())
 }
 
 async fn wait_for_process_exit(pid: u32) -> Result<()> {
@@ -7089,8 +8334,10 @@ async fn wait_for_process_exit(pid: u32) -> Result<()> {
         Pid::from_raw(raw_pid).ok_or_else(|| anyhow::anyhow!("invalid process id {pid}"))?;
 
     for _attempt in 0..50 {
-        if test_kill_process(process).is_err() {
-            return Ok(());
+        match test_kill_process(process) {
+            Err(rustix::io::Errno::SRCH) => return Ok(()),
+            Ok(()) => {}
+            Err(error) => bail!("failed to inspect process {pid}: {error}"),
         }
 
         sleep(Duration::from_millis(20)).await;
@@ -7126,7 +8373,47 @@ fn process_is_alive(pid: u32) -> Result<bool> {
     let process =
         Pid::from_raw(raw_pid).ok_or_else(|| anyhow::anyhow!("invalid process id {pid}"))?;
 
-    Ok(test_kill_process(process).is_ok())
+    match test_kill_process(process) {
+        Ok(()) => Ok(true),
+        Err(rustix::io::Errno::SRCH) => Ok(false),
+        Err(error) => bail!("failed to inspect process {pid}: {error}"),
+    }
+}
+
+fn process_group_is_alive(pid: u32) -> Result<bool> {
+    let raw_pid = i32::try_from(pid)?;
+    let process_group =
+        Pid::from_raw(raw_pid).ok_or_else(|| anyhow::anyhow!("invalid process id {pid}"))?;
+
+    match test_kill_process_group(process_group) {
+        Ok(()) => Ok(true),
+        Err(rustix::io::Errno::SRCH) => Ok(false),
+        Err(error) => bail!("failed to inspect process group {pid}: {error}"),
+    }
+}
+
+async fn process_and_group_are_absent(pid: u32, wait: Duration) -> Result<bool> {
+    let deadline = Instant::now() + wait;
+    loop {
+        if !process_is_alive(pid)? && !process_group_is_alive(pid)? {
+            return Ok(true);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn assert_process_group_absent(pid: u32) -> Result<()> {
+    let raw_pid = i32::try_from(pid)?;
+    let process_group =
+        Pid::from_raw(raw_pid).ok_or_else(|| anyhow::anyhow!("invalid process id {pid}"))?;
+    match test_kill_process_group(process_group) {
+        Err(rustix::io::Errno::SRCH) => Ok(()),
+        Ok(()) => bail!("process group {pid} remained after cleanup"),
+        Err(error) => bail!("failed to inspect process group {pid}: {error}"),
+    }
 }
 
 fn replace_runtime_metadata_identity(
@@ -7247,6 +8534,7 @@ fn assert_process_spec_snapshot(
 async fn resource_only_target_recovers_alive_unready_gateway_with_invalid_config() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = create_project_with_config(tempdir.path(), "acme", "serve: false\n")?;
     let caddy_release = tempdir.path().join("fake-caddy-release");
     write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
@@ -7315,6 +8603,8 @@ async fn resource_only_target_recovers_alive_unready_gateway_with_invalid_config
     assert!(!invalid_fragment.exists());
     assert_eq!(gateway_status, Some(RuntimeObservedStatus::Degraded));
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -7325,6 +8615,7 @@ async fn targeted_inspection_promotes_only_recoverable_uncertainty() -> Result<(
     {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
         let project_root = create_project_with_config(tempdir.path(), "acme", "php: \"8.4\"\n")?;
         let caddy_release = tempdir.path().join("fake-caddy-release");
         let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
@@ -7375,6 +8666,7 @@ async fn targeted_inspection_promotes_only_recoverable_uncertainty() -> Result<(
 
         stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
         stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+        runtime_guard.cleanup().await?;
     }
 
     // Denied: invalid target config and a deleted target keep their original
@@ -7382,6 +8674,7 @@ async fn targeted_inspection_promotes_only_recoverable_uncertainty() -> Result<(
     {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
         let project_root = create_project_with_config(tempdir.path(), "acme", "php: \"8.4\"\n")?;
         let caddy_release = tempdir.path().join("fake-caddy-release");
         let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
@@ -7477,6 +8770,7 @@ async fn targeted_inspection_promotes_only_recoverable_uncertainty() -> Result<(
 
         stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
         stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+        runtime_guard.cleanup().await?;
     }
 
     Ok(())
@@ -7486,6 +8780,7 @@ async fn targeted_inspection_promotes_only_recoverable_uncertainty() -> Result<(
 async fn gateway_failure_preserves_primary_error_when_observation_write_fails() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = create_project_with_config(tempdir.path(), "acme", "php: \"8.4\"\n")?;
     let caddy_release = tempdir.path().join("fake-caddy-release");
     let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
@@ -7560,6 +8855,8 @@ async fn gateway_failure_preserves_primary_error_when_observation_write_fails() 
     stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
     stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
 
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }
 
@@ -7567,6 +8864,7 @@ async fn gateway_failure_preserves_primary_error_when_observation_write_fails() 
 async fn targeted_reconciliation_reports_alive_unready_worker() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let project_root = create_project_with_config(tempdir.path(), "acme", "php: \"8.4\"\n")?;
     let caddy_release = tempdir.path().join("fake-caddy-release");
     let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
@@ -7674,5 +8972,7 @@ async fn targeted_reconciliation_reports_alive_unready_worker() -> Result<()> {
         ),
     )
     ");
+    runtime_guard.cleanup().await?;
+
     Ok(())
 }

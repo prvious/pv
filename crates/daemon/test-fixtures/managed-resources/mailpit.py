@@ -5,6 +5,31 @@ import signal
 import socketserver
 import sys
 import threading
+import time
+
+
+parent_pid = os.getppid()
+parent_capture_marker = os.environ.get("PV_TEST_PARENT_CAPTURE_MARKER")
+parent_capture_release = os.environ.get("PV_TEST_PARENT_CAPTURE_RELEASE")
+if parent_capture_marker and parent_capture_release:
+    with open(parent_capture_marker, "w", encoding="utf-8") as marker:
+        marker.write("started\n")
+    while not os.path.exists(parent_capture_release):
+        if os.getppid() != parent_pid:
+            os._exit(0)
+        time.sleep(0.01)
+if parent_pid == 1:
+    os._exit(0)
+
+
+def monitor_parent():
+    while True:
+        time.sleep(0.1)
+        if os.getppid() != parent_pid:
+            os._exit(0)
+
+
+threading.Thread(target=monitor_parent, daemon=True).start()
 
 
 arguments = list(sys.argv[1:])

@@ -849,6 +849,30 @@ async fn supervisor_stop_waits_for_process_group_descendants() -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn adopted_stop_accepts_runtime_already_stopped_by_its_owner() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let spec = process_spec(
+        &paths,
+        "already-stopped-runtime",
+        "/bin/sleep",
+        vec!["30".to_owned()],
+    );
+    let process = supervisor.start(spec.clone()).await?;
+    let adopted = supervisor
+        .adopt_recorded(&spec.pid_path, &spec.metadata_path)?
+        .ok_or_else(|| anyhow!("runtime was not adoptable before owner cleanup"))?;
+
+    process.stop(Duration::from_secs(1)).await?;
+    adopted.stop(Duration::from_secs(1)).await?;
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn supervisor_rejects_metadata_for_a_reused_pid_with_a_different_command() -> Result<()> {
     let tempdir = tempdir()?;

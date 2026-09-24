@@ -258,6 +258,9 @@ pub enum DaemonError {
     #[error("process `{name}` started without observable identity for pid {pid}")]
     MissingProcessIdentity { name: String, pid: u32 },
 
+    #[error("process {pid} stopped matching its recorded identity before cleanup")]
+    RuntimeProcessIdentityChanged { pid: u32 },
+
     #[error("readiness check `{check}` timed out after {timeout_ms}ms; last error: {last_error:?}")]
     ReadinessTimedOut {
         check: String,

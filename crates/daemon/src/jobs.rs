@@ -3796,6 +3796,8 @@ mod tests {
     use rcgen::generate_simple_self_signed;
     use resources::{ManagedResourceCommandError, ResourceHttpClient, ResourcesError};
     use rusqlite::{Connection, Error as SqliteError};
+    #[cfg(target_os = "macos")]
+    use rustix::process::{Pid, test_kill_process, test_kill_process_group};
     use serde_json::json;
     use state::{
         Database, GatewayPort, JobDiagnosticSubject, JobStatus, JobsLock, LinkProjectInput,
@@ -3808,7 +3810,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     use tokio::net::UnixStream;
     use tokio::sync::{mpsc::channel, oneshot, watch};
-    use tokio::time::{Duration, timeout};
+    use tokio::time::{Duration, sleep, timeout};
 
     use crate::gateway::{
         GatewayPfRoutingState, reconcile_gateway_runtimes_with_pf_state_for_test,
@@ -3892,8 +3894,9 @@ mod tests {
             &paths.ca_private_key(),
             &certified_key.signing_key.serialize_pem(),
         )?;
-        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
         let release = tempdir.path().join("frankenphp-release");
+        caddy_guard.register_worker("8.4", &release);
         let executable = release.join("bin/frankenphp");
         state::fs::write_sensitive_file(
             &executable,
@@ -3953,9 +3956,7 @@ mod tests {
             &paths.worker_runtime_metadata("8.4"),
         )?;
         let worker_recovered = recovered.is_some();
-        if let Some(worker) = recovered {
-            worker.stop(Duration::from_secs(1)).await?;
-        }
+        drop(recovered);
         let database = Database::open(&paths)?;
         let job_statuses = database
             .recent_jobs()?
@@ -3980,6 +3981,9 @@ mod tests {
             ],
         )
         ");
+        caddy_guard.cleanup().await?;
+        assert!(!paths.worker_pid("8.4").exists());
+        assert!(!paths.worker_runtime_metadata("8.4").exists());
         Ok(())
     }
 
@@ -3988,7 +3992,7 @@ mod tests {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_installed_caddy(&paths)?;
-        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
         let project_path = tempdir.path().join("project");
         let config_path = project_path.join("pv.yml");
         state::fs::write_sensitive_file(&config_path, "php: [\n")?;
@@ -4019,6 +4023,7 @@ mod tests {
         ] if reason == "FrankenPHP is not installed for PHP track `8.4`"),
             "unexpected failures: {failures:?}"
         );
+        caddy_guard.cleanup().await?;
         Ok(())
     }
 
@@ -4049,7 +4054,7 @@ mod tests {
             .project;
         drop(database);
         seed_installed_caddy(&paths)?;
-        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
         crate::gateway::reconcile_gateway_runtimes_with_pf_state_for_test(
             &paths,
             Duration::from_secs(5),
@@ -4113,6 +4118,7 @@ mod tests {
             assert_eq!(event["subject"], "target_project");
         }
 
+        caddy_guard.cleanup().await?;
         Ok(())
     }
 
@@ -4139,7 +4145,7 @@ mod tests {
             .project;
         drop(database);
         seed_installed_caddy(&paths)?;
-        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
         crate::gateway::reconcile_gateway_runtimes_with_pf_state_for_test(
             &paths,
             Duration::from_secs(5),
@@ -4232,6 +4238,7 @@ mod tests {
             gateway_observation.message.as_deref(),
             Some("previous gateway failure")
         );
+        caddy_guard.cleanup().await?;
 
         Ok(())
     }
@@ -4279,7 +4286,7 @@ mod tests {
             "# stale active target route\n",
         )?;
         seed_installed_caddy(&paths)?;
-        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
         let scope = ReconciliationScope::project(target.id.clone())?;
         let ReconciliationScope::Project { id } = &scope else {
             return Err(anyhow::anyhow!("expected Project scope"));
@@ -4326,6 +4333,7 @@ mod tests {
             2
         );
 
+        caddy_guard.cleanup().await?;
         Ok(())
     }
 
@@ -4362,7 +4370,7 @@ mod tests {
         )?;
         drop(database);
         seed_installed_caddy(&paths)?;
-        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
         let target = &projects[0];
         let scope = ReconciliationScope::project(target.id.clone())?;
         let project_failure = start_reconciliation_job(&paths, &scope.to_string())?;
@@ -4447,6 +4455,7 @@ mod tests {
                 .unresolved_job_failures()?
                 .is_empty()
         );
+        caddy_guard.cleanup().await?;
         Ok(())
     }
 
@@ -4771,6 +4780,8 @@ mod tests {
         for reject_observation in [false, true] {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
+            let mut runtime_guard =
+                SeededRuntimeGuard::with_resource(paths.clone(), "mailpit", MAILPIT_TEST_TRACK);
             seed_installed_artifact(
                 &paths,
                 "mailpit",
@@ -4873,7 +4884,8 @@ mod tests {
                 database.replace_project_managed_resources(&project.id, &[])?;
             }
             drop(database);
-            stop_undemanded_system_resource_runtimes(&paths, Some(&catalog)).await?;
+            let resource_cleanup_result =
+                stop_undemanded_system_resource_runtimes(&paths, Some(&catalog)).await;
             let correct_error = match (&result, reject_observation) {
                 (
                     Err(DaemonError::ReadinessTimedOut {
@@ -4910,7 +4922,7 @@ mod tests {
                             && observed.message == result.as_ref().err().map(ToString::to_string)
                     })
                 });
-            outcomes.push((
+            let outcome = (
                 format!(
                     "reject_observation={reject_observation}, error={:?}",
                     result.as_ref().err()
@@ -4921,11 +4933,28 @@ mod tests {
                     files_preserved,
                     runtime_failed,
                     observations[2] == unrelated_before,
+                    resource_cleanup_result.is_ok(),
                     !state::fs::path_entry_exists(
                         &paths.resource_pid("mailpit", MAILPIT_TEST_TRACK),
                     )?,
                 ],
-            ));
+            );
+            let outcome_passed = outcome.1.iter().all(|passed| *passed);
+            let guard_cleanup_result = runtime_guard.cleanup().await;
+            if !outcome_passed {
+                anyhow::bail!(
+                    "fatal track outcome: {outcome:#?}; resource cleanup: {resource_cleanup_result:?}; guard cleanup: {guard_cleanup_result:?}"
+                );
+            }
+            match (resource_cleanup_result, guard_cleanup_result) {
+                (Ok(()), Ok(())) => {}
+                (Err(resource_error), Ok(())) => return Err(resource_error.into()),
+                (Ok(()), Err(guard_error)) => return Err(guard_error),
+                (Err(resource_error), Err(guard_error)) => anyhow::bail!(
+                    "resource cleanup failed: {resource_error}; guard cleanup failed: {guard_error}"
+                ),
+            }
+            outcomes.push(outcome);
         }
         assert!(
             outcomes
@@ -5861,7 +5890,7 @@ mod tests {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
             seed_cached_php_pair(&paths, tempdir.path())?;
-            let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+            let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
             if !update_path {
                 seed_gateway_ports(&mut Database::open(&paths)?)?;
                 let certified_key =
@@ -6157,6 +6186,7 @@ mod tests {
                             && phase["outcome"] == "failed")
                     );
                 }
+                caddy_guard.cleanup().await?;
                 continue;
             }
             result?;
@@ -6183,6 +6213,7 @@ mod tests {
                 # <<< PV MANAGED
                 ");
             }
+            caddy_guard.cleanup().await?;
         }
         assert_debug_snapshot!(mixed_errors, @r#"
         [
@@ -6314,7 +6345,11 @@ mod tests {
             }
             let refreshed_manifest = serde_json::to_string_pretty(&refreshed_manifest)?;
             seed_installed_caddy(&paths)?;
-            let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+            let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
+            caddy_guard.register_worker(
+                "8.5+redis",
+                &paths.resources().join("frankenphp").join(PHP_TEST_TRACK),
+            );
             let mut database = Database::open(&paths)?;
             database.link_project(LinkProjectInput {
                 path: project_path.clone(),
@@ -6412,6 +6447,7 @@ mod tests {
                 |row| row.get::<_, i64>(0),
             )?;
             assert_eq!(observed_writes, 1);
+            caddy_guard.cleanup().await?;
         }
 
         Ok(())
@@ -6424,7 +6460,7 @@ mod tests {
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_cached_php_pair(&paths, tempdir.path())?;
         seed_installed_caddy(&paths)?;
-        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
         let manifest = state::fs::read_to_string(&paths.downloads().join("manifest.json"))?;
         let mut database = Database::open(&paths)?;
         let mut projects = Vec::new();
@@ -6530,6 +6566,7 @@ mod tests {
         "
         );
 
+        caddy_guard.cleanup().await?;
         Ok(())
     }
 
@@ -6538,7 +6575,8 @@ mod tests {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_installed_caddy(&paths)?;
-        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
+        caddy_guard.register_resource("mailpit", MAILPIT_TEST_TRACK);
         seed_installed_artifact(
             &paths,
             "mailpit",
@@ -6694,7 +6732,6 @@ mod tests {
         }
         .await;
         Database::open(&paths)?.replace_project_managed_resources(&linked.project.id, &[])?;
-        stop_undemanded_system_resource_runtimes(&paths, Some(&catalog)).await?;
         let (result, snapshot) = verification?;
         let error = result
             .err()
@@ -6750,6 +6787,14 @@ mod tests {
             "# >>> PV MANAGED\nAPP_NAME=independent\n# <<< PV MANAGED\n",
         )
         "##);
+        caddy_guard.cleanup().await?;
+        assert!(!paths.resource_pid("mailpit", MAILPIT_TEST_TRACK).exists());
+        assert!(
+            !paths
+                .resource_runtime_metadata("mailpit", MAILPIT_TEST_TRACK)
+                .exists()
+        );
+        assert!(TcpStream::connect(smtp_address).is_err());
         Ok(())
     }
 
@@ -6761,7 +6806,7 @@ mod tests {
             let paths = PvPaths::for_home(tempdir.path().join("home"));
             seed_cached_php_pair(&paths, tempdir.path())?;
             seed_installed_caddy(&paths)?;
-            let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+            let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
             let archive_path = tempdir.path().join(PHP_TEST_ARCHIVE_FILE_NAME);
             let sha256 = sha256_file(&archive_path)?;
             state::fs::remove_file(
@@ -6895,6 +6940,7 @@ mod tests {
                     Some(ProjectEnvObservedStatus::Failed)
                 );
                 assert!(!state::fs::path_exists(&linked.project.path.join(".env")));
+                caddy_guard.cleanup().await?;
                 continue;
             }
             result?;
@@ -6918,6 +6964,7 @@ mod tests {
             # <<< PV MANAGED
             ");
             }
+            caddy_guard.cleanup().await?;
         }
         Ok(())
     }
@@ -6974,7 +7021,7 @@ mod tests {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
             seed_installed_caddy(&paths)?;
-            let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+            let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
             let (client, _) = scripted_artifact_client(
                 tempdir.path(),
                 "mailpit",
@@ -7096,6 +7143,7 @@ mod tests {
                     Some(ProjectEnvObservedStatus::Failed)
                 );
                 assert!(!state::fs::path_exists(&linked.project.path.join(".env")));
+                caddy_guard.cleanup().await?;
                 continue;
             }
             result?;
@@ -7113,6 +7161,7 @@ mod tests {
                 # <<< PV MANAGED
                 ");
             }
+            caddy_guard.cleanup().await?;
         }
         Ok(())
     }
@@ -7149,7 +7198,11 @@ mod tests {
             let paths = PvPaths::for_home(tempdir.path().join("home"));
             seed_cached_php_pair(&paths, tempdir.path())?;
             seed_installed_caddy(&paths)?;
-            let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+            let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
+            caddy_guard.register_worker(
+                PHP_TEST_TRACK,
+                &paths.resources().join("frankenphp").join(PHP_TEST_TRACK),
+            );
             seed_installed_artifact(
                 &paths,
                 "mailpit",
@@ -7247,6 +7300,7 @@ mod tests {
                     |phase| phase["phase"] == "gateway" && phase["outcome"] == expected_outcome
                 )
             );
+            caddy_guard.cleanup().await?;
         }
 
         Ok(())
@@ -8243,7 +8297,7 @@ mod tests {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_installed_caddy(&paths)?;
-        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
         let job_id = start_reconciliation_job(&paths, "system")?;
         let (client, server) = duplex(64);
         drop(client);
@@ -8273,6 +8327,7 @@ mod tests {
             job.error
         );
 
+        caddy_guard.cleanup().await?;
         Ok(())
     }
 
@@ -8543,7 +8598,7 @@ mod tests {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_installed_caddy(&paths)?;
-        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
         let (client, _total_bytes) = scripted_artifact_client(
             tempdir.path(),
             "caddy",
@@ -8623,6 +8678,7 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("missing update failure {job_id}"))?;
         assert_eq!(failure.subject, JobDiagnosticSubject::UpdateAssessment);
 
+        caddy_guard.cleanup().await?;
         Ok(())
     }
 
@@ -8693,7 +8749,7 @@ mod tests {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_installed_caddy(&paths)?;
-        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
         let (client, _total_bytes) = scripted_artifact_client(
             tempdir.path(),
             "composer",
@@ -8774,6 +8830,7 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("missing job {job_id}"))?;
         assert_eq!(job.status, JobStatus::Succeeded);
 
+        caddy_guard.cleanup().await?;
         Ok(())
     }
 
@@ -10745,7 +10802,7 @@ mod tests {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_installed_caddy(&paths)?;
-        let _caddy_guard = SeededCaddyGuard::new(paths.clone());
+        let _caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
         let (client, _archive_size) = scripted_artifact_client(
             tempdir.path(),
             "composer",
@@ -11622,44 +11679,450 @@ mod tests {
         set_executable(executable)
     }
 
-    struct SeededCaddyGuard {
-        paths: PvPaths,
+    struct SeededRuntimeRecord {
+        label: String,
+        pid_path: Utf8PathBuf,
+        metadata_path: Utf8PathBuf,
+        process_name: String,
+        resource_name: String,
+        track: String,
+        command_root: Utf8PathBuf,
+        config_path: Utf8PathBuf,
+        log_path: Utf8PathBuf,
+        arguments: Option<Vec<String>>,
     }
 
-    impl SeededCaddyGuard {
-        fn new(paths: PvPaths) -> Self {
-            Self { paths }
+    struct SeededRuntimeGuard {
+        paths: Option<PvPaths>,
+        runtimes: Vec<SeededRuntimeRecord>,
+    }
+
+    impl SeededRuntimeGuard {
+        fn with_gateway(paths: PvPaths) -> Self {
+            let gateway = seeded_gateway_record(&paths);
+            Self {
+                paths: Some(paths),
+                runtimes: vec![gateway],
+            }
+        }
+
+        fn with_resource(paths: PvPaths, resource_name: &str, track: &str) -> Self {
+            let mut guard = Self {
+                paths: Some(paths),
+                runtimes: Vec::new(),
+            };
+            guard.register_resource(resource_name, track);
+            guard
+        }
+
+        fn register_worker(&mut self, runtime_key: &str, command_root: &Utf8Path) {
+            if let Some(paths) = self.paths.as_ref() {
+                let config_path = paths.worker_root_config(runtime_key);
+                self.runtimes.push(SeededRuntimeRecord {
+                    label: format!("FrankenPHP worker {runtime_key}"),
+                    pid_path: paths.worker_pid(runtime_key),
+                    metadata_path: paths.worker_runtime_metadata(runtime_key),
+                    process_name: format!("php-worker-{runtime_key}"),
+                    resource_name: "frankenphp".to_owned(),
+                    track: runtime_key.to_owned(),
+                    command_root: command_root.to_path_buf(),
+                    config_path: config_path.clone(),
+                    log_path: paths.worker_log(runtime_key),
+                    arguments: Some(vec![
+                        "run".to_owned(),
+                        "--config".to_owned(),
+                        config_path.into_string(),
+                        "--adapter".to_owned(),
+                        "caddyfile".to_owned(),
+                    ]),
+                });
+            }
+        }
+
+        fn register_resource(&mut self, resource_name: &str, track: &str) {
+            if let Some(paths) = self.paths.as_ref() {
+                self.runtimes.push(SeededRuntimeRecord {
+                    label: format!("Managed Resource {resource_name} {track}"),
+                    pid_path: paths.resource_pid(resource_name, track),
+                    metadata_path: paths.resource_runtime_metadata(resource_name, track),
+                    process_name: format!("{resource_name}-{track}"),
+                    resource_name: resource_name.to_owned(),
+                    track: track.to_owned(),
+                    command_root: paths.resources().join(resource_name).join(track),
+                    config_path: paths.resource_runtime_config(resource_name, track),
+                    log_path: paths.resource_log(resource_name, track),
+                    arguments: None,
+                });
+            }
+        }
+
+        async fn cleanup(&mut self) -> anyhow::Result<()> {
+            let Some(paths) = self.paths.as_ref() else {
+                return Ok(());
+            };
+            stop_seeded_runtimes(paths, &self.runtimes).await?;
+            self.paths = None;
+            Ok(())
         }
     }
 
-    impl Drop for SeededCaddyGuard {
+    fn seeded_gateway_record(paths: &PvPaths) -> SeededRuntimeRecord {
+        let config_path = paths.gateway_root_config();
+        SeededRuntimeRecord {
+            label: "Gateway".to_owned(),
+            pid_path: paths.gateway_pid(),
+            metadata_path: paths.gateway_runtime_metadata(),
+            process_name: "gateway".to_owned(),
+            resource_name: "caddy".to_owned(),
+            track: CADDY_TEST_TRACK.to_owned(),
+            command_root: paths.resources().join("caddy").join(CADDY_TEST_TRACK),
+            config_path: config_path.clone(),
+            log_path: paths.gateway_supervisor_log(),
+            arguments: Some(vec![
+                "run".to_owned(),
+                "--config".to_owned(),
+                config_path.into_string(),
+                "--adapter".to_owned(),
+                "caddyfile".to_owned(),
+            ]),
+        }
+    }
+
+    impl Drop for SeededRuntimeGuard {
         fn drop(&mut self) {
-            let paths = self.paths.clone();
-            std::thread::scope(|scope| {
-                let cleanup_thread = scope.spawn(move || {
-                    let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+            let Some(paths) = self.paths.as_ref() else {
+                return;
+            };
+            let runtimes = &self.runtimes;
+            let cleanup_result = std::thread::scope(|scope| {
+                let cleanup_thread = std::thread::Builder::new().spawn_scoped(scope, || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()
-                    else {
-                        return;
-                    };
+                        .map_err(|error| {
+                            anyhow::anyhow!("cleanup runtime construction failed: {error}")
+                        })?;
 
-                    let _cleanup_result = runtime.block_on(stop_seeded_caddy(&paths));
+                    runtime.block_on(stop_seeded_runtimes(paths, runtimes))
                 });
-                let _join_result = cleanup_thread.join();
+                match cleanup_thread {
+                    Ok(cleanup_thread) => match cleanup_thread.join() {
+                        Ok(result) => result.map_err(|error| format!("cleanup failed: {error:#}")),
+                        Err(_panic) => Err("cleanup thread panicked".to_owned()),
+                    },
+                    Err(error) => Err(format!("cleanup thread construction failed: {error}")),
+                }
             });
+            if let Err(failure) = cleanup_result {
+                let failure = seeded_cleanup_failure_with_emergency(
+                    failure,
+                    emergency_cleanup_seeded_runtimes(paths, runtimes),
+                );
+                report_seeded_runtime_cleanup_failure(paths, &failure);
+            }
         }
+    }
+
+    fn seeded_cleanup_failure_with_emergency(
+        primary: String,
+        emergency: anyhow::Result<()>,
+    ) -> String {
+        match emergency {
+            Ok(()) => primary,
+            Err(error) => format!("{primary}; emergency cleanup failed: {error:#}"),
+        }
+    }
+
+    fn emergency_cleanup_seeded_runtimes(
+        paths: &PvPaths,
+        runtimes: &[SeededRuntimeRecord],
+    ) -> anyhow::Result<()> {
+        let supervisor = ProcessSupervisor::new(paths.clone());
+        let mut failures = Vec::new();
+
+        for runtime in runtimes {
+            let publication_deadline = std::time::Instant::now() + Duration::from_millis(500);
+            if let Err(error) =
+                emergency_cleanup_seeded_runtime(&supervisor, runtime, publication_deadline)
+            {
+                failures.push(format!("{}: {error:#}", runtime.label));
+            }
+        }
+
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(failures.join("; "))
+        }
+    }
+
+    fn emergency_cleanup_seeded_runtime(
+        supervisor: &ProcessSupervisor,
+        runtime: &SeededRuntimeRecord,
+        publication_deadline: std::time::Instant,
+    ) -> anyhow::Result<()> {
+        loop {
+            let pid_exists = state::fs::path_entry_exists(&runtime.pid_path)?;
+            let metadata_exists = state::fs::path_entry_exists(&runtime.metadata_path)?;
+            match (pid_exists, metadata_exists) {
+                (false, false) if std::time::Instant::now() >= publication_deadline => {
+                    return Ok(());
+                }
+                (false, false) => {}
+                (true, true) => {
+                    if !seeded_runtime_record_matches_expected(runtime)? {
+                        anyhow::bail!("runtime metadata does not match its registered identity");
+                    }
+                    let pid_snapshot = state::fs::read_to_string(&runtime.pid_path)?;
+                    let metadata_snapshot = state::fs::read_to_string(&runtime.metadata_path)?;
+                    if let Some(process) =
+                        supervisor.adopt_recorded(&runtime.pid_path, &runtime.metadata_path)?
+                    {
+                        process.kill_and_wait_for_test(Duration::from_secs(1))?;
+                        let records_unchanged = state::fs::read_to_string(&runtime.pid_path)
+                            .is_ok_and(|contents| contents == pid_snapshot)
+                            && state::fs::read_to_string(&runtime.metadata_path)
+                                .is_ok_and(|contents| contents == metadata_snapshot);
+                        if records_unchanged {
+                            state::fs::remove_file_if_exists(&runtime.pid_path)?;
+                            state::fs::remove_file_if_exists(&runtime.metadata_path)?;
+                        } else if std::time::Instant::now() >= publication_deadline {
+                            anyhow::bail!("runtime records changed during emergency cleanup");
+                        }
+                    } else if std::time::Instant::now() >= publication_deadline {
+                        anyhow::bail!("runtime was not adoptable through its recorded identity");
+                    }
+                }
+                _ if std::time::Instant::now() >= publication_deadline => {
+                    anyhow::bail!("runtime has incomplete ownership records");
+                }
+                _ => {}
+            }
+
+            if std::time::Instant::now() < publication_deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+    }
+
+    fn report_seeded_runtime_cleanup_failure(paths: &PvPaths, message: &str) {
+        let record = json!({
+            "level": "error",
+            "target": "jobs",
+            "event": "seeded_runtime_cleanup_failed",
+            "message": message,
+        });
+        if let Ok(mut log) = state::fs::open_append_file(&paths.daemon_log()) {
+            let _write_result = log.write_all(format!("{record}\n").as_bytes());
+        }
+        let _write_result = writeln!(io::stderr().lock(), "{record}");
     }
 
     async fn stop_seeded_caddy(paths: &PvPaths) -> anyhow::Result<()> {
+        stop_seeded_runtimes(paths, &[seeded_gateway_record(paths)]).await
+    }
+
+    async fn stop_seeded_runtimes(
+        paths: &PvPaths,
+        runtimes: &[SeededRuntimeRecord],
+    ) -> anyhow::Result<()> {
         let supervisor = ProcessSupervisor::new(paths.clone());
-        if let Some(caddy) =
-            supervisor.adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
-        {
-            caddy.stop(Duration::from_secs(1)).await?;
+        let mut failures = Vec::new();
+
+        for runtime in runtimes {
+            if let Err(error) = stop_seeded_runtime(&supervisor, runtime).await {
+                failures.push(format!("{}: {error}", runtime.label));
+            }
         }
 
-        Ok(())
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            anyhow::bail!(failures.join("; "))
+        }
+    }
+
+    async fn stop_seeded_runtime(
+        supervisor: &ProcessSupervisor,
+        runtime: &SeededRuntimeRecord,
+    ) -> anyhow::Result<()> {
+        let pid_path = &runtime.pid_path;
+        let metadata_path = &runtime.metadata_path;
+        let deadline = Instant::now() + Duration::from_millis(500);
+
+        loop {
+            let has_pid = state::fs::path_entry_exists(pid_path)?;
+            let has_metadata = state::fs::path_entry_exists(metadata_path)?;
+            if !has_pid && !has_metadata {
+                if Instant::now() >= deadline {
+                    return Ok(());
+                }
+                sleep(Duration::from_millis(10)).await;
+                continue;
+            }
+            if has_metadata && !seeded_runtime_record_matches_expected(runtime)? {
+                anyhow::bail!("runtime metadata does not match its registered identity");
+            }
+            if has_pid && !has_metadata {
+                if Instant::now() < deadline {
+                    sleep(Duration::from_millis(10)).await;
+                    continue;
+                }
+                let pid = state::fs::read_to_string(pid_path)?.trim().parse::<u32>()?;
+                if !seeded_runtime_process_and_group_are_absent(pid)? {
+                    anyhow::bail!(
+                        "pid was published without metadata while its process group is alive"
+                    );
+                }
+                state::fs::remove_file_if_exists(pid_path)?;
+                return Ok(());
+            }
+            if !has_pid {
+                if Instant::now() < deadline {
+                    sleep(Duration::from_millis(10)).await;
+                    continue;
+                }
+                let metadata: serde_json::Value =
+                    serde_json::from_str(&state::fs::read_to_string(metadata_path)?)?;
+                let pid = metadata["pid"]
+                    .as_u64()
+                    .and_then(|pid| u32::try_from(pid).ok())
+                    .ok_or_else(|| anyhow::anyhow!("runtime metadata has no valid pid"))?;
+                if !seeded_runtime_process_and_group_are_absent(pid)? {
+                    anyhow::bail!("metadata still names a live process group");
+                }
+                state::fs::remove_file_if_exists(metadata_path)?;
+                return Ok(());
+            }
+
+            let Some(process) = supervisor.adopt_recorded(pid_path, metadata_path)? else {
+                if Instant::now() >= deadline {
+                    if remove_absent_seeded_runtime_records(runtime)? {
+                        return Ok(());
+                    }
+                    anyhow::bail!("runtime was not adoptable");
+                }
+                sleep(Duration::from_millis(10)).await;
+                continue;
+            };
+            let pid = process.pid();
+            let stop_result = match process.stop(Duration::from_secs(1)).await {
+                Ok(()) => Ok(()),
+                Err(stop_error) => match seeded_runtime_process_and_group_are_absent(pid) {
+                    Ok(true)
+                        if matches!(
+                            stop_error,
+                            DaemonError::RuntimeProcessIdentityChanged { .. }
+                        ) =>
+                    {
+                        Ok(())
+                    }
+                    Ok(true) => Err(stop_error),
+                    Ok(false) => anyhow::bail!(
+                        "stop failed: {stop_error}; process group remained after verified cleanup"
+                    ),
+                    Err(inspection_error) => anyhow::bail!(
+                        "stop failed: {stop_error}; process-group inspection failed: {inspection_error}"
+                    ),
+                },
+            };
+            let record_cleanup = (|| {
+                state::fs::remove_file_if_exists(pid_path)?;
+                state::fs::remove_file_if_exists(metadata_path)?;
+                if state::fs::path_entry_exists(pid_path)?
+                    || state::fs::path_entry_exists(metadata_path)?
+                {
+                    anyhow::bail!("runtime files remained after cleanup");
+                }
+                Ok::<_, anyhow::Error>(())
+            })();
+
+            return match (stop_result, record_cleanup) {
+                (Ok(()), Ok(())) => Ok(()),
+                (Err(stop_error), Ok(())) => Err(stop_error.into()),
+                (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
+                (Err(stop_error), Err(cleanup_error)) => anyhow::bail!(
+                    "stop failed: {stop_error}; record cleanup failed: {cleanup_error:#}"
+                ),
+            };
+        }
+    }
+
+    fn remove_absent_seeded_runtime_records(runtime: &SeededRuntimeRecord) -> anyhow::Result<bool> {
+        if !seeded_runtime_record_matches_expected(runtime)? {
+            anyhow::bail!("runtime metadata does not match its registered identity");
+        }
+        let pid = state::fs::read_to_string(&runtime.pid_path)?
+            .trim()
+            .parse::<u32>()?;
+        let metadata: serde_json::Value =
+            serde_json::from_str(&state::fs::read_to_string(&runtime.metadata_path)?)?;
+        let metadata_pid = metadata["pid"]
+            .as_u64()
+            .and_then(|pid| u32::try_from(pid).ok())
+            .ok_or_else(|| anyhow::anyhow!("runtime metadata has no valid pid"))?;
+
+        for recorded_pid in [pid, metadata_pid] {
+            if !seeded_runtime_process_and_group_are_absent(recorded_pid)? {
+                return Ok(false);
+            }
+        }
+
+        state::fs::remove_file_if_exists(&runtime.pid_path)?;
+        state::fs::remove_file_if_exists(&runtime.metadata_path)?;
+        if state::fs::path_entry_exists(&runtime.pid_path)?
+            || state::fs::path_entry_exists(&runtime.metadata_path)?
+        {
+            anyhow::bail!("runtime files remained after cleanup");
+        }
+
+        Ok(true)
+    }
+
+    fn seeded_runtime_record_matches_expected(
+        runtime: &SeededRuntimeRecord,
+    ) -> anyhow::Result<bool> {
+        let metadata: serde_json::Value =
+            serde_json::from_str(&state::fs::read_to_string(&runtime.metadata_path)?)?;
+        let arguments_match = runtime
+            .arguments
+            .as_ref()
+            .is_none_or(|arguments| metadata["arguments"] == json!(arguments));
+
+        Ok(metadata["name"] == runtime.process_name
+            && metadata["resource_name"] == runtime.resource_name
+            && metadata["track"] == runtime.track
+            && metadata["command"]
+                .as_str()
+                .is_some_and(|command| Utf8Path::new(command).starts_with(&runtime.command_root))
+            && metadata["config_path"] == runtime.config_path.as_str()
+            && metadata["log_path"] == runtime.log_path.as_str()
+            && arguments_match)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn seeded_runtime_process_and_group_are_absent(pid: u32) -> anyhow::Result<bool> {
+        let process = Pid::from_raw(i32::try_from(pid)?)
+            .ok_or_else(|| anyhow::anyhow!("invalid seeded runtime pid {pid}"))?;
+        let leader_absent = match test_kill_process(process) {
+            Ok(()) => false,
+            Err(rustix::io::Errno::SRCH) => true,
+            Err(error) => anyhow::bail!("failed to inspect seeded runtime pid {pid}: {error}"),
+        };
+        let group_absent = match test_kill_process_group(process) {
+            Ok(()) => false,
+            Err(rustix::io::Errno::SRCH) => true,
+            Err(error) => {
+                anyhow::bail!("failed to inspect seeded runtime process group {pid}: {error}")
+            }
+        };
+
+        Ok(leader_absent && group_absent)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn seeded_runtime_process_and_group_are_absent(_pid: u32) -> anyhow::Result<bool> {
+        anyhow::bail!("seeded runtime process-group inspection is unsupported on this platform")
     }
 
     #[derive(Clone, Copy)]

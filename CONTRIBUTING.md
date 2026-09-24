@@ -40,6 +40,40 @@ To update snapshots for a specific test:
 cargo insta test --accept --test-runner nextest -- <test_name>
 ```
 
+## Fixture Lifecycle
+
+Tests that start long-running Managed Resource or Gateway fixtures must register
+each intended process's exact PID-path/runtime-metadata-path pair
+before startup or reconciliation. Capture assertions while the runtime is live,
+then use explicit cleanup where the guard exposes it so cleanup failures fail
+the test. If an operation has already failed, preserve that primary failure
+while also reporting cleanup failures. Cleanup validates the recorded metadata
+and process identity, stops the complete owned process group, waits for its
+members and listeners to disappear, and removes the exact records only after
+verified stop.
+
+Fixture guards must also clean up from `Drop` so normal return, early return,
+panic unwind, and cancellation cannot bypass teardown. The fallback uses an
+independent cleanup runtime and reports failures because `Drop` cannot return
+them to the test. Long-running fixture entrypoints also monitor their actual
+test parent. When that parent disappears, Python fixtures exit themselves and
+shell wrappers stop and reap only the child they directly spawned, including
+parent-loss races before readiness. The Rust guard or supervisor owns
+whole-process-group cleanup.
+
+Use the CI nextest profile for CI runs (`cargo nextest run --profile ci`). It
+warns after 60 seconds, terminates a wedged test after 120 seconds, and allows
+10 seconds for graceful exit. The default profile remains available for tests
+with intentionally longer limits.
+
+Persisted-runtime cleanup must never discover ownership through process-name
+scans or signal a PID found only in a record. A persisted PID is actionable
+only together with matching recorded metadata and a verified process identity.
+A fixture wrapper may signal and reap a child it directly spawned and still
+owns. These guarantees do not cover machine or kernel failure, a killed or
+stopped parent watcher, or descendants that deliberately escape their owned
+process group.
+
 ## Formatting
 
 ```shell

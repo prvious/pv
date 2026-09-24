@@ -9,7 +9,7 @@ use resources::RuntimeArtifactAdapter;
 use serde_json::{Value, json};
 use state::{Database, LinkProjectInput, ProjectRecord, PvPaths};
 
-use super::ManagedResourceRuntimeAdapter;
+use super::{ManagedResourceRuntimeAdapter, tests::ManagedResourceFixtureGuard};
 
 const MYSQL_TRACK: &str = "8.0";
 const MYSQL_ARTIFACT_VERSION: &str = "8.0.35-pv1";
@@ -91,6 +91,8 @@ async fn mysql_reconciliation_creates_database_allocation_and_renders_env() -> R
         resources::default_artifact_manifest_url(),
         admin.clone(),
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mysql", MYSQL_TRACK);
     seed_mysql_fixture_artifact(&paths, MYSQL_TRACK)?;
 
     run_project_reconciliation(&paths, &project, &catalog).await?;
@@ -114,7 +116,7 @@ async fn mysql_reconciliation_creates_database_allocation_and_renders_env() -> R
         "mysql_reconciliation_creates_database_allocation_and_renders_env",
         snapshot,
     )?;
-    stop_mysql_runtime(&paths, &project, &catalog).await?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -129,6 +131,8 @@ async fn mysql_project_demand_installs_missing_fixture_track_before_start() -> R
         OFFLINE_TEST_MANIFEST_URL,
         admin.clone(),
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mysql", MYSQL_TRACK);
     seed_mysql_cached_fixture(&paths, tempdir.path())?;
 
     run_project_reconciliation(&paths, &project, &catalog).await?;
@@ -152,7 +156,7 @@ async fn mysql_project_demand_installs_missing_fixture_track_before_start() -> R
         "mysql_project_demand_installs_missing_fixture_track_before_start",
         snapshot,
     )?;
-    stop_mysql_runtime(&paths, &project, &catalog).await?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -167,6 +171,8 @@ async fn mysql_reconciliation_reuses_admin_env_and_ready_allocation() -> Result<
         resources::default_artifact_manifest_url(),
         admin,
     )?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("mysql", MYSQL_TRACK);
     seed_mysql_fixture_artifact(&paths, MYSQL_TRACK)?;
 
     run_project_reconciliation(&paths, &project, &catalog).await?;
@@ -179,7 +185,7 @@ async fn mysql_reconciliation_reuses_admin_env_and_ready_allocation() -> Result<
     assert_eq!(first.1.generated_name, second.1.generated_name);
     assert_eq!(first.1.env, second.1.env);
     assert_eq!(second.1.status, state::ResourceAllocationStatus::Ready);
-    stop_mysql_runtime(&paths, &project, &catalog).await?;
+    runtimes.cleanup().await?;
 
     Ok(())
 }
@@ -198,23 +204,6 @@ async fn run_project_reconciliation(
         catalog,
     )
     .await?;
-
-    Ok(())
-}
-
-async fn stop_mysql_runtime(
-    paths: &PvPaths,
-    project: &ProjectRecord,
-    catalog: &super::ManagedResourceRuntimeCatalog,
-) -> Result<()> {
-    write_project_config(
-        project,
-        r#"env:
-  APP_URL: "${project_url}"
-"#,
-    )?;
-
-    let _result = run_project_reconciliation(paths, project, catalog).await;
 
     Ok(())
 }
@@ -283,12 +272,6 @@ fn link_project(
     })?;
 
     Ok(result.project)
-}
-
-fn write_project_config(project: &ProjectRecord, config_source: &str) -> Result<()> {
-    state::fs::write_sensitive_file(&project.config_path, config_source)?;
-
-    Ok(())
 }
 
 fn read_dotenv(project: &ProjectRecord) -> Result<String> {

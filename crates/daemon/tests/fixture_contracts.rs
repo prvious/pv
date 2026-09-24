@@ -1,17 +1,22 @@
+use std::ffi::OsString;
 use std::io::{Error, ErrorKind, Read, Seek};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::path::PathBuf;
 use std::process::{Child, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use camino::Utf8Path;
 use camino_tempfile::{tempdir, tempfile};
 use insta::{Settings, assert_debug_snapshot};
 use rustix::io::Errno;
-use rustix::process::{Pid, Signal, kill_process, kill_process_group, test_kill_process};
+use rustix::process::{
+    Pid, Signal, getpgid, kill_process, kill_process_group, test_kill_process,
+    test_kill_process_group,
+};
 use state::StateError;
 use state::fs::ensure_user_dir;
 
@@ -41,6 +46,18 @@ const REDIS_FIXTURE: &str = include_str!(concat!(
 const MAILPIT_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/managed-resources/mailpit.py"
+));
+const POSTGRES_UNREADY_FIXTURE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/managed-resources/postgres-unready.sh"
+));
+const FAKE_CADDY_FIXTURE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/gateway/fake-caddy.sh"
+));
+const FAKE_CADDY_SERVER_FIXTURE: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/test-fixtures/gateway/fake-caddy-server.py"
 ));
 const RUSTFS_FIXTURE_TEMPLATE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -127,6 +144,21 @@ def getfqdn(_name=""):
 
 socket.getfqdn = getfqdn
 "#;
+const PARENT_LOSS_PYTHON_PROBE: &str = r#"import os
+
+
+marker_path = os.environ["PV_PARENT_LOSS_MEMBER_PID"]
+staging_path = f"{marker_path}.{os.getpid()}.tmp"
+with open(staging_path, "w", encoding="utf-8") as marker:
+    marker.write(str(os.getpid()))
+os.replace(staging_path, marker_path)
+"#;
+const PARENT_LOSS_PS_PROBE: &str = r#"#!/bin/sh
+/bin/ps "$@"
+status=$?
+printf 'started\n' > ./watcher-ready
+exit "$status"
+"#;
 
 #[expect(
     clippy::disallowed_types,
@@ -199,6 +231,73 @@ impl MultiServerFixture {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum ParentLossFixture {
+    ShellSql,
+    DirectPythonMailpit,
+    ShellToPythonGateway,
+}
+
+impl ParentLossFixture {
+    fn name(self) -> &'static str {
+        match self {
+            Self::ShellSql => "shell-only SQL",
+            Self::DirectPythonMailpit => "direct-Python Mailpit",
+            Self::ShellToPythonGateway => "shell-to-Python gateway",
+        }
+    }
+
+    fn has_python_member(self) -> bool {
+        matches!(self, Self::DirectPythonMailpit | Self::ShellToPythonGateway)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ParentLossTiming {
+    AfterReadiness,
+    BeforeWatcherInitialization,
+}
+
+impl ParentLossTiming {
+    fn name(self) -> &'static str {
+        match self {
+            Self::AfterReadiness => "after readiness",
+            Self::BeforeWatcherInitialization => "before watcher initialization",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ParentLossOutcome {
+    fixture: &'static str,
+    timing: &'static str,
+    parent_exit_signal: Option<i32>,
+    leader_stopped: bool,
+    process_group_stopped: bool,
+    ports_rebound: Vec<bool>,
+}
+
+#[derive(Clone)]
+struct CapturedFixtureIdentity {
+    process_group: Pid,
+    members: Vec<CapturedFixtureMember>,
+}
+
+#[derive(Clone)]
+struct CapturedFixtureMember {
+    pid: Pid,
+    start_identity: platform::ProcessStartIdentity,
+}
+
+impl ParentLossOutcome {
+    fn succeeded(&self) -> bool {
+        self.parent_exit_signal == Some(Signal::KILL.as_raw())
+            && self.leader_stopped
+            && self.process_group_stopped
+            && self.ports_rebound.iter().all(|rebound| *rebound)
+    }
+}
+
 #[test]
 fn fixture_command_timeout_kills_and_reaps_child() -> Result<()> {
     let tempdir = tempdir()?;
@@ -232,7 +331,11 @@ fn fixture_command_timeout_kills_and_reaps_child() -> Result<()> {
     let raw_child_pid =
         raw_child_pid.ok_or_else(|| anyhow!("fixture command did not report its child PID"))?;
     let child_pid = process_pid(raw_child_pid)?;
-    assert!(test_kill_process(child_pid).is_err());
+    match test_kill_process(child_pid) {
+        Err(rustix::io::Errno::SRCH) => {}
+        Ok(()) => bail!("fixture command child {child_pid} remained alive"),
+        Err(error) => bail!("failed to inspect fixture command child {child_pid}: {error}"),
+    }
 
     Ok(())
 }
@@ -449,6 +552,131 @@ fn multi_server_fixture_avoids_fqdn_lookup_and_exits_after_signal_status() -> Re
     }
 
     Ok(())
+}
+
+#[test]
+fn long_running_fixtures_exit_when_their_test_parent_is_lost() -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+
+    let mut outcomes = Vec::new();
+
+    for fixture in [
+        ParentLossFixture::ShellSql,
+        ParentLossFixture::DirectPythonMailpit,
+        ParentLossFixture::ShellToPythonGateway,
+    ] {
+        for timing in [
+            ParentLossTiming::AfterReadiness,
+            ParentLossTiming::BeforeWatcherInitialization,
+        ] {
+            outcomes.push(assert_fixture_exits_after_parent_loss(fixture, timing)?);
+        }
+    }
+
+    assert_debug_snapshot!(outcomes, @r#"
+    [
+        ParentLossOutcome {
+            fixture: "shell-only SQL",
+            timing: "after readiness",
+            parent_exit_signal: Some(
+                9,
+            ),
+            leader_stopped: true,
+            process_group_stopped: true,
+            ports_rebound: [],
+        },
+        ParentLossOutcome {
+            fixture: "shell-only SQL",
+            timing: "before watcher initialization",
+            parent_exit_signal: Some(
+                9,
+            ),
+            leader_stopped: true,
+            process_group_stopped: true,
+            ports_rebound: [],
+        },
+        ParentLossOutcome {
+            fixture: "direct-Python Mailpit",
+            timing: "after readiness",
+            parent_exit_signal: Some(
+                9,
+            ),
+            leader_stopped: true,
+            process_group_stopped: true,
+            ports_rebound: [
+                true,
+                true,
+            ],
+        },
+        ParentLossOutcome {
+            fixture: "direct-Python Mailpit",
+            timing: "before watcher initialization",
+            parent_exit_signal: Some(
+                9,
+            ),
+            leader_stopped: true,
+            process_group_stopped: true,
+            ports_rebound: [
+                true,
+                true,
+            ],
+        },
+        ParentLossOutcome {
+            fixture: "shell-to-Python gateway",
+            timing: "after readiness",
+            parent_exit_signal: Some(
+                9,
+            ),
+            leader_stopped: true,
+            process_group_stopped: true,
+            ports_rebound: [
+                true,
+            ],
+        },
+        ParentLossOutcome {
+            fixture: "shell-to-Python gateway",
+            timing: "before watcher initialization",
+            parent_exit_signal: Some(
+                9,
+            ),
+            leader_stopped: true,
+            process_group_stopped: true,
+            ports_rebound: [
+                true,
+            ],
+        },
+    ]
+    "#);
+
+    Ok(())
+}
+
+#[test]
+#[ignore = "nested parent process used by long_running_fixtures_exit_when_their_test_parent_is_lost"]
+fn parent_loss_fixture_test_parent_inner() -> Result<()> {
+    let mut command = FixtureCommand::new("./fixture-entrypoint");
+    command.process_group(0);
+    let mut fixture = command.spawn()?;
+    let process_group = process_pid(fixture.id())?;
+    if let Err(error) =
+        state::fs::write_sensitive_file(Utf8Path::new("./fixture.pid"), &fixture.id().to_string())
+    {
+        return match kill_process_group_and_reap_child(&mut fixture, process_group) {
+            Ok(()) => Err(error.into()),
+            Err(cleanup_error) => Err(anyhow!(
+                "{error}; fixture startup cleanup also failed: {cleanup_error}"
+            )),
+        };
+    }
+
+    loop {
+        if let Some(status) = fixture.try_wait()? {
+            bail!("parent-loss fixture exited before its test parent: {status}");
+        }
+        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
+    }
 }
 
 #[test]
@@ -801,6 +1029,494 @@ fn rustfs_fixture_cli_preserves_shell_contract() -> Result<()> {
             rendered.contains(RUSTFS_REJECT_S3_SENTINEL),
         ),
     )
+}
+
+fn assert_fixture_exits_after_parent_loss(
+    fixture: ParentLossFixture,
+    timing: ParentLossTiming,
+) -> Result<ParentLossOutcome> {
+    let tempdir = tempdir()?;
+    let port_reservations = prepare_parent_loss_fixture(tempdir.path(), fixture, timing)?;
+    let ports = port_reservations
+        .iter()
+        .map(TcpListener::local_addr)
+        .collect::<std::io::Result<Vec<_>>>()?
+        .into_iter()
+        .map(|address| address.port())
+        .collect::<Vec<_>>();
+    drop(port_reservations);
+
+    let mut parent_stdout = tempfile()?;
+    let mut parent_stderr = tempfile()?;
+    let mut parent = FixtureCommand::new(current_test_binary()?);
+    parent
+        .args([
+            "--exact",
+            "parent_loss_fixture_test_parent_inner",
+            "--ignored",
+            "--nocapture",
+        ])
+        .current_dir(tempdir.path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(parent_stdout.try_clone()?))
+        .stderr(Stdio::from(parent_stderr.try_clone()?));
+    let mut parent = parent.spawn()?;
+    let mut captured_identity = None;
+
+    let lifecycle = (|| {
+        let leader = wait_for_recorded_pid(
+            &tempdir.path().join("fixture.pid"),
+            &mut parent,
+            FIXTURE_COMMAND_TIMEOUT,
+        )?;
+        let process_group = getpgid(Some(leader))
+            .with_context(|| format!("failed to inspect fixture leader {leader}"))?;
+        if process_group != leader {
+            bail!(
+                "parent-loss fixture leader {leader} did not own its process group {process_group}"
+            );
+        }
+        captured_identity = Some(CapturedFixtureIdentity {
+            process_group,
+            members: vec![capture_fixture_member_identity(leader)?],
+        });
+
+        if matches!(timing, ParentLossTiming::BeforeWatcherInitialization) {
+            wait_for_handler_marker(
+                &tempdir.path().join("parent-captured"),
+                FIXTURE_COMMAND_TIMEOUT,
+            )?;
+        }
+
+        match timing {
+            ParentLossTiming::AfterReadiness if ports.is_empty() => {
+                wait_for_handler_marker(
+                    &tempdir.path().join("watcher-ready"),
+                    FIXTURE_COMMAND_TIMEOUT,
+                )?;
+            }
+            ParentLossTiming::AfterReadiness => {
+                let readiness = wait_for_loopback_ports_slice(&ports, FIXTURE_COMMAND_TIMEOUT)?;
+                if !readiness.iter().all(|ready| *ready) {
+                    bail!("{} did not become ready on ports {ports:?}", fixture.name());
+                }
+            }
+            ParentLossTiming::BeforeWatcherInitialization => {}
+        }
+        if fixture.has_python_member() && matches!(timing, ParentLossTiming::AfterReadiness) {
+            capture_fixture_member(
+                captured_identity.as_mut(),
+                &tempdir.path().join("member.pid"),
+                FIXTURE_COMMAND_TIMEOUT,
+            )
+            .with_context(|| {
+                format!(
+                    "failed to capture {} member after readiness",
+                    fixture.name()
+                )
+            })?;
+        }
+
+        parent
+            .kill()
+            .context("failed to kill fixture test parent")?;
+        let parent_status = wait_for_child_status(&mut parent, FIXTURE_SHUTDOWN_TIMEOUT)?
+            .ok_or_else(|| anyhow!("timed out reaping the fixture test parent"))?;
+
+        let identity = captured_identity
+            .as_ref()
+            .ok_or_else(|| anyhow!("fixture process identity was not captured"))?;
+        let (members_stopped, process_group_stopped) =
+            wait_for_process_identity_exit(identity, FIXTURE_COMMAND_TIMEOUT)?;
+        let ports_rebound = wait_for_loopback_ports_to_rebind(&ports, FIXTURE_COMMAND_TIMEOUT);
+
+        Ok::<_, anyhow::Error>(ParentLossOutcome {
+            fixture: fixture.name(),
+            timing: timing.name(),
+            parent_exit_signal: parent_status.signal(),
+            leader_stopped: members_stopped.first().copied().unwrap_or(false),
+            process_group_stopped,
+            ports_rebound,
+        })
+    })();
+
+    let lifecycle = lifecycle.and_then(|outcome| {
+        if outcome.succeeded() {
+            Ok(outcome)
+        } else {
+            bail!(
+                "{} fixture failed parent-loss contract {}: {outcome:?}",
+                outcome.fixture,
+                outcome.timing
+            )
+        }
+    });
+    let emergency_identity = match &lifecycle {
+        Ok(outcome) if outcome.succeeded() => None,
+        Ok(_) | Err(_) => captured_identity.clone(),
+    };
+    let cleanup = cleanup_parent_loss_fixture(&mut parent, emergency_identity, &ports);
+
+    match (lifecycle, cleanup) {
+        (Ok(outcome), Ok(())) => Ok(outcome),
+        (Err(error), Ok(())) => Err(parent_loss_error_with_output(
+            error,
+            &mut parent_stdout,
+            &mut parent_stderr,
+        )),
+        (Ok(_outcome), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(error), Err(cleanup_error)) => {
+            let error =
+                parent_loss_error_with_output(error, &mut parent_stdout, &mut parent_stderr);
+            Err(anyhow!(
+                "{error}; emergency fixture cleanup also failed: {cleanup_error}"
+            ))
+        }
+    }
+}
+
+fn parent_loss_error_with_output(
+    error: anyhow::Error,
+    stdout: &mut (impl Read + Seek),
+    stderr: &mut (impl Read + Seek),
+) -> anyhow::Error {
+    let stdout = captured_fixture_output(stdout);
+    let stderr = captured_fixture_output(stderr);
+    anyhow!("{error}; nested stdout={stdout:?}; nested stderr={stderr:?}")
+}
+
+fn captured_fixture_output(file: &mut (impl Read + Seek)) -> String {
+    match read_fixture_output(file) {
+        Ok(contents) => String::from_utf8_lossy(&contents).into_owned(),
+        Err(error) => format!("<failed to capture output: {error}>"),
+    }
+}
+
+fn prepare_parent_loss_fixture(
+    root: &Utf8Path,
+    fixture: ParentLossFixture,
+    timing: ParentLossTiming,
+) -> Result<Vec<TcpListener>> {
+    let mut port_reservations = Vec::new();
+    let fixture_command = match fixture {
+        ParentLossFixture::ShellSql => {
+            let executable = root.join("postgres-unready");
+            let data_dir = root.join("postgres-data");
+            materialize_fixture(&executable, POSTGRES_UNREADY_FIXTURE)?;
+            materialize_fixture(&root.join("probe-bin/ps"), PARENT_LOSS_PS_PROBE)?;
+            state::fs::write_sensitive_file(&data_dir.join("PG_VERSION"), "16\n")?;
+            "PATH=./probe-bin:$PATH\nexport PATH\nexec ./postgres-unready -D ./postgres-data -h 127.0.0.1 -p 5432\n".to_owned()
+        }
+        ParentLossFixture::DirectPythonMailpit => {
+            port_reservations.push(TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?);
+            port_reservations.push(TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?);
+            let smtp_port = port_reservations[0].local_addr()?.port();
+            let dashboard_port = port_reservations[1].local_addr()?.port();
+            materialize_fixture(&root.join("mailpit"), MAILPIT_FIXTURE)?;
+            ensure_user_dir(&root.join("mailpit-data"))?;
+            format!(
+                "exec ./mailpit --smtp 127.0.0.1:{smtp_port} --listen 127.0.0.1:{dashboard_port} --database ./mailpit-data/mailpit.db --disable-version-check\n"
+            )
+        }
+        ParentLossFixture::ShellToPythonGateway => {
+            port_reservations.push(TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?);
+            let http_port = port_reservations[0].local_addr()?.port();
+            let admin_socket = root.join("admin.sock");
+            materialize_fixture(&root.join("fake-caddy"), FAKE_CADDY_FIXTURE)?;
+            state::fs::write_sensitive_file(
+                &root.join("fake-caddy.server.py"),
+                FAKE_CADDY_SERVER_FIXTURE,
+            )?;
+            state::fs::write_sensitive_file(
+                &root.join("Caddyfile"),
+                &format!(
+                    "{{\n    admin \"unix/{admin_socket}|0600\"\n    http_port {http_port}\n}}\n"
+                ),
+            )?;
+            "exec ./fake-caddy run --config ./Caddyfile\n".to_owned()
+        }
+    };
+
+    let parent_capture_gate = if matches!(timing, ParentLossTiming::BeforeWatcherInitialization) {
+        "PV_TEST_PARENT_CAPTURE_MARKER=./parent-captured\n\
+PV_TEST_PARENT_CAPTURE_RELEASE=./parent-capture-release\n\
+export PV_TEST_PARENT_CAPTURE_MARKER PV_TEST_PARENT_CAPTURE_RELEASE\n"
+    } else {
+        ""
+    };
+    state::fs::write_sensitive_file(
+        &root.join("parent-loss-probe/sitecustomize.py"),
+        PARENT_LOSS_PYTHON_PROBE,
+    )?;
+    materialize_fixture(
+        &root.join("fixture-entrypoint"),
+        &format!(
+            "#!/bin/sh\nset -eu\n\n{parent_capture_gate}PYTHONPATH=./parent-loss-probe\nPV_PARENT_LOSS_MEMBER_PID=./member.pid\nexport PYTHONPATH PV_PARENT_LOSS_MEMBER_PID\n{fixture_command}"
+        ),
+    )?;
+
+    Ok(port_reservations)
+}
+
+fn wait_for_recorded_pid(path: &Utf8Path, parent: &mut Child, timeout: Duration) -> Result<Pid> {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        match state::fs::read_to_string(path) {
+            Ok(contents) => {
+                let raw_pid = contents.trim().parse::<i32>()?;
+                return Pid::from_raw(raw_pid)
+                    .ok_or_else(|| anyhow!("fixture recorded invalid process id {raw_pid}"));
+            }
+            Err(StateError::Filesystem { source, .. }) if source.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        if let Some(status) = parent.try_wait()? {
+            bail!("fixture test parent exited before recording its child PID: {status}");
+        }
+        if Instant::now() >= deadline {
+            bail!("timed out waiting for fixture PID at {path}");
+        }
+
+        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
+    }
+}
+
+fn capture_fixture_member(
+    identity: Option<&mut CapturedFixtureIdentity>,
+    path: &Utf8Path,
+    timeout: Duration,
+) -> Result<()> {
+    let identity = identity.ok_or_else(|| anyhow!("fixture process identity was not captured"))?;
+    let member = wait_for_fixture_member_pid(path, timeout)?;
+    record_captured_member(identity, member)
+}
+
+fn record_captured_member(identity: &mut CapturedFixtureIdentity, member: Pid) -> Result<()> {
+    if identity
+        .members
+        .iter()
+        .any(|captured| captured.pid == member)
+    {
+        return Ok(());
+    }
+
+    match getpgid(Some(member)) {
+        Ok(process_group) if process_group == identity.process_group => {}
+        Ok(process_group) => bail!(
+            "fixture member {member} joined process group {process_group}; expected {}",
+            identity.process_group
+        ),
+        Err(Errno::SRCH | Errno::PERM) => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect fixture member {member}"));
+        }
+    }
+    identity
+        .members
+        .push(capture_fixture_member_identity(member)?);
+
+    Ok(())
+}
+
+fn capture_fixture_member_identity(pid: Pid) -> Result<CapturedFixtureMember> {
+    let raw_pid = u32::try_from(pid.as_raw_pid())?;
+    let identity = platform::inspect_process_identity(raw_pid)?
+        .ok_or_else(|| anyhow!("fixture member {pid} exited before identity capture"))?;
+
+    Ok(CapturedFixtureMember {
+        pid,
+        start_identity: identity.start_identity,
+    })
+}
+
+fn wait_for_fixture_member_pid(path: &Utf8Path, timeout: Duration) -> Result<Pid> {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        match state::fs::read_to_string(path) {
+            Ok(contents) => {
+                let raw_pid = contents.trim().parse::<i32>()?;
+                return Pid::from_raw(raw_pid)
+                    .ok_or_else(|| anyhow!("fixture recorded invalid member PID {raw_pid}"));
+            }
+            Err(StateError::Filesystem { source, .. }) if source.kind() == ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        if Instant::now() >= deadline {
+            bail!("timed out waiting for fixture member PID at {path}");
+        }
+        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
+    }
+}
+
+fn wait_for_process_identity_exit(
+    identity: &CapturedFixtureIdentity,
+    timeout: Duration,
+) -> Result<(Vec<bool>, bool)> {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let stopped = identity
+            .members
+            .iter()
+            .map(|member| member_identity_is_stopped(member, identity.process_group))
+            .collect::<Result<Vec<_>>>()?;
+        let process_group_stopped = stopped.iter().all(|stopped| *stopped)
+            && captured_process_group_is_stopped(identity.process_group)?;
+        if process_group_stopped || Instant::now() >= deadline {
+            return Ok((stopped, process_group_stopped));
+        }
+        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
+    }
+}
+
+fn captured_process_group_is_stopped(process_group: Pid) -> Result<bool> {
+    match test_kill_process_group(process_group) {
+        Ok(()) => Ok(false),
+        Err(Errno::SRCH) => Ok(true),
+        // An inaccessible group cannot be verified as stopped. Cleanup will
+        // fail without signaling it unless a captured member still matches.
+        Err(Errno::PERM) => Ok(false),
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to inspect fixture process group {process_group}")),
+    }
+}
+
+fn member_identity_is_stopped(
+    member: &CapturedFixtureMember,
+    expected_process_group: Pid,
+) -> Result<bool> {
+    let process_group_changed = match getpgid(Some(member.pid)) {
+        Ok(process_group) => process_group != expected_process_group,
+        // An inaccessible PID cannot be proven to still be the captured fixture
+        // member, so it must not authorize process-group cleanup.
+        Err(Errno::SRCH | Errno::PERM) => return Ok(true),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("failed to inspect fixture member {}", member.pid));
+        }
+    };
+    if process_group_changed {
+        return Ok(true);
+    }
+
+    Ok(
+        platform::inspect_process_identity(u32::try_from(member.pid.as_raw_pid())?)?
+            .is_none_or(|identity| identity.start_identity != member.start_identity),
+    )
+}
+
+fn wait_for_loopback_ports_to_rebind(ports: &[u16], timeout: Duration) -> Vec<bool> {
+    let deadline = Instant::now() + timeout;
+
+    loop {
+        let rebound = ports
+            .iter()
+            .map(|port| TcpListener::bind((Ipv4Addr::LOCALHOST, *port)).is_ok())
+            .collect::<Vec<_>>();
+        if rebound.iter().all(|rebound| *rebound) || Instant::now() >= deadline {
+            return rebound;
+        }
+        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
+    }
+}
+
+fn cleanup_parent_loss_fixture(
+    parent: &mut Child,
+    identity: Option<CapturedFixtureIdentity>,
+    ports: &[u16],
+) -> Result<()> {
+    let parent_cleanup = match parent.try_wait() {
+        Ok(Some(_status)) => Ok(()),
+        Ok(None) => kill_and_reap_child(parent).context("failed to stop fixture test parent"),
+        Err(error) => Err(error).context("failed to inspect fixture test parent"),
+    };
+    let group_cleanup = if let Some(identity) = identity {
+        cleanup_captured_process_group(&identity, ports)
+    } else {
+        Ok(())
+    };
+
+    match (parent_cleanup, group_cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+        (Err(parent_error), Err(group_error)) => Err(anyhow!(
+            "fixture parent cleanup failed: {parent_error}; fixture group cleanup failed: {group_error}"
+        )),
+    }
+}
+
+fn cleanup_captured_process_group(identity: &CapturedFixtureIdentity, ports: &[u16]) -> Result<()> {
+    let mut verified_member = None;
+    for member in &identity.members {
+        if !member_identity_is_stopped(member, identity.process_group)? {
+            verified_member = Some(member.pid);
+            break;
+        }
+    }
+
+    if verified_member.is_some() {
+        match kill_process_group(identity.process_group, Signal::KILL) {
+            Ok(()) | Err(Errno::SRCH) => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to kill verified fixture process group {}",
+                        identity.process_group
+                    )
+                });
+            }
+        }
+    }
+
+    let (stopped, process_group_stopped) =
+        wait_for_process_identity_exit(identity, FIXTURE_SHUTDOWN_TIMEOUT)?;
+    let ports_rebound = wait_for_loopback_ports_to_rebind(ports, FIXTURE_SHUTDOWN_TIMEOUT);
+    if !process_group_stopped || !ports_rebound.iter().all(|rebound| *rebound) {
+        bail!(
+            "fixture cleanup could not verify process group {} stopped; members={stopped:?}; ports={ports_rebound:?}",
+            identity.process_group
+        );
+    }
+
+    Ok(())
+}
+
+fn wait_for_loopback_ports_slice(ports: &[u16], timeout: Duration) -> Result<Vec<bool>> {
+    let deadline = Instant::now() + timeout;
+    let mut readiness = vec![false; ports.len()];
+
+    loop {
+        for (index, port) in ports.iter().enumerate() {
+            if !readiness[index] && TcpStream::connect((Ipv4Addr::LOCALHOST, *port)).is_ok() {
+                readiness[index] = true;
+            }
+        }
+        if readiness.iter().all(|ready| *ready) {
+            return Ok(readiness);
+        }
+        if Instant::now() >= deadline {
+            return Ok(readiness);
+        }
+        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
+    }
+}
+
+fn current_test_binary() -> Result<OsString> {
+    let binary = std::env::args_os()
+        .next()
+        .ok_or_else(|| anyhow!("test binary path was missing"))?;
+    let binary = PathBuf::from(binary);
+    if binary.is_absolute() {
+        return Ok(binary.into_os_string());
+    }
+
+    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(binary)
+        .into_os_string())
 }
 
 fn render_rustfs_fixture(reject_s3: bool) -> Result<String> {

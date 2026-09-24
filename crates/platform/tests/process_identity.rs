@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
-use platform::inspect_process_identity;
+use platform::{inspect_process_identity, inspect_process_start_identity};
 
 #[expect(
     clippy::disallowed_types,
@@ -25,6 +25,10 @@ fn native_process_identity_reports_direct_executable_and_ordered_arguments() -> 
     assert_eq!(identity.arguments, ["30"]);
     assert!(identity.start_identity.seconds > 0);
     assert!(identity.start_identity.microseconds < 1_000_000);
+    assert_eq!(
+        inspect_process_start_identity(child.0.id())?,
+        Some(identity.start_identity)
+    );
 
     Ok(())
 }
