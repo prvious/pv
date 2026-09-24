@@ -762,13 +762,13 @@ The canonical Managed Resource name is `postgres` for commands, filesystem paths
 
 Project config, command namespaces, filesystem paths, and internal state use canonical lowercase Managed Resource names: `mysql`, `postgres`, `redis`, `mailpit`, and `rustfs`. Prose may use display names such as MySQL, Postgres, Redis, Mailpit, and RustFS.
 
-Managed Resource uninstall commands remove installed binaries and runtime metadata by default. They delete Managed Resource data only when `--prune` is provided. `--prune` requires an interactive confirmation in which the user types the literal word `yes`, unless `--force` is also provided.
+Managed Resource uninstall commands remove installed binaries and runtime metadata by default. They delete Managed Resource data only when `--prune` is provided. `--prune` asks for an interactive confirmation that defaults to No, unless `--force` is also provided.
 
 PV refuses to uninstall a Managed Resource track currently needed by a linked Project unless `--force` is provided. Forced uninstall marks affected Projects failed or pending. Reconciliation preserves explicit removal intent and reports a removed-track error while Project config still demands the track.
 
 `pv uninstall` is safe by default. It stops and unregisters the LaunchAgent, removes `/etc/resolver/test`, removes PV's `pf` redirect rules, removes PV local CA trust, deregisters and removes the root helper, removes the PV-managed `PV ENV` shell profile block when present, stops PV-managed processes, and removes PV app binaries, shims, runtime metadata, sockets, generated configs, and installed Managed Resource binaries. Helper removal cleans the exclusively PV-owned system support directory, including interrupted work files. macOS may request administrator authentication when helper artifacts exist; an installation created with `--no-setup` does not prompt merely to remove an absent helper. Before editing a shell profile during uninstall, PV creates a backup.
 
-By default, `pv uninstall` preserves logs, `pv.db`, certificates, Composer home/cache, Managed Resource data, and Project `.env` blocks. `pv uninstall --prune` removes all PV-owned state under `~/.pv` and PV-owned system integration files/trust. Prune deletes local PV-owned data trees rather than attempting logical cleanup inside Managed Resources first. Shell profile backups created by PV are user safety artifacts and are not removed by `--prune`. `--prune` requires an interactive confirmation in which the user types the literal word `yes`, unless `--force` is also provided.
+By default, `pv uninstall` preserves logs, `pv.db`, certificates, Composer home/cache, Managed Resource data, and Project `.env` blocks. `pv uninstall --prune` removes all PV-owned state under `~/.pv` and PV-owned system integration files/trust. Prune deletes local PV-owned data trees rather than attempting logical cleanup inside Managed Resources first. Shell profile backups created by PV are user safety artifacts and are not removed by `--prune`. `--prune` asks for an interactive confirmation that defaults to No, unless `--force` is also provided.
 
 ## Filesystem Layout
 
@@ -1593,11 +1593,11 @@ PV styles only structure it owns. These payloads are never decorated, wrapped, m
 
 PV prompts only when the command contract permits it, stdin and stderr are both terminals, and `--non-interactive` (where the command supports it) is not active. Otherwise the command takes its documented non-interactive path or refuses with an error on stderr that names the flag to rerun with. Prompts render on stderr.
 
-- **Confirm:** `y` and `n` answer immediately; Enter accepts the highlighted default; arrow keys and `h`/`j`/`k`/`l` move between Yes and No.
+- **Confirm:** `y` and `n` answer immediately; Enter accepts the highlighted default; arrow keys and `h`/`j`/`k`/`l` move between Yes and No. Confirmations for the action the user just asked for (installing the privileged helper, updating the shell profile, writing `pv init` config) default to Yes.
 - **Select:** Up/Down or `j`/`k` move; Enter submits the highlighted choice.
 - **Multi-select:** Up/Down or `j`/`k` move; Space toggles; Enter submits.
 - **Text:** Enter submits; an empty answer keeps the shown default; an invalid value is explained inline and asked again.
-- **Destructive confirmation** (`--prune`): the user must type the literal word `yes` and press Enter; any other answer declines. It is never a single-key confirmation. `--force` skips it.
+- **Destructive confirmation** (`--prune`): the same confirm prompt, defaulting to No, so Enter alone never deletes data. `--force` skips it.
 - **Cancellation:** Escape or Ctrl-C cancels the prompt, restores the terminal, shows the prompt as cancelled, and exits with status 130 without a panic or backtrace. Steps that completed before the prompt stay completed.
 - **Completed prompt:** once answered, a prompt collapses to its question and the chosen value instead of leaving the full list behind.
 
@@ -1614,9 +1614,9 @@ Every terminal row in `design.pen` maps to one command state. "Stream" names whe
 | Mock row | Command and state | Stream | Rendering | Not rendered |
 | --- | --- | --- | --- | --- |
 | `A7m5z` | Design system reference | — | Rules for this section | — |
-| `Rurb6` | `pv setup` helper confirmation | stdout flow, stderr prompt | Confirm, default No | `y / yes` legend (keys are in the prompt hint) |
+| `Rurb6` | `pv setup` helper confirmation | stdout flow, stderr prompt | Confirm, default Yes | `y / yes` legend (keys are in the prompt hint) |
 | `KqQlC` | `pv setup` administrator password | stderr | Active step, then sudo's own `Password:` prompt | — |
-| `c9hnGM` | `pv setup` helper installed, shell profile confirmation | stdout flow, stderr prompt | Confirm, default No | — |
+| `c9hnGM` | `pv setup` helper installed, shell profile confirmation | stdout flow, stderr prompt | Confirm, default Yes | — |
 | `goXWS` | `pv setup` profile updated, required steps | stdout | Flow steps as each required step completes | Live "2 of 4" step list |
 | `v7kd9B` | `pv setup` shell profile skipped or current | stdout | Status rows plus manual hint | — |
 | `gY3Gp` | `pv setup` required step fails | stdout | Failed step, `└ ✗ PV stopped during …` | — |
@@ -1625,13 +1625,13 @@ Every terminal row in `design.pen` maps to one command state. "Stream" names whe
 | `Q9Ng13` | `pv setup` installing default resources | stderr | Phase spinner and one bar per download | Per-step detail lines not produced by the code |
 | `o2kox` | `pv setup` complete | stdout | Flow ending plus shell hint | Elapsed time |
 | `y322y` | `pv uninstall` | stdout | Flow steps | — |
-| `YP52d` | `pv uninstall --prune` confirmation | stderr | Destructive typed `yes` | — |
+| `YP52d` | `pv uninstall --prune` confirmation | stderr | Confirm, default No | — |
 | `MaTHS` | `pv uninstall --prune` completed | stdout | Flow steps | — |
 | `e7dtMI` | `pv uninstall --prune` without a terminal | stderr | Error with `--force` | — |
 | `TfCPu` | `pv init` detection summary | stdout flow, stderr prompt | Select Yes / No / Edit | — |
 | `xYU9A` | `pv init` edit path | stderr | Text prompts with defaults | — |
 | `I9uFM` | `pv init` validation failure | stderr | Inline text-prompt error, asked again | Unknown-resource exit (resources are a multi-select) |
-| `G5ytn` | `pv init` preview and confirm | stdout preview, stderr prompt | Confirm, default No | — |
+| `G5ytn` | `pv init` preview and confirm | stdout preview, stderr prompt | Confirm, default Yes | — |
 | `EH7uC` | `pv init` cancelled by answering No | stdout | Flow ending, exit 1 | — |
 | `yUEX0` | `pv init` invalid selection | — | Not reachable: the select only accepts listed choices | Whole row |
 | `AwYmd` | `pv init` without a terminal | stderr | Error naming `--yes` and `--print` | — |
@@ -1662,7 +1662,7 @@ Every terminal row in `design.pen` maps to one command state. "Stream" names whe
 | `O5ORTC` | `pv composer:*` | stdout | Status rows | PATH note |
 | `wiFpO` | `pv <resource>:install` / `:update` | stdout | Status rows | "starts when" note |
 | `I2QUwp` | `pv <resource>:list` | stdout | Report table, stacked rows when narrow | — |
-| `wbsN6` | `pv <resource>:uninstall --prune` confirmation | stderr | Destructive typed `yes` | Data size |
+| `wbsN6` | `pv <resource>:uninstall --prune` confirmation | stderr | Confirm, default No | Typed `yes`, data size |
 | `MveUZ` | `pv <resource>:uninstall` outcomes | stdout, stderr error | Status rows | — |
 | `BIc96` | `pv mailpit:open`, `pv rustfs:open` | stdout | Status rows | "it starts when" note |
 | `MUHcB` | `pv daemon:*` | stdout, stderr errors | Status rows | — |
