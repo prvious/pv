@@ -436,6 +436,19 @@ fn runtime_mark(status: Option<RuntimeObservedStatus>) -> Mark {
     }
 }
 
+/// Announces the helper installation that macOS will ask an administrator
+/// password for. It is a stderr row, like the prompt it introduces.
+fn write_installing_helper(
+    stderr: &mut Output<'_>,
+    version: impl std::fmt::Display,
+    protocol_version: u32,
+) -> io::Result<()> {
+    stderr.flow_label(
+        Mark::Active,
+        format!("Installing privileged helper {version} (protocol {protocol_version})"),
+    )
+}
+
 /// Reports how many tracks an update changed; nothing changed is a no-op.
 fn write_updated(output: &mut Output<'_>, count: usize, what: &str) -> io::Result<()> {
     let mark = if count == 0 {

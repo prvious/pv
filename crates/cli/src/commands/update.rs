@@ -710,12 +710,11 @@ fn run_app_update_phase(
 
     let mut helper_install_cleanup_warning = None;
     if helper_update_required {
-        // macOS asks for an administrator password while this step runs.
-        output.flow_active(format!(
-            "Installing privileged helper {} (protocol {})",
+        super::write_installing_helper(
+            stderr,
             asset.helper().version(),
-            asset.helper().protocol_version()
-        ))?;
+            asset.helper().protocol_version(),
+        )?;
         let prepared_directory = paths.config().join("helper");
         let install_result = environment.install_privileged_helper(
             &helper_candidate,

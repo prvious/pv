@@ -546,13 +546,14 @@ impl<'writer> Output<'writer> {
         }
     }
 
-    /// Shows the step that is about to run, such as one that waits for an
-    /// administrator password. Plain output has no in-progress steps.
-    pub(crate) fn flow_active(&mut self, line: impl Into<Line>) -> io::Result<()> {
+    /// A flow step only terminals show, such as the step about to wait for
+    /// an administrator password or the title over a finished step's rows.
+    /// Plain output keeps just the rows the step itself writes.
+    pub(crate) fn flow_label(&mut self, mark: Mark, line: impl Into<Line>) -> io::Result<()> {
         if !self.surface.decorated {
             return Ok(());
         }
-        self.flow_step(Mark::Active, line)
+        self.flow_step(mark, line)
     }
 
     /// Closes a flow that a failing command left open, before its error.
@@ -662,6 +663,28 @@ impl<'writer> Streams<'writer> {
             err: Output::new(stderr, presentation.stderr),
             interactive: presentation.interactive,
         }
+    }
+
+    /// Runs `step` with its stdout and stderr captured into `out` and `err`,
+    /// so the caller can title the rows once the outcome is known. Captured
+    /// rows keep the current flow state. Never capture a step that prompts:
+    /// its prompt would show above rows that are still held back.
+    pub(crate) fn capture<T>(
+        &mut self,
+        out: &mut Vec<u8>,
+        err: &mut Vec<u8>,
+        step: impl FnOnce(&mut Streams<'_>) -> T,
+    ) -> T {
+        let mut captured = Streams {
+            out: Output::new(out, self.out.surface),
+            err: Output::new(err, self.err.surface),
+            interactive: self.interactive,
+        };
+        if self.out.gutter {
+            captured.out.flow_resume(&self.out.flow_title);
+        }
+
+        step(&mut captured)
     }
 }
 

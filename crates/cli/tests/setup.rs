@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
-use insta::assert_debug_snapshot;
+use insta::{assert_debug_snapshot, assert_snapshot};
 use platform::{
     HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult, LAUNCH_AGENT_LABEL,
     LaunchAgentConfig, LocalCaMetadata, PRIVILEGED_HELPER_VERSION, PfConfReference,
@@ -41,6 +41,7 @@ struct TestEnvironment {
     client: ScriptedClient,
     target_platform: TargetPlatform,
     helper_status: Mutex<Option<PrivilegedHelperStatus>>,
+    terminal_width: Mutex<Option<usize>>,
 }
 
 impl TestEnvironment {
@@ -68,6 +69,7 @@ impl TestEnvironment {
                 protocol_version: HELPER_PROTOCOL_VERSION,
                 owner_uid: 501,
             })),
+            terminal_width: Mutex::new(None),
         }
     }
 
@@ -180,6 +182,14 @@ impl Environment for TestEnvironment {
 
     fn current_exe(&self) -> io::Result<PathBuf> {
         Ok(self.current_exe.clone())
+    }
+
+    fn stdout_is_terminal(&self) -> bool {
+        lock(&self.terminal_width).is_some()
+    }
+
+    fn terminal_width(&self) -> Option<usize> {
+        *lock(&self.terminal_width)
     }
 
     fn stdin_is_terminal(&self) -> bool {
@@ -1080,6 +1090,64 @@ fn setup_yes_creates_and_uninstall_removes_shell_profile_block() -> anyhow::Resu
             profile_after_uninstall,
             fixture.environment.operations(),
         ));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn setup_and_uninstall_on_a_terminal_render_flows() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new_with_shell(tempdir.path(), "/bin/zsh");
+    seed_online_setup_manifest(&fixture)?;
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+    write_file(
+        &fixture.paths.home().join(".zprofile"),
+        "export EXISTING=1\n",
+    )?;
+    // Wide enough that no row wraps, so wrap points never depend on how long
+    // this machine's temp path is.
+    *lock(&fixture.environment.terminal_width) = Some(200);
+
+    let setup = run_pv(
+        &["setup", "--yes", "--no-color"],
+        fixture.environment.as_ref(),
+    )?;
+    let _daemon_requests = daemon.finish()?;
+    let uninstall = run_pv(&["uninstall", "--no-color"], fixture.environment.as_ref())?;
+
+    assert_eq!(setup.exit_code, ExitCode::SUCCESS);
+    assert_eq!(uninstall.exit_code, ExitCode::SUCCESS);
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_snapshot!("setup_on_a_terminal", setup.stdout);
+        assert_snapshot!("uninstall_on_a_terminal", uninstall.stdout);
+    });
+
+    Ok(())
+}
+
+#[test]
+fn setup_stops_at_a_failed_required_step_on_both_surfaces() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    write_file(&fixture.system_resolver_path, "nameserver 192.0.2.1\n")?;
+
+    let plain = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    script_setup_manifest(&fixture)?;
+    *lock(&fixture.environment.terminal_width) = Some(200);
+    let decorated = run_pv(
+        &["setup", "--no-path", "--no-color"],
+        fixture.environment.as_ref(),
+    )?;
+
+    assert_eq!(plain.exit_code, ExitCode::FAILURE);
+    assert_eq!(decorated.exit_code, ExitCode::FAILURE);
+    assert!(!plain.stderr.contains("error:"));
+    assert!(!decorated.stderr.contains("error:"));
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_snapshot!("setup_stops_at_a_failed_required_step_plain", plain.stdout);
+        assert_snapshot!("setup_stops_at_a_failed_required_step", decorated.stdout);
     });
 
     Ok(())

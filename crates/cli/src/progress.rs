@@ -247,6 +247,21 @@ impl Drop for DownloadProgressRenderer<'_> {
 
 /// Live progress draws on stderr, so redirected stdout only receives the
 /// durable result.
+/// A spinner naming a step while it runs, for steps whose rows appear only
+/// once they finish. It is hidden unless `stderr` is a terminal; the caller
+/// clears it with `finish_and_clear`.
+pub(crate) fn step_spinner(stderr: &Output<'_>, label: &str) -> ProgressBar {
+    if !stderr.surface().decorated() {
+        return ProgressBar::hidden();
+    }
+    let spinner = ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr());
+    spinner.set_style(status_style(false));
+    spinner.set_message(label.to_string());
+    spinner.enable_steady_tick(Duration::from_millis(100));
+
+    spinner
+}
+
 fn progress_target(enabled: bool) -> MultiProgress {
     if enabled {
         MultiProgress::with_draw_target(ProgressDrawTarget::stderr())

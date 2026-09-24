@@ -15,8 +15,8 @@ use crate::args::{SetupArgs, UninstallArgs};
 use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
 use crate::helper_release::{HelperReleaseMetadata, metadata_path as helper_metadata_path};
-use crate::output::{Output, Streams};
-use crate::progress::DownloadProgressRenderer;
+use crate::output::{Line, Mark, Output, Streams};
+use crate::progress::{DownloadProgressRenderer, step_spinner};
 use crate::prompt;
 use crate::shell::Shell;
 
@@ -90,10 +90,13 @@ pub(crate) fn setup(
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
 
-    streams.out.line("PV setup")?;
     streams
         .out
-        .line(&format!("Ensured PV state layout: {}", paths.root()))?;
+        .flow_start("setup", "PV setup", Some("macOS integration"))?;
+    streams.out.flow_step(
+        Mark::Done,
+        Line::field("Ensured PV state layout: ", paths.root()),
+    )?;
     install_command_shims(environment, &paths)?;
     let default_resource_plan = refresh_setup_artifact_manifest(environment, &paths, streams)?;
 
@@ -154,20 +157,23 @@ pub(crate) fn setup(
     drop(progress);
     let output = &mut streams.out;
 
-    output.line(&format!(
-        "System reconciliation completed: {}",
-        completed.summary
-    ))?;
+    output.flow_step(
+        Mark::Done,
+        Line::field("System reconciliation completed: ", &completed.summary),
+    )?;
     if !default_resource_plan.failures.is_empty() {
-        output.line("Default Managed Resource planning failed for some defaults:")?;
+        output.flow_end(
+            Mark::Failure,
+            "Default Managed Resource planning failed for some defaults:",
+        )?;
         for failure in &default_resource_plan.failures {
-            output.line(&format!("  - {failure}"))?;
+            output.detail(format!("- {failure}"))?;
         }
-        output.line("PV setup completed core integrations; rerun `pv setup` after fixing the default Managed Resource manifest.")?;
+        output.follow_up("PV setup completed core integrations; rerun `pv setup` after fixing the default Managed Resource manifest.")?;
 
         return Ok(ExitCode::FAILURE);
     }
-    output.line("PV setup complete")?;
+    output.flow_end(Mark::Done, "PV setup complete")?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -342,7 +348,14 @@ pub(crate) fn uninstall(
         return Ok(ExitCode::FAILURE);
     }
 
-    streams.out.line("PV uninstall")?;
+    let subtitle = if args.prune {
+        "--prune"
+    } else {
+        "macOS integration"
+    };
+    streams
+        .out
+        .flow_start("uninstall", "PV uninstall", Some(subtitle))?;
 
     let _helper_lifecycle_lock = state::HelperLifecycleLock::acquire(&paths)?;
     if !run_required_step("daemon removal", streams, |streams| {
@@ -374,30 +387,57 @@ pub(crate) fn uninstall(
         return Ok(ExitCode::FAILURE);
     }
 
-    if args.prune {
-        prune_state(&paths, streams)?;
-    } else {
-        remove_default_state(&paths, streams)?;
-    }
+    run_required_step("PV state removal", streams, |streams| {
+        if args.prune {
+            prune_state(&paths, streams)?;
+        } else {
+            remove_default_state(&paths, streams)?;
+        }
 
-    streams.out.line("PV uninstall complete")?;
+        Ok(ExitCode::SUCCESS)
+    })?;
+
+    streams.out.flow_end(Mark::Done, "PV uninstall complete")?;
 
     Ok(ExitCode::SUCCESS)
 }
 
+/// Runs one required setup or uninstall step. On a terminal a spinner names
+/// the step while it runs, then its rows appear under a title marked with
+/// its outcome; plain output streams the rows as they happen. Either way a
+/// failed step ends with the stop line.
 fn run_required_step(
     label: &str,
     streams: &mut Streams<'_>,
     command: impl FnOnce(&mut Streams<'_>) -> Result<ExitCode, ExecuteError>,
 ) -> Result<bool, ExecuteError> {
-    let exit_code = command(streams)?;
-    if exit_code == ExitCode::SUCCESS {
-        return Ok(true);
+    if !streams.out.surface().decorated() {
+        if command(streams)? == ExitCode::SUCCESS {
+            return Ok(true);
+        }
+        streams.out.line(&format!("PV stopped during {label}."))?;
+
+        return Ok(false);
     }
 
-    streams.out.line(&format!("PV stopped during {label}."))?;
+    let spinner = step_spinner(&streams.err, label);
+    let mut out = Vec::new();
+    let mut err = Vec::new();
+    let result = streams.capture(&mut out, &mut err, command);
+    spinner.finish_and_clear();
+    let succeeded = matches!(result, Ok(exit_code) if exit_code == ExitCode::SUCCESS);
+    let mark = if succeeded { Mark::Done } else { Mark::Failure };
+    streams.out.flow_step(mark, label)?;
+    streams.out.writer().write_all(&out)?;
+    streams.err.writer().write_all(&err)?;
+    if succeeded {
+        return Ok(true);
+    }
+    streams
+        .out
+        .flow_end(Mark::Failure, format!("PV stopped during {label}."))?;
 
-    Ok(false)
+    result.map(|_exit_code| false)
 }
 
 fn privileged_helper_installation_required(
@@ -436,10 +476,13 @@ fn ensure_privileged_helper(
         privileged_helper_installation_required(environment, &candidate)?;
     if !current_installation_required {
         let status = environment.privileged_helper_status()?;
-        streams.out.line(&format!(
-            "Privileged helper: current {} (protocol {})",
-            status.version, status.protocol_version
-        ))?;
+        streams.out.flow_step(
+            Mark::Done,
+            format!(
+                "Privileged helper: current {} (protocol {})",
+                status.version, status.protocol_version
+            ),
+        )?;
 
         return Ok(ExitCode::SUCCESS);
     }
@@ -449,6 +492,11 @@ fn ensure_privileged_helper(
         )
         .into());
     }
+    super::write_installing_helper(
+        &mut streams.err,
+        candidate.metadata.version(),
+        candidate.metadata.protocol_version(),
+    )?;
     let prepared_directory = paths.config().join("helper");
     let install_outcome = environment.install_privileged_helper(
         &candidate.path,
@@ -458,10 +506,13 @@ fn ensure_privileged_helper(
         candidate.metadata.protocol_version(),
     )?;
     let status = install_outcome.status();
-    streams.out.line(&format!(
-        "Installed privileged helper {} (protocol {})",
-        status.version, status.protocol_version,
-    ))?;
+    streams.out.flow_step(
+        Mark::Done,
+        format!(
+            "Installed privileged helper {} (protocol {})",
+            status.version, status.protocol_version,
+        ),
+    )?;
     if let Some(warning) = install_outcome.cleanup_warning() {
         streams.err.warning(warning)?;
     }
@@ -519,23 +570,32 @@ fn configure_shell_integration(
     let output = &mut streams.out;
 
     if args.no_path {
-        output.line("Shell profile integration skipped by --no-path.")?;
+        output.flow_step(
+            Mark::Idle,
+            "Shell profile integration skipped by --no-path.",
+        )?;
         write_manual_shell_integration(output, None)?;
 
         return Ok(ExitCode::SUCCESS);
     }
 
     let Some(shell_path) = environment.var_os("SHELL") else {
-        output.line("Shell profile integration skipped because $SHELL is not set.")?;
+        output.flow_step(
+            Mark::Idle,
+            "Shell profile integration skipped because $SHELL is not set.",
+        )?;
         write_manual_shell_integration(output, None)?;
 
         return Ok(ExitCode::SUCCESS);
     };
     let Some(shell) = Shell::detect(shell_path.as_os_str()) else {
-        output.line(&format!(
-            "Shell profile integration skipped for unsupported shell: {}",
-            shell_path.to_string_lossy()
-        ))?;
+        output.flow_step(
+            Mark::Idle,
+            format!(
+                "Shell profile integration skipped for unsupported shell: {}",
+                shell_path.to_string_lossy()
+            ),
+        )?;
         write_manual_shell_integration(output, None)?;
 
         return Ok(ExitCode::SUCCESS);
@@ -548,9 +608,12 @@ fn configure_shell_integration(
         Some(content) => {
             let transform = remove_pv_env_block(content);
             if !transform.complete {
-                output.line(&format!(
-                    "Shell profile has an incomplete PV ENV block; leaving it unchanged: {profile_path}"
-                ))?;
+                output.flow_step(
+                    Mark::Failure,
+                    format!(
+                        "Shell profile has an incomplete PV ENV block; leaving it unchanged: {profile_path}"
+                    ),
+                )?;
 
                 return Ok(ExitCode::FAILURE);
             }
@@ -561,9 +624,10 @@ fn configure_shell_integration(
                 append_shell_block(content, &block)
             };
             if next == content {
-                output.line(&format!(
-                    "Shell profile integration already current: {profile_path}"
-                ))?;
+                output.flow_step(
+                    Mark::Done,
+                    Line::field("Shell profile integration already current: ", &profile_path),
+                )?;
 
                 return Ok(ExitCode::SUCCESS);
             }
@@ -599,16 +663,18 @@ fn configure_shell_integration(
 
     if existing.is_some() {
         let backup_path = backup_user_file(&profile_path)?;
-        streams
-            .out
-            .line(&format!("Backed up shell profile: {backup_path}"))?;
+        streams.out.flow_step(
+            Mark::Done,
+            Line::field("Backed up shell profile: ", backup_path),
+        )?;
     }
     write_user_file(&profile_path, &next_content)?;
 
     let output = &mut streams.out;
-    output.line(&format!(
-        "Updated shell profile integration: {profile_path}"
-    ))?;
+    output.flow_step(
+        Mark::Done,
+        Line::field("Updated shell profile integration: ", &profile_path),
+    )?;
     write_manual_shell_integration(output, Some(shell))?;
 
     Ok(ExitCode::SUCCESS)
@@ -621,48 +687,65 @@ fn remove_shell_integration(
 ) -> Result<ExitCode, ExecuteError> {
     let output = &mut streams.out;
     let Some(shell_path) = environment.var_os("SHELL") else {
-        output.line("Shell profile integration not inspected because $SHELL is not set.")?;
+        output.flow_step(
+            Mark::Idle,
+            "Shell profile integration not inspected because $SHELL is not set.",
+        )?;
 
         return Ok(ExitCode::SUCCESS);
     };
     let Some(shell) = Shell::detect(shell_path.as_os_str()) else {
-        output.line(&format!(
-            "Shell profile integration not inspected for unsupported shell: {}",
-            shell_path.to_string_lossy()
-        ))?;
+        output.flow_step(
+            Mark::Idle,
+            format!(
+                "Shell profile integration not inspected for unsupported shell: {}",
+                shell_path.to_string_lossy()
+            ),
+        )?;
 
         return Ok(ExitCode::SUCCESS);
     };
 
     let profile_path = shell_profile_path(paths.home(), shell);
     let Some(content) = read_user_file(&profile_path)? else {
-        output.line(&format!("Shell profile already absent: {profile_path}"))?;
+        output.flow_step(
+            Mark::Idle,
+            Line::field("Shell profile already absent: ", &profile_path),
+        )?;
 
         return Ok(ExitCode::SUCCESS);
     };
     let transform = remove_pv_env_block(&content);
 
     if !transform.complete {
-        output.line(&format!(
-            "Shell profile has an incomplete PV ENV block; leaving it unchanged: {profile_path}"
-        ))?;
+        output.flow_step(
+            Mark::Failure,
+            format!(
+                "Shell profile has an incomplete PV ENV block; leaving it unchanged: {profile_path}"
+            ),
+        )?;
 
         return Ok(ExitCode::FAILURE);
     }
     if !transform.found {
-        output.line(&format!(
-            "Shell profile has no PV ENV block: {profile_path}"
-        ))?;
+        output.flow_step(
+            Mark::Idle,
+            Line::field("Shell profile has no PV ENV block: ", &profile_path),
+        )?;
 
         return Ok(ExitCode::SUCCESS);
     }
 
     let backup_path = backup_user_file(&profile_path)?;
     write_user_file(&profile_path, &transform.content)?;
-    output.line(&format!("Backed up shell profile: {backup_path}"))?;
-    output.line(&format!(
-        "Removed shell profile integration: {profile_path}"
-    ))?;
+    output.flow_step(
+        Mark::Done,
+        Line::field("Backed up shell profile: ", backup_path),
+    )?;
+    output.flow_step(
+        Mark::Done,
+        Line::field("Removed shell profile integration: ", &profile_path),
+    )?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -680,15 +763,16 @@ fn untrust_ca_for_uninstall(
         let output = &mut streams.out;
         if fingerprints.is_empty() {
             output
-                .line("PV local CA files are absent; System keychain trust is already absent.")?;
+                .note("PV local CA files are absent; System keychain trust is already absent.")?;
 
             return Ok(ExitCode::SUCCESS);
         }
 
         for fingerprint in fingerprints {
             environment.untrust_system_ca(&fingerprint)?;
-            output.line(&format!(
-                "Removed stale PV local CA trust from the System keychain: {fingerprint}"
+            output.success(Line::field(
+                "Removed stale PV local CA trust from the System keychain: ",
+                &fingerprint,
             ))?;
         }
 
@@ -703,7 +787,7 @@ fn remove_helper_for_uninstall(
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     environment.remove_privileged_helper()?;
-    streams.out.line("Privileged helper removed")?;
+    streams.out.success("Privileged helper removed")?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -719,12 +803,12 @@ fn remove_default_state(paths: &PvPaths, streams: &mut Streams<'_>) -> Result<()
         ("download cache", paths.downloads()),
     ] {
         if delete_optional_dir(path)? {
-            output.line(&format!("Removed {label}: {path}"))?;
+            output.success(Line::field(&format!("Removed {label}: "), path))?;
         } else {
-            output.line(&format!("{label} already absent: {path}"))?;
+            output.note(Line::field(&format!("{label} already absent: "), path))?;
         }
     }
-    output.line("Preserved logs, pv.db, certificates, Composer home/cache, and resources data.")?;
+    output.note("Preserved logs, pv.db, certificates, Composer home/cache, and resources data.")?;
 
     Ok(())
 }
@@ -752,9 +836,9 @@ fn prune_state(paths: &PvPaths, streams: &mut Streams<'_>) -> Result<(), Execute
     let output = &mut streams.out;
 
     if delete_optional_dir(paths.root())? {
-        output.line(&format!("Removed PV state: {}", paths.root()))?;
+        output.success(Line::field("Removed PV state: ", paths.root()))?;
     } else {
-        output.line(&format!("PV state already absent: {}", paths.root()))?;
+        output.note(Line::field("PV state already absent: ", paths.root()))?;
     }
 
     Ok(())
@@ -803,11 +887,11 @@ end
 
 fn write_manual_shell_integration(output: &mut Output<'_>, shell: Option<Shell>) -> io::Result<()> {
     match shell {
-        Some(shell) => output.line(&format!(
+        Some(shell) => output.follow_up(format!(
             "Open a new terminal, or run `pv env --shell {}` for current-session shell integration.",
             shell_name(shell)
         )),
-        None => output.line(
+        None => output.follow_up(
             "Run `pv env --shell zsh`, `pv env --shell bash`, or `pv env --shell fish` for manual shell integration.",
         ),
     }

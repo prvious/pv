@@ -1,0 +1,47 @@
+---
+source: crates/cli/tests/setup.rs
+expression: uninstall.stdout
+---
+[pv] uninstall
+
+┌  PV uninstall  ·  macOS integration
+│
+◇  daemon removal
+│  ✓ Daemon disabled
+│  ✓ LaunchAgent removed: <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist
+│
+◇  DNS resolver removal
+│  ✓ Deleted prepared DNS resolver config: <tempdir>/home/.pv/config/resolver/test
+│  ✓ Removed PV-owned system resolver config: <tempdir>/etc/resolver/test
+│
+◇  port redirect removal
+│  ✓ Deleted prepared pf anchor: <tempdir>/home/.pv/config/pf/com.prvious.pv
+│  ✓ Deleted prepared pf.conf reference: <tempdir>/home/.pv/config/pf/pf.conf
+│  ✓ Removed PV-owned system pf redirect config
+│
+◇  CA trust removal
+│  ✓ Prepared PV local CA trust removal
+│  ✓ Local CA files: current
+│    certificate: <tempdir>/home/.pv/certificates/ca.pem
+│    private key: <tempdir>/home/.pv/certificates/ca-key.pem
+│    common name: PV Local Development CA
+│    fingerprint: <fingerprint>
+│  ✓ System keychain trust: current
+│    fingerprint: <fingerprint>
+│  ✓ Removed PV local CA trust from the System keychain.
+│
+◇  privileged helper removal
+│  ✓ Privileged helper removed
+│
+◇  Backed up shell profile: <tempdir>/home/.zprofile.<timestamp>.pv.bak
+│
+◇  Removed shell profile integration: <tempdir>/home/.zprofile
+│
+◇  PV state removal
+│  ✓ Removed PV app binaries and shims: <tempdir>/home/.pv/bin
+│  ✓ Removed runtime metadata: <tempdir>/home/.pv/run
+│  ✓ Removed generated configs: <tempdir>/home/.pv/config
+│  ✓ Removed download cache: <tempdir>/home/.pv/downloads
+│  ○ Preserved logs, pv.db, certificates, Composer home/cache, and resources data.
+│
+└  PV uninstall complete
