@@ -2,6 +2,7 @@ use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use config::{
+    ProjectInitDetection, ProjectInitResourceName, ProjectInitSelection,
     default_project_init_selection, detect_project_init, render_project_init_config,
     write_project_config,
 };
@@ -9,7 +10,10 @@ use config::{
 use crate::args::InitArgs;
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, Streams};
+use crate::output::{Line, Mark, Output, Streams};
+use crate::prompt::{self, Choice};
+
+const VITE_NOTE: &str = "Vite HTTPS: configure the app's Vite config to read VITE_DEV_SERVER_CERT and VITE_DEV_SERVER_KEY.";
 
 pub(crate) fn run(
     args: InitArgs,
@@ -24,28 +28,21 @@ pub(crate) fn run(
         yaml_serde::to_string(&config).map_err(|source| config::ConfigError::Parse { source })?;
 
     if args.print {
-        write!(streams.out.writer(), "{content}")?;
+        streams.out.raw(&content)?;
         return Ok(ExitCode::SUCCESS);
     }
 
     if args.yes {
-        let written = write_project_config(&project_root, &config)?;
         let output = &mut streams.out;
-        output.line(&format!("Wrote Project config: {}", written.path))?;
+        output.flow_start("init", "PV init", project_root.file_name())?;
         write_detection_summary(output, &detection, &selection)?;
-        if selection.include_vite_tls {
-            output.line(
-                "Vite HTTPS: configure the app's Vite config to read VITE_DEV_SERVER_CERT and VITE_DEV_SERVER_KEY.",
-            )?;
-        }
+        let written = write_project_config(&project_root, &config)?;
+        finish_written(output, &written.path, selection.include_vite_tls)?;
         return Ok(ExitCode::SUCCESS);
     }
 
     if !streams.interactive {
-        streams
-            .out
-            .line("pv init requires an interactive terminal; rerun with --yes or --print.")?;
-        return Ok(ExitCode::FAILURE);
+        return Err(CliError::InitRequiresTerminal.into());
     }
 
     run_interactive(
@@ -54,139 +51,120 @@ pub(crate) fn run(
         selection,
         content,
         environment,
-        streams,
+        &mut streams.out,
     )
 }
 
 fn run_interactive(
     project_root: Utf8PathBuf,
-    detection: config::ProjectInitDetection,
-    selection: config::ProjectInitSelection,
+    detection: ProjectInitDetection,
+    selection: ProjectInitSelection,
     content: String,
     environment: &impl Environment,
-    streams: &mut Streams<'_>,
+    output: &mut Output<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    let output = &mut streams.out;
+    output.flow_start("init", "PV init", project_root.file_name())?;
     write_detection_summary(output, &detection, &selection)?;
-    write_resource_checklist(output, &selection.resources)?;
-    output.line(
-        "Use these selections? Enter y to preview, n to cancel, or edit to change selections:",
-    )?;
+    write_resource_checklist(output, &selection)?;
 
-    match environment
-        .read_line()?
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "" | "y" | "yes" => preview_and_confirm_write(
-            project_root,
-            content,
+    let choices = [
+        Choice::new("Yes", "preview the config"),
+        Choice::new("No", "cancel"),
+        Choice::new("Edit", "change selections"),
+    ];
+    match prompt::select(environment, output, "Use these selections?", &choices, 0)? {
+        0 => preview_and_confirm_write(
+            &project_root,
+            &content,
             selection.include_vite_tls,
             environment,
             output,
         ),
-        "n" | "no" => cancelled(output),
-        "e" | "edit" => {
-            run_structured_edit(project_root, detection, selection, environment, output)
-        }
-        _ => {
-            output.line("Invalid selection. Enter y, n, or edit.")?;
-            Ok(ExitCode::FAILURE)
-        }
+        1 => cancelled(output),
+        _ => run_structured_edit(&project_root, detection, selection, environment, output),
     }
 }
 
 fn preview_and_confirm_write(
-    project_root: Utf8PathBuf,
-    content: String,
+    project_root: &Utf8Path,
+    content: &str,
     include_vite_tls: bool,
     environment: &impl Environment,
     output: &mut Output<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    output.line("Project config preview:")?;
+    output.flow_step(Mark::Done, "Project config preview:")?;
     for line in content.lines() {
-        output.line(line)?;
+        output.quote(line)?;
     }
-    output.line("Write Project config? Enter y to continue:")?;
-    if !matches!(
-        environment
-            .read_line()?
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "y" | "yes"
-    ) {
+    if !prompt::confirm(environment, output, "Write Project config?", true)? {
         return cancelled(output);
     }
 
-    let config = config::ProjectConfig::parse(&content)?;
-    let written = write_project_config(&project_root, &config)?;
-    output.line(&format!("Wrote Project config: {}", written.path))?;
-    if include_vite_tls {
-        output.line(
-            "Vite HTTPS: configure the app's Vite config to read VITE_DEV_SERVER_CERT and VITE_DEV_SERVER_KEY.",
-        )?;
-    }
+    let config = config::ProjectConfig::parse(content)?;
+    let written = write_project_config(project_root, &config)?;
+    finish_written(output, &written.path, include_vite_tls)?;
 
     Ok(ExitCode::SUCCESS)
 }
 
+fn finish_written(
+    output: &mut Output<'_>,
+    path: &Utf8Path,
+    include_vite_tls: bool,
+) -> Result<(), ExecuteError> {
+    output.flow_end(
+        Mark::Done,
+        Line::from("Wrote Project config: ").value(path.as_str()),
+    )?;
+    if include_vite_tls {
+        output.status(Mark::Warning, VITE_NOTE)?;
+    }
+
+    Ok(())
+}
+
 fn cancelled(output: &mut Output<'_>) -> Result<ExitCode, ExecuteError> {
-    output.line("pv init cancelled; no files changed.")?;
+    output.flow_end(Mark::Failure, "pv init cancelled; no files changed.")?;
     Ok(ExitCode::FAILURE)
 }
 
 fn write_resource_checklist(
     output: &mut Output<'_>,
-    resources: &std::collections::BTreeMap<
-        config::ProjectInitResourceName,
-        config::ProjectInitResourceSelection,
-    >,
+    selection: &ProjectInitSelection,
 ) -> Result<(), ExecuteError> {
-    output.line("Resource checklist:")?;
-    for name in resource_names() {
-        let Some(resource) = resources.get(&name) else {
-            continue;
-        };
-        let marker = if resource.selected { "[x]" } else { "[ ]" };
-        output.line(&format!("  {marker} {}", resource_label(name)))?;
+    output.flow_step(Mark::Done, "Resource checklist:")?;
+    for name in available_resources(selection) {
+        let selected = selection
+            .resources
+            .get(&name)
+            .is_some_and(|resource| resource.selected);
+        let marker = if selected { "[x]" } else { "[ ]" };
+        output.detail(format!("{marker} {}", resource_label(name)))?;
     }
 
     Ok(())
 }
 
 fn run_structured_edit(
-    project_root: Utf8PathBuf,
-    mut detection: config::ProjectInitDetection,
-    mut selection: config::ProjectInitSelection,
+    project_root: &Utf8Path,
+    mut detection: ProjectInitDetection,
+    mut selection: ProjectInitSelection,
     environment: &impl Environment,
     output: &mut Output<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    output.line(&format!("PHP track [{}]:", selection.php))?;
-    let php = environment.read_line()?;
-    if !php.trim().is_empty() {
-        selection.php = php.trim().to_string();
-    }
+    selection.php = prompt::text(environment, output, "PHP track", &selection.php, None)?;
 
     let document_root = selection
         .document_root
         .as_ref()
-        .map_or(".", |path| path.as_str());
-    output.line(&format!("Document root [{document_root}]:"))?;
-    let document_root = environment.read_line()?;
-    if !document_root.trim().is_empty() {
-        selection.document_root = Some(Utf8PathBuf::from(document_root.trim()));
+        .map_or(".", |path| path.as_str())
+        .to_string();
+    let answer = prompt::text(environment, output, "Document root", &document_root, None)?;
+    if answer != document_root {
+        selection.document_root = Some(Utf8PathBuf::from(answer));
     }
 
-    let selected_resources = selected_resource_names(&selection.resources);
-    output.line(&format!("Selected resources [{selected_resources}]:"))?;
-    let selected_resources = environment.read_line()?;
-    if !selected_resources.trim().is_empty()
-        && !apply_selected_resources(&mut selection, selected_resources.trim(), output)?
-    {
-        return Ok(ExitCode::FAILURE);
-    }
+    select_resources(&mut selection, environment, output)?;
 
     let mut explicitly_edited_allocation_resources = Vec::new();
     for name in resource_names() {
@@ -205,39 +183,57 @@ fn run_structured_edit(
         yaml_serde::to_string(&config).map_err(|source| config::ConfigError::Parse { source })?;
     preview_and_confirm_write(
         project_root,
-        content,
+        &content,
         selection.include_vite_tls,
         environment,
         output,
     )
 }
 
-fn apply_selected_resources(
-    selection: &mut config::ProjectInitSelection,
-    value: &str,
-    output: &mut Output<'_>,
-) -> Result<bool, ExecuteError> {
-    let mut selected = Vec::new();
-    for token in parse_csv(value) {
-        let Some(name) = resource_from_token(&token) else {
-            output.line(&format!("Unknown resource selection: {token}"))?;
-            return Ok(false);
-        };
-        selected.push(name);
+fn select_resources(
+    selection: &mut ProjectInitSelection,
+    environment: &impl Environment,
+    output: &Output<'_>,
+) -> Result<(), ExecuteError> {
+    let available = available_resources(selection);
+    let choices = available
+        .iter()
+        .map(|name| Choice::new(resource_label(*name), ""))
+        .collect::<Vec<_>>();
+    let selected = available
+        .iter()
+        .enumerate()
+        .filter(|(_index, name)| {
+            selection
+                .resources
+                .get(name)
+                .is_some_and(|resource| resource.selected)
+        })
+        .map(|(index, _name)| index)
+        .collect::<Vec<_>>();
+    let chosen = prompt::multiselect(
+        environment,
+        output,
+        "Select Project resources",
+        &choices,
+        &selected,
+    )?;
+    for (index, name) in available.iter().enumerate() {
+        if let Some(resource) = selection.resources.get_mut(name) {
+            resource.selected = chosen.contains(&index);
+        }
     }
 
-    for (name, resource) in &mut selection.resources {
-        resource.selected = selected.contains(name);
-    }
-
-    Ok(true)
+    Ok(())
 }
 
+/// Asks for a selected resource's track and allocations. Returns whether the
+/// allocations were explicitly changed.
 fn prompt_resource_details(
-    name: config::ProjectInitResourceName,
-    selection: &mut config::ProjectInitSelection,
+    name: ProjectInitResourceName,
+    selection: &mut ProjectInitSelection,
     environment: &impl Environment,
-    output: &mut Output<'_>,
+    output: &Output<'_>,
 ) -> Result<bool, ExecuteError> {
     let Some(resource) = selection.resources.get_mut(&name) else {
         return Ok(false);
@@ -246,36 +242,47 @@ fn prompt_resource_details(
         return Ok(false);
     }
 
-    output.line(&format!(
-        "{} track [{}]:",
-        resource_label(name),
-        resource.track
-    ))?;
-    let track = environment.read_line()?;
-    if !track.trim().is_empty() {
-        resource.track = track.trim().to_string();
-    }
+    let label = resource_label(name);
+    resource.track = prompt::text(
+        environment,
+        output,
+        &format!("{label} track"),
+        &resource.track,
+        None,
+    )?;
 
-    if name != config::ProjectInitResourceName::Mailpit {
-        let allocations = resource.allocations.join(",");
-        output.line(&format!(
-            "{} allocations [{allocations}]:",
-            resource_label(name)
-        ))?;
-        let allocations = environment.read_line()?;
-        if !allocations.trim().is_empty() {
-            resource.allocations = parse_csv(allocations.trim());
-            return Ok(true);
-        }
+    if name == ProjectInitResourceName::Mailpit {
+        return Ok(false);
     }
+    let answer = prompt::text(
+        environment,
+        output,
+        &format!("{label} allocations"),
+        &resource.allocations.join(","),
+        Some(validate_allocations),
+    )?;
+    let allocations = parse_csv(&answer);
+    if allocations == resource.allocations {
+        return Ok(false);
+    }
+    resource.allocations = allocations;
 
-    Ok(false)
+    Ok(true)
+}
+
+fn validate_allocations(value: &str) -> Result<(), String> {
+    parse_csv(value)
+        .iter()
+        .try_for_each(|allocation| config::validate_allocation_name(allocation))
+        .map_err(|error| {
+            format!("{error}; start with a lowercase letter and use only a-z, 0-9, _, or -")
+        })
 }
 
 fn prune_explicitly_edited_allocations(
-    detection: &mut config::ProjectInitDetection,
-    selection: &config::ProjectInitSelection,
-    resources: &[config::ProjectInitResourceName],
+    detection: &mut ProjectInitDetection,
+    selection: &ProjectInitSelection,
+    resources: &[ProjectInitResourceName],
 ) {
     for name in resources {
         let Some(selected_allocations) = selection
@@ -307,66 +314,47 @@ fn parse_csv(value: &str) -> Vec<String> {
         .collect()
 }
 
-fn selected_resource_names(
-    resources: &std::collections::BTreeMap<
-        config::ProjectInitResourceName,
-        config::ProjectInitResourceSelection,
-    >,
-) -> String {
-    resource_names()
-        .into_iter()
-        .filter(|name| {
-            resources
-                .get(name)
-                .is_some_and(|resource| resource.selected)
-        })
-        .map(resource_name)
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
-fn resource_names() -> [config::ProjectInitResourceName; 5] {
+fn resource_names() -> [ProjectInitResourceName; 5] {
     [
-        config::ProjectInitResourceName::Mysql,
-        config::ProjectInitResourceName::Postgres,
-        config::ProjectInitResourceName::Redis,
-        config::ProjectInitResourceName::Mailpit,
-        config::ProjectInitResourceName::Rustfs,
+        ProjectInitResourceName::Mysql,
+        ProjectInitResourceName::Postgres,
+        ProjectInitResourceName::Redis,
+        ProjectInitResourceName::Mailpit,
+        ProjectInitResourceName::Rustfs,
     ]
 }
 
-fn resource_from_token(value: &str) -> Option<config::ProjectInitResourceName> {
-    match value.to_ascii_lowercase().as_str() {
-        "mailpit" => Some(config::ProjectInitResourceName::Mailpit),
-        "mysql" => Some(config::ProjectInitResourceName::Mysql),
-        "postgres" => Some(config::ProjectInitResourceName::Postgres),
-        "redis" => Some(config::ProjectInitResourceName::Redis),
-        "rustfs" | "s3" => Some(config::ProjectInitResourceName::Rustfs),
-        _ => None,
-    }
+fn available_resources(selection: &ProjectInitSelection) -> Vec<ProjectInitResourceName> {
+    resource_names()
+        .into_iter()
+        .filter(|name| selection.resources.contains_key(name))
+        .collect()
 }
 
-fn resource_label(name: config::ProjectInitResourceName) -> &'static str {
+fn resource_label(name: ProjectInitResourceName) -> &'static str {
     match name {
-        config::ProjectInitResourceName::Mailpit => "Mailpit",
-        config::ProjectInitResourceName::Mysql => "MySQL",
-        config::ProjectInitResourceName::Postgres => "Postgres",
-        config::ProjectInitResourceName::Redis => "Redis",
-        config::ProjectInitResourceName::Rustfs => "RustFS/S3",
+        ProjectInitResourceName::Mailpit => "Mailpit",
+        ProjectInitResourceName::Mysql => "MySQL",
+        ProjectInitResourceName::Postgres => "Postgres",
+        ProjectInitResourceName::Redis => "Redis",
+        ProjectInitResourceName::Rustfs => "RustFS/S3",
     }
 }
 
 fn write_detection_summary(
     output: &mut Output<'_>,
-    detection: &config::ProjectInitDetection,
-    selection: &config::ProjectInitSelection,
+    detection: &ProjectInitDetection,
+    selection: &ProjectInitSelection,
 ) -> Result<(), ExecuteError> {
     if detection.signals.is_empty() {
-        output.line("No framework-specific Project signals detected.")?;
+        output.flow_step(
+            Mark::Done,
+            "No framework-specific Project signals detected.",
+        )?;
     } else {
-        output.line("Detected Project signals:")?;
+        output.flow_step(Mark::Done, "Detected Project signals:")?;
         for signal in &detection.signals {
-            output.line(&format!("  {}: {}", signal.label, signal.detail))?;
+            output.detail(format!("{}: {}", signal.label, signal.detail))?;
         }
     }
 
@@ -382,22 +370,22 @@ fn write_detection_summary(
         })
         .collect::<Vec<_>>();
     if !selected_resources.is_empty() {
-        output.line("Selected Project resources:")?;
+        output.flow_step(Mark::Done, "Selected Project resources:")?;
         for (name, resource) in selected_resources {
-            output.line(&format!("  {}: {}", resource_name(*name), resource.reason))?;
+            output.detail(format!("{}: {}", resource_name(*name), resource.reason))?;
         }
     }
 
     Ok(())
 }
 
-fn resource_name(name: config::ProjectInitResourceName) -> &'static str {
+fn resource_name(name: ProjectInitResourceName) -> &'static str {
     match name {
-        config::ProjectInitResourceName::Mailpit => "mailpit",
-        config::ProjectInitResourceName::Mysql => "mysql",
-        config::ProjectInitResourceName::Postgres => "postgres",
-        config::ProjectInitResourceName::Redis => "redis",
-        config::ProjectInitResourceName::Rustfs => "rustfs",
+        ProjectInitResourceName::Mailpit => "mailpit",
+        ProjectInitResourceName::Mysql => "mysql",
+        ProjectInitResourceName::Postgres => "postgres",
+        ProjectInitResourceName::Redis => "redis",
+        ProjectInitResourceName::Rustfs => "rustfs",
     }
 }
 
@@ -423,441 +411,4 @@ fn resolve_project_path(
 fn current_dir(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
     Utf8PathBuf::from_path_buf(environment.current_dir()?)
         .map_err(|path| CliError::NonUtf8Path { path }.into())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::cell::RefCell;
-    use std::ffi::OsString;
-    use std::io;
-    use std::path::PathBuf;
-
-    use camino::Utf8Path;
-    use camino_tempfile::tempdir;
-    use insta::assert_snapshot;
-
-    use super::*;
-    use crate::output::Presentation;
-
-    #[derive(Debug)]
-    struct TestEnvironment {
-        current_dir: PathBuf,
-        input: RefCell<Vec<String>>,
-    }
-
-    impl TestEnvironment {
-        fn new(current_dir: &Utf8Path, input: &[&str]) -> Self {
-            Self {
-                current_dir: current_dir.as_std_path().to_path_buf(),
-                input: RefCell::new(input.iter().rev().map(|line| format!("{line}\n")).collect()),
-            }
-        }
-    }
-
-    impl Environment for TestEnvironment {
-        fn var_os(&self, _key: &str) -> Option<OsString> {
-            None
-        }
-
-        fn home_dir(&self) -> Option<PathBuf> {
-            Some(self.current_dir.clone())
-        }
-
-        fn current_dir(&self) -> io::Result<PathBuf> {
-            Ok(self.current_dir.clone())
-        }
-
-        fn current_exe(&self) -> io::Result<PathBuf> {
-            Ok(self.current_dir.join("pv"))
-        }
-
-        fn stdin_is_terminal(&self) -> bool {
-            true
-        }
-
-        fn read_line(&self) -> io::Result<String> {
-            self.input
-                .borrow_mut()
-                .pop()
-                .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "missing test input"))
-        }
-
-        fn open_url(&self, _url: &str) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn init_interactive_accepts_defaults_and_writes_config() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let project = tempdir.path().join("acme");
-        create_laravel_fixture(&project)?;
-        let environment = TestEnvironment::new(&project, &["y", "y"]);
-        let mut stdout = Vec::new();
-
-        let mut stderr = Vec::new();
-        let exit = run(
-            default_args(),
-            &environment,
-            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
-        )?;
-
-        assert_eq!(exit, ExitCode::SUCCESS);
-        assert_output_snapshot(
-            "init_interactive_accepts_defaults_and_writes_config_output",
-            tempdir.path(),
-            String::from_utf8(stdout)?,
-        );
-        assert_snapshot!(
-            "init_interactive_accepts_defaults_and_writes_config_config",
-            read_file(&project.join("pv.yml"))?
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn init_interactive_initial_cancel_leaves_new_project_unchanged() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let project = tempdir.path().join("acme");
-        create_laravel_fixture(&project)?;
-        let environment = TestEnvironment::new(&project, &["n"]);
-        let mut stdout = Vec::new();
-
-        let mut stderr = Vec::new();
-        let exit = run(
-            default_args(),
-            &environment,
-            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
-        )?;
-
-        assert_eq!(exit, ExitCode::FAILURE);
-        assert!(!path_exists(&project.join("pv.yml"))?);
-        assert_output_snapshot(
-            "init_interactive_initial_cancel_leaves_new_project_unchanged",
-            tempdir.path(),
-            String::from_utf8(stdout)?,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn init_interactive_final_cancel_leaves_existing_config_unchanged() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let project = tempdir.path().join("acme");
-        create_laravel_fixture(&project)?;
-        let original = "php: 8.3\ndocument_root: public\nenv:\n  USER_VALUE: preserved\n";
-        write_file(&project.join("pv.yml"), original)?;
-        let environment = TestEnvironment::new(&project, &["y", "n"]);
-        let mut stdout = Vec::new();
-
-        let mut stderr = Vec::new();
-        let exit = run(
-            default_args(),
-            &environment,
-            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
-        )?;
-
-        assert_eq!(exit, ExitCode::FAILURE);
-        assert_eq!(read_file(&project.join("pv.yml"))?, original);
-        assert_output_snapshot(
-            "init_interactive_final_cancel_leaves_existing_config_unchanged",
-            tempdir.path(),
-            String::from_utf8(stdout)?,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn init_interactive_edits_php_resources_and_allocations() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let project = tempdir.path().join("acme");
-        create_laravel_fixture(&project)?;
-        let environment = TestEnvironment::new(
-            &project,
-            &[
-                "edit",
-                "8.5",
-                "public",
-                "mysql,redis,mailpit,rustfs",
-                "latest",
-                "app,analytics",
-                "latest",
-                "cache",
-                "latest",
-                "latest",
-                "uploads",
-                "y",
-            ],
-        );
-        let mut stdout = Vec::new();
-
-        let mut stderr = Vec::new();
-        let exit = run(
-            default_args(),
-            &environment,
-            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
-        )?;
-
-        assert_eq!(exit, ExitCode::SUCCESS);
-        assert_output_snapshot(
-            "init_interactive_edits_php_resources_and_allocations_output",
-            tempdir.path(),
-            String::from_utf8(stdout)?,
-        );
-        assert_snapshot!(
-            "init_interactive_edits_php_resources_and_allocations_config",
-            read_file(&project.join("pv.yml"))?
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn init_interactive_blank_edits_preserve_existing_defaults() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let project = tempdir.path().join("acme");
-        create_laravel_fixture(&project)?;
-        write_file(
-            &project.join("pv.yml"),
-            "php: 8.3\ndocument_root: public\nmysql:\n  version: 8.4\n  allocations:\n    primary: {}\nredis:\n  version: 7.2\n  allocations:\n    sessions: {}\nmailpit:\n  version: 1.0\nrustfs:\n  version: 1.1\n  allocations:\n    media: {}\n",
-        )?;
-        let environment = TestEnvironment::new(
-            &project,
-            &["edit", "", "", "", "", "", "", "", "", "", "", "y"],
-        );
-        let mut stdout = Vec::new();
-
-        let mut stderr = Vec::new();
-        let exit = run(
-            default_args(),
-            &environment,
-            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
-        )?;
-
-        assert_eq!(exit, ExitCode::SUCCESS);
-        assert_output_snapshot(
-            "init_interactive_blank_edits_preserve_existing_defaults_output",
-            tempdir.path(),
-            String::from_utf8(stdout)?,
-        );
-        assert_snapshot!(
-            "init_interactive_blank_edits_preserve_existing_defaults_config",
-            read_file(&project.join("pv.yml"))?
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn init_interactive_explicit_allocation_edits_replace_existing_allocations()
-    -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let project = tempdir.path().join("acme");
-        create_laravel_fixture(&project)?;
-        write_file(
-            &project.join("pv.yml"),
-            "php: 8.3\ndocument_root: public\nmysql:\n  version: 8.4\n  allocations:\n    primary: {}\n",
-        )?;
-        let environment = TestEnvironment::new(
-            &project,
-            &["edit", "", "", "", "", "app", "", "", "", "", "", "y"],
-        );
-        let mut stdout = Vec::new();
-
-        let mut stderr = Vec::new();
-        let exit = run(
-            default_args(),
-            &environment,
-            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
-        )?;
-
-        assert_eq!(exit, ExitCode::SUCCESS);
-        let output = String::from_utf8(stdout)?;
-        assert!(output.contains("    app:"));
-        assert!(!output.contains("    primary:"));
-        assert_output_snapshot(
-            "init_interactive_explicit_allocation_edits_replace_existing_allocations_output",
-            tempdir.path(),
-            output,
-        );
-        let config = read_file(&project.join("pv.yml"))?;
-        assert!(config.contains("    app:"));
-        assert!(!config.contains("    primary:"));
-        assert_snapshot!(
-            "init_interactive_explicit_allocation_edits_replace_existing_allocations_config",
-            config
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn init_interactive_explicit_allocation_edits_preserve_retained_allocation_config()
-    -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let project = tempdir.path().join("acme");
-        create_laravel_fixture(&project)?;
-        write_file(
-            &project.join("pv.yml"),
-            "php: 8.3\ndocument_root: public\nmysql:\n  version: 8.4\n  allocations:\n    primary:\n      env:\n        CUSTOM_PRIMARY: preserved\n        DB_HOST: custom.internal\n    legacy:\n      env:\n        LEGACY_VALUE: remove-me\n",
-        )?;
-        let environment = TestEnvironment::new(
-            &project,
-            &[
-                "edit",
-                "",
-                "",
-                "",
-                "",
-                "primary,app",
-                "",
-                "",
-                "",
-                "",
-                "",
-                "y",
-            ],
-        );
-        let mut stdout = Vec::new();
-
-        let mut stderr = Vec::new();
-        let exit = run(
-            default_args(),
-            &environment,
-            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
-        )?;
-
-        assert_eq!(exit, ExitCode::SUCCESS);
-        let output = String::from_utf8(stdout)?;
-        assert!(output.contains("    app:"));
-        assert!(output.contains("    primary:"));
-        assert!(output.contains("CUSTOM_PRIMARY: preserved"));
-        assert!(output.contains("DB_HOST: custom.internal"));
-        assert!(!output.contains("    legacy:"));
-        assert_output_snapshot(
-            "init_interactive_explicit_allocation_edits_preserve_retained_allocation_config_output",
-            tempdir.path(),
-            output,
-        );
-        let config = read_file(&project.join("pv.yml"))?;
-        assert!(config.contains("    app:"));
-        assert!(config.contains("    primary:"));
-        assert!(config.contains("CUSTOM_PRIMARY: preserved"));
-        assert!(config.contains("DB_HOST: custom.internal"));
-        assert!(!config.contains("    legacy:"));
-        assert_snapshot!(
-            "init_interactive_explicit_allocation_edits_preserve_retained_allocation_config_config",
-            config
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn init_interactive_rejects_unknown_resource_selection_without_writing() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let project = tempdir.path().join("acme");
-        create_laravel_fixture(&project)?;
-        let environment = TestEnvironment::new(&project, &["edit", "", "", "mysql,unknown"]);
-        let mut stdout = Vec::new();
-
-        let mut stderr = Vec::new();
-        let exit = run(
-            default_args(),
-            &environment,
-            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
-        )?;
-
-        assert_eq!(exit, ExitCode::FAILURE);
-        assert!(!path_exists(&project.join("pv.yml"))?);
-        assert_output_snapshot(
-            "init_interactive_rejects_unknown_resource_selection_without_writing",
-            tempdir.path(),
-            String::from_utf8(stdout)?,
-        );
-
-        Ok(())
-    }
-
-    fn default_args() -> InitArgs {
-        InitArgs {
-            path: None,
-            yes: false,
-            print: false,
-        }
-    }
-
-    fn assert_output_snapshot(name: &str, tempdir: &Utf8Path, output: String) {
-        let mut settings = insta::Settings::clone_current();
-        settings.add_filter(tempdir.as_str(), "<tempdir>");
-        settings.add_filter("/private<tempdir>", "<tempdir>");
-        settings.bind(|| assert_snapshot!(name, output));
-    }
-
-    fn create_laravel_fixture(project: &Utf8Path) -> anyhow::Result<()> {
-        create_dir(&project.join("bootstrap"))?;
-        create_dir(&project.join("config"))?;
-        create_dir(&project.join("public"))?;
-        write_file(&project.join("artisan"), "")?;
-        write_file(&project.join("bootstrap/app.php"), "<?php\n")?;
-        write_file(&project.join("config/app.php"), "<?php\n")?;
-        write_file(&project.join("public/index.php"), "<?php\n")?;
-        write_file(
-            &project.join("composer.json"),
-            r#"{"require":{"php":"^8.4","laravel/framework":"^12.0"}}"#,
-        )?;
-        write_file(
-            &project.join("package.json"),
-            r#"{"devDependencies":{"vite":"^7.0.0","laravel-vite-plugin":"^2.0.0"}}"#,
-        )?;
-        write_file(
-            &project.join(".env.example"),
-            "APP_URL=http://localhost\nDB_CONNECTION=mysql\nREDIS_HOST=127.0.0.1\nCACHE_STORE=redis\nMAIL_MAILER=smtp\nAWS_ACCESS_KEY_ID=\nAWS_SECRET_ACCESS_KEY=\n",
-        )?;
-
-        Ok(())
-    }
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "CLI init tests create fixture directories"
-    )]
-    fn create_dir(path: &Utf8Path) -> anyhow::Result<()> {
-        std::fs::create_dir_all(path)?;
-
-        Ok(())
-    }
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "CLI init tests write fixture files"
-    )]
-    fn write_file(path: &Utf8Path, contents: &str) -> anyhow::Result<()> {
-        std::fs::write(path, contents)?;
-
-        Ok(())
-    }
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "CLI init tests read fixture files"
-    )]
-    fn read_file(path: &Utf8Path) -> anyhow::Result<String> {
-        Ok(std::fs::read_to_string(path)?)
-    }
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "CLI init tests check fixture file presence"
-    )]
-    fn path_exists(path: &Utf8Path) -> anyhow::Result<bool> {
-        match std::fs::symlink_metadata(path) {
-            Ok(_metadata) => Ok(true),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(error.into()),
-        }
-    }
 }

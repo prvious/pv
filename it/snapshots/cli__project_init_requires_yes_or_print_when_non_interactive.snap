@@ -6,6 +6,6 @@ CommandOutput {
     code: Some(
         1,
     ),
-    stdout: "pv init requires an interactive terminal; rerun with --yes or --print.\n",
-    stderr: "",
+    stdout: "",
+    stderr: "error: pv init requires an interactive terminal; rerun with --yes or --print.\n",
 }

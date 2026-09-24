@@ -1,28 +1,11 @@
 ---
-source: crates/cli/src/commands/init.rs
-expression: output
+source: crates/cli/tests/init.rs
+expression: session.stdout
 ---
-Detected Project signals:
-  Laravel: Detected composer.json, artisan, and Laravel project files
-  Vite: Detected Vite in package.json
-Selected Project resources:
-  mailpit: Detected SMTP mail env keys when selected
-  mysql: Detected DB_CONNECTION=mysql
-  redis: Detected Redis-compatible env keys when selected
-  rustfs: Detected AWS/S3 env keys when selected
-Resource checklist:
-  [x] MySQL
-  [ ] Postgres
-  [x] Redis
-  [x] Mailpit
-  [x] RustFS/S3
-Use these selections? Enter y to preview, n to cancel, or edit to change selections:
-Project config preview:
-php: '8.3'
+php: '8.4'
 document_root: public
 env:
   APP_URL: ${project_url}
-  USER_VALUE: preserved
   VITE_DEV_SERVER_CERT: ${tls_cert}
   VITE_DEV_SERVER_KEY: ${tls_key}
 mailpit:
@@ -59,5 +42,3 @@ rustfs:
         AWS_BUCKET: ${bucket}
         AWS_ENDPOINT: ${endpoint}
         AWS_SECRET_ACCESS_KEY: ${secret_key}
-Write Project config? Enter y to continue:
-pv init cancelled; no files changed.

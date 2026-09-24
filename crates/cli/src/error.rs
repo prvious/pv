@@ -4,6 +4,12 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum CliError {
+    #[error("prompt cancelled")]
+    PromptCancelled,
+
+    #[error("pv init requires an interactive terminal; rerun with --yes or --print.")]
+    InitRequiresTerminal,
+
     #[error("could not detect the current shell; pass --shell zsh, --shell bash, or --shell fish")]
     MissingShell,
 

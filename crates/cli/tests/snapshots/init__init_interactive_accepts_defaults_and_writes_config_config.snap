@@ -1,5 +1,5 @@
 ---
-source: crates/cli/src/commands/init.rs
+source: crates/cli/tests/init.rs
 expression: "read_file(&project.join(\"pv.yml\"))?"
 ---
 php: '8.4'

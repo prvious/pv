@@ -7,6 +7,8 @@ use std::process::ExitCode;
 use camino::Utf8Path;
 use console::Term;
 
+use crate::prompt::{Answer, Prompt};
+
 pub trait Environment {
     fn var_os(&self, key: &str) -> Option<OsString>;
 
@@ -32,6 +34,20 @@ pub trait Environment {
     }
 
     fn read_line(&self) -> io::Result<String>;
+
+    /// Asks a keyboard prompt. Callers check `Streams::interactive` first.
+    fn prompt(&self, prompt: &Prompt<'_>) -> io::Result<Answer> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            format!("cannot ask `{}` in this environment", prompt.message),
+        ))
+    }
+
+    /// Sets whether libraries that draw on stderr by themselves, such as
+    /// prompts and progress bars, may use color.
+    fn set_terminal_colors(&self, enabled: bool) {
+        let _enabled = enabled;
+    }
 
     fn open_url(&self, url: &str) -> io::Result<()>;
 
@@ -298,6 +314,15 @@ impl Environment for ProcessEnvironment {
         io::stdin().read_line(&mut line)?;
 
         Ok(line)
+    }
+
+    fn prompt(&self, prompt: &Prompt<'_>) -> io::Result<Answer> {
+        crate::prompt::interact(prompt)
+    }
+
+    fn set_terminal_colors(&self, enabled: bool) {
+        console::set_colors_enabled(enabled);
+        console::set_colors_enabled_stderr(enabled);
     }
 
     fn open_url(&self, url: &str) -> io::Result<()> {

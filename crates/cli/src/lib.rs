@@ -5,6 +5,7 @@ mod error;
 mod helper_release;
 mod output;
 mod progress;
+mod prompt;
 mod shell;
 
 use std::ffi::OsString;
@@ -20,6 +21,7 @@ pub use error::CliError;
 use error::ExecuteError;
 pub use output::{Output, Surface};
 use output::{Presentation, Streams};
+pub use prompt::{Answer, Choice, Prompt, PromptKind, Validator};
 
 pub fn run<I, Argument>(
     args: I,
@@ -63,6 +65,7 @@ where
         }
     };
 
+    environment.set_terminal_colors(presentation.stderr.color());
     let mut streams = Streams::new(stdout, stderr, presentation);
     let result = commands::execute(cli, environment, &mut streams);
 
@@ -75,6 +78,8 @@ fn finish_execution(
 ) -> Result<ExitCode> {
     let message = match result {
         Ok(exit_code) => return Ok(exit_code),
+        // The prompt has already drawn its cancelled state.
+        Err(ExecuteError::User(CliError::PromptCancelled)) => return Ok(ExitCode::from(130)),
         Err(ExecuteError::Daemon(error)) => return Err(error.into()),
         Err(ExecuteError::State(error)) => return Err(error.into()),
         Err(error) => error.to_string(),

@@ -1,6 +1,6 @@
 ---
-source: crates/cli/src/commands/init.rs
-expression: config
+source: crates/cli/tests/init.rs
+expression: "read_file(&project.join(\"pv.yml\"))?"
 ---
 php: '8.3'
 document_root: public
@@ -9,7 +9,7 @@ env:
   VITE_DEV_SERVER_CERT: ${tls_cert}
   VITE_DEV_SERVER_KEY: ${tls_key}
 mailpit:
-  version: latest
+  version: '1.0'
   env:
     MAIL_HOST: ${smtp_host}
     MAIL_MAILER: smtp
@@ -17,7 +17,7 @@ mailpit:
 mysql:
   version: '8.4'
   allocations:
-    app:
+    primary:
       env:
         DB_CONNECTION: mysql
         DB_DATABASE: ${database}
@@ -26,17 +26,17 @@ mysql:
         DB_PORT: ${port}
         DB_USERNAME: ${username}
 redis:
-  version: latest
+  version: '7.2'
   allocations:
-    cache:
+    sessions:
       env:
         REDIS_HOST: ${host}
         REDIS_PORT: ${port}
         REDIS_PREFIX: ${prefix}
 rustfs:
-  version: latest
+  version: '1.1'
   allocations:
-    uploads:
+    media:
       env:
         AWS_ACCESS_KEY_ID: ${access_key}
         AWS_BUCKET: ${bucket}

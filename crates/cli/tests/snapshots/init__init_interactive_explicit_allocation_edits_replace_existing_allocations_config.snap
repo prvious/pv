@@ -1,5 +1,5 @@
 ---
-source: crates/cli/src/commands/init.rs
+source: crates/cli/tests/init.rs
 expression: config
 ---
 php: '8.3'
@@ -19,18 +19,9 @@ mysql:
   allocations:
     app:
       env:
-        APP_DB_CONNECTION: mysql
-        APP_DB_DATABASE: ${database}
-        APP_DB_HOST: ${host}
-        APP_DB_PASSWORD: ${password}
-        APP_DB_PORT: ${port}
-        APP_DB_USERNAME: ${username}
-    primary:
-      env:
-        CUSTOM_PRIMARY: preserved
         DB_CONNECTION: mysql
         DB_DATABASE: ${database}
-        DB_HOST: custom.internal
+        DB_HOST: ${host}
         DB_PASSWORD: ${password}
         DB_PORT: ${port}
         DB_USERNAME: ${username}
