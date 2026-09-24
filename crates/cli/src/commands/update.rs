@@ -73,7 +73,7 @@ pub(crate) fn run_managed_resource_continuation(
     let current_version = AppUpdateVersion::current()?;
     validate_active_release(&layout, &current_version)?;
 
-    run_managed_resource_update_phase(paths, environment, streams)
+    run_managed_resource_update_phase(paths, streams)
 }
 
 fn run_update(
@@ -83,9 +83,7 @@ fn run_update(
     let outcome = run_app_update_phase(environment, streams)?;
 
     match outcome {
-        AppUpdateOutcome::Current { paths } => {
-            run_managed_resource_update_phase(paths, environment, streams)
-        }
+        AppUpdateOutcome::Current { paths } => run_managed_resource_update_phase(paths, streams),
         AppUpdateOutcome::Updated { paths } => {
             let active_pv_binary = paths.active_pv_binary();
 
@@ -96,13 +94,9 @@ fn run_update(
 
 fn run_managed_resource_update_phase(
     paths: PvPaths,
-    environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    let mut progress = DownloadProgressRenderer::with_output(
-        environment.stdout_is_terminal(),
-        streams.out.writer(),
-    );
+    let mut progress = DownloadProgressRenderer::with_output(&mut streams.err);
     let job = daemon::run_job_with_events_blocking(paths, "update", "system", &mut progress)
         .map_err(managed_resource_update_daemon_error)?;
     drop(progress);
@@ -585,7 +579,7 @@ fn run_app_update_phase(
     } else {
         None
     };
-    let progress = DownloadProgressRenderer::new(output.surface().decorated());
+    let progress = DownloadProgressRenderer::new(stderr);
     if app_update_required {
         let downloaded = download_app_asset(
             environment,
@@ -837,20 +831,17 @@ fn run_app_update_phase(
         }
     }
 
-    let helper_install_cleanup_warning = helper_install_cleanup_warning
-        .as_deref()
-        .map(|warning| format!("; warning: {warning}"))
-        .unwrap_or_default();
     if !app_update_required {
         write_helper_rollback_cleanup_warning(
             stderr,
             cleanup_helper_rollback(helper_rollback.as_ref()).err(),
         )?;
         output.line(&format!(
-            "Privileged helper: updated to {} (protocol {}){helper_install_cleanup_warning}",
+            "Privileged helper: updated to {} (protocol {})",
             asset.helper().version(),
             asset.helper().protocol_version()
         ))?;
+        write_privileged_helper_cleanup_warning(stderr, helper_install_cleanup_warning.as_deref())?;
         if manifest.version() < &current_version {
             output.line(&format!(
                 "PV application: current {current_version}; app manifest {} is older",
@@ -896,10 +887,11 @@ fn run_app_update_phase(
 
     if helper_update_required {
         output.line(&format!(
-            "Privileged helper: updated to {} (protocol {}){helper_install_cleanup_warning}",
+            "Privileged helper: updated to {} (protocol {})",
             asset.helper().version(),
             asset.helper().protocol_version()
         ))?;
+        write_privileged_helper_cleanup_warning(stderr, helper_install_cleanup_warning.as_deref())?;
     } else if let InstalledHelperState::Ready(status) = &installed_helper {
         output.line(&format!(
             "Privileged helper: current {} (protocol {})",
@@ -916,9 +908,7 @@ fn run_app_update_phase(
         cleanup_helper_rollback(helper_rollback.as_ref()).err(),
     )?;
     if let Err(error) = layout.prune_releases(&previous_version) {
-        stderr.line(&format!(
-            "warning: failed to prune old PV app releases: {error}"
-        ))?;
+        stderr.warning(&format!("failed to prune old PV app releases: {error}"))?;
     }
 
     Ok(AppUpdateOutcome::Updated { paths })
@@ -1290,9 +1280,7 @@ fn write_cleanup_warning(
     cleanup_error: Option<StateError>,
 ) -> Result<(), ExecuteError> {
     if let Some(error) = cleanup_error {
-        stderr.line(&format!(
-            "warning: failed to remove failed PV app release: {error}"
-        ))?;
+        stderr.warning(&format!("failed to remove failed PV app release: {error}"))?;
     }
 
     Ok(())
@@ -1303,8 +1291,8 @@ fn write_helper_rollback_cleanup_warning(
     cleanup_error: Option<StateError>,
 ) -> Result<(), ExecuteError> {
     if let Some(error) = cleanup_error {
-        stderr.line(&format!(
-            "warning: failed to remove privileged-helper rollback candidate: {error}"
+        stderr.warning(&format!(
+            "failed to remove privileged-helper rollback candidate: {error}"
         ))?;
     }
 
@@ -1316,7 +1304,7 @@ fn write_privileged_helper_cleanup_warning(
     cleanup_warning: Option<&str>,
 ) -> Result<(), ExecuteError> {
     if let Some(warning) = cleanup_warning {
-        stderr.line(&format!("warning: {warning}"))?;
+        stderr.warning(warning)?;
     }
 
     Ok(())
@@ -1327,8 +1315,8 @@ fn write_download_cleanup_warning(
     cleanup_error: Option<ExecuteError>,
 ) -> Result<(), ExecuteError> {
     if let Some(error) = cleanup_error {
-        stderr.line(&format!(
-            "warning: failed to remove temporary PV app download: {error}"
+        stderr.warning(&format!(
+            "failed to remove temporary PV app download: {error}"
         ))?;
     }
 

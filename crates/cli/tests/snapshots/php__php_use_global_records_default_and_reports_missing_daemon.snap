@@ -9,8 +9,8 @@ expression: "(output, default_track, resource_record_snapshots(&records, tempdir
                 0,
             ),
         ),
-        stdout: "Set global PHP track to 8.4\nInstalled PHP track 8.4\nInstalled FrankenPHP track 8.4\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Set global PHP track to 8.4\nInstalled PHP track 8.4\nInstalled FrankenPHP track 8.4\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     Some(
         "8.4",

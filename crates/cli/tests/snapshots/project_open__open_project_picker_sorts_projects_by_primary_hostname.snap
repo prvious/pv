@@ -9,8 +9,8 @@ expression: "(link_zeta, link_alpha, open, opened_urls)"
                 0,
             ),
         ),
-        stdout: "Linked zeta.test -> <tempdir>/alpha-project\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Linked zeta.test -> <tempdir>/alpha-project\n",
+        stderr: "\u{1b}[33m⚠\u{1b}[0m  \u{1b}[33mwarning:\u{1b}[0m PV daemon is not running; reconciliation will run after `pv setup`\n   starts it\n",
     },
     RunOutput {
         exit_code: ExitCode(
@@ -18,8 +18,8 @@ expression: "(link_zeta, link_alpha, open, opened_urls)"
                 0,
             ),
         ),
-        stdout: "Linked alpha.test -> <tempdir>/zeta-project\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Linked alpha.test -> <tempdir>/zeta-project\n",
+        stderr: "\u{1b}[33m⚠\u{1b}[0m  \u{1b}[33mwarning:\u{1b}[0m PV daemon is not running; reconciliation will run after `pv setup`\n   starts it\n",
     },
     RunOutput {
         exit_code: ExitCode(

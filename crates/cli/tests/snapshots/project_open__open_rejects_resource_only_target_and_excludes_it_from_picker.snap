@@ -9,8 +9,8 @@ expression: "(link_resource_only, explicit_open, current_open, link_served, pick
                 0,
             ),
         ),
-        stdout: "Linked resources (resource-only) -> <tempdir>/resources\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Linked resources (resource-only) -> <tempdir>/resources\n",
+        stderr: "\u{1b}[33m⚠\u{1b}[0m  \u{1b}[33mwarning:\u{1b}[0m PV daemon is not running; reconciliation will run after `pv setup`\n   starts it\n",
     },
     RunOutput {
         exit_code: ExitCode(
@@ -36,8 +36,8 @@ expression: "(link_resource_only, explicit_open, current_open, link_served, pick
                 0,
             ),
         ),
-        stdout: "Linked web.test -> <tempdir>/web\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Linked web.test -> <tempdir>/web\n",
+        stderr: "\u{1b}[33m⚠\u{1b}[0m  \u{1b}[33mwarning:\u{1b}[0m PV daemon is not running; reconciliation will run after `pv setup`\n   starts it\n",
     },
     RunOutput {
         exit_code: ExitCode(

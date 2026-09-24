@@ -144,7 +144,7 @@ impl Tone {
         }
     }
 
-    fn paint(self, text: &str, color: bool) -> String {
+    pub(crate) fn paint(self, text: &str, color: bool) -> String {
         if !color || self == Self::Plain || text.is_empty() {
             return text.to_string();
         }
@@ -337,26 +337,44 @@ impl<'writer> Output<'writer> {
         writeln!(self.writer, "{}{text}", self.continuation)
     }
 
+    /// A warning, normally written to stderr.
+    pub(crate) fn warning(&mut self, message: &str) -> io::Result<()> {
+        if !self.surface.decorated {
+            return writeln!(self.writer, "warning: {message}");
+        }
+        self.labelled(Mark::Warning, "warning:", Tone::Plain, message)
+    }
+
     /// An error, normally written to stderr. Lines after the first are cause
     /// and repair details.
     pub fn error(&mut self, message: &str) -> io::Result<()> {
         if !self.surface.decorated {
             return writeln!(self.writer, "error: {message}");
         }
-        let color = self.surface.color;
         let mut lines = message.lines();
-        let summary = lines.next().unwrap_or_default();
-        let body = format!(
-            "{} {}",
-            Tone::Failure.paint("error:", color),
-            Tone::Strong.paint(summary, color)
-        );
-        self.write_wrapped(&format!("{}  ", Mark::Failure.paint(color)), INDENT, &body)?;
+        self.labelled(
+            Mark::Failure,
+            "error:",
+            Tone::Strong,
+            lines.next().unwrap_or_default(),
+        )?;
+        let color = self.surface.color;
         for cause in lines {
             self.write_wrapped(INDENT, INDENT, &Tone::Dim.paint(cause, color))?;
         }
 
         Ok(())
+    }
+
+    /// A decorated `glyph  label summary` row, colored by the mark.
+    fn labelled(&mut self, mark: Mark, label: &str, tone: Tone, summary: &str) -> io::Result<()> {
+        let color = self.surface.color;
+        let body = format!(
+            "{} {}",
+            mark.tone().paint(label, color),
+            tone.paint(summary, color)
+        );
+        self.write_wrapped(&format!("{}  ", mark.paint(color)), INDENT, &body)
     }
 
     /// Opens a multi-step flow: the badge, then `┌  title  ·  subtitle`.
@@ -628,20 +646,28 @@ mod tests {
     }
 
     #[test]
-    fn errors_keep_their_label_and_dim_details() {
+    fn errors_and_warnings_keep_their_label_and_dim_details() {
         let write = |output: &mut Output<'_>| {
+            output.warning(
+                "PV daemon is not running; reconciliation will run after `pv setup` starts it",
+            )?;
             output.error("PHP track 8.3 is not installed.\nRun `pv php:install 8.3` to install it.")
         };
 
         assert_snapshot!(render(Surface::plain(), write), @"
+        warning: PV daemon is not running; reconciliation will run after `pv setup` starts it
         error: PHP track 8.3 is not installed.
         Run `pv php:install 8.3` to install it.
         ");
         assert_snapshot!(render(Surface::terminal(false, 60), write), @"
+        ⚠  warning: PV daemon is not running; reconciliation will
+           run after `pv setup` starts it
         ✗  error: PHP track 8.3 is not installed.
            Run `pv php:install 8.3` to install it.
         ");
         assert_snapshot!(render(Surface::terminal(true, 60), write), @"
+        ␛[33m⚠␛[0m  ␛[33mwarning:␛[0m PV daemon is not running; reconciliation will
+           run after `pv setup` starts it
         ␛[31m✗␛[0m  ␛[31merror:␛[0m ␛[1mPHP track 8.3 is not installed.␛[0m
            ␛[2mRun `pv php:install 8.3` to install it.␛[0m
         ");

@@ -62,7 +62,7 @@ fn postgres_install_uses_manifest_default_and_installs_without_network_download(
     let records = managed_resource_records(&database, RESOURCE)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_resource_snapshot(
         "postgres_install_uses_manifest_default_and_installs_without_network_download",
         tempdir.path(),
@@ -96,7 +96,7 @@ fn pg_alias_install_records_canonical_postgres_resource() -> anyhow::Result<()> 
     let records = managed_resource_records(&database, RESOURCE)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_resource_snapshot(
         "pg_alias_install_records_canonical_postgres_resource",
         tempdir.path(),
@@ -131,7 +131,7 @@ fn postgres_update_updates_installed_tracks() -> anyhow::Result<()> {
     let records = managed_resource_records(&database, RESOURCE)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_resource_snapshot(
         "postgres_update_updates_installed_tracks",
         tempdir.path(),
@@ -189,7 +189,7 @@ fn postgres_uninstall_force_prune_queues_removal_intent() -> anyhow::Result<()> 
     let records = managed_resource_records(&database, RESOURCE)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_resource_snapshot(
         "postgres_uninstall_force_prune_queues_removal_intent",
         tempdir.path(),

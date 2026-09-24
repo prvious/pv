@@ -182,7 +182,7 @@ fn composer_install_uses_manifest_default_php_track_without_cached_manifest() ->
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(environment.byte_request_count(), 0);
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -224,7 +224,7 @@ fn composer_install_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(environment.byte_request_count(), 0);
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -292,7 +292,7 @@ fn composer_install_prefers_global_php_default_track() -> anyhow::Result<()> {
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((
             output,
@@ -365,7 +365,7 @@ fn composer_update_updates_track_two_only() -> anyhow::Result<()> {
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(environment.byte_request_count(), 0);
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -401,7 +401,7 @@ fn composer_update_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()>
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(environment.byte_request_count(), 0);
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -431,7 +431,7 @@ fn composer_uninstall_force_prune_queues_removal_intent() -> anyhow::Result<()> 
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert!(records.iter().all(|record| {
         record.desired_state == ManagedResourceDesiredState::Removed
             && record.removal_force

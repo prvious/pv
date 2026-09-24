@@ -404,7 +404,7 @@ fn setup_no_path_configures_system_integrations_and_waits_for_reconciliation() -
     let parsed_launch_agent = LaunchAgentConfig::parse(&launch_agent);
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert!(parsed_resolver.is_some());
     assert_eq!(system_resolver, prepared_resolver);
     assert_eq!(system_anchor, prepared_anchor);
@@ -531,7 +531,7 @@ fn setup_uses_cached_manifest_with_warning_when_refresh_fails() -> anyhow::Resul
     assert_eq!(fixture.environment.text_request_count(), 1);
     assert!(
         output
-            .stdout
+            .stderr
             .contains("warning: artifact manifest refresh failed")
     );
     assert_eq!(observed, expected_setup_tracks());

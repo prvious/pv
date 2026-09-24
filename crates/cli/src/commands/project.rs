@@ -71,7 +71,7 @@ pub(crate) fn link(
     let project_name = if result.project.mode == ProjectMode::ResourceOnly {
         format!("{} (resource-only)", result.project.slug)
     } else {
-        project_display_name(&result.project).to_string()
+        super::project_display_name(&result.project).to_string()
     };
     match result.status {
         LinkProjectStatus::Created => {
@@ -86,7 +86,7 @@ pub(crate) fn link(
             result.project.path,
         ))?,
     }
-    request_project_reconciliation(&paths, &result.project, output)?;
+    super::request_project_reconciliation(&paths, &result.project, streams)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -130,10 +130,10 @@ pub(crate) fn unlink(
 
     output.line(&format!(
         "Unlinked {} -> {}",
-        project_display_name(&project),
+        super::project_display_name(&project),
         project.path
     ))?;
-    request_system_reconciliation(&paths, output)?;
+    super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -176,7 +176,7 @@ pub(crate) fn open(
     streams.out.line(&format!(
         "Opened {} for {}",
         url,
-        project_display_name(&project)
+        super::project_display_name(&project)
     ))?;
 
     Ok(ExitCode::SUCCESS)
@@ -243,8 +243,8 @@ pub(crate) fn list(
     let database = Database::open(&paths)?;
     let mut projects = database.projects()?;
     projects.sort_by(|left, right| {
-        project_display_name(left)
-            .cmp(project_display_name(right))
+        super::project_display_name(left)
+            .cmp(super::project_display_name(right))
             .then_with(|| left.id.cmp(&right.id))
     });
 
@@ -270,7 +270,7 @@ pub(crate) fn list(
         let status = project_list_status(&database, &project)?;
         output.line(&format!(
             "{}  {}  {}  {}  unknown  {}  {}",
-            project_display_name(&project),
+            super::project_display_name(&project),
             project.mode.as_str(),
             project.desired_php_track.as_deref().unwrap_or("default"),
             status.project.as_str(),
@@ -286,34 +286,6 @@ pub(crate) fn list(
     }
 
     Ok(ExitCode::SUCCESS)
-}
-
-fn request_project_reconciliation(
-    paths: &PvPaths,
-    project: &ProjectRecord,
-    output: &mut Output<'_>,
-) -> Result<(), ExecuteError> {
-    let scope = format!("project:{}", project.id);
-    if let Some(job) = super::submit_reconciliation(paths, &scope, output)? {
-        output.line(&format!(
-            "Queued reconciliation {} for {}",
-            job.id,
-            project_display_name(project)
-        ))?;
-    }
-
-    Ok(())
-}
-
-fn request_system_reconciliation(
-    paths: &PvPaths,
-    output: &mut Output<'_>,
-) -> Result<(), ExecuteError> {
-    if let Some(job) = super::submit_reconciliation(paths, "system", output)? {
-        output.line(&format!("System reconciliation requested: {}", job.id))?;
-    }
-
-    Ok(())
 }
 
 fn resolve_open_project(
@@ -362,7 +334,7 @@ fn select_project(
         output.line(&format!(
             "{}. {}  {}",
             index + 1,
-            project_display_name(project),
+            super::project_display_name(project),
             project.path
         ))?;
     }
@@ -472,7 +444,7 @@ fn write_project_env_warnings(
     output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     for warning in warnings {
-        output.line(&format!("warning: {}", project_env_warning(warning)))?;
+        output.warning(&project_env_warning(warning))?;
     }
 
     Ok(())
@@ -567,17 +539,6 @@ fn served_project_hostname(project: &ProjectRecord) -> Result<&str, ExecuteError
             project_id: project.id.clone(),
         })
         .map_err(Into::into)
-}
-
-fn project_display_name(project: &ProjectRecord) -> &str {
-    if project.mode == ProjectMode::ResourceOnly {
-        return project.slug.as_str();
-    }
-
-    project
-        .primary_hostname
-        .as_deref()
-        .unwrap_or(project.slug.as_str())
 }
 
 fn resolve_project_path(

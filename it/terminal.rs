@@ -18,6 +18,7 @@ mod support;
 const ROWS: u16 = 120;
 const COLUMNS: u16 = 100;
 const TIMEOUT: Duration = Duration::from_secs(15);
+const KEY_DELAY: Duration = Duration::from_millis(50);
 
 const ENTER: &str = "\r";
 const ESCAPE: &str = "\u{1b}";
@@ -183,7 +184,10 @@ impl Session {
         })
     }
 
+    /// Types `keys` after a short pause. A key that arrives before the
+    /// prompt switches the terminal into raw mode would be echoed by the tty.
     fn press(&mut self, keys: &str) -> Result<()> {
+        thread::sleep(KEY_DELAY);
         self.writer.write_all(keys.as_bytes())?;
         self.writer.flush()?;
 

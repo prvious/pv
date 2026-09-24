@@ -9,8 +9,8 @@ expression: "(output, resource_record_snapshots(&records, tempdir.path())?,\nenv
                 0,
             ),
         ),
-        stdout: "warning: newest php artifact 8.4.9-pv1 for track 8.4 was revoked (failed smoke test); installed fallback 8.4.8-pv1\nwarning: newest frankenphp artifact 8.4.9-pv1 for track 8.4 was revoked (failed smoke test); installed fallback 8.4.8-pv1\nUpdated 2 PHP runtime artifact(s)\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Updated 2 PHP runtime artifact(s)\n",
+        stderr: "warning: newest php artifact 8.4.9-pv1 for track 8.4 was revoked (failed smoke test); installed fallback 8.4.8-pv1\nwarning: newest frankenphp artifact 8.4.9-pv1 for track 8.4 was revoked (failed smoke test); installed fallback 8.4.8-pv1\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     [
         ResourceRecordSnapshot {

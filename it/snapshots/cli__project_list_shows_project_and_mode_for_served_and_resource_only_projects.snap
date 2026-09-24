@@ -7,15 +7,15 @@ expression: "(link_served, link_resource_only, list)"
         code: Some(
             0,
         ),
-        stdout: "Linked alpha.test -> <tempdir>/Zulu Web\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Linked alpha.test -> <tempdir>/Zulu Web\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Linked beta-data (resource-only) -> <tempdir>/Beta Data\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Linked beta-data (resource-only) -> <tempdir>/Beta Data\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     CommandOutput {
         code: Some(

@@ -9,8 +9,8 @@ expression: snapshot
                 0,
             ),
         ),
-        stdout: "Installed MySQL track 8.0\nwarning: reconciliation deferred while another PV mutation holds the jobs lock\nSystem reconciliation requested: job_lock_2\n",
-        stderr: "",
+        stdout: "Installed MySQL track 8.0\nSystem reconciliation requested: job_lock_2\n",
+        stderr: "warning: reconciliation deferred while another PV mutation holds the jobs lock\n",
     },
     [
         Object {

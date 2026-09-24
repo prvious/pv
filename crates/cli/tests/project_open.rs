@@ -105,7 +105,7 @@ fn open_primary_hostname_argument_normalizes_and_opens_project() -> anyhow::Resu
     assert_eq!(link.exit_code, ExitCode::SUCCESS);
     assert_eq!(open.exit_code, ExitCode::SUCCESS);
     assert_eq!(opened_urls, vec!["https://acme.test"]);
-    assert!(link.stderr.is_empty());
+    assert!(!link.stderr.contains("error:"));
     assert!(open.stderr.is_empty());
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
@@ -208,7 +208,7 @@ fn open_additional_hostname_argument_opens_exact_hostname() -> anyhow::Result<()
     assert_eq!(link.exit_code, ExitCode::SUCCESS);
     assert_eq!(open.exit_code, ExitCode::SUCCESS);
     assert_eq!(opened_urls, vec!["https://api.acme.test"]);
-    assert!(link.stderr.is_empty());
+    assert!(!link.stderr.contains("error:"));
     assert!(open.stderr.is_empty());
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
@@ -239,7 +239,7 @@ fn open_without_hostname_uses_current_project_primary_hostname() -> anyhow::Resu
     assert_eq!(link.exit_code, ExitCode::SUCCESS);
     assert_eq!(open.exit_code, ExitCode::SUCCESS);
     assert_eq!(opened_urls, vec!["https://acme.test"]);
-    assert!(link.stderr.is_empty());
+    assert!(!link.stderr.contains("error:"));
     assert!(open.stderr.is_empty());
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
@@ -269,7 +269,7 @@ fn open_uses_project_picker_when_outside_a_linked_project() -> anyhow::Result<()
     assert_eq!(link.exit_code, ExitCode::SUCCESS);
     assert_eq!(open.exit_code, ExitCode::SUCCESS);
     assert_eq!(opened_urls, vec!["https://acme.test"]);
-    assert!(link.stderr.is_empty());
+    assert!(!link.stderr.contains("error:"));
     assert!(open.stderr.is_empty());
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
@@ -350,8 +350,8 @@ fn open_project_picker_sorts_projects_by_primary_hostname() -> anyhow::Result<()
     assert_eq!(link_alpha.exit_code, ExitCode::SUCCESS);
     assert_eq!(open.exit_code, ExitCode::SUCCESS);
     assert_eq!(opened_urls, vec!["https://zeta.test"]);
-    assert!(link_zeta.stderr.is_empty());
-    assert!(link_alpha.stderr.is_empty());
+    assert!(!link_zeta.stderr.contains("error:"));
+    assert!(!link_alpha.stderr.contains("error:"));
     assert!(open.stderr.is_empty());
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
@@ -381,7 +381,7 @@ fn open_without_current_project_fails_when_non_interactive() -> anyhow::Result<(
     assert_eq!(link.exit_code, ExitCode::SUCCESS);
     assert_eq!(open.exit_code, ExitCode::FAILURE);
     assert!(opened_urls.is_empty());
-    assert!(link.stderr.is_empty());
+    assert!(!link.stderr.contains("error:"));
     assert!(open.stdout.is_empty());
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");

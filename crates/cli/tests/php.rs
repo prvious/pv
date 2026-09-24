@@ -979,7 +979,7 @@ fn php_use_updates_project_config_state_and_reports_missing_daemon() -> anyhow::
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(
         config_file
             .config
@@ -1030,7 +1030,7 @@ fn php_use_latest_preserves_alias_in_config_and_records_resolved_track() -> anyh
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(
         config_file
             .config
@@ -1076,7 +1076,7 @@ fn php_use_global_records_default_and_reports_missing_daemon() -> anyhow::Result
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(default_track.as_deref(), Some("8.4"));
     assert_debug_snapshot!((
         output,
@@ -1244,7 +1244,7 @@ fn php_install_uses_manifest_default_and_installs_pair_without_network() -> anyh
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_debug_snapshot!((
         output,
         resource_record_snapshots(&records, tempdir.path())?,
@@ -1310,7 +1310,7 @@ fn php_install_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()> {
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(environment.byte_request_count(), 0);
     assert_debug_snapshot!((
         output,
@@ -1343,7 +1343,7 @@ fn php_update_reports_missing_daemon_after_resource_update() -> anyhow::Result<(
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_debug_snapshot!((
         output,
         resource_record_snapshots(&records, tempdir.path())?,
@@ -1411,7 +1411,7 @@ fn php_update_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()> {
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(environment.byte_request_count(), 0);
     assert_debug_snapshot!((
         output,
@@ -1443,7 +1443,7 @@ fn php_install_uses_injected_target_platform() -> anyhow::Result<()> {
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_debug_snapshot!((
         output,
         resource_record_snapshots(&records, tempdir.path())?,
@@ -1632,7 +1632,7 @@ fn php_uninstall_force_proceeds_for_project_selected_track() -> anyhow::Result<(
 
     assert_eq!(install.exit_code, ExitCode::SUCCESS);
     assert_eq!(uninstall.exit_code, ExitCode::SUCCESS);
-    assert!(uninstall.stderr.is_empty());
+    assert!(!uninstall.stderr.contains("error:"));
     assert!(records.iter().all(|record| {
         record.desired_state == ManagedResourceDesiredState::Removed && record.removal_force
     }));
@@ -1668,7 +1668,7 @@ fn php_uninstall_force_prune_queues_both_removal_intents() -> anyhow::Result<()>
 
     assert_eq!(install.exit_code, ExitCode::SUCCESS);
     assert_eq!(uninstall.exit_code, ExitCode::SUCCESS);
-    assert!(uninstall.stderr.is_empty());
+    assert!(!uninstall.stderr.contains("error:"));
     assert!(records.iter().all(|record| {
         record.desired_state == ManagedResourceDesiredState::Removed
             && record.removal_force

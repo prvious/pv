@@ -3,7 +3,6 @@ use std::io;
 use std::io::Write;
 use std::process::ExitCode;
 
-use anstyle::{AnsiColor, Style};
 use camino::{Utf8Path, Utf8PathBuf};
 use resources::{ArtifactManifestCache, ResourceName, TrackSelector};
 use state::{Database, PvPaths, StateError};
@@ -11,7 +10,7 @@ use state::{Database, PvPaths, StateError};
 use crate::args::LogsArgs;
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, Streams};
+use crate::output::{Output, Streams, Tone};
 
 const MAX_LINE_COUNT: usize = 5000;
 
@@ -287,15 +286,11 @@ fn write_initial_tail(
         return Ok(());
     }
 
-    let prefix = available_count > 1;
+    let prefixed = available_count > 1;
     for tail in tails {
+        let prefix = log_prefix(&tail.source.label, prefixed, color_enabled);
         for line in tail.lines {
-            output.line(&format_log_line(
-                &tail.source.label,
-                &line,
-                prefix,
-                color_enabled,
-            ))?;
+            writeln!(output.writer(), "{prefix}{line}")?;
         }
     }
 
@@ -387,53 +382,30 @@ fn read_log_lines(path: &Utf8Path) -> Result<Vec<String>, ExecuteError> {
     }
 }
 
-fn format_log_line(label: &str, line: &str, prefix: bool, color_enabled: bool) -> String {
-    let line = color_severity(line, color_enabled);
-
-    if !prefix {
-        return line;
+/// The source prefix PV adds before each stored log line when streams are
+/// combined; empty for a single stream. Only this prefix may be colored: the
+/// stored body is always written unchanged after it.
+fn log_prefix(label: &str, prefixed: bool, color_enabled: bool) -> String {
+    if !prefixed {
+        return String::new();
     }
 
-    format!("{} | {line}", color_label(label, color_enabled))
+    format!(
+        "{}{}",
+        source_tone(label).paint(label, color_enabled),
+        Tone::Dim.paint(" | ", color_enabled)
+    )
 }
 
-fn color_label(label: &str, color_enabled: bool) -> String {
-    if !color_enabled {
-        return label.to_string();
-    }
-
-    let style = if label.starts_with("daemon") {
-        Style::new().fg_color(Some(AnsiColor::Cyan.into()))
+fn source_tone(label: &str) -> Tone {
+    if label.starts_with("daemon") {
+        Tone::Value
     } else if label.starts_with("launchd") {
-        Style::new().fg_color(Some(AnsiColor::Magenta.into()))
+        Tone::Accent
     } else if label.starts_with("gateway") {
-        Style::new().fg_color(Some(AnsiColor::Blue.into()))
+        Tone::Strong
     } else {
-        Style::new().fg_color(Some(AnsiColor::Green.into()))
-    };
-
-    format!("{style}{label}{style:#}")
-}
-
-fn color_severity(line: &str, color_enabled: bool) -> String {
-    if !color_enabled {
-        return line.to_string();
-    }
-
-    let lowercase = line.to_ascii_lowercase();
-    let style = if lowercase.contains("error") || lowercase.contains("fatal") {
-        Some(Style::new().fg_color(Some(AnsiColor::Red.into())))
-    } else if lowercase.contains("warn") || lowercase.contains("warning") {
-        Some(Style::new().fg_color(Some(AnsiColor::Yellow.into())))
-    } else if lowercase.contains("debug") || lowercase.contains("trace") {
-        Some(Style::new().dimmed())
-    } else {
-        None
-    };
-
-    match style {
-        Some(style) => format!("{style}{line}{style:#}"),
-        None => line.to_string(),
+        Tone::Success
     }
 }
 
@@ -456,27 +428,21 @@ async fn follow_sources_async(
     max_lines: Option<usize>,
 ) -> Result<(), ExecuteError> {
     let mut muxed_lines = linemux::MuxedLines::new()?;
-    let mut labels = BTreeMap::new();
+    let prefixed = sources.len() > 1;
+    let mut prefixes = BTreeMap::new();
 
     for source in sources {
         let path = muxed_lines
             .add_file(source.active_path.as_std_path())
             .await?;
-        labels.insert(path, source.label.clone());
+        prefixes.insert(path, log_prefix(&source.label, prefixed, color_enabled));
     }
 
-    let prefix = sources.len() > 1;
+    let unknown_source = log_prefix("log", prefixed, color_enabled);
     let mut emitted_lines = 0usize;
     while let Some(line) = muxed_lines.next_line().await? {
-        let label = labels
-            .get(line.source())
-            .map(String::as_str)
-            .unwrap_or("log");
-        writeln!(
-            stdout,
-            "{}",
-            format_log_line(label, line.line(), prefix, color_enabled)
-        )?;
+        let prefix = prefixes.get(line.source()).unwrap_or(&unknown_source);
+        writeln!(stdout, "{prefix}{}", line.line())?;
         stdout.flush()?;
         emitted_lines += 1;
         if let Some(max_lines) = max_lines
@@ -501,8 +467,53 @@ mod tests {
     use std::time::Duration;
 
     use camino_tempfile::tempdir;
+    use insta::assert_snapshot;
 
     use super::*;
+
+    const BODIES: [&str; 4] = [
+        "error: upstream worker:8.3 refused for legacy-shop.test",
+        r#"{"level":"fatal","msg":"allowed memory size exhausted"}"#,
+        "\u{1b}[31mnot PV color\u{1b}[0m [Warning] debug trace",
+        "plain line",
+    ];
+
+    fn render(prefixed: bool, color: bool) -> String {
+        let prefix = log_prefix("gateway:error", prefixed, color);
+        BODIES
+            .iter()
+            .map(|body| format!("{prefix}{body}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+            .replace('\u{1b}', "␛")
+    }
+
+    #[test]
+    fn log_bodies_are_emitted_unchanged_even_with_color() {
+        assert_eq!(log_prefix("daemon", false, true), "");
+        assert_snapshot!(render(false, true), @r#"
+        error: upstream worker:8.3 refused for legacy-shop.test
+        {"level":"fatal","msg":"allowed memory size exhausted"}
+        ␛[31mnot PV color␛[0m [Warning] debug trace
+        plain line
+        "#);
+        assert_snapshot!(render(true, true), @r#"
+        ␛[1mgateway:error␛[0m␛[2m | ␛[0merror: upstream worker:8.3 refused for legacy-shop.test
+        ␛[1mgateway:error␛[0m␛[2m | ␛[0m{"level":"fatal","msg":"allowed memory size exhausted"}
+        ␛[1mgateway:error␛[0m␛[2m | ␛[0m␛[31mnot PV color␛[0m [Warning] debug trace
+        ␛[1mgateway:error␛[0m␛[2m | ␛[0mplain line
+        "#);
+    }
+
+    #[test]
+    fn plain_log_prefixes_carry_no_escapes() {
+        assert_snapshot!(render(true, false), @r#"
+        gateway:error | error: upstream worker:8.3 refused for legacy-shop.test
+        gateway:error | {"level":"fatal","msg":"allowed memory size exhausted"}
+        gateway:error | ␛[31mnot PV color␛[0m [Warning] debug trace
+        gateway:error | plain line
+        "#);
+    }
 
     #[test]
     fn follow_sources_multiplexes_active_files() -> anyhow::Result<()> {

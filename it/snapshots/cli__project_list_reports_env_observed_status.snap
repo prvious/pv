@@ -7,8 +7,8 @@ expression: "(link, list_pending, list_rendered, list_warning, list_failed)"
         code: Some(
             0,
         ),
-        stdout: "Linked acme-store.test -> <tempdir>/Acme Store\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Linked acme-store.test -> <tempdir>/Acme Store\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     CommandOutput {
         code: Some(

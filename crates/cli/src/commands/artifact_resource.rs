@@ -16,8 +16,6 @@ use crate::error::ExecuteError;
 use crate::output::{Output, Streams};
 use crate::progress::DownloadProgressRenderer;
 
-const SYSTEM_SCOPE: &str = "system";
-
 pub(crate) struct ArtifactResourceCommandSpec {
     pub resource_name: &'static str,
     pub display_name: &'static str,
@@ -38,7 +36,7 @@ pub(crate) fn install(
     let adapter = (spec.adapter)()?;
     let commands = resource_commands(&paths, environment)?;
     let jobs_lock = super::acquire_jobs_lock(&paths)?;
-    let progress = DownloadProgressRenderer::new(streams.out.surface().decorated());
+    let progress = DownloadProgressRenderer::new(&streams.err);
     let installed = with_resource_http_client(environment, |client| {
         commands.install_with_progress(&adapter, selector, client, &progress)
     })?;
@@ -46,13 +44,13 @@ pub(crate) fn install(
     drop(jobs_lock);
     let output = &mut streams.out;
 
-    super::write_revoked_latest_warning(&installed, output)?;
+    super::write_revoked_latest_warning(&installed, &mut streams.err)?;
     output.line(&format!(
         "Installed {} track {}",
         spec.display_name,
         installed.track()
     ))?;
-    request_system_reconciliation(&paths, output)?;
+    super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -66,7 +64,7 @@ pub(crate) fn update(
     let adapter = (spec.adapter)()?;
     let commands = resource_commands(&paths, environment)?;
     let jobs_lock = super::acquire_jobs_lock(&paths)?;
-    let progress = DownloadProgressRenderer::new(streams.out.surface().decorated());
+    let progress = DownloadProgressRenderer::new(&streams.err);
     let updated = with_resource_http_client(environment, |client| {
         commands.update_with_progress(&adapter, client, &progress)
     })?;
@@ -74,13 +72,13 @@ pub(crate) fn update(
     drop(jobs_lock);
     let output = &mut streams.out;
 
-    super::write_revoked_latest_warnings(updated.installs(), output)?;
+    super::write_revoked_latest_warnings(updated.installs(), &mut streams.err)?;
     output.line(&format!(
         "Updated {} {} track(s)",
         updated.installs().len(),
         spec.display_name
     ))?;
-    request_system_reconciliation(&paths, output)?;
+    super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -111,7 +109,7 @@ pub(crate) fn uninstall(
         spec.display_name,
         removal.track()
     ))?;
-    request_system_reconciliation(&paths, output)?;
+    super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -397,17 +395,6 @@ fn with_resource_http_client<T>(
 
     let client = UreqResourceHttpClient::default();
     Ok(operation(&client)?)
-}
-
-fn request_system_reconciliation(
-    paths: &PvPaths,
-    output: &mut Output<'_>,
-) -> Result<(), ExecuteError> {
-    if let Some(job) = super::submit_reconciliation(paths, SYSTEM_SCOPE, output)? {
-        output.line(&format!("System reconciliation requested: {}", job.id))?;
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

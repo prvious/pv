@@ -716,7 +716,7 @@ mod update_tests {
         let daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert!(output.stderr.is_empty());
+        assert!(!output.stderr.contains("error:"));
         assert_eq!(
             layout.active_release()?,
             Some(CURRENT_APP_VERSION.to_string())
@@ -1295,7 +1295,7 @@ mod update_tests {
         let daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert!(output.stderr.is_empty());
+        assert!(!output.stderr.contains("error:"));
         assert_eq!(
             daemon_requests,
             vec![json!({
@@ -1524,7 +1524,7 @@ mod update_tests {
             })]
         );
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert!(output.stderr.is_empty());
+        assert!(!output.stderr.contains("error:"));
         assert_eq!(
             layout.active_release()?,
             Some(CURRENT_APP_VERSION.to_string())
@@ -1794,7 +1794,7 @@ mod update_tests {
             })]
         );
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert!(output.stderr.is_empty());
+        assert!(!output.stderr.contains("error:"));
         assert_eq!(
             layout.active_release()?,
             Some(CURRENT_APP_VERSION.to_string())

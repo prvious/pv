@@ -300,11 +300,12 @@ fn command_blocked_during_update(command: &Command) -> bool {
 }
 
 const RECONCILE_KIND: &str = "reconcile";
+const SYSTEM_SCOPE: &str = "system";
 const JOBS_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 const DEFERRED_RECONCILIATION_WARNING: &str =
-    "warning: reconciliation deferred while another PV mutation holds the jobs lock";
+    "reconciliation deferred while another PV mutation holds the jobs lock";
 const DAEMON_UNAVAILABLE_WARNING: &str =
-    "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it";
+    "PV daemon is not running; reconciliation will run after `pv setup` starts it";
 
 fn acquire_jobs_lock(paths: &PvPaths) -> Result<state::JobsLock, ExecuteError> {
     state::JobsLock::acquire(paths).map_err(coordination_lock_error)
@@ -315,18 +316,18 @@ fn acquire_jobs_lock(paths: &PvPaths) -> Result<state::JobsLock, ExecuteError> {
 /// The command releases `jobs.lock` before notifying the daemon, so a competing
 /// mutation can win the handoff and make the daemon reject this request. Retry
 /// that specific rejection until the request is admitted instead of losing the
-/// reconciliation for committed state.
+/// reconciliation for committed state. Warnings go to `stderr`.
 fn submit_reconciliation(
     paths: &PvPaths,
     scope: &str,
-    output: &mut Output<'_>,
+    stderr: &mut Output<'_>,
 ) -> Result<Option<::daemon::SubmittedJob>, ExecuteError> {
     let mut deferred = false;
     loop {
         match ::daemon::submit_job_blocking(paths.clone(), RECONCILE_KIND, scope) {
             Ok(job) => return Ok(Some(job)),
             Err(::daemon::DaemonError::Io(error)) if daemon_is_unavailable(&error) => {
-                output.line(DAEMON_UNAVAILABLE_WARNING)?;
+                stderr.warning(DAEMON_UNAVAILABLE_WARNING)?;
 
                 return Ok(None);
             }
@@ -335,13 +336,76 @@ fn submit_reconciliation(
             {
                 if !deferred {
                     deferred = true;
-                    output.line(DEFERRED_RECONCILIATION_WARNING)?;
+                    stderr.warning(DEFERRED_RECONCILIATION_WARNING)?;
                 }
                 std::thread::sleep(JOBS_LOCK_RETRY_INTERVAL);
             }
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+/// Requests system reconciliation for committed state. The job line is part
+/// of the command's result; warnings go to stderr.
+fn request_system_reconciliation(
+    paths: &PvPaths,
+    streams: &mut Streams<'_>,
+) -> Result<(), ExecuteError> {
+    if let Some(job) = submit_reconciliation(paths, SYSTEM_SCOPE, &mut streams.err)? {
+        streams
+            .out
+            .line(&format!("System reconciliation requested: {}", job.id))?;
+    }
+
+    Ok(())
+}
+
+/// Requests reconciliation of one Project for committed state.
+fn request_project_reconciliation(
+    paths: &PvPaths,
+    project: &state::ProjectRecord,
+    streams: &mut Streams<'_>,
+) -> Result<(), ExecuteError> {
+    let scope = format!("project:{}", project.id);
+    if let Some(job) = submit_reconciliation(paths, &scope, &mut streams.err)? {
+        streams.out.line(&format!(
+            "Queued reconciliation {} for {}",
+            job.id,
+            project_display_name(project)
+        ))?;
+    }
+
+    Ok(())
+}
+
+/// The name users know a Project by: its slug when resource-only, otherwise
+/// its primary hostname.
+fn project_display_name(project: &state::ProjectRecord) -> &str {
+    if project.mode == state::ProjectMode::ResourceOnly {
+        return project.slug.as_str();
+    }
+
+    project
+        .primary_hostname
+        .as_deref()
+        .unwrap_or(project.slug.as_str())
+}
+
+fn write_php_pair_install_lines(
+    installed: &resources::PhpPairInstall,
+    streams: &mut Streams<'_>,
+) -> Result<(), ExecuteError> {
+    write_revoked_latest_warning(installed.php(), &mut streams.err)?;
+    write_revoked_latest_warning(installed.frankenphp(), &mut streams.err)?;
+    streams
+        .out
+        .line(&format!("Installed PHP track {}", installed.php().track()))?;
+    streams.out.line(&format!(
+        "Installed FrankenPHP track {}",
+        installed.frankenphp().track()
+    ))?;
+
+    Ok(())
 }
 
 fn daemon_is_unavailable(error: &io::Error) -> bool {
@@ -370,10 +434,10 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
 
 fn write_revoked_latest_warnings(
     installs: &[resources::ManagedResourceInstall],
-    output: &mut Output<'_>,
+    stderr: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     for install in installs {
-        write_revoked_latest_warning(install, output)?;
+        write_revoked_latest_warning(install, stderr)?;
     }
 
     Ok(())
@@ -381,14 +445,14 @@ fn write_revoked_latest_warnings(
 
 fn write_revoked_latest_warning(
     install: &resources::ManagedResourceInstall,
-    output: &mut Output<'_>,
+    stderr: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     let Some(revoked_latest) = install.revoked_latest() else {
         return Ok(());
     };
 
-    output.line(&format!(
-        "warning: newest {} artifact {} for track {} was revoked ({}); installed fallback {}",
+    stderr.warning(&format!(
+        "newest {} artifact {} for track {} was revoked ({}); installed fallback {}",
         install.resource_name(),
         revoked_latest.artifact_version(),
         install.track(),

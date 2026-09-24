@@ -9,8 +9,8 @@ expression: "(link, unlink, env_before)"
                 0,
             ),
         ),
-        stdout: "Linked acme (resource-only) -> <tempdir>/acme\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Linked acme (resource-only) -> <tempdir>/acme\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     RunOutput {
         exit_code: ExitCode(
@@ -18,8 +18,8 @@ expression: "(link, unlink, env_before)"
                 0,
             ),
         ),
-        stdout: "Unlinked acme -> <tempdir>/acme\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Unlinked acme -> <tempdir>/acme\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_NAME=acme\n# <<< PV MANAGED\n",
 )

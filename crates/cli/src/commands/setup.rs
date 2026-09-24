@@ -147,10 +147,7 @@ pub(crate) fn setup(
         return Ok(ExitCode::FAILURE);
     }
 
-    let mut progress = DownloadProgressRenderer::with_output(
-        environment.stdout_is_terminal(),
-        streams.out.writer(),
-    );
+    let mut progress = DownloadProgressRenderer::with_output(&mut streams.err);
     let completed =
         ::daemon::run_job_with_events_blocking(paths, "reconcile", "system", &mut progress)?;
     drop(progress);
@@ -186,8 +183,8 @@ fn refresh_setup_artifact_manifest(
         with_resource_http_client(environment, |client| cache.refresh(&manifest_url, client))?;
 
     if let ArtifactManifestSource::Cached { reason } = refresh.source() {
-        streams.out.line(&format!(
-            "warning: artifact manifest refresh failed ({reason}); using cached manifest at {}",
+        streams.err.warning(&format!(
+            "artifact manifest refresh failed ({reason}); using cached manifest at {}",
             cache.path()
         ))?;
     }
@@ -451,14 +448,13 @@ fn ensure_privileged_helper(
         candidate.metadata.protocol_version(),
     )?;
     let status = install_outcome.status();
-    let cleanup_warning = install_outcome
-        .cleanup_warning()
-        .map(|warning| format!("; warning: {warning}"))
-        .unwrap_or_default();
     streams.out.line(&format!(
-        "Installed privileged helper {} (protocol {}){cleanup_warning}",
+        "Installed privileged helper {} (protocol {})",
         status.version, status.protocol_version,
     ))?;
+    if let Some(warning) = install_outcome.cleanup_warning() {
+        streams.err.warning(warning)?;
+    }
 
     Ok(ExitCode::SUCCESS)
 }

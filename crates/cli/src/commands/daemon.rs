@@ -9,7 +9,6 @@ use crate::error::{CliError, ExecuteError};
 use crate::output::{Output, Streams};
 
 const RECONCILE_KIND: &str = "reconcile";
-const SYSTEM_SCOPE: &str = "system";
 
 pub(crate) fn enable(
     environment: &impl Environment,
@@ -215,7 +214,7 @@ fn submit_system_reconciliation(
     paths: PvPaths,
     output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
-    let submitted = ::daemon::submit_job_blocking(paths, RECONCILE_KIND, SYSTEM_SCOPE)?;
+    let submitted = ::daemon::submit_job_blocking(paths, RECONCILE_KIND, super::SYSTEM_SCOPE)?;
     output.line(&format!(
         "System reconciliation requested: {}",
         submitted.id

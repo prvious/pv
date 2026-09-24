@@ -73,7 +73,7 @@ fn unlink_removes_project_tls_directory() -> anyhow::Result<()> {
     let database = Database::open(&paths)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert!(database.project_by_id(&project.id)?.is_none());
     assert!(!path_exists(&project_tls_dir));
     assert!(path_exists(&project.path));
