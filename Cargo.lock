@@ -2766,6 +2766,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mysql-dump"
+version = "0.2.4"
+dependencies = [
+ "squonk",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "ndk-context"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3610,7 +3618,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.3",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -4652,6 +4660,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "squonk"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2396bcc4db37292777e1bc9c1ae9123b3831d6d344784326cf4f601dd6e0e0b0"
+dependencies = [
+ "squonk-ast",
+ "thin-vec",
+]
+
+[[package]]
+name = "squonk-ast"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c1e65a88ac4d06b4be1e56ee3e822d91cc35c9f4de8aedafb77ce1f93af5af0"
+dependencies = [
+ "thin-vec",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4810,6 +4837,12 @@ dependencies = [
  "unicode-linebreak",
  "unicode-width",
 ]
+
+[[package]]
+name = "thin-vec"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6a4b9ba8738cb4a4f399d37e266becfd475e75eb73425b87a05a2f2039ba63e"
 
 [[package]]
 name = "thiserror"

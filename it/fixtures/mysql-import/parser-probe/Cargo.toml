@@ -1,0 +1,12 @@
+[package]
+name = "pv350-parser-probe"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+sqlparser = "=0.63.0"
+qusql-parse = "=0.11.0"
+sqlglot-rust = "=0.10.30"
+squonk = { version = "=3.0.0", features = ["mysql"] }

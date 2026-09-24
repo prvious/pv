@@ -10,6 +10,7 @@ members = [
     "crates/cli",
     "crates/config",
     "crates/daemon",
+    "crates/mysql-dump",
     "crates/platform",
     "crates/privileged-helper",
     "crates/protocol",
@@ -76,6 +77,7 @@ sha1 = "0.11"
 sha2 = "0.10"
 socket2 = { version = "0.6.3", features = ["all"] }
 sqlx = { version = "0.9.0", default-features = false, features = ["mysql", "postgres", "runtime-tokio", "tls-rustls"] }
+squonk = { version = "=3.0.0", features = ["mysql"] }
 tar = "0.4.45"
 textwrap = "0.16.2"
 thiserror = "2"

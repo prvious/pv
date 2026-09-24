@@ -1,0 +1,4 @@
+8.0.46/*.sql -whitespace
+8.4.9/*.sql -whitespace
+9.7.0/*.sql -whitespace
+phpmyadmin-crlf.sql -whitespace
