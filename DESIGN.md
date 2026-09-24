@@ -1156,7 +1156,11 @@ An explicit, confirmed `pv mysql:import` command may import user-supplied SQL du
 
 MySQL import accepts multi-database dumps. A source database matching a declared allocation uses that allocation's persisted `generated_name`. An undeclared user database is created with the normal Project-namespaced allocation naming rule, while `pv.yml` and `pv.db` remain unchanged; the plan warns that it is unmanaged and shows the allocation snippet for later adoption. Known system-schema sections are skipped explicitly, and server-scoped statements outside those sections fail preflight.
 
-PV starts its local MySQL tracks with binary logging disabled. This lets a database-scoped import account create triggers and stored functions without granting it server-wide privileges or temporarily changing a global trust setting. PV does not provide MySQL replication or binary-log backup commands.
+MySQL import matches source database names exactly as written. A source name that is not a valid PV allocation name requires an explicit `--map`. For a plain dump without database-routing SQL, PV may use the `mysqldump` database header; a headerless dump requires an explicit target mapping. Import accepts connection-scoped setup used by `mysqldump` and phpMyAdmin, such as `SET NAMES` and `FOREIGN_KEY_CHECKS`, but preflight rejects global settings, server-side file access, replication, account changes, dynamic SQL, and unknown syntax.
+
+MySQL import uses the track's existing `pv_root` account and does not create a separate import owner. The complete dump must pass a positive preflight allowlist before any SQL runs. Source `DEFINER` accounts are normalized to `pv_root` only for stored objects whose complete definition passes preflight; unsupported stored-object syntax fails before execution.
+
+PV starts its local MySQL tracks with binary logging disabled. PV does not provide MySQL replication or binary-log backup commands. This setting is not an import security boundary; the current MySQL account still has server-wide privileges.
 
 PV creates and checks SQL Resource allocation databases through `sqlx` for MySQL and Postgres rather than shelling out to managed `mysql` or `psql` binaries. PV uses `sqlx` only for PV-owned admin operations such as readiness checks and database creation, not for application schema or migrations.
 
