@@ -18,7 +18,8 @@ use clap::{CommandFactory, FromArgMatches};
 pub use environment::{Environment, ProcessEnvironment};
 pub use error::CliError;
 use error::ExecuteError;
-pub use output::{Output, OutputMode};
+pub use output::{Output, Surface};
+use output::{Presentation, Streams};
 
 pub fn run<I, Argument>(
     args: I,
@@ -43,8 +44,8 @@ where
     Argument: Into<OsString>,
 {
     let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
-    let output_mode = OutputMode::from_inputs(&args, environment);
-    let mut clap_command = Cli::command().color(clap_color(output_mode));
+    let presentation = Presentation::detect(&args, environment);
+    let mut clap_command = Cli::command().color(clap_color(presentation));
     let matches = match clap_command.try_get_matches_from_mut(&args) {
         Ok(matches) => matches,
         Err(error) => {
@@ -62,75 +63,29 @@ where
         }
     };
 
-    finish_execution(
-        commands::execute(cli, environment, stdout, stderr),
-        output_mode,
-        stderr,
-    )
+    let mut streams = Streams::new(stdout, stderr, presentation);
+    let result = commands::execute(cli, environment, &mut streams);
+
+    finish_execution(result, &mut streams.err)
 }
 
 fn finish_execution(
     result: Result<ExitCode, ExecuteError>,
-    output_mode: OutputMode,
-    stderr: &mut impl Write,
+    stderr: &mut Output<'_>,
 ) -> Result<ExitCode> {
-    match result {
-        Ok(exit_code) => Ok(exit_code),
-        Err(ExecuteError::User(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
+    let message = match result {
+        Ok(exit_code) => return Ok(exit_code),
+        Err(ExecuteError::Daemon(error)) => return Err(error.into()),
+        Err(ExecuteError::State(error)) => return Err(error.into()),
+        Err(error) => error.to_string(),
+    };
+    stderr.error(&message)?;
 
-            Ok(ExitCode::FAILURE)
-        }
-        Err(ExecuteError::Config(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        Err(ExecuteError::Io(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        Err(ExecuteError::Json(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        Err(ExecuteError::Platform(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        Err(ExecuteError::Resources(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        Err(ExecuteError::ManagedResourceCommand(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        Err(ExecuteError::SelfUpdate(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        Err(ExecuteError::Daemon(error)) => Err(error.into()),
-        Err(ExecuteError::State(error)) => Err(error.into()),
-    }
+    Ok(ExitCode::FAILURE)
 }
 
-fn clap_color(output_mode: OutputMode) -> clap::ColorChoice {
-    if output_mode.no_color() {
+fn clap_color(presentation: Presentation) -> clap::ColorChoice {
+    if !presentation.stderr.color() {
         clap::ColorChoice::Never
     } else {
         clap::ColorChoice::Auto
@@ -170,15 +125,14 @@ mod tests {
 
     use super::finish_execution;
     use crate::error::ExecuteError;
-    use crate::output::OutputMode;
+    use crate::output::{Output, Surface};
 
     #[test]
     fn finish_execution_formats_io_errors() -> anyhow::Result<()> {
         let mut stderr = Vec::new();
         let exit_code = finish_execution(
             Err(ExecuteError::Io(io::Error::other("stdout closed"))),
-            OutputMode::plain(),
-            &mut stderr,
+            &mut Output::new(&mut stderr, Surface::plain()),
         )?;
 
         assert_eq!(exit_code, ExitCode::FAILURE);

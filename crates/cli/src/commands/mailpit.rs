@@ -1,5 +1,4 @@
 use std::collections::BTreeSet;
-use std::io::Write;
 use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
@@ -8,7 +7,7 @@ use state::{Database, PvPaths, RuntimeObservedStatus, RuntimeSubject, StateError
 use crate::args::{ListArgs, MailpitInstallArgs, MailpitUninstallArgs};
 use crate::environment::Environment;
 use crate::error::ExecuteError;
-use crate::output::{Output, OutputMode};
+use crate::output::Streams;
 
 const NOT_RUNNING_MESSAGE: &str = "Mailpit is not running for any linked Project";
 
@@ -22,22 +21,22 @@ const SPEC: super::artifact_resource::ArtifactResourceCommandSpec =
 pub(crate) fn install(
     args: MailpitInstallArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    super::artifact_resource::install(SPEC, args.track.as_deref(), environment, stdout)
+    super::artifact_resource::install(SPEC, args.track.as_deref(), environment, streams)
 }
 
 pub(crate) fn update(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    super::artifact_resource::update(SPEC, environment, stdout)
+    super::artifact_resource::update(SPEC, environment, streams)
 }
 
 pub(crate) fn uninstall(
     args: MailpitUninstallArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     super::artifact_resource::uninstall(
         SPEC,
@@ -45,27 +44,26 @@ pub(crate) fn uninstall(
         args.prune,
         args.force,
         environment,
-        stdout,
+        streams,
     )
 }
 
 pub(crate) fn list(
     args: ListArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    super::artifact_resource::list(SPEC, args, environment, stdout)
+    super::artifact_resource::list(SPEC, args, environment, streams)
 }
 
 pub(crate) fn open(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
     let Some(url) = running_dashboard_url(&database)? else {
-        let mut output = Output::new(stdout, OutputMode::plain());
-        output.line(NOT_RUNNING_MESSAGE)?;
+        streams.out.line(NOT_RUNNING_MESSAGE)?;
 
         return Ok(ExitCode::SUCCESS);
     };

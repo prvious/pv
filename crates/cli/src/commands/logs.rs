@@ -11,33 +11,30 @@ use state::{Database, PvPaths, StateError};
 use crate::args::LogsArgs;
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, OutputMode};
+use crate::output::{Output, Streams};
 
 const MAX_LINE_COUNT: usize = 5000;
 
 pub(crate) fn run(
     args: LogsArgs,
-    no_color: bool,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let line_count = line_count(args.lines)?;
     let paths = pv_paths(environment)?;
     let selection = select_sources(&args, &paths)?;
-    let color_enabled =
-        !no_color && environment.var_os("NO_COLOR").is_none() && environment.stdout_is_terminal();
-    let mut output = Output::new(stdout, OutputMode::from_no_color(no_color));
+    let color_enabled = streams.out.surface().color();
 
     write_initial_tail(
         &selection.sources,
         line_count,
         &selection.empty_message,
         color_enabled,
-        &mut output,
+        &mut streams.out,
     )?;
 
     if args.follow {
-        follow_sources(&selection.sources, color_enabled, stdout)?;
+        follow_sources(&selection.sources, color_enabled, streams.out.writer())?;
     }
 
     Ok(ExitCode::SUCCESS)
@@ -277,7 +274,7 @@ fn write_initial_tail(
     line_count: usize,
     empty_message: &str,
     color_enabled: bool,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     let tails = sources
         .iter()
@@ -443,7 +440,7 @@ fn color_severity(line: &str, color_enabled: bool) -> String {
 fn follow_sources(
     sources: &[LogSource],
     color_enabled: bool,
-    stdout: &mut impl Write,
+    stdout: &mut dyn Write,
 ) -> Result<(), ExecuteError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -455,7 +452,7 @@ fn follow_sources(
 async fn follow_sources_async(
     sources: &[LogSource],
     color_enabled: bool,
-    stdout: &mut impl Write,
+    stdout: &mut dyn Write,
     max_lines: Option<usize>,
 ) -> Result<(), ExecuteError> {
     let mut muxed_lines = linemux::MuxedLines::new()?;

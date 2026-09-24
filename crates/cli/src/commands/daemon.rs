@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
@@ -7,28 +6,28 @@ use state::{PvPaths, StateError};
 
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, OutputMode};
+use crate::output::{Output, Streams};
 
 const RECONCILE_KIND: &str = "reconcile";
 const SYSTEM_SCOPE: &str = "system";
 
 pub(crate) fn enable(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    enable_inner(environment, stdout, true)
+    enable_inner(environment, streams, true)
 }
 
 pub(crate) fn enable_without_reconciliation(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    enable_inner(environment, stdout, false)
+    enable_inner(environment, streams, false)
 }
 
 fn enable_inner(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
     request_reconciliation: bool,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
@@ -37,16 +36,16 @@ fn enable_inner(
     let config = launch_agent_config(&paths);
     let path = launch_agent_path(environment)?;
     let state = platform::inspect_launch_agent_file(&path, Some(&config));
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     match state {
         LaunchAgentFileState::Current { .. } => {
             environment.kickstart_launch_agent()?;
             output.line("LaunchAgent already installed")?;
             output.line("Daemon started")?;
-            wait_for_daemon(paths.clone(), &mut output)?;
+            wait_for_daemon(paths.clone(), output)?;
             if request_reconciliation {
-                submit_system_reconciliation(paths, &mut output)?;
+                submit_system_reconciliation(paths, output)?;
             }
 
             Ok(ExitCode::SUCCESS)
@@ -56,7 +55,7 @@ fn enable_inner(
             &path,
             &config,
             paths,
-            &mut output,
+            output,
             "Daemon started",
             request_reconciliation,
         ),
@@ -67,7 +66,7 @@ fn enable_inner(
                 &path,
                 &config,
                 paths,
-                &mut output,
+                output,
                 "Daemon started",
                 request_reconciliation,
             )
@@ -89,11 +88,11 @@ fn enable_inner(
 
 pub(crate) fn disable(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let path = launch_agent_path(environment)?;
     let state = platform::inspect_launch_agent_file(&path, None);
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     match state {
         LaunchAgentFileState::Missing { .. } => {
@@ -127,7 +126,7 @@ pub(crate) fn disable(
 
 pub(crate) fn restart(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
@@ -135,13 +134,13 @@ pub(crate) fn restart(
     let config = launch_agent_config(&paths);
     let path = launch_agent_path(environment)?;
     let state = platform::inspect_launch_agent_file(&path, Some(&config));
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     match state {
         LaunchAgentFileState::Current { .. } => {
             environment.kickstart_launch_agent()?;
             output.line("Daemon restarted")?;
-            wait_for_daemon_and_submit_reconciliation(paths, &mut output)?;
+            wait_for_daemon_and_submit_reconciliation(paths, output)?;
 
             Ok(ExitCode::SUCCESS)
         }
@@ -150,7 +149,7 @@ pub(crate) fn restart(
             &path,
             &config,
             paths,
-            &mut output,
+            output,
             "Daemon restarted",
             true,
         ),
@@ -161,7 +160,7 @@ pub(crate) fn restart(
                 &path,
                 &config,
                 paths,
-                &mut output,
+                output,
                 "Daemon restarted",
                 true,
             )
@@ -199,16 +198,13 @@ fn launch_agent_config(paths: &PvPaths) -> LaunchAgentConfig {
 
 fn wait_for_daemon_and_submit_reconciliation(
     paths: PvPaths,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     wait_for_daemon(paths.clone(), output)?;
     submit_system_reconciliation(paths, output)
 }
 
-fn wait_for_daemon(
-    paths: PvPaths,
-    output: &mut Output<'_, impl Write>,
-) -> Result<(), ExecuteError> {
+fn wait_for_daemon(paths: PvPaths, output: &mut Output<'_>) -> Result<(), ExecuteError> {
     ::daemon::wait_until_healthy_blocking(paths)?;
     output.line("Daemon healthy")?;
 
@@ -217,7 +213,7 @@ fn wait_for_daemon(
 
 fn submit_system_reconciliation(
     paths: PvPaths,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     let submitted = ::daemon::submit_job_blocking(paths, RECONCILE_KIND, SYSTEM_SCOPE)?;
     output.line(&format!(
@@ -233,7 +229,7 @@ fn install_and_start_launch_agent(
     path: &Utf8PathBuf,
     config: &LaunchAgentConfig,
     paths: PvPaths,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
     started_message: &str,
     request_reconciliation: bool,
 ) -> Result<ExitCode, ExecuteError> {

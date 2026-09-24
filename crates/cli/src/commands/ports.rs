@@ -1,5 +1,4 @@
 use std::io;
-use std::io::Write;
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -12,7 +11,7 @@ use state::{
 use crate::args::PortsStatusArgs;
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, OutputMode};
+use crate::output::{Output, Streams};
 
 use super::pf_diagnostics::PfRoutingDiagnostic;
 
@@ -21,7 +20,7 @@ const LOW_PORTS: [u16; 2] = [80, 443];
 pub(crate) fn status(
     args: PortsStatusArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let database = Database::open_read_only(&paths)?;
@@ -33,13 +32,12 @@ pub(crate) fn status(
     };
 
     if args.json {
-        serde_json::to_writer(&mut *stdout, &diagnostic)?;
-        writeln!(stdout)?;
+        streams.out.json(&diagnostic)?;
 
         return Ok(exit_code);
     }
 
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     output.line("Port redirect status")?;
     output.line(&format!("State: {}", diagnostic.state.as_str()))?;
@@ -68,12 +66,12 @@ fn display_port(port: Option<u16>) -> String {
 
 pub(crate) fn install(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let listening_ports = environment.loopback_tcp_listener_ports()?;
     let low_port_conflicts = low_port_conflicts(&listening_ports);
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     if !low_port_conflicts.is_empty() {
         output.line("Port redirect preparation failed")?;
@@ -135,7 +133,7 @@ pub(crate) fn install(
     ))?;
 
     if let Some(exit_code) =
-        write_pf_install_blocker(&mut output, &system_anchor_state, &system_reference_state)?
+        write_pf_install_blocker(output, &system_anchor_state, &system_reference_state)?
     {
         release_new_gateway_ports(&mut database, had_http_assignment, had_https_assignment)?;
 
@@ -279,7 +277,7 @@ fn release_new_gateway_ports(
 
 pub(crate) fn uninstall(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let prepared_anchor_path = paths.pf_anchor_config();
@@ -291,23 +289,23 @@ pub(crate) fn uninstall(
     let deleted_reference = delete_optional_file(&prepared_reference_path)?;
     let system_anchor_state = platform::inspect_pf_anchor_file(&system_anchor_path, None);
     let system_reference_state = platform::inspect_pf_conf_reference(&system_pf_conf_path, None);
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     write_delete_result(
-        &mut output,
+        output,
         "prepared pf anchor",
         &prepared_anchor_path,
         deleted_anchor,
     )?;
     write_delete_result(
-        &mut output,
+        output,
         "prepared pf.conf reference",
         &prepared_reference_path,
         deleted_reference,
     )?;
 
     if let Some(exit_code) =
-        write_pf_uninstall_blocker(&mut output, &system_anchor_state, &system_reference_state)?
+        write_pf_uninstall_blocker(output, &system_anchor_state, &system_reference_state)?
     {
         return Ok(exit_code);
     }
@@ -343,7 +341,7 @@ fn pf_config_from_assignments(assignments: &GatewayPortAssignments) -> PfRedirec
 }
 
 fn write_pf_install_blocker(
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
     anchor_state: &PfFileState<PfRedirectConfig>,
     reference_state: &PfFileState<PfConfReference>,
 ) -> io::Result<Option<ExitCode>> {
@@ -383,7 +381,7 @@ fn write_pf_install_blocker(
 }
 
 fn write_pf_uninstall_blocker(
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
     anchor_state: &PfFileState<PfRedirectConfig>,
     reference_state: &PfFileState<PfConfReference>,
 ) -> io::Result<Option<ExitCode>> {
@@ -423,7 +421,7 @@ fn write_pf_uninstall_blocker(
 }
 
 fn write_delete_result(
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
     label: &str,
     path: &Utf8Path,
     deleted: bool,

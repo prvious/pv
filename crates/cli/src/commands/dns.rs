@@ -1,5 +1,4 @@
 use std::io;
-use std::io::Write;
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -8,11 +7,11 @@ use state::{Database, PortOwner, PortRequest, PvPaths, StateError};
 
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, OutputMode};
+use crate::output::{Output, Streams};
 
 pub(crate) fn status(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let prepared_path = paths.resolver_config();
@@ -20,32 +19,32 @@ pub(crate) fn status(
     let prepared_state = platform::inspect_resolver_file(&prepared_path, None);
     let expected_config = resolver_config_from_state(&prepared_state);
     let system_state = environment.inspect_resolver_file(&system_path, expected_config.as_ref());
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     output.line("DNS resolver status")?;
-    write_resolver_state(&mut output, "Prepared resolver config", &prepared_state)?;
-    write_resolver_state(&mut output, "System resolver config", &system_state)?;
+    write_resolver_state(output, "Prepared resolver config", &prepared_state)?;
+    write_resolver_state(output, "System resolver config", &system_state)?;
 
     Ok(ExitCode::SUCCESS)
 }
 
 pub(crate) fn install(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    install_inner(environment, stdout, true)
+    install_inner(environment, streams, true)
 }
 
 pub(crate) fn install_config_only(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    install_inner(environment, stdout, false)
+    install_inner(environment, streams, false)
 }
 
 fn install_inner(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
     ensure_daemon: bool,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
@@ -66,7 +65,7 @@ fn install_inner(
     }
 
     let system_state = environment.inspect_resolver_file(&system_path, Some(&config));
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     output.line("Prepared PV DNS resolver config")?;
     output.line(&format!("  path: {prepared_path}"))?;
@@ -96,7 +95,7 @@ fn install_inner(
     }
 
     if ensure_daemon {
-        let exit_code = ensure_daemon_running(&paths, &mut output)?;
+        let exit_code = ensure_daemon_running(&paths, output)?;
         if exit_code != ExitCode::SUCCESS {
             release_new_dns_port(&mut database, had_dns_assignment)?;
 
@@ -139,7 +138,7 @@ fn release_new_dns_port(
 
 fn ensure_daemon_running(
     paths: &PvPaths,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let daemon_socket = paths.daemon_socket();
 
@@ -169,7 +168,7 @@ fn ensure_daemon_running(
 
 pub(crate) fn uninstall(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let mut database = Database::open(&paths)?;
@@ -177,7 +176,7 @@ pub(crate) fn uninstall(
     let system_path = resolver_test_path(environment)?;
     let deleted_prepared = delete_optional_file(&prepared_path)?;
     let system_state = environment.inspect_resolver_file(&system_path, None);
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     if deleted_prepared {
         output.line(&format!(
@@ -222,7 +221,7 @@ pub(crate) fn uninstall(
 }
 
 fn write_resolver_state(
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
     label: &str,
     state: &ResolverFileState,
 ) -> io::Result<()> {

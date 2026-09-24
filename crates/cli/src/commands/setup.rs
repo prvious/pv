@@ -1,5 +1,4 @@
 use std::io;
-use std::io::Write;
 use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -16,7 +15,7 @@ use crate::args::{SetupArgs, UninstallArgs};
 use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
 use crate::helper_release::{HelperReleaseMetadata, metadata_path as helper_metadata_path};
-use crate::output::{Output, OutputMode};
+use crate::output::{Output, Streams};
 use crate::progress::DownloadProgressRenderer;
 use crate::shell::Shell;
 
@@ -85,24 +84,23 @@ impl SetupResourceDefault {
 pub(crate) fn setup(
     args: SetupArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
 
-    {
-        let mut output = Output::new(stdout, OutputMode::plain());
-        output.line("PV setup")?;
-        output.line(&format!("Ensured PV state layout: {}", paths.root()))?;
-    }
+    streams.out.line("PV setup")?;
+    streams
+        .out
+        .line(&format!("Ensured PV state layout: {}", paths.root()))?;
     install_command_shims(environment, &paths)?;
-    let default_resource_plan = refresh_setup_artifact_manifest(environment, &paths, stdout)?;
+    let default_resource_plan = refresh_setup_artifact_manifest(environment, &paths, streams)?;
 
     let helper_candidate = privileged_helper_candidate(environment, &paths)?;
     let helper_installation_required =
         privileged_helper_installation_required(environment, &helper_candidate)?;
     if args.non_interactive && helper_installation_required {
-        let mut output = Output::new(stdout, OutputMode::plain());
+        let output = &mut streams.out;
         output.line(
             "pv setup --non-interactive requires macOS authentication to install or replace the privileged helper.",
         )?;
@@ -112,49 +110,51 @@ pub(crate) fn setup(
     }
     if helper_installation_required
         && !args.yes
-        && !confirm_privileged_helper_installation(environment, stdout)?
+        && !confirm_privileged_helper_installation(environment, streams)?
     {
         return Ok(ExitCode::FAILURE);
     }
 
     let _helper_lifecycle_lock = state::HelperLifecycleLock::acquire(&paths)?;
-    if ensure_privileged_helper(environment, &paths, helper_installation_required, stdout)?
+    if ensure_privileged_helper(environment, &paths, helper_installation_required, streams)?
         != ExitCode::SUCCESS
     {
         return Ok(ExitCode::FAILURE);
     }
 
-    if configure_shell_integration(&args, environment, &paths, stdout)? != ExitCode::SUCCESS {
+    if configure_shell_integration(&args, environment, &paths, streams)? != ExitCode::SUCCESS {
         return Ok(ExitCode::FAILURE);
     }
-    if !run_required_step("DNS resolver setup", stdout, |stdout| {
-        dns::install_config_only(environment, stdout)
+    if !run_required_step("DNS resolver setup", streams, |streams| {
+        dns::install_config_only(environment, streams)
     })? {
         return Ok(ExitCode::FAILURE);
     }
-    if !run_required_step("port redirect setup", stdout, |stdout| {
-        ports::install(environment, stdout)
+    if !run_required_step("port redirect setup", streams, |streams| {
+        ports::install(environment, streams)
     })? {
         return Ok(ExitCode::FAILURE);
     }
-    if !run_required_step("CA trust setup", stdout, |stdout| {
-        ca::trust(environment, stdout)
+    if !run_required_step("CA trust setup", streams, |streams| {
+        ca::trust(environment, streams)
     })? {
         return Ok(ExitCode::FAILURE);
     }
     record_default_resource_desired_state(&paths, &default_resource_plan.plans)?;
-    if !run_required_step("daemon registration", stdout, |stdout| {
-        daemon_command::enable_without_reconciliation(environment, stdout)
+    if !run_required_step("daemon registration", streams, |streams| {
+        daemon_command::enable_without_reconciliation(environment, streams)
     })? {
         return Ok(ExitCode::FAILURE);
     }
 
-    let mut progress =
-        DownloadProgressRenderer::with_output(environment.stdout_is_terminal(), stdout);
+    let mut progress = DownloadProgressRenderer::with_output(
+        environment.stdout_is_terminal(),
+        streams.out.writer(),
+    );
     let completed =
         ::daemon::run_job_with_events_blocking(paths, "reconcile", "system", &mut progress)?;
     drop(progress);
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     output.line(&format!(
         "System reconciliation completed: {}",
@@ -177,7 +177,7 @@ pub(crate) fn setup(
 fn refresh_setup_artifact_manifest(
     environment: &impl Environment,
     paths: &PvPaths,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<SetupResourcePlans, ExecuteError> {
     let cache = ArtifactManifestCache::new(paths.downloads());
     let manifest_url = artifact_manifest_url(environment);
@@ -186,8 +186,7 @@ fn refresh_setup_artifact_manifest(
         with_resource_http_client(environment, |client| cache.refresh(&manifest_url, client))?;
 
     if let ArtifactManifestSource::Cached { reason } = refresh.source() {
-        let mut output = Output::new(stdout, OutputMode::plain());
-        output.line(&format!(
+        streams.out.line(&format!(
             "warning: artifact manifest refresh failed ({reason}); using cached manifest at {}",
             cache.path()
         ))?;
@@ -328,76 +327,68 @@ struct CommandShim {
 pub(crate) fn uninstall(
     args: UninstallArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
 
-    if args.prune && !args.force && !confirm_prune(environment, stdout)? {
+    if args.prune && !args.force && !confirm_prune(environment, streams)? {
         return Ok(ExitCode::FAILURE);
     }
 
-    {
-        let mut output = Output::new(stdout, OutputMode::plain());
-        output.line("PV uninstall")?;
-    }
+    streams.out.line("PV uninstall")?;
 
     let _helper_lifecycle_lock = state::HelperLifecycleLock::acquire(&paths)?;
-    if !run_required_step("daemon removal", stdout, |stdout| {
-        daemon_command::disable(environment, stdout)
+    if !run_required_step("daemon removal", streams, |streams| {
+        daemon_command::disable(environment, streams)
     })? {
         return Ok(ExitCode::FAILURE);
     }
-    if !run_required_step("DNS resolver removal", stdout, |stdout| {
-        dns::uninstall(environment, stdout)
+    if !run_required_step("DNS resolver removal", streams, |streams| {
+        dns::uninstall(environment, streams)
     })? {
         return Ok(ExitCode::FAILURE);
     }
-    if !run_required_step("port redirect removal", stdout, |stdout| {
-        ports::uninstall(environment, stdout)
+    if !run_required_step("port redirect removal", streams, |streams| {
+        ports::uninstall(environment, streams)
     })? {
         return Ok(ExitCode::FAILURE);
     }
-    if !run_required_step("CA trust removal", stdout, |stdout| {
-        untrust_ca_for_uninstall(environment, stdout)
+    if !run_required_step("CA trust removal", streams, |streams| {
+        untrust_ca_for_uninstall(environment, streams)
     })? {
         return Ok(ExitCode::FAILURE);
     }
-    if !run_required_step("privileged helper removal", stdout, |stdout| {
-        remove_helper_for_uninstall(environment, stdout)
+    if !run_required_step("privileged helper removal", streams, |streams| {
+        remove_helper_for_uninstall(environment, streams)
     })? {
         return Ok(ExitCode::FAILURE);
     }
-    if remove_shell_integration(environment, &paths, stdout)? != ExitCode::SUCCESS {
+    if remove_shell_integration(environment, &paths, streams)? != ExitCode::SUCCESS {
         return Ok(ExitCode::FAILURE);
     }
 
     if args.prune {
-        prune_state(&paths, stdout)?;
+        prune_state(&paths, streams)?;
     } else {
-        remove_default_state(&paths, stdout)?;
+        remove_default_state(&paths, streams)?;
     }
 
-    let mut output = Output::new(stdout, OutputMode::plain());
-    output.line("PV uninstall complete")?;
+    streams.out.line("PV uninstall complete")?;
 
     Ok(ExitCode::SUCCESS)
 }
 
-fn run_required_step<Writer>(
+fn run_required_step(
     label: &str,
-    stdout: &mut Writer,
-    command: impl FnOnce(&mut Writer) -> Result<ExitCode, ExecuteError>,
-) -> Result<bool, ExecuteError>
-where
-    Writer: Write,
-{
-    let exit_code = command(stdout)?;
+    streams: &mut Streams<'_>,
+    command: impl FnOnce(&mut Streams<'_>) -> Result<ExitCode, ExecuteError>,
+) -> Result<bool, ExecuteError> {
+    let exit_code = command(streams)?;
     if exit_code == ExitCode::SUCCESS {
         return Ok(true);
     }
 
-    let mut output = Output::new(stdout, OutputMode::plain());
-    output.line(&format!("PV stopped during {label}."))?;
+    streams.out.line(&format!("PV stopped during {label}."))?;
 
     Ok(false)
 }
@@ -431,15 +422,14 @@ fn ensure_privileged_helper(
     environment: &impl Environment,
     paths: &PvPaths,
     installation_required: bool,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let candidate = privileged_helper_candidate(environment, paths)?;
     let current_installation_required =
         privileged_helper_installation_required(environment, &candidate)?;
     if !current_installation_required {
         let status = environment.privileged_helper_status()?;
-        let mut output = Output::new(stdout, OutputMode::plain());
-        output.line(&format!(
+        streams.out.line(&format!(
             "Privileged helper: current {} (protocol {})",
             status.version, status.protocol_version
         ))?;
@@ -465,8 +455,7 @@ fn ensure_privileged_helper(
         .cleanup_warning()
         .map(|warning| format!("; warning: {warning}"))
         .unwrap_or_default();
-    let mut output = Output::new(stdout, OutputMode::plain());
-    output.line(&format!(
+    streams.out.line(&format!(
         "Installed privileged helper {} (protocol {}){cleanup_warning}",
         status.version, status.protocol_version,
     ))?;
@@ -500,10 +489,10 @@ fn privileged_helper_candidate(
 
 fn confirm_privileged_helper_installation(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<bool, ExecuteError> {
-    let mut output = Output::new(stdout, OutputMode::plain());
-    if !environment.stdin_is_terminal() {
+    let output = &mut streams.out;
+    if !streams.interactive {
         output.line("Privileged helper installation requires confirmation; rerun with --yes.")?;
 
         return Ok(false);
@@ -541,20 +530,20 @@ fn configure_shell_integration(
     args: &SetupArgs,
     environment: &impl Environment,
     paths: &PvPaths,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     if args.no_path {
         output.line("Shell profile integration skipped by --no-path.")?;
-        write_manual_shell_integration(&mut output, None)?;
+        write_manual_shell_integration(output, None)?;
 
         return Ok(ExitCode::SUCCESS);
     }
 
     let Some(shell_path) = environment.var_os("SHELL") else {
         output.line("Shell profile integration skipped because $SHELL is not set.")?;
-        write_manual_shell_integration(&mut output, None)?;
+        write_manual_shell_integration(output, None)?;
 
         return Ok(ExitCode::SUCCESS);
     };
@@ -563,7 +552,7 @@ fn configure_shell_integration(
             "Shell profile integration skipped for unsupported shell: {}",
             shell_path.to_string_lossy()
         ))?;
-        write_manual_shell_integration(&mut output, None)?;
+        write_manual_shell_integration(output, None)?;
 
         return Ok(ExitCode::SUCCESS);
     };
@@ -609,22 +598,23 @@ fn configure_shell_integration(
         return Ok(ExitCode::FAILURE);
     }
 
-    if !args.yes && !confirm_shell_profile_update(environment, stdout, &profile_path, action)? {
+    if !args.yes && !confirm_shell_profile_update(environment, streams, &profile_path, action)? {
         return Ok(ExitCode::FAILURE);
     }
 
     if existing.is_some() {
         let backup_path = backup_user_file(&profile_path)?;
-        let mut output = Output::new(stdout, OutputMode::plain());
-        output.line(&format!("Backed up shell profile: {backup_path}"))?;
+        streams
+            .out
+            .line(&format!("Backed up shell profile: {backup_path}"))?;
     }
     write_user_file(&profile_path, &next_content)?;
 
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
     output.line(&format!(
         "Updated shell profile integration: {profile_path}"
     ))?;
-    write_manual_shell_integration(&mut output, Some(shell))?;
+    write_manual_shell_integration(output, Some(shell))?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -632,9 +622,9 @@ fn configure_shell_integration(
 fn remove_shell_integration(
     environment: &impl Environment,
     paths: &PvPaths,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
     let Some(shell_path) = environment.var_os("SHELL") else {
         output.line("Shell profile integration not inspected because $SHELL is not set.")?;
 
@@ -684,13 +674,13 @@ fn remove_shell_integration(
 
 fn confirm_shell_profile_update(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
     profile_path: &Utf8Path,
     action: &str,
 ) -> Result<bool, ExecuteError> {
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
-    if !environment.stdin_is_terminal() {
+    if !streams.interactive {
         output.line(&format!(
             "Shell profile integration requires {action}; rerun with --yes or --no-path: {profile_path}"
         ))?;
@@ -712,11 +702,11 @@ fn confirm_shell_profile_update(
 
 fn confirm_prune(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<bool, ExecuteError> {
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
-    if !environment.stdin_is_terminal() {
+    if !streams.interactive {
         output.line("Refusing to prune PV state without an interactive confirmation.")?;
         output
             .line("Rerun with `pv uninstall --prune --force` to remove ~/.pv non-interactively.")?;
@@ -736,7 +726,7 @@ fn confirm_prune(
 
 fn untrust_ca_for_uninstall(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let local_state =
@@ -744,7 +734,7 @@ fn untrust_ca_for_uninstall(
 
     if matches!(local_state, CaFileState::Missing { .. }) {
         let fingerprints = trusted_pv_ca_fingerprints(environment)?;
-        let mut output = Output::new(stdout, OutputMode::plain());
+        let output = &mut streams.out;
         if fingerprints.is_empty() {
             output
                 .line("PV local CA files are absent; System keychain trust is already absent.")?;
@@ -762,24 +752,23 @@ fn untrust_ca_for_uninstall(
         return Ok(ExitCode::SUCCESS);
     }
 
-    ca::untrust(environment, stdout)
+    ca::untrust(environment, streams)
 }
 
 fn remove_helper_for_uninstall(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     environment.remove_privileged_helper()?;
-    let mut output = Output::new(stdout, OutputMode::plain());
-    output.line("Privileged helper removed")?;
+    streams.out.line("Privileged helper removed")?;
 
     Ok(ExitCode::SUCCESS)
 }
 
-fn remove_default_state(paths: &PvPaths, stdout: &mut impl Write) -> Result<(), ExecuteError> {
+fn remove_default_state(paths: &PvPaths, streams: &mut Streams<'_>) -> Result<(), ExecuteError> {
     state::fs::remove_daemon_socket(paths)?;
 
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
     for (label, path) in [
         ("PV app binaries and shims", paths.bin()),
         ("runtime metadata", paths.run()),
@@ -815,9 +804,9 @@ fn trusted_pv_ca_fingerprints(environment: &impl Environment) -> Result<Vec<Stri
     )?)
 }
 
-fn prune_state(paths: &PvPaths, stdout: &mut impl Write) -> Result<(), ExecuteError> {
+fn prune_state(paths: &PvPaths, streams: &mut Streams<'_>) -> Result<(), ExecuteError> {
     state::fs::remove_daemon_socket(paths)?;
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     if delete_optional_dir(paths.root())? {
         output.line(&format!("Removed PV state: {}", paths.root()))?;
@@ -869,10 +858,7 @@ end
     }
 }
 
-fn write_manual_shell_integration(
-    output: &mut Output<'_, impl Write>,
-    shell: Option<Shell>,
-) -> io::Result<()> {
+fn write_manual_shell_integration(output: &mut Output<'_>, shell: Option<Shell>) -> io::Result<()> {
     match shell {
         Some(shell) => output.line(&format!(
             "Open a new terminal, or run `pv env --shell {}` for current-session shell integration.",

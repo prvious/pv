@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
@@ -16,14 +15,14 @@ use state::{
 use crate::args::StatusArgs;
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, OutputMode};
+use crate::output::{Output, Streams};
 
 use super::pf_diagnostics::PfRoutingDiagnostic;
 
 pub(crate) fn run(
     args: StatusArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let snapshot = StatusSnapshot::read(environment)?;
     let exit_code = if snapshot.has_failure() {
@@ -33,14 +32,12 @@ pub(crate) fn run(
     };
 
     if args.json {
-        serde_json::to_writer(&mut *stdout, &snapshot)?;
-        writeln!(stdout)?;
+        streams.out.json(&snapshot)?;
 
         return Ok(exit_code);
     }
 
-    let mut output = Output::new(stdout, OutputMode::plain());
-    snapshot.write_plain(&mut output)?;
+    snapshot.write_plain(&mut streams.out)?;
 
     Ok(exit_code)
 }
@@ -113,7 +110,7 @@ impl StatusSnapshot {
         self.overall == "failed"
     }
 
-    fn write_plain(&self, output: &mut Output<'_, impl Write>) -> Result<(), ExecuteError> {
+    fn write_plain(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
         output.line("PV status")?;
         output.line(&format!("Overall: {}", self.overall))?;
         output.line(&format!("Daemon: {}", self.daemon.state))?;

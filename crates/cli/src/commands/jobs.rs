@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
@@ -8,12 +7,12 @@ use state::{Database, JobRecord, JobStatus, PvPaths, StateError};
 use crate::args::JobsArgs;
 use crate::environment::Environment;
 use crate::error::ExecuteError;
-use crate::output::{Output, OutputMode};
+use crate::output::{Output, Streams};
 
 pub(crate) fn run(
     args: JobsArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let jobs = match Database::open_read_only(&paths)? {
@@ -22,19 +21,17 @@ pub(crate) fn run(
     };
 
     if args.json {
-        serde_json::to_writer(&mut *stdout, &JobsJson::from_records(&jobs))?;
-        writeln!(stdout)?;
+        streams.out.json(&JobsJson::from_records(&jobs))?;
 
         return Ok(ExitCode::SUCCESS);
     }
 
-    let mut output = Output::new(stdout, OutputMode::plain());
-    write_jobs(&jobs, &mut output)?;
+    write_jobs(&jobs, &mut streams.out)?;
 
     Ok(ExitCode::SUCCESS)
 }
 
-fn write_jobs(jobs: &[JobRecord], output: &mut Output<'_, impl Write>) -> Result<(), ExecuteError> {
+fn write_jobs(jobs: &[JobRecord], output: &mut Output<'_>) -> Result<(), ExecuteError> {
     if jobs.is_empty() {
         output.line("No recent daemon jobs")?;
         return Ok(());

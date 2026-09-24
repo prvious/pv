@@ -1,5 +1,4 @@
 use std::io;
-use std::io::Write;
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -18,12 +17,12 @@ use state::{
 use crate::args::{LinkArgs, ListArgs, OpenArgs, ProjectEnvArgs, UnlinkArgs};
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, OutputMode};
+use crate::output::{Output, Streams};
 
 pub(crate) fn link(
     args: LinkArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let original_project_path = resolve_project_path(args.path.as_deref(), environment)?;
@@ -68,7 +67,7 @@ pub(crate) fn link(
         mode,
     )?;
 
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
     let project_name = if result.project.mode == ProjectMode::ResourceOnly {
         format!("{} (resource-only)", result.project.slug)
     } else {
@@ -87,7 +86,7 @@ pub(crate) fn link(
             result.project.path,
         ))?,
     }
-    request_project_reconciliation(&paths, &result.project, &mut output)?;
+    request_project_reconciliation(&paths, &result.project, output)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -120,21 +119,21 @@ fn resolved_project_php_track(
 pub(crate) fn unlink(
     args: UnlinkArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let mut database = Database::open(&paths)?;
     let project = resolve_project(&database, args.hostname.as_deref(), environment)?;
     delete_optional_project_tls_dir(&paths, &project)?;
     let project = database.unlink_project(&project.id)?;
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     output.line(&format!(
         "Unlinked {} -> {}",
         project_display_name(&project),
         project.path
     ))?;
-    request_system_reconciliation(&paths, &mut output)?;
+    request_system_reconciliation(&paths, output)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -155,7 +154,7 @@ fn delete_optional_project_tls_dir(
 pub(crate) fn open(
     args: OpenArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
@@ -168,14 +167,13 @@ pub(crate) fn open(
                 resolved.matched_hostname.unwrap_or(hostname),
             )
         }
-        None => resolve_open_project(&database, environment, stdout)?,
+        None => resolve_open_project(&database, environment, streams)?,
     };
     let url = format!("https://{hostname}");
 
     environment.open_url(&url)?;
 
-    let mut output = Output::new(stdout, OutputMode::plain());
-    output.line(&format!(
+    streams.out.line(&format!(
         "Opened {} for {}",
         url,
         project_display_name(&project)
@@ -187,8 +185,7 @@ pub(crate) fn open(
 pub(crate) fn env(
     args: ProjectEnvArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
-    stderr: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
@@ -220,9 +217,8 @@ pub(crate) fn env(
     };
 
     if args.json {
-        serde_json::to_writer(&mut *stdout, &rendered.values)?;
-        writeln!(stdout)?;
-        write_project_env_warnings(&warnings, stderr)?;
+        streams.out.json(&rendered.values)?;
+        write_project_env_warnings(&warnings, &mut streams.err)?;
 
         return Ok(ExitCode::SUCCESS);
     }
@@ -232,8 +228,8 @@ pub(crate) fn env(
         return Ok(ExitCode::SUCCESS);
     }
 
-    write!(stdout, "{content}")?;
-    write_project_env_warnings(&warnings, stderr)?;
+    write!(streams.out.writer(), "{content}")?;
+    write_project_env_warnings(&warnings, &mut streams.err)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -241,7 +237,7 @@ pub(crate) fn env(
 pub(crate) fn list(
     args: ListArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
@@ -257,13 +253,12 @@ pub(crate) fn list(
             .into_iter()
             .map(|project| project_list_item(&database, project))
             .collect::<Result<Vec<_>, _>>()?;
-        serde_json::to_writer(&mut *stdout, &ProjectListOutput { projects })?;
-        writeln!(stdout)?;
+        streams.out.json(&ProjectListOutput { projects })?;
 
         return Ok(ExitCode::SUCCESS);
     }
 
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     if projects.is_empty() {
         output.line("No linked Projects")?;
@@ -296,7 +291,7 @@ pub(crate) fn list(
 fn request_project_reconciliation(
     paths: &PvPaths,
     project: &ProjectRecord,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     let scope = format!("project:{}", project.id);
     if let Some(job) = super::submit_reconciliation(paths, &scope, output)? {
@@ -312,7 +307,7 @@ fn request_project_reconciliation(
 
 fn request_system_reconciliation(
     paths: &PvPaths,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     if let Some(job) = super::submit_reconciliation(paths, "system", output)? {
         output.line(&format!("System reconciliation requested: {}", job.id))?;
@@ -324,7 +319,7 @@ fn request_system_reconciliation(
 fn resolve_open_project(
     database: &Database,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<(ProjectRecord, String), ExecuteError> {
     let current_dir = current_dir(environment)?;
     if let Some(project) = database.nearest_project_for_path(&current_dir)? {
@@ -332,7 +327,7 @@ fn resolve_open_project(
         return Ok((project, hostname));
     }
 
-    if !environment.stdin_is_terminal() {
+    if !streams.interactive {
         return Err(CliError::ProjectNotResolved.into());
     }
 
@@ -346,7 +341,7 @@ fn resolve_open_project(
             .cmp(&right.primary_hostname)
             .then_with(|| left.id.cmp(&right.id))
     });
-    let project = select_project(projects, environment, stdout)?;
+    let project = select_project(projects, environment, streams)?;
     let hostname = served_project_hostname(&project)?.to_string();
 
     Ok((project, hostname))
@@ -355,13 +350,13 @@ fn resolve_open_project(
 fn select_project(
     projects: Vec<ProjectRecord>,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ProjectRecord, ExecuteError> {
     if projects.is_empty() {
         return Err(CliError::ProjectNotResolved.into());
     }
 
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
     output.line("Select a Project:")?;
     for (index, project) in projects.iter().enumerate() {
         output.line(&format!(
@@ -474,9 +469,8 @@ fn read_project_env_file(env_file_path: &Utf8Path) -> Result<Option<String>, Exe
 
 fn write_project_env_warnings(
     warnings: &[ProjectEnvWarning],
-    stderr: &mut impl Write,
+    output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
-    let mut output = Output::new(stderr, OutputMode::plain());
     for warning in warnings {
         output.line(&format!("warning: {}", project_env_warning(warning)))?;
     }

@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -10,7 +9,7 @@ use crate::args::{ListArgs, RustfsInstallArgs, RustfsUninstallArgs};
 use crate::commands::artifact_resource::{self, ArtifactResourceCommandSpec};
 use crate::environment::Environment;
 use crate::error::ExecuteError;
-use crate::output::{Output, OutputMode};
+use crate::output::Streams;
 
 const NOT_RUNNING_MESSAGE: &str = "RustFS is not running for any linked Project";
 const CONSOLE_LIVENESS_TIMEOUT: Duration = Duration::from_millis(250);
@@ -18,22 +17,22 @@ const CONSOLE_LIVENESS_TIMEOUT: Duration = Duration::from_millis(250);
 pub(crate) fn install(
     args: RustfsInstallArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    artifact_resource::install(spec(), args.track.as_deref(), environment, stdout)
+    artifact_resource::install(spec(), args.track.as_deref(), environment, streams)
 }
 
 pub(crate) fn update(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    artifact_resource::update(spec(), environment, stdout)
+    artifact_resource::update(spec(), environment, streams)
 }
 
 pub(crate) fn uninstall(
     args: RustfsUninstallArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     artifact_resource::uninstall(
         spec(),
@@ -41,25 +40,25 @@ pub(crate) fn uninstall(
         args.prune,
         args.force,
         environment,
-        stdout,
+        streams,
     )
 }
 
 pub(crate) fn list(
     args: ListArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    artifact_resource::list(spec(), args, environment, stdout)
+    artifact_resource::list(spec(), args, environment, streams)
 }
 
 pub(crate) fn open(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     let Some(url) = running_console_url(&database)? else {
         output.line(NOT_RUNNING_MESSAGE)?;

@@ -758,6 +758,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "config",
+ "console",
  "daemon",
  "home",
  "indicatif",

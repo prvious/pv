@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
@@ -15,14 +14,14 @@ use crate::environment::Environment;
 use crate::error::CliError;
 use crate::error::ExecuteError;
 use crate::helper_release::HelperReleaseMetadata;
-use crate::output::{Output, OutputMode};
+use crate::output::{Output, Streams};
 
 use super::pf_diagnostics::{PfRoutingDiagnostic, PfRoutingState};
 
 pub(crate) fn run(
     args: DoctorArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let report = DoctorReport::read(environment)?;
     let exit_code = if report.has_failures() {
@@ -31,13 +30,11 @@ pub(crate) fn run(
         ExitCode::SUCCESS
     };
     if args.json {
-        serde_json::to_writer(&mut *stdout, &report)?;
-        writeln!(stdout)?;
+        streams.out.json(&report)?;
 
         return Ok(exit_code);
     }
-    let mut output = Output::new(stdout, OutputMode::plain());
-    report.write_plain(&mut output)?;
+    report.write_plain(&mut streams.out)?;
 
     Ok(exit_code)
 }
@@ -76,7 +73,7 @@ impl DoctorReport {
             .any(|check| check.status == CheckStatus::Fail)
     }
 
-    fn write_plain(&self, output: &mut Output<'_, impl Write>) -> Result<(), ExecuteError> {
+    fn write_plain(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
         output.line("PV doctor")?;
         for check in &self.checks {
             output.line(&format!(

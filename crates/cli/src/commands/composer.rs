@@ -1,6 +1,5 @@
 use std::ffi::OsString;
 use std::io;
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -14,7 +13,7 @@ use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
 use crate::args::{ComposerUninstallArgs, ShimArgs};
 use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, OutputMode};
+use crate::output::{Output, Streams};
 use crate::progress::DownloadProgressRenderer;
 
 const COMPOSER_TRACK: &str = "2";
@@ -22,14 +21,14 @@ const SYSTEM_SCOPE: &str = "system";
 
 pub(crate) fn install(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let commands = resource_commands(&paths, environment)?;
     let jobs_lock = super::acquire_jobs_lock(&paths)?;
     let database = Database::open(&paths)?;
     let selector = php_selector(&database)?;
-    let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
+    let progress = DownloadProgressRenderer::new(streams.out.surface().decorated());
     let installed = with_resource_http_client(environment, |client| {
         commands.install_composer_with_php_pair_and_progress(selector, client, &progress)
     })?;
@@ -37,43 +36,43 @@ pub(crate) fn install(
     drop(jobs_lock);
     let php_pair = installed.php_pair();
     let composer = installed.composer();
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
-    super::write_revoked_latest_warning(php_pair.php(), &mut output)?;
-    super::write_revoked_latest_warning(php_pair.frankenphp(), &mut output)?;
-    super::write_revoked_latest_warning(composer, &mut output)?;
+    super::write_revoked_latest_warning(php_pair.php(), output)?;
+    super::write_revoked_latest_warning(php_pair.frankenphp(), output)?;
+    super::write_revoked_latest_warning(composer, output)?;
     output.line(&format!("Installed PHP track {}", php_pair.php().track()))?;
     output.line(&format!(
         "Installed FrankenPHP track {}",
         php_pair.frankenphp().track()
     ))?;
     output.line(&format!("Installed Composer track {}", composer.track()))?;
-    request_system_reconciliation(&paths, &mut output)?;
+    request_system_reconciliation(&paths, output)?;
 
     Ok(ExitCode::SUCCESS)
 }
 
 pub(crate) fn update(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let commands = resource_commands(&paths, environment)?;
     let jobs_lock = super::acquire_jobs_lock(&paths)?;
-    let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
+    let progress = DownloadProgressRenderer::new(streams.out.surface().decorated());
     let updated = with_resource_http_client(environment, |client| {
         commands.update_composer_with_progress(client, &progress)
     })?;
     drop(progress);
     drop(jobs_lock);
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
-    super::write_revoked_latest_warnings(updated.installs(), &mut output)?;
+    super::write_revoked_latest_warnings(updated.installs(), output)?;
     output.line(&format!(
         "Updated {} Composer track(s)",
         updated.installs().len()
     ))?;
-    request_system_reconciliation(&paths, &mut output)?;
+    request_system_reconciliation(&paths, output)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -81,7 +80,7 @@ pub(crate) fn update(
 pub(crate) fn uninstall(
     args: ComposerUninstallArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let commands = resource_commands(&paths, environment)?;
@@ -89,13 +88,13 @@ pub(crate) fn uninstall(
         .prune(args.prune)
         .force(args.force);
     let removal = commands.uninstall_composer(options)?;
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     output.line(&format!(
         "Queued removal for Composer track {}",
         removal.track()
     ))?;
-    request_system_reconciliation(&paths, &mut output)?;
+    request_system_reconciliation(&paths, output)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -237,7 +236,7 @@ fn with_resource_http_client<T>(
 
 fn request_system_reconciliation(
     paths: &PvPaths,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     if let Some(job) = super::submit_reconciliation(paths, SYSTEM_SCOPE, output)? {
         output.line(&format!("System reconciliation requested: {}", job.id))?;

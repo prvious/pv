@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::io::Write;
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -17,7 +16,7 @@ use state::{
 use crate::args::{ListArgs, PhpInstallArgs, PhpUninstallArgs, PhpUseArgs, ShimArgs};
 use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, OutputMode};
+use crate::output::{Output, Streams};
 use crate::progress::DownloadProgressRenderer;
 
 const SYSTEM_SCOPE: &str = "system";
@@ -25,29 +24,29 @@ const SYSTEM_SCOPE: &str = "system";
 pub(crate) fn use_track(
     args: PhpUseArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let requested_track = args.track;
     let selector = TrackSelector::parse(requested_track.as_str())?;
     let commands = resource_commands(&paths, environment)?;
     let jobs_lock = super::acquire_jobs_lock(&paths)?;
-    let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
+    let progress = DownloadProgressRenderer::new(streams.out.surface().decorated());
 
     if args.global {
         let installed = with_resource_http_client(environment, |client| {
             commands.install_php_pair_with_progress(selector, client, &progress)
         })?;
         drop(progress);
-        let mut output = Output::new(stdout, OutputMode::plain());
+        let output = &mut streams.out;
         let track = installed.php().track().as_str().to_string();
         let mut database = Database::open(&paths)?;
         database.record_global_php_default_track(&track)?;
         drop(jobs_lock);
 
         output.line(&format!("Set global PHP track to {track}"))?;
-        write_install_lines(&installed, &mut output)?;
-        request_system_reconciliation(&paths, &mut output)?;
+        write_install_lines(&installed, output)?;
+        request_system_reconciliation(&paths, output)?;
 
         return Ok(ExitCode::SUCCESS);
     }
@@ -59,7 +58,7 @@ pub(crate) fn use_track(
         commands.install_php_pair_with_progress(selector, client, &progress)
     })?;
     drop(progress);
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
     let track = installed.php().track().as_str().to_string();
     let config_file = config::write_project_php_track(&project.path, &requested_track)?;
     let project = database.replace_project_desired_php_track(&project.id, Some(&track))?;
@@ -70,8 +69,8 @@ pub(crate) fn use_track(
         project_display_name(&project)
     ))?;
     output.line(&format!("Updated Project config: {}", config_file.path))?;
-    write_install_lines(&installed, &mut output)?;
-    request_project_reconciliation(&paths, &project, &mut output)?;
+    write_install_lines(&installed, output)?;
+    request_project_reconciliation(&paths, &project, output)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -79,7 +78,7 @@ pub(crate) fn use_track(
 pub(crate) fn install(
     args: PhpInstallArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let selector = match args.track {
@@ -88,41 +87,41 @@ pub(crate) fn install(
     };
     let commands = resource_commands(&paths, environment)?;
     let jobs_lock = super::acquire_jobs_lock(&paths)?;
-    let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
+    let progress = DownloadProgressRenderer::new(streams.out.surface().decorated());
     let installed = with_resource_http_client(environment, |client| {
         commands.install_php_pair_with_progress(selector, client, &progress)
     })?;
     drop(progress);
     drop(jobs_lock);
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
-    write_install_lines(&installed, &mut output)?;
-    request_system_reconciliation(&paths, &mut output)?;
+    write_install_lines(&installed, output)?;
+    request_system_reconciliation(&paths, output)?;
 
     Ok(ExitCode::SUCCESS)
 }
 
 pub(crate) fn update(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let commands = resource_commands(&paths, environment)?;
     let jobs_lock = super::acquire_jobs_lock(&paths)?;
-    let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
+    let progress = DownloadProgressRenderer::new(streams.out.surface().decorated());
     let updated = with_resource_http_client(environment, |client| {
         commands.update_php_pairs_with_progress(client, &progress)
     })?;
     drop(progress);
     drop(jobs_lock);
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
-    super::write_revoked_latest_warnings(updated.installs(), &mut output)?;
+    super::write_revoked_latest_warnings(updated.installs(), output)?;
     output.line(&format!(
         "Updated {} PHP runtime artifact(s)",
         updated.installs().len()
     ))?;
-    request_system_reconciliation(&paths, &mut output)?;
+    request_system_reconciliation(&paths, output)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -130,7 +129,7 @@ pub(crate) fn update(
 pub(crate) fn uninstall(
     args: PhpUninstallArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let track = TrackName::new(args.track)?;
@@ -153,7 +152,7 @@ pub(crate) fn uninstall(
         .prune(args.prune)
         .force(args.force);
     let removal = commands.uninstall_php_pair(&track, options)?;
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     output.line(&format!(
         "Queued removal for PHP track {}",
@@ -163,7 +162,7 @@ pub(crate) fn uninstall(
         "Queued removal for FrankenPHP track {}",
         removal.frankenphp().track()
     ))?;
-    request_system_reconciliation(&paths, &mut output)?;
+    request_system_reconciliation(&paths, output)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -171,7 +170,7 @@ pub(crate) fn uninstall(
 pub(crate) fn list(
     args: ListArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let php = ResourceName::new("php")?;
@@ -181,14 +180,12 @@ pub(crate) fn list(
 
     if tracks.is_empty() {
         if args.json {
-            serde_json::to_writer(&mut *stdout, &PhpListOutput { tracks: Vec::new() })?;
-            writeln!(stdout)?;
+            streams.out.json(&PhpListOutput { tracks: Vec::new() })?;
 
             return Ok(ExitCode::SUCCESS);
         }
 
-        let mut output = Output::new(stdout, OutputMode::plain());
-        output.line("No PHP tracks installed")?;
+        streams.out.line("No PHP tracks installed")?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -209,13 +206,12 @@ pub(crate) fn list(
                 }
             })
             .collect::<Vec<_>>();
-        serde_json::to_writer(&mut *stdout, &PhpListOutput { tracks })?;
-        writeln!(stdout)?;
+        streams.out.json(&PhpListOutput { tracks })?;
 
         return Ok(ExitCode::SUCCESS);
     }
 
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
     output.line("Track  Default  Projects  Version  Path")?;
     for track in tracks {
         let default_marker = if default_track.as_deref() == Some(track.track().as_str()) {
@@ -545,7 +541,7 @@ fn installed_php(database: &Database, track: &str) -> Result<InstalledPhp, Execu
 
 fn write_install_lines(
     installed: &resources::PhpPairInstall,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     super::write_revoked_latest_warning(installed.php(), output)?;
     super::write_revoked_latest_warning(installed.frankenphp(), output)?;
@@ -651,7 +647,7 @@ fn with_resource_http_client<T>(
 fn request_project_reconciliation(
     paths: &PvPaths,
     project: &ProjectRecord,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     let scope = format!("project:{}", project.id);
     if let Some(job) = super::submit_reconciliation(paths, &scope, output)? {
@@ -678,7 +674,7 @@ fn project_display_name(project: &ProjectRecord) -> &str {
 
 fn request_system_reconciliation(
     paths: &PvPaths,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     if let Some(job) = super::submit_reconciliation(paths, SYSTEM_SCOPE, output)? {
         output.line(&format!("System reconciliation requested: {}", job.id))?;

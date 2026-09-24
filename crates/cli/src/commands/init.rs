@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -10,12 +9,12 @@ use config::{
 use crate::args::InitArgs;
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, OutputMode};
+use crate::output::{Output, Streams};
 
 pub(crate) fn run(
     args: InitArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let project_root = resolve_project_path(args.path.as_deref(), environment)?;
     let detection = detect_project_init(&project_root)?;
@@ -25,15 +24,15 @@ pub(crate) fn run(
         yaml_serde::to_string(&config).map_err(|source| config::ConfigError::Parse { source })?;
 
     if args.print {
-        write!(stdout, "{content}")?;
+        write!(streams.out.writer(), "{content}")?;
         return Ok(ExitCode::SUCCESS);
     }
 
     if args.yes {
         let written = write_project_config(&project_root, &config)?;
-        let mut output = Output::new(stdout, OutputMode::plain());
+        let output = &mut streams.out;
         output.line(&format!("Wrote Project config: {}", written.path))?;
-        write_detection_summary(&mut output, &detection, &selection)?;
+        write_detection_summary(output, &detection, &selection)?;
         if selection.include_vite_tls {
             output.line(
                 "Vite HTTPS: configure the app's Vite config to read VITE_DEV_SERVER_CERT and VITE_DEV_SERVER_KEY.",
@@ -42,9 +41,10 @@ pub(crate) fn run(
         return Ok(ExitCode::SUCCESS);
     }
 
-    if !environment.stdin_is_terminal() {
-        let mut output = Output::new(stdout, OutputMode::plain());
-        output.line("pv init requires an interactive terminal; rerun with --yes or --print.")?;
+    if !streams.interactive {
+        streams
+            .out
+            .line("pv init requires an interactive terminal; rerun with --yes or --print.")?;
         return Ok(ExitCode::FAILURE);
     }
 
@@ -54,7 +54,7 @@ pub(crate) fn run(
         selection,
         content,
         environment,
-        stdout,
+        streams,
     )
 }
 
@@ -64,11 +64,11 @@ fn run_interactive(
     selection: config::ProjectInitSelection,
     content: String,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    let mut output = Output::new(stdout, OutputMode::plain());
-    write_detection_summary(&mut output, &detection, &selection)?;
-    write_resource_checklist(&mut output, &selection.resources)?;
+    let output = &mut streams.out;
+    write_detection_summary(output, &detection, &selection)?;
+    write_resource_checklist(output, &selection.resources)?;
     output.line(
         "Use these selections? Enter y to preview, n to cancel, or edit to change selections:",
     )?;
@@ -84,11 +84,11 @@ fn run_interactive(
             content,
             selection.include_vite_tls,
             environment,
-            &mut output,
+            output,
         ),
-        "n" | "no" => cancelled(&mut output),
+        "n" | "no" => cancelled(output),
         "e" | "edit" => {
-            run_structured_edit(project_root, detection, selection, environment, &mut output)
+            run_structured_edit(project_root, detection, selection, environment, output)
         }
         _ => {
             output.line("Invalid selection. Enter y, n, or edit.")?;
@@ -102,7 +102,7 @@ fn preview_and_confirm_write(
     content: String,
     include_vite_tls: bool,
     environment: &impl Environment,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     output.line("Project config preview:")?;
     for line in content.lines() {
@@ -132,13 +132,13 @@ fn preview_and_confirm_write(
     Ok(ExitCode::SUCCESS)
 }
 
-fn cancelled(output: &mut Output<'_, impl Write>) -> Result<ExitCode, ExecuteError> {
+fn cancelled(output: &mut Output<'_>) -> Result<ExitCode, ExecuteError> {
     output.line("pv init cancelled; no files changed.")?;
     Ok(ExitCode::FAILURE)
 }
 
 fn write_resource_checklist(
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
     resources: &std::collections::BTreeMap<
         config::ProjectInitResourceName,
         config::ProjectInitResourceSelection,
@@ -161,7 +161,7 @@ fn run_structured_edit(
     mut detection: config::ProjectInitDetection,
     mut selection: config::ProjectInitSelection,
     environment: &impl Environment,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     output.line(&format!("PHP track [{}]:", selection.php))?;
     let php = environment.read_line()?;
@@ -215,7 +215,7 @@ fn run_structured_edit(
 fn apply_selected_resources(
     selection: &mut config::ProjectInitSelection,
     value: &str,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<bool, ExecuteError> {
     let mut selected = Vec::new();
     for token in parse_csv(value) {
@@ -237,7 +237,7 @@ fn prompt_resource_details(
     name: config::ProjectInitResourceName,
     selection: &mut config::ProjectInitSelection,
     environment: &impl Environment,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<bool, ExecuteError> {
     let Some(resource) = selection.resources.get_mut(&name) else {
         return Ok(false);
@@ -357,7 +357,7 @@ fn resource_label(name: config::ProjectInitResourceName) -> &'static str {
 }
 
 fn write_detection_summary(
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
     detection: &config::ProjectInitDetection,
     selection: &config::ProjectInitSelection,
 ) -> Result<(), ExecuteError> {
@@ -437,6 +437,7 @@ mod tests {
     use insta::assert_snapshot;
 
     use super::*;
+    use crate::output::Presentation;
 
     #[derive(Debug)]
     struct TestEnvironment {
@@ -494,7 +495,12 @@ mod tests {
         let environment = TestEnvironment::new(&project, &["y", "y"]);
         let mut stdout = Vec::new();
 
-        let exit = run(default_args(), &environment, &mut stdout)?;
+        let mut stderr = Vec::new();
+        let exit = run(
+            default_args(),
+            &environment,
+            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
+        )?;
 
         assert_eq!(exit, ExitCode::SUCCESS);
         assert_output_snapshot(
@@ -518,7 +524,12 @@ mod tests {
         let environment = TestEnvironment::new(&project, &["n"]);
         let mut stdout = Vec::new();
 
-        let exit = run(default_args(), &environment, &mut stdout)?;
+        let mut stderr = Vec::new();
+        let exit = run(
+            default_args(),
+            &environment,
+            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
+        )?;
 
         assert_eq!(exit, ExitCode::FAILURE);
         assert!(!path_exists(&project.join("pv.yml"))?);
@@ -541,7 +552,12 @@ mod tests {
         let environment = TestEnvironment::new(&project, &["y", "n"]);
         let mut stdout = Vec::new();
 
-        let exit = run(default_args(), &environment, &mut stdout)?;
+        let mut stderr = Vec::new();
+        let exit = run(
+            default_args(),
+            &environment,
+            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
+        )?;
 
         assert_eq!(exit, ExitCode::FAILURE);
         assert_eq!(read_file(&project.join("pv.yml"))?, original);
@@ -578,7 +594,12 @@ mod tests {
         );
         let mut stdout = Vec::new();
 
-        let exit = run(default_args(), &environment, &mut stdout)?;
+        let mut stderr = Vec::new();
+        let exit = run(
+            default_args(),
+            &environment,
+            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
+        )?;
 
         assert_eq!(exit, ExitCode::SUCCESS);
         assert_output_snapshot(
@@ -609,7 +630,12 @@ mod tests {
         );
         let mut stdout = Vec::new();
 
-        let exit = run(default_args(), &environment, &mut stdout)?;
+        let mut stderr = Vec::new();
+        let exit = run(
+            default_args(),
+            &environment,
+            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
+        )?;
 
         assert_eq!(exit, ExitCode::SUCCESS);
         assert_output_snapshot(
@@ -641,7 +667,12 @@ mod tests {
         );
         let mut stdout = Vec::new();
 
-        let exit = run(default_args(), &environment, &mut stdout)?;
+        let mut stderr = Vec::new();
+        let exit = run(
+            default_args(),
+            &environment,
+            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
+        )?;
 
         assert_eq!(exit, ExitCode::SUCCESS);
         let output = String::from_utf8(stdout)?;
@@ -692,7 +723,12 @@ mod tests {
         );
         let mut stdout = Vec::new();
 
-        let exit = run(default_args(), &environment, &mut stdout)?;
+        let mut stderr = Vec::new();
+        let exit = run(
+            default_args(),
+            &environment,
+            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
+        )?;
 
         assert_eq!(exit, ExitCode::SUCCESS);
         let output = String::from_utf8(stdout)?;
@@ -728,7 +764,12 @@ mod tests {
         let environment = TestEnvironment::new(&project, &["edit", "", "", "mysql,unknown"]);
         let mut stdout = Vec::new();
 
-        let exit = run(default_args(), &environment, &mut stdout)?;
+        let mut stderr = Vec::new();
+        let exit = run(
+            default_args(),
+            &environment,
+            &mut Streams::new(&mut stdout, &mut stderr, Presentation::interactive()),
+        )?;
 
         assert_eq!(exit, ExitCode::FAILURE);
         assert!(!path_exists(&project.join("pv.yml"))?);

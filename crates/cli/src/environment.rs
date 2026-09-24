@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use camino::Utf8Path;
+use console::Term;
 
 pub trait Environment {
     fn var_os(&self, key: &str) -> Option<OsString>;
@@ -19,6 +20,15 @@ pub trait Environment {
 
     fn stdout_is_terminal(&self) -> bool {
         false
+    }
+
+    fn stderr_is_terminal(&self) -> bool {
+        false
+    }
+
+    /// The terminal width in columns, when a terminal is attached.
+    fn terminal_width(&self) -> Option<usize> {
+        None
     }
 
     fn read_line(&self) -> io::Result<String>;
@@ -270,6 +280,17 @@ impl Environment for ProcessEnvironment {
 
     fn stdout_is_terminal(&self) -> bool {
         io::stdout().is_terminal()
+    }
+
+    fn stderr_is_terminal(&self) -> bool {
+        io::stderr().is_terminal()
+    }
+
+    fn terminal_width(&self) -> Option<usize> {
+        Term::stdout()
+            .size_checked()
+            .or_else(|| Term::stderr().size_checked())
+            .map(|(_rows, columns)| usize::from(columns))
     }
 
     fn read_line(&self) -> io::Result<String> {

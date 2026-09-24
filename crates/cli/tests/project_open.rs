@@ -68,6 +68,10 @@ impl Environment for TestEnvironment {
         self.stdin_terminal
     }
 
+    fn stderr_is_terminal(&self) -> bool {
+        self.stdin_terminal
+    }
+
     fn read_line(&self) -> io::Result<String> {
         Ok(self
             .input_lines

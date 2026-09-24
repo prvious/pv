@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::io::Write;
 use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
@@ -14,7 +13,7 @@ use state::{PortAssignment, PortOwner, PvPaths, RuntimeObservedStatus, StateErro
 use crate::args::ListArgs;
 use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::ExecuteError;
-use crate::output::{Output, OutputMode};
+use crate::output::{Output, Streams};
 use crate::progress::DownloadProgressRenderer;
 
 const SYSTEM_SCOPE: &str = "system";
@@ -29,7 +28,7 @@ pub(crate) fn install(
     spec: ArtifactResourceCommandSpec,
     track: Option<&str>,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let selector = match track {
@@ -39,21 +38,21 @@ pub(crate) fn install(
     let adapter = (spec.adapter)()?;
     let commands = resource_commands(&paths, environment)?;
     let jobs_lock = super::acquire_jobs_lock(&paths)?;
-    let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
+    let progress = DownloadProgressRenderer::new(streams.out.surface().decorated());
     let installed = with_resource_http_client(environment, |client| {
         commands.install_with_progress(&adapter, selector, client, &progress)
     })?;
     drop(progress);
     drop(jobs_lock);
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
-    super::write_revoked_latest_warning(&installed, &mut output)?;
+    super::write_revoked_latest_warning(&installed, output)?;
     output.line(&format!(
         "Installed {} track {}",
         spec.display_name,
         installed.track()
     ))?;
-    request_system_reconciliation(&paths, &mut output)?;
+    request_system_reconciliation(&paths, output)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -61,27 +60,27 @@ pub(crate) fn install(
 pub(crate) fn update(
     spec: ArtifactResourceCommandSpec,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let adapter = (spec.adapter)()?;
     let commands = resource_commands(&paths, environment)?;
     let jobs_lock = super::acquire_jobs_lock(&paths)?;
-    let progress = DownloadProgressRenderer::new(environment.stdout_is_terminal());
+    let progress = DownloadProgressRenderer::new(streams.out.surface().decorated());
     let updated = with_resource_http_client(environment, |client| {
         commands.update_with_progress(&adapter, client, &progress)
     })?;
     drop(progress);
     drop(jobs_lock);
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
-    super::write_revoked_latest_warnings(updated.installs(), &mut output)?;
+    super::write_revoked_latest_warnings(updated.installs(), output)?;
     output.line(&format!(
         "Updated {} {} track(s)",
         updated.installs().len(),
         spec.display_name
     ))?;
-    request_system_reconciliation(&paths, &mut output)?;
+    request_system_reconciliation(&paths, output)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -92,27 +91,27 @@ pub(crate) fn uninstall(
     prune: bool,
     force: bool,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let resource_name = ResourceName::new(spec.resource_name)?;
     let track = TrackName::new(track)?;
     let commands = resource_commands(&paths, environment)?;
-    if prune && !force && !confirm_prune(&spec, track.as_str(), environment, stdout)? {
+    if prune && !force && !confirm_prune(&spec, track.as_str(), environment, streams)? {
         return Ok(ExitCode::SUCCESS);
     }
     let options = ManagedResourceUninstallOptions::new()
         .prune(prune)
         .force(force);
     let removal = commands.uninstall(&resource_name, &track, options)?;
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     output.line(&format!(
         "Queued removal for {} track {}",
         spec.display_name,
         removal.track()
     ))?;
-    request_system_reconciliation(&paths, &mut output)?;
+    request_system_reconciliation(&paths, output)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -121,7 +120,7 @@ pub(crate) fn list(
     spec: ArtifactResourceCommandSpec,
     args: ListArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let resource_name = ResourceName::new(spec.resource_name)?;
@@ -135,13 +134,12 @@ pub(crate) fn list(
         } else {
             resource_json_tracks(&tracks)
         };
-        serde_json::to_writer(&mut *stdout, &ResourceListOutput { tracks })?;
-        writeln!(stdout)?;
+        streams.out.json(&ResourceListOutput { tracks })?;
 
         return Ok(ExitCode::SUCCESS);
     }
 
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     if tracks.is_empty() {
         output.line(&format!("No {} tracks installed", spec.display_name))?;
@@ -149,7 +147,7 @@ pub(crate) fn list(
     }
 
     if descriptor.kind() == ResourceKind::BackingService {
-        write_backing_resource_list(&paths, spec.resource_name, &tracks, &mut output)?;
+        write_backing_resource_list(&paths, spec.resource_name, &tracks, output)?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -171,11 +169,11 @@ fn confirm_prune(
     spec: &ArtifactResourceCommandSpec,
     track: &str,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<bool, ExecuteError> {
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
-    if !environment.stdin_is_terminal() {
+    if !streams.interactive {
         output.line(&format!(
             "Refusing to prune {} track {track} without an interactive confirmation.",
             spec.display_name
@@ -207,7 +205,7 @@ fn write_backing_resource_list(
     paths: &PvPaths,
     resource_name: &str,
     tracks: &[ManagedResourceTrack],
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     let observation = backing_resource_observation(paths, resource_name)?;
 
@@ -403,7 +401,7 @@ fn with_resource_http_client<T>(
 
 fn request_system_reconciliation(
     paths: &PvPaths,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     if let Some(job) = super::submit_reconciliation(paths, SYSTEM_SCOPE, output)? {
         output.line(&format!("System reconciliation requested: {}", job.id))?;
@@ -429,11 +427,11 @@ mod tests {
     };
 
     use super::*;
+    use crate::output::Presentation;
 
     #[derive(Debug)]
     struct TestEnvironment {
         home: PathBuf,
-        stdin_is_terminal: bool,
         lines: RefCell<VecDeque<String>>,
     }
 
@@ -441,7 +439,6 @@ mod tests {
         fn new(home: &Utf8Path) -> Self {
             Self {
                 home: home.as_std_path().to_path_buf(),
-                stdin_is_terminal: false,
                 lines: RefCell::new(VecDeque::new()),
             }
         }
@@ -465,7 +462,7 @@ mod tests {
         }
 
         fn stdin_is_terminal(&self) -> bool {
-            self.stdin_is_terminal
+            false
         }
 
         fn read_line(&self) -> io::Result<String> {
@@ -497,7 +494,15 @@ mod tests {
         database.record_managed_resource_track_installed("redis", "7.2", "7.2.5-pv1", &release)?;
         let mut stdout = Vec::new();
 
-        let exit_code = uninstall(redis_spec(), "7.2", true, false, &environment, &mut stdout)?;
+        let mut stderr = Vec::new();
+        let exit_code = uninstall(
+            redis_spec(),
+            "7.2",
+            true,
+            false,
+            &environment,
+            &mut Streams::new(&mut stdout, &mut stderr, Presentation::plain()),
+        )?;
         let record = database.managed_resource_track("redis", "7.2")?;
 
         assert_eq!(exit_code, ExitCode::SUCCESS);
@@ -565,11 +570,12 @@ mod tests {
         )?;
         let mut stdout = Vec::new();
 
+        let mut stderr = Vec::new();
         let exit_code = list(
             mailpit_spec(),
             ListArgs { json: false },
             &environment,
-            &mut stdout,
+            &mut Streams::new(&mut stdout, &mut stderr, Presentation::plain()),
         )?;
 
         assert_eq!(exit_code, ExitCode::SUCCESS);

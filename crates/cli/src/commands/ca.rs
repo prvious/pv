@@ -1,5 +1,4 @@
 use std::io;
-use std::io::Write;
 use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
@@ -8,29 +7,29 @@ use state::{PvPaths, StateError};
 
 use crate::environment::Environment;
 use crate::error::ExecuteError;
-use crate::output::{Output, OutputMode};
+use crate::output::{Output, Streams};
 
 pub(crate) fn status(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let local_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
     let local_metadata = metadata_from_local_state(&local_state);
     let trust_state = trust_state(environment, local_metadata.as_ref());
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     output.line("CA trust status")?;
-    write_local_ca_state(&mut output, &local_state)?;
-    write_system_trust_state(&mut output, &trust_state)?;
+    write_local_ca_state(output, &local_state)?;
+    write_system_trust_state(output, &trust_state)?;
 
     Ok(ExitCode::SUCCESS)
 }
 
 pub(crate) fn trust(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let initial_state =
@@ -38,7 +37,7 @@ pub(crate) fn trust(
     let (local_state, generated) = ensure_local_ca(&paths, initial_state)?;
     let local_metadata = metadata_from_local_state(&local_state);
     let trust_state = trust_state(environment, local_metadata.as_ref());
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     output.line("Prepared PV local CA")?;
     match generated {
@@ -52,7 +51,7 @@ pub(crate) fn trust(
         }
         None => output.line("  existing local CA is current")?,
     }
-    write_system_trust_state(&mut output, &trust_state)?;
+    write_system_trust_state(output, &trust_state)?;
 
     match trust_state {
         TrustDomainState::Current { .. } => {
@@ -88,18 +87,18 @@ pub(crate) fn trust(
 
 pub(crate) fn untrust(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let local_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
     let local_metadata = metadata_from_local_state(&local_state);
     let trust_state = trust_state(environment, local_metadata.as_ref());
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     output.line("Prepared PV local CA trust removal")?;
-    write_local_ca_state(&mut output, &local_state)?;
-    write_system_trust_state(&mut output, &trust_state)?;
+    write_local_ca_state(output, &local_state)?;
+    write_system_trust_state(output, &trust_state)?;
 
     match trust_state {
         TrustDomainState::NotTrusted { .. } => {
@@ -191,10 +190,7 @@ fn trust_state(
     platform::inspect_system_ca_trust(metadata, &inspector)
 }
 
-fn write_local_ca_state(
-    output: &mut Output<'_, impl Write>,
-    state: &CaFileState,
-) -> io::Result<()> {
+fn write_local_ca_state(output: &mut Output<'_>, state: &CaFileState) -> io::Result<()> {
     match state {
         CaFileState::Missing {
             certificate_path,
@@ -233,10 +229,7 @@ fn write_local_ca_state(
     }
 }
 
-fn write_system_trust_state(
-    output: &mut Output<'_, impl Write>,
-    state: &TrustDomainState,
-) -> io::Result<()> {
+fn write_system_trust_state(output: &mut Output<'_>, state: &TrustDomainState) -> io::Result<()> {
     match state {
         TrustDomainState::Current { fingerprint } => {
             output.line("System keychain trust: current")?;
