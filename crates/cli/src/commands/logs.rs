@@ -282,7 +282,7 @@ fn write_initial_tail(
     let available_count = tails.iter().filter(|tail| tail.available).count();
 
     if available_count == 0 {
-        output.line(empty_message)?;
+        output.note(empty_message)?;
         return Ok(());
     }
 

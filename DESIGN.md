@@ -1577,7 +1577,7 @@ Each human-facing stream is rendered in one of two forms, chosen independently f
 
 Decorated output uses color only when neither `NO_COLOR` nor the global `--no-color` flag is set; without color it keeps its layout and glyphs. Color never carries meaning alone: every glyph accompanies a status word or outcome text. PV uses the terminal's default foreground for ordinary text plus a small ANSI palette (success green, warning yellow, error red, values cyan, active/prompt magenta, labels dim). PV does not detect the terminal background and does not offer user themes.
 
-Glyph vocabulary: `✓` success, `✗` failure, `⚠` warning, `○` no-op or idle, `●` running or default, `◇` completed flow step or answered prompt, `◆` active step or prompt, `│` gutter (`┌` opens, `└` closes a flow), `↳` hint or repair command, `◐` spinner.
+Glyph vocabulary: `✓` success, `✗` failure, `⚠` warning, `○` no-op or idle, `●` running or default, `◇` completed flow step or answered prompt, `◆` active step or prompt, `│` gutter (`┌` opens, `└` closes a flow), `↳` hint or repair command, `◐` spinner. When a command's outcome depends on the states it reports, such as `pv status`, `pv doctor`, and `pv ports:status` exiting non-zero, each row's glyph agrees with that outcome: `✗` marks exactly what fails the command, and `⚠` marks something worth attention that does not.
 
 Decorated output reflows to the terminal width (80 columns when the width is unknown) and never needs horizontal scrolling. A table that does not fit reflows each record into stacked `label: value` rows without dropping fields. Secondary prose wraps at word boundaries; paths, hostnames, URLs, versions, and identifiers are never split. Plain output does not depend on width.
 

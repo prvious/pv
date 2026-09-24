@@ -481,6 +481,25 @@ impl<'writer> Output<'writer> {
         )
     }
 
+    /// A report section heading, such as `ROUTING`, after a blank line.
+    /// Plain reports stay flat, so a plain surface writes nothing; a report
+    /// whose plain form has its own section labels uses its own plain writer.
+    pub(crate) fn section(&mut self, title: &str) -> io::Result<()> {
+        if !self.surface.decorated {
+            return Ok(());
+        }
+        let title = title.to_uppercase();
+        let title = if self.surface.color {
+            let style = Style::new().effects(Effects::DIMMED | Effects::BOLD);
+            format!("{style}{title}{style:#}")
+        } else {
+            title
+        };
+        self.continuation = INDENT.to_string();
+        writeln!(self.writer)?;
+        writeln!(self.writer, "{title}")
+    }
+
     /// Opens a multi-step flow: the badge, then `┌  title  ·  subtitle`.
     /// A plain surface gets only the title.
     pub(crate) fn flow_start(

@@ -14,7 +14,7 @@ use crate::environment::Environment;
 use crate::error::CliError;
 use crate::error::ExecuteError;
 use crate::helper_release::HelperReleaseMetadata;
-use crate::output::{Output, Streams};
+use crate::output::{Line, Mark, Output, Streams, Tone};
 
 use super::pf_diagnostics::{PfRoutingDiagnostic, PfRoutingState};
 
@@ -30,18 +30,29 @@ pub(crate) fn run(
         ExitCode::SUCCESS
     };
     if args.json {
-        streams.out.json(&report)?;
+        streams.out.json(&report.json())?;
 
         return Ok(exit_code);
     }
-    report.write_plain(&mut streams.out)?;
+    report.write(&mut streams.out)?;
 
     Ok(exit_code)
 }
 
-#[derive(Serialize)]
+/// The checks, grouped the way the decorated report shows them. Plain and
+/// JSON output list the same checks in the same order.
 struct DoctorReport {
+    sections: [DoctorSection; 3],
+}
+
+struct DoctorSection {
+    title: &'static str,
     checks: Vec<DoctorCheck>,
+}
+
+#[derive(Serialize)]
+struct DoctorJson<'report> {
+    checks: Vec<&'report DoctorCheck>,
 }
 
 impl DoctorReport {
@@ -50,65 +61,116 @@ impl DoctorReport {
         let database = Database::open_read_only(&paths)?;
         let launch_agent_path = launch_agent_path(environment)?;
         let launch_agent = platform::inspect_launch_agent_file(&launch_agent_path, None);
-        let checks = vec![
-            layout_check(&paths),
-            database_check(&paths, database.as_ref()),
-            privileged_helper_check(environment, &paths),
-            launch_agent_check(&launch_agent),
-            daemon_socket_check(&paths, &launch_agent),
-            dns_check(environment, &paths)?,
-            ports_check(environment, &paths, database.as_ref())?,
-            ca_check(environment, &paths),
-            recent_jobs_check(database.as_ref())?,
-            runtime_states_check(database.as_ref())?,
-            manifest_cache_check(&paths),
+        let sections = [
+            DoctorSection {
+                title: "System",
+                checks: vec![
+                    layout_check(&paths),
+                    database_check(&paths, database.as_ref()),
+                    privileged_helper_check(environment, &paths),
+                ],
+            },
+            DoctorSection {
+                title: "Routing",
+                checks: vec![
+                    dns_check(environment, &paths)?,
+                    ports_check(environment, &paths, database.as_ref())?,
+                    ca_check(environment, &paths),
+                ],
+            },
+            DoctorSection {
+                title: "Daemon & jobs",
+                checks: vec![
+                    launch_agent_check(&launch_agent),
+                    daemon_socket_check(&paths, &launch_agent),
+                    recent_jobs_check(database.as_ref())?,
+                    runtime_states_check(database.as_ref())?,
+                    manifest_cache_check(&paths),
+                ],
+            },
         ];
 
-        Ok(Self { checks })
+        Ok(Self { sections })
+    }
+
+    fn checks(&self) -> impl Iterator<Item = &DoctorCheck> {
+        self.sections
+            .iter()
+            .flat_map(|section| section.checks.iter())
+    }
+
+    fn count(&self, status: CheckStatus) -> usize {
+        self.checks().filter(|check| check.status == status).count()
     }
 
     fn has_failures(&self) -> bool {
-        self.checks
-            .iter()
-            .any(|check| check.status == CheckStatus::Fail)
+        self.count(CheckStatus::Fail) > 0
     }
 
-    fn write_plain(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
-        output.line("PV doctor")?;
-        for check in &self.checks {
-            output.line(&format!(
-                "[{}] {}: {}",
-                check.status.as_str(),
-                check.name,
-                check.message
-            ))?;
-            if let Some(detail) = &check.detail {
-                output.line(&format!("  {detail}"))?;
-            }
-            if let Some(repair) = &check.repair {
-                output.line(&format!("  repair: `{repair}`"))?;
+    fn json(&self) -> DoctorJson<'_> {
+        DoctorJson {
+            checks: self.checks().collect(),
+        }
+    }
+
+    fn write(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
+        let decorated = output.surface().decorated();
+        let name_width = self
+            .checks()
+            .map(|check| check.name.chars().count())
+            .max()
+            .unwrap_or(0);
+        output.heading("doctor", Some("PV doctor"))?;
+        for section in &self.sections {
+            output.section(section.title)?;
+            for check in &section.checks {
+                if decorated {
+                    let message_tone = match check.status {
+                        CheckStatus::Pass => Tone::Dim,
+                        CheckStatus::Warn | CheckStatus::Fail => Tone::Plain,
+                    };
+                    output.status(
+                        check.status.mark(),
+                        Line::from(format!("{:name_width$}  ", check.name))
+                            .toned(message_tone, check.message.as_str()),
+                    )?;
+                } else {
+                    output.line(&format!(
+                        "[{}] {}: {}",
+                        check.status.as_str(),
+                        check.name,
+                        check.message
+                    ))?;
+                }
+                if let Some(detail) = &check.detail {
+                    output.detail(detail)?;
+                }
+                if let Some(repair) = &check.repair {
+                    output.hint("repair", repair)?;
+                }
             }
         }
 
-        let passed = self
-            .checks
-            .iter()
-            .filter(|check| check.status == CheckStatus::Pass)
-            .count();
-        let warnings = self
-            .checks
-            .iter()
-            .filter(|check| check.status == CheckStatus::Warn)
-            .count();
-        let failures = self
-            .checks
-            .iter()
-            .filter(|check| check.status == CheckStatus::Fail)
-            .count();
-
-        output.line(&format!(
-            "Summary: {passed} passed, {warnings} warning(s), {failures} failed"
-        ))?;
+        let passed = self.count(CheckStatus::Pass);
+        let warnings = self.count(CheckStatus::Warn);
+        let failures = self.count(CheckStatus::Fail);
+        if !decorated {
+            output.line(&format!(
+                "Summary: {passed} passed, {warnings} warning(s), {failures} failed"
+            ))?;
+            return Ok(());
+        }
+        let mark = self
+            .checks()
+            .map(|check| check.status)
+            .max()
+            .map_or(Mark::Success, CheckStatus::mark);
+        let warning_noun = if warnings == 1 { "warning" } else { "warnings" };
+        output.line("")?;
+        output.status(
+            mark,
+            format!("{passed} passed · {warnings} {warning_noun} · {failures} failed"),
+        )?;
 
         Ok(())
     }
@@ -175,7 +237,8 @@ fn privileged_helper_check(environment: &impl Environment, paths: &PvPaths) -> D
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+/// Ordered from best to worst, so the worst check decides the summary.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "lowercase")]
 enum CheckStatus {
     Pass,
@@ -189,6 +252,14 @@ impl CheckStatus {
             Self::Pass => "pass",
             Self::Warn => "warn",
             Self::Fail => "fail",
+        }
+    }
+
+    const fn mark(self) -> Mark {
+        match self {
+            Self::Pass => Mark::Success,
+            Self::Warn => Mark::Warning,
+            Self::Fail => Mark::Failure,
         }
     }
 }

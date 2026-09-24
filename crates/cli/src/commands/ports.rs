@@ -13,7 +13,7 @@ use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Line, Mark, Output, Streams};
 
-use super::pf_diagnostics::{PfRoutingDiagnostic, PfRoutingState};
+use super::pf_diagnostics::PfRoutingDiagnostic;
 
 const LOW_PORTS: [u16; 2] = [80, 443];
 
@@ -25,10 +25,10 @@ pub(crate) fn status(
     let paths = pv_paths(environment)?;
     let database = Database::open_read_only(&paths)?;
     let diagnostic = PfRoutingDiagnostic::read(environment, &paths, database.as_ref())?;
-    let exit_code = if diagnostic.is_active() {
-        ExitCode::SUCCESS
+    let (exit_code, mark) = if diagnostic.is_active() {
+        (ExitCode::SUCCESS, Mark::Success)
     } else {
-        ExitCode::FAILURE
+        (ExitCode::FAILURE, Mark::Failure)
     };
 
     if args.json {
@@ -40,10 +40,7 @@ pub(crate) fn status(
     let output = &mut streams.out;
 
     output.heading("ports:status", Some("Port redirect status"))?;
-    output.status(
-        routing_mark(diagnostic.state),
-        format!("State: {}", diagnostic.state.as_str()),
-    )?;
+    output.status(mark, format!("State: {}", diagnostic.state.as_str()))?;
     output.detail(Line::field("Evidence: ", diagnostic.evidence.as_str()))?;
     output.detail(format!(
         "Expected redirects: HTTP {}, HTTPS {}",
@@ -61,14 +58,6 @@ pub(crate) fn status(
     }
 
     Ok(exit_code)
-}
-
-fn routing_mark(state: PfRoutingState) -> Mark {
-    match state {
-        PfRoutingState::Active => Mark::Success,
-        PfRoutingState::Drifted | PfRoutingState::Unknown => Mark::Warning,
-        PfRoutingState::Inactive => Mark::Failure,
-    }
 }
 
 fn display_port(port: Option<u16>) -> String {

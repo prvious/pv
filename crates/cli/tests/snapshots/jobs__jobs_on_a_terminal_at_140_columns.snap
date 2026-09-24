@@ -1,0 +1,8 @@
+---
+source: crates/cli/tests/jobs.rs
+expression: wide.stdout
+---
+ID          KIND       SCOPE             STATUS       STARTED               FINISHED              SUMMARY
+job_000003  install    resource:redis:7  ● running    <timestamp>  -                     -
+job_000002  reconcile  project:acme      ✗ failed     <timestamp>  <timestamp>  Gateway failed to start
+job_000001  setup      system            ✓ succeeded  <timestamp>  <timestamp>  Installed default resources
