@@ -161,6 +161,11 @@ pub(crate) struct Line {
 }
 
 impl Line {
+    /// A `label` followed by a value, such as `path: /etc/resolver/test`.
+    pub(crate) fn field(label: &str, value: impl std::fmt::Display) -> Self {
+        Self::from(label).value(value.to_string())
+    }
+
     pub(crate) fn text(mut self, text: impl Into<String>) -> Self {
         self.spans.push((Tone::Plain, text.into()));
         self
@@ -202,13 +207,21 @@ impl From<String> for Line {
     }
 }
 
+impl From<&String> for Line {
+    fn from(text: &String) -> Self {
+        Self::default().text(text.as_str())
+    }
+}
+
 /// The glyph that leads a status row. Every mark accompanies status text.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Mark {
+    Success,
     Failure,
     Warning,
     /// A no-op, idle, or empty outcome.
     Idle,
+    Running,
     /// A completed flow step or answered prompt.
     Done,
 }
@@ -216,16 +229,18 @@ pub(crate) enum Mark {
 impl Mark {
     fn glyph(self) -> &'static str {
         match self {
+            Self::Success => "✓",
             Self::Failure => "✗",
             Self::Warning => "⚠",
             Self::Idle => "○",
+            Self::Running => "●",
             Self::Done => "◇",
         }
     }
 
     fn tone(self) -> Tone {
         match self {
-            Self::Done => Tone::Success,
+            Self::Success | Self::Running | Self::Done => Tone::Success,
             Self::Failure => Tone::Failure,
             Self::Warning => Tone::Warning,
             Self::Idle => Tone::Dim,
@@ -291,6 +306,19 @@ impl<'writer> Output<'writer> {
         writeln!(self.writer, "{line}")
     }
 
+    pub(crate) fn success(&mut self, line: impl Into<Line>) -> io::Result<()> {
+        self.status(Mark::Success, line)
+    }
+
+    pub(crate) fn failure(&mut self, line: impl Into<Line>) -> io::Result<()> {
+        self.status(Mark::Failure, line)
+    }
+
+    /// A no-op outcome, such as something already being current.
+    pub(crate) fn note(&mut self, line: impl Into<Line>) -> io::Result<()> {
+        self.status(Mark::Idle, line)
+    }
+
     /// A status row: the glyph column followed by the status text.
     pub(crate) fn status(&mut self, mark: Mark, line: impl Into<Line>) -> io::Result<()> {
         let line = line.into();
@@ -325,6 +353,36 @@ impl<'writer> Output<'writer> {
         let body = line.paint(Tone::Dim, self.surface.color);
         let prefix = self.continuation.clone();
         self.write_wrapped(&prefix, &prefix, &body)
+    }
+
+    /// A consequence of the latest row, such as the reconciliation job it
+    /// queued. Plain output keeps the line unindented.
+    pub(crate) fn follow_up(&mut self, line: impl Into<Line>) -> io::Result<()> {
+        let line = line.into();
+        if !self.surface.decorated {
+            return self.line(&line.plain());
+        }
+        self.arrow_row(&line)
+    }
+
+    /// A runnable next step, such as a repair command.
+    pub(crate) fn hint(&mut self, label: &str, command: &str) -> io::Result<()> {
+        if !self.surface.decorated {
+            return self.line(&format!("  {label}: `{command}`"));
+        }
+        self.arrow_row(&Line::from(label).text("  ").value(command))
+    }
+
+    /// A dim `↳ …` row under the latest row, keeping value spans colored.
+    fn arrow_row(&mut self, line: &Line) -> io::Result<()> {
+        let color = self.surface.color;
+        let body = format!(
+            "{} {}",
+            Tone::Dim.paint("↳", color),
+            line.paint(Tone::Dim, color)
+        );
+        let prefix = self.continuation.clone();
+        self.write_wrapped(&prefix, &format!("{prefix}  "), &body)
     }
 
     /// Verbatim content such as a config preview: unchanged on a plain
@@ -375,6 +433,24 @@ impl<'writer> Output<'writer> {
             tone.paint(summary, color)
         );
         self.write_wrapped(&format!("{}  ", mark.paint(color)), INDENT, &body)
+    }
+
+    /// A report heading: the `pv` badge and the command, then a rule. A plain
+    /// surface gets `plain_title` when the command documents one.
+    pub(crate) fn heading(&mut self, command: &str, plain_title: Option<&str>) -> io::Result<()> {
+        if !self.surface.decorated {
+            return match plain_title {
+                Some(title) => self.line(title),
+                None => Ok(()),
+            };
+        }
+        self.badge(command)?;
+        let rule = "─".repeat(self.surface.width);
+        writeln!(
+            self.writer,
+            "{}",
+            Tone::Dim.paint(&rule, self.surface.color)
+        )
     }
 
     /// Opens a multi-step flow: the badge, then `┌  title  ·  subtitle`.

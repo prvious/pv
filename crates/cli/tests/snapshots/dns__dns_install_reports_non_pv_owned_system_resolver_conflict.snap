@@ -9,7 +9,7 @@ expression: "(output, prepared_path, prepared_config, system_resolver_path,\nsys
                 1,
             ),
         ),
-        stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nSystem resolver config is not PV-owned: <tempdir>/etc/resolver/test\nLeaving it in place.\n",
+        stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nSystem resolver config is not PV-owned: <tempdir>/etc/resolver/test\n  Leaving it in place.\n",
         stderr: "",
     },
     "<tempdir>/home/.pv/config/resolver/test",

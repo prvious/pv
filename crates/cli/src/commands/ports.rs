@@ -11,9 +11,9 @@ use state::{
 use crate::args::PortsStatusArgs;
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, Streams};
+use crate::output::{Line, Mark, Output, Streams};
 
-use super::pf_diagnostics::PfRoutingDiagnostic;
+use super::pf_diagnostics::{PfRoutingDiagnostic, PfRoutingState};
 
 const LOW_PORTS: [u16; 2] = [80, 443];
 
@@ -39,25 +39,36 @@ pub(crate) fn status(
 
     let output = &mut streams.out;
 
-    output.line("Port redirect status")?;
-    output.line(&format!("State: {}", diagnostic.state.as_str()))?;
-    output.line(&format!("Evidence: {}", diagnostic.evidence.as_str()))?;
-    output.line(&format!(
+    output.heading("ports:status", Some("Port redirect status"))?;
+    output.status(
+        routing_mark(diagnostic.state),
+        format!("State: {}", diagnostic.state.as_str()),
+    )?;
+    output.detail(Line::field("Evidence: ", diagnostic.evidence.as_str()))?;
+    output.detail(format!(
         "Expected redirects: HTTP {}, HTTPS {}",
         display_port(diagnostic.expected_http_port),
         display_port(diagnostic.expected_https_port),
     ))?;
-    output.line(&format!(
+    output.detail(format!(
         "Active redirects: HTTP {}, HTTPS {}",
         display_port(diagnostic.active_http_port),
         display_port(diagnostic.active_https_port),
     ))?;
-    output.line(&format!("Observed: {}", diagnostic.observed_at))?;
+    output.detail(Line::field("Observed: ", &diagnostic.observed_at))?;
     if !diagnostic.is_active() {
-        output.line("Repair: `pv ports:install`")?;
+        output.hint("repair", "pv ports:install")?;
     }
 
     Ok(exit_code)
+}
+
+fn routing_mark(state: PfRoutingState) -> Mark {
+    match state {
+        PfRoutingState::Active => Mark::Success,
+        PfRoutingState::Drifted | PfRoutingState::Unknown => Mark::Warning,
+        PfRoutingState::Inactive => Mark::Failure,
+    }
 }
 
 fn display_port(port: Option<u16>) -> String {
@@ -74,11 +85,11 @@ pub(crate) fn install(
     let output = &mut streams.out;
 
     if !low_port_conflicts.is_empty() {
-        output.line("Port redirect preparation failed")?;
+        output.failure("Port redirect preparation failed")?;
         for port in low_port_conflicts {
-            output.line(&format!("Loopback TCP port {port} already has a listener."))?;
+            output.detail(format!("Loopback TCP port {port} already has a listener."))?;
         }
-        output.line("Stop the conflicting service, then run `pv ports:install` again.")?;
+        output.detail("Stop the conflicting service, then run `pv ports:install` again.")?;
 
         return Ok(ExitCode::FAILURE);
     }
@@ -118,22 +129,23 @@ pub(crate) fn install(
     let system_reference_state =
         platform::inspect_pf_conf_reference(&system_pf_conf_path, Some(&reference));
 
-    output.line("Prepared PV port redirect config")?;
-    output.line(&format!("  anchor path: {prepared_anchor_path}"))?;
-    output.line(&format!(
-        "  pf.conf reference path: {prepared_reference_path}"
+    output.success("Prepared PV port redirect config")?;
+    output.detail(Line::field("anchor path: ", &prepared_anchor_path))?;
+    output.detail(Line::field(
+        "pf.conf reference path: ",
+        &prepared_reference_path,
     ))?;
-    output.line(&format!(
-        "  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:{}",
-        config.http_port
+    output.detail(Line::field(
+        "HTTP redirect: 127.0.0.1:80 -> ",
+        format!("127.0.0.1:{}", config.http_port),
     ))?;
-    output.line(&format!(
-        "  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:{}",
-        config.https_port
+    output.detail(Line::field(
+        "HTTPS redirect: 127.0.0.1:443 -> ",
+        format!("127.0.0.1:{}", config.https_port),
     ))?;
 
     if let Some(exit_code) =
-        write_pf_install_blocker(output, &system_anchor_state, &system_reference_state)?
+        write_pf_blocker(output, &system_anchor_state, &system_reference_state)?
     {
         release_new_gateway_ports(&mut database, had_http_assignment, had_https_assignment)?;
 
@@ -157,7 +169,7 @@ pub(crate) fn install(
         };
 
         if active_config.as_ref() == Some(&config) {
-            output.line("System pf redirect config already matches PV")?;
+            output.note("System pf redirect config already matches PV")?;
             refresh_gateway_observation_after_pf_repair(
                 environment,
                 &paths,
@@ -167,8 +179,10 @@ pub(crate) fn install(
 
             return Ok(ExitCode::SUCCESS);
         }
-        output
-            .line("System pf redirect config matches PV, but active redirects are not loaded.")?;
+        output.status(
+            Mark::Warning,
+            "System pf redirect config matches PV, but active redirects are not loaded.",
+        )?;
     }
 
     if let Err(error) = environment.install_pf_redirects(
@@ -189,7 +203,7 @@ pub(crate) fn install(
         had_https_assignment,
     )?;
     refresh_gateway_observation_after_pf_repair(environment, &paths, &config, &mut database)?;
-    output.line("Installed system pf redirect config")?;
+    output.success("Installed system pf redirect config")?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -305,7 +319,7 @@ pub(crate) fn uninstall(
     )?;
 
     if let Some(exit_code) =
-        write_pf_uninstall_blocker(output, &system_anchor_state, &system_reference_state)?
+        write_pf_blocker(output, &system_anchor_state, &system_reference_state)?
     {
         return Ok(exit_code);
     }
@@ -313,13 +327,13 @@ pub(crate) fn uninstall(
     if matches!(system_anchor_state, PfFileState::Missing { .. })
         && matches!(system_reference_state, PfFileState::Missing { .. })
     {
-        output.line("System pf redirect config already absent")?;
+        output.note("System pf redirect config already absent")?;
 
         return Ok(ExitCode::SUCCESS);
     }
 
     environment.remove_pf_redirects(&system_anchor_path, &system_pf_conf_path, &candidate_dir)?;
-    output.line("Removed PV-owned system pf redirect config")?;
+    output.success("Removed PV-owned system pf redirect config")?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -340,84 +354,38 @@ fn pf_config_from_assignments(assignments: &GatewayPortAssignments) -> PfRedirec
     PfRedirectConfig::new(assignments.http.port, assignments.https.port)
 }
 
-fn write_pf_install_blocker(
+/// Reports a system pf file PV does not own or cannot inspect, which blocks
+/// both install and uninstall.
+fn write_pf_blocker(
     output: &mut Output<'_>,
     anchor_state: &PfFileState<PfRedirectConfig>,
     reference_state: &PfFileState<PfConfReference>,
 ) -> io::Result<Option<ExitCode>> {
-    match anchor_state {
-        PfFileState::Conflict { path } => {
-            output.line(&format!("System pf anchor is not PV-owned: {path}"))?;
-            output.line("Leaving it in place.")?;
-            return Ok(Some(ExitCode::FAILURE));
+    let blocker = match (anchor_state, reference_state) {
+        (PfFileState::Conflict { path }, _) => {
+            Some(("System pf anchor is not PV-owned: ", path, None))
         }
-        PfFileState::Unreadable { path, message } => {
-            output.line(&format!("System pf anchor could not be inspected: {path}"))?;
-            output.line(&format!("  {message}"))?;
-            output.line("Leaving it in place.")?;
-            return Ok(Some(ExitCode::FAILURE));
+        (PfFileState::Unreadable { path, message }, _) => Some((
+            "System pf anchor could not be inspected: ",
+            path,
+            Some(message),
+        )),
+        (_, PfFileState::Conflict { path }) => {
+            Some(("System pf.conf reference is not PV-owned: ", path, None))
         }
-        PfFileState::Missing { .. } | PfFileState::Current { .. } | PfFileState::Stale { .. } => {}
-    }
+        (_, PfFileState::Unreadable { path, message }) => Some((
+            "System pf.conf reference could not be inspected: ",
+            path,
+            Some(message),
+        )),
+        _ => None,
+    };
+    let Some((summary, path, message)) = blocker else {
+        return Ok(None);
+    };
+    super::write_left_in_place(output, summary, path, message.map(String::as_str))?;
 
-    match reference_state {
-        PfFileState::Conflict { path } => {
-            output.line(&format!("System pf.conf reference is not PV-owned: {path}"))?;
-            output.line("Leaving it in place.")?;
-            Ok(Some(ExitCode::FAILURE))
-        }
-        PfFileState::Unreadable { path, message } => {
-            output.line(&format!(
-                "System pf.conf reference could not be inspected: {path}"
-            ))?;
-            output.line(&format!("  {message}"))?;
-            output.line("Leaving it in place.")?;
-            Ok(Some(ExitCode::FAILURE))
-        }
-        PfFileState::Missing { .. } | PfFileState::Current { .. } | PfFileState::Stale { .. } => {
-            Ok(None)
-        }
-    }
-}
-
-fn write_pf_uninstall_blocker(
-    output: &mut Output<'_>,
-    anchor_state: &PfFileState<PfRedirectConfig>,
-    reference_state: &PfFileState<PfConfReference>,
-) -> io::Result<Option<ExitCode>> {
-    match anchor_state {
-        PfFileState::Conflict { path } => {
-            output.line(&format!("System pf anchor is not PV-owned: {path}"))?;
-            output.line("Leaving it in place.")?;
-            return Ok(Some(ExitCode::FAILURE));
-        }
-        PfFileState::Unreadable { path, message } => {
-            output.line(&format!("System pf anchor could not be inspected: {path}"))?;
-            output.line(&format!("  {message}"))?;
-            output.line("Leaving it in place.")?;
-            return Ok(Some(ExitCode::FAILURE));
-        }
-        PfFileState::Missing { .. } | PfFileState::Current { .. } | PfFileState::Stale { .. } => {}
-    }
-
-    match reference_state {
-        PfFileState::Conflict { path } => {
-            output.line(&format!("System pf.conf reference is not PV-owned: {path}"))?;
-            output.line("Leaving it in place.")?;
-            Ok(Some(ExitCode::FAILURE))
-        }
-        PfFileState::Unreadable { path, message } => {
-            output.line(&format!(
-                "System pf.conf reference could not be inspected: {path}"
-            ))?;
-            output.line(&format!("  {message}"))?;
-            output.line("Leaving it in place.")?;
-            Ok(Some(ExitCode::FAILURE))
-        }
-        PfFileState::Missing { .. } | PfFileState::Current { .. } | PfFileState::Stale { .. } => {
-            Ok(None)
-        }
-    }
+    Ok(Some(ExitCode::FAILURE))
 }
 
 fn write_delete_result(
@@ -427,9 +395,9 @@ fn write_delete_result(
     deleted: bool,
 ) -> io::Result<()> {
     if deleted {
-        output.line(&format!("Deleted {label}: {path}"))
+        output.success(Line::from(format!("Deleted {label}: ")).value(path.as_str()))
     } else {
-        output.line(&format!("{label} already absent: {path}"))
+        output.note(Line::from(format!("{label} already absent: ")).value(path.as_str()))
     }
 }
 

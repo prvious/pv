@@ -9,7 +9,7 @@ use state::{PvPaths, StateError};
 use crate::args::{Cli, Command};
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, Streams};
+use crate::output::{Line, Output, Streams};
 
 mod artifact_resource;
 mod ca;
@@ -352,9 +352,7 @@ fn request_system_reconciliation(
     streams: &mut Streams<'_>,
 ) -> Result<(), ExecuteError> {
     if let Some(job) = submit_reconciliation(paths, SYSTEM_SCOPE, &mut streams.err)? {
-        streams
-            .out
-            .line(&format!("System reconciliation requested: {}", job.id))?;
+        write_reconciliation_requested(&mut streams.out, &job.id)?;
     }
 
     Ok(())
@@ -368,11 +366,11 @@ fn request_project_reconciliation(
 ) -> Result<(), ExecuteError> {
     let scope = format!("project:{}", project.id);
     if let Some(job) = submit_reconciliation(paths, &scope, &mut streams.err)? {
-        streams.out.line(&format!(
-            "Queued reconciliation {} for {}",
-            job.id,
-            project_display_name(project)
-        ))?;
+        streams.out.follow_up(
+            Line::from("Queued reconciliation ")
+                .value(job.id)
+                .text(format!(" for {}", project_display_name(project))),
+        )?;
     }
 
     Ok(())
@@ -389,6 +387,26 @@ fn project_display_name(project: &state::ProjectRecord) -> &str {
         .primary_hostname
         .as_deref()
         .unwrap_or(project.slug.as_str())
+}
+
+/// Reports a system file PV must not touch because it is not PV-owned or
+/// cannot be inspected.
+fn write_left_in_place(
+    output: &mut Output<'_>,
+    summary: &str,
+    path: &camino::Utf8Path,
+    message: Option<&str>,
+) -> io::Result<()> {
+    output.failure(Line::field(summary, path))?;
+    if let Some(message) = message {
+        output.detail(message)?;
+    }
+    output.detail("Leaving it in place.")
+}
+
+/// The follow-up line for an accepted system reconciliation request.
+fn write_reconciliation_requested(output: &mut Output<'_>, job_id: &str) -> io::Result<()> {
+    output.follow_up(Line::field("System reconciliation requested: ", job_id))
 }
 
 fn write_php_pair_install_lines(

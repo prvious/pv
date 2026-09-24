@@ -20,6 +20,7 @@ struct TestEnvironment {
     certificates: RefCell<Vec<KeychainCertificate>>,
     keychain_error: Option<String>,
     operations: RefCell<Vec<String>>,
+    terminal_width: Option<usize>,
 }
 
 impl TestEnvironment {
@@ -30,6 +31,7 @@ impl TestEnvironment {
             certificates: RefCell::new(Vec::new()),
             keychain_error: None,
             operations: RefCell::new(Vec::new()),
+            terminal_width: None,
         }
     }
 
@@ -40,6 +42,12 @@ impl TestEnvironment {
 
     fn with_keychain_error(mut self, message: &str) -> Self {
         self.keychain_error = Some(message.to_string());
+        self
+    }
+
+    /// Stdout is a terminal of `width` columns, so rows render decorated.
+    fn on_terminal(mut self, width: usize) -> Self {
+        self.terminal_width = Some(width);
         self
     }
 }
@@ -63,6 +71,14 @@ impl Environment for TestEnvironment {
 
     fn stdin_is_terminal(&self) -> bool {
         false
+    }
+
+    fn stdout_is_terminal(&self) -> bool {
+        self.terminal_width.is_some()
+    }
+
+    fn terminal_width(&self) -> Option<usize> {
+        self.terminal_width
     }
 
     fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -236,6 +252,15 @@ fn ca_status_reports_local_and_system_trust_without_creating_files() -> anyhow::
             trust: KeychainTrustResult::TrustRoot,
         });
     let current = run_pv(&["ca:status"], &current_environment)?;
+    let current_on_terminal = run_pv(
+        &["ca:status", "--no-color"],
+        &TestEnvironment::new(&home, &current_dir)
+            .with_certificate(KeychainCertificate {
+                metadata: generated.metadata.clone(),
+                trust: KeychainTrustResult::TrustRoot,
+            })
+            .on_terminal(80),
+    )?;
 
     let unreadable_environment =
         TestEnvironment::new(&home, &current_dir).with_keychain_error("fixture keychain failure");
@@ -248,7 +273,7 @@ fn ca_status_reports_local_and_system_trust_without_creating_files() -> anyhow::
     assert!(key_after_missing.is_none());
 
     with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!((missing, current, unreadable));
+        assert_debug_snapshot!((missing, current, current_on_terminal, unreadable));
     });
 
     Ok(())

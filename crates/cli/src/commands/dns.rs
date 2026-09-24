@@ -7,7 +7,7 @@ use state::{Database, PortOwner, PortRequest, PvPaths, StateError};
 
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, Streams};
+use crate::output::{Line, Mark, Output, Streams};
 
 pub(crate) fn status(
     environment: &impl Environment,
@@ -21,7 +21,7 @@ pub(crate) fn status(
     let system_state = environment.inspect_resolver_file(&system_path, expected_config.as_ref());
     let output = &mut streams.out;
 
-    output.line("DNS resolver status")?;
+    output.heading("dns:status", Some("DNS resolver status"))?;
     write_resolver_state(output, "Prepared resolver config", &prepared_state)?;
     write_resolver_state(output, "System resolver config", &system_state)?;
 
@@ -67,9 +67,9 @@ fn install_inner(
     let system_state = environment.inspect_resolver_file(&system_path, Some(&config));
     let output = &mut streams.out;
 
-    output.line("Prepared PV DNS resolver config")?;
-    output.line(&format!("  path: {prepared_path}"))?;
-    output.line(&format!("  DNS resolver port: {dns_port}"))?;
+    output.success("Prepared PV DNS resolver config")?;
+    output.detail(Line::field("path: ", &prepared_path))?;
+    output.detail(Line::field("DNS resolver port: ", dns_port))?;
 
     match &system_state {
         ResolverFileState::Current { .. }
@@ -77,18 +77,23 @@ fn install_inner(
         | ResolverFileState::Stale { .. } => {}
         ResolverFileState::Conflict { path } => {
             release_new_dns_port(&mut database, had_dns_assignment)?;
-            output.line(&format!("System resolver config is not PV-owned: {path}"))?;
-            output.line("Leaving it in place.")?;
+            super::write_left_in_place(
+                output,
+                "System resolver config is not PV-owned: ",
+                path,
+                None,
+            )?;
 
             return Ok(ExitCode::FAILURE);
         }
         ResolverFileState::Unreadable { path, message } => {
             release_new_dns_port(&mut database, had_dns_assignment)?;
-            output.line(&format!(
-                "System resolver config could not be inspected: {path}"
-            ))?;
-            output.line(&format!("  {message}"))?;
-            output.line("Leaving it in place.")?;
+            super::write_left_in_place(
+                output,
+                "System resolver config could not be inspected: ",
+                path,
+                Some(message),
+            )?;
 
             return Ok(ExitCode::FAILURE);
         }
@@ -105,9 +110,12 @@ fn install_inner(
 
     match system_state {
         ResolverFileState::Current { path, port } => {
-            output.line(&format!(
-                "System resolver config already matches PV on port {port}: {path}"
-            ))?;
+            output.note(
+                Line::from(format!(
+                    "System resolver config already matches PV on port {port}: "
+                ))
+                .value(path.as_str()),
+            )?;
         }
         ResolverFileState::Missing { path } | ResolverFileState::Stale { path, .. } => {
             if let Err(error) = environment.install_resolver_config(&prepared_path, &system_path) {
@@ -115,7 +123,7 @@ fn install_inner(
 
                 return Err(error.into());
             }
-            output.line(&format!("Installed system resolver config: {path}"))?;
+            output.success(Line::field("Installed system resolver config: ", &path))?;
         }
         ResolverFileState::Conflict { .. } | ResolverFileState::Unreadable { .. } => {
             return Ok(ExitCode::FAILURE);
@@ -142,28 +150,23 @@ fn ensure_daemon_running(
 ) -> Result<ExitCode, ExecuteError> {
     let daemon_socket = paths.daemon_socket();
 
-    if !daemon_socket.exists() {
-        output.line("PV daemon is not running; .test lookups will not resolve yet.")?;
-        output.line("Run `pv setup` or `pv daemon:enable`, then retry `pv dns:install`.")?;
-        output.line(&format!("  socket: {daemon_socket}"))?;
+    let cause = if daemon_socket.exists() {
+        match ::daemon::wait_until_healthy_blocking(paths.clone()) {
+            Ok(()) => {
+                output.status(Mark::Running, "PV daemon is running.")?;
 
-        return Ok(ExitCode::FAILURE);
-    }
-
-    match ::daemon::wait_until_healthy_blocking(paths.clone()) {
-        Ok(()) => {
-            output.line("PV daemon is running.")?;
-
-            Ok(ExitCode::SUCCESS)
+                return Ok(ExitCode::SUCCESS);
+            }
+            Err(error) => Line::from(error.to_string()),
         }
-        Err(error) => {
-            output.line("PV daemon is not running; .test lookups will not resolve yet.")?;
-            output.line("Run `pv setup` or `pv daemon:enable`, then retry `pv dns:install`.")?;
-            output.line(&format!("  {error}"))?;
+    } else {
+        Line::field("socket: ", &daemon_socket)
+    };
+    output.failure("PV daemon is not running; .test lookups will not resolve yet.")?;
+    output.detail("Run `pv setup` or `pv daemon:enable`, then retry `pv dns:install`.")?;
+    output.detail(cause)?;
 
-            Ok(ExitCode::FAILURE)
-        }
-    }
+    Ok(ExitCode::FAILURE)
 }
 
 pub(crate) fn uninstall(
@@ -179,41 +182,54 @@ pub(crate) fn uninstall(
     let output = &mut streams.out;
 
     if deleted_prepared {
-        output.line(&format!(
-            "Deleted prepared DNS resolver config: {prepared_path}"
+        output.success(Line::field(
+            "Deleted prepared DNS resolver config: ",
+            &prepared_path,
         ))?;
     } else {
-        output.line(&format!(
-            "Prepared DNS resolver config already absent: {prepared_path}"
+        output.note(Line::field(
+            "Prepared DNS resolver config already absent: ",
+            &prepared_path,
         ))?;
     }
 
     match system_state {
         ResolverFileState::Missing { path } => {
-            output.line(&format!("System resolver config already absent: {path}"))?;
+            output.note(Line::field(
+                "System resolver config already absent: ",
+                &path,
+            ))?;
             database.release_port(PortOwner::Dns)?;
 
             Ok(ExitCode::SUCCESS)
         }
         ResolverFileState::Unreadable { path, message } => {
-            output.line(&format!(
-                "System resolver config could not be inspected: {path}"
-            ))?;
-            output.line(&format!("  {message}"))?;
-            output.line("Leaving it in place.")?;
+            super::write_left_in_place(
+                output,
+                "System resolver config could not be inspected: ",
+                &path,
+                Some(&message),
+            )?;
 
             Ok(ExitCode::FAILURE)
         }
         ResolverFileState::Current { path, .. } | ResolverFileState::Stale { path, .. } => {
             environment.remove_resolver_config(&system_path)?;
-            output.line(&format!("Removed PV-owned system resolver config: {path}"))?;
+            output.success(Line::field(
+                "Removed PV-owned system resolver config: ",
+                &path,
+            ))?;
             database.release_port(PortOwner::Dns)?;
 
             Ok(ExitCode::SUCCESS)
         }
         ResolverFileState::Conflict { path } => {
-            output.line(&format!("System resolver config is not PV-owned: {path}"))?;
-            output.line("Leaving it in place.")?;
+            super::write_left_in_place(
+                output,
+                "System resolver config is not PV-owned: ",
+                &path,
+                None,
+            )?;
 
             Ok(ExitCode::FAILURE)
         }
@@ -225,41 +241,31 @@ fn write_resolver_state(
     label: &str,
     state: &ResolverFileState,
 ) -> io::Result<()> {
+    let (mark, status, path) = match state {
+        ResolverFileState::Missing { path } => (Mark::Idle, "missing", path),
+        ResolverFileState::Current { path, .. } => (Mark::Success, "current", path),
+        ResolverFileState::Stale { path, .. } => (Mark::Warning, "stale", path),
+        ResolverFileState::Conflict { path } => (Mark::Failure, "not PV-owned", path),
+        ResolverFileState::Unreadable { path, .. } => (Mark::Failure, "unreadable", path),
+    };
+    output.status(mark, format!("{label}: {status}"))?;
+    output.detail(Line::field("path: ", path))?;
     match state {
-        ResolverFileState::Missing { path } => {
-            output.line(&format!("{label}: missing"))?;
-            output.line(&format!("  path: {path}"))
-        }
-        ResolverFileState::Current { path, port } => {
-            output.line(&format!("{label}: current"))?;
-            output.line(&format!("  path: {path}"))?;
-            output.line(&format!("  port: {port}"))
-        }
+        ResolverFileState::Current { port, .. } => output.detail(Line::field("port: ", port)),
         ResolverFileState::Stale {
-            path,
             expected_port,
             actual_port,
+            ..
         } => {
-            output.line(&format!("{label}: stale"))?;
-            output.line(&format!("  path: {path}"))?;
-            match expected_port {
-                Some(expected_port) => output.line(&format!("  expected port: {expected_port}"))?,
-                None => output.line("  expected port: unknown")?,
-            }
-            match actual_port {
-                Some(actual_port) => output.line(&format!("  actual port: {actual_port}")),
-                None => output.line("  actual port: unparseable"),
-            }
+            let expected =
+                expected_port.map_or_else(|| "unknown".to_string(), |port| port.to_string());
+            let actual =
+                actual_port.map_or_else(|| "unparseable".to_string(), |port| port.to_string());
+            output.detail(Line::field("expected port: ", &expected))?;
+            output.detail(Line::field("actual port: ", &actual))
         }
-        ResolverFileState::Conflict { path } => {
-            output.line(&format!("{label}: not PV-owned"))?;
-            output.line(&format!("  path: {path}"))
-        }
-        ResolverFileState::Unreadable { path, message } => {
-            output.line(&format!("{label}: unreadable"))?;
-            output.line(&format!("  path: {path}"))?;
-            output.line(&format!("  {message}"))
-        }
+        ResolverFileState::Unreadable { message, .. } => output.detail(message),
+        ResolverFileState::Missing { .. } | ResolverFileState::Conflict { .. } => Ok(()),
     }
 }
 
