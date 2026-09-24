@@ -2209,6 +2209,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mysql-dump"
+version = "0.2.4"
+dependencies = [
+ "squonk",
+ "thiserror",
+]
+
+[[package]]
 name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3471,6 +3479,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "squonk"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2396bcc4db37292777e1bc9c1ae9123b3831d6d344784326cf4f601dd6e0e0b0"
+dependencies = [
+ "squonk-ast",
+ "thin-vec",
+]
+
+[[package]]
+name = "squonk-ast"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c1e65a88ac4d06b4be1e56ee3e822d91cc35c9f4de8aedafb77ce1f93af5af0"
+dependencies = [
+ "thin-vec",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3597,6 +3624,12 @@ name = "termtree"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f50febec83f5ee1df3015341d8bd429f2d1cc62bcba7ea2076759d315084683"
+
+[[package]]
+name = "thin-vec"
+version = "0.2.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4568d7e143ec86d2021c338bae2afa88699e84b8e0af523626654fe6f03a1748"
 
 [[package]]
 name = "thiserror"
