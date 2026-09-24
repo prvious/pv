@@ -151,14 +151,14 @@ copy_install_tree() {
     die "Postgres supplied extension catalog does not match track $PV_TRACK"
   fi
 
+  for binary in postgres initdb pg_ctl psql pg_restore; do
+    [ -x "$root_dir/bin/$binary" ] || die "Postgres artifact missing bin/$binary"
+  done
   case "$PLATFORM" in
     darwin-arm64 | darwin-amd64)
       pv_recipe_cleanup_macho_rpaths_tree "$root_dir"
       rewrite_macho_install_names "$root_dir" "$install_dir" "$openssl_prefix"
       pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
-      for binary in postgres initdb pg_ctl psql; do
-        [ -x "$root_dir/bin/$binary" ] || die "Postgres artifact missing bin/$binary"
-      done
       for library in \
         lib/libcrypto.3.dylib \
         lib/libssl.3.dylib \
@@ -176,9 +176,6 @@ copy_install_tree() {
       done
       ;;
     linux-amd64 | linux-arm64)
-      for binary in postgres initdb pg_ctl psql; do
-        [ -x "$root_dir/bin/$binary" ] || die "Postgres artifact missing bin/$binary"
-      done
       for library in pg_trgm pgcrypto sslinfo; do
         [ -f "$root_dir/lib/postgresql/$library.so" ] || die "Postgres artifact missing lib/postgresql/$library.so"
       done
