@@ -1822,7 +1822,7 @@ fn mysql_smoke_uses_tcp_readiness_and_select() -> Result<()> {
 }
 
 #[test]
-fn postgres_pv2_recipe_contract_is_pinned_and_complete() -> Result<()> {
+fn postgres_pv1_recipe_contract_is_pinned_and_complete() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let recipe = read_file(&workspace_root.join("release/artifacts/recipes/postgres/recipe.toml"))?;
     let build = read_file(&workspace_root.join("release/artifacts/recipes/postgres/build.sh"))?;
@@ -1845,10 +1845,10 @@ fn postgres_pv2_recipe_contract_is_pinned_and_complete() -> Result<()> {
         .collect::<Vec<_>>();
 
     let summary = format!(
-        "revision_is_pv2={}\npostgres_versions_are_17_10_and_18_4={}\nopenssl_version_3_5_8={}\nopenssl_checksum_pinned={}\nworld_bin_build={}\ninstall_world_bin={}\nssl_configure_flags={}\nzlib_remains_disabled={}\nopenssl_runtime_closure={}\nsource_input_and_legal_markers={}\nmacho_cleanup_rewrite_sign_validate={}\nreusable_dependency_contract_complete={}\nevery_reused_bundle_validated={}\nsource_cache_checksum_validated={}\nbuild_jobs_bounded={}\npostgres_staging_is_track_local={}\ntrack_17_extension_count={}\ntrack_18_extension_count={}\ntrack_18_additions={track_18_additions:?}\nonly_plpgsql_default={}\npv_realistic_auth={}\ncritical_function_smokes={}",
-        recipe.contains("pv_build_revision = \"pv2\""),
-        recipe.contains("upstream_version = \"17.10\"")
-            && recipe.contains("upstream_version = \"18.4\""),
+        "revision_is_pv1={}\npostgres_versions_are_17_11_and_18_6={}\nopenssl_version_3_5_8={}\nopenssl_checksum_pinned={}\nworld_bin_build={}\ninstall_world_bin={}\nssl_configure_flags={}\nzlib_remains_disabled={}\nopenssl_runtime_closure={}\nsource_input_and_legal_markers={}\nmacho_cleanup_rewrite_sign_validate={}\nreusable_dependency_contract_complete={}\nevery_reused_bundle_validated={}\nsource_cache_checksum_validated={}\nbuild_jobs_bounded={}\npostgres_staging_is_track_local={}\ntrack_17_extension_count={}\ntrack_18_extension_count={}\ntrack_18_additions={track_18_additions:?}\nonly_plpgsql_default={}\npv_realistic_auth={}\ncritical_function_smokes={}",
+        recipe.contains("pv_build_revision = \"pv1\""),
+        recipe.contains("upstream_version = \"17.11\"")
+            && recipe.contains("upstream_version = \"18.6\""),
         openssl.contains("PV_POSTGRES_OPENSSL_VERSION=3.5.8"),
         openssl.contains("a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2"),
         build.contains("make -j \"$BUILD_JOBS\" world-bin"),
@@ -2083,6 +2083,10 @@ fn postgres_smoke_uses_pv_auth_and_validates_supplied_extensions() -> Result<()>
     write_fake_postgres_initdb(&artifact_bin.join("initdb"))?;
     write_fake_postgres_pg_ctl(&artifact_bin.join("pg_ctl"))?;
     write_fake_postgres_psql(&artifact_bin.join("psql"))?;
+    write_executable(
+        &artifact_bin.join("pg_restore"),
+        "#!/bin/sh\ncase \"$1\" in\n  --version) exit 0 ;;\n  --list) printf '%s\\n' 'TABLE DATA public proof'; exit 0 ;;\nesac\nexit 1\n",
+    )?;
     for relative_path in [
         "lib/libcrypto.3.dylib",
         "lib/libssl.3.dylib",
@@ -2156,7 +2160,7 @@ fn postgres_smoke_uses_pv_auth_and_validates_supplied_extensions() -> Result<()>
 }
 
 #[test]
-fn postgres_build_recipe_packages_pv2_supplied_extensions() -> Result<()> {
+fn postgres_build_recipe_packages_pv1_supplied_extensions() -> Result<()> {
     let run = run_postgres_build_recipe_smoke(false)?;
 
     assert!(
@@ -2167,7 +2171,7 @@ fn postgres_build_recipe_packages_pv2_supplied_extensions() -> Result<()> {
     assert!(run.archive_exists);
     assert_eq!(
         run.validate_log,
-        "archive=postgres-17.10-pv2-darwin-arm64.tar.gz record=postgres-17.10-pv2-darwin-arm64.json smoke=smoke.sh\n"
+        "archive=postgres-17.11-pv1-darwin-arm64.tar.gz record=postgres-17.11-pv1-darwin-arm64.json smoke=smoke.sh\n"
     );
     assert!(run.configure_log.contains("[--with-ssl=openssl]"));
     assert!(run.configure_log.contains("[--without-zlib]"));
@@ -2331,11 +2335,11 @@ fn postgres_build_recipe_reuses_dependency_across_tracks() -> Result<()> {
     );
     assert!(
         run.validate_log
-            .contains("archive=postgres-17.10-pv2-darwin-arm64.tar.gz")
+            .contains("archive=postgres-17.11-pv1-darwin-arm64.tar.gz")
     );
     assert!(
         run.validate_log
-            .contains("archive=postgres-18.4-pv2-darwin-arm64.tar.gz")
+            .contains("archive=postgres-18.6-pv1-darwin-arm64.tar.gz")
     );
 
     Ok(())
@@ -3445,7 +3449,7 @@ fn run_postgres_build_recipe_smoke_with_options(
     let record_dir = tempdir.path().join("records");
     let source_archive = tempdir.path().join("postgres-source.tar.gz");
     let openssl_source_archive = tempdir.path().join("openssl-source.tar.gz");
-    let artifact_basename = "postgres-17.10-pv2-darwin-arm64";
+    let artifact_basename = "postgres-17.11-pv1-darwin-arm64";
     let dependency_bundle = tempdir.path().join("postgres-openssl-bundle.tar.gz");
     let dependency_prefix = tempdir.path().join("openssl-dependency");
     let dependency_work_dir = tempdir.path().join("dependency-work");
@@ -3546,7 +3550,7 @@ fn run_postgres_build_recipe_smoke_with_options(
     if options.corrupt_postgres_source_cache {
         create_dir_all(&source_cache_dir)?;
         write_file(
-            &source_cache_dir.join("postgresql-17.10.tar.gz"),
+            &source_cache_dir.join("postgresql-17.11.tar.gz"),
             "corrupted source cache fixture",
         )?;
     }
@@ -3557,7 +3561,7 @@ fn run_postgres_build_recipe_smoke_with_options(
                      extension_catalog: &Utf8Path,
                      install_mismatched_catalog: bool|
      -> Result<Output> {
-        let build_artifact_basename = format!("postgres-{upstream_version}-pv2-darwin-arm64");
+        let build_artifact_basename = format!("postgres-{upstream_version}-pv1-darwin-arm64");
         let openssl_prefix = out_dir
             .join("work")
             .join(format!("postgres-{track}-{build_artifact_basename}"))
@@ -3601,7 +3605,7 @@ fn run_postgres_build_recipe_smoke_with_options(
                 "PV_TEST_POSTGRES_INSTALL_MISMATCHED_CATALOG",
                 if install_mismatched_catalog { "1" } else { "" },
             )
-            .env("PV_TEST_PV_BUILD_REVISION", "pv2")
+            .env("PV_TEST_PV_BUILD_REVISION", "pv1")
             .env("PV_TEST_RECORD_ARGUMENTS_LOG", &record_arguments_log)
             .env("PV_TEST_REMOVED_RPATHS_LOG", &removed_rpaths_log)
             .env("PV_TEST_RESOURCE", "postgres")
@@ -3633,17 +3637,17 @@ fn run_postgres_build_recipe_smoke_with_options(
     };
     let output = run_build(
         "17",
-        "17.10",
+        "17.11",
         &extension_catalog_17,
         options.install_mismatched_catalog,
     )?;
     let second_output = match options.second_run {
         SecondPostgresRun::None => None,
         SecondPostgresRun::SameTrack => {
-            Some(run_build("17", "17.10", &extension_catalog_17, false)?)
+            Some(run_build("17", "17.11", &extension_catalog_17, false)?)
         }
         SecondPostgresRun::NextTrack => {
-            Some(run_build("18", "18.4", &extension_catalog_18, false)?)
+            Some(run_build("18", "18.6", &extension_catalog_18, false)?)
         }
     };
 
@@ -3651,11 +3655,11 @@ fn run_postgres_build_recipe_smoke_with_options(
     let record = record_dir
         .join("postgres")
         .join("17")
-        .join("17.10-pv2")
+        .join("17.11-pv1")
         .join("darwin-arm64")
         .join(format!("{artifact_basename}.json"));
     let archive_exists = path_exists(&archive);
-    let second_archive_exists = path_exists(&out_dir.join("postgres-18.4-pv2-darwin-arm64.tar.gz"));
+    let second_archive_exists = path_exists(&out_dir.join("postgres-18.6-pv1-darwin-arm64.tar.gz"));
     let archive_entries = if archive_exists {
         archive_entries(&archive)?
     } else {
@@ -5674,7 +5678,7 @@ case "${1:-}" in
       "$install_prefix/bin" \
       "$install_prefix/lib/postgresql/pgxs/src/test/regress" \
       "$install_prefix/share/extension"
-    for binary in postgres initdb pg_ctl psql pg_config; do
+    for binary in postgres initdb pg_ctl psql pg_restore pg_config; do
       printf '%s fixture\n' "$binary" >"$install_prefix/bin/$binary"
       chmod 755 "$install_prefix/bin/$binary"
     done
@@ -5712,7 +5716,7 @@ case "${file_path##*/}" in
   openssl-3.5.8.tar.gz | openssl-3.5.8.tar.gz.tmp.*)
     checksum=a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2
     ;;
-  postgresql-17.10.tar.gz | postgresql-17.10.tar.gz.tmp.* | postgresql-18.4.tar.gz | postgresql-18.4.tar.gz.tmp.*)
+  postgresql-17.11.tar.gz | postgresql-17.11.tar.gz.tmp.* | postgresql-18.6.tar.gz | postgresql-18.6.tar.gz.tmp.*)
     if [ -n "${PV_TEST_USE_REAL_POSTGRES_SOURCE_HASH:-}" ]; then
       exec /usr/bin/shasum "$@"
     fi

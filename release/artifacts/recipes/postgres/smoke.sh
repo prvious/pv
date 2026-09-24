@@ -10,6 +10,7 @@ postgres="$artifact_root/bin/postgres"
 initdb="$artifact_root/bin/initdb"
 pg_ctl="$artifact_root/bin/pg_ctl"
 psql="$artifact_root/bin/psql"
+pg_restore="$artifact_root/bin/pg_restore"
 extension_catalog=${PV_POSTGRES_EXTENSION_CATALOG:-}
 admin_user=pv_root
 admin_password=pv_local_password
@@ -89,6 +90,7 @@ validate_packaged_macho_tree() {
     bin/initdb \
     bin/pg_ctl \
     bin/psql \
+    bin/pg_restore \
     lib/libcrypto.3.dylib \
     lib/libssl.3.dylib \
     lib/postgresql/pg_trgm.dylib \
@@ -142,8 +144,14 @@ cleanup() {
   printf '%s\n' "missing executable $psql" >&2
   exit 42
 }
+[ -x "$pg_restore" ] || {
+  printf '%s\n' "missing executable $pg_restore" >&2
+  exit 42
+}
+"$pg_restore" --version >/dev/null
 
 need diff
+need grep
 need codesign
 need file
 need find
@@ -170,6 +178,8 @@ started=false
 trap cleanup 0 1 2 3 15
 
 validate_packaged_macho_tree
+"$pg_restore" --list "$ROOT/it/fixtures/postgres-import/17.11/custom.dump" >"$tmpdir/pg-restore-list.txt"
+grep -q 'TABLE DATA public proof' "$tmpdir/pg-restore-list.txt" || die "pg_restore could not inspect the Postgres import fixture"
 
 printf '%s\n' "$admin_password" >"$password_file"
 "$initdb" \

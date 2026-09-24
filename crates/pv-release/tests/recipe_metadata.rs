@@ -155,7 +155,7 @@ fn committed_recipe_metadata_parses() -> Result<()> {
         vec![("8.0", "8.0.46"), ("8.4", "8.4.9"), ("9.7", "9.7.0")]
     );
     assert_eq!(postgres.default_track().as_str(), "18");
-    assert_eq!(postgres.pv_build_revision(), "pv2");
+    assert_eq!(postgres.pv_build_revision(), "pv1");
     assert_eq!(postgres.license_files(), ["LICENSE", "OPENSSL-LICENSE"]);
     assert_eq!(postgres.notice_files(), ["NOTICE", "THIRD-PARTY-NOTICES"]);
     assert_eq!(
@@ -165,6 +165,7 @@ fn committed_recipe_metadata_parses() -> Result<()> {
             "bin/initdb",
             "bin/pg_ctl",
             "bin/psql",
+            "bin/pg_restore",
             "lib/libcrypto.3.dylib",
             "lib/libssl.3.dylib",
             "lib/postgresql/pg_trgm.dylib",
@@ -181,7 +182,7 @@ fn committed_recipe_metadata_parses() -> Result<()> {
             .iter()
             .map(|track| (track.name().as_str(), track.upstream_version()))
             .collect::<Vec<_>>(),
-        vec![("17", "17.10"), ("18", "18.4")]
+        vec![("17", "17.11"), ("18", "18.6")]
     );
     assert_eq!(mailpit.default_track().as_str(), "1");
     assert_eq!(mailpit.payload_paths(), ["bin/mailpit"]);

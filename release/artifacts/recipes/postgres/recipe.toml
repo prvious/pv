@@ -3,7 +3,7 @@ resources = ["postgres"]
 default_track = "18"
 platforms = ["darwin-arm64", "darwin-amd64"]
 minimum_pv_version = "0.1.0"
-pv_build_revision = "pv2"
+pv_build_revision = "pv1"
 license_files = ["LICENSE", "OPENSSL-LICENSE"]
 notice_files = ["NOTICE", "THIRD-PARTY-NOTICES"]
 
@@ -13,6 +13,7 @@ payload_paths = [
   "bin/initdb",
   "bin/pg_ctl",
   "bin/psql",
+  "bin/pg_restore",
   "lib/libcrypto.3.dylib",
   "lib/libssl.3.dylib",
   "lib/postgresql/pg_trgm.dylib",
@@ -25,12 +26,12 @@ payload_paths = [
 
 [[tracks]]
 name = "17"
-upstream_version = "17.10"
-source_url = "https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.gz"
-source_sha256 = "e4b43025f32ea3d271be64365d284c8462cffd41d80db0c3df6fc62417a2d9dc"
+upstream_version = "17.11"
+source_url = "https://ftp.postgresql.org/pub/source/v17.11/postgresql-17.11.tar.gz"
+source_sha256 = "5367f6fb2ec97efe1eb2e0c7926bb33438e51b0bd3a9733b88498056a7dc9a7e"
 
 [[tracks]]
 name = "18"
-upstream_version = "18.4"
-source_url = "https://ftp.postgresql.org/pub/source/v18.4/postgresql-18.4.tar.gz"
-source_sha256 = "450aa8f2da06c46f8221916e82ae06b04fb1040f8f00643dbf8b7d663caac0b9"
+upstream_version = "18.6"
+source_url = "https://ftp.postgresql.org/pub/source/v18.6/postgresql-18.6.tar.gz"
+source_sha256 = "983ee554ec53dbeb9b70797bef9fcf4e67e117e7e48ca1463cc80b3ff8e8ff3f"

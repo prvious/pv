@@ -146,7 +146,7 @@ copy_install_tree() {
   pv_recipe_cleanup_macho_rpaths_tree "$root_dir"
   rewrite_macho_install_names "$root_dir" "$install_dir" "$openssl_prefix"
   pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
-  for binary in postgres initdb pg_ctl psql; do
+  for binary in postgres initdb pg_ctl psql pg_restore; do
     [ -x "$root_dir/bin/$binary" ] || die "Postgres artifact missing bin/$binary"
     pv_recipe_validate_macho_binary "$root_dir/bin/$binary" "$PLATFORM" "$DEPLOYMENT_TARGET"
   done
