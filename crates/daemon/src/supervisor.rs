@@ -631,7 +631,7 @@ impl AdoptedProcess {
         require_process_containment()?;
         if !self.owned.matches_live()? {
             reap_process_if_child(self.owned.pid)?;
-            if process_group_exists(self.owned.pid)? || process_exists(self.owned.pid)? {
+            if !process_and_group_are_absent(self.owned.pid)? {
                 return Err(io::Error::other(format!(
                     "process {} remained after its recorded identity stopped matching",
                     self.owned.pid
@@ -645,7 +645,7 @@ impl AdoptedProcess {
         let deadline = StdInstant::now() + timeout;
         loop {
             reap_process_if_child(self.owned.pid)?;
-            if !process_group_exists(self.owned.pid)? && !process_exists(self.owned.pid)? {
+            if process_and_group_are_absent(self.owned.pid)? {
                 return Ok(());
             }
             if StdInstant::now() >= deadline {
@@ -1317,22 +1317,6 @@ fn process_group_exists(pid: u32) -> Result<bool, DaemonError> {
 }
 
 #[cfg(target_os = "macos")]
-fn process_exists(pid: u32) -> Result<bool, DaemonError> {
-    let process = process_group_pid(pid)?;
-    match test_kill_process(process) {
-        Ok(()) => Ok(true),
-        Err(source) => {
-            let error = io::Error::from(source);
-            // See process_group_exists: a permission-denied PID is no longer provably ours.
-            if process_not_found(&error) || error.kind() == io::ErrorKind::PermissionDenied {
-                return Ok(false);
-            }
-            Err(error.into())
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
 fn process_and_group_are_absent(pid: u32) -> Result<bool, DaemonError> {
     let process = process_group_pid(pid)?;
     let process_absent = match test_kill_process(process) {
@@ -1360,13 +1344,6 @@ fn reap_process_if_child(pid: u32) -> Result<(), DaemonError> {
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 fn process_group_exists(_pid: u32) -> Result<bool, DaemonError> {
-    require_process_containment()?;
-
-    Ok(false)
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-fn process_exists(_pid: u32) -> Result<bool, DaemonError> {
     require_process_containment()?;
 
     Ok(false)
@@ -1625,7 +1602,7 @@ mod tests {
     use tokio::time::sleep;
 
     use super::{
-        ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint, process_exists,
+        ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint, process_and_group_are_absent,
         process_group_exists,
     };
     use state::PvPaths;
@@ -1981,8 +1958,7 @@ mod tests {
         }
         cleanup_result?;
 
-        assert!(!process_group_exists(leader_pid)?);
-        assert!(!process_exists(leader_pid)?);
+        assert!(process_and_group_are_absent(leader_pid)?);
         assert!(wait_for_test_process_exit_synchronously(descendant_pid)?);
         assert!(wait_for_test_listener_release(listener_port));
 

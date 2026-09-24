@@ -15,7 +15,7 @@ if [ "$1" = "run" ]; then
   # shellcheck disable=SC2329 # Invoked indirectly by the signal trap.
   stop_fixture() {
     if [ -n "$watcher" ]; then
-      kill "$watcher" 2>/dev/null || :
+      kill '%?watch_parent' 2>/dev/null || :
       wait "$watcher" 2>/dev/null || :
     fi
     exit 0

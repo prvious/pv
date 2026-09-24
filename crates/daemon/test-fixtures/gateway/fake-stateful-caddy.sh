@@ -19,7 +19,7 @@ if [ "$1" = "run" ]; then
   stop_watcher() {
     if [ -n "$watcher" ]; then
       if ! printf 'stop\n' > "$watcher_stop_path"; then
-        kill "$watcher" 2>/dev/null || :
+        kill '%?watch_parent' 2>/dev/null || :
       fi
       wait "$watcher" 2>/dev/null || :
       watcher=""
@@ -31,7 +31,7 @@ if [ "$1" = "run" ]; then
   # shellcheck disable=SC2329 # Invoked indirectly by the signal trap.
   stop_child() {
     if [ -n "$child" ]; then
-      kill "$child" 2>/dev/null || :
+      kill '%?python3' 2>/dev/null || :
       wait "$child" 2>/dev/null || :
       child=""
     fi

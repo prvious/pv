@@ -37,12 +37,12 @@ if [ "$1" = "run" ]; then
   # shellcheck disable=SC2329 # Invoked indirectly by the signal trap.
   stop_child() {
     if [ -n "$child" ]; then
-      kill "$child" 2>/dev/null || :
+      kill '%?python3' 2>/dev/null || :
       wait "$child" 2>/dev/null || :
       child=""
     fi
     if [ -n "$watcher" ]; then
-      kill "$watcher" 2>/dev/null || :
+      kill '%?watch_parent' 2>/dev/null || :
       wait "$watcher" 2>/dev/null || :
       watcher=""
     fi
@@ -69,7 +69,7 @@ if [ "$1" = "run" ]; then
     child_status="$?"
   fi
   child=""
-  kill "$watcher" 2>/dev/null || :
+  kill '%?watch_parent' 2>/dev/null || :
   wait "$watcher" 2>/dev/null || :
   watcher=""
   exit "$child_status"
