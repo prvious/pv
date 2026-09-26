@@ -1160,6 +1160,8 @@ MySQL import matches source database names exactly as written. A source name tha
 
 MySQL import uses the track's existing `pv_root` account and does not create a separate import owner. The complete dump must pass a positive preflight allowlist before any SQL runs. Source `DEFINER` accounts are normalized to `pv_root` only for stored objects whose complete definition passes preflight; unsupported stored-object syntax fails before execution.
 
+MySQL import rejects dynamic SQL in stored routines by default. The user may explicitly skip a named source routine with `--skip-routine <database>.<routine>`; preflight then omits both its drop and create statements and lists the missing routine in the import plan. Skip names compare case-sensitively against decoded source database and routine identifiers, with an unqualified routine name taking its database from the active `USE` statement or the plain dump header. A requested name absent from the dump is an error. Skipping a routine does not imply that objects depending on it will work after import.
+
 PV starts its local MySQL tracks with binary logging disabled. PV does not provide MySQL replication or binary-log backup commands. This setting is not an import security boundary; the current MySQL account still has server-wide privileges.
 
 PV creates and checks SQL Resource allocation databases through `sqlx` for MySQL and Postgres rather than shelling out to managed `mysql` or `psql` binaries. PV uses `sqlx` only for PV-owned admin operations such as readiness checks and database creation, not for application schema or migrations.
