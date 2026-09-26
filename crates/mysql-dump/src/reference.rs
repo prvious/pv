@@ -3,7 +3,7 @@ use std::ops::Range;
 use squonk::ast::Resolver;
 use squonk::ast::generated::Visit;
 use squonk::ast::generated::visit::walk_expr;
-use squonk::ast::{Definer, Expr, Ident, ObjectName, Statement};
+use squonk::ast::{Definer, Expr, Ident, ObjectName, Statement, UpdateAssignment};
 use squonk::dialect::MySql;
 use thiserror::Error;
 
@@ -94,7 +94,7 @@ impl ReferenceCollector<'_> {
             self.invalid_span = true;
             return;
         };
-        if span.start >= span.end || self.source.get(span.clone()).is_none() {
+        if !verified_identifier(self.source, span.clone(), name) {
             self.invalid_span = true;
             return;
         }
@@ -105,7 +105,52 @@ impl ReferenceCollector<'_> {
     }
 }
 
+pub(crate) fn verified_identifier(source: &str, span: Range<usize>, name: &str) -> bool {
+    let Some(raw) = source.get(span) else {
+        return false;
+    };
+    if raw.is_empty() {
+        return false;
+    }
+    let decoded = if let Some(inner) = raw
+        .strip_prefix('`')
+        .and_then(|value| value.strip_suffix('`'))
+    {
+        inner.replace("``", "`")
+    } else {
+        raw.to_owned()
+    };
+    decoded == name
+}
+
 impl<'ast> Visit<'ast> for ReferenceCollector<'_> {
+    fn visit_update_assignment(&mut self, assignment: &'ast UpdateAssignment) {
+        match assignment {
+            UpdateAssignment::Single { target, value, .. } => {
+                // In `SET alias.column`, the first identifier is a table alias.
+                // A database can only appear in a three-part target.
+                if target.0.len() == 3
+                    && let Some(database) = target.0.first()
+                {
+                    self.add(database);
+                }
+                self.visit_update_value(value);
+            }
+            UpdateAssignment::Tuple {
+                targets, source, ..
+            } => {
+                for target in targets {
+                    if target.0.len() == 3
+                        && let Some(database) = target.0.first()
+                    {
+                        self.add(database);
+                    }
+                }
+                self.visit_update_tuple_source(source);
+            }
+        }
+    }
+
     fn visit_definer(&mut self, definer: &'ast Definer) {
         if let Definer::Account { meta, .. } = definer {
             let span = meta.span.start() as usize..meta.span.end() as usize;
@@ -137,5 +182,19 @@ impl<'ast> Visit<'ast> for ReferenceCollector<'_> {
         } else {
             walk_expr(self, expression);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verified_identifier;
+
+    #[test]
+    fn identifier_span_must_decode_to_the_reported_name() {
+        let source = "`ad``min`";
+        assert!(verified_identifier(source, 0..source.len(), "ad`min"));
+        assert!(!verified_identifier(source, 0..source.len(), "other"));
+        assert!(!verified_identifier(source, 1..source.len(), "ad`min"));
+        assert!(!verified_identifier(source, 0..0, ""));
     }
 }
