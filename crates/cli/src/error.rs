@@ -90,6 +90,9 @@ pub enum CliError {
     )]
     ProjectNotResolved,
 
+    #[error("MySQL import: {message}")]
+    MysqlImport { message: String },
+
     #[error(
         "no linked Project matches `{selector}`\nRun `pv list` to see linked Projects and their hostnames."
     )]

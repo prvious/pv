@@ -72,6 +72,16 @@ pub fn scan<R: Read, F: FnMut(Frame) -> Result<(), ReaderError>>(
     input: R,
     callback: F,
 ) -> Result<(), ReaderError> {
+    scan_with(input, callback)
+}
+
+/// Frame a dump while letting a preflight callback return its own typed error.
+pub fn scan_with<R, F, E>(input: R, callback: F) -> Result<(), E>
+where
+    R: Read,
+    F: FnMut(Frame) -> Result<(), E>,
+    E: From<ReaderError>,
+{
     let mut scanner = Scanner {
         callback,
         state: State::Normal,
@@ -90,7 +100,7 @@ pub fn scan<R: Read, F: FnMut(Frame) -> Result<(), ReaderError>>(
     let mut skip_candidate_until_newline = false;
 
     loop {
-        if reader.read(&mut byte)? == 0 {
+        if reader.read(&mut byte).map_err(ReaderError::from)? == 0 {
             break;
         }
         let current = byte[0];
@@ -183,7 +193,7 @@ pub fn scan<R: Read, F: FnMut(Frame) -> Result<(), ReaderError>>(
         | State::Escape(_)
         | State::BlockFirst
         | State::BlockComment
-        | State::BlockStar => return Err(ReaderError::Unterminated),
+        | State::BlockStar => return Err(ReaderError::Unterminated.into()),
         _ => {}
     }
     if scanner.start < offset {
@@ -237,8 +247,12 @@ fn parse_delimiter(line: &[u8], offset: u64) -> Result<Option<Vec<u8>>, ReaderEr
     Ok(Some(value))
 }
 
-impl<F: FnMut(Frame) -> Result<(), ReaderError>> Scanner<F> {
-    fn feed(&mut self, byte: u8, offset: u64) -> Result<(), ReaderError> {
+impl<F> Scanner<F> {
+    fn feed<E>(&mut self, byte: u8, offset: u64) -> Result<(), E>
+    where
+        F: FnMut(Frame) -> Result<(), E>,
+        E: From<ReaderError>,
+    {
         let mut again = true;
         while again {
             again = false;
@@ -366,7 +380,11 @@ impl<F: FnMut(Frame) -> Result<(), ReaderError>> Scanner<F> {
         self.state = state;
     }
 
-    fn push_tail(&mut self, byte: u8, offset: u64) -> Result<(), ReaderError> {
+    fn push_tail<E>(&mut self, byte: u8, offset: u64) -> Result<(), E>
+    where
+        F: FnMut(Frame) -> Result<(), E>,
+        E: From<ReaderError>,
+    {
         self.tail.push(byte);
         if self.tail.len() > self.delimiter.len() {
             self.tail.remove(0);

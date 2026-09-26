@@ -11,6 +11,12 @@ fn generated_connection_setup_is_accepted() -> Result<(), Box<dyn std::error::Er
         "/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;",
         "SET time_zone = '+00:00';",
         "SET NAMES utf8mb4;",
+        "SET character_set_client=latin1;",
+        "SET character_set_results=utf8mb3;",
+        "SET collation_connection=latin1_swedish_ci;",
+        "SET collation_connection=utf8mb3_general_ci;",
+        "SET @private_restore=@@character_set_client;",
+        "SET sql_mode='STRICT_TRANS_TABLES,STRICT_ALL_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ALLOW_INVALID_DATES,ERROR_FOR_DIVISION_BY_ZERO,TRADITIONAL,NO_ENGINE_SUBSTITUTION';",
         "/*!50003 SET sql_mode = 'ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION' */;",
     ] {
         assert_eq!(session_setup(source)?, Some(SessionSetup::Keep), "{source}");
@@ -42,6 +48,8 @@ fn server_scope_and_unsafe_expressions_fail_preflight() {
         "SET ROLE admin;",
         "SET character_set_client = utf8mb4_0900_ai_ci;",
         "SET collation_connection = utf8mb4;",
+        "SET character_set_client = gbk;",
+        "SET collation_connection = gbk_chinese_ci;",
         "SET sql_mode=@OLD_SQL_MODE, foreign_key_checks=0;",
     ] {
         assert!(

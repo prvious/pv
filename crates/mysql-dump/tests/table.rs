@@ -61,6 +61,15 @@ fn unquoted_and_escaped_database_identifiers_are_verified() -> Result<(), Box<dy
 }
 
 #[test]
+fn temporary_table_uses_the_same_option_policy() -> Result<(), Box<dyn std::error::Error>> {
+    let source = "CREATE TEMPORARY TABLE `admin`.`scratch` (id INT) ENGINE=InnoDB;";
+    let references = table_database_references(source)?;
+    assert_eq!(references.len(), 1);
+    assert_eq!(references[0].name, "admin");
+    Ok(())
+}
+
+#[test]
 fn unsupported_table_forms_and_extra_statements_fail() {
     for source in [
         "CREATE TABLE t AS SELECT * FROM other.t;",
@@ -68,6 +77,11 @@ fn unsupported_table_forms_and_extra_statements_fail() {
         "CREATE TABLE t (id int CHECK (other.t.id > 0));",
         "CREATE TABLE t (id int CHECK (other.validate(id) > 0));",
         "CREATE TABLE t LIKE other.t;",
+        "CREATE TABLE t (id INT) DATA DIRECTORY '/tmp/pv350-data';",
+        "CREATE TABLE t (id INT) INDEX DIRECTORY '/tmp/pv350-index';",
+        "CREATE TABLE t (id INT) ENGINE=FEDERATED CONNECTION='mysql://remote/db/t';",
+        "CREATE TABLE t (id INT) TABLESPACE mysql;",
+        "CREATE TABLE t (id INT) /*!50100 ENGINE=FEDERATED CONNECTION='mysql://remote/db/t' */;",
     ] {
         assert!(matches!(
             table_database_references(source),

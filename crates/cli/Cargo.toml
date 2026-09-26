@@ -11,6 +11,7 @@ workspace = true
 anstyle = { workspace = true }
 anyhow = { workspace = true }
 camino = { workspace = true }
+camino-tempfile = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 cliclack = { workspace = true }
@@ -20,6 +21,7 @@ config = { path = "../config" }
 daemon = { path = "../daemon" }
 home = { workspace = true }
 indicatif = { workspace = true }
+mysql-dump = { path = "../mysql-dump" }
 notify = { workspace = true }
 platform = { path = "../platform" }
 protocol = { path = "../protocol" }
@@ -28,6 +30,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 self-update = { path = "../self-update" }
+sqlx = { workspace = true }
 state = { path = "../state" }
 textwrap = { workspace = true }
 thiserror = { workspace = true }
@@ -35,7 +38,6 @@ tokio = { workspace = true }
 yaml_serde = { workspace = true }
 
 [dev-dependencies]
-camino-tempfile = { workspace = true }
 insta = { workspace = true }
 platform = { path = "../platform", features = ["test-support"] }
 pv-fake = { path = "../pv-fake" }
