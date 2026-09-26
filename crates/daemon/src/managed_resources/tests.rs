@@ -1467,7 +1467,7 @@ async fn mailpit_reconciliation_records_smtp_and_dashboard_env() -> Result<()> {
     write_project_config(
         &project,
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
@@ -1534,7 +1534,7 @@ async fn mailpit_project_demand_installs_missing_fixture_track_before_start() ->
     write_project_config(
         &project,
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     reconcile_project_env_with_mailpit_runtime_catalog_and_manifest_url(
@@ -1634,7 +1634,7 @@ async fn demanded_resource_starts_fake_multi_port_runtime_before_env_rendering()
     write_project_config(
         &project,
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
@@ -3995,7 +3995,7 @@ async fn demanded_resource_installs_fake_multi_port_runtime_from_cached_fixture_
     write_project_config(
         &project,
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
@@ -4060,7 +4060,7 @@ async fn rustfs_reconciliation_creates_bucket_and_renders_env() -> Result<()> {
     write_project_config(
         &project,
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     runtimes.cleanup().await?;
@@ -4105,7 +4105,7 @@ async fn rustfs_project_demand_installs_missing_fixture_track_before_start() -> 
     write_project_config(
         &project,
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     runtimes.cleanup().await?;
@@ -4172,7 +4172,7 @@ async fn rustfs_ready_allocation_reconciliation_repairs_missing_bucket_and_prese
     write_project_config(
         &project,
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     runtimes.cleanup().await?;
@@ -4258,7 +4258,7 @@ async fn rustfs_port_reassignment_renders_current_endpoint_for_ready_allocation(
     write_project_config(
         &project,
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     runtimes.cleanup().await?;
@@ -4616,7 +4616,7 @@ async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -
     write_project_config(
         &project,
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
@@ -4658,7 +4658,7 @@ async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -
     write_project_config(
         &project,
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     runtimes.cleanup().await?;
@@ -5005,7 +5005,7 @@ async fn demanded_removed_track_fails_without_starting_runtime() -> Result<()> {
         write_project_config(
             &project,
             r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
         )?;
         let _cleanup = reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await;
@@ -5245,7 +5245,7 @@ async fn demanded_resource_uses_async_readiness_and_allocation_hooks() -> Result
     write_project_config(
         &project,
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     crate::project_env::reconcile_project_env_with_catalog(
@@ -5274,7 +5274,7 @@ async fn resource_readiness_slots_include_start_and_poll_during_preparation() ->
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "env:\n  APP_URL: \"${project_url}\"\n",
+        "env:\n  APP_URL: \"${url}\"\n",
     )?;
     let tracks = ["8.0", "8.1", "8.2", "8.3", "8.4"];
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
@@ -5384,7 +5384,7 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "env:\n  APP_URL: \"${project_url}\"\n",
+        "env:\n  APP_URL: \"${url}\"\n",
     )?;
     let ready_tracks = ["8.0", "8.1"];
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
@@ -6204,7 +6204,7 @@ async fn redis_reconciliation_marks_prefix_allocation_ready_and_renders_env() ->
     write_project_config(
         &project,
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
@@ -6457,7 +6457,7 @@ async fn redis_port_reassignment_refreshes_ready_allocation_env() -> Result<()> 
     write_project_config(
         &project,
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
@@ -6504,7 +6504,7 @@ async fn redis_project_demand_installs_missing_fixture_track_before_start() -> R
     write_project_config(
         &project,
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;

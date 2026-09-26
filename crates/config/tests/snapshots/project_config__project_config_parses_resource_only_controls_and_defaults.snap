@@ -24,7 +24,7 @@ expression: "(defaults, resource_only)"
         ],
         env: {
             "APP_ENV": "local",
-            "APP_URL": "${project_url}",
+            "APP_URL": "${url}",
         },
         resources: {},
     },

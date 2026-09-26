@@ -151,8 +151,12 @@ fn value_uses_tls_placeholder(value: &str) -> bool {
     value_uses_any_placeholder(value, &["tls.ca", "tls.cert", "tls.key"])
 }
 
-pub(crate) fn value_uses_serving_placeholder(value: &str) -> bool {
-    value_uses_any_placeholder(value, &["project_url", "tls.ca", "tls.cert", "tls.key"])
+pub(crate) fn value_uses_serving_placeholder(value: &str, project_scope: bool) -> bool {
+    if project_scope {
+        value_uses_any_placeholder(value, &["url", "tls.ca", "tls.cert", "tls.key"])
+    } else {
+        value_uses_tls_placeholder(value)
+    }
 }
 
 fn value_uses_any_placeholder(value: &str, placeholders: &[&str]) -> bool {

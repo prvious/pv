@@ -3049,7 +3049,7 @@ async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
     let (_project_id, mut worker_port_handoff) = seed_foundation_php_project(
         &paths,
         &project_path,
-        "php: \"8.4\"\nenv:\n  APP_URL: \"${project_url}\"\n  APP_NAME: setup\n",
+        "php: \"8.4\"\nenv:\n  APP_URL: \"${url}\"\n  APP_NAME: setup\n",
     )?;
     let php_track = "8.4";
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
@@ -3883,7 +3883,7 @@ async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> 
 
     write_file_after_modified_time_tick(
         &config_path,
-        "env:\n  APP_URL: \"${project_url}\"\n  APP_NAME: watched\n",
+        "env:\n  APP_URL: \"${url}\"\n  APP_NAME: watched\n",
     )
     .await?;
 
@@ -3933,7 +3933,7 @@ async fn daemon_shutdown_cancels_watcher_retry_waiting_for_jobs_lock() -> Result
 
     write_file_after_modified_time_tick(
         &config_path,
-        "env:\n  APP_URL: \"${project_url}\"\n  APP_NAME: watched\n",
+        "env:\n  APP_URL: \"${url}\"\n  APP_NAME: watched\n",
     )
     .await?;
     // Give the config watcher time to observe the change and enter its jobs-lock retry loop.

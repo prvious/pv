@@ -42,7 +42,7 @@ fn managed_env_block_transformer_clears_existing_block_when_all_mappings_are_dor
     let config = ProjectConfig::parse(
         r#"serve: false
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     let rendered = render_project_env(&config, &ProjectEnvContext::default())?;
@@ -72,13 +72,13 @@ fn project_env_renderer_resolves_project_resource_and_allocation_contexts() -> R
     let config = ProjectConfig::parse(
         r#"
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
   SHARED_VALUE: root
 mysql:
   env:
     DB_HOST: "${host}"
     DB_PORT: "${port}"
-    RESOURCE_URL: "${project_url}/mysql"
+    RESOURCE_URL: "${url}"
     SHARED_VALUE: resource
   allocations:
     app:
@@ -110,6 +110,7 @@ rustfs:
                     ("host", "127.0.0.1"),
                     ("password", "secret"),
                     ("port", "3306"),
+                    ("url", "mysql://root:secret@127.0.0.1:3306"),
                     ("username", "root"),
                 ]),
                 allocations: allocations(&[(
@@ -150,19 +151,17 @@ rustfs:
 }
 
 #[test]
-fn project_env_renderer_resolves_project_url_from_primary_hostname_across_scopes() -> Result<()> {
+fn project_env_renderer_resolves_url_by_scope() -> Result<()> {
     let config = ProjectConfig::parse(
         r#"
 env:
-  ROOT_PROJECT_URL: "${project_url}"
+  ROOT_URL: "${url}"
 mysql:
   env:
-    RESOURCE_PROJECT_URL: "${project_url}"
     RESOURCE_SERVICE_URL: "${url}"
   allocations:
     app:
       env:
-        ALLOCATION_PROJECT_URL: "${project_url}"
         ALLOCATION_SERVICE_URL: "${url}"
 "#,
     )?;
@@ -176,7 +175,6 @@ mysql:
                     ("host", "127.0.0.1"),
                     ("password", "secret"),
                     ("port", "3306"),
-                    ("project_url", "https://resource-context.test"),
                     ("url", "mysql://root:secret@127.0.0.1:3306"),
                     ("username", "root"),
                 ]),
@@ -186,7 +184,6 @@ mysql:
                         generated_name: "acme_test_app".to_string(),
                         values: values(&[
                             ("database", "acme_test_app"),
-                            ("project_url", "https://allocation-context.test"),
                             ("url", "mysql://root:secret@127.0.0.1:3306/acme_test_app"),
                         ]),
                     },
@@ -198,22 +195,22 @@ mysql:
     let rendered = render_project_env(&config, &context)?;
 
     assert_eq!(
-        rendered.values.get("ROOT_PROJECT_URL").map(String::as_str),
+        rendered.values.get("ROOT_URL").map(String::as_str),
         Some("https://primary.acme.test")
     );
     assert_eq!(
         rendered
             .values
-            .get("RESOURCE_PROJECT_URL")
+            .get("RESOURCE_SERVICE_URL")
             .map(String::as_str),
-        Some("https://primary.acme.test")
+        Some("mysql://root:secret@127.0.0.1:3306")
     );
     assert_eq!(
         rendered
             .values
-            .get("ALLOCATION_PROJECT_URL")
+            .get("ALLOCATION_SERVICE_URL")
             .map(String::as_str),
-        Some("https://primary.acme.test")
+        Some("mysql://root:secret@127.0.0.1:3306/acme_test_app")
     );
     assert_debug_snapshot!((&rendered, format_project_env(&rendered)));
 
@@ -283,16 +280,18 @@ fn resource_only_env_omits_serving_placeholders_across_scopes() -> Result<()> {
 serve: false
 env:
   APP_ENV: local
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
   TLS_KEY: "${tls.key}"
 mysql:
   env:
     DB_HOST: "${host}"
+    DATABASE_URL: "${url}"
     TLS_CA: "${tls.ca}"
   allocations:
     app:
       env:
         DB_DATABASE: "${database}"
+        ALLOCATION_URL: "${url}"
         TLS_CERT: "${tls.cert}"
 "#,
     )?;
@@ -305,12 +304,18 @@ mysql:
             "mysql".to_string(),
             ResourceEnvContext {
                 track: "8.4".to_string(),
-                values: values(&[("host", "127.0.0.1")]),
+                values: values(&[
+                    ("host", "127.0.0.1"),
+                    ("url", "mysql://root@127.0.0.1:3306"),
+                ]),
                 allocations: allocations(&[(
                     "app",
                     AllocationEnvContext {
                         generated_name: "acme_app".to_string(),
-                        values: values(&[("database", "acme_app")]),
+                        values: values(&[
+                            ("database", "acme_app"),
+                            ("url", "mysql://root@127.0.0.1:3306/acme_app"),
+                        ]),
                     },
                 )]),
             },
@@ -326,6 +331,25 @@ mysql:
 
 #[test]
 fn project_env_renderer_reports_missing_contexts() -> Result<()> {
+    let root_config = ProjectConfig::parse("env:\n  APP_URL: \"${url}\"\n")?;
+    assert!(matches!(
+        render_project_env(&root_config, &ProjectEnvContext::default()),
+        Err(ConfigError::MissingEnvContext { field, placeholder })
+            if field == "project.primary_hostname" && placeholder == "url"
+    ));
+
+    let resource_url_config =
+        ProjectConfig::parse("mysql:\n  env:\n    DATABASE_URL: \"${url}\"\n")?;
+    let missing_resource_url = render_project_env(
+        &resource_url_config,
+        &project_context(&[("mysql", ResourceEnvContext::default())]),
+    );
+    assert!(matches!(
+        missing_resource_url,
+        Err(ConfigError::MissingEnvContext { field, placeholder })
+            if field == "mysql.env.DATABASE_URL" && placeholder == "url"
+    ));
+
     let resource_config = ProjectConfig::parse(
         r#"
 mysql:

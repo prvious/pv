@@ -7,7 +7,7 @@ root: public
 hostnames:
 - admin.acme.test
 env:
-  APP_URL: ${project_url}
+  APP_URL: ${url}
 mysql:
   version: '8.0'
   env:

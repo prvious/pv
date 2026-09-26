@@ -23,7 +23,7 @@ expression: "(written.path.file_name(), written.exists, reloaded.config)"
         ),
         hostnames: [],
         env: {
-            "APP_URL": "${project_url}",
+            "APP_URL": "${url}",
         },
         resources: {
             "mysql": ResourceConfig {

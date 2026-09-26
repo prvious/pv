@@ -5,10 +5,12 @@ expression: "(&rendered, format_project_env(&rendered))"
 (
     RenderedProjectEnv {
         values: {
+            "ALLOCATION_URL": "mysql://root@127.0.0.1:3306/acme_app",
             "APP_ENV": "local",
+            "DATABASE_URL": "mysql://root@127.0.0.1:3306",
             "DB_DATABASE": "acme_app",
             "DB_HOST": "127.0.0.1",
         },
     },
-    "APP_ENV=local\nDB_DATABASE=acme_app\nDB_HOST=127.0.0.1\n",
+    "ALLOCATION_URL=mysql://root@127.0.0.1:3306/acme_app\nAPP_ENV=local\nDATABASE_URL=mysql://root@127.0.0.1:3306\nDB_DATABASE=acme_app\nDB_HOST=127.0.0.1\n",
 )

@@ -20,7 +20,7 @@ ProjectConfig {
         "api.acme.test",
     ],
     env: {
-        "APP_URL": "${project_url}",
+        "APP_URL": "${url}",
     },
     resources: {
         "mysql": ResourceConfig {

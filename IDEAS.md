@@ -206,7 +206,7 @@ Example:
 php: "8.4"
 
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 
 postgres:
   version: "8.0"
