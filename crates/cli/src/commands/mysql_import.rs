@@ -89,20 +89,34 @@ pub(crate) fn run(
         .enable_all()
         .build()?;
     let (cancel_sender, cancel) = watch::channel(false);
-    let (mut interrupt, mut terminate) = {
-        let _entered = runtime.enter();
-        (
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?,
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?,
-        )
-    };
-    runtime.spawn(async move {
-        tokio::select! {
-            _ = interrupt.recv() => {},
-            _ = terminate.recv() => {},
-        }
-        cancel_sender.send_replace(true);
-    });
+    #[cfg(unix)]
+    {
+        let (mut interrupt, mut terminate) = {
+            let _entered = runtime.enter();
+            (
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?,
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?,
+            )
+        };
+        runtime.spawn(async move {
+            tokio::select! {
+                _ = interrupt.recv() => {},
+                _ = terminate.recv() => {},
+            }
+            cancel_sender.send_replace(true);
+        });
+    }
+    #[cfg(windows)]
+    {
+        let mut interrupt = {
+            let _entered = runtime.enter();
+            tokio::signal::windows::ctrl_c()?
+        };
+        runtime.spawn(async move {
+            interrupt.recv().await;
+            cancel_sender.send_replace(true);
+        });
+    }
     state::fs::ensure_user_dir(paths.run())?;
     let temporary = camino_tempfile::tempdir_in(paths.run())?;
     let snapshot = temporary.path().join("source.sql");
