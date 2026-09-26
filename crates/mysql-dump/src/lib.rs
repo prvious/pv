@@ -9,6 +9,7 @@ mod routine;
 mod routing;
 mod session;
 mod stored_function;
+mod table;
 
 pub use header::{HeaderError, source_database_header};
 pub use key_toggle::{KeyToggleError, dump_key_toggle};
@@ -25,3 +26,4 @@ pub use routine::{
 pub use routing::{RoutingAction, RoutingError, RoutingReference, routing_reference};
 pub use session::{SessionError, SessionSetup, session_setup};
 pub use stored_function::{StoredFunctionError, normalize_stored_function_for_analysis};
+pub use table::{TableError, table_database_references};

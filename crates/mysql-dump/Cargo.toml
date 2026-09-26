@@ -8,5 +8,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+sqlparser = { workspace = true }
 squonk = { workspace = true }
 thiserror = { workspace = true }
