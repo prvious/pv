@@ -120,6 +120,8 @@ pub enum RoutineError {
     Lexical { message: String },
     #[error("routine name or statement boundary is unsupported")]
     InvalidName,
+    #[error("routine frame contains an unsupported body boundary or trailing SQL")]
+    InvalidBoundary,
     #[error("could not parse routine drop: {message}")]
     UnsupportedDrop { message: String },
 }
@@ -273,6 +275,7 @@ fn create_reference(
     {
         return Err(RoutineError::InvalidName);
     }
+    validate_create_boundary(analysis, tokens, after_name)?;
     let name = identifier(source, name_token).ok_or(RoutineError::InvalidName)?;
     let span = name_token.span.start() as usize..name_token.span.end() as usize;
     Ok(Some(RoutineReference {
@@ -282,6 +285,113 @@ fn create_reference(
         name,
         name_span: span,
     }))
+}
+
+fn validate_create_boundary(
+    analysis: &str,
+    tokens: &[Token],
+    after_name: usize,
+) -> Result<(), RoutineError> {
+    if let Ok(parsed) = squonk::parse_with(analysis, squonk::ParseConfig::new(MySql))
+        && matches!(
+            parsed.statements(),
+            [Statement::CreateFunction { .. } | Statement::CreateProcedure { .. }]
+        )
+    {
+        return Ok(());
+    }
+    let Some(begin) = tokens
+        .iter()
+        .enumerate()
+        .skip(after_name + 1)
+        .find_map(|(index, token)| token_is(analysis, *token, "BEGIN").then_some(index))
+    else {
+        return if tokens
+            .iter()
+            .enumerate()
+            .filter(|(_, token)| token_text(analysis, **token) == Some(";"))
+            .map(|(index, _)| index)
+            .eq([tokens.len().saturating_sub(1)])
+        {
+            Ok(())
+        } else {
+            Err(RoutineError::InvalidBoundary)
+        };
+    };
+    if tokens[after_name + 1..begin]
+        .iter()
+        .any(|token| token_text(analysis, *token) == Some(";"))
+    {
+        return Err(RoutineError::InvalidBoundary);
+    }
+    let opening_label = begin
+        .checked_sub(2)
+        .filter(|_| {
+            tokens
+                .get(begin - 1)
+                .and_then(|token| token_text(analysis, *token))
+                == Some(":")
+        })
+        .and_then(|index| tokens.get(index))
+        .and_then(|token| identifier(analysis, *token));
+    let mut depth = 0_usize;
+    let mut case_depth = 0_usize;
+    for (index, token) in tokens.iter().enumerate().skip(begin) {
+        if token_is(analysis, *token, "BEGIN") {
+            depth += 1;
+        } else if token_is(analysis, *token, "CASE")
+            && !index
+                .checked_sub(1)
+                .and_then(|previous| tokens.get(previous))
+                .is_some_and(|previous| token_is(analysis, *previous, "END"))
+        {
+            case_depth += 1;
+        } else if token_is(analysis, *token, "END") {
+            let next_keyword = tokens.get(index + 1);
+            if next_keyword.is_some_and(|next| token_is(analysis, *next, "CASE")) {
+                let Some(next_depth) = case_depth.checked_sub(1) else {
+                    return Err(RoutineError::InvalidBoundary);
+                };
+                case_depth = next_depth;
+                continue;
+            }
+            if next_keyword.is_some_and(|next| {
+                ["IF", "LOOP", "WHILE", "REPEAT"]
+                    .iter()
+                    .any(|keyword| token_is(analysis, *next, keyword))
+            }) {
+                continue;
+            }
+            if case_depth > 0 {
+                case_depth -= 1;
+                continue;
+            }
+            let Some(next_depth) = depth.checked_sub(1) else {
+                return Err(RoutineError::InvalidBoundary);
+            };
+            depth = next_depth;
+            if depth == 0 {
+                let valid_tail = match tokens.get(index + 1..) {
+                    Some([semicolon]) => token_text(analysis, *semicolon) == Some(";"),
+                    Some([label, semicolon]) => {
+                        token_text(analysis, *semicolon) == Some(";")
+                            && opening_label.as_deref().is_some_and(|opening| {
+                                identifier(analysis, *label)
+                                    .as_deref()
+                                    .is_some_and(|closing| opening.eq_ignore_ascii_case(closing))
+                            })
+                    }
+                    _ => false,
+                };
+                return if valid_tail {
+                    Ok(())
+                } else {
+                    Err(RoutineError::InvalidBoundary)
+                };
+            }
+        }
+    }
+    Err(RoutineError::InvalidBoundary)
 }
 
 fn drop_reference(source: &str, analysis: &str) -> Result<Option<RoutineReference>, RoutineError> {

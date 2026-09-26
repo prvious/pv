@@ -1,7 +1,7 @@
 use mysql_dump::{
-    Edit, Frame, RoutineAction, RoutineKind, RoutineName, RoutineSkipError, RoutineSkips,
-    RoutingAction, routine_reference, routing_reference, scan, source_database_header,
-    write_transformed,
+    Edit, Frame, RoutineAction, RoutineError, RoutineKind, RoutineName, RoutineSkipError,
+    RoutineSkips, RoutingAction, routine_reference, routing_reference, scan,
+    source_database_header, write_transformed,
 };
 
 #[test]
@@ -96,6 +96,51 @@ fn routine_create_if_not_exists_identifies_name() -> Result<(), Box<dyn std::err
     let reference = routine_reference(create, b"$$")?.ok_or("missing procedure")?;
     assert_eq!(reference.name, "p");
     assert_eq!(create.get(reference.name_span), Some("p"));
+    Ok(())
+}
+
+#[test]
+fn skipped_routine_cannot_hide_trailing_sql() -> Result<(), Box<dyn std::error::Error>> {
+    for source in [
+        "CREATE PROCEDURE p() BEGIN END; DROP DATABASE other;;",
+        "CREATE PROCEDURE p() BEGIN PREPARE s FROM @sql; END; SET GLOBAL read_only=1;;",
+        "CREATE PROCEDURE p() SELECT 1; BEGIN END;;",
+    ] {
+        assert!(matches!(
+            routine_reference(source, b";;"),
+            Err(RoutineError::InvalidBoundary)
+        ));
+    }
+    let source = "CREATE PROCEDURE p() BEGIN IF 1=1 THEN PREPARE s FROM @sql; END IF; END;;";
+    assert!(matches!(
+        routine_reference(source, b";;")?,
+        Some(reference) if reference.name == "p"
+    ));
+    let source = "CREATE PROCEDURE p() outer: BEGIN PREPARE s FROM @sql; END outer;;";
+    assert!(matches!(
+        routine_reference(source, b";;")?,
+        Some(reference) if reference.name == "p"
+    ));
+    let source = "CREATE PROCEDURE p() outer: BEGIN END wrong;;";
+    assert!(matches!(
+        routine_reference(source, b";;"),
+        Err(RoutineError::InvalidBoundary)
+    ));
+    let source = "CREATE PROCEDURE p() BEGIN DECLARE total int; SELECT CASE WHEN 1=1 THEN 1 ELSE 0 END INTO total; PREPARE s FROM @sql; END;;";
+    assert!(matches!(
+        routine_reference(source, b";;")?,
+        Some(reference) if reference.name == "p"
+    ));
+    let source = "CREATE PROCEDURE p() SELECT * FROM JSON_TABLE(@j, '$[*]' COLUMNS (x INT PATH '$')) AS jt;;";
+    assert!(matches!(
+        routine_reference(source, b";;")?,
+        Some(reference) if reference.name == "p"
+    ));
+    let source = "CREATE PROCEDURE p() SELECT 1; DROP DATABASE other;;";
+    assert!(matches!(
+        routine_reference(source, b";;"),
+        Err(RoutineError::InvalidBoundary)
+    ));
     Ok(())
 }
 

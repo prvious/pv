@@ -5,6 +5,8 @@ use squonk::ast::{Ident, ObjectName, Statement};
 use squonk::dialect::MySql;
 use thiserror::Error;
 
+use crate::reference::verified_identifier;
+
 /// A database-routing statement in a framed SQL chunk.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoutingAction {
@@ -68,12 +70,12 @@ pub fn routing_reference(source: &str) -> Result<Option<RoutingReference>, Routi
     };
     let start = identifier.meta.span.start() as usize;
     let end = identifier.meta.span.end() as usize;
-    if start >= end || source.get(start..end).is_none() {
-        return Err(RoutingError::InvalidSpan);
-    }
     let Some(name) = parsed.resolver().try_resolve(identifier.sym) else {
         return Err(RoutingError::InvalidSpan);
     };
+    if !verified_identifier(source, start..end, name) {
+        return Err(RoutingError::InvalidSpan);
+    }
     Ok(Some(RoutingReference {
         action,
         name: name.to_owned(),
@@ -125,12 +127,12 @@ fn generated_create_database_reference(
     };
     let identifier = only_identifier(&create.name)?;
     let span = identifier.meta.span.start() as usize..identifier.meta.span.end() as usize;
-    if span.start >= span.end || source.get(span.clone()).is_none() {
-        return Err(RoutingError::InvalidSpan);
-    }
     let Some(name) = parsed.resolver().try_resolve(identifier.sym) else {
         return Err(RoutingError::InvalidSpan);
     };
+    if !verified_identifier(source, span.clone(), name) {
+        return Err(RoutingError::InvalidSpan);
+    }
     Ok(Some(RoutingReference {
         action: RoutingAction::Create,
         name: name.to_owned(),
