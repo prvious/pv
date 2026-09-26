@@ -1,6 +1,6 @@
 use std::io::{self, Read};
 
-use mysql_dump::{Frame, ReaderError, scan};
+use mysql_dump::{Frame, ReaderError, scan, scan_with};
 
 fn frames(source: &[u8]) -> Result<Vec<Frame>, mysql_dump::ReaderError> {
     let mut found = Vec::new();
@@ -9,6 +9,22 @@ fn frames(source: &[u8]) -> Result<Vec<Frame>, mysql_dump::ReaderError> {
         Ok(())
     })?;
     Ok(found)
+}
+
+#[derive(Debug, thiserror::Error)]
+enum PreflightFailure {
+    #[error(transparent)]
+    Reader(#[from] ReaderError),
+    #[error("unsafe SQL")]
+    Unsafe,
+}
+
+#[test]
+fn scanner_preserves_preflight_callback_error() {
+    let result = scan_with("DROP DATABASE other;".as_bytes(), |_| {
+        Err(PreflightFailure::Unsafe)
+    });
+    assert!(matches!(result, Err(PreflightFailure::Unsafe)));
 }
 
 #[test]

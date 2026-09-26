@@ -492,7 +492,7 @@ fn project_env_warning(warning: &ProjectEnvWarning) -> String {
     }
 }
 
-fn resolve_project(
+pub(super) fn resolve_project(
     database: &Database,
     selector: Option<&str>,
     environment: &impl Environment,

@@ -164,6 +164,14 @@ pub fn create_new_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
     create_new_file_handle(path)
 }
 
+#[expect(
+    clippy::disallowed_types,
+    reason = "PV filesystem helper owns direct file handles"
+)]
+pub fn open_read_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
+    open_read_file_handle(path)
+}
+
 pub fn read_to_string(path: &Utf8Path) -> Result<String, StateError> {
     read_utf8_file(path)
 }
@@ -365,6 +373,14 @@ fn create_new_file_handle(path: &Utf8Path) -> Result<std::fs::File, StateError> 
         .create_new(true)
         .open(path)
         .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
+}
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "PV filesystem helper owns direct file reads"
+)]
+fn open_read_file_handle(path: &Utf8Path) -> Result<std::fs::File, StateError> {
+    std::fs::File::open(path).map_err(|source| StateError::filesystem(path.to_path_buf(), source))
 }
 
 #[expect(

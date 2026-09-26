@@ -111,8 +111,16 @@ pub fn session_setup(source: &str) -> Result<Option<SessionSetup>, SessionError>
                             return Err(SessionError::UnsafeSetup);
                         };
                         let name = name.to_ascii_lowercase();
-                        if !(name.starts_with("old_") || name.starts_with("saved_"))
-                            || !safe_expr(value)
+                        if !safe_expr(value)
+                            || (!(name.starts_with("old_") || name.starts_with("saved_"))
+                                && !matches!(
+                                    value.as_ref(),
+                                    Expr::SessionVariable {
+                                        kind: SessionVariableKind::System
+                                            | SessionVariableKind::SystemSession,
+                                        ..
+                                    }
+                                ))
                         {
                             return Err(SessionError::UnsafeSetup);
                         }
@@ -177,11 +185,21 @@ fn safe_charset_value(value: &SetVariableValue, source: &str, variable: &str) ->
     source
         .get(span.start() as usize..span.end() as usize)
         .is_some_and(|name| {
-            matches!(
-                (variable, name.to_ascii_lowercase().as_str()),
-                ("character_set_client" | "character_set_results", "utf8mb4")
-                    | ("collation_connection", "utf8mb4_0900_ai_ci")
-            )
+            let name = name.to_ascii_lowercase();
+            match variable {
+                "character_set_client" | "character_set_results" => {
+                    matches!(name.as_str(), "utf8mb4" | "utf8mb3" | "utf8" | "latin1")
+                }
+                "collation_connection" => {
+                    ["utf8mb4_", "utf8mb3_", "utf8_", "latin1_"]
+                        .iter()
+                        .any(|prefix| name.starts_with(prefix))
+                        && name
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+                }
+                _ => false,
+            }
         })
 }
 
@@ -204,6 +222,9 @@ fn safe_sql_mode_literal(source: &str) -> bool {
                 "NO_AUTO_VALUE_ON_ZERO"
                     | "ONLY_FULL_GROUP_BY"
                     | "STRICT_TRANS_TABLES"
+                    | "STRICT_ALL_TABLES"
+                    | "ALLOW_INVALID_DATES"
+                    | "TRADITIONAL"
                     | "NO_ZERO_IN_DATE"
                     | "NO_ZERO_DATE"
                     | "ERROR_FOR_DIVISION_BY_ZERO"

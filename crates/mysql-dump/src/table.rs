@@ -1,15 +1,15 @@
-use std::ops::{ControlFlow, Range};
+use std::ops::ControlFlow;
 
 use sqlparser::ast::{
-    ColumnOption, Expr, Ident, ObjectName, ObjectNamePart, Statement, TableConstraint, Visit,
-    Visitor,
+    ColumnOption, CreateTableOptions, Expr, ObjectName, ObjectNamePart, SqlOption, Statement,
+    TableConstraint, Visit, Visitor,
 };
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
-use sqlparser::tokenizer::Location;
 use thiserror::Error;
 
 use crate::reference::DatabaseReference;
+use crate::span::SourceLines;
 
 const MAX_TABLE_BYTES: usize = 8 * 1024 * 1024;
 
@@ -33,6 +33,9 @@ pub fn table_database_references(source: &str) -> Result<Vec<DatabaseReference>,
     if source.len() > MAX_TABLE_BYTES {
         return Err(TableError::TooLarge);
     }
+    if source.contains("/*!") {
+        return Err(TableError::UnsupportedForm);
+    }
     let parsed = Parser::parse_sql(&MySqlDialect {}, source).map_err(|error| {
         TableError::UnsupportedSyntax {
             message: error.to_string(),
@@ -48,6 +51,29 @@ pub fn table_database_references(source: &str) -> Result<Vec<DatabaseReference>,
         || create.external
     {
         return Err(TableError::UnsupportedForm);
+    }
+    let options = match &create.table_options {
+        CreateTableOptions::None => &[][..],
+        CreateTableOptions::Plain(options) => options.as_slice(),
+        _ => return Err(TableError::UnsupportedForm),
+    };
+    for option in options {
+        let safe = match option {
+            SqlOption::Comment(_) => true,
+            SqlOption::KeyValue { key, .. } => safe_table_option_name(&key.value),
+            SqlOption::NamedParenthesizedList(engine) => {
+                engine.key.value.eq_ignore_ascii_case("ENGINE")
+                    && engine.values.is_empty()
+                    && engine
+                        .name
+                        .as_ref()
+                        .is_some_and(|name| safe_table_engine(&name.value))
+            }
+            _ => false,
+        };
+        if !safe {
+            return Err(TableError::UnsupportedForm);
+        }
     }
     let mut expression_check = ExpressionCheck;
     if let ControlFlow::Break(()) = parsed[0].visit(&mut expression_check) {
@@ -73,6 +99,38 @@ pub fn table_database_references(source: &str) -> Result<Vec<DatabaseReference>,
     Ok(references)
 }
 
+pub(crate) fn safe_table_option_name(name: &str) -> bool {
+    [
+        "AUTO_INCREMENT",
+        "AVG_ROW_LENGTH",
+        "CHARACTER SET",
+        "CHARSET",
+        "CHECKSUM",
+        "COLLATE",
+        "COMPRESSION",
+        "DEFAULT CHARACTER SET",
+        "DEFAULT CHARSET",
+        "DEFAULT COLLATE",
+        "DELAY_KEY_WRITE",
+        "KEY_BLOCK_SIZE",
+        "MAX_ROWS",
+        "MIN_ROWS",
+        "PACK_KEYS",
+        "ROW_FORMAT",
+        "STATS_AUTO_RECALC",
+        "STATS_PERSISTENT",
+        "STATS_SAMPLE_PAGES",
+    ]
+    .iter()
+    .any(|allowed| name.eq_ignore_ascii_case(allowed))
+}
+
+pub(crate) fn safe_table_engine(name: &str) -> bool {
+    ["INNODB", "MYISAM", "MEMORY", "CSV", "ARCHIVE"]
+        .iter()
+        .any(|allowed| name.eq_ignore_ascii_case(allowed))
+}
+
 struct ExpressionCheck;
 
 impl Visitor for ExpressionCheck {
@@ -81,7 +139,17 @@ impl Visitor for ExpressionCheck {
     fn pre_visit_expr(&mut self, expression: &Expr) -> ControlFlow<Self::Break> {
         match expression {
             Expr::CompoundIdentifier(_) => ControlFlow::Break(()),
-            Expr::Function(function) if function.name.0.len() > 1 => ControlFlow::Break(()),
+            Expr::Function(function)
+                if function.name.0.len() > 1
+                    || function
+                        .name
+                        .0
+                        .first()
+                        .and_then(ObjectNamePart::as_ident)
+                        .is_some_and(|name| name.value.eq_ignore_ascii_case("LOAD_FILE")) =>
+            {
+                ControlFlow::Break(())
+            }
             _ => ControlFlow::Continue(()),
         }
     }
@@ -100,68 +168,10 @@ fn add_name(
         ] => database,
         _ => return Err(TableError::UnsupportedForm),
     };
-    let span = lines.span(database)?;
+    let span = lines.span(database).ok_or(TableError::InvalidSpan)?;
     references.push(DatabaseReference {
         name: database.value.clone(),
         span,
     });
     Ok(())
-}
-
-struct SourceLines<'a> {
-    source: &'a str,
-    starts: Vec<usize>,
-}
-
-impl<'a> SourceLines<'a> {
-    fn new(source: &'a str) -> Self {
-        let mut starts = vec![0];
-        for (index, byte) in source.bytes().enumerate() {
-            if byte == b'\n' {
-                starts.push(index + 1);
-            }
-        }
-        Self { source, starts }
-    }
-
-    fn offset(&self, location: Location) -> Option<usize> {
-        let line = usize::try_from(location.line.checked_sub(1)?).ok()?;
-        let column = usize::try_from(location.column.checked_sub(1)?).ok()?;
-        let start = *self.starts.get(line)?;
-        let end = self
-            .starts
-            .get(line + 1)
-            .copied()
-            .unwrap_or(self.source.len());
-        let source_line = self.source.get(start..end)?;
-        let relative = source_line
-            .char_indices()
-            .nth(column)
-            .map(|(offset, _)| offset)
-            .or_else(|| (source_line.chars().count() == column).then_some(source_line.len()))?;
-        start.checked_add(relative)
-    }
-
-    fn span(&self, identifier: &Ident) -> Result<Range<usize>, TableError> {
-        let start = self
-            .offset(identifier.span.start)
-            .ok_or(TableError::InvalidSpan)?;
-        let end = self
-            .offset(identifier.span.end)
-            .ok_or(TableError::InvalidSpan)?;
-        let raw = self.source.get(start..end).ok_or(TableError::InvalidSpan)?;
-        let decoded = match identifier.quote_style {
-            None => raw.to_owned(),
-            Some('`') => raw
-                .strip_prefix('`')
-                .and_then(|value| value.strip_suffix('`'))
-                .ok_or(TableError::InvalidSpan)?
-                .replace("``", "`"),
-            _ => return Err(TableError::InvalidSpan),
-        };
-        if start >= end || decoded != identifier.value {
-            return Err(TableError::InvalidSpan);
-        }
-        Ok(start..end)
-    }
 }

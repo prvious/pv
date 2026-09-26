@@ -116,6 +116,9 @@ _pv() {
             pv,mailpit:update)
                 cmd="pv__subcmd__mailpit:update"
                 ;;
+            pv,mysql:import)
+                cmd="pv__subcmd__mysql:import"
+                ;;
             pv,mysql:install)
                 cmd="pv__subcmd__mysql:install"
                 ;;
@@ -252,7 +255,7 @@ _pv() {
 
     case "${cmd}" in
         pv)
-            opts="-h -V --no-color --help --version env completions setup uninstall daemon:enable daemon:disable daemon:restart daemon:run shim:php shim:composer dns:status dns:install dns:uninstall ports:status ports:install ports:uninstall ca:status ca:trust ca:untrust link init unlink open project:env status logs doctor jobs update internal:update-managed-resources list php:use php:install php:update php:uninstall php:list composer:install composer:update composer:uninstall mailpit:install mailpit:update mailpit:uninstall mailpit:list mailpit:open mail:install mail:update mail:uninstall mail:list mail:open redis:install redis:update redis:uninstall redis:list rustfs:install rustfs:update rustfs:uninstall rustfs:list rustfs:open s3:install s3:update s3:uninstall s3:list s3:open mysql:install mysql:update mysql:uninstall mysql:list postgres:install postgres:update postgres:uninstall postgres:list pg:install pg:update pg:uninstall pg:list"
+            opts="-h -V --no-color --help --version env completions setup uninstall daemon:enable daemon:disable daemon:restart daemon:run shim:php shim:composer dns:status dns:install dns:uninstall ports:status ports:install ports:uninstall ca:status ca:trust ca:untrust link init unlink open project:env status logs doctor jobs update internal:update-managed-resources list php:use php:install php:update php:uninstall php:list composer:install composer:update composer:uninstall mailpit:install mailpit:update mailpit:uninstall mailpit:list mailpit:open mail:install mail:update mail:uninstall mail:list mail:open redis:install redis:update redis:uninstall redis:list rustfs:install rustfs:update rustfs:uninstall rustfs:list rustfs:open s3:install s3:update s3:uninstall s3:list s3:open mysql:install mysql:update mysql:uninstall mysql:list mysql:import postgres:install postgres:update postgres:uninstall postgres:list pg:install pg:update pg:uninstall pg:list"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -734,6 +737,32 @@ _pv() {
                 return 0
             fi
             case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        pv__subcmd__mysql:import)
+            opts="-h --project --map --skip-routine --yes --force --no-color --help <path>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --project)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --map)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --skip-routine)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;

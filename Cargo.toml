@@ -70,7 +70,7 @@ squonk = { version = "=3.0.0", features = ["mysql"] }
 tar = "0.4.45"
 thiserror = "2"
 time = { version = "0", features = ["formatting", "macros"] }
-tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 tokio-util = { version = "0", features = ["codec"] }
 toml = "1.1.2"

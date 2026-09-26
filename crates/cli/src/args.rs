@@ -251,6 +251,12 @@ pub(crate) enum Command {
     #[command(name = "mysql:list", about = "List installed MySQL tracks")]
     MysqlList(ListArgs),
 
+    #[command(
+        name = "mysql:import",
+        about = "Import a MySQL SQL dump into a linked Project"
+    )]
+    MysqlImport(MysqlImportArgs),
+
     #[command(name = "postgres:install", about = "Install a Postgres track")]
     PostgresInstall(PostgresInstallArgs),
 
@@ -433,6 +439,41 @@ pub(crate) struct MysqlUninstallArgs {
     pub(crate) prune: bool,
 
     #[arg(long, help = "Remove the track even if Projects use it")]
+    pub(crate) force: bool,
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct MysqlImportArgs {
+    #[arg(value_name = "path", help = "Uncompressed MySQL SQL dump")]
+    pub(crate) path: std::path::PathBuf,
+
+    #[arg(
+        long,
+        help = "Linked Project slug or hostname (defaults to current Project)"
+    )]
+    pub(crate) project: Option<String>,
+
+    #[arg(
+        long = "map",
+        value_name = "source=allocation",
+        help = "Map a source database to a PV allocation name"
+    )]
+    pub(crate) mappings: Vec<String>,
+
+    #[arg(
+        long = "skip-routine",
+        value_name = "database.routine",
+        help = "Omit an explicitly named stored procedure or function"
+    )]
+    pub(crate) skip_routines: Vec<String>,
+
+    #[arg(long, help = "Accept the import plan without an interactive prompt")]
+    pub(crate) yes: bool,
+
+    #[arg(
+        long,
+        help = "Accept importing into targets that already contain objects"
+    )]
     pub(crate) force: bool,
 }
 
