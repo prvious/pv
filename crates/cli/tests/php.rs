@@ -8,7 +8,7 @@ use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::{Answer, Environment, Prompt, PromptKind, run_with_environment};
 use config::ProjectConfigFile;
 use insta::{assert_debug_snapshot, assert_snapshot};
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
@@ -122,7 +122,19 @@ impl Environment for TestEnvironment {
     }
 
     fn stdin_is_terminal(&self) -> bool {
-        false
+        self.terminal_width.get().is_some()
+    }
+
+    fn stderr_is_terminal(&self) -> bool {
+        self.terminal_width.get().is_some()
+    }
+
+    fn prompt(&self, prompt: &Prompt<'_>) -> io::Result<Answer> {
+        let PromptKind::Confirm { default } = prompt.kind else {
+            return Err(io::Error::other("only confirmations are scripted"));
+        };
+
+        Ok(Answer::Confirmed(default))
     }
 
     fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -1684,6 +1696,61 @@ fn php_uninstall_force_prune_queues_both_removal_intents() -> anyhow::Result<()>
         uninstall,
         resource_record_snapshots(&records, tempdir.path())?,
     ));
+
+    Ok(())
+}
+
+#[test]
+fn php_uninstall_prune_refuses_without_terminal() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    record_installed_php_pair(&home, "8.4", &artifacts)?;
+    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+
+    let output = run_pv(&["php:uninstall", "8.4", "--prune"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.is_empty());
+    assert!(records.iter().all(|record| {
+        record.desired_state == ManagedResourceDesiredState::Installed
+            && !record.removal_prune
+            && !record.removal_force
+    }));
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!((output, resource_record_snapshots(&records, tempdir.path())?,));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn php_uninstall_prune_defaults_to_no_on_a_terminal() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    record_installed_php_pair(&home, "8.4", &artifacts)?;
+    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+    environment.terminal_width.set(Some(100));
+
+    let output = run_pv(&["php:uninstall", "8.4", "--prune"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stdout.contains("Prune cancelled."));
+    assert!(records.iter().all(|record| {
+        record.desired_state == ManagedResourceDesiredState::Installed
+            && !record.removal_prune
+            && !record.removal_force
+    }));
 
     Ok(())
 }

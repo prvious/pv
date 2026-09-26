@@ -15,6 +15,7 @@ use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Line, Streams};
 use crate::progress::DownloadProgressRenderer;
+use crate::prompt;
 
 const COMPOSER_TRACK: &str = "2";
 
@@ -74,6 +75,19 @@ pub(crate) fn uninstall(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let commands = resource_commands(&paths, environment)?;
+    if args.prune
+        && !args.force
+        && !prompt::confirm_or(
+            environment,
+            streams,
+            CliError::ComposerPruneRequiresTerminal,
+            "Prune PV-owned Composer home and cache?",
+            false,
+        )?
+    {
+        streams.out.note("Prune cancelled.")?;
+        return Ok(ExitCode::SUCCESS);
+    }
     let options = ManagedResourceUninstallOptions::new()
         .prune(args.prune)
         .force(args.force);

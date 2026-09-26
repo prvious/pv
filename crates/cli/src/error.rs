@@ -40,6 +40,11 @@ pub enum CliError {
         track: String,
     },
 
+    #[error(
+        "Refusing to prune Composer data without an interactive confirmation.\nRerun with `pv composer:uninstall --prune --force` to prune non-interactively."
+    )]
+    ComposerPruneRequiresTerminal,
+
     #[error("could not detect the current shell; pass --shell zsh, --shell bash, or --shell fish")]
     MissingShell,
 

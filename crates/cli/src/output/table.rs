@@ -50,8 +50,8 @@ impl Output<'_> {
     /// A plain surface gets the header and rows joined by two spaces. A
     /// decorated surface gets aligned borderless columns, or, when those do
     /// not fit the width, one stacked block per record: the first cell as its
-    /// title, then a `label  value` line per remaining column, so no field is
-    /// dropped and nothing scrolls horizontally.
+    /// title, then a `label  value` line per remaining column. No field is
+    /// dropped, though a long indivisible value may exceed the width.
     pub(crate) fn table(&mut self, table: &Table) -> io::Result<()> {
         self.continuation = INDENT.to_string();
         if !self.surface.decorated {
@@ -126,15 +126,16 @@ impl Output<'_> {
             if let Some(title) = cells.next() {
                 self.line(&cell_text(title, Tone::Strong, color))?;
             }
-            // Values are never wrapped: they are paths, hostnames, and ids.
             for (header, cell) in table.headers.iter().skip(1).zip(cells) {
                 let label = format!("{:label_width$}", header.to_lowercase());
-                writeln!(
-                    self.writer,
-                    "{INDENT}{}  {}",
-                    Tone::Dim.paint(&label, color),
-                    cell_text(cell, Tone::Plain, color)
-                )?;
+                let value = cell_text(cell, Tone::Plain, color);
+                let first = format!("{INDENT}{}  ", Tone::Dim.paint(&label, color));
+                if header.eq_ignore_ascii_case("summary") {
+                    let rest = format!("{INDENT}{:label_width$}  ", "");
+                    self.write_wrapped(&first, &rest, &value)?;
+                } else {
+                    writeln!(self.writer, "{first}{value}")?;
+                }
             }
             self.row_details(row)?;
         }

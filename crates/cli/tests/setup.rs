@@ -42,6 +42,7 @@ struct TestEnvironment {
     target_platform: TargetPlatform,
     helper_status: Mutex<Option<PrivilegedHelperStatus>>,
     terminal_width: Mutex<Option<usize>>,
+    terminal_surfaces: Mutex<Option<(bool, bool)>>,
 }
 
 impl TestEnvironment {
@@ -70,6 +71,7 @@ impl TestEnvironment {
                 owner_uid: 501,
             })),
             terminal_width: Mutex::new(None),
+            terminal_surfaces: Mutex::new(None),
         }
     }
 
@@ -99,6 +101,11 @@ impl TestEnvironment {
 
     fn set_helper_missing(&self) {
         *lock(&self.helper_status) = None;
+    }
+
+    fn set_terminal_surfaces(&self, stdout: bool, stderr: bool, width: usize) {
+        *lock(&self.terminal_surfaces) = Some((stdout, stderr));
+        *lock(&self.terminal_width) = Some(width);
     }
 }
 
@@ -185,11 +192,17 @@ impl Environment for TestEnvironment {
     }
 
     fn stdout_is_terminal(&self) -> bool {
-        lock(&self.terminal_width).is_some()
+        (*lock(&self.terminal_surfaces)).map_or_else(
+            || lock(&self.terminal_width).is_some(),
+            |(stdout, _)| stdout,
+        )
     }
 
     fn stderr_is_terminal(&self) -> bool {
-        lock(&self.terminal_width).is_some()
+        (*lock(&self.terminal_surfaces)).map_or_else(
+            || lock(&self.terminal_width).is_some(),
+            |(_, stderr)| stderr,
+        )
     }
 
     fn terminal_width(&self) -> Option<usize> {
@@ -1160,6 +1173,39 @@ fn setup_stops_at_a_failed_required_step_on_both_surfaces() -> anyhow::Result<()
     Ok(())
 }
 
+#[test]
+fn setup_required_steps_follow_independent_stream_surfaces() -> anyhow::Result<()> {
+    let decorated_stdout = run_setup_with_stream_surfaces(true, false)?;
+    let decorated_stderr = run_setup_with_stream_surfaces(false, true)?;
+
+    assert_eq!(decorated_stdout.exit_code, ExitCode::SUCCESS);
+    assert_eq!(decorated_stderr.exit_code, ExitCode::SUCCESS);
+
+    assert!(decorated_stdout.stdout.contains("◇  DNS resolver setup"));
+    assert!(
+        decorated_stdout
+            .stdout
+            .contains("◇  System reconciliation completed: stub job completed")
+    );
+    assert!(
+        decorated_stdout
+            .stderr
+            .contains("Reconciliation slot acquired after <1s")
+    );
+    assert!(!decorated_stdout.stderr.contains("DNS resolver setup"));
+
+    assert!(
+        decorated_stderr
+            .stdout
+            .contains("Prepared PV DNS resolver config")
+    );
+    assert!(decorated_stderr.stdout.contains("PV setup complete"));
+    assert!(!decorated_stderr.stdout.contains('◇'));
+    assert!(!decorated_stderr.stdout.contains('\u{1b}'));
+
+    Ok(())
+}
+
 #[derive(Debug)]
 struct Fixture {
     paths: PvPaths,
@@ -1365,6 +1411,27 @@ fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOu
         stdout: String::from_utf8(stdout)?,
         stderr: String::from_utf8(stderr)?,
     })
+}
+
+fn run_setup_with_stream_surfaces(
+    stdout_terminal: bool,
+    stderr_terminal: bool,
+) -> anyhow::Result<RunOutput> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+    fixture
+        .environment
+        .set_terminal_surfaces(stdout_terminal, stderr_terminal, 200);
+
+    let output = run_pv(
+        &["setup", "--no-path", "--no-color"],
+        fixture.environment.as_ref(),
+    )?;
+    let _daemon_requests = daemon.finish()?;
+
+    Ok(output)
 }
 
 fn seed_uninstall_files(paths: &PvPaths) -> anyhow::Result<()> {

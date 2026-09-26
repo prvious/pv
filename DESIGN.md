@@ -1566,7 +1566,7 @@ PV is a persistent, composable command-line application. Output stays in shell h
 
 stdout carries durable results that callers may redirect or pipe: completed human reports, JSON, `pv env` and `pv project:env` output, generated completions, and generated config explicitly requested with `pv init --print`.
 
-stderr carries transient interaction and diagnostics: prompts, spinners and progress bars, sparse non-terminal progress lines, warnings, refusals, and errors. Command-line usage errors keep clap's own format, styled only when stderr allows color; `--help` and `--version` output go to stdout the same way. `pv setup > result.txt` therefore shows prompts and progress in the terminal while `result.txt` receives only the durable result.
+stderr carries transient interaction and diagnostics: prompts, spinners and progress bars, sparse phase-transition lines for setup and update flows, warnings, refusals, and errors. Command-line usage errors keep clap's own format, styled only when stderr allows color; `--help` and `--version` output go to stdout the same way. `pv setup > result.txt` therefore shows prompts and progress in the terminal while `result.txt` receives only the durable result.
 
 ### Decorated and plain rendering
 
@@ -1575,7 +1575,7 @@ Each human-facing stream is rendered in one of two forms, chosen independently f
 - **Decorated** when the stream is a terminal: the glyph column, `┌ │ └` gutter flows for multi-step commands, command headings, section headings, report tables, repair hints, and semantic color, as in the terminal designs.
 - **Plain** when the stream is not a terminal: the plain lines documented throughout this document, with no glyphs, ANSI escapes, spinners, or bars.
 
-Plain output keeps each command's words and follows the same order as its decorated form:
+Plain output keeps each command's words and documented facts, in that command's documented plain order. Decorated output may arrange the same facts around terminal-specific headings, gutters, and tables:
 
 - Lines that explain the row above them, such as a refusal's `Leaving it in place.` or the fields of `pv ports:status`, are indented two spaces like other sub-lines, and repair commands read `  repair: `<command>``.
 - `pv doctor` lists its checks grouped as System, Routing, and Daemon & jobs, in plain and JSON output alike.
@@ -1585,13 +1585,13 @@ Decorated output uses color only when neither `NO_COLOR` nor the global `--no-co
 
 Glyph vocabulary: `✓` success, `✗` failure, `⚠` warning, `○` no-op or idle, `●` running or default, `◇` completed flow step or answered prompt, `◆` active step or prompt, `│` gutter (`┌` opens, `└` closes a flow), `↳` hint or repair command, `◐` spinner. When a command's outcome depends on the states it reports, such as `pv status`, `pv doctor`, and `pv ports:status` exiting non-zero, each row's glyph agrees with that outcome: `✗` marks exactly what fails the command, and `⚠` marks something worth attention that does not.
 
-Decorated output reflows to the terminal width (80 columns when the width is unknown) and never needs horizontal scrolling. A table that does not fit reflows each record into a stacked block, the first field as its title and then one `label  value` line per remaining field, without dropping fields. Secondary prose wraps at word boundaries; paths, hostnames, URLs, versions, and identifiers are never split. Plain output does not depend on width.
+Decorated output reflows to the terminal width (80 columns when the width is unknown) and is designed to avoid horizontal scrolling. A table that does not fit reflows each record into a stacked block, the first field as its title and then one `label  value` line per remaining field, without dropping fields. Secondary prose wraps at word boundaries; paths, hostnames, URLs, versions, and identifiers are never split, so a single indivisible value may extend past the target width when it cannot be shortened. Plain output does not depend on width.
 
 ### Flows
 
 Multi-step commands (`pv setup`, `pv uninstall`, `pv update`, and `pv init`) render as a `┌ │ └` flow on a decorated stdout. Each completed milestone is a `◇` step, prompts join the gutter, and the command's outcome closes the flow.
 
-- **Required steps** whose output is only meaningful once they finish, such as setup's DNS, port-redirect, CA, and daemon steps, show a stderr spinner naming the step while it runs. When the step finishes, its title appears marked `◇` or `✗`, with the step's own rows beneath it. A failed required step closes the flow with `└ ✗ PV stopped during <step>.`
+- **Required steps** whose output is only meaningful once they finish, such as setup's DNS, port-redirect, CA, and daemon steps, show a spinner naming the step when stderr is a terminal, independently of stdout's rendering. On decorated stdout, the completed title appears marked `◇` or `✗`, with the step's rows beneath it; plain stdout streams the rows without that title. A failed required step closes a decorated flow with `└ ✗ PV stopped during <step>.`
 - **The helper installation** is announced as an active `◆` step on stderr just before macOS asks for an administrator password.
 - **A command that fails with its flow still open** closes it with `└ ✗ <title> stopped` before the error is printed on stderr. A cancelled prompt closes the flow with its own cancelled state instead.
 - **`pv update`'s re-executed continuation** resumes the flow the updating process opened instead of starting a new one.
@@ -1622,7 +1622,7 @@ Prompts are implemented with Cliclack behind a PV prompt adapter. Ordinary outpu
 
 ### Progress
 
-Live progress uses `indicatif` on stderr and is enabled only when stderr is a terminal. It shows the current daemon phase and one bar per download, redraws at a throttled rate, and is cleared before the durable result is printed. When stderr is not a terminal, PV writes sparse phase-transition lines to stderr instead.
+Live progress uses `indicatif` on stderr and is enabled only when stderr is a terminal. It shows the current daemon phase and one bar per download, redraws at a throttled rate, and is cleared before the durable result is printed. When stderr is not a terminal, setup and update report phase transitions as sparse lines on stderr; download-only commands emit no progress lines there.
 
 ### Terminal design mapping
 

@@ -16,6 +16,7 @@ use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Line, Mark, Streams, Table};
 use crate::progress::DownloadProgressRenderer;
+use crate::prompt;
 
 pub(crate) fn use_track(
     args: PhpUseArgs,
@@ -140,6 +141,19 @@ pub(crate) fn uninstall(
                 usage_count,
             }
             .into());
+        }
+    }
+
+    if args.prune && !args.force {
+        let refusal = CliError::ResourcePruneRequiresTerminal {
+            display_name: "PHP",
+            resource_name: "php",
+            track: track.to_string(),
+        };
+        let message = format!("Prune PV-owned data for PHP/FrankenPHP track {track}?");
+        if !prompt::confirm_or(environment, streams, refusal, &message, false)? {
+            streams.out.note("Prune cancelled.")?;
+            return Ok(ExitCode::SUCCESS);
         }
     }
 

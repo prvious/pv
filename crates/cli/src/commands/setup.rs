@@ -407,19 +407,21 @@ pub(crate) fn uninstall(
     Ok(ExitCode::SUCCESS)
 }
 
-/// Runs one required setup or uninstall step. When stdout is decorated, a
-/// stderr spinner names the step while it runs, then its rows appear under a
-/// title marked with its outcome, and a failure closes the flow with the stop
-/// line. Plain output streams the rows as they happen and writes the stop
-/// line when the step returns a failing exit code. A step that needs sudo or
-/// a prompt must not run here.
+/// Runs one required setup or uninstall step. A terminal stderr shows a
+/// spinner while it runs. Decorated stdout then places its rows under a title
+/// marked with the outcome and closes a failed flow with the stop line. Plain
+/// stdout streams rows as they happen and writes the stop line for a failing
+/// exit code. A step that needs sudo or a prompt must not run here.
 fn run_required_step(
     label: &str,
     streams: &mut Streams<'_>,
     command: impl FnOnce(&mut Streams<'_>) -> Result<ExitCode, ExecuteError>,
 ) -> Result<bool, ExecuteError> {
+    let spinner = step_spinner(&streams.err, label);
     if !streams.out.surface().decorated() {
-        if command(streams)? == ExitCode::SUCCESS {
+        let result = command(streams);
+        spinner.finish_and_clear();
+        if result? == ExitCode::SUCCESS {
             return Ok(true);
         }
         streams.out.line(&format!("PV stopped during {label}."))?;
@@ -427,7 +429,6 @@ fn run_required_step(
         return Ok(false);
     }
 
-    let spinner = step_spinner(&streams.err, label);
     let mut out = Vec::new();
     let mut err = Vec::new();
     let result = streams.capture(&mut out, &mut err, command);
