@@ -198,7 +198,7 @@ pub struct RuntimeProject {
     pub primary_hostname: String,
     pub hostnames: Vec<String>,
     pub project_root: Utf8PathBuf,
-    pub document_root: Utf8PathBuf,
+    pub root: Utf8PathBuf,
 }
 
 struct TargetedRuntimePlan {
@@ -2718,7 +2718,7 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
             &project,
             config.as_ref().and_then(|config| config.php.as_ref()),
         )?;
-        let document_root = resolve_project_document_root(&project.path, config.as_ref())?;
+        let root = resolve_project_root(&project.path, config.as_ref())?;
         let runtime_project = RuntimeProject {
             id: project.id,
             render_config: true,
@@ -2732,7 +2732,7 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
                     .unwrap_or_default(),
             ),
             project_root: project.path,
-            document_root,
+            root,
         };
 
         append_runtime_project(
@@ -2800,8 +2800,7 @@ fn build_target_runtime_plan(
         if persisted_runtime_key.as_deref() != Some(runtime.runtime_key.as_str()) {
             return Ok(None);
         }
-        let document_root =
-            resolve_project_document_root(&project.path, Some(&config_file.config))?;
+        let root = resolve_project_root(&project.path, Some(&config_file.config))?;
         let runtime_project = RuntimeProject {
             id: project.id,
             render_config: true,
@@ -2812,7 +2811,7 @@ fn build_target_runtime_plan(
                 config_file.config.hostnames,
             ),
             project_root: project.path,
-            document_root,
+            root,
         };
         current_runtime_key = Some(runtime.runtime_key.clone());
         append_runtime_project(
@@ -3234,7 +3233,7 @@ fn append_targeted_persisted_runtime_project(
             Vec::new(),
         ),
         project_root: project.path.clone(),
-        document_root: project.path,
+        root: project.path,
     };
     let worker_port = append_runtime_project(
         paths,
@@ -3284,12 +3283,12 @@ fn sorted_runtime_workers(
         .collect()
 }
 
-fn resolve_project_document_root(
+fn resolve_project_root(
     project_root: &Utf8Path,
     config: Option<&ProjectConfig>,
 ) -> Result<Utf8PathBuf, DaemonError> {
-    if let Some(document_root) = config.and_then(|config| config.document_root.as_ref()) {
-        return Ok(project_root.join(document_root));
+    if let Some(root) = config.and_then(|config| config.root.as_ref()) {
+        return Ok(project_root.join(root));
     }
 
     let public_root = project_root.join("public");
@@ -3367,7 +3366,7 @@ fn append_persisted_runtime_project(
             Vec::new(),
         ),
         project_root: project.path.clone(),
-        document_root: project.path,
+        root: project.path,
     };
     if let Some(gateway_fragment) = read_preserved_project_config_fragment(
         &paths.gateway_projects_config_dir(),
@@ -3631,7 +3630,7 @@ fn desired_worker_config(
             primary_hostname: project.primary_hostname.clone(),
             hostnames: project.hostnames.clone(),
             project_root: project.project_root.clone(),
-            document_root: project.document_root.clone(),
+            root: project.root.clone(),
         })
         .collect::<Vec<_>>();
     let mut config_input = PhpWorkerConfigInput {
@@ -5156,7 +5155,7 @@ fn worker_project_config_fragments(
                 primary_hostname: project.primary_hostname.clone(),
                 hostnames: project.hostnames.clone(),
                 project_root: project.project_root.clone(),
-                document_root: project.document_root.clone(),
+                root: project.root.clone(),
             };
 
             Some(render_php_worker_project_config(&input, worker.port)?)

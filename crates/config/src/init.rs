@@ -18,7 +18,7 @@ pub struct ProjectInitDetection {
     pub config_file: ProjectConfigFile,
     pub signals: Vec<ProjectInitSignal>,
     pub suggested_php: String,
-    pub suggested_document_root: Option<Utf8PathBuf>,
+    pub suggested_root: Option<Utf8PathBuf>,
     pub include_app_url: bool,
     pub include_vite_tls: bool,
     pub resources: BTreeMap<ProjectInitResourceName, ProjectInitResourceDetection>,
@@ -40,7 +40,7 @@ pub struct ProjectInitResourceDetection {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectInitSelection {
     pub php: String,
-    pub document_root: Option<Utf8PathBuf>,
+    pub root: Option<Utf8PathBuf>,
     pub include_app_url: bool,
     pub include_vite_tls: bool,
     pub resources: BTreeMap<ProjectInitResourceName, ProjectInitResourceSelection>,
@@ -109,7 +109,7 @@ pub fn detect_project_init(project_root: &Utf8Path) -> Result<ProjectInitDetecti
         .and_then(detect_php_track_from_composer)
         .unwrap_or_else(|| "latest".to_string());
     let public = project_root.join("public");
-    let suggested_document_root = if path_present(&public)? && is_directory(&public)? {
+    let suggested_root = if path_present(&public)? && is_directory(&public)? {
         Some(Utf8PathBuf::from("public"))
     } else {
         None
@@ -121,7 +121,7 @@ pub fn detect_project_init(project_root: &Utf8Path) -> Result<ProjectInitDetecti
         config_file,
         signals,
         suggested_php,
-        suggested_document_root,
+        suggested_root,
         include_app_url,
         include_vite_tls: vite_detected,
         resources,
@@ -164,12 +164,12 @@ pub fn default_project_init_selection(detection: &ProjectInitDetection) -> Proje
             .and_then(PhpConfig::version_selector)
             .map(str::to_string)
             .unwrap_or_else(|| detection.suggested_php.clone()),
-        document_root: detection
+        root: detection
             .config_file
             .config
-            .document_root
+            .root
             .clone()
-            .or_else(|| detection.suggested_document_root.clone()),
+            .or_else(|| detection.suggested_root.clone()),
         include_app_url: detection.include_app_url
             || detection.config_file.config.env.contains_key("APP_URL"),
         include_vite_tls: detection.include_vite_tls,
@@ -183,7 +183,7 @@ pub fn render_project_init_config(
 ) -> Result<ProjectConfig, ConfigError> {
     let mut config = detection.config_file.config.clone();
     config.php.get_or_insert_with(PhpConfig::default).version = Some(selection.php.clone());
-    config.document_root = selection.document_root.clone();
+    config.root = selection.root.clone();
     if selection.include_app_url {
         config
             .env

@@ -7,7 +7,7 @@ expression: "(defaults, resource_only)"
         serve: true,
         env_file: ".env",
         php: None,
-        document_root: None,
+        root: None,
         hostnames: [],
         env: {},
         resources: {},
@@ -16,7 +16,7 @@ expression: "(defaults, resource_only)"
         serve: false,
         env_file: ".env.local",
         php: None,
-        document_root: Some(
+        root: Some(
             "missing",
         ),
         hostnames: [

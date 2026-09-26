@@ -18,7 +18,7 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
                 extensions: [],
             },
         ),
-        document_root: Some(
+        root: Some(
             "public",
         ),
         hostnames: [
@@ -63,7 +63,7 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
                 extensions: [],
             },
         ),
-        document_root: Some(
+        root: Some(
             "public",
         ),
         hostnames: [

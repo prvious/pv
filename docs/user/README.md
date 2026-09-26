@@ -120,7 +120,7 @@ Example:
 
 ```yaml
 php: "8.5"
-document_root: public
+root: public
 hostnames:
   - api.acme.test
 env:

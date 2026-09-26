@@ -14,14 +14,14 @@ fn main() {
 
 const SIMPLE_CONFIG: &str = r#"
 php: 8.4
-document_root: public
+root: public
 hostnames:
   - api.acme.test
 "#;
 
 const COMPLEX_CONFIG: &str = r#"
 php: 8.4
-document_root: public
+root: public
 hostnames:
   - api.acme.test
   - admin.acme.test

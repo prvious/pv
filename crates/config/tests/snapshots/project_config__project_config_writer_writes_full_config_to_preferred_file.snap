@@ -18,7 +18,7 @@ expression: "(written.path.file_name(), written.exists, reloaded.config)"
                 extensions: [],
             },
         ),
-        document_root: Some(
+        root: Some(
             "public",
         ),
         hostnames: [],

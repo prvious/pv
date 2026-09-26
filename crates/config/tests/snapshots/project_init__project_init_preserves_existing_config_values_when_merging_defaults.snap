@@ -6,7 +6,7 @@ php:
   version: '8.3'
   extensions:
   - intl
-document_root: web
+root: web
 hostnames:
 - admin.acme.test
 env:

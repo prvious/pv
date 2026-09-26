@@ -19,7 +19,7 @@ Resource checklist:
 Use these selections? Enter y to preview, n to cancel, or edit to change selections:
 Project config preview:
 php: '8.3'
-document_root: public
+root: public
 env:
   APP_URL: ${project_url}
   USER_VALUE: preserved

@@ -22,10 +22,10 @@ RuntimePlan {
                 RuntimeProject {
                     id: "<project_id>",
                     render_config: true,
-                    primary_hostname: "configless.test",
+                    primary_hostname: "static.test",
                     hostnames: [],
-                    project_root: "<tempdir>/configless-project",
-                    document_root: "<tempdir>/configless-project/public",
+                    project_root: "<tempdir>/configless-static-project",
+                    root: "<tempdir>/configless-static-project",
                 },
             ],
         },

@@ -11,7 +11,7 @@ expression: "(config_file.path.file_name(), config_file.exists, config_file.conf
         serve: true,
         env_file: ".env",
         php: None,
-        document_root: Some(
+        root: Some(
             "public",
         ),
         hostnames: [

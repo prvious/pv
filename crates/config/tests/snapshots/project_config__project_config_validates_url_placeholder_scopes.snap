@@ -10,7 +10,7 @@ expression: cases
                 serve: true,
                 env_file: ".env",
                 php: None,
-                document_root: None,
+                root: None,
                 hostnames: [],
                 env: {
                     "APP_URL": "${project_url}",
@@ -26,7 +26,7 @@ expression: cases
                 serve: true,
                 env_file: ".env",
                 php: None,
-                document_root: None,
+                root: None,
                 hostnames: [],
                 env: {
                     "PV_TLS_CA": "${tls_ca}",
@@ -62,7 +62,7 @@ expression: cases
                 serve: true,
                 env_file: ".env",
                 php: None,
-                document_root: None,
+                root: None,
                 hostnames: [],
                 env: {},
                 resources: {
@@ -84,7 +84,7 @@ expression: cases
                 serve: true,
                 env_file: ".env",
                 php: None,
-                document_root: None,
+                root: None,
                 hostnames: [],
                 env: {},
                 resources: {
@@ -108,7 +108,7 @@ expression: cases
                 serve: true,
                 env_file: ".env",
                 php: None,
-                document_root: None,
+                root: None,
                 hostnames: [],
                 env: {},
                 resources: {
@@ -139,7 +139,7 @@ expression: cases
                 serve: true,
                 env_file: ".env",
                 php: None,
-                document_root: None,
+                root: None,
                 hostnames: [],
                 env: {},
                 resources: {
@@ -165,7 +165,7 @@ expression: cases
                 serve: true,
                 env_file: ".env",
                 php: None,
-                document_root: None,
+                root: None,
                 hostnames: [],
                 env: {},
                 resources: {
@@ -193,7 +193,7 @@ expression: cases
                 serve: true,
                 env_file: ".env",
                 php: None,
-                document_root: None,
+                root: None,
                 hostnames: [],
                 env: {},
                 resources: {

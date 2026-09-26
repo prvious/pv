@@ -57,7 +57,7 @@ pub struct PhpWorkerProject {
     pub primary_hostname: String,
     pub hostnames: Vec<String>,
     pub project_root: Utf8PathBuf,
-    pub document_root: Utf8PathBuf,
+    pub root: Utf8PathBuf,
 }
 
 pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, DaemonError> {
@@ -187,7 +187,7 @@ pub fn render_php_worker_project_config(
     output.push_str("    bind 127.0.0.1 ::1\n");
     output.push_str(&format!(
         "    root * {}\n",
-        quoted_caddyfile_token(project.document_root.as_str())?
+        quoted_caddyfile_token(project.root.as_str())?
     ));
     output.push_str("    php_server\n");
     output.push_str("    file_server\n");

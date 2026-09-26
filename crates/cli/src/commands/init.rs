@@ -169,14 +169,11 @@ fn run_structured_edit(
         selection.php = php.trim().to_string();
     }
 
-    let document_root = selection
-        .document_root
-        .as_ref()
-        .map_or(".", |path| path.as_str());
-    output.line(&format!("Document root [{document_root}]:"))?;
-    let document_root = environment.read_line()?;
-    if !document_root.trim().is_empty() {
-        selection.document_root = Some(Utf8PathBuf::from(document_root.trim()));
+    let root = selection.root.as_ref().map_or(".", |path| path.as_str());
+    output.line(&format!("Document root [{root}]:"))?;
+    let root = environment.read_line()?;
+    if !root.trim().is_empty() {
+        selection.root = Some(Utf8PathBuf::from(root.trim()));
     }
 
     let selected_resources = selected_resource_names(&selection.resources);
@@ -536,7 +533,7 @@ mod tests {
         let tempdir = tempdir()?;
         let project = tempdir.path().join("acme");
         create_laravel_fixture(&project)?;
-        let original = "php: 8.3\ndocument_root: public\nenv:\n  USER_VALUE: preserved\n";
+        let original = "php: 8.3\nroot: public\nenv:\n  USER_VALUE: preserved\n";
         write_file(&project.join("pv.yml"), original)?;
         let environment = TestEnvironment::new(&project, &["y", "n"]);
         let mut stdout = Vec::new();
@@ -601,7 +598,7 @@ mod tests {
         create_laravel_fixture(&project)?;
         write_file(
             &project.join("pv.yml"),
-            "php: 8.3\ndocument_root: public\nmysql:\n  version: 8.4\n  allocations:\n    primary: {}\nredis:\n  version: 7.2\n  allocations:\n    sessions: {}\nmailpit:\n  version: 1.0\nrustfs:\n  version: 1.1\n  allocations:\n    media: {}\n",
+            "php: 8.3\nroot: public\nmysql:\n  version: 8.4\n  allocations:\n    primary: {}\nredis:\n  version: 7.2\n  allocations:\n    sessions: {}\nmailpit:\n  version: 1.0\nrustfs:\n  version: 1.1\n  allocations:\n    media: {}\n",
         )?;
         let environment = TestEnvironment::new(
             &project,
@@ -633,7 +630,7 @@ mod tests {
         create_laravel_fixture(&project)?;
         write_file(
             &project.join("pv.yml"),
-            "php: 8.3\ndocument_root: public\nmysql:\n  version: 8.4\n  allocations:\n    primary: {}\n",
+            "php: 8.3\nroot: public\nmysql:\n  version: 8.4\n  allocations:\n    primary: {}\n",
         )?;
         let environment = TestEnvironment::new(
             &project,
@@ -671,7 +668,7 @@ mod tests {
         create_laravel_fixture(&project)?;
         write_file(
             &project.join("pv.yml"),
-            "php: 8.3\ndocument_root: public\nmysql:\n  version: 8.4\n  allocations:\n    primary:\n      env:\n        CUSTOM_PRIMARY: preserved\n        DB_HOST: custom.internal\n    legacy:\n      env:\n        LEGACY_VALUE: remove-me\n",
+            "php: 8.3\nroot: public\nmysql:\n  version: 8.4\n  allocations:\n    primary:\n      env:\n        CUSTOM_PRIMARY: preserved\n        DB_HOST: custom.internal\n    legacy:\n      env:\n        LEGACY_VALUE: remove-me\n",
         )?;
         let environment = TestEnvironment::new(
             &project,

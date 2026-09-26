@@ -7,7 +7,7 @@ use resources::{
 };
 use yaml_serde::{Mapping, Number, Value};
 
-use crate::discovery::validate_document_root_shape;
+use crate::discovery::validate_root_shape;
 use crate::hostname::normalize_additional_hostname;
 use crate::{AllocationConfig, ConfigError, PhpConfig, ProjectConfig, ResourceConfig};
 
@@ -63,11 +63,11 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
             "php" => {
                 config.php = Some(php_config(&value)?);
             }
-            "document_root" => {
-                let document_root = non_empty_string("document_root", &value)?;
-                let document_root = Utf8PathBuf::from(document_root);
-                validate_document_root_shape(&document_root)?;
-                config.document_root = Some(document_root);
+            "root" => {
+                let root = non_empty_string("root", &value)?;
+                let root = Utf8PathBuf::from(root);
+                validate_root_shape(&root)?;
+                config.root = Some(root);
             }
             "hostnames" => {
                 hostnames = Some(value);
