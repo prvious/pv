@@ -7,6 +7,8 @@ use daemon::{JobDownloadProgress, JobEventHandler};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
 use resources::{DownloadProgress, DownloadProgressEvent, ManifestArtifact};
 
+use crate::output::Output;
+
 const WAITING_MESSAGE: &str = "Waiting for the reconciliation slot";
 
 pub(crate) struct DownloadProgressRenderer<'output> {
@@ -19,14 +21,19 @@ pub(crate) struct DownloadProgressRenderer<'output> {
 }
 
 impl DownloadProgressRenderer<'static> {
-    pub(crate) fn new(enabled: bool) -> Self {
+    /// Live download bars when `stderr` is a terminal; nothing otherwise.
+    pub(crate) fn new(stderr: &Output<'_>) -> Self {
+        let enabled = stderr.surface().decorated();
         Self::with_progress(enabled, None, progress_target(enabled))
     }
 }
 
 impl<'output> DownloadProgressRenderer<'output> {
-    pub(crate) fn with_output(enabled: bool, output: &'output mut dyn Write) -> Self {
-        Self::with_progress(enabled, Some(output), progress_target(enabled))
+    /// Live progress when `stderr` is a terminal, or sparse phase lines
+    /// written to a non-terminal `stderr`.
+    pub(crate) fn with_output(stderr: &'output mut Output<'_>) -> Self {
+        let enabled = stderr.surface().decorated();
+        Self::with_progress(enabled, Some(stderr.writer()), progress_target(enabled))
     }
 
     fn with_progress(
@@ -56,7 +63,7 @@ impl<'output> DownloadProgressRenderer<'output> {
 
         self.update_progress(
             progress_key("pv", "app", version),
-            format!("Downloading PV {version}"),
+            || format!("Downloading PV {version}"),
             downloaded_bytes,
             total_bytes,
         );
@@ -75,11 +82,17 @@ impl<'output> DownloadProgressRenderer<'output> {
         }
 
         let key = progress_key(resource, track, artifact_version);
-        let label = progress_label(resource, track, artifact_version);
+        let label = || progress_label(resource, track, artifact_version);
         self.update_progress(key, label, downloaded_bytes, total_bytes);
     }
 
-    fn update_progress(&self, key: String, label: String, downloaded_bytes: u64, total_bytes: u64) {
+    fn update_progress(
+        &self,
+        key: String,
+        label: impl FnOnce() -> String,
+        downloaded_bytes: u64,
+        total_bytes: u64,
+    ) {
         if !self.enabled {
             return;
         }
@@ -88,7 +101,7 @@ impl<'output> DownloadProgressRenderer<'output> {
         {
             let bar = bars
                 .entry(key.clone())
-                .or_insert_with(|| self.progress.add(progress_bar(total_bytes, label)));
+                .or_insert_with(|| self.progress.add(progress_bar(total_bytes, label())));
             bar.set_position(downloaded_bytes.min(total_bytes));
         }
 
@@ -232,22 +245,44 @@ impl Drop for DownloadProgressRenderer<'_> {
     }
 }
 
+/// A spinner naming a step while it runs, for steps whose rows appear only
+/// once they finish. It is hidden unless `stderr` is a terminal; the caller
+/// clears it with `finish_and_clear`.
+pub(crate) fn step_spinner(stderr: &Output<'_>, label: &str) -> ProgressBar {
+    if !stderr.surface().decorated() {
+        return ProgressBar::hidden();
+    }
+    let spinner = ProgressBar::with_draw_target(None, ProgressDrawTarget::stderr());
+    spinner.set_style(status_style(false));
+    spinner.set_message(label.to_string());
+    spinner.enable_steady_tick(Duration::from_millis(100));
+
+    spinner
+}
+
+/// Live progress draws on stderr, so redirected stdout only receives the
+/// durable result.
 fn progress_target(enabled: bool) -> MultiProgress {
     if enabled {
-        MultiProgress::with_draw_target(ProgressDrawTarget::stdout())
+        MultiProgress::with_draw_target(ProgressDrawTarget::stderr())
     } else {
         MultiProgress::with_draw_target(ProgressDrawTarget::hidden())
     }
 }
 
+/// The terminal design's spinner frames; the last one is the finished state.
+const SPINNER_FRAMES: [&str; 5] = ["◐", "◓", "◑", "◒", "◇"];
+
 fn status_style(show_elapsed: bool) -> ProgressStyle {
     let template = if show_elapsed {
-        "{spinner} {msg} [{elapsed_precise}]"
+        "{spinner:.cyan} {msg} {elapsed:.dim}"
     } else {
-        "{spinner} {msg}"
+        "{spinner:.cyan} {msg}"
     };
 
-    ProgressStyle::with_template(template).unwrap_or_else(|_error| ProgressStyle::default_spinner())
+    ProgressStyle::with_template(template)
+        .unwrap_or_else(|_error| ProgressStyle::default_spinner())
+        .tick_strings(&SPINNER_FRAMES)
 }
 
 fn elapsed_label(elapsed: Duration) -> String {
@@ -278,8 +313,10 @@ fn progress_message(message: &str) -> Option<String> {
 fn progress_bar(total_bytes: u64, label: String) -> ProgressBar {
     let bar = ProgressBar::new(total_bytes);
     bar.set_message(label);
-    if let Ok(style) = ProgressStyle::with_template("{msg} [{wide_bar}] {bytes}/{total_bytes}") {
-        bar.set_style(style.progress_chars("=> "));
+    if let Ok(style) = ProgressStyle::with_template(
+        "{spinner:.cyan} {msg} {bar:24.green/dim} {percent:>3}% {binary_bytes_per_sec:.dim}",
+    ) {
+        bar.set_style(style.progress_chars("█░").tick_strings(&SPINNER_FRAMES));
     }
 
     bar
@@ -318,12 +355,14 @@ mod tests {
     use insta::assert_snapshot;
 
     use super::DownloadProgressRenderer;
+    use crate::output::{Output, Surface};
 
     #[test]
     fn non_terminal_progress_prints_sparse_transitions() -> anyhow::Result<()> {
         let mut output = Vec::new();
         {
-            let mut progress = DownloadProgressRenderer::with_output(false, &mut output);
+            let mut stderr = Output::new(&mut output, Surface::plain());
+            let mut progress = DownloadProgressRenderer::with_output(&mut stderr);
             progress.job_accepted("job_1");
             progress.log("Waiting for the reconciliation slot");
             progress.log("Waiting for the reconciliation slot");
@@ -353,7 +392,8 @@ mod tests {
     fn non_terminal_update_prints_every_known_phase() -> anyhow::Result<()> {
         let mut output = Vec::new();
         {
-            let mut progress = DownloadProgressRenderer::with_output(false, &mut output);
+            let mut stderr = Output::new(&mut output, Surface::plain());
+            let mut progress = DownloadProgressRenderer::with_output(&mut stderr);
             progress.job_accepted("job_1");
             progress.job_started("update", "system");
             for phase in [

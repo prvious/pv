@@ -55,10 +55,6 @@ impl Environment for TestEnvironment {
         false
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(String::new())
-    }
-
     fn open_url(&self, url: &str) -> io::Result<()> {
         self.opened_urls.borrow_mut().push(url.to_string());
 
@@ -110,7 +106,10 @@ fn mailpit_open_opens_running_dashboard_without_mutating_state() -> anyhow::Resu
     let after = observed_mailpit_state(&paths)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stdout.is_empty());
+    assert_eq!(
+        output.stdout,
+        "Opened Mailpit dashboard at http://127.0.0.1:8025\n"
+    );
     assert!(output.stderr.is_empty());
     assert_eq!(
         environment.opened_urls(),

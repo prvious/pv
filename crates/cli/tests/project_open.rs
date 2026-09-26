@@ -1,5 +1,4 @@
 use std::cell::RefCell;
-use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
@@ -7,15 +6,20 @@ use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::{Answer, Environment, Prompt, run_with_environment};
 use insta::assert_debug_snapshot;
 use state::{Database, ProjectMode, PvPaths};
+
+#[path = "support/prompts.rs"]
+mod prompts;
+
+use prompts::{ScriptedPrompts, Step};
 
 #[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
     current_dir: RefCell<PathBuf>,
-    input_lines: RefCell<VecDeque<String>>,
+    prompts: ScriptedPrompts,
     opened_urls: RefCell<Vec<String>>,
     stdin_terminal: bool,
 }
@@ -25,15 +29,15 @@ impl TestEnvironment {
         Self {
             home: home.as_std_path().to_path_buf(),
             current_dir: RefCell::new(current_dir.as_std_path().to_path_buf()),
-            input_lines: RefCell::new(VecDeque::new()),
+            prompts: ScriptedPrompts::default(),
             opened_urls: RefCell::new(Vec::new()),
             stdin_terminal: false,
         }
     }
 
-    fn interactive(mut self, input_lines: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    fn interactive(mut self, steps: impl IntoIterator<Item = Step>) -> Self {
         self.stdin_terminal = true;
-        self.input_lines = RefCell::new(input_lines.into_iter().map(Into::into).collect());
+        self.prompts = ScriptedPrompts::new(steps);
 
         self
     }
@@ -68,12 +72,12 @@ impl Environment for TestEnvironment {
         self.stdin_terminal
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(self
-            .input_lines
-            .borrow_mut()
-            .pop_front()
-            .unwrap_or_default())
+    fn stderr_is_terminal(&self) -> bool {
+        self.stdin_terminal
+    }
+
+    fn prompt(&self, prompt: &Prompt<'_>) -> io::Result<Answer> {
+        self.prompts.ask(prompt)
     }
 
     fn open_url(&self, url: &str) -> io::Result<()> {
@@ -101,7 +105,7 @@ fn open_primary_hostname_argument_normalizes_and_opens_project() -> anyhow::Resu
     assert_eq!(link.exit_code, ExitCode::SUCCESS);
     assert_eq!(open.exit_code, ExitCode::SUCCESS);
     assert_eq!(opened_urls, vec!["https://acme.test"]);
-    assert!(link.stderr.is_empty());
+    assert!(!link.stderr.contains("error:"));
     assert!(open.stderr.is_empty());
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
@@ -204,7 +208,7 @@ fn open_additional_hostname_argument_opens_exact_hostname() -> anyhow::Result<()
     assert_eq!(link.exit_code, ExitCode::SUCCESS);
     assert_eq!(open.exit_code, ExitCode::SUCCESS);
     assert_eq!(opened_urls, vec!["https://api.acme.test"]);
-    assert!(link.stderr.is_empty());
+    assert!(!link.stderr.contains("error:"));
     assert!(open.stderr.is_empty());
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
@@ -235,7 +239,7 @@ fn open_without_hostname_uses_current_project_primary_hostname() -> anyhow::Resu
     assert_eq!(link.exit_code, ExitCode::SUCCESS);
     assert_eq!(open.exit_code, ExitCode::SUCCESS);
     assert_eq!(opened_urls, vec!["https://acme.test"]);
-    assert!(link.stderr.is_empty());
+    assert!(!link.stderr.contains("error:"));
     assert!(open.stderr.is_empty());
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
@@ -255,7 +259,7 @@ fn open_uses_project_picker_when_outside_a_linked_project() -> anyhow::Result<()
     let outside = tempdir.path().join("outside");
     create_dir(&project)?;
     create_dir(&outside)?;
-    let environment = TestEnvironment::new(&home, &project).interactive(["1\n"]);
+    let environment = TestEnvironment::new(&home, &project).interactive([Step::Accept]);
 
     let link = run_pv(&["link"], &environment)?;
     environment.set_current_dir(&outside);
@@ -265,7 +269,7 @@ fn open_uses_project_picker_when_outside_a_linked_project() -> anyhow::Result<()
     assert_eq!(link.exit_code, ExitCode::SUCCESS);
     assert_eq!(open.exit_code, ExitCode::SUCCESS);
     assert_eq!(opened_urls, vec!["https://acme.test"]);
-    assert!(link.stderr.is_empty());
+    assert!(!link.stderr.contains("error:"));
     assert!(open.stderr.is_empty());
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
@@ -288,7 +292,7 @@ fn open_rejects_resource_only_target_and_excludes_it_from_picker() -> anyhow::Re
     create_dir(&served)?;
     create_dir(&outside)?;
     write_file(&resource_only.join("pv.yml"), "serve: false\n")?;
-    let environment = TestEnvironment::new(&home, &resource_only).interactive(["1\n"]);
+    let environment = TestEnvironment::new(&home, &resource_only).interactive([Step::Accept]);
 
     let link_resource_only = run_pv(&["link"], &environment)?;
     let explicit_open = run_pv(&["open", "resources"], &environment)?;
@@ -333,7 +337,8 @@ fn open_project_picker_sorts_projects_by_primary_hostname() -> anyhow::Result<()
     create_dir(&first_by_slug)?;
     create_dir(&second_by_slug)?;
     create_dir(&outside)?;
-    let environment = TestEnvironment::new(&home, &first_by_slug).interactive(["2\n"]);
+    let environment = TestEnvironment::new(&home, &first_by_slug)
+        .interactive([Step::Answer(Answer::Selected(1))]);
 
     let link_zeta = run_pv(&["link", "--hostname", "zeta"], &environment)?;
     environment.set_current_dir(&second_by_slug);
@@ -346,14 +351,20 @@ fn open_project_picker_sorts_projects_by_primary_hostname() -> anyhow::Result<()
     assert_eq!(link_alpha.exit_code, ExitCode::SUCCESS);
     assert_eq!(open.exit_code, ExitCode::SUCCESS);
     assert_eq!(opened_urls, vec!["https://zeta.test"]);
-    assert!(link_zeta.stderr.is_empty());
-    assert!(link_alpha.stderr.is_empty());
+    assert!(!link_zeta.stderr.contains("error:"));
+    assert!(!link_alpha.stderr.contains("error:"));
     assert!(open.stderr.is_empty());
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.bind(|| {
-        assert_debug_snapshot!((link_zeta, link_alpha, open, opened_urls));
+        assert_debug_snapshot!((
+            link_zeta,
+            link_alpha,
+            open,
+            opened_urls,
+            environment.prompts.transcript()
+        ));
     });
 
     Ok(())
@@ -377,7 +388,7 @@ fn open_without_current_project_fails_when_non_interactive() -> anyhow::Result<(
     assert_eq!(link.exit_code, ExitCode::SUCCESS);
     assert_eq!(open.exit_code, ExitCode::FAILURE);
     assert!(opened_urls.is_empty());
-    assert!(link.stderr.is_empty());
+    assert!(!link.stderr.contains("error:"));
     assert!(open.stdout.is_empty());
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
@@ -385,6 +396,32 @@ fn open_without_current_project_fails_when_non_interactive() -> anyhow::Result<(
     settings.bind(|| {
         assert_debug_snapshot!((link, open, opened_urls));
     });
+
+    Ok(())
+}
+
+#[test]
+fn open_picker_cancel_exits_130_without_opening() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    let outside = tempdir.path().join("outside");
+    create_dir(&project)?;
+    create_dir(&outside)?;
+    let environment = TestEnvironment::new(&home, &project).interactive([Step::Cancel]);
+
+    run_pv(&["link"], &environment)?;
+    environment.set_current_dir(&outside);
+    let open = run_pv(&["open"], &environment)?;
+
+    assert_eq!(open.exit_code, ExitCode::from(130));
+    assert!(open.stdout.is_empty());
+    assert!(open.stderr.is_empty());
+    assert!(environment.opened_urls().is_empty());
+    assert_eq!(
+        environment.prompts.transcript(),
+        vec!["Select a Project -> Cancelled"]
+    );
 
     Ok(())
 }

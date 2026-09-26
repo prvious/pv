@@ -13,6 +13,9 @@ anyhow = { workspace = true }
 camino = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
+cliclack = { workspace = true }
+comfy-table = { workspace = true }
+console = { workspace = true }
 config = { path = "../config" }
 daemon = { path = "../daemon" }
 home = { workspace = true }
@@ -26,6 +29,7 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 self-update = { path = "../self-update" }
 state = { path = "../state" }
+textwrap = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }

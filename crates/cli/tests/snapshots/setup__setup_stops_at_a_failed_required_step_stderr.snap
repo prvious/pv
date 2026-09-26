@@ -1,0 +1,6 @@
+---
+source: crates/cli/tests/setup.rs
+expression: "format!(\"plain:\\n{}decorated:\\n{}\", plain.stderr, decorated.stderr)"
+---
+plain:
+decorated:

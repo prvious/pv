@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
@@ -16,14 +15,14 @@ use state::{
 use crate::args::StatusArgs;
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, OutputMode};
+use crate::output::{Line, Mark, Output, Streams, Table, Tone};
 
-use super::pf_diagnostics::PfRoutingDiagnostic;
+use super::pf_diagnostics::{PfRoutingDiagnostic, PfRoutingState};
 
 pub(crate) fn run(
     args: StatusArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let snapshot = StatusSnapshot::read(environment)?;
     let exit_code = if snapshot.has_failure() {
@@ -33,14 +32,12 @@ pub(crate) fn run(
     };
 
     if args.json {
-        serde_json::to_writer(&mut *stdout, &snapshot)?;
-        writeln!(stdout)?;
+        streams.out.json(&snapshot)?;
 
         return Ok(exit_code);
     }
 
-    let mut output = Output::new(stdout, OutputMode::plain());
-    snapshot.write_plain(&mut output)?;
+    snapshot.write(&mut streams.out)?;
 
     Ok(exit_code)
 }
@@ -93,7 +90,7 @@ impl StatusSnapshot {
             || integrations.failure
             || managed_resources.iter().any(|resource| resource.failure)
             || runtimes.iter().any(|runtime| runtime.failure)
-            || projects.iter().any(|project| project.failure)
+            || projects.iter().any(|project| project.mark == Mark::Failure)
             || !recent_errors.is_empty();
         let overall = if has_failure { "failed" } else { "ok" };
 
@@ -113,7 +110,10 @@ impl StatusSnapshot {
         self.overall == "failed"
     }
 
-    fn write_plain(&self, output: &mut Output<'_, impl Write>) -> Result<(), ExecuteError> {
+    fn write(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
+        if output.surface().decorated() {
+            return self.write_decorated(output);
+        }
         output.line("PV status")?;
         output.line(&format!("Overall: {}", self.overall))?;
         output.line(&format!("Daemon: {}", self.daemon.state))?;
@@ -187,6 +187,112 @@ impl StatusSnapshot {
 
         Ok(())
     }
+
+    /// The terminal report: the daemon, then one section per area, then the
+    /// overall outcome. It carries the same facts as the plain report.
+    fn write_decorated(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
+        output.heading("status", None)?;
+        output.line("")?;
+        output.status(
+            self.daemon.mark,
+            Line::default().toned(Tone::Strong, format!("Daemon {}", self.daemon.state)),
+        )?;
+        output.detail(
+            Line::field("LaunchAgent ", self.daemon.launch_agent)
+                .text("  ·  Socket ")
+                .value(self.daemon.socket),
+        )?;
+
+        output.section("Integrations")?;
+        let integration = |name: &str, state: &str| Line::from(format!("{name:5}  ")).text(state);
+        let ports = &self.integrations.ports;
+        output.status(
+            self.integrations.dns_mark,
+            integration("DNS", self.integrations.dns),
+        )?;
+        output.status(
+            self.integrations.ports_mark,
+            integration("Ports", ports.state.as_str()),
+        )?;
+        if !ports.is_active() {
+            output.hint("repair", "pv ports:install")?;
+        }
+        output.status(
+            self.integrations.ca_mark,
+            integration("CA", self.integrations.ca),
+        )?;
+
+        output.section("Managed Resources")?;
+        if self.managed_resources.is_empty() {
+            output.note("none")?;
+        } else {
+            let mut table = Table::new(&["Resource", "Track", "State", "Projects", "Version"]);
+            for resource in &self.managed_resources {
+                table.row(vec![
+                    Line::from(resource.name.as_str()),
+                    Line::from(resource.track.as_str()),
+                    Line::marked(resource.mark, resource.status),
+                    Line::from(resource.projects.to_string()),
+                    Line::default().value(resource.version.as_deref().unwrap_or("-")),
+                ]);
+            }
+            output.table(&table)?;
+        }
+
+        if !self.runtimes.is_empty() {
+            output.section("Runtimes")?;
+            for runtime in &self.runtimes {
+                output.status(
+                    runtime.mark,
+                    Line::from(format!("{}  ", runtime.subject)).text(runtime.status),
+                )?;
+                if let Some(message) = &runtime.message {
+                    output.detail(message)?;
+                }
+            }
+        }
+
+        output.section("Projects")?;
+        if self.projects.is_empty() {
+            output.note("none")?;
+        }
+        for project in &self.projects {
+            output.status(
+                project.mark,
+                Line::from(format!("{}  env ", project.display_name())).text(project.env_status),
+            )?;
+            if let Some(message) = &project.message {
+                output.detail(message)?;
+            }
+        }
+
+        output.section("Recent errors")?;
+        if self.recent_errors.is_empty() {
+            output.note("none")?;
+        }
+        for job in &self.recent_errors {
+            output.failure(Line::default().value(job.id.as_str()).text(format!(
+                " {} {} failed at {}",
+                job.kind,
+                job.scope,
+                job.finished_at.as_deref().unwrap_or(&job.started_at),
+            )))?;
+            if let Some(error) = &job.error {
+                output.detail(error)?;
+            }
+        }
+
+        output.line("")?;
+        let overall_mark = if self.has_failure() {
+            Mark::Failure
+        } else {
+            Mark::Success
+        };
+        output.status(overall_mark, format!("Overall: {}", self.overall))?;
+        output.hint("logs", &self.log_directory)?;
+
+        Ok(())
+    }
 }
 
 #[derive(Serialize)]
@@ -195,6 +301,8 @@ struct DaemonStatus {
     launch_agent: &'static str,
     socket: &'static str,
     failure: bool,
+    #[serde(skip)]
+    mark: Mark,
 }
 
 impl DaemonStatus {
@@ -211,23 +319,28 @@ impl DaemonStatus {
         } else {
             "unhealthy"
         };
-        let state = match &launch_agent {
-            LaunchAgentFileState::Missing { .. } if socket == "missing" => "disabled",
-            LaunchAgentFileState::Missing { .. } if socket == "healthy" => "socket-only",
-            LaunchAgentFileState::Missing { .. } => "socket-stale",
-            LaunchAgentFileState::Current { .. } if socket == "healthy" => "running",
-            LaunchAgentFileState::Current { .. } => "down",
-            LaunchAgentFileState::Stale { .. } => "repair-required",
-            LaunchAgentFileState::Conflict { .. } => "repair-required",
-            LaunchAgentFileState::Unreadable { .. } => "unknown",
+        let (state, mark) = match &launch_agent {
+            LaunchAgentFileState::Missing { .. } if socket == "missing" => ("disabled", Mark::Idle),
+            LaunchAgentFileState::Missing { .. } if socket == "healthy" => {
+                ("socket-only", Mark::Warning)
+            }
+            LaunchAgentFileState::Missing { .. } => ("socket-stale", Mark::Failure),
+            LaunchAgentFileState::Current { .. } if socket == "healthy" => {
+                ("running", Mark::Running)
+            }
+            LaunchAgentFileState::Current { .. } => ("down", Mark::Failure),
+            LaunchAgentFileState::Stale { .. } | LaunchAgentFileState::Conflict { .. } => {
+                ("repair-required", Mark::Failure)
+            }
+            LaunchAgentFileState::Unreadable { .. } => ("unknown", Mark::Warning),
         };
-        let failure = matches!(state, "down" | "repair-required" | "socket-stale");
 
         Ok(Self {
             state,
             launch_agent: launch_agent_status,
             socket,
-            failure,
+            failure: mark == Mark::Failure,
+            mark,
         })
     }
 }
@@ -239,6 +352,12 @@ struct IntegrationStatuses {
     ca: &'static str,
     #[serde(skip)]
     failure: bool,
+    #[serde(skip)]
+    dns_mark: Mark,
+    #[serde(skip)]
+    ports_mark: Mark,
+    #[serde(skip)]
+    ca_mark: Mark,
 }
 
 impl IntegrationStatuses {
@@ -253,22 +372,31 @@ impl IntegrationStatuses {
         let system_resolver_path = resolver_test_path(environment)?;
         let system_resolver =
             environment.inspect_resolver_file(&system_resolver_path, expected_resolver.as_ref());
-        let (dns, dns_failure) = resolver_status(&prepared_resolver, &system_resolver);
+        let (dns, dns_mark) = resolver_status(&prepared_resolver, &system_resolver);
 
         let ports = PfRoutingDiagnostic::read(environment, paths, database)?;
-        let ports_failure = low_port_routing_required && !ports.is_active();
+        // Low-port routing is only required while the daemon is enabled.
+        let ports_mark = match ports.state {
+            PfRoutingState::Active => Mark::Success,
+            _ if low_port_routing_required => Mark::Failure,
+            PfRoutingState::Inactive => Mark::Idle,
+            PfRoutingState::Drifted | PfRoutingState::Unknown => Mark::Warning,
+        };
 
         let local_ca =
             platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
         let local_metadata = metadata_from_local_ca(&local_ca);
         let trust = ca_trust_state(environment, local_metadata.as_ref());
-        let (ca, ca_failure) = ca_status(&local_ca, &trust);
+        let (ca, ca_mark) = ca_status(&local_ca, &trust);
 
         Ok(Self {
             dns,
             ports,
             ca,
-            failure: dns_failure || ports_failure || ca_failure,
+            failure: [dns_mark, ports_mark, ca_mark].contains(&Mark::Failure),
+            dns_mark,
+            ports_mark,
+            ca_mark,
         })
     }
 }
@@ -282,6 +410,8 @@ struct ManagedResourceStatus {
     projects: i64,
     version: Option<String>,
     failure: bool,
+    #[serde(skip)]
+    mark: Mark,
 }
 
 #[derive(Serialize)]
@@ -291,6 +421,8 @@ struct RuntimeStatus {
     message: Option<String>,
     observed_at: String,
     failure: bool,
+    #[serde(skip)]
+    mark: Mark,
 }
 
 #[derive(Serialize)]
@@ -302,7 +434,7 @@ struct ProjectStatus {
     message: Option<String>,
     observed_at: Option<String>,
     #[serde(skip)]
-    failure: bool,
+    mark: Mark,
 }
 
 impl ProjectStatus {
@@ -370,10 +502,7 @@ fn managed_resource_status(
     let status = runtime_status
         .map(runtime_status_label)
         .unwrap_or("not-running");
-    let failure = matches!(
-        runtime_status,
-        Some(RuntimeObservedStatus::Failed | RuntimeObservedStatus::Degraded)
-    );
+    let mark = super::runtime_mark(runtime_status);
 
     ManagedResourceStatus {
         name: track.resource_name,
@@ -382,7 +511,8 @@ fn managed_resource_status(
         status,
         projects: track.usage_count,
         version: track.installed_version,
-        failure,
+        failure: mark == Mark::Failure,
+        mark,
     }
 }
 
@@ -392,16 +522,17 @@ fn runtime_statuses(runtime_states: &[RuntimeObservedStateRecord]) -> Vec<Runtim
         .filter_map(|state| match &state.subject {
             RuntimeSubject::Gateway
             | RuntimeSubject::PhpWorker { .. }
-            | RuntimeSubject::PhpRuntimeWorker { .. } => Some(RuntimeStatus {
-                subject: runtime_subject_label(&state.subject),
-                status: runtime_status_label(state.status),
-                message: state.message.clone(),
-                observed_at: state.observed_at.clone(),
-                failure: matches!(
-                    state.status,
-                    RuntimeObservedStatus::Failed | RuntimeObservedStatus::Degraded
-                ),
-            }),
+            | RuntimeSubject::PhpRuntimeWorker { .. } => {
+                let mark = super::runtime_mark(Some(state.status));
+                Some(RuntimeStatus {
+                    subject: runtime_subject_label(&state.subject),
+                    status: runtime_status_label(state.status),
+                    message: state.message.clone(),
+                    observed_at: state.observed_at.clone(),
+                    failure: mark == Mark::Failure,
+                    mark,
+                })
+            }
             RuntimeSubject::Resource { .. } => None,
         })
         .collect()
@@ -433,11 +564,16 @@ fn project_status(
             env_status: "pending",
             message: Some("Project env has not been observed yet".to_string()),
             observed_at: None,
-            failure: false,
+            mark: Mark::Idle,
         };
     };
     let env_status = project_env_status_label(observed.status);
-    let failure = observed.status == ProjectEnvObservedStatus::Failed;
+    let mark = match observed.status {
+        ProjectEnvObservedStatus::Pending => Mark::Idle,
+        ProjectEnvObservedStatus::Rendered => Mark::Success,
+        ProjectEnvObservedStatus::Warning => Mark::Warning,
+        ProjectEnvObservedStatus::Failed => Mark::Failure,
+    };
     let message = if observed.status == ProjectEnvObservedStatus::Warning {
         project_env_warning_message(&observed)
     } else {
@@ -451,7 +587,7 @@ fn project_status(
         env_status,
         message,
         observed_at: Some(observed.observed_at),
-        failure,
+        mark,
     }
 }
 
@@ -486,35 +622,35 @@ fn launch_agent_status(state: &LaunchAgentFileState) -> &'static str {
 fn resolver_status(
     prepared: &ResolverFileState,
     system: &ResolverFileState,
-) -> (&'static str, bool) {
+) -> (&'static str, Mark) {
     match prepared {
-        ResolverFileState::Missing { .. } => ("missing", false),
+        ResolverFileState::Missing { .. } => ("missing", Mark::Idle),
         ResolverFileState::Current { .. } => match system {
-            ResolverFileState::Current { .. } => ("current", false),
-            ResolverFileState::Missing { .. } => ("prepared-only", true),
-            ResolverFileState::Stale { .. } => ("stale", true),
-            ResolverFileState::Conflict { .. } => ("conflict", true),
-            ResolverFileState::Unreadable { .. } => ("unreadable", true),
+            ResolverFileState::Current { .. } => ("current", Mark::Success),
+            ResolverFileState::Missing { .. } => ("prepared-only", Mark::Failure),
+            ResolverFileState::Stale { .. } => ("stale", Mark::Failure),
+            ResolverFileState::Conflict { .. } => ("conflict", Mark::Failure),
+            ResolverFileState::Unreadable { .. } => ("unreadable", Mark::Failure),
         },
-        ResolverFileState::Stale { .. } => ("stale", true),
-        ResolverFileState::Conflict { .. } => ("conflict", true),
-        ResolverFileState::Unreadable { .. } => ("unreadable", true),
+        ResolverFileState::Stale { .. } => ("stale", Mark::Failure),
+        ResolverFileState::Conflict { .. } => ("conflict", Mark::Failure),
+        ResolverFileState::Unreadable { .. } => ("unreadable", Mark::Failure),
     }
 }
 
-fn ca_status(state: &CaFileState, trust: &TrustDomainState) -> (&'static str, bool) {
+fn ca_status(state: &CaFileState, trust: &TrustDomainState) -> (&'static str, Mark) {
     match state {
-        CaFileState::Missing { .. } => ("missing", false),
+        CaFileState::Missing { .. } => ("missing", Mark::Idle),
         CaFileState::Current { .. } => match trust {
-            TrustDomainState::Current { .. } => ("current", false),
-            TrustDomainState::NotTrusted { .. } => ("not-trusted", true),
-            TrustDomainState::Stale { .. } => ("stale", true),
-            TrustDomainState::Denied { .. } => ("denied", true),
-            TrustDomainState::Unknown { .. } => ("unknown", true),
-            TrustDomainState::Unreadable { .. } => ("unreadable", true),
+            TrustDomainState::Current { .. } => ("current", Mark::Success),
+            TrustDomainState::NotTrusted { .. } => ("not-trusted", Mark::Failure),
+            TrustDomainState::Stale { .. } => ("stale", Mark::Failure),
+            TrustDomainState::Denied { .. } => ("denied", Mark::Failure),
+            TrustDomainState::Unknown { .. } => ("unknown", Mark::Failure),
+            TrustDomainState::Unreadable { .. } => ("unreadable", Mark::Failure),
         },
-        CaFileState::RepairRequired { .. } => ("repair-required", true),
-        CaFileState::Unreadable { .. } => ("unreadable", true),
+        CaFileState::RepairRequired { .. } => ("repair-required", Mark::Failure),
+        CaFileState::Unreadable { .. } => ("unreadable", Mark::Failure),
     }
 }
 

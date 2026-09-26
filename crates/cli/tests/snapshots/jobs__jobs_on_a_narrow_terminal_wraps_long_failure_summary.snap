@@ -1,0 +1,12 @@
+---
+source: crates/cli/tests/jobs.rs
+expression: output.stdout
+---
+job_000001
+   kind      reconcile
+   scope     project:acme
+   status    ✗ failed
+   started   <timestamp>
+   finished  <timestamp>
+   summary   Gateway failed to start because the configured local port is
+             already occupied by another process

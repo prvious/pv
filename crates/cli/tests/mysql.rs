@@ -266,7 +266,7 @@ fn mysql_install_uses_manifest_default_and_installs_without_network_download() -
     let records = managed_resource_records(&database, RESOURCE)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_resource_snapshot(
         "mysql_install_uses_manifest_default_and_installs_without_network_download",
         tempdir.path(),
@@ -306,7 +306,7 @@ fn mysql_update_updates_installed_tracks() -> anyhow::Result<()> {
     let records = managed_resource_records(&database, RESOURCE)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_resource_snapshot(
         "mysql_update_updates_installed_tracks",
         tempdir.path(),
@@ -364,7 +364,7 @@ fn mysql_uninstall_force_prune_queues_removal_intent() -> anyhow::Result<()> {
     let records = managed_resource_records(&database, RESOURCE)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_resource_snapshot(
         "mysql_uninstall_force_prune_queues_removal_intent",
         tempdir.path(),

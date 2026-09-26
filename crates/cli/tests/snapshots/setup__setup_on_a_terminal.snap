@@ -1,0 +1,48 @@
+---
+source: crates/cli/tests/setup.rs
+expression: setup.stdout
+---
+[pv] setup
+
+┌  PV setup  ·  macOS integration
+│
+◇  Ensured PV state layout: <tempdir>/home/.pv
+│
+◇  Privileged helper: current 1.0.0 (protocol 1)
+│
+◇  Backed up shell profile: <tempdir>/home/.zprofile.<timestamp>.pv.bak
+│
+◇  Updated shell profile integration: <tempdir>/home/.zprofile
+│  ↳ Open a new terminal, or run `pv env --shell zsh` for current-session shell integration.
+│
+◇  DNS resolver setup
+│  ✓ Prepared PV DNS resolver config
+│    path: <tempdir>/home/.pv/config/resolver/test
+│    DNS resolver port: <dns-port>
+│  ✓ Installed system resolver config: <tempdir>/etc/resolver/test
+│
+◇  port redirect setup
+│  ✓ Prepared PV port redirect config
+│    anchor path: <tempdir>/home/.pv/config/pf/com.prvious.pv
+│    pf.conf reference path: <tempdir>/home/.pv/config/pf/pf.conf
+│    HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:48080
+│    HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:48443
+│  ✓ Installed system pf redirect config
+│
+◇  CA trust setup
+│  ✓ Prepared PV local CA
+│    certificate: <tempdir>/home/.pv/certificates/ca.pem
+│    private key: <tempdir>/home/.pv/certificates/ca-key.pem
+│    fingerprint: <fingerprint>
+│  ⚠ System keychain trust: not trusted
+│    fingerprint: <fingerprint>
+│  ✓ Trusted PV local CA in the System keychain.
+│
+◇  daemon registration
+│  ✓ LaunchAgent installed: <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist
+│  ✓ Daemon started
+│  ✓ Daemon healthy
+│
+◇  System reconciliation completed: stub job completed
+│
+└  PV setup complete

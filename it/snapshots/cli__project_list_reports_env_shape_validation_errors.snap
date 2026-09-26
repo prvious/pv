@@ -7,14 +7,14 @@ expression: "(link, list)"
         code: Some(
             0,
         ),
-        stdout: "Linked acme-store.test -> <tempdir>/Acme Store\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Linked acme-store.test -> <tempdir>/Acme Store\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  default  config-invalid  unknown  invalid  <tempdir>/Acme Store\n  config: duplicate rendered Project env key `DB_HOST` from same-depth mappings `mysql.env.DB_HOST` and `redis.env.DB_HOST`\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  default  config-invalid  0  invalid  <tempdir>/Acme Store\n  config: duplicate rendered Project env key `DB_HOST` from same-depth mappings `mysql.env.DB_HOST` and `redis.env.DB_HOST`\n",
         stderr: "",
     },
 )

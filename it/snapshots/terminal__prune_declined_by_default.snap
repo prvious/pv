@@ -1,0 +1,7 @@
+---
+source: it/terminal.rs
+expression: session.screen()
+---
+◇  Prune PV-owned data for Redis track 8.8?
+│  No
+○  Prune cancelled.

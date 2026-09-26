@@ -9,8 +9,8 @@ expression: "(output, resource_record_snapshots(&records, tempdir.path())?,)"
                 0,
             ),
         ),
-        stdout: "Queued removal for Composer track 2\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Queued removal for Composer track 2\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     [
         ResourceRecordSnapshot {

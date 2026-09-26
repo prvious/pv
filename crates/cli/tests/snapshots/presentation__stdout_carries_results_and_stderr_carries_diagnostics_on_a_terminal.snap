@@ -1,0 +1,24 @@
+---
+source: crates/cli/tests/presentation.rs
+expression: "(link, unlink)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "✓  Linked acme.test -> <tempdir>/acme\n",
+        stderr: "⚠  warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "",
+        stderr: "✗  error: this directory is not inside a linked Project\n   Pass a Project slug or hostname, or run `pv list` to see linked Projects.\n",
+    },
+)

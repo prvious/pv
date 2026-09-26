@@ -1,0 +1,16 @@
+---
+source: crates/cli/tests/init.rs
+expression: session
+---
+Session {
+    exit_code: ExitCode(
+        unix_exit_status(
+            130,
+        ),
+    ),
+    stdout: "PV init\nDetected Project signals:\n  Laravel: Detected composer.json, artisan, and Laravel project files\n  Vite: Detected Vite in package.json\nSelected Project resources:\n  mailpit: Detected SMTP mail env keys when selected\n  mysql: Detected DB_CONNECTION=mysql\n  redis: Detected Redis-compatible env keys when selected\n  rustfs: Detected AWS/S3 env keys when selected\nResource checklist:\n  [x] MySQL\n  [ ] Postgres\n  [x] Redis\n  [x] Mailpit\n  [x] RustFS/S3\n",
+    stderr: "",
+    prompts: [
+        "Use these selections? -> Cancelled",
+    ],
+}

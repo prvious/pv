@@ -9,8 +9,8 @@ expression: snapshot
                 0,
             ),
         ),
-        stdout: "Installed MySQL track 8.0\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Installed MySQL track 8.0\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     [
         ResourceRecordSnapshot {

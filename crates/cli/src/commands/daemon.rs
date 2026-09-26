@@ -1,4 +1,3 @@
-use std::io::Write;
 use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
@@ -7,28 +6,27 @@ use state::{PvPaths, StateError};
 
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, OutputMode};
+use crate::output::{Line, Output, Streams};
 
 const RECONCILE_KIND: &str = "reconcile";
-const SYSTEM_SCOPE: &str = "system";
 
 pub(crate) fn enable(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    enable_inner(environment, stdout, true)
+    enable_inner(environment, streams, true)
 }
 
 pub(crate) fn enable_without_reconciliation(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    enable_inner(environment, stdout, false)
+    enable_inner(environment, streams, false)
 }
 
 fn enable_inner(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
     request_reconciliation: bool,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
@@ -37,16 +35,16 @@ fn enable_inner(
     let config = launch_agent_config(&paths);
     let path = launch_agent_path(environment)?;
     let state = platform::inspect_launch_agent_file(&path, Some(&config));
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     match state {
         LaunchAgentFileState::Current { .. } => {
             environment.kickstart_launch_agent()?;
-            output.line("LaunchAgent already installed")?;
-            output.line("Daemon started")?;
-            wait_for_daemon(paths.clone(), &mut output)?;
+            output.note("LaunchAgent already installed")?;
+            output.success("Daemon started")?;
+            wait_for_daemon(paths.clone(), output)?;
             if request_reconciliation {
-                submit_system_reconciliation(paths, &mut output)?;
+                submit_system_reconciliation(paths, output)?;
             }
 
             Ok(ExitCode::SUCCESS)
@@ -56,7 +54,7 @@ fn enable_inner(
             &path,
             &config,
             paths,
-            &mut output,
+            output,
             "Daemon started",
             request_reconciliation,
         ),
@@ -67,67 +65,49 @@ fn enable_inner(
                 &path,
                 &config,
                 paths,
-                &mut output,
+                output,
                 "Daemon started",
                 request_reconciliation,
             )
         }
-        LaunchAgentFileState::Conflict { path } => {
-            output.error("LaunchAgent file is not PV-owned; leaving it unchanged")?;
-            output.line(&format!("  path: {path}"))?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        LaunchAgentFileState::Unreadable { message, .. } => {
-            output.error("LaunchAgent file is unreadable; leaving it unchanged")?;
-            output.line(&format!("  {message}"))?;
-
-            Ok(ExitCode::FAILURE)
+        LaunchAgentFileState::Conflict { .. } | LaunchAgentFileState::Unreadable { .. } => {
+            refuse_launch_agent(&mut streams.err, &state)
         }
     }
 }
 
 pub(crate) fn disable(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let path = launch_agent_path(environment)?;
     let state = platform::inspect_launch_agent_file(&path, None);
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     match state {
         LaunchAgentFileState::Missing { .. } => {
             bootout_launch_agent_if_loaded(environment)?;
-            output.line("LaunchAgent already absent")?;
+            output.note("LaunchAgent already absent")?;
 
             Ok(ExitCode::SUCCESS)
         }
         LaunchAgentFileState::Current { .. } | LaunchAgentFileState::Stale { .. } => {
             bootout_launch_agent_if_loaded(environment)?;
             platform::remove_launch_agent_file(&path)?;
-            output.line("Daemon disabled")?;
-            output.line(&format!("LaunchAgent removed: {path}"))?;
+            output.success("Daemon disabled")?;
+            output.success(Line::field("LaunchAgent removed: ", &path))?;
 
             Ok(ExitCode::SUCCESS)
         }
-        LaunchAgentFileState::Conflict { path } => {
-            output.error("LaunchAgent file is not PV-owned; leaving it unchanged")?;
-            output.line(&format!("  path: {path}"))?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        LaunchAgentFileState::Unreadable { message, .. } => {
-            output.error("LaunchAgent file is unreadable; leaving it unchanged")?;
-            output.line(&format!("  {message}"))?;
-
-            Ok(ExitCode::FAILURE)
+        LaunchAgentFileState::Conflict { .. } | LaunchAgentFileState::Unreadable { .. } => {
+            refuse_launch_agent(&mut streams.err, &state)
         }
     }
 }
 
 pub(crate) fn restart(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
@@ -135,13 +115,13 @@ pub(crate) fn restart(
     let config = launch_agent_config(&paths);
     let path = launch_agent_path(environment)?;
     let state = platform::inspect_launch_agent_file(&path, Some(&config));
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
     match state {
         LaunchAgentFileState::Current { .. } => {
             environment.kickstart_launch_agent()?;
-            output.line("Daemon restarted")?;
-            wait_for_daemon_and_submit_reconciliation(paths, &mut output)?;
+            output.success("Daemon restarted")?;
+            wait_for_daemon_and_submit_reconciliation(paths, output)?;
 
             Ok(ExitCode::SUCCESS)
         }
@@ -150,7 +130,7 @@ pub(crate) fn restart(
             &path,
             &config,
             paths,
-            &mut output,
+            output,
             "Daemon restarted",
             true,
         ),
@@ -161,22 +141,13 @@ pub(crate) fn restart(
                 &path,
                 &config,
                 paths,
-                &mut output,
+                output,
                 "Daemon restarted",
                 true,
             )
         }
-        LaunchAgentFileState::Conflict { path } => {
-            output.error("LaunchAgent file is not PV-owned; leaving it unchanged")?;
-            output.line(&format!("  path: {path}"))?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        LaunchAgentFileState::Unreadable { message, .. } => {
-            output.error("LaunchAgent file is unreadable; leaving it unchanged")?;
-            output.line(&format!("  {message}"))?;
-
-            Ok(ExitCode::FAILURE)
+        LaunchAgentFileState::Conflict { .. } | LaunchAgentFileState::Unreadable { .. } => {
+            refuse_launch_agent(&mut streams.err, &state)
         }
     }
 }
@@ -189,6 +160,29 @@ pub(crate) fn run() -> Result<ExitCode, ExecuteError> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// Returns success when PV may touch the LaunchAgent file; otherwise writes
+/// the refusal to stderr and returns failure, for a file PV does not own or
+/// cannot read.
+fn refuse_launch_agent(
+    stderr: &mut Output<'_>,
+    state: &LaunchAgentFileState,
+) -> Result<ExitCode, ExecuteError> {
+    let message = match state {
+        LaunchAgentFileState::Conflict { path } => {
+            format!("LaunchAgent file is not PV-owned; leaving it unchanged\npath: {path}")
+        }
+        LaunchAgentFileState::Unreadable { message, .. } => {
+            format!("LaunchAgent file is unreadable; leaving it unchanged\n{message}")
+        }
+        LaunchAgentFileState::Missing { .. }
+        | LaunchAgentFileState::Current { .. }
+        | LaunchAgentFileState::Stale { .. } => return Ok(ExitCode::SUCCESS),
+    };
+    stderr.error(&message)?;
+
+    Ok(ExitCode::FAILURE)
+}
+
 fn launch_agent_config(paths: &PvPaths) -> LaunchAgentConfig {
     LaunchAgentConfig::new(
         paths.active_pv_binary(),
@@ -199,31 +193,25 @@ fn launch_agent_config(paths: &PvPaths) -> LaunchAgentConfig {
 
 fn wait_for_daemon_and_submit_reconciliation(
     paths: PvPaths,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     wait_for_daemon(paths.clone(), output)?;
     submit_system_reconciliation(paths, output)
 }
 
-fn wait_for_daemon(
-    paths: PvPaths,
-    output: &mut Output<'_, impl Write>,
-) -> Result<(), ExecuteError> {
+fn wait_for_daemon(paths: PvPaths, output: &mut Output<'_>) -> Result<(), ExecuteError> {
     ::daemon::wait_until_healthy_blocking(paths)?;
-    output.line("Daemon healthy")?;
+    output.success("Daemon healthy")?;
 
     Ok(())
 }
 
 fn submit_system_reconciliation(
     paths: PvPaths,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
-    let submitted = ::daemon::submit_job_blocking(paths, RECONCILE_KIND, SYSTEM_SCOPE)?;
-    output.line(&format!(
-        "System reconciliation requested: {}",
-        submitted.id
-    ))?;
+    let submitted = ::daemon::submit_job_blocking(paths, RECONCILE_KIND, super::SYSTEM_SCOPE)?;
+    super::write_reconciliation_requested(output, &submitted.id)?;
 
     Ok(())
 }
@@ -233,15 +221,15 @@ fn install_and_start_launch_agent(
     path: &Utf8PathBuf,
     config: &LaunchAgentConfig,
     paths: PvPaths,
-    output: &mut Output<'_, impl Write>,
+    output: &mut Output<'_>,
     started_message: &str,
     request_reconciliation: bool,
 ) -> Result<ExitCode, ExecuteError> {
     platform::write_launch_agent_file(path, config)?;
     environment.bootstrap_launch_agent(path)?;
     environment.kickstart_launch_agent()?;
-    output.line(&format!("LaunchAgent installed: {path}"))?;
-    output.line(started_message)?;
+    output.success(Line::field("LaunchAgent installed: ", path))?;
+    output.success(started_message)?;
     wait_for_daemon(paths.clone(), output)?;
     if request_reconciliation {
         submit_system_reconciliation(paths, output)?;

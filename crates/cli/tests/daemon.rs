@@ -85,10 +85,6 @@ impl Environment for TestEnvironment {
         false
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(String::new())
-    }
-
     fn open_url(&self, _url: &str) -> io::Result<()> {
         Ok(())
     }
@@ -400,8 +396,8 @@ fn daemon_disable_refuses_non_pv_owned_launch_agent() -> anyhow::Result<()> {
     let plist_after_disable = read_required_file(&launch_agent_path)?;
 
     assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stdout.contains("not PV-owned"));
-    assert!(output.stderr.is_empty());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.contains("not PV-owned"));
     assert_eq!(plist_after_disable, conflict);
 
     with_normalized_tempdir(tempdir.path(), || {

@@ -8,9 +8,9 @@ use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::{Answer, Environment, Prompt, PromptKind, run_with_environment};
 use config::ProjectConfigFile;
-use insta::assert_debug_snapshot;
+use insta::{assert_debug_snapshot, assert_snapshot};
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use state::{
     Database, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackRecord,
@@ -27,6 +27,7 @@ struct TestEnvironment {
     target_platform: Option<TargetPlatform>,
     target_platform_resolution_fails: bool,
     exec_calls: RefCell<Vec<ExecCall>>,
+    terminal_width: Cell<Option<usize>>,
 }
 
 impl TestEnvironment {
@@ -38,6 +39,7 @@ impl TestEnvironment {
             target_platform: Some(TargetPlatform::DarwinArm64),
             target_platform_resolution_fails: false,
             exec_calls: RefCell::new(Vec::new()),
+            terminal_width: Cell::new(None),
         }
     }
 
@@ -111,12 +113,28 @@ impl Environment for TestEnvironment {
         Ok(PathBuf::from("/bin/pv"))
     }
 
-    fn stdin_is_terminal(&self) -> bool {
-        false
+    fn stdout_is_terminal(&self) -> bool {
+        self.terminal_width.get().is_some()
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(String::new())
+    fn terminal_width(&self) -> Option<usize> {
+        self.terminal_width.get()
+    }
+
+    fn stdin_is_terminal(&self) -> bool {
+        self.terminal_width.get().is_some()
+    }
+
+    fn stderr_is_terminal(&self) -> bool {
+        self.terminal_width.get().is_some()
+    }
+
+    fn prompt(&self, prompt: &Prompt<'_>) -> io::Result<Answer> {
+        let PromptKind::Confirm { default } = prompt.kind else {
+            return Err(io::Error::other("only confirmations are scripted"));
+        };
+
+        Ok(Answer::Confirmed(default))
     }
 
     fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -979,7 +997,7 @@ fn php_use_updates_project_config_state_and_reports_missing_daemon() -> anyhow::
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(
         config_file
             .config
@@ -1030,7 +1048,7 @@ fn php_use_latest_preserves_alias_in_config_and_records_resolved_track() -> anyh
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(
         config_file
             .config
@@ -1076,7 +1094,7 @@ fn php_use_global_records_default_and_reports_missing_daemon() -> anyhow::Result
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(default_track.as_deref(), Some("8.4"));
     assert_debug_snapshot!((
         output,
@@ -1244,7 +1262,7 @@ fn php_install_uses_manifest_default_and_installs_pair_without_network() -> anyh
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_debug_snapshot!((
         output,
         resource_record_snapshots(&records, tempdir.path())?,
@@ -1310,7 +1328,7 @@ fn php_install_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()> {
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(environment.byte_request_count(), 0);
     assert_debug_snapshot!((
         output,
@@ -1343,7 +1361,7 @@ fn php_update_reports_missing_daemon_after_resource_update() -> anyhow::Result<(
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_debug_snapshot!((
         output,
         resource_record_snapshots(&records, tempdir.path())?,
@@ -1411,7 +1429,7 @@ fn php_update_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()> {
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(environment.byte_request_count(), 0);
     assert_debug_snapshot!((
         output,
@@ -1443,7 +1461,7 @@ fn php_install_uses_injected_target_platform() -> anyhow::Result<()> {
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_debug_snapshot!((
         output,
         resource_record_snapshots(&records, tempdir.path())?,
@@ -1632,7 +1650,7 @@ fn php_uninstall_force_proceeds_for_project_selected_track() -> anyhow::Result<(
 
     assert_eq!(install.exit_code, ExitCode::SUCCESS);
     assert_eq!(uninstall.exit_code, ExitCode::SUCCESS);
-    assert!(uninstall.stderr.is_empty());
+    assert!(!uninstall.stderr.contains("error:"));
     assert!(records.iter().all(|record| {
         record.desired_state == ManagedResourceDesiredState::Removed && record.removal_force
     }));
@@ -1668,7 +1686,7 @@ fn php_uninstall_force_prune_queues_both_removal_intents() -> anyhow::Result<()>
 
     assert_eq!(install.exit_code, ExitCode::SUCCESS);
     assert_eq!(uninstall.exit_code, ExitCode::SUCCESS);
-    assert!(uninstall.stderr.is_empty());
+    assert!(!uninstall.stderr.contains("error:"));
     assert!(records.iter().all(|record| {
         record.desired_state == ManagedResourceDesiredState::Removed
             && record.removal_force
@@ -1678,6 +1696,61 @@ fn php_uninstall_force_prune_queues_both_removal_intents() -> anyhow::Result<()>
         uninstall,
         resource_record_snapshots(&records, tempdir.path())?,
     ));
+
+    Ok(())
+}
+
+#[test]
+fn php_uninstall_prune_refuses_without_terminal() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    record_installed_php_pair(&home, "8.4", &artifacts)?;
+    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+
+    let output = run_pv(&["php:uninstall", "8.4", "--prune"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.is_empty());
+    assert!(records.iter().all(|record| {
+        record.desired_state == ManagedResourceDesiredState::Installed
+            && !record.removal_prune
+            && !record.removal_force
+    }));
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!((output, resource_record_snapshots(&records, tempdir.path())?,));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn php_uninstall_prune_defaults_to_no_on_a_terminal() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let artifacts = php_pair_artifacts("8.4.8-pv1")?;
+    record_installed_php_pair(&home, "8.4", &artifacts)?;
+    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+    environment.terminal_width.set(Some(100));
+
+    let output = run_pv(&["php:uninstall", "8.4", "--prune"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stdout.contains("Prune cancelled."));
+    assert!(records.iter().all(|record| {
+        record.desired_state == ManagedResourceDesiredState::Installed
+            && !record.removal_prune
+            && !record.removal_force
+    }));
 
     Ok(())
 }
@@ -1715,12 +1788,16 @@ fn php_list_marks_global_default_track() -> anyhow::Result<()> {
     }
 
     let list = run_pv(&["php:list"], &environment)?;
+    environment.terminal_width.set(Some(200));
+    let decorated = run_pv(&["php:list", "--no-color"], &environment)?;
 
     assert_eq!(install.exit_code, ExitCode::SUCCESS);
     assert_eq!(list.exit_code, ExitCode::SUCCESS);
     assert!(list.stderr.is_empty());
+    assert_eq!(decorated.exit_code, ExitCode::SUCCESS);
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!(list);
+        assert_snapshot!("php_list_on_a_terminal", decorated.stdout);
         Ok(())
     })?;
 

@@ -630,7 +630,9 @@ fn validate_env_key(key: &str) -> Result<(), ConfigError> {
     }
 }
 
-fn validate_allocation_name(allocation: &str) -> Result<(), ConfigError> {
+/// Checks a Project config allocation name: a lowercase ASCII letter followed
+/// by lowercase letters, digits, `_`, or `-`.
+pub fn validate_allocation_name(allocation: &str) -> Result<(), ConfigError> {
     let mut bytes = allocation.bytes();
     let Some(first) = bytes.next() else {
         return Err(ConfigError::InvalidAllocationName {

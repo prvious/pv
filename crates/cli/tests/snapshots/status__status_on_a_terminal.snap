@@ -1,0 +1,38 @@
+---
+source: crates/cli/tests/status.rs
+expression: output.stdout
+---
+[pv] status
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+○  Daemon disabled
+   LaunchAgent missing  ·  Socket missing
+
+INTEGRATIONS
+○  DNS    missing
+○  Ports  inactive
+   ↳ repair  pv ports:install
+○  CA     missing
+
+MANAGED RESOURCES
+RESOURCE  TRACK  STATE          PROJECTS  VERSION
+mailpit   1      ● running      0         1.20.0-pv1
+mysql     8.0    ● running      0         8.0.36-pv1
+php       8.4    ○ not-running  0         8.4.8-pv1
+postgres  16     ● running      0         16.4-pv1
+redis     7      ● running      0         7.2.5-pv1
+rustfs    1      ● running      0         1.0.0-pv1
+
+RUNTIMES
+●  worker:8.4  running
+   PHP worker is ready
+
+PROJECTS
+○  none
+
+RECENT ERRORS
+✗  job_000001 reconcile resource:redis:7 failed at <timestamp>
+   Redis failed readiness
+
+✗  Overall: failed
+   ↳ logs  <tempdir>/home/.pv/logs

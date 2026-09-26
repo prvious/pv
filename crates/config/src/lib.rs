@@ -26,4 +26,5 @@ pub use init::{
     default_project_init_selection, detect_project_init, render_project_init_config,
 };
 pub use model::{AllocationConfig, PhpConfig, ProjectConfig, ProjectConfigFile, ResourceConfig};
+pub use parser::validate_allocation_name;
 pub use writer::{update_project_config, write_project_config, write_project_php_track};

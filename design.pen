@@ -1,5 +1,5 @@
 {
-  "version": "2.18",
+  "version": "2.19",
   "children": [
     {
       "type": "frame",
@@ -2019,8 +2019,7 @@
                 "x": 0,
                 "y": 18
               },
-              "blur": 48,
-              "spread": -14
+              "blur": 48
             },
             {
               "type": "shadow",
@@ -5573,8 +5572,7 @@
                 "x": 0,
                 "y": 18
               },
-              "blur": 48,
-              "spread": -14
+              "blur": 48
             },
             {
               "type": "shadow",
@@ -9765,8 +9763,7 @@
                 "x": 0,
                 "y": 18
               },
-              "blur": 48,
-              "spread": -14
+              "blur": 48
             },
             {
               "type": "shadow",
@@ -13751,8 +13748,7 @@
                 "x": 0,
                 "y": 18
               },
-              "blur": 48,
-              "spread": -14
+              "blur": 48
             },
             {
               "type": "shadow",
@@ -17695,8 +17691,7 @@
                 "x": 0,
                 "y": 18
               },
-              "blur": 48,
-              "spread": -14
+              "blur": 48
             },
             {
               "type": "shadow",
@@ -21655,8 +21650,7 @@
                 "x": 0,
                 "y": 18
               },
-              "blur": 48,
-              "spread": -14
+              "blur": 48
             },
             {
               "type": "shadow",
@@ -25221,8 +25215,7 @@
                 "x": 0,
                 "y": 18
               },
-              "blur": 48,
-              "spread": -14
+              "blur": 48
             },
             {
               "type": "shadow",
@@ -29851,8 +29844,7 @@
                 "x": 0,
                 "y": 18
               },
-              "blur": 48,
-              "spread": -14
+              "blur": 48
             },
             {
               "type": "shadow",
@@ -35609,8 +35601,7 @@
                 "x": 0,
                 "y": 18
               },
-              "blur": 48,
-              "spread": -14
+              "blur": 48
             },
             {
               "type": "shadow",
@@ -40440,8 +40431,7 @@
                 "x": 0,
                 "y": 18
               },
-              "blur": 48,
-              "spread": -14
+              "blur": 48
             },
             {
               "type": "shadow",
@@ -45032,8 +45022,7 @@
                 "x": 0,
                 "y": 18
               },
-              "blur": 48,
-              "spread": -14
+              "blur": 48
             },
             {
               "type": "shadow",
@@ -48646,8 +48635,7 @@
                 "x": 0,
                 "y": 18
               },
-              "blur": 48,
-              "spread": -14
+              "blur": 48
             },
             {
               "type": "shadow",
@@ -53613,8 +53601,7 @@
                 "x": 0,
                 "y": 18
               },
-              "blur": 48,
-              "spread": -14
+              "blur": 48
             },
             {
               "type": "shadow",
@@ -53843,8 +53830,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 44,
-                      "spread": -10
+                      "blur": 44
                     },
                     {
                       "type": "shadow",
@@ -54810,8 +54796,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 44,
-                      "spread": -10
+                      "blur": 44
                     },
                     {
                       "type": "shadow",
@@ -59380,8 +59365,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -59902,8 +59886,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -60472,8 +60455,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -60994,8 +60976,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -61564,8 +61545,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -62196,8 +62176,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -62876,8 +62855,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -63692,8 +63670,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -64556,8 +64533,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -65008,8 +64984,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -65508,8 +65483,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -66243,8 +66217,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -67026,8 +66999,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -67714,8 +67686,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -68450,8 +68421,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -69320,8 +69290,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -70237,8 +70206,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -71563,8 +71531,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -72937,8 +72904,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -73630,8 +73596,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -74371,8 +74336,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -75246,8 +75210,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -76169,8 +76132,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -76581,8 +76543,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -77041,8 +77002,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -77541,8 +77501,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -78089,8 +78048,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -78434,8 +78392,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -78878,8 +78835,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -80108,8 +80064,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -81386,8 +81341,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -82799,8 +82753,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -84260,8 +84213,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -85095,8 +85047,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -85978,8 +85929,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -88141,8 +88091,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -90352,8 +90301,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -91019,8 +90967,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -91734,8 +91681,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -92504,8 +92450,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -93322,8 +93267,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -93643,8 +93587,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -94012,8 +93955,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -95530,8 +95472,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -97096,8 +97037,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -97661,8 +97601,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -98273,8 +98212,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -99406,8 +99344,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -100637,8 +100574,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -101581,8 +101517,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -102572,8 +102507,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -103406,8 +103340,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -104288,8 +104221,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -104717,63 +104649,6 @@
                         },
                         {
                           "type": "frame",
-                          "id": "GxnOK",
-                          "name": "gl",
-                          "width": "fill_container",
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "text",
-                              "id": "H0ZjD",
-                              "name": "seg",
-                              "fill": "$td-faint",
-                              "textGrowth": "fixed-width",
-                              "width": 22,
-                              "content": "│",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "knILJ",
-                              "name": "seg",
-                              "fill": "$td-dim",
-                              "content": "○ ",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "DJXw1",
-                              "name": "seg",
-                              "fill": "$td-dim",
-                              "textGrowth": "fixed-width",
-                              "width": 236,
-                              "content": "4. invoicer (resource-only)",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "tnIAp",
-                              "name": "seg",
-                              "fill": "$td-dim",
-                              "content": "~/Code/invoicer",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
                           "id": "Sw9x0",
                           "name": "gl",
                           "width": "fill_container",
@@ -104918,7 +104793,7 @@
                               "id": "Kvo0K",
                               "name": "seg",
                               "fill": "$td-cyan",
-                              "content": "1-4",
+                              "content": "1-3",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -104961,8 +104836,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -105390,63 +105264,6 @@
                         },
                         {
                           "type": "frame",
-                          "id": "qSqd7",
-                          "name": "gl",
-                          "width": "fill_container",
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "text",
-                              "id": "ooxlI",
-                              "name": "seg",
-                              "fill": "$tl-faint",
-                              "textGrowth": "fixed-width",
-                              "width": 22,
-                              "content": "│",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "D0CPz",
-                              "name": "seg",
-                              "fill": "$tl-dim",
-                              "content": "○ ",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "YJLAL",
-                              "name": "seg",
-                              "fill": "$tl-dim",
-                              "textGrowth": "fixed-width",
-                              "width": 236,
-                              "content": "4. invoicer (resource-only)",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "zbSan",
-                              "name": "seg",
-                              "fill": "$tl-dim",
-                              "content": "~/Code/invoicer",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
                           "id": "XgRie",
                           "name": "gl",
                           "width": "fill_container",
@@ -105591,7 +105408,7 @@
                               "id": "ep5BV",
                               "name": "seg",
                               "fill": "$tl-cyan",
-                              "content": "1-4",
+                              "content": "1-3",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -105682,8 +105499,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -106175,8 +105991,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -106715,8 +106530,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -106868,7 +106682,7 @@
                               "id": "cdqq3",
                               "name": "seg",
                               "fill": "$td-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -107812,8 +107626,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -107965,7 +107778,7 @@
                               "id": "dsP5u",
                               "name": "seg",
                               "fill": "$tl-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -108956,8 +108769,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -109057,86 +108869,46 @@
                       "children": [
                         {
                           "type": "frame",
-                          "id": "zJwkX",
-                          "name": "hdr",
+                          "id": "cE2ea",
+                          "name": "prompt",
                           "width": "fill_container",
-                          "gap": 8,
                           "alignItems": "center",
                           "children": [
                             {
-                              "type": "frame",
-                              "id": "g4krgI",
-                              "name": "badge",
-                              "fill": "$td-violet",
-                              "cornerRadius": 5,
-                              "padding": [
-                                3,
-                                7
-                              ],
-                              "alignItems": "center",
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "n9VlP",
-                                  "name": "seg",
-                                  "fill": "$td-bg",
-                                  "content": "pv",
-                                  "fontFamily": "$font-mono",
-                                  "fontSize": 12,
-                                  "fontWeight": "700"
-                                }
-                              ]
-                            },
-                            {
                               "type": "text",
-                              "id": "h20UD",
+                              "id": "QmnDa",
                               "name": "seg",
-                              "fill": "$td-fg",
-                              "content": "project:env",
+                              "fill": "$td-green",
+                              "textGrowth": "fixed-width",
+                              "width": 22,
+                              "content": "❯",
+                              "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
                               "fontWeight": "600"
                             },
                             {
-                              "type": "frame",
-                              "id": "z60a2i",
-                              "name": "sp",
-                              "width": "fill_container",
-                              "height": 1
+                              "type": "text",
+                              "id": "o0zXR",
+                              "name": "seg",
+                              "fill": "$td-fg",
+                              "content": "pv project:env",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
                             },
                             {
                               "type": "text",
-                              "id": "Mslpg",
+                              "id": "eSVdP",
                               "name": "seg",
                               "fill": "$td-dim",
-                              "content": "v3.4.0",
+                              "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
-                              "fontSize": 12,
+                              "fontSize": 13,
                               "fontWeight": "normal"
                             }
                           ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "FLcM4",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 8
-                        },
-                        {
-                          "type": "rectangle",
-                          "id": "u5QbDe",
-                          "name": "rule",
-                          "fill": "$td-border",
-                          "width": "fill_container",
-                          "height": 1
-                        },
-                        {
-                          "type": "frame",
-                          "id": "fYgRh",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 6
                         },
                         {
                           "type": "frame",
@@ -109746,8 +109518,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -109847,86 +109618,46 @@
                       "children": [
                         {
                           "type": "frame",
-                          "id": "RXYN5",
-                          "name": "hdr",
+                          "id": "GVQrr",
+                          "name": "prompt",
                           "width": "fill_container",
-                          "gap": 8,
                           "alignItems": "center",
                           "children": [
                             {
-                              "type": "frame",
-                              "id": "B7B9T",
-                              "name": "badge",
-                              "fill": "$tl-violet",
-                              "cornerRadius": 5,
-                              "padding": [
-                                3,
-                                7
-                              ],
-                              "alignItems": "center",
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "u00a0",
-                                  "name": "seg",
-                                  "fill": "$tl-bg",
-                                  "content": "pv",
-                                  "fontFamily": "$font-mono",
-                                  "fontSize": 12,
-                                  "fontWeight": "700"
-                                }
-                              ]
-                            },
-                            {
                               "type": "text",
-                              "id": "Bhy2i",
+                              "id": "lJ3Ra",
                               "name": "seg",
-                              "fill": "$tl-fg",
-                              "content": "project:env",
+                              "fill": "$tl-green",
+                              "textGrowth": "fixed-width",
+                              "width": 22,
+                              "content": "❯",
+                              "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
                               "fontWeight": "600"
                             },
                             {
-                              "type": "frame",
-                              "id": "n0gWJ",
-                              "name": "sp",
-                              "width": "fill_container",
-                              "height": 1
+                              "type": "text",
+                              "id": "t0bnIk",
+                              "name": "seg",
+                              "fill": "$tl-fg",
+                              "content": "pv project:env",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
                             },
                             {
                               "type": "text",
-                              "id": "GOozq",
+                              "id": "v2vfG",
                               "name": "seg",
                               "fill": "$tl-dim",
-                              "content": "v3.4.0",
+                              "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
-                              "fontSize": 12,
+                              "fontSize": 13,
                               "fontWeight": "normal"
                             }
                           ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "Y9Qejm",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 8
-                        },
-                        {
-                          "type": "rectangle",
-                          "id": "qCZt4",
-                          "name": "rule",
-                          "fill": "$tl-border",
-                          "width": "fill_container",
-                          "height": 1
-                        },
-                        {
-                          "type": "frame",
-                          "id": "x2Had9",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 6
                         },
                         {
                           "type": "frame",
@@ -110583,8 +110314,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -110684,86 +110414,46 @@
                       "children": [
                         {
                           "type": "frame",
-                          "id": "QDcwg",
-                          "name": "hdr",
+                          "id": "Xsxvd",
+                          "name": "prompt",
                           "width": "fill_container",
-                          "gap": 8,
                           "alignItems": "center",
                           "children": [
                             {
-                              "type": "frame",
-                              "id": "BTIgK",
-                              "name": "badge",
-                              "fill": "$td-violet",
-                              "cornerRadius": 5,
-                              "padding": [
-                                3,
-                                7
-                              ],
-                              "alignItems": "center",
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "X8O71Q",
-                                  "name": "seg",
-                                  "fill": "$td-bg",
-                                  "content": "pv",
-                                  "fontFamily": "$font-mono",
-                                  "fontSize": 12,
-                                  "fontWeight": "700"
-                                }
-                              ]
-                            },
-                            {
                               "type": "text",
-                              "id": "K2ZpEo",
+                              "id": "TRhwB",
                               "name": "seg",
-                              "fill": "$td-fg",
-                              "content": "project:env --json",
+                              "fill": "$td-green",
+                              "textGrowth": "fixed-width",
+                              "width": 22,
+                              "content": "❯",
+                              "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
                               "fontWeight": "600"
                             },
                             {
-                              "type": "frame",
-                              "id": "iUBDz",
-                              "name": "sp",
-                              "width": "fill_container",
-                              "height": 1
+                              "type": "text",
+                              "id": "nz0sD",
+                              "name": "seg",
+                              "fill": "$td-fg",
+                              "content": "pv project:env --json",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
                             },
                             {
                               "type": "text",
-                              "id": "fZnYy",
+                              "id": "xxOjw",
                               "name": "seg",
                               "fill": "$td-dim",
-                              "content": "v3.4.0",
+                              "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
-                              "fontSize": 12,
+                              "fontSize": 13,
                               "fontWeight": "normal"
                             }
                           ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "CDB0l",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 8
-                        },
-                        {
-                          "type": "rectangle",
-                          "id": "tjbH8",
-                          "name": "rule",
-                          "fill": "$td-border",
-                          "width": "fill_container",
-                          "height": 1
-                        },
-                        {
-                          "type": "frame",
-                          "id": "K6y7C9",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 6
                         },
                         {
                           "type": "frame",
@@ -111606,8 +111296,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -111707,86 +111396,46 @@
                       "children": [
                         {
                           "type": "frame",
-                          "id": "SKqrk",
-                          "name": "hdr",
+                          "id": "IVCR4",
+                          "name": "prompt",
                           "width": "fill_container",
-                          "gap": 8,
                           "alignItems": "center",
                           "children": [
                             {
-                              "type": "frame",
-                              "id": "AVsua",
-                              "name": "badge",
-                              "fill": "$tl-violet",
-                              "cornerRadius": 5,
-                              "padding": [
-                                3,
-                                7
-                              ],
-                              "alignItems": "center",
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "KeZRE",
-                                  "name": "seg",
-                                  "fill": "$tl-bg",
-                                  "content": "pv",
-                                  "fontFamily": "$font-mono",
-                                  "fontSize": 12,
-                                  "fontWeight": "700"
-                                }
-                              ]
-                            },
-                            {
                               "type": "text",
-                              "id": "oq9pU",
+                              "id": "FsLF2",
                               "name": "seg",
-                              "fill": "$tl-fg",
-                              "content": "project:env --json",
+                              "fill": "$tl-green",
+                              "textGrowth": "fixed-width",
+                              "width": 22,
+                              "content": "❯",
+                              "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
                               "fontWeight": "600"
                             },
                             {
-                              "type": "frame",
-                              "id": "IzzDW",
-                              "name": "sp",
-                              "width": "fill_container",
-                              "height": 1
+                              "type": "text",
+                              "id": "JVmjM",
+                              "name": "seg",
+                              "fill": "$tl-fg",
+                              "content": "pv project:env --json",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
                             },
                             {
                               "type": "text",
-                              "id": "ROZMo",
+                              "id": "w5zBv",
                               "name": "seg",
                               "fill": "$tl-dim",
-                              "content": "v3.4.0",
+                              "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
-                              "fontSize": 12,
+                              "fontSize": 13,
                               "fontWeight": "normal"
                             }
                           ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "hMq1O",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 8
-                        },
-                        {
-                          "type": "rectangle",
-                          "id": "PyoEW",
-                          "name": "rule",
-                          "fill": "$tl-border",
-                          "width": "fill_container",
-                          "height": 1
-                        },
-                        {
-                          "type": "frame",
-                          "id": "yFG5E",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 6
                         },
                         {
                           "type": "frame",
@@ -112727,8 +112376,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -112880,7 +112528,7 @@
                               "id": "i8zcec",
                               "name": "seg",
                               "fill": "$td-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -113712,8 +113360,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -113865,7 +113512,7 @@
                               "id": "R4d64",
                               "name": "seg",
                               "fill": "$tl-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -114744,8 +114391,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -114897,7 +114543,7 @@
                               "id": "QB8X1",
                               "name": "seg",
                               "fill": "$td-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -116020,8 +115666,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -116173,7 +115818,7 @@
                               "id": "xxFmX",
                               "name": "seg",
                               "fill": "$tl-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -117343,8 +116988,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -117496,7 +117140,7 @@
                               "id": "ogV43",
                               "name": "seg",
                               "fill": "$td-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -118635,8 +118279,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -118788,7 +118431,7 @@
                               "id": "hPZrt",
                               "name": "seg",
                               "fill": "$tl-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -119974,8 +119617,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -120127,7 +119769,7 @@
                               "id": "VmraI",
                               "name": "seg",
                               "fill": "$td-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -120927,8 +120569,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -121080,7 +120721,7 @@
                               "id": "YVlZ1",
                               "name": "seg",
                               "fill": "$tl-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -121894,7 +121535,7 @@
                   "id": "jp7og",
                   "name": "s",
                   "fill": "$ink-2",
-                  "content": "Interleaved tail of every PV log · label colored by source family, message tinted by severity",
+                  "content": "Interleaved tail of every PV log · label colored by source family, message bodies printed exactly as stored",
                   "fontFamily": "$font-ui",
                   "fontSize": 13,
                   "fontWeight": "normal"
@@ -121927,8 +121568,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -122080,7 +121720,7 @@
                               "id": "jzkG9",
                               "name": "seg",
                               "fill": "$td-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -122151,7 +121791,7 @@
                               "type": "text",
                               "id": "Djtjx",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:02:11 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -122206,7 +121846,7 @@
                               "type": "text",
                               "id": "I5p59",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:02:13 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -122305,7 +121945,7 @@
                               "type": "text",
                               "id": "bp0nU",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:02:20 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -122360,7 +122000,7 @@
                               "type": "text",
                               "id": "Uy0bs",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:02:22 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -122371,7 +122011,7 @@
                               "type": "text",
                               "id": "R6WvJd",
                               "name": "seg",
-                              "fill": "$td-red",
+                              "fill": "$td-fg",
                               "content": "error: upstream worker:8.3 refused for legacy-shop.test",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -122415,7 +122055,7 @@
                               "type": "text",
                               "id": "fLPpU",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:02:24 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -122426,7 +122066,7 @@
                               "type": "text",
                               "id": "H0vk8",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "debug: opcache hit ratio 99.2%",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -122470,7 +122110,7 @@
                               "type": "text",
                               "id": "IWwmk",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:02:31 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -122481,7 +122121,7 @@
                               "type": "text",
                               "id": "xiYsc",
                               "name": "seg",
-                              "fill": "$td-amber",
+                              "fill": "$td-fg",
                               "content": "[Warning] Aborted connection 812 to db 'acme_app'",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -122525,7 +122165,7 @@
                               "type": "text",
                               "id": "kyx68",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:05:00 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -122580,7 +122220,7 @@
                               "type": "text",
                               "id": "bqave",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:05:02 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -122635,7 +122275,7 @@
                               "type": "text",
                               "id": "TYKYj",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:05:03 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -122646,7 +122286,7 @@
                               "type": "text",
                               "id": "wfJSW",
                               "name": "seg",
-                              "fill": "$td-red",
+                              "fill": "$td-fg",
                               "content": "fatal: allowed memory size exhausted in Invoice.php:214",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -122690,7 +122330,7 @@
                               "type": "text",
                               "id": "ChPeb",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:05:04 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -122814,8 +122454,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -122967,7 +122606,7 @@
                               "id": "x3vy1y",
                               "name": "seg",
                               "fill": "$tl-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -123038,7 +122677,7 @@
                               "type": "text",
                               "id": "p7l92f",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:02:11 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -123093,7 +122732,7 @@
                               "type": "text",
                               "id": "VcBgc",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:02:13 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -123192,7 +122831,7 @@
                               "type": "text",
                               "id": "JVr0Z",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:02:20 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -123247,7 +122886,7 @@
                               "type": "text",
                               "id": "SRDUC",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:02:22 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -123258,7 +122897,7 @@
                               "type": "text",
                               "id": "L2nvPm",
                               "name": "seg",
-                              "fill": "$tl-red",
+                              "fill": "$tl-fg",
                               "content": "error: upstream worker:8.3 refused for legacy-shop.test",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -123302,7 +122941,7 @@
                               "type": "text",
                               "id": "hbLA2",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:02:24 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -123313,7 +122952,7 @@
                               "type": "text",
                               "id": "XdVgF",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "debug: opcache hit ratio 99.2%",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -123357,7 +122996,7 @@
                               "type": "text",
                               "id": "zB1Ti",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:02:31 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -123368,7 +123007,7 @@
                               "type": "text",
                               "id": "kDmkO",
                               "name": "seg",
-                              "fill": "$tl-amber",
+                              "fill": "$tl-fg",
                               "content": "[Warning] Aborted connection 812 to db 'acme_app'",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -123412,7 +123051,7 @@
                               "type": "text",
                               "id": "jfEyT",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:05:00 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -123467,7 +123106,7 @@
                               "type": "text",
                               "id": "eOKnZ",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:05:02 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -123522,7 +123161,7 @@
                               "type": "text",
                               "id": "a9opq4",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:05:03 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -123533,7 +123172,7 @@
                               "type": "text",
                               "id": "CC4Fn",
                               "name": "seg",
-                              "fill": "$tl-red",
+                              "fill": "$tl-fg",
                               "content": "fatal: allowed memory size exhausted in Invoice.php:214",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -123577,7 +123216,7 @@
                               "type": "text",
                               "id": "N1VdUl",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:05:04 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -123748,8 +123387,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -123901,7 +123539,7 @@
                               "id": "I1nLb9",
                               "name": "seg",
                               "fill": "$td-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -123972,7 +123610,7 @@
                               "type": "text",
                               "id": "liFVE",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:02:11 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124027,7 +123665,7 @@
                               "type": "text",
                               "id": "z6tR6",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:02:13 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124126,7 +123764,7 @@
                               "type": "text",
                               "id": "f6hBu",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:02:20 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124181,7 +123819,7 @@
                               "type": "text",
                               "id": "n4lNV",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:02:22 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124192,7 +123830,7 @@
                               "type": "text",
                               "id": "C3hKC",
                               "name": "seg",
-                              "fill": "$td-red",
+                              "fill": "$td-fg",
                               "content": "error: upstream worker:8.3 refused for legacy-shop.test",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124236,7 +123874,7 @@
                               "type": "text",
                               "id": "O1asQM",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:02:24 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124247,7 +123885,7 @@
                               "type": "text",
                               "id": "SmEmZ",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "debug: opcache hit ratio 99.2%",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124291,7 +123929,7 @@
                               "type": "text",
                               "id": "zarpv",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:02:31 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124302,7 +123940,7 @@
                               "type": "text",
                               "id": "ELBdv",
                               "name": "seg",
-                              "fill": "$td-amber",
+                              "fill": "$td-fg",
                               "content": "[Warning] Aborted connection 812 to db 'acme_app'",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124346,7 +123984,7 @@
                               "type": "text",
                               "id": "OxzX8",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:05:00 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124401,7 +124039,7 @@
                               "type": "text",
                               "id": "atOo7",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:05:02 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124456,7 +124094,7 @@
                               "type": "text",
                               "id": "uuXKQ",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:05:03 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124467,7 +124105,7 @@
                               "type": "text",
                               "id": "ZBHT6",
                               "name": "seg",
-                              "fill": "$td-red",
+                              "fill": "$td-fg",
                               "content": "fatal: allowed memory size exhausted in Invoice.php:214",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124511,7 +124149,7 @@
                               "type": "text",
                               "id": "afL7M",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:05:04 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124566,7 +124204,7 @@
                               "type": "text",
                               "id": "kM49H",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "14:05:06 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124670,8 +124308,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -124823,7 +124460,7 @@
                               "id": "xlQEg",
                               "name": "seg",
                               "fill": "$tl-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -124894,7 +124531,7 @@
                               "type": "text",
                               "id": "rTjOX",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:02:11 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -124949,7 +124586,7 @@
                               "type": "text",
                               "id": "L2wh9",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:02:13 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -125048,7 +124685,7 @@
                               "type": "text",
                               "id": "Z1yByS",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:02:20 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -125103,7 +124740,7 @@
                               "type": "text",
                               "id": "wnHZR",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:02:22 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -125114,7 +124751,7 @@
                               "type": "text",
                               "id": "pYdDK",
                               "name": "seg",
-                              "fill": "$tl-red",
+                              "fill": "$tl-fg",
                               "content": "error: upstream worker:8.3 refused for legacy-shop.test",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -125158,7 +124795,7 @@
                               "type": "text",
                               "id": "uj65U",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:02:24 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -125169,7 +124806,7 @@
                               "type": "text",
                               "id": "GdP3E",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "debug: opcache hit ratio 99.2%",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -125213,7 +124850,7 @@
                               "type": "text",
                               "id": "A3tPk",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:02:31 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -125224,7 +124861,7 @@
                               "type": "text",
                               "id": "tdiW2",
                               "name": "seg",
-                              "fill": "$tl-amber",
+                              "fill": "$tl-fg",
                               "content": "[Warning] Aborted connection 812 to db 'acme_app'",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -125268,7 +124905,7 @@
                               "type": "text",
                               "id": "V2DOP",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:05:00 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -125323,7 +124960,7 @@
                               "type": "text",
                               "id": "j4yziO",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:05:02 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -125378,7 +125015,7 @@
                               "type": "text",
                               "id": "ugXtN",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:05:03 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -125389,7 +125026,7 @@
                               "type": "text",
                               "id": "zdhFS",
                               "name": "seg",
-                              "fill": "$tl-red",
+                              "fill": "$tl-fg",
                               "content": "fatal: allowed memory size exhausted in Invoice.php:214",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -125433,7 +125070,7 @@
                               "type": "text",
                               "id": "qge6w",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:05:04 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -125488,7 +125125,7 @@
                               "type": "text",
                               "id": "ziRMp",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "14:05:06 ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -125639,8 +125276,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -126195,8 +125831,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -126798,8 +126433,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -127352,8 +126986,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -128004,8 +127637,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -128157,7 +127789,7 @@
                               "id": "TpYiv",
                               "name": "seg",
                               "fill": "$td-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -128235,7 +127867,7 @@
                               "id": "Q7az7P",
                               "name": "seg",
                               "fill": "$td-cyan",
-                              "content": "3.4.0",
+                              "content": "0.2.4",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -128755,8 +128387,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -128908,7 +128539,7 @@
                               "id": "G8mHsS",
                               "name": "seg",
                               "fill": "$tl-dim",
-                              "content": "v3.4.0",
+                              "content": "v0.2.4",
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
@@ -128986,7 +128617,7 @@
                               "id": "MKjjB",
                               "name": "seg",
                               "fill": "$tl-cyan",
-                              "content": "3.4.0",
+                              "content": "0.2.4",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -129553,8 +129184,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -129790,7 +129420,7 @@
                               "id": "IVRFt",
                               "name": "seg",
                               "fill": "$td-fg",
-                              "content": "Downloading PV 3.4.1",
+                              "content": "Downloading PV 0.2.5",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -130003,7 +129633,7 @@
                               "id": "SiyC2",
                               "name": "seg",
                               "fill": "$td-dim",
-                              "content": "   3.4.0 → ",
+                              "content": "   0.2.4 → ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -130014,7 +129644,7 @@
                               "id": "xt8Lv",
                               "name": "seg",
                               "fill": "$td-cyan",
-                              "content": "3.4.1",
+                              "content": "0.2.5",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -130189,8 +129819,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -130426,7 +130055,7 @@
                               "id": "XFYM4",
                               "name": "seg",
                               "fill": "$tl-fg",
-                              "content": "Downloading PV 3.4.1",
+                              "content": "Downloading PV 0.2.5",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -130639,7 +130268,7 @@
                               "id": "eH7XF",
                               "name": "seg",
                               "fill": "$tl-dim",
-                              "content": "   3.4.0 → ",
+                              "content": "   0.2.4 → ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -130650,7 +130279,7 @@
                               "id": "AruAU",
                               "name": "seg",
                               "fill": "$tl-cyan",
-                              "content": "3.4.1",
+                              "content": "0.2.5",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -130872,8 +130501,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -131589,8 +131217,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -132353,8 +131980,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -133018,8 +132644,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -133730,8 +133355,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -134440,19 +134064,19 @@
                         },
                         {
                           "type": "frame",
-                          "id": "WGsUv",
-                          "name": "err",
+                          "id": "C9458k",
+                          "name": "ok",
                           "width": "fill_container",
                           "alignItems": "center",
                           "children": [
                             {
                               "type": "text",
-                              "id": "aHUOk",
+                              "id": "OoTBb",
                               "name": "seg",
-                              "fill": "$td-red",
+                              "fill": "$td-green",
                               "textGrowth": "fixed-width",
                               "width": 22,
-                              "content": "✗",
+                              "content": "✓",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -134460,47 +134084,167 @@
                             },
                             {
                               "type": "text",
-                              "id": "tJm88",
+                              "id": "RFeqx",
                               "name": "seg",
                               "fill": "$td-fg",
-                              "content": "PHP track ",
+                              "content": "Set ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
-                              "fontWeight": "600"
+                              "fontWeight": "normal"
                             },
                             {
                               "type": "text",
-                              "id": "NDtg4",
+                              "id": "apSUv",
+                              "name": "seg",
+                              "fill": "$td-cyan",
+                              "content": "acme.test",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "aZHpT",
+                              "name": "seg",
+                              "fill": "$td-fg",
+                              "content": " PHP track to ",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "XhP3L",
                               "name": "seg",
                               "fill": "$td-cyan",
                               "content": "8.3",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
-                              "fontWeight": "600"
-                            },
-                            {
-                              "type": "text",
-                              "id": "NkdUj",
-                              "name": "seg",
-                              "fill": "$td-fg",
-                              "content": " is not installed",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "600"
+                              "fontWeight": "normal"
                             }
                           ]
                         },
                         {
                           "type": "frame",
-                          "id": "royl1",
-                          "name": "try",
+                          "id": "g8YKxD",
+                          "name": "ok",
                           "width": "fill_container",
-                          "gap": 8,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "Mnt8p",
+                              "name": "seg",
+                              "fill": "$td-green",
+                              "textGrowth": "fixed-width",
+                              "width": 22,
+                              "content": "✓",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "text",
+                              "id": "IKjcJ",
+                              "name": "seg",
+                              "fill": "$td-fg",
+                              "content": "Installed PHP track 8.3",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "AZqEj",
+                              "name": "seg",
+                              "fill": "$td-dim",
+                              "content": "  ·  ",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "dDDm9",
+                              "name": "seg",
+                              "fill": "$td-cyan",
+                              "content": "8.3.21-pv1",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "s0MoP",
+                          "name": "ok",
+                          "width": "fill_container",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "Tm3M7",
+                              "name": "seg",
+                              "fill": "$td-green",
+                              "textGrowth": "fixed-width",
+                              "width": 22,
+                              "content": "✓",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "text",
+                              "id": "fdDp5",
+                              "name": "seg",
+                              "fill": "$td-fg",
+                              "content": "Installed FrankenPHP track 8.3",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "CXCpB",
+                              "name": "seg",
+                              "fill": "$td-dim",
+                              "content": "  ·  ",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "AYLfd",
+                              "name": "seg",
+                              "fill": "$td-cyan",
+                              "content": "1.4.3-pv1",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "GmKMa",
+                          "name": "job",
+                          "width": "fill_container",
                           "padding": [
-                            3,
+                            2,
                             0,
                             2,
                             22
@@ -134509,36 +134253,47 @@
                           "children": [
                             {
                               "type": "text",
-                              "id": "g2On7X",
+                              "id": "tq6SK",
                               "name": "seg",
                               "fill": "$td-dim",
-                              "content": "↳ install it first",
+                              "content": "↳ queued reconciliation ",
+                              "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
                             },
                             {
-                              "type": "frame",
-                              "id": "jrppM",
-                              "name": "chip",
-                              "fill": "$td-sel",
-                              "cornerRadius": 5,
-                              "padding": [
-                                2,
-                                7
-                              ],
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "O211K",
-                                  "name": "seg",
-                                  "fill": "$td-cyan",
-                                  "content": "pv php:install 8.3",
-                                  "fontFamily": "$font-mono",
-                                  "fontSize": 12,
-                                  "fontWeight": "normal"
-                                }
-                              ]
+                              "type": "text",
+                              "id": "wHxx0",
+                              "name": "seg",
+                              "fill": "$td-cyan",
+                              "content": "job_01J8K6",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "Hr9EA",
+                              "name": "seg",
+                              "fill": "$td-dim",
+                              "content": " for ",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "jnVw2",
+                              "name": "seg",
+                              "fill": "$td-cyan",
+                              "content": "acme.test",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
                             }
                           ]
                         },
@@ -134606,8 +134361,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -135316,19 +135070,19 @@
                         },
                         {
                           "type": "frame",
-                          "id": "QSzfF",
-                          "name": "err",
+                          "id": "XzrFg",
+                          "name": "ok",
                           "width": "fill_container",
                           "alignItems": "center",
                           "children": [
                             {
                               "type": "text",
-                              "id": "c8VDO5",
+                              "id": "hXLLV",
                               "name": "seg",
-                              "fill": "$tl-red",
+                              "fill": "$tl-green",
                               "textGrowth": "fixed-width",
                               "width": 22,
-                              "content": "✗",
+                              "content": "✓",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -135336,47 +135090,167 @@
                             },
                             {
                               "type": "text",
-                              "id": "N2SGQW",
+                              "id": "J32o8",
                               "name": "seg",
                               "fill": "$tl-fg",
-                              "content": "PHP track ",
+                              "content": "Set ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
-                              "fontWeight": "600"
+                              "fontWeight": "normal"
                             },
                             {
                               "type": "text",
-                              "id": "YNn5i",
+                              "id": "zvSFV",
+                              "name": "seg",
+                              "fill": "$tl-cyan",
+                              "content": "acme.test",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "T3GHB",
+                              "name": "seg",
+                              "fill": "$tl-fg",
+                              "content": " PHP track to ",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "bt1By",
                               "name": "seg",
                               "fill": "$tl-cyan",
                               "content": "8.3",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
-                              "fontWeight": "600"
-                            },
-                            {
-                              "type": "text",
-                              "id": "K75tB",
-                              "name": "seg",
-                              "fill": "$tl-fg",
-                              "content": " is not installed",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "600"
+                              "fontWeight": "normal"
                             }
                           ]
                         },
                         {
                           "type": "frame",
-                          "id": "HnVAD",
-                          "name": "try",
+                          "id": "AFii8",
+                          "name": "ok",
                           "width": "fill_container",
-                          "gap": 8,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "QUDMd",
+                              "name": "seg",
+                              "fill": "$tl-green",
+                              "textGrowth": "fixed-width",
+                              "width": 22,
+                              "content": "✓",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "text",
+                              "id": "cc6MQ",
+                              "name": "seg",
+                              "fill": "$tl-fg",
+                              "content": "Installed PHP track 8.3",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "P9wx1n",
+                              "name": "seg",
+                              "fill": "$tl-dim",
+                              "content": "  ·  ",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "WSxpI",
+                              "name": "seg",
+                              "fill": "$tl-cyan",
+                              "content": "8.3.21-pv1",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "iAxUn",
+                          "name": "ok",
+                          "width": "fill_container",
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "Y6e7W3",
+                              "name": "seg",
+                              "fill": "$tl-green",
+                              "textGrowth": "fixed-width",
+                              "width": 22,
+                              "content": "✓",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "600"
+                            },
+                            {
+                              "type": "text",
+                              "id": "TnbLx",
+                              "name": "seg",
+                              "fill": "$tl-fg",
+                              "content": "Installed FrankenPHP track 8.3",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "syMCn",
+                              "name": "seg",
+                              "fill": "$tl-dim",
+                              "content": "  ·  ",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "cEJkZ",
+                              "name": "seg",
+                              "fill": "$tl-cyan",
+                              "content": "1.4.3-pv1",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 13,
+                              "fontWeight": "normal"
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "KREwK",
+                          "name": "job",
+                          "width": "fill_container",
                           "padding": [
-                            3,
+                            2,
                             0,
                             2,
                             22
@@ -135385,36 +135259,47 @@
                           "children": [
                             {
                               "type": "text",
-                              "id": "IReou",
+                              "id": "iRG5Z",
                               "name": "seg",
                               "fill": "$tl-dim",
-                              "content": "↳ install it first",
+                              "content": "↳ queued reconciliation ",
+                              "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
                               "fontWeight": "normal"
                             },
                             {
-                              "type": "frame",
-                              "id": "cNNSJ",
-                              "name": "chip",
-                              "fill": "$tl-sel",
-                              "cornerRadius": 5,
-                              "padding": [
-                                2,
-                                7
-                              ],
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "AeeJA",
-                                  "name": "seg",
-                                  "fill": "$tl-cyan",
-                                  "content": "pv php:install 8.3",
-                                  "fontFamily": "$font-mono",
-                                  "fontSize": 12,
-                                  "fontWeight": "normal"
-                                }
-                              ]
+                              "type": "text",
+                              "id": "Gj6Nl",
+                              "name": "seg",
+                              "fill": "$tl-cyan",
+                              "content": "job_01J8K6",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "bW0Lg",
+                              "name": "seg",
+                              "fill": "$tl-dim",
+                              "content": " for ",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "text",
+                              "id": "Y7LYT",
+                              "name": "seg",
+                              "fill": "$tl-cyan",
+                              "content": "acme.test",
+                              "lineHeight": 1.55,
+                              "fontFamily": "$font-mono",
+                              "fontSize": 12,
+                              "fontWeight": "normal"
                             }
                           ]
                         },
@@ -135529,8 +135414,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -136505,8 +136389,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -137528,8 +137411,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -138260,8 +138142,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -139039,8 +138920,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -139734,8 +139614,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -140476,8 +140355,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -141042,7 +140920,7 @@
                               "fill": "$td-fg",
                               "textGrowth": "fixed-width",
                               "width": 64,
-                              "content": "16",
+                              "content": "17",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -141092,7 +140970,7 @@
                               "id": "lrzsy",
                               "name": "seg",
                               "fill": "$td-cyan",
-                              "content": "16.4-pv1",
+                              "content": "17.6-pv1",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -141118,7 +140996,7 @@
                               "id": "xNbef",
                               "name": "seg",
                               "fill": "$td-dim",
-                              "content": "~/.pv/resources/postgres/16/releases/16.4-pv1",
+                              "content": "~/.pv/resources/postgres/17/releases/17.6-pv1",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
@@ -141312,8 +141190,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -141878,7 +141755,7 @@
                               "fill": "$tl-fg",
                               "textGrowth": "fixed-width",
                               "width": 64,
-                              "content": "16",
+                              "content": "17",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -141928,7 +141805,7 @@
                               "id": "uMZm1",
                               "name": "seg",
                               "fill": "$tl-cyan",
-                              "content": "16.4-pv1",
+                              "content": "17.6-pv1",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -141954,7 +141831,7 @@
                               "id": "MkltO",
                               "name": "seg",
                               "fill": "$tl-dim",
-                              "content": "~/.pv/resources/postgres/16/releases/16.4-pv1",
+                              "content": "~/.pv/resources/postgres/17/releases/17.6-pv1",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
@@ -142178,7 +142055,7 @@
                 {
                   "type": "frame",
                   "id": "m4JX7",
-                  "name": "Term · acme ~ pv mysql:uninstall 5.7 --prune",
+                  "name": "Term · acme ~ pv mysql:uninstall 8.0 --prune",
                   "clip": true,
                   "width": 764,
                   "fill": "$td-bg",
@@ -142195,8 +142072,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -142594,7 +142470,7 @@
                 {
                   "type": "frame",
                   "id": "H4Hsoc",
-                  "name": "Term · acme ~ pv mysql:uninstall 5.7 --prune",
+                  "name": "Term · acme ~ pv mysql:uninstall 8.0 --prune",
                   "clip": true,
                   "width": 764,
                   "fill": "$tl-bg",
@@ -142611,8 +142487,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -143074,8 +142949,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -143832,8 +143706,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -144637,8 +144510,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -145093,8 +144965,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -145647,8 +145518,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -146685,8 +146555,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -147770,8 +147639,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -147986,7 +147854,7 @@
                               "id": "K23Cy",
                               "name": "seg",
                               "fill": "$td-cyan",
-                              "content": "~/.pv/etc/resolver-test",
+                              "content": "~/.pv/config/resolver/test",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -148348,7 +148216,7 @@
                               "id": "c69MIR",
                               "name": "seg",
                               "fill": "$td-cyan",
-                              "content": "~/.pv/etc/resolver-test",
+                              "content": "~/.pv/config/resolver/test",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -148799,7 +148667,7 @@
                               "id": "WHVTb",
                               "name": "seg",
                               "fill": "$td-cyan",
-                              "content": "~/.pv/etc/resolver-test",
+                              "content": "~/.pv/config/resolver/test",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -149086,8 +148954,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -149302,7 +149169,7 @@
                               "id": "G50To",
                               "name": "seg",
                               "fill": "$tl-cyan",
-                              "content": "~/.pv/etc/resolver-test",
+                              "content": "~/.pv/config/resolver/test",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -149664,7 +149531,7 @@
                               "id": "zYlaz",
                               "name": "seg",
                               "fill": "$tl-cyan",
-                              "content": "~/.pv/etc/resolver-test",
+                              "content": "~/.pv/config/resolver/test",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -150115,7 +149982,7 @@
                               "id": "vgkIL",
                               "name": "seg",
                               "fill": "$tl-cyan",
-                              "content": "~/.pv/etc/resolver-test",
+                              "content": "~/.pv/config/resolver/test",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -150449,8 +150316,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -151266,7 +151132,7 @@
                               "id": "F3Vh7",
                               "name": "seg",
                               "fill": "$td-cyan",
-                              "content": "~/.pv/etc/pf/com.prvious.pv",
+                              "content": "~/.pv/config/pf/com.prvious.pv",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -151303,7 +151169,7 @@
                               "id": "tHqn0",
                               "name": "seg",
                               "fill": "$td-cyan",
-                              "content": "~/.pv/etc/pf/pf.conf",
+                              "content": "~/.pv/config/pf/pf.conf",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -151895,8 +151761,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -152712,7 +152577,7 @@
                               "id": "p8h7V",
                               "name": "seg",
                               "fill": "$tl-cyan",
-                              "content": "~/.pv/etc/pf/com.prvious.pv",
+                              "content": "~/.pv/config/pf/com.prvious.pv",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -152749,7 +152614,7 @@
                               "id": "lIGag",
                               "name": "seg",
                               "fill": "$tl-cyan",
-                              "content": "~/.pv/etc/pf/pf.conf",
+                              "content": "~/.pv/config/pf/pf.conf",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -153388,8 +153253,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -154823,8 +154687,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -156305,8 +156168,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -156472,7 +156334,7 @@
                               "type": "text",
                               "id": "TtriC",
                               "name": "seg",
-                              "fill": "$td-cyan",
+                              "fill": "$td-fg",
                               "content": "pv_prepend_path",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156483,7 +156345,7 @@
                               "type": "text",
                               "id": "oxYli",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "() {",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156520,7 +156382,7 @@
                               "type": "text",
                               "id": "BFFvW",
                               "name": "seg",
-                              "fill": "$td-violet",
+                              "fill": "$td-fg",
                               "content": "case",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156542,7 +156404,7 @@
                               "type": "text",
                               "id": "TpE78",
                               "name": "seg",
-                              "fill": "$td-green",
+                              "fill": "$td-fg",
                               "content": "\":$PATH:\"",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156564,7 +156426,7 @@
                               "type": "text",
                               "id": "v0POO",
                               "name": "seg",
-                              "fill": "$td-violet",
+                              "fill": "$td-fg",
                               "content": "in",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156601,7 +156463,7 @@
                               "type": "text",
                               "id": "XUum4",
                               "name": "seg",
-                              "fill": "$td-green",
+                              "fill": "$td-fg",
                               "content": "\":$1:\"",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156649,7 +156511,7 @@
                               "type": "text",
                               "id": "MlnCc",
                               "name": "seg",
-                              "fill": "$td-green",
+                              "fill": "$td-fg",
                               "content": "\"$1${PATH:+:$PATH}\"",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156697,7 +156559,7 @@
                               "type": "text",
                               "id": "S53oYE",
                               "name": "seg",
-                              "fill": "$td-violet",
+                              "fill": "$td-fg",
                               "content": "esac",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156723,7 +156585,7 @@
                               "type": "text",
                               "id": "W65EA4",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "}",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156756,7 +156618,7 @@
                               "type": "text",
                               "id": "MNHFA",
                               "name": "seg",
-                              "fill": "$td-violet",
+                              "fill": "$td-fg",
                               "content": "export ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156778,7 +156640,7 @@
                               "type": "text",
                               "id": "G58YRu",
                               "name": "seg",
-                              "fill": "$td-green",
+                              "fill": "$td-fg",
                               "content": "\"$HOME/.pv/composer\"",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156804,7 +156666,7 @@
                               "type": "text",
                               "id": "L3YUjW",
                               "name": "seg",
-                              "fill": "$td-violet",
+                              "fill": "$td-fg",
                               "content": "export ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156826,7 +156688,7 @@
                               "type": "text",
                               "id": "AlDEf",
                               "name": "seg",
-                              "fill": "$td-green",
+                              "fill": "$td-fg",
                               "content": "\"$HOME/.pv/composer/cache\"",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156852,7 +156714,7 @@
                               "type": "text",
                               "id": "D1xoX6",
                               "name": "seg",
-                              "fill": "$td-cyan",
+                              "fill": "$td-fg",
                               "content": "pv_prepend_path ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156863,7 +156725,7 @@
                               "type": "text",
                               "id": "zOm9k",
                               "name": "seg",
-                              "fill": "$td-green",
+                              "fill": "$td-fg",
                               "content": "\"$HOME/.pv/composer/vendor/bin\"",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156889,7 +156751,7 @@
                               "type": "text",
                               "id": "Y4Luf",
                               "name": "seg",
-                              "fill": "$td-cyan",
+                              "fill": "$td-fg",
                               "content": "pv_prepend_path ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156900,7 +156762,7 @@
                               "type": "text",
                               "id": "mHSEs",
                               "name": "seg",
-                              "fill": "$td-green",
+                              "fill": "$td-fg",
                               "content": "\"$HOME/.pv/bin\"",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156926,7 +156788,7 @@
                               "type": "text",
                               "id": "Q5PjW",
                               "name": "seg",
-                              "fill": "$td-violet",
+                              "fill": "$td-fg",
                               "content": "export ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156963,7 +156825,7 @@
                               "type": "text",
                               "id": "A8czLC",
                               "name": "seg",
-                              "fill": "$td-violet",
+                              "fill": "$td-fg",
                               "content": "unset",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -156985,7 +156847,7 @@
                               "type": "text",
                               "id": "fdZ9S",
                               "name": "seg",
-                              "fill": "$td-cyan",
+                              "fill": "$td-fg",
                               "content": "pv_prepend_path",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157000,62 +156862,6 @@
                           "name": "gap",
                           "width": "fill_container",
                           "height": 4
-                        },
-                        {
-                          "type": "frame",
-                          "id": "ODgbu",
-                          "name": "try",
-                          "width": "fill_container",
-                          "gap": 8,
-                          "padding": [
-                            3,
-                            0,
-                            2,
-                            22
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "text",
-                              "id": "i43Uy7",
-                              "name": "seg",
-                              "fill": "$td-dim",
-                              "content": "↳ add to ~/.zprofile",
-                              "fontFamily": "$font-mono",
-                              "fontSize": 12,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "frame",
-                              "id": "bF6M4",
-                              "name": "chip",
-                              "fill": "$td-sel",
-                              "cornerRadius": 5,
-                              "padding": [
-                                2,
-                                7
-                              ],
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "lsnN6",
-                                  "name": "seg",
-                                  "fill": "$td-cyan",
-                                  "content": "eval \"$(pv env --shell zsh)\"",
-                                  "fontFamily": "$font-mono",
-                                  "fontSize": 12,
-                                  "fontWeight": "normal"
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "TYm1X",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 14
                         },
                         {
                           "type": "frame",
@@ -157231,8 +157037,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -157398,7 +157203,7 @@
                               "type": "text",
                               "id": "V0Frw",
                               "name": "seg",
-                              "fill": "$tl-cyan",
+                              "fill": "$tl-fg",
                               "content": "pv_prepend_path",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157409,7 +157214,7 @@
                               "type": "text",
                               "id": "ohpG3",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "() {",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157446,7 +157251,7 @@
                               "type": "text",
                               "id": "ZyHjJ",
                               "name": "seg",
-                              "fill": "$tl-violet",
+                              "fill": "$tl-fg",
                               "content": "case",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157468,7 +157273,7 @@
                               "type": "text",
                               "id": "l9Ra8E",
                               "name": "seg",
-                              "fill": "$tl-green",
+                              "fill": "$tl-fg",
                               "content": "\":$PATH:\"",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157490,7 +157295,7 @@
                               "type": "text",
                               "id": "f1VcI4",
                               "name": "seg",
-                              "fill": "$tl-violet",
+                              "fill": "$tl-fg",
                               "content": "in",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157527,7 +157332,7 @@
                               "type": "text",
                               "id": "R6qkv",
                               "name": "seg",
-                              "fill": "$tl-green",
+                              "fill": "$tl-fg",
                               "content": "\":$1:\"",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157575,7 +157380,7 @@
                               "type": "text",
                               "id": "tChZC",
                               "name": "seg",
-                              "fill": "$tl-green",
+                              "fill": "$tl-fg",
                               "content": "\"$1${PATH:+:$PATH}\"",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157623,7 +157428,7 @@
                               "type": "text",
                               "id": "FmodE",
                               "name": "seg",
-                              "fill": "$tl-violet",
+                              "fill": "$tl-fg",
                               "content": "esac",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157649,7 +157454,7 @@
                               "type": "text",
                               "id": "XoQ1r",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "}",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157682,7 +157487,7 @@
                               "type": "text",
                               "id": "iNsZ2",
                               "name": "seg",
-                              "fill": "$tl-violet",
+                              "fill": "$tl-fg",
                               "content": "export ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157704,7 +157509,7 @@
                               "type": "text",
                               "id": "W8Jhl",
                               "name": "seg",
-                              "fill": "$tl-green",
+                              "fill": "$tl-fg",
                               "content": "\"$HOME/.pv/composer\"",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157730,7 +157535,7 @@
                               "type": "text",
                               "id": "rRPwW",
                               "name": "seg",
-                              "fill": "$tl-violet",
+                              "fill": "$tl-fg",
                               "content": "export ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157752,7 +157557,7 @@
                               "type": "text",
                               "id": "ffHfN",
                               "name": "seg",
-                              "fill": "$tl-green",
+                              "fill": "$tl-fg",
                               "content": "\"$HOME/.pv/composer/cache\"",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157778,7 +157583,7 @@
                               "type": "text",
                               "id": "xSoEr",
                               "name": "seg",
-                              "fill": "$tl-cyan",
+                              "fill": "$tl-fg",
                               "content": "pv_prepend_path ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157789,7 +157594,7 @@
                               "type": "text",
                               "id": "D6SGmZ",
                               "name": "seg",
-                              "fill": "$tl-green",
+                              "fill": "$tl-fg",
                               "content": "\"$HOME/.pv/composer/vendor/bin\"",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157815,7 +157620,7 @@
                               "type": "text",
                               "id": "qr5Ct",
                               "name": "seg",
-                              "fill": "$tl-cyan",
+                              "fill": "$tl-fg",
                               "content": "pv_prepend_path ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157826,7 +157631,7 @@
                               "type": "text",
                               "id": "sK0Jz",
                               "name": "seg",
-                              "fill": "$tl-green",
+                              "fill": "$tl-fg",
                               "content": "\"$HOME/.pv/bin\"",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157852,7 +157657,7 @@
                               "type": "text",
                               "id": "Ew3dW",
                               "name": "seg",
-                              "fill": "$tl-violet",
+                              "fill": "$tl-fg",
                               "content": "export ",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157889,7 +157694,7 @@
                               "type": "text",
                               "id": "W9vRmg",
                               "name": "seg",
-                              "fill": "$tl-violet",
+                              "fill": "$tl-fg",
                               "content": "unset",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157911,7 +157716,7 @@
                               "type": "text",
                               "id": "G2o6I",
                               "name": "seg",
-                              "fill": "$tl-cyan",
+                              "fill": "$tl-fg",
                               "content": "pv_prepend_path",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -157926,62 +157731,6 @@
                           "name": "gap",
                           "width": "fill_container",
                           "height": 4
-                        },
-                        {
-                          "type": "frame",
-                          "id": "NMpl7",
-                          "name": "try",
-                          "width": "fill_container",
-                          "gap": 8,
-                          "padding": [
-                            3,
-                            0,
-                            2,
-                            22
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "text",
-                              "id": "KuvI1",
-                              "name": "seg",
-                              "fill": "$tl-dim",
-                              "content": "↳ add to ~/.zprofile",
-                              "fontFamily": "$font-mono",
-                              "fontSize": 12,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "frame",
-                              "id": "Z2bD4a",
-                              "name": "chip",
-                              "fill": "$tl-sel",
-                              "cornerRadius": 5,
-                              "padding": [
-                                2,
-                                7
-                              ],
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "m6FYq",
-                                  "name": "seg",
-                                  "fill": "$tl-cyan",
-                                  "content": "eval \"$(pv env --shell zsh)\"",
-                                  "fontFamily": "$font-mono",
-                                  "fontSize": 12,
-                                  "fontWeight": "normal"
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "C5JdVZ",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 14
                         },
                         {
                           "type": "frame",
@@ -158204,8 +157953,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -158371,7 +158119,7 @@
                               "type": "text",
                               "id": "X7OlmC",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "#compdef pv",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -158404,7 +158152,7 @@
                               "type": "text",
                               "id": "dH9eG",
                               "name": "seg",
-                              "fill": "$td-violet",
+                              "fill": "$td-fg",
                               "content": "autoload",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -158448,7 +158196,7 @@
                               "type": "text",
                               "id": "mTml8",
                               "name": "seg",
-                              "fill": "$td-cyan",
+                              "fill": "$td-fg",
                               "content": "_pv",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -158459,7 +158207,7 @@
                               "type": "text",
                               "id": "vlzpO",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "() {",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -158496,7 +158244,7 @@
                               "type": "text",
                               "id": "eG7Q6",
                               "name": "seg",
-                              "fill": "$td-violet",
+                              "fill": "$td-fg",
                               "content": "typeset",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -158544,7 +158292,7 @@
                               "type": "text",
                               "id": "g92ms",
                               "name": "seg",
-                              "fill": "$td-violet",
+                              "fill": "$td-fg",
                               "content": "typeset",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -158592,7 +158340,7 @@
                               "type": "text",
                               "id": "S8bzm",
                               "name": "seg",
-                              "fill": "$td-violet",
+                              "fill": "$td-fg",
                               "content": "local",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -158647,7 +158395,7 @@
                               "type": "text",
                               "id": "aL9yM",
                               "name": "seg",
-                              "fill": "$td-violet",
+                              "fill": "$td-fg",
                               "content": "if",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -158669,7 +158417,7 @@
                               "type": "text",
                               "id": "KsYRe",
                               "name": "seg",
-                              "fill": "$td-violet",
+                              "fill": "$td-fg",
                               "content": "then",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -158706,7 +158454,7 @@
                               "type": "text",
                               "id": "S6sUam",
                               "name": "seg",
-                              "fill": "$td-green",
+                              "fill": "$td-fg",
                               "content": "(-s -S -C)",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -158743,7 +158491,7 @@
                               "type": "text",
                               "id": "bYToi",
                               "name": "seg",
-                              "fill": "$td-violet",
+                              "fill": "$td-fg",
                               "content": "else",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -158780,7 +158528,7 @@
                               "type": "text",
                               "id": "i69v6t",
                               "name": "seg",
-                              "fill": "$td-green",
+                              "fill": "$td-fg",
                               "content": "(-s -C)",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -158817,7 +158565,7 @@
                               "type": "text",
                               "id": "A1t9gp",
                               "name": "seg",
-                              "fill": "$td-violet",
+                              "fill": "$td-fg",
                               "content": "fi",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -158843,7 +158591,7 @@
                               "type": "text",
                               "id": "ukGWU",
                               "name": "seg",
-                              "fill": "$td-dim",
+                              "fill": "$td-fg",
                               "content": "    ⋮  1,240 more lines",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -158858,85 +158606,6 @@
                           "name": "gap",
                           "width": "fill_container",
                           "height": 4
-                        },
-                        {
-                          "type": "frame",
-                          "id": "P2xnAl",
-                          "name": "try",
-                          "width": "fill_container",
-                          "gap": 8,
-                          "padding": [
-                            3,
-                            0,
-                            2,
-                            22
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "text",
-                              "id": "DfIXm",
-                              "name": "seg",
-                              "fill": "$td-dim",
-                              "content": "↳ install",
-                              "fontFamily": "$font-mono",
-                              "fontSize": 12,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "frame",
-                              "id": "glp0B",
-                              "name": "chip",
-                              "fill": "$td-sel",
-                              "cornerRadius": 5,
-                              "padding": [
-                                2,
-                                7
-                              ],
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "Ztgh0",
-                                  "name": "seg",
-                                  "fill": "$td-cyan",
-                                  "content": "pv completions zsh > ~/.zfunc/_pv",
-                                  "fontFamily": "$font-mono",
-                                  "fontSize": 12,
-                                  "fontWeight": "normal"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "frame",
-                              "id": "q1qkfF",
-                              "name": "chip",
-                              "fill": "$td-sel",
-                              "cornerRadius": 5,
-                              "padding": [
-                                2,
-                                7
-                              ],
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "U6ymwO",
-                                  "name": "seg",
-                                  "fill": "$td-cyan",
-                                  "content": "fpath+=~/.zfunc",
-                                  "fontFamily": "$font-mono",
-                                  "fontSize": 12,
-                                  "fontWeight": "normal"
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "sRMOl",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 14
                         },
                         {
                           "type": "frame",
@@ -159112,8 +158781,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 40,
-                      "spread": -14
+                      "blur": 40
                     },
                     {
                       "type": "shadow",
@@ -159279,7 +158947,7 @@
                               "type": "text",
                               "id": "TisnV",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "#compdef pv",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -159312,7 +158980,7 @@
                               "type": "text",
                               "id": "fUFkH",
                               "name": "seg",
-                              "fill": "$tl-violet",
+                              "fill": "$tl-fg",
                               "content": "autoload",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -159356,7 +159024,7 @@
                               "type": "text",
                               "id": "hWEpR",
                               "name": "seg",
-                              "fill": "$tl-cyan",
+                              "fill": "$tl-fg",
                               "content": "_pv",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -159367,7 +159035,7 @@
                               "type": "text",
                               "id": "dgLaE",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "() {",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -159404,7 +159072,7 @@
                               "type": "text",
                               "id": "d2rd7",
                               "name": "seg",
-                              "fill": "$tl-violet",
+                              "fill": "$tl-fg",
                               "content": "typeset",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -159452,7 +159120,7 @@
                               "type": "text",
                               "id": "bsPCd",
                               "name": "seg",
-                              "fill": "$tl-violet",
+                              "fill": "$tl-fg",
                               "content": "typeset",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -159500,7 +159168,7 @@
                               "type": "text",
                               "id": "SlAPb",
                               "name": "seg",
-                              "fill": "$tl-violet",
+                              "fill": "$tl-fg",
                               "content": "local",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -159555,7 +159223,7 @@
                               "type": "text",
                               "id": "UzexQ",
                               "name": "seg",
-                              "fill": "$tl-violet",
+                              "fill": "$tl-fg",
                               "content": "if",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -159577,7 +159245,7 @@
                               "type": "text",
                               "id": "yIBkh",
                               "name": "seg",
-                              "fill": "$tl-violet",
+                              "fill": "$tl-fg",
                               "content": "then",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -159614,7 +159282,7 @@
                               "type": "text",
                               "id": "ofVYg",
                               "name": "seg",
-                              "fill": "$tl-green",
+                              "fill": "$tl-fg",
                               "content": "(-s -S -C)",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -159651,7 +159319,7 @@
                               "type": "text",
                               "id": "YSTfS",
                               "name": "seg",
-                              "fill": "$tl-violet",
+                              "fill": "$tl-fg",
                               "content": "else",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -159688,7 +159356,7 @@
                               "type": "text",
                               "id": "XQT7D",
                               "name": "seg",
-                              "fill": "$tl-green",
+                              "fill": "$tl-fg",
                               "content": "(-s -C)",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -159725,7 +159393,7 @@
                               "type": "text",
                               "id": "H0dfUw",
                               "name": "seg",
-                              "fill": "$tl-violet",
+                              "fill": "$tl-fg",
                               "content": "fi",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -159751,7 +159419,7 @@
                               "type": "text",
                               "id": "owYlw",
                               "name": "seg",
-                              "fill": "$tl-dim",
+                              "fill": "$tl-fg",
                               "content": "    ⋮  1,240 more lines",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
@@ -159766,85 +159434,6 @@
                           "name": "gap",
                           "width": "fill_container",
                           "height": 4
-                        },
-                        {
-                          "type": "frame",
-                          "id": "IeeMa",
-                          "name": "try",
-                          "width": "fill_container",
-                          "gap": 8,
-                          "padding": [
-                            3,
-                            0,
-                            2,
-                            22
-                          ],
-                          "alignItems": "center",
-                          "children": [
-                            {
-                              "type": "text",
-                              "id": "HHFbH",
-                              "name": "seg",
-                              "fill": "$tl-dim",
-                              "content": "↳ install",
-                              "fontFamily": "$font-mono",
-                              "fontSize": 12,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "frame",
-                              "id": "F4IyZ",
-                              "name": "chip",
-                              "fill": "$tl-sel",
-                              "cornerRadius": 5,
-                              "padding": [
-                                2,
-                                7
-                              ],
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "WYQLn",
-                                  "name": "seg",
-                                  "fill": "$tl-cyan",
-                                  "content": "pv completions zsh > ~/.zfunc/_pv",
-                                  "fontFamily": "$font-mono",
-                                  "fontSize": 12,
-                                  "fontWeight": "normal"
-                                }
-                              ]
-                            },
-                            {
-                              "type": "frame",
-                              "id": "ArFad",
-                              "name": "chip",
-                              "fill": "$tl-sel",
-                              "cornerRadius": 5,
-                              "padding": [
-                                2,
-                                7
-                              ],
-                              "children": [
-                                {
-                                  "type": "text",
-                                  "id": "yeZkK",
-                                  "name": "seg",
-                                  "fill": "$tl-cyan",
-                                  "content": "fpath+=~/.zfunc",
-                                  "fontFamily": "$font-mono",
-                                  "fontSize": 12,
-                                  "fontWeight": "normal"
-                                }
-                              ]
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "fzzlX",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 14
                         },
                         {
                           "type": "frame",
@@ -160318,8 +159907,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 44,
-                      "spread": -10
+                      "blur": 44
                     },
                     {
                       "type": "shadow",
@@ -161302,8 +160890,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 44,
-                      "spread": -10
+                      "blur": 44
                     },
                     {
                       "type": "shadow",
@@ -162617,8 +162204,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 44,
-                      "spread": -10
+                      "blur": 44
                     },
                     {
                       "type": "shadow",
@@ -163417,8 +163003,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 44,
-                      "spread": -10
+                      "blur": 44
                     },
                     {
                       "type": "shadow",
@@ -164518,8 +164103,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 44,
-                      "spread": -10
+                      "blur": 44
                     },
                     {
                       "type": "shadow",
@@ -165206,8 +164790,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 44,
-                      "spread": -10
+                      "blur": 44
                     },
                     {
                       "type": "shadow",
@@ -166139,8 +165722,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 44,
-                      "spread": -10
+                      "blur": 44
                     },
                     {
                       "type": "shadow",
@@ -166782,8 +166364,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 44,
-                      "spread": -10
+                      "blur": 44
                     },
                     {
                       "type": "shadow",
@@ -167641,8 +167222,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 44,
-                      "spread": -10
+                      "blur": 44
                     },
                     {
                       "type": "shadow",
@@ -168771,8 +168351,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 44,
-                      "spread": -10
+                      "blur": 44
                     },
                     {
                       "type": "shadow",
@@ -170248,8 +169827,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 44,
-                      "spread": -10
+                      "blur": 44
                     },
                     {
                       "type": "shadow",
@@ -171045,8 +170623,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 44,
-                      "spread": -10
+                      "blur": 44
                     },
                     {
                       "type": "shadow",
@@ -171976,8 +171553,7 @@
                         "x": 0,
                         "y": 16
                       },
-                      "blur": 44,
-                      "spread": -10
+                      "blur": 44
                     },
                     {
                       "type": "shadow",

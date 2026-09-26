@@ -5,6 +5,7 @@ mod error;
 mod helper_release;
 mod output;
 mod progress;
+mod prompt;
 mod shell;
 
 use std::ffi::OsString;
@@ -18,7 +19,8 @@ use clap::{CommandFactory, FromArgMatches};
 pub use environment::{Environment, ProcessEnvironment};
 pub use error::CliError;
 use error::ExecuteError;
-pub use output::{Output, OutputMode};
+use output::{Presentation, Streams, Surface};
+pub use prompt::{Answer, Choice, Prompt, PromptKind, Validator};
 
 pub fn run<I, Argument>(
     args: I,
@@ -43,13 +45,13 @@ where
     Argument: Into<OsString>,
 {
     let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
-    let output_mode = OutputMode::from_inputs(&args, environment);
-    let mut clap_command = Cli::command().color(clap_color(output_mode));
+    let presentation = Presentation::detect(&args, environment);
+    let mut clap_command = Cli::command();
     let matches = match clap_command.try_get_matches_from_mut(&args) {
         Ok(matches) => matches,
         Err(error) => {
             let status_code = error.exit_code();
-            write_clap_error(error, stdout, stderr)?;
+            write_clap_error(error, presentation, stdout, stderr)?;
             return Ok(exit_code(status_code));
         }
     };
@@ -57,84 +59,46 @@ where
         Ok(cli) => cli,
         Err(error) => {
             let status_code = error.exit_code();
-            write_clap_error(error, stdout, stderr)?;
+            write_clap_error(error, presentation, stdout, stderr)?;
             return Ok(exit_code(status_code));
         }
     };
 
-    finish_execution(
-        commands::execute(cli, environment, stdout, stderr),
-        output_mode,
-        stderr,
-    )
+    environment.set_terminal_colors(presentation.stderr.color());
+    let mut streams = Streams::new(stdout, stderr, presentation);
+    let result = commands::execute(cli, environment, &mut streams);
+
+    finish_execution(result, &mut streams)
 }
 
 fn finish_execution(
     result: Result<ExitCode, ExecuteError>,
-    output_mode: OutputMode,
-    stderr: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode> {
-    match result {
-        Ok(exit_code) => Ok(exit_code),
-        Err(ExecuteError::User(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
-
-            Ok(ExitCode::FAILURE)
+    // A failed command's open flow closes before its error. A cancelled
+    // prompt has already closed it with its own footer. The close is reported
+    // after the error, so a broken stdout never hides the real failure.
+    let closed = match &result {
+        Ok(exit_code) if *exit_code == ExitCode::SUCCESS => Ok(()),
+        Err(ExecuteError::User(CliError::PromptCancelled)) => Ok(()),
+        _ => streams.out.flow_stopped(),
+    };
+    let message = match result {
+        Ok(exit_code) => {
+            closed?;
+            return Ok(exit_code);
         }
-        Err(ExecuteError::Config(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
+        Err(ExecuteError::User(CliError::PromptCancelled)) => return Ok(ExitCode::from(130)),
+        // Daemon and state errors keep their cause chain, as `main` prints
+        // them.
+        Err(ExecuteError::Daemon(error)) => format!("{:#}", anyhow::Error::from(error)),
+        Err(ExecuteError::State(error)) => format!("{:#}", anyhow::Error::from(error)),
+        Err(error) => error.to_string(),
+    };
+    streams.err.error(&message)?;
+    closed?;
 
-            Ok(ExitCode::FAILURE)
-        }
-        Err(ExecuteError::Io(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        Err(ExecuteError::Json(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        Err(ExecuteError::Platform(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        Err(ExecuteError::Resources(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        Err(ExecuteError::ManagedResourceCommand(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        Err(ExecuteError::SelfUpdate(error)) => {
-            let mut output = Output::new(stderr, output_mode);
-            output.error(&error.to_string())?;
-
-            Ok(ExitCode::FAILURE)
-        }
-        Err(ExecuteError::Daemon(error)) => Err(error.into()),
-        Err(ExecuteError::State(error)) => Err(error.into()),
-    }
-}
-
-fn clap_color(output_mode: OutputMode) -> clap::ColorChoice {
-    if output_mode.no_color() {
-        clap::ColorChoice::Never
-    } else {
-        clap::ColorChoice::Auto
-    }
+    Ok(ExitCode::FAILURE)
 }
 
 fn exit_code(code: i32) -> ExitCode {
@@ -148,18 +112,26 @@ fn exit_code(code: i32) -> ExitCode {
     }
 }
 
+/// Writes help and version to stdout and usage errors to stderr, in clap's
+/// own format, styled when that stream allows color.
 fn write_clap_error(
     error: clap::Error,
+    presentation: Presentation,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> std::io::Result<()> {
-    if matches!(
+    let (writer, surface): (&mut dyn Write, Surface) = if matches!(
         error.kind(),
         ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
     ) {
-        write!(stdout, "{error}")
+        (stdout, presentation.stdout)
     } else {
-        write!(stderr, "{error}")
+        (stderr, presentation.stderr)
+    };
+    if surface.color() {
+        write!(writer, "{}", error.render().ansi())
+    } else {
+        write!(writer, "{error}")
     }
 }
 
@@ -170,18 +142,19 @@ mod tests {
 
     use super::finish_execution;
     use crate::error::ExecuteError;
-    use crate::output::OutputMode;
+    use crate::output::{Presentation, Streams};
 
     #[test]
     fn finish_execution_formats_io_errors() -> anyhow::Result<()> {
+        let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let exit_code = finish_execution(
             Err(ExecuteError::Io(io::Error::other("stdout closed"))),
-            OutputMode::plain(),
-            &mut stderr,
+            &mut Streams::new(&mut stdout, &mut stderr, Presentation::plain()),
         )?;
 
         assert_eq!(exit_code, ExitCode::FAILURE);
+        assert!(stdout.is_empty());
         assert_eq!(String::from_utf8(stderr)?, "error: stdout closed\n");
 
         Ok(())

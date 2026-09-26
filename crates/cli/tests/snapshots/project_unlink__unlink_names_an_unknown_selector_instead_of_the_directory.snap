@@ -1,0 +1,8 @@
+---
+source: crates/cli/tests/project_unlink.rs
+expression: "(hostname.stderr, slug.stderr)"
+---
+(
+    "error: no linked Project matches `typo.test`\nRun `pv list` to see linked Projects and their hostnames.\n",
+    "error: no linked Project matches `typo`\nRun `pv list` to see linked Projects and their hostnames.\n",
+)

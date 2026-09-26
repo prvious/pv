@@ -9,7 +9,7 @@ use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::{Answer, Environment, Prompt, PromptKind, run_with_environment};
 use config::ProjectConfigFile;
 use insta::assert_debug_snapshot;
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
@@ -27,6 +27,7 @@ struct TestEnvironment {
     vars: RefCell<BTreeMap<String, OsString>>,
     client: ScriptedClient,
     exec_calls: RefCell<Vec<ExecCall>>,
+    terminal: bool,
 }
 
 impl TestEnvironment {
@@ -37,7 +38,13 @@ impl TestEnvironment {
             vars: RefCell::new(BTreeMap::new()),
             client,
             exec_calls: RefCell::new(Vec::new()),
+            terminal: false,
         }
+    }
+
+    fn with_terminal(mut self) -> Self {
+        self.terminal = true;
+        self
     }
 
     fn with_var(self, key: &str, value: impl Into<OsString>) -> Self {
@@ -116,11 +123,27 @@ impl Environment for TestEnvironment {
     }
 
     fn stdin_is_terminal(&self) -> bool {
-        false
+        self.terminal
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(String::new())
+    fn stdout_is_terminal(&self) -> bool {
+        self.terminal
+    }
+
+    fn stderr_is_terminal(&self) -> bool {
+        self.terminal
+    }
+
+    fn terminal_width(&self) -> Option<usize> {
+        self.terminal.then_some(100)
+    }
+
+    fn prompt(&self, prompt: &Prompt<'_>) -> io::Result<Answer> {
+        let PromptKind::Confirm { default } = prompt.kind else {
+            return Err(io::Error::other("only confirmations are scripted"));
+        };
+
+        Ok(Answer::Confirmed(default))
     }
 
     fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -182,7 +205,7 @@ fn composer_install_uses_manifest_default_php_track_without_cached_manifest() ->
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(environment.byte_request_count(), 0);
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -224,7 +247,7 @@ fn composer_install_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(environment.byte_request_count(), 0);
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -292,7 +315,7 @@ fn composer_install_prefers_global_php_default_track() -> anyhow::Result<()> {
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((
             output,
@@ -365,7 +388,7 @@ fn composer_update_updates_track_two_only() -> anyhow::Result<()> {
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(environment.byte_request_count(), 0);
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -401,7 +424,7 @@ fn composer_update_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()>
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert_eq!(environment.byte_request_count(), 0);
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -431,7 +454,7 @@ fn composer_uninstall_force_prune_queues_removal_intent() -> anyhow::Result<()> 
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert!(records.iter().all(|record| {
         record.desired_state == ManagedResourceDesiredState::Removed
             && record.removal_force
@@ -441,6 +464,61 @@ fn composer_uninstall_force_prune_queues_removal_intent() -> anyhow::Result<()> 
         assert_debug_snapshot!((output, resource_record_snapshots(&records, tempdir.path())?,));
         Ok(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn composer_uninstall_prune_refuses_without_terminal() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let composer_artifact = composer_fixture_artifact("2.8.1-pv1");
+    record_installed_composer(&home, "2", &composer_artifact)?;
+    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+
+    let output = run_pv(&["composer:uninstall", "--prune"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.is_empty());
+    assert!(records.iter().all(|record| {
+        record.desired_state == ManagedResourceDesiredState::Installed
+            && !record.removal_prune
+            && !record.removal_force
+    }));
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!((output, resource_record_snapshots(&records, tempdir.path())?,));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn composer_uninstall_prune_defaults_to_no_on_a_terminal() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let composer_artifact = composer_fixture_artifact("2.8.1-pv1");
+    record_installed_composer(&home, "2", &composer_artifact)?;
+    let environment =
+        TestEnvironment::new(&home, &current_dir, ScriptedClient::new()).with_terminal();
+
+    let output = run_pv(&["composer:uninstall", "--prune"], &environment)?;
+    let database = Database::open(&pv_paths(&home))?;
+    let records = managed_resource_records(&database)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stdout.contains("Prune cancelled."));
+    assert!(records.iter().all(|record| {
+        record.desired_state == ManagedResourceDesiredState::Installed
+            && !record.removal_prune
+            && !record.removal_force
+    }));
 
     Ok(())
 }

@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
-use insta::{Settings, assert_debug_snapshot};
+use insta::{Settings, assert_debug_snapshot, assert_snapshot};
 use platform::{
     ActivePfRedirectInspection, KeychainCertificate, PfConfReference, PfRedirectConfig,
     ResolverConfig,
@@ -28,6 +28,7 @@ struct TestEnvironment {
     pf_anchor_path: PathBuf,
     pf_conf_path: PathBuf,
     trusted_certificates: Vec<KeychainCertificate>,
+    terminal_width: Option<usize>,
 }
 
 impl TestEnvironment {
@@ -46,7 +47,13 @@ impl TestEnvironment {
                 .to_path_buf(),
             pf_conf_path: home.join("etc/pf.conf").as_std_path().to_path_buf(),
             trusted_certificates: Vec::new(),
+            terminal_width: None,
         }
+    }
+
+    fn on_terminal(mut self, width: usize) -> Self {
+        self.terminal_width = Some(width);
+        self
     }
 
     fn with_trusted_certificate(mut self, certificate: KeychainCertificate) -> Self {
@@ -72,12 +79,16 @@ impl Environment for TestEnvironment {
         Ok(PathBuf::from("/bin/pv"))
     }
 
-    fn stdin_is_terminal(&self) -> bool {
-        false
+    fn stdout_is_terminal(&self) -> bool {
+        self.terminal_width.is_some()
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(String::new())
+    fn terminal_width(&self) -> Option<usize> {
+        self.terminal_width
+    }
+
+    fn stdin_is_terminal(&self) -> bool {
+        false
     }
 
     fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -437,6 +448,25 @@ fn status_reports_runtime_and_resource_states() -> anyhow::Result<()> {
 }
 
 #[test]
+fn status_on_a_terminal_renders_sections_and_a_resource_table() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home).on_terminal(120);
+    seed_resource_state(&paths)?;
+
+    let output = run_pv(&["status", "--no-color"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stderr.is_empty());
+    status_settings(tempdir.path()).bind(|| {
+        assert_snapshot!("status_on_a_terminal", output.stdout);
+    });
+
+    Ok(())
+}
+
+#[test]
 fn status_json_redacts_secret_context() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -632,11 +662,15 @@ fn write_file(path: &Utf8Path, contents: &str) -> anyhow::Result<()> {
 }
 
 fn assert_status_snapshot(name: &'static str, tempdir: &Utf8Path, snapshot: impl std::fmt::Debug) {
+    status_settings(tempdir).bind(|| {
+        assert_debug_snapshot!(name, snapshot);
+    });
+}
+
+fn status_settings(tempdir: &Utf8Path) -> Settings {
     let mut settings = Settings::clone_current();
     settings.add_filter(tempdir.as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
-    settings.bind(|| {
-        assert_debug_snapshot!(name, snapshot);
-    });
+    settings
 }

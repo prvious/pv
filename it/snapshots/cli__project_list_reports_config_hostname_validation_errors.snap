@@ -7,14 +7,14 @@ expression: "(link, list)"
         code: Some(
             0,
         ),
-        stdout: "Linked acme-store.test -> <tempdir>/Acme Store\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Linked acme-store.test -> <tempdir>/Acme Store\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  8.4  config-invalid  unknown  invalid  <tempdir>/Acme Store\n  config: Project hostname `acme-store.test` appears more than once for the same Project\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  8.4  config-invalid  0  invalid  <tempdir>/Acme Store\n  config: Project hostname `acme-store.test` appears more than once for the same Project\n",
         stderr: "",
     },
 )

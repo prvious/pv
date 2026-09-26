@@ -1,0 +1,28 @@
+---
+source: it/terminal.rs
+expression: session.screen()
+---
+ pv  init
+
+┌  PV init  ·  acme
+│
+◇  Detected Project signals:
+│  Laravel: Detected composer.json, artisan, and Laravel project files
+│  Vite: Detected Vite in package.json
+│
+◇  Selected Project resources:
+│  mailpit: Detected SMTP mail env keys when selected
+│  mysql: Detected DB_CONNECTION=mysql
+│  redis: Detected Redis-compatible env keys when selected
+│  rustfs: Detected AWS/S3 env keys when selected
+│
+◇  Resource checklist:
+│  [x] MySQL
+│  [ ] Postgres
+│  [x] Redis
+│  [x] Mailpit
+│  [x] RustFS/S3
+│
+✗  Use these selections?
+│  Yes
+└  Cancelled.

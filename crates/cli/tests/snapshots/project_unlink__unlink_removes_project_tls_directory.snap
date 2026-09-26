@@ -8,6 +8,6 @@ expression: "(&output.exit_code, &output.stdout, &output.stderr)"
             0,
         ),
     ),
-    "Unlinked acme.test -> <tempdir>/acme\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-    "",
+    "Unlinked acme.test -> <tempdir>/acme\n",
+    "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
 )

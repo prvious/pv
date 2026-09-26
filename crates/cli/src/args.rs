@@ -11,6 +11,8 @@ use crate::shell::Shell;
     disable_help_subcommand = true
 )]
 pub(crate) struct Cli {
+    // Parsed so clap accepts the flag; `Presentation::detect` reads it from the
+    // raw arguments because color must be known before parsing succeeds.
     #[arg(long, global = true, help = "Disable colored output")]
     pub(crate) no_color: bool,
 

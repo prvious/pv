@@ -203,7 +203,7 @@ Default Managed Resources installed by `pv setup` are not started until a linked
 
 Default tool/resource installation is owned by the daemon. `pv setup` records desired install state, starts the daemon, requests reconciliation, and waits for that reconciliation job to finish.
 
-One-off CLI commands communicate with the daemon through a Unix domain socket at `~/.pv/run/pv.sock` using newline-delimited JSON messages. Each request is one JSON line and includes a daemon protocol version field. The immediate response is one JSON line. For long-running work, the daemon then emits best-effort NDJSON progress snapshots over the same connection. Event types include `job_started`, `progress`, `download_progress`, `log`, `job_completed`, and `job_failed`. `pv setup` listens to the progress stream, renders download bars only when stdout is a terminal, clears those bars before final command output, and exits when the reconciliation job completes or fails. Live phase progress is published before the corresponding work begins; completion still records timing and outcome, and explicitly skipped phases remain visible.
+One-off CLI commands communicate with the daemon through a Unix domain socket at `~/.pv/run/pv.sock` using newline-delimited JSON messages. Each request is one JSON line and includes a daemon protocol version field. The immediate response is one JSON line. For long-running work, the daemon then emits best-effort NDJSON progress snapshots over the same connection. Event types include `job_started`, `progress`, `download_progress`, `log`, `job_completed`, and `job_failed`. `pv setup` listens to the progress stream, renders live progress on stderr only when stderr is a terminal (sparse phase lines on stderr otherwise), clears that progress before final command output, and exits when the reconciliation job completes or fails. Live phase progress is published before the corresponding work begins; completion still records timing and outcome, and explicitly skipped phases remain visible.
 
 If the CLI and daemon protocol versions are incompatible, commands print a clear repair command such as `pv daemon:restart` rather than automatically restarting the daemon. `pv update` may handle daemon restart explicitly as part of the update flow.
 
@@ -762,13 +762,13 @@ The canonical Managed Resource name is `postgres` for commands, filesystem paths
 
 Project config, command namespaces, filesystem paths, and internal state use canonical lowercase Managed Resource names: `mysql`, `postgres`, `redis`, `mailpit`, and `rustfs`. Prose may use display names such as MySQL, Postgres, Redis, Mailpit, and RustFS.
 
-Managed Resource uninstall commands remove installed binaries and runtime metadata by default. They delete Managed Resource data only when `--prune` is provided. `--prune` requires interactive confirmation unless `--force` is also provided.
+Managed Resource uninstall commands remove installed binaries and runtime metadata by default. They delete Managed Resource data only when `--prune` is provided. `--prune` asks for an interactive confirmation that defaults to No, unless `--force` is also provided.
 
 PV refuses to uninstall a Managed Resource track currently needed by a linked Project unless `--force` is provided. Forced uninstall marks affected Projects failed or pending. Reconciliation preserves explicit removal intent and reports a removed-track error while Project config still demands the track.
 
 `pv uninstall` is safe by default. It stops and unregisters the LaunchAgent, removes `/etc/resolver/test`, removes PV's `pf` redirect rules, removes PV local CA trust, deregisters and removes the root helper, removes the PV-managed `PV ENV` shell profile block when present, stops PV-managed processes, and removes PV app binaries, shims, runtime metadata, sockets, generated configs, and installed Managed Resource binaries. Helper removal cleans the exclusively PV-owned system support directory, including interrupted work files. macOS may request administrator authentication when helper artifacts exist; an installation created with `--no-setup` does not prompt merely to remove an absent helper. Before editing a shell profile during uninstall, PV creates a backup.
 
-By default, `pv uninstall` preserves logs, `pv.db`, certificates, Composer home/cache, Managed Resource data, and Project `.env` blocks. `pv uninstall --prune` removes all PV-owned state under `~/.pv` and PV-owned system integration files/trust. Prune deletes local PV-owned data trees rather than attempting logical cleanup inside Managed Resources first. Shell profile backups created by PV are user safety artifacts and are not removed by `--prune`. `--prune` requires interactive confirmation unless `--force` is also provided.
+By default, `pv uninstall` preserves logs, `pv.db`, certificates, Composer home/cache, Managed Resource data, and Project `.env` blocks. `pv uninstall --prune` removes all PV-owned state under `~/.pv` and PV-owned system integration files/trust. Prune deletes local PV-owned data trees rather than attempting logical cleanup inside Managed Resources first. Shell profile backups created by PV are user safety artifacts and are not removed by `--prune`. `--prune` asks for an interactive confirmation that defaults to No, unless `--force` is also provided.
 
 ## Filesystem Layout
 
@@ -1342,7 +1342,7 @@ If a Project has no Project config, or its Project config has no environment map
 
 PV does not watch `.env` files. It only writes the PV-managed block during reconciliation when Project config or Managed Resource state requires an update.
 
-PV v1 includes `pv init [path]` as a guided Project config initializer for existing directories. By default, it inspects local Project files, suggests conservative PHP, document root, env, and Managed Resource config, allows structured edits, previews the generated YAML, and writes only after confirmation. `pv init --yes` writes the detected defaults without prompting, while `pv init --print` prints the generated YAML without writing. Existing Project config values are preserved unless changed through the guided flow.
+PV v1 includes `pv init [path]` as a guided Project config initializer for existing directories. By default, it inspects local Project files, suggests conservative PHP, document root, env, and Managed Resource config, allows structured edits (text prompts for tracks, document root, and allocations; a multi-select for Managed Resources), previews the generated YAML, and writes only after confirmation. `pv init --yes` writes the detected defaults without prompting, while `pv init --print` prints the generated YAML without writing. Existing Project config values are preserved unless changed through the guided flow.
 
 `pv init` directly writes only Project config. It does not link the Project, request reconciliation, call the daemon, install or start Managed Resources, write `.env`, edit `vite.config.js`, or run framework or package commands. Writing config for an already-linked Project can still trigger the daemon's normal file-watcher reconciliation. Vite detection generates the exact `VITE_DEV_SERVER_CERT` and `VITE_DEV_SERVER_KEY` env mappings, but the Project's Vite config must read them. PV v1 does not migrate Herd config and does not generate `serve: false`.
 
@@ -1458,7 +1458,7 @@ An explicit resource-only Project target returns a clear non-zero error and neve
 
 `pv rustfs:open` / `pv s3:open` opens the RustFS console only when RustFS is already running. It does not start RustFS or change desired state.
 
-If `pv open` is run outside a linked Project, it shows a picker of linked Projects and opens the selected Project in the user's browser.
+If `pv open` is run outside a linked Project, it shows a keyboard picker of linked Projects (see Terminal Presentation) and opens the selected Project in the user's browser.
 
 The picker displays each Project's primary hostname first, followed by its canonical absolute path. For example: `acme.test  /Users/me/Code/acme`. Additional hostnames are not separate picker entries in v1.
 
@@ -1526,7 +1526,7 @@ When showing the last N lines, `pv logs` includes recent rotated log files if th
 
 When `pv logs --follow` streams multiple files, PV prefixes each line with the source, such as `daemon`, `launchd:stdout`, or `launchd:stderr`.
 
-`pv logs` may colorize source prefixes when output is an interactive TTY. Color is disabled automatically when output is piped, `NO_COLOR` is set, or the global `--no-color` flag is used. Log output may also apply minimal severity color for obvious level words: `error` and `fatal` as red, `warn` and `warning` as yellow, and `debug` and `trace` as dim text. The words remain present in the output.
+`pv logs` emits every stored log line unchanged. PV does not scan, recolor, pretty-print, or highlight message bodies, including JSON bodies and bodies that contain severity words or ANSI-looking bytes. Only the PV-added source prefix may be colored, and only when stdout is an interactive TTY; color is disabled automatically when output is piped, `NO_COLOR` is set, or the global `--no-color` flag is used. Users can opt into highlighting with tools such as `jq` or `bat`.
 
 `pv logs --all --follow` includes every PV-owned log stream, including daemon, LaunchAgent, Gateway, Project-serving workers, and Managed Resource logs, with source prefixes.
 
@@ -1557,6 +1557,137 @@ Read/status commands support `--json` output in v1, including `pv status`, `pv d
 `pv status` exits non-zero for clear failure states such as daemon down after setup, Gateway failed, DNS or ports repair required, or failed reconciliation. It exits zero for healthy or pending-but-not-failed states.
 
 If the daemon is intentionally disabled while DNS, ports, or CA integrations remain installed, `pv status` reports the daemon as `disabled` and PV as not running, but does not treat DNS, ports, or CA as broken. It suggests `pv daemon:enable` or `pv setup`.
+
+## Terminal Presentation
+
+PV is a persistent, composable command-line application. Output stays in shell history: PV never switches to an alternate screen or a full-screen renderer. The terminal designs in `design.pen` ("Terminal 1…7") are the visual reference for hierarchy, spacing, symbols, and prompt states; the wording and facts in this document and the code remain authoritative. Literal pixel and hex identity is not a goal because the terminal controls fonts, glyph metrics, and palette.
+
+### Streams
+
+stdout carries durable results that callers may redirect or pipe: completed human reports, JSON, `pv env` and `pv project:env` output, generated completions, and generated config explicitly requested with `pv init --print`.
+
+stderr carries transient interaction and diagnostics: prompts, spinners and progress bars, sparse phase-transition lines for setup and update flows, warnings, refusals, and errors. Command-line usage errors keep clap's own format, styled only when stderr allows color; `--help` and `--version` output go to stdout the same way. `pv setup > result.txt` therefore shows prompts and progress in the terminal while `result.txt` receives only the durable result.
+
+### Decorated and plain rendering
+
+Each human-facing stream is rendered in one of two forms, chosen independently for stdout and stderr:
+
+- **Decorated** when the stream is a terminal: the glyph column, `┌ │ └` gutter flows for multi-step commands, command headings, section headings, report tables, repair hints, and semantic color, as in the terminal designs.
+- **Plain** when the stream is not a terminal: the plain lines documented throughout this document, with no glyphs, ANSI escapes, spinners, or bars.
+
+Plain output keeps each command's words and documented facts, in that command's documented plain order. Decorated output may arrange the same facts around terminal-specific headings, gutters, and tables:
+
+- Lines that explain the row above them, such as a refusal's `Leaving it in place.` or the fields of `pv ports:status`, are indented two spaces like other sub-lines, and repair commands read `  repair: `<command>``.
+- `pv doctor` lists its checks grouped as System, Routing, and Daemon & jobs, in plain and JSON output alike.
+- A flow's plain output starts with its title (`PV setup`, `PV update`, `PV init`) and reports its outcome last. `pv init` prints its detection summary before `Wrote Project config: <path>`.
+
+Decorated output uses color only when neither `NO_COLOR` nor the global `--no-color` flag is set; without color it keeps its layout and glyphs. Color never carries meaning alone: every glyph accompanies a status word or outcome text. PV uses the terminal's default foreground for ordinary text plus a small ANSI palette (success green, warning yellow, error red, values cyan, active/prompt magenta, labels dim). PV does not detect the terminal background and does not offer user themes.
+
+Glyph vocabulary: `✓` success, `✗` failure, `⚠` warning, `○` no-op or idle, `●` running or default, `◇` completed flow step or answered prompt, `◆` active step or prompt, `│` gutter (`┌` opens, `└` closes a flow), `↳` hint or repair command, `◐` spinner. When a command's outcome depends on the states it reports, such as `pv status`, `pv doctor`, and `pv ports:status` exiting non-zero, each row's glyph agrees with that outcome: `✗` marks exactly what fails the command, and `⚠` marks something worth attention that does not.
+
+Decorated output reflows to the terminal width (80 columns when the width is unknown) and is designed to avoid horizontal scrolling. A table that does not fit reflows each record into a stacked block, the first field as its title and then one `label  value` line per remaining field, without dropping fields. Secondary prose wraps at word boundaries; paths, hostnames, URLs, versions, and identifiers are never split, so a single indivisible value may extend past the target width when it cannot be shortened. Plain output does not depend on width.
+
+### Flows
+
+Multi-step commands (`pv setup`, `pv uninstall`, `pv update`, and `pv init`) render as a `┌ │ └` flow on a decorated stdout. Each completed milestone is a `◇` step, prompts join the gutter, and the command's outcome closes the flow.
+
+- **Required steps** whose output is only meaningful once they finish, such as setup's DNS, port-redirect, CA, and daemon steps, show a spinner naming the step when stderr is a terminal, independently of stdout's rendering. On decorated stdout, the completed title appears marked `◇` or `✗`, with the step's rows beneath it; plain stdout streams the rows without that title. A failed required step closes a decorated flow with `└ ✗ PV stopped during <step>.`
+- **The helper installation** is announced as an active `◆` step on stderr just before macOS asks for an administrator password.
+- **A command that fails with its flow still open** closes it with `└ ✗ <title> stopped` before the error is printed on stderr. A cancelled prompt closes the flow with its own cancelled state instead.
+- **`pv update`'s re-executed continuation** resumes the flow the updating process opened instead of starting a new one.
+
+Plain output prints only the documented lines: flow titles, steps, and outcomes that have plain text keep it, while decorated-only step titles, spinners, and the `<title> stopped` closer are omitted. A failed required step still prints `PV stopped during <step>.`
+
+### Raw output
+
+PV styles only structure it owns. These payloads are never decorated, wrapped, masked, or recolored, even on a terminal:
+
+- `--json` output: valid plain JSON on stdout; warnings and errors stay on stderr.
+- `pv env`, `pv completions`, `pv project:env` (actual values, including secrets), and `pv init --print`.
+- Log message bodies (see `pv logs`).
+
+### Prompts
+
+PV prompts only when the command contract permits it, stdin and stderr are both terminals, and `--non-interactive` (where the command supports it) is not active. Otherwise the command takes its documented non-interactive path or refuses with an error on stderr that names the flag to rerun with. Prompts render on stderr.
+
+- **Confirm:** `y` and `n` answer immediately; Enter accepts the highlighted answer, initially the default; arrow keys and `h`/`j`/`k`/`l` move between Yes and No. Confirmations for the action the user just asked for (installing the privileged helper, updating the shell profile, writing `pv init` config) default to Yes.
+- **Select:** Up/Down (also Left/Right, `j`/`k`, `h`/`l`) move; Enter submits the highlighted choice.
+- **Multi-select:** Up/Down (also Left/Right, `j`/`k`, `h`/`l`) move; Space toggles; Enter submits.
+- **Text:** Enter submits; an empty answer keeps the shown default; an invalid value is explained inline and asked again.
+- **Destructive confirmation** (`pv uninstall --prune` and `pv <resource>:uninstall --prune`): the same confirm prompt, defaulting to No, so Enter alone never deletes data. `--force` skips it.
+- **Cancellation:** Escape or Ctrl-C cancels the prompt, restores the terminal, shows the prompt as cancelled, and exits with status 130 without a panic or backtrace. Steps that completed before the prompt stay completed.
+- **Completed prompt:** once answered, a prompt collapses to its question and the chosen value instead of leaving the full list behind.
+
+Prompts are implemented with Cliclack behind a PV prompt adapter. Ordinary output, tables, and progress do not use Cliclack.
+
+### Progress
+
+Live progress uses `indicatif` on stderr and is enabled only when stderr is a terminal. It shows the current daemon phase and one bar per download, redraws at a throttled rate, and is cleared before the durable result is printed. When stderr is not a terminal, setup and update report phase transitions as sparse lines on stderr; download-only commands emit no progress lines there.
+
+### Terminal design mapping
+
+Every terminal row in `design.pen` maps to one command state. "Stream" names where the visible content is written; prompts and progress are always stderr. "Not rendered" lists mock content that PV intentionally does not print because the code has no such data or because it would violate a contract above. Report headings never show the PV version, and summaries never show elapsed time, because both would make otherwise identical output differ between runs and releases.
+
+| Mock row | Command and state | Stream | Rendering | Not rendered |
+| --- | --- | --- | --- | --- |
+| `A7m5z` | Design system reference | — | Rules for this section | — |
+| `Rurb6` | `pv setup` helper confirmation | stdout flow, stderr prompt | Confirm, default Yes | `y / yes` legend (keys are in the prompt hint) |
+| `KqQlC` | `pv setup` administrator password | stderr | Active step, then sudo's own `Password:` prompt | — |
+| `c9hnGM` | `pv setup` helper installed, shell profile confirmation | stdout flow, stderr prompt | Confirm, default Yes | — |
+| `goXWS` | `pv setup` profile updated, required steps | stdout | Flow steps as each required step completes | Live "2 of 4" step list |
+| `v7kd9B` | `pv setup` shell profile skipped or current | stdout | Status rows plus manual hint | — |
+| `gY3Gp` | `pv setup` required step fails | stdout | Failed step, `└ ✗ PV stopped during …` | — |
+| `zk0cN` | `pv setup` non-interactive refusals | stderr | Error with the rerun flag | — |
+| `DCiog` | `pv setup` manifest warning and planning failure | stderr warning, stdout flow | Warning row; failed flow ending | — |
+| `Q9Ng13` | `pv setup` installing default resources | stderr | Phase spinner and one bar per download | Per-step detail lines not produced by the code |
+| `o2kox` | `pv setup` complete | stdout | Flow ending plus shell hint | Elapsed time |
+| `y322y` | `pv uninstall` | stdout | Flow steps | — |
+| `YP52d` | `pv uninstall --prune` confirmation | stderr | Confirm, default No | — |
+| `MaTHS` | `pv uninstall --prune` completed | stdout | Flow steps | — |
+| `e7dtMI` | `pv uninstall --prune` without a terminal | stderr | Error with `--force` | — |
+| `TfCPu` | `pv init` detection summary | stdout flow, stderr prompt | Select Yes / No / Edit | — |
+| `xYU9A` | `pv init` edit path | stderr | Text prompts with defaults | — |
+| `I9uFM` | `pv init` validation failure | stderr | Inline text-prompt error, asked again | Unknown-resource exit (resources are a multi-select) |
+| `G5ytn` | `pv init` preview and confirm | stdout preview, stderr prompt | Confirm, default Yes | — |
+| `EH7uC` | `pv init` cancelled by answering No | stdout | Flow ending, exit 1 | — |
+| `yUEX0` | `pv init` invalid selection | — | Not reachable: the select only accepts listed choices | Whole row |
+| `AwYmd` | `pv init` without a terminal | stderr | Error naming `--yes` and `--print` | — |
+| `IJvHi` | `pv init --print` | stdout | Raw YAML | YAML coloring |
+| `z21m1m` | `pv init --yes` | stdout | Status rows plus Vite note | — |
+| `T2ldI` | `pv init` finished session | stdout, stderr | Answered prompts collapse to their values | — |
+| `IueHq` | `pv link` | stdout, stderr warning | Status row plus job line | — |
+| `QZGEG` | `pv open`, `pv unlink` | stdout, stderr errors | Status rows | Hint chips on errors |
+| `wlvuh` | `pv open` Project picker | stderr | Select by keyboard; resource-only Projects excluded | Typed numbers; `pv unlink` picker (unlink has none) |
+| `D40aND` | `pv open`, `pv unlink` after selection | stdout | Status rows | — |
+| `hTBHd` | `pv list` | stdout | Report table, stacked rows when narrow | Summary counts |
+| `U0FXx` | `pv project:env` | stdout raw, stderr warning | Raw `KEY=value` | Heading, rule, value coloring |
+| `iz40G` | `pv project:env --json` | stdout raw, stderr warning | Raw JSON | Heading, rule, JSON coloring |
+| `glhPM` | `pv doctor` healthy | stdout | Heading, grouped status rows, summary | Elapsed time |
+| `D3tQw` | `pv doctor` needs attention | stdout | Failed rows with detail and repair hint | Elapsed time |
+| `E06oP` | `pv status` | stdout | Heading, sections, resource table | Daemon uptime and pid |
+| `NwDwS` | `pv jobs` | stdout | Report table | Summary counts |
+| `qgTVJ` | `pv logs --all` | stdout | Prefixed lines, only the prefix styled | Severity tinting of bodies, heading, summary |
+| `vmsp3` | `pv logs --all --follow` | stdout | Same, streaming | Severity tinting, footer |
+| `Q3MhoA` | Empty `pv list`, `pv jobs`, `pv logs` | stdout | `○` status row | Suggested next commands |
+| `YFsqg` | Errors in a shell session | stderr | `✗ error:` summary, dim continuation lines; clap errors keep clap's own format | Hint chips |
+| `VudiT` | `pv update --check` | stdout | Status rows per component | Summary footer |
+| `AIBcI` | `pv update` | stdout flow, stderr progress | Flow steps | Elapsed time |
+| `KRCXi` | `pv php:install` downloading | stderr | One bar per artifact | Resolved-artifact step |
+| `FN4cW` | `pv php:install` complete | stdout, stderr warnings | Status rows | Byte totals |
+| `Z8n4Uf` | `pv php:use` Project and global | stdout | Status rows (missing tracks are installed) | — |
+| `r692j` | `pv php:list`, `php:update`, `php:uninstall` | stdout, stderr error | Table and status rows | Version deltas |
+| `O5ORTC` | `pv composer:*` | stdout | Status rows | PATH note |
+| `wiFpO` | `pv <resource>:install` / `:update` | stdout | Status rows | "starts when" note |
+| `I2QUwp` | `pv <resource>:list` | stdout | Report table, stacked rows when narrow | Path as a line under each row (PATH stays a column, as in `hTBHd` and `r692j`) |
+| `wbsN6` | `pv <resource>:uninstall --prune` confirmation | stderr | Confirm, default No | Typed `yes`, data size |
+| `MveUZ` | `pv <resource>:uninstall` outcomes | stdout, stderr error | Status rows | — |
+| `BIc96` | `pv mailpit:open`, `pv rustfs:open` | stdout | Status rows | "it starts when" note |
+| `MUHcB` | `pv daemon:*` | stdout, stderr errors | Status rows | — |
+| `mJ0B3` | `pv dns:*` | stdout | Status rows with details | — |
+| `qee8Y` | `pv ports:*` | stdout | Status rows with details | — |
+| `od0HF` | `pv ca:*` | stdout | Status rows with details | — |
+| `MPKC7` | `pv env` | stdout raw | Raw shell code | Syntax highlighting, install hint |
+| `Q7EWy` | `pv completions` | stdout raw | Raw completion script | Syntax highlighting, install hint |
 
 # Commands
 

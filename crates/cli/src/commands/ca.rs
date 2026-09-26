@@ -1,36 +1,35 @@
 use std::io;
-use std::io::Write;
 use std::process::ExitCode;
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use platform::{CaFileState, GeneratedLocalCa, LocalCaMetadata, TrustDomainState};
 use state::{PvPaths, StateError};
 
 use crate::environment::Environment;
 use crate::error::ExecuteError;
-use crate::output::{Output, OutputMode};
+use crate::output::{Line, Mark, Output, Streams};
 
 pub(crate) fn status(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let local_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
     let local_metadata = metadata_from_local_state(&local_state);
     let trust_state = trust_state(environment, local_metadata.as_ref());
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
-    output.line("CA trust status")?;
-    write_local_ca_state(&mut output, &local_state)?;
-    write_system_trust_state(&mut output, &trust_state)?;
+    output.heading("ca:status", Some("CA trust status"))?;
+    write_local_ca_state(output, &local_state)?;
+    write_system_trust_state(output, &trust_state)?;
 
     Ok(ExitCode::SUCCESS)
 }
 
 pub(crate) fn trust(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let initial_state =
@@ -38,37 +37,36 @@ pub(crate) fn trust(
     let (local_state, generated) = ensure_local_ca(&paths, initial_state)?;
     let local_metadata = metadata_from_local_state(&local_state);
     let trust_state = trust_state(environment, local_metadata.as_ref());
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
-    output.line("Prepared PV local CA")?;
+    output.success("Prepared PV local CA")?;
     match generated {
         Some(generated) => {
-            output.line(&format!("  certificate: {}", paths.ca_certificate()))?;
-            output.line(&format!("  private key: {}", paths.ca_private_key()))?;
-            output.line(&format!(
-                "  fingerprint: {}",
-                generated.metadata.fingerprint
+            write_ca_paths(output, &paths.ca_certificate(), &paths.ca_private_key())?;
+            output.detail(Line::field(
+                "fingerprint: ",
+                &generated.metadata.fingerprint,
             ))?;
         }
-        None => output.line("  existing local CA is current")?,
+        None => output.detail("existing local CA is current")?,
     }
-    write_system_trust_state(&mut output, &trust_state)?;
+    write_system_trust_state(output, &trust_state)?;
 
     match trust_state {
         TrustDomainState::Current { .. } => {
-            output.line("System keychain trust already matches PV.")?;
+            output.note("System keychain trust already matches PV.")?;
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::NotTrusted { .. } => {
             environment.trust_system_ca(&paths.ca_certificate())?;
-            output.line("Trusted PV local CA in the System keychain.")?;
+            output.success("Trusted PV local CA in the System keychain.")?;
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::Denied { fingerprint } => {
             environment.untrust_system_ca(&fingerprint)?;
             environment.trust_system_ca(&paths.ca_certificate())?;
-            output.line("Removed denied PV local CA trust from the System keychain.")?;
-            output.line("Trusted PV local CA in the System keychain.")?;
+            output.success("Removed denied PV local CA trust from the System keychain.")?;
+            output.success("Trusted PV local CA in the System keychain.")?;
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::Stale {
@@ -76,8 +74,8 @@ pub(crate) fn trust(
         } => {
             environment.untrust_system_ca(&actual_fingerprint)?;
             environment.trust_system_ca(&paths.ca_certificate())?;
-            output.line("Removed stale PV local CA trust from the System keychain.")?;
-            output.line("Trusted PV local CA in the System keychain.")?;
+            output.success("Removed stale PV local CA trust from the System keychain.")?;
+            output.success("Trusted PV local CA in the System keychain.")?;
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::Unknown { .. } | TrustDomainState::Unreadable { .. } => {
@@ -88,34 +86,34 @@ pub(crate) fn trust(
 
 pub(crate) fn untrust(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let local_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
     let local_metadata = metadata_from_local_state(&local_state);
     let trust_state = trust_state(environment, local_metadata.as_ref());
-    let mut output = Output::new(stdout, OutputMode::plain());
+    let output = &mut streams.out;
 
-    output.line("Prepared PV local CA trust removal")?;
-    write_local_ca_state(&mut output, &local_state)?;
-    write_system_trust_state(&mut output, &trust_state)?;
+    output.success("Prepared PV local CA trust removal")?;
+    write_local_ca_state(output, &local_state)?;
+    write_system_trust_state(output, &trust_state)?;
 
     match trust_state {
         TrustDomainState::NotTrusted { .. } => {
-            output.line("System keychain trust is already absent.")?;
+            output.note("System keychain trust is already absent.")?;
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::Current { fingerprint } | TrustDomainState::Denied { fingerprint } => {
             environment.untrust_system_ca(&fingerprint)?;
-            output.line("Removed PV local CA trust from the System keychain.")?;
+            output.success("Removed PV local CA trust from the System keychain.")?;
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::Stale {
             actual_fingerprint, ..
         } => {
             environment.untrust_system_ca(&actual_fingerprint)?;
-            output.line("Removed stale PV local CA trust from the System keychain.")?;
+            output.success("Removed stale PV local CA trust from the System keychain.")?;
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::Unknown { .. } | TrustDomainState::Unreadable { .. } => {
@@ -191,81 +189,76 @@ fn trust_state(
     platform::inspect_system_ca_trust(metadata, &inspector)
 }
 
-fn write_local_ca_state(
-    output: &mut Output<'_, impl Write>,
-    state: &CaFileState,
-) -> io::Result<()> {
+fn write_local_ca_state(output: &mut Output<'_>, state: &CaFileState) -> io::Result<()> {
     match state {
         CaFileState::Missing {
             certificate_path,
             private_key_path,
         } => {
-            output.line("Local CA files: missing")?;
-            output.line(&format!("  certificate: {certificate_path}"))?;
-            output.line(&format!("  private key: {private_key_path}"))
+            output.note("Local CA files: missing")?;
+            write_ca_paths(output, certificate_path, private_key_path)
         }
         CaFileState::Current {
             certificate_path,
             private_key_path,
             metadata,
         } => {
-            output.line("Local CA files: current")?;
-            output.line(&format!("  certificate: {certificate_path}"))?;
-            output.line(&format!("  private key: {private_key_path}"))?;
-            output.line(&format!("  common name: {}", metadata.common_name))?;
-            output.line(&format!("  fingerprint: {}", metadata.fingerprint))
+            output.success("Local CA files: current")?;
+            write_ca_paths(output, certificate_path, private_key_path)?;
+            output.detail(Line::field("common name: ", &metadata.common_name))?;
+            output.detail(Line::field("fingerprint: ", &metadata.fingerprint))
         }
         CaFileState::RepairRequired {
             certificate_path,
             private_key_path,
             reason,
         } => {
-            output.line("Local CA files: repair required")?;
-            output.line(&format!("  certificate: {certificate_path}"))?;
-            output.line(&format!("  private key: {private_key_path}"))?;
-            output.line(&format!("  reason: {reason:?}"))
+            output.failure("Local CA files: repair required")?;
+            write_ca_paths(output, certificate_path, private_key_path)?;
+            output.detail(format!("reason: {reason:?}"))
         }
         CaFileState::Unreadable { path, message } => {
-            output.line("Local CA files: unreadable")?;
-            output.line(&format!("  path: {path}"))?;
-            output.line(&format!("  {message}"))
+            output.failure("Local CA files: unreadable")?;
+            output.detail(Line::field("path: ", path))?;
+            output.detail(message)
         }
     }
 }
 
-fn write_system_trust_state(
-    output: &mut Output<'_, impl Write>,
-    state: &TrustDomainState,
+fn write_ca_paths(
+    output: &mut Output<'_>,
+    certificate_path: &Utf8Path,
+    private_key_path: &Utf8Path,
 ) -> io::Result<()> {
+    output.detail(Line::field("certificate: ", certificate_path))?;
+    output.detail(Line::field("private key: ", private_key_path))
+}
+
+fn write_system_trust_state(output: &mut Output<'_>, state: &TrustDomainState) -> io::Result<()> {
+    let (mark, status) = match state {
+        TrustDomainState::Current { .. } => (Mark::Success, "current"),
+        TrustDomainState::NotTrusted { .. } => (Mark::Warning, "not trusted"),
+        TrustDomainState::Stale { .. } => (Mark::Warning, "stale"),
+        TrustDomainState::Denied { .. } => (Mark::Failure, "denied"),
+        TrustDomainState::Unknown { .. } => (Mark::Warning, "unknown"),
+        TrustDomainState::Unreadable { .. } => (Mark::Failure, "unreadable"),
+    };
+    output.status(mark, format!("System keychain trust: {status}"))?;
     match state {
-        TrustDomainState::Current { fingerprint } => {
-            output.line("System keychain trust: current")?;
-            output.line(&format!("  fingerprint: {fingerprint}"))
-        }
-        TrustDomainState::NotTrusted { fingerprint } => {
-            output.line("System keychain trust: not trusted")?;
-            output.line(&format!("  fingerprint: {fingerprint}"))
+        TrustDomainState::Current { fingerprint }
+        | TrustDomainState::NotTrusted { fingerprint }
+        | TrustDomainState::Denied { fingerprint } => {
+            output.detail(Line::field("fingerprint: ", fingerprint))
         }
         TrustDomainState::Stale {
             expected_fingerprint,
             actual_fingerprint,
         } => {
-            output.line("System keychain trust: stale")?;
-            output.line(&format!("  expected fingerprint: {expected_fingerprint}"))?;
-            output.line(&format!("  actual fingerprint: {actual_fingerprint}"))
+            output.detail(Line::field("expected fingerprint: ", expected_fingerprint))?;
+            output.detail(Line::field("actual fingerprint: ", actual_fingerprint))
         }
-        TrustDomainState::Denied { fingerprint } => {
-            output.line("System keychain trust: denied")?;
-            output.line(&format!("  fingerprint: {fingerprint}"))
-        }
-        TrustDomainState::Unknown { reason } => {
-            output.line("System keychain trust: unknown")?;
-            output.line(&format!("  {reason}"))
-        }
-        TrustDomainState::Unreadable { message } => {
-            output.line("System keychain trust: unreadable")?;
-            output.line(&format!("  {message}"))
-        }
+        TrustDomainState::Unknown { reason } => output.detail(reason.to_string()),
+        TrustDomainState::Unreadable { message } => output.detail(message),
     }
 }
 

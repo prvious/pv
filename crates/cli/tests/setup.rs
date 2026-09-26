@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
-use insta::assert_debug_snapshot;
+use insta::{assert_debug_snapshot, assert_snapshot};
 use platform::{
     HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult, LAUNCH_AGENT_LABEL,
     LaunchAgentConfig, LocalCaMetadata, PRIVILEGED_HELPER_VERSION, PfConfReference,
@@ -38,11 +38,11 @@ struct TestEnvironment {
     certificates: Mutex<Vec<KeychainCertificate>>,
     active_pf_config: Mutex<Option<PfRedirectConfig>>,
     operations: Mutex<Vec<String>>,
-    stdin_terminal: bool,
-    input: Mutex<VecDeque<String>>,
     client: ScriptedClient,
     target_platform: TargetPlatform,
     helper_status: Mutex<Option<PrivilegedHelperStatus>>,
+    terminal_width: Mutex<Option<usize>>,
+    terminal_surfaces: Mutex<Option<(bool, bool)>>,
 }
 
 impl TestEnvironment {
@@ -63,8 +63,6 @@ impl TestEnvironment {
             certificates: Mutex::new(Vec::new()),
             active_pf_config: Mutex::new(None),
             operations: Mutex::new(Vec::new()),
-            stdin_terminal: false,
-            input: Mutex::new(VecDeque::new()),
             client: ScriptedClient::new(),
             target_platform,
             helper_status: Mutex::new(Some(PrivilegedHelperStatus {
@@ -72,6 +70,8 @@ impl TestEnvironment {
                 protocol_version: HELPER_PROTOCOL_VERSION,
                 owner_uid: 501,
             })),
+            terminal_width: Mutex::new(None),
+            terminal_surfaces: Mutex::new(None),
         }
     }
 
@@ -101,6 +101,11 @@ impl TestEnvironment {
 
     fn set_helper_missing(&self) {
         *lock(&self.helper_status) = None;
+    }
+
+    fn set_terminal_surfaces(&self, stdout: bool, stderr: bool, width: usize) {
+        *lock(&self.terminal_surfaces) = Some((stdout, stderr));
+        *lock(&self.terminal_width) = Some(width);
     }
 }
 
@@ -186,12 +191,26 @@ impl Environment for TestEnvironment {
         Ok(self.current_exe.clone())
     }
 
-    fn stdin_is_terminal(&self) -> bool {
-        self.stdin_terminal
+    fn stdout_is_terminal(&self) -> bool {
+        (*lock(&self.terminal_surfaces)).map_or_else(
+            || lock(&self.terminal_width).is_some(),
+            |(stdout, _)| stdout,
+        )
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(lock(&self.input).pop_front().unwrap_or_default())
+    fn stderr_is_terminal(&self) -> bool {
+        (*lock(&self.terminal_surfaces)).map_or_else(
+            || lock(&self.terminal_width).is_some(),
+            |(_, stderr)| stderr,
+        )
+    }
+
+    fn terminal_width(&self) -> Option<usize> {
+        *lock(&self.terminal_width)
+    }
+
+    fn stdin_is_terminal(&self) -> bool {
+        false
     }
 
     fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -404,7 +423,7 @@ fn setup_no_path_configures_system_integrations_and_waits_for_reconciliation() -
     let parsed_launch_agent = LaunchAgentConfig::parse(&launch_agent);
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert!(parsed_resolver.is_some());
     assert_eq!(system_resolver, prepared_resolver);
     assert_eq!(system_anchor, prepared_anchor);
@@ -531,7 +550,7 @@ fn setup_uses_cached_manifest_with_warning_when_refresh_fails() -> anyhow::Resul
     assert_eq!(fixture.environment.text_request_count(), 1);
     assert!(
         output
-            .stdout
+            .stderr
             .contains("warning: artifact manifest refresh failed")
     );
     assert_eq!(observed, expected_setup_tracks());
@@ -708,7 +727,7 @@ fn setup_non_interactive_fails_before_privileged_system_changes() -> anyhow::Res
     )?;
 
     assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stdout.contains("requires macOS authentication"));
+    assert!(output.stderr.contains("requires macOS authentication"));
     assert!(fixture.environment.operations().is_empty());
     assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
     assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
@@ -831,7 +850,7 @@ fn setup_requires_confirmation_before_installing_missing_helper() -> anyhow::Res
     let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
 
     assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stdout.contains("requires confirmation"));
+    assert!(output.stderr.contains("requires confirmation"));
     assert!(fixture.environment.operations().is_empty());
 
     Ok(())
@@ -877,7 +896,7 @@ fn setup_non_interactive_fails_before_shell_profile_mutation() -> anyhow::Result
     assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert!(
         output
-            .stdout
+            .stderr
             .contains("Shell profile integration requires update")
     );
     assert_eq!(profile_after_setup, "export EXISTING=1\n");
@@ -1093,6 +1112,100 @@ fn setup_yes_creates_and_uninstall_removes_shell_profile_block() -> anyhow::Resu
     Ok(())
 }
 
+#[test]
+fn setup_and_uninstall_on_a_terminal_render_flows() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new_with_shell(tempdir.path(), "/bin/zsh");
+    seed_online_setup_manifest(&fixture)?;
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+    write_file(
+        &fixture.paths.home().join(".zprofile"),
+        "export EXISTING=1\n",
+    )?;
+    // Wide enough that no row wraps, so wrap points never depend on how long
+    // this machine's temp path is.
+    *lock(&fixture.environment.terminal_width) = Some(200);
+
+    let setup = run_pv(
+        &["setup", "--yes", "--no-color"],
+        fixture.environment.as_ref(),
+    )?;
+    let _daemon_requests = daemon.finish()?;
+    let uninstall = run_pv(&["uninstall", "--no-color"], fixture.environment.as_ref())?;
+
+    assert_eq!(setup.exit_code, ExitCode::SUCCESS);
+    assert_eq!(uninstall.exit_code, ExitCode::SUCCESS);
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_snapshot!("setup_on_a_terminal", setup.stdout);
+        assert_snapshot!("uninstall_on_a_terminal", uninstall.stdout);
+        assert_snapshot!("uninstall_on_a_terminal_stderr", uninstall.stderr);
+    });
+
+    Ok(())
+}
+
+#[test]
+fn setup_stops_at_a_failed_required_step_on_both_surfaces() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    write_file(&fixture.system_resolver_path, "nameserver 192.0.2.1\n")?;
+
+    let plain = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    script_setup_manifest(&fixture)?;
+    *lock(&fixture.environment.terminal_width) = Some(200);
+    let decorated = run_pv(
+        &["setup", "--no-path", "--no-color"],
+        fixture.environment.as_ref(),
+    )?;
+
+    assert_eq!(plain.exit_code, ExitCode::FAILURE);
+    assert_eq!(decorated.exit_code, ExitCode::FAILURE);
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_snapshot!("setup_stops_at_a_failed_required_step_plain", plain.stdout);
+        assert_snapshot!("setup_stops_at_a_failed_required_step", decorated.stdout);
+        assert_snapshot!(
+            "setup_stops_at_a_failed_required_step_stderr",
+            format!("plain:\n{}decorated:\n{}", plain.stderr, decorated.stderr)
+        );
+    });
+
+    Ok(())
+}
+
+#[test]
+fn setup_required_steps_follow_independent_stream_surfaces() -> anyhow::Result<()> {
+    let decorated_stdout = run_setup_with_stream_surfaces(true, false)?;
+    let decorated_stderr = run_setup_with_stream_surfaces(false, true)?;
+
+    assert_eq!(decorated_stdout.exit_code, ExitCode::SUCCESS);
+    assert_eq!(decorated_stderr.exit_code, ExitCode::SUCCESS);
+
+    assert!(decorated_stdout.stdout.contains("◇  DNS resolver setup"));
+    assert!(
+        decorated_stdout
+            .stdout
+            .contains("◇  System reconciliation completed: stub job completed")
+    );
+    assert!(
+        decorated_stdout
+            .stderr
+            .contains("Reconciliation slot acquired after <1s")
+    );
+    assert!(!decorated_stdout.stderr.contains("DNS resolver setup"));
+
+    assert!(
+        decorated_stderr
+            .stdout
+            .contains("Prepared PV DNS resolver config")
+    );
+    assert!(decorated_stderr.stdout.contains("PV setup complete"));
+    assert!(!decorated_stderr.stdout.contains('◇'));
+    assert!(!decorated_stderr.stdout.contains('\u{1b}'));
+
+    Ok(())
+}
+
 #[derive(Debug)]
 struct Fixture {
     paths: PvPaths,
@@ -1298,6 +1411,27 @@ fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOu
         stdout: String::from_utf8(stdout)?,
         stderr: String::from_utf8(stderr)?,
     })
+}
+
+fn run_setup_with_stream_surfaces(
+    stdout_terminal: bool,
+    stderr_terminal: bool,
+) -> anyhow::Result<RunOutput> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+    fixture
+        .environment
+        .set_terminal_surfaces(stdout_terminal, stderr_terminal, 200);
+
+    let output = run_pv(
+        &["setup", "--no-path", "--no-color"],
+        fixture.environment.as_ref(),
+    )?;
+    let _daemon_requests = daemon.finish()?;
+
+    Ok(output)
 }
 
 fn seed_uninstall_files(paths: &PvPaths) -> anyhow::Result<()> {

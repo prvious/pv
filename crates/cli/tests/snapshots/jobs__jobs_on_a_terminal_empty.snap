@@ -1,0 +1,5 @@
+---
+source: crates/cli/tests/jobs.rs
+expression: empty.stdout
+---
+○  No recent daemon jobs

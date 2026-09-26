@@ -9,8 +9,8 @@ expression: "(uninstall, resource_record_snapshots(&records, tempdir.path())?,)"
                 0,
             ),
         ),
-        stdout: "Queued removal for PHP track 8.4\nQueued removal for FrankenPHP track 8.4\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Queued removal for PHP track 8.4\nQueued removal for FrankenPHP track 8.4\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     [
         ResourceRecordSnapshot {

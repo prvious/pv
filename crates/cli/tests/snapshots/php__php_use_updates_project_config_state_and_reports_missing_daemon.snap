@@ -9,8 +9,8 @@ expression: "(output, config_file.config,\nproject_snapshot(&project_after, temp
                 0,
             ),
         ),
-        stdout: "Set acme.test PHP track to 8.4\nUpdated Project config: <tempdir>/acme/pv.yml\nInstalled PHP track 8.4\nInstalled FrankenPHP track 8.4\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Set acme.test PHP track to 8.4\n  Updated Project config: <tempdir>/acme/pv.yml\nInstalled PHP track 8.4\nInstalled FrankenPHP track 8.4\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     ProjectConfig {
         serve: true,

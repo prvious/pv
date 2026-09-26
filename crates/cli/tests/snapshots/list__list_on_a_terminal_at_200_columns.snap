@@ -1,0 +1,9 @@
+---
+source: crates/cli/tests/list.rs
+expression: wide
+---
+PROJECT         MODE           PHP      STATUS            RESOURCES  ENV      PATH
+acme.test       served         8.4      ○ unknown         2          warning  <tempdir>/acme
+   env: warning: APP_URL already exists outside the PV block
+billing-worker  resource-only  default  ✗ config-invalid  0          invalid  <tempdir>/Billing Worker
+   config: unknown Project config key `unexpected`

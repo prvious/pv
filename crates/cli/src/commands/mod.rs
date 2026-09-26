@@ -1,15 +1,15 @@
-use std::io::{self, Write};
+use std::io;
 use std::process::ExitCode;
 use std::time::Duration;
 
 use camino::Utf8PathBuf;
 use platform::PlatformCapability;
-use state::{PvPaths, StateError};
+use state::{PvPaths, RuntimeObservedStatus, StateError};
 
 use crate::args::{Cli, Command};
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::Output;
+use crate::output::{Line, Mark, Output, Streams};
 
 mod artifact_resource;
 mod ca;
@@ -38,17 +38,15 @@ mod update;
 pub(crate) fn execute(
     cli: Cli,
     environment: &impl Environment,
-    stdout: &mut impl Write,
-    stderr: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    execute_with_capability_check(cli, environment, stdout, stderr, require_command_capability)
+    execute_with_capability_check(cli, environment, streams, require_command_capability)
 }
 
 fn execute_with_capability_check<CapabilityCheck>(
     cli: Cli,
     environment: &impl Environment,
-    stdout: &mut impl Write,
-    stderr: &mut impl Write,
+    streams: &mut Streams<'_>,
     capability_check: CapabilityCheck,
 ) -> Result<ExitCode, ExecuteError>
 where
@@ -58,86 +56,86 @@ where
     require_no_update_in_progress(&cli.command, environment)?;
 
     match cli.command {
-        Command::Env(args) => env::run(args, cli.no_color, environment, stdout),
-        Command::Completions(args) => Ok(completions::run(args, stdout)),
-        Command::Setup(args) => setup::setup(args, environment, stdout),
-        Command::Uninstall(args) => setup::uninstall(args, environment, stdout),
-        Command::DaemonEnable => daemon::enable(environment, stdout),
-        Command::DaemonDisable => daemon::disable(environment, stdout),
-        Command::DaemonRestart => daemon::restart(environment, stdout),
+        Command::Env(args) => env::run(args, environment, streams),
+        Command::Completions(args) => Ok(completions::run(args, streams)),
+        Command::Setup(args) => setup::setup(args, environment, streams),
+        Command::Uninstall(args) => setup::uninstall(args, environment, streams),
+        Command::DaemonEnable => daemon::enable(environment, streams),
+        Command::DaemonDisable => daemon::disable(environment, streams),
+        Command::DaemonRestart => daemon::restart(environment, streams),
         Command::DaemonRun => daemon::run(),
         Command::ShimPhp(args) => php::shim(args, environment),
         Command::ShimComposer(args) => composer::shim(args, environment),
-        Command::DnsStatus => dns::status(environment, stdout),
-        Command::DnsInstall => dns::install(environment, stdout),
-        Command::DnsUninstall => dns::uninstall(environment, stdout),
-        Command::PortsStatus(args) => ports::status(args, environment, stdout),
-        Command::PortsInstall => ports::install(environment, stdout),
-        Command::PortsUninstall => ports::uninstall(environment, stdout),
-        Command::CaStatus => ca::status(environment, stdout),
-        Command::CaTrust => ca::trust(environment, stdout),
-        Command::CaUntrust => ca::untrust(environment, stdout),
-        Command::Link(args) => project::link(args, environment, stdout),
-        Command::Init(args) => init::run(args, environment, stdout),
-        Command::Unlink(args) => project::unlink(args, environment, stdout),
-        Command::Open(args) => project::open(args, environment, stdout),
-        Command::ProjectEnv(args) => project::env(args, environment, stdout, stderr),
-        Command::Status(args) => status::run(args, environment, stdout),
-        Command::Logs(args) => logs::run(args, cli.no_color, environment, stdout),
-        Command::Doctor(args) => doctor::run(args, environment, stdout),
-        Command::Jobs(args) => jobs::run(args, environment, stdout),
-        Command::Update(args) => update::run(args, environment, stdout, stderr),
+        Command::DnsStatus => dns::status(environment, streams),
+        Command::DnsInstall => dns::install(environment, streams),
+        Command::DnsUninstall => dns::uninstall(environment, streams),
+        Command::PortsStatus(args) => ports::status(args, environment, streams),
+        Command::PortsInstall => ports::install(environment, streams),
+        Command::PortsUninstall => ports::uninstall(environment, streams),
+        Command::CaStatus => ca::status(environment, streams),
+        Command::CaTrust => ca::trust(environment, streams),
+        Command::CaUntrust => ca::untrust(environment, streams),
+        Command::Link(args) => project::link(args, environment, streams),
+        Command::Init(args) => init::run(args, environment, streams),
+        Command::Unlink(args) => project::unlink(args, environment, streams),
+        Command::Open(args) => project::open(args, environment, streams),
+        Command::ProjectEnv(args) => project::env(args, environment, streams),
+        Command::Status(args) => status::run(args, environment, streams),
+        Command::Logs(args) => logs::run(args, environment, streams),
+        Command::Doctor(args) => doctor::run(args, environment, streams),
+        Command::Jobs(args) => jobs::run(args, environment, streams),
+        Command::Update(args) => update::run(args, environment, streams),
         Command::InternalUpdateManagedResources => {
-            update::run_managed_resource_continuation(environment, stdout)
+            update::run_managed_resource_continuation(environment, streams)
         }
-        Command::List(args) => project::list(args, environment, stdout),
-        Command::PhpUse(args) => php::use_track(args, environment, stdout),
-        Command::PhpInstall(args) => php::install(args, environment, stdout),
-        Command::PhpUpdate => php::update(environment, stdout),
-        Command::PhpUninstall(args) => php::uninstall(args, environment, stdout),
-        Command::PhpList(args) => php::list(args, environment, stdout),
-        Command::ComposerInstall => composer::install(environment, stdout),
-        Command::ComposerUpdate => composer::update(environment, stdout),
-        Command::ComposerUninstall(args) => composer::uninstall(args, environment, stdout),
+        Command::List(args) => project::list(args, environment, streams),
+        Command::PhpUse(args) => php::use_track(args, environment, streams),
+        Command::PhpInstall(args) => php::install(args, environment, streams),
+        Command::PhpUpdate => php::update(environment, streams),
+        Command::PhpUninstall(args) => php::uninstall(args, environment, streams),
+        Command::PhpList(args) => php::list(args, environment, streams),
+        Command::ComposerInstall => composer::install(environment, streams),
+        Command::ComposerUpdate => composer::update(environment, streams),
+        Command::ComposerUninstall(args) => composer::uninstall(args, environment, streams),
         Command::MailpitInstall(args) | Command::MailInstall(args) => {
-            mailpit::install(args, environment, stdout)
+            mailpit::install(args, environment, streams)
         }
-        Command::MailpitUpdate | Command::MailUpdate => mailpit::update(environment, stdout),
+        Command::MailpitUpdate | Command::MailUpdate => mailpit::update(environment, streams),
         Command::MailpitUninstall(args) | Command::MailUninstall(args) => {
-            mailpit::uninstall(args, environment, stdout)
+            mailpit::uninstall(args, environment, streams)
         }
         Command::MailpitList(args) | Command::MailList(args) => {
-            mailpit::list(args, environment, stdout)
+            mailpit::list(args, environment, streams)
         }
-        Command::MailpitOpen | Command::MailOpen => mailpit::open(environment, stdout),
-        Command::RedisInstall(args) => redis::install(args, environment, stdout),
-        Command::RedisUpdate => redis::update(environment, stdout),
-        Command::RedisUninstall(args) => redis::uninstall(args, environment, stdout),
-        Command::RedisList(args) => redis::list(args, environment, stdout),
+        Command::MailpitOpen | Command::MailOpen => mailpit::open(environment, streams),
+        Command::RedisInstall(args) => redis::install(args, environment, streams),
+        Command::RedisUpdate => redis::update(environment, streams),
+        Command::RedisUninstall(args) => redis::uninstall(args, environment, streams),
+        Command::RedisList(args) => redis::list(args, environment, streams),
         Command::RustfsInstall(args) | Command::S3Install(args) => {
-            rustfs::install(args, environment, stdout)
+            rustfs::install(args, environment, streams)
         }
-        Command::RustfsUpdate | Command::S3Update => rustfs::update(environment, stdout),
+        Command::RustfsUpdate | Command::S3Update => rustfs::update(environment, streams),
         Command::RustfsUninstall(args) | Command::S3Uninstall(args) => {
-            rustfs::uninstall(args, environment, stdout)
+            rustfs::uninstall(args, environment, streams)
         }
         Command::RustfsList(args) | Command::S3List(args) => {
-            rustfs::list(args, environment, stdout)
+            rustfs::list(args, environment, streams)
         }
-        Command::RustfsOpen | Command::S3Open => rustfs::open(environment, stdout),
-        Command::MysqlInstall(args) => mysql::install(args, environment, stdout),
-        Command::MysqlUpdate => mysql::update(environment, stdout),
-        Command::MysqlUninstall(args) => mysql::uninstall(args, environment, stdout),
-        Command::MysqlList(args) => mysql::list(args, environment, stdout),
+        Command::RustfsOpen | Command::S3Open => rustfs::open(environment, streams),
+        Command::MysqlInstall(args) => mysql::install(args, environment, streams),
+        Command::MysqlUpdate => mysql::update(environment, streams),
+        Command::MysqlUninstall(args) => mysql::uninstall(args, environment, streams),
+        Command::MysqlList(args) => mysql::list(args, environment, streams),
         Command::PostgresInstall(args) | Command::PgInstall(args) => {
-            postgres::install(args, environment, stdout)
+            postgres::install(args, environment, streams)
         }
-        Command::PostgresUpdate | Command::PgUpdate => postgres::update(environment, stdout),
+        Command::PostgresUpdate | Command::PgUpdate => postgres::update(environment, streams),
         Command::PostgresUninstall(args) | Command::PgUninstall(args) => {
-            postgres::uninstall(args, environment, stdout)
+            postgres::uninstall(args, environment, streams)
         }
         Command::PostgresList(args) | Command::PgList(args) => {
-            postgres::list(args, environment, stdout)
+            postgres::list(args, environment, streams)
         }
     }
 }
@@ -302,11 +300,12 @@ fn command_blocked_during_update(command: &Command) -> bool {
 }
 
 const RECONCILE_KIND: &str = "reconcile";
+const SYSTEM_SCOPE: &str = "system";
 const JOBS_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 const DEFERRED_RECONCILIATION_WARNING: &str =
-    "warning: reconciliation deferred while another PV mutation holds the jobs lock";
+    "reconciliation deferred while another PV mutation holds the jobs lock";
 const DAEMON_UNAVAILABLE_WARNING: &str =
-    "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it";
+    "PV daemon is not running; reconciliation will run after `pv setup` starts it";
 
 fn acquire_jobs_lock(paths: &PvPaths) -> Result<state::JobsLock, ExecuteError> {
     state::JobsLock::acquire(paths).map_err(coordination_lock_error)
@@ -317,18 +316,18 @@ fn acquire_jobs_lock(paths: &PvPaths) -> Result<state::JobsLock, ExecuteError> {
 /// The command releases `jobs.lock` before notifying the daemon, so a competing
 /// mutation can win the handoff and make the daemon reject this request. Retry
 /// that specific rejection until the request is admitted instead of losing the
-/// reconciliation for committed state.
+/// reconciliation for committed state. Warnings go to `stderr`.
 fn submit_reconciliation(
     paths: &PvPaths,
     scope: &str,
-    output: &mut Output<'_, impl Write>,
+    stderr: &mut Output<'_>,
 ) -> Result<Option<::daemon::SubmittedJob>, ExecuteError> {
     let mut deferred = false;
     loop {
         match ::daemon::submit_job_blocking(paths.clone(), RECONCILE_KIND, scope) {
             Ok(job) => return Ok(Some(job)),
             Err(::daemon::DaemonError::Io(error)) if daemon_is_unavailable(&error) => {
-                output.line(DAEMON_UNAVAILABLE_WARNING)?;
+                stderr.warning(DAEMON_UNAVAILABLE_WARNING)?;
 
                 return Ok(None);
             }
@@ -337,13 +336,124 @@ fn submit_reconciliation(
             {
                 if !deferred {
                     deferred = true;
-                    output.line(DEFERRED_RECONCILIATION_WARNING)?;
+                    stderr.warning(DEFERRED_RECONCILIATION_WARNING)?;
                 }
                 std::thread::sleep(JOBS_LOCK_RETRY_INTERVAL);
             }
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+/// Requests system reconciliation for committed state. The job line is part
+/// of the command's result; warnings go to stderr.
+fn request_system_reconciliation(
+    paths: &PvPaths,
+    streams: &mut Streams<'_>,
+) -> Result<(), ExecuteError> {
+    if let Some(job) = submit_reconciliation(paths, SYSTEM_SCOPE, &mut streams.err)? {
+        write_reconciliation_requested(&mut streams.out, &job.id)?;
+    }
+
+    Ok(())
+}
+
+/// Requests reconciliation of one Project for committed state.
+fn request_project_reconciliation(
+    paths: &PvPaths,
+    project: &state::ProjectRecord,
+    streams: &mut Streams<'_>,
+) -> Result<(), ExecuteError> {
+    let scope = format!("project:{}", project.id);
+    if let Some(job) = submit_reconciliation(paths, &scope, &mut streams.err)? {
+        streams.out.follow_up(
+            Line::from("Queued reconciliation ")
+                .value(job.id)
+                .text(format!(" for {}", project_display_name(project))),
+        )?;
+    }
+
+    Ok(())
+}
+
+/// The name users know a Project by: its slug when resource-only, otherwise
+/// its primary hostname.
+fn project_display_name(project: &state::ProjectRecord) -> &str {
+    if project.mode == state::ProjectMode::ResourceOnly {
+        return project.slug.as_str();
+    }
+
+    project
+        .primary_hostname
+        .as_deref()
+        .unwrap_or(project.slug.as_str())
+}
+
+/// Reports a system file PV must not touch because it is not PV-owned or
+/// cannot be inspected.
+fn write_left_in_place(
+    output: &mut Output<'_>,
+    summary: &str,
+    path: &camino::Utf8Path,
+    message: Option<&str>,
+) -> io::Result<()> {
+    output.failure(Line::field(summary, path))?;
+    if let Some(message) = message {
+        output.detail(message)?;
+    }
+    output.detail("Leaving it in place.")
+}
+
+/// The follow-up line for an accepted system reconciliation request.
+fn write_reconciliation_requested(output: &mut Output<'_>, job_id: &str) -> io::Result<()> {
+    output.follow_up(Line::field("System reconciliation requested: ", job_id))
+}
+
+fn write_php_pair_install_lines(
+    installed: &resources::PhpPairInstall,
+    streams: &mut Streams<'_>,
+) -> Result<(), ExecuteError> {
+    write_revoked_latest_warning(installed.php(), &mut streams.err)?;
+    write_revoked_latest_warning(installed.frankenphp(), &mut streams.err)?;
+    streams
+        .out
+        .success(Line::field("Installed PHP track ", installed.php().track()))?;
+    streams.out.success(Line::field(
+        "Installed FrankenPHP track ",
+        installed.frankenphp().track(),
+    ))?;
+
+    Ok(())
+}
+
+/// A runtime's mark. A degraded runtime is a failure, as `pv status` and
+/// `pv doctor` count it.
+fn runtime_mark(status: Option<RuntimeObservedStatus>) -> Mark {
+    match status {
+        Some(RuntimeObservedStatus::Running) => Mark::Running,
+        Some(RuntimeObservedStatus::Degraded | RuntimeObservedStatus::Failed) => Mark::Failure,
+        Some(RuntimeObservedStatus::Pending | RuntimeObservedStatus::Stopped) | None => Mark::Idle,
+    }
+}
+
+/// Announces a step that sudo will ask an administrator password for, as an
+/// active stderr step like the prompt it introduces. The step must then run
+/// live, without a spinner or captured rows, so the prompt stays visible.
+fn write_administrator_step(stderr: &mut Output<'_>, line: String) -> io::Result<()> {
+    if !stderr.surface().decorated() {
+        return Ok(());
+    }
+    stderr.flow_step(Mark::Active, line)
+}
+
+/// Reports how many tracks an update changed; nothing changed is a no-op.
+fn write_updated(output: &mut Output<'_>, count: usize, what: &str) -> io::Result<()> {
+    let mark = if count == 0 {
+        Mark::Idle
+    } else {
+        Mark::Success
+    };
+    output.status(mark, format!("Updated {count} {what}"))
 }
 
 fn daemon_is_unavailable(error: &io::Error) -> bool {
@@ -372,10 +482,10 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
 
 fn write_revoked_latest_warnings(
     installs: &[resources::ManagedResourceInstall],
-    output: &mut Output<'_, impl Write>,
+    stderr: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     for install in installs {
-        write_revoked_latest_warning(install, output)?;
+        write_revoked_latest_warning(install, stderr)?;
     }
 
     Ok(())
@@ -383,14 +493,14 @@ fn write_revoked_latest_warnings(
 
 fn write_revoked_latest_warning(
     install: &resources::ManagedResourceInstall,
-    output: &mut Output<'_, impl Write>,
+    stderr: &mut Output<'_>,
 ) -> Result<(), ExecuteError> {
     let Some(revoked_latest) = install.revoked_latest() else {
         return Ok(());
     };
 
-    output.line(&format!(
-        "warning: newest {} artifact {} for track {} was revoked ({}); installed fallback {}",
+    stderr.warning(&format!(
+        "newest {} artifact {} for track {} was revoked ({}); installed fallback {}",
         install.resource_name(),
         revoked_latest.artifact_version(),
         install.track(),
@@ -418,6 +528,7 @@ mod tests {
     };
     use crate::environment::Environment;
     use crate::error::ExecuteError;
+    use crate::output::{Presentation, Streams};
     use crate::shell::Shell;
 
     #[test]
@@ -556,14 +667,14 @@ mod tests {
         let environment = AccessTrackingEnvironment::default();
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
+        let mut streams = Streams::new(&mut stdout, &mut stderr, Presentation::plain());
         let result = execute_with_capability_check(
             Cli {
                 no_color: false,
                 command,
             },
             &environment,
-            &mut stdout,
-            &mut stderr,
+            &mut streams,
             |command| {
                 if required_capability(command) != Some(capability) {
                     return Ok(());
@@ -624,11 +735,6 @@ mod tests {
         fn stdin_is_terminal(&self) -> bool {
             self.record_access();
             false
-        }
-
-        fn read_line(&self) -> io::Result<String> {
-            self.record_access();
-            Err(io::Error::other("unexpected input access"))
         }
 
         fn open_url(&self, _url: &str) -> io::Result<()> {

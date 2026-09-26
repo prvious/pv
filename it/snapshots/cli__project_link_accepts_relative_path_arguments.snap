@@ -7,14 +7,14 @@ expression: "(link, list)"
         code: Some(
             0,
         ),
-        stdout: "Linked acme-store.test -> <tempdir>/parent/Acme Store\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Linked acme-store.test -> <tempdir>/parent/Acme Store\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  8.4  unknown  unknown  none  <tempdir>/parent/Acme Store\n",
+        stdout: "Project  Mode  PHP  Status  Resources  Env  Path\nacme-store.test  served  8.4  unknown  0  none  <tempdir>/parent/Acme Store\n",
         stderr: "",
     },
 )

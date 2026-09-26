@@ -9,8 +9,8 @@ expression: snapshot
                 0,
             ),
         ),
-        stdout: "Queued removal for Postgres track 16\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Queued removal for Postgres track 16\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     [
         ResourceRecordSnapshot {

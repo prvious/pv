@@ -1,0 +1,34 @@
+---
+source: crates/cli/tests/doctor.rs
+expression: failing.stdout
+---
+[pv] doctor
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+SYSTEM
+✓  State layout             9 PV-owned directories have user-only permissions
+✓  Database                 read-only open succeeded; 12 migrations applied
+✓  Privileged helper        available at version 1.0.0 with protocol 1
+
+ROUTING
+✓  DNS config               system resolver uses port 35353
+✓  Port redirect config     low-port routing is active
+   evidence: pfctl; expected: HTTP 48080, HTTPS 48443; active: HTTP 48080, HTTPS 48443; observed: <timestamp>
+✓  Local CA trust           system trust matches fingerprint <fingerprint>
+
+DAEMON & JOBS
+✓  Daemon LaunchAgent       PV-owned LaunchAgent is installed
+   path: <tempdir>/home/Library/LaunchAgents/com.prvious.pv.daemon.plist
+✗  Daemon socket            daemon socket is present but daemon did not answer health check
+   path: <tempdir>/home/.pv/run/pv.sock; error: I/O error: Connection refused (os error 61)
+   ↳ repair  pv daemon:restart
+✗  Recent jobs              1 unresolved failed job(s)
+   <job-id> reconcile system at <timestamp>: Gateway failed to start
+   ↳ repair  pv daemon:restart
+✗  Runtime states           1 degraded or failed runtime observation(s)
+   gateway Gateway restarted twice
+   ↳ repair  pv daemon:restart
+✓  Artifact manifest cache  cached manifest is present
+   path: <tempdir>/home/.pv/downloads/manifest.json
+
+✗  8 passed · 0 warnings · 3 failed

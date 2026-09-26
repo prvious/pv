@@ -9,8 +9,8 @@ expression: "(link, open, opened_urls)"
                 0,
             ),
         ),
-        stdout: "Linked acme.test -> <tempdir>/acme\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
-        stderr: "",
+        stdout: "Linked acme.test -> <tempdir>/acme\n",
+        stderr: "\u{1b}[33m⚠\u{1b}[0m  \u{1b}[33mwarning:\u{1b}[0m PV daemon is not running; reconciliation will run after `pv setup`\n   starts it\n",
     },
     RunOutput {
         exit_code: ExitCode(
@@ -18,7 +18,7 @@ expression: "(link, open, opened_urls)"
                 0,
             ),
         ),
-        stdout: "Select a Project:\n1. acme.test  <tempdir>/acme\nEnter selection:\nOpened https://acme.test for acme.test\n",
+        stdout: "Opened https://acme.test for acme.test\n",
         stderr: "",
     },
     [
