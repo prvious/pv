@@ -26,7 +26,7 @@ hostnames:
   - api.acme.test
   - admin.acme.test
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
   APP_ENV: production
 mysql:
   version: "8.4"

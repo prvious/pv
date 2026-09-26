@@ -16,7 +16,7 @@ root: public
 hostnames:
   - Api.Acme.test.
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 mysql:
   version: 8.0
   env:
@@ -46,7 +46,7 @@ root: missing
 hostnames:
   - Api.Example.test.
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
   APP_ENV: local
 "#,
     )?;
@@ -279,11 +279,11 @@ fn project_config_rejects_invalid_env_placeholders() -> Result<()> {
 fn project_config_validates_url_placeholder_scopes() {
     let cases = vec![
         (
-            "project-url-project-env",
+            "project-url-root-env",
             ProjectConfig::parse(
                 r#"
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
             ),
         ),
@@ -299,30 +299,11 @@ env:
             ),
         ),
         (
-            "legacy-url-project-env",
-            ProjectConfig::parse(
-                r#"
-env:
-  APP_URL: "${url}"
-"#,
-            ),
-        ),
-        (
             "unknown-project-env",
             ProjectConfig::parse(
                 r#"
 env:
   APP_URL: "${missing_url}"
-"#,
-            ),
-        ),
-        (
-            "resource-project-url",
-            ProjectConfig::parse(
-                r#"
-mysql:
-  env:
-    APP_URL: "${project_url}"
 "#,
             ),
         ),
@@ -355,18 +336,6 @@ mysql:
 mailpit:
   env:
     MAIL_URL: "${url}"
-"#,
-            ),
-        ),
-        (
-            "allocation-project-url",
-            ProjectConfig::parse(
-                r#"
-mysql:
-  allocations:
-    app:
-      env:
-        APP_URL: "${project_url}"
 "#,
             ),
         ),
@@ -421,7 +390,7 @@ fn project_config_reports_tls_placeholder_usage() -> Result<()> {
         "postgres:\n  allocations:\n    app:\n      env:\n        TLS_CA: \"${tls.ca}\"\n",
     )?;
     let escaped_tls = ProjectConfig::parse("env:\n  LITERAL: \"$${tls.key}\"\n")?;
-    let no_tls = ProjectConfig::parse("env:\n  APP_URL: \"${project_url}\"\n")?;
+    let no_tls = ProjectConfig::parse("env:\n  APP_URL: \"${url}\"\n")?;
 
     assert!(project_tls.uses_tls_placeholders());
     assert!(resource_tls.uses_tls_placeholders());
@@ -463,8 +432,8 @@ redis:
             if field == "redis.allocations.app.env.S3_BUCKET" && placeholder == "bucket"
     ));
 
-    assert!(ProjectConfig::parse("env:\n  APP_URL: \"${project_url}\"\n").is_ok());
-    assert!(ProjectConfig::parse("mysql:\n  env:\n    APP_URL: \"${project_url}\"\n").is_ok());
+    assert!(ProjectConfig::parse("env:\n  APP_URL: \"${url}\"\n").is_ok());
+    assert!(ProjectConfig::parse("mysql:\n  env:\n    APP_URL: \"${url}\"\n").is_ok());
     assert!(ProjectConfig::parse("mysql:\n  env:\n    DB_HOST: \"${host}\"\n").is_ok());
     assert!(
         ProjectConfig::parse(
@@ -473,7 +442,7 @@ mysql:
   allocations:
     app:
       env:
-        APP_URL: "${project_url}"
+        APP_URL: "${url}"
 "#
         )
         .is_ok()
@@ -666,7 +635,7 @@ root: public
 hostnames:
   - Admin.Acme.test.
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 mysql:
   version: 8.0
   env:
@@ -704,7 +673,7 @@ fn project_config_writer_writes_full_config_to_preferred_file() -> Result<()> {
 php: 8.4
 root: public
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 mysql:
   version: latest
   allocations:

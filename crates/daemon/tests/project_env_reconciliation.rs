@@ -42,9 +42,45 @@ env_file: config/development.env
 php: "8.4"
 env:
   APP_NAME: resource-project
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
+postgres:
+  version: "8.0"
+  env:
+    RESOURCE_URL: "${url}"
+  allocations:
+    app-db:
+      env:
+        DATABASE_URL: "${url}"
 "#,
     )?;
+    seed_postgres_context(&paths, &project)?;
+    {
+        let mut database = Database::open(&paths)?;
+        database.record_managed_resource_track_env_context(
+            "postgres",
+            "8.0",
+            &env_context(&[
+                ("host", "127.0.0.1"),
+                ("password", "secret"),
+                ("port", "3306"),
+                ("url", "postgres://root:secret@127.0.0.1:3306"),
+                ("username", "root"),
+            ]),
+        )?;
+        database.record_resource_allocation_env_context(
+            &project.id,
+            "postgres",
+            "8.0",
+            "app-db",
+            &env_context(&[
+                ("database", "acme_test_app_db"),
+                (
+                    "url",
+                    "postgres://root:secret@127.0.0.1:3306/acme_test_app_db",
+                ),
+            ]),
+        )?;
+    }
 
     let lines = run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
@@ -64,7 +100,7 @@ env:
     assert_eq!(reconciled.php_runtime.track.as_deref(), Some("8.4"));
     assert_eq!(
         custom_env,
-        "# >>> PV MANAGED\nAPP_NAME=resource-project\n# <<< PV MANAGED\n"
+        "# >>> PV MANAGED\nAPP_NAME=resource-project\nDATABASE_URL=postgres://root:secret@127.0.0.1:3306/acme_test_app_db\nRESOURCE_URL=postgres://root:secret@127.0.0.1:3306\n# <<< PV MANAGED\n"
     );
 
     assert_with_normalized_timestamps_and_tempdir(
@@ -240,7 +276,7 @@ async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> R
         &tempdir.path().join("project"),
         "acme.test",
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
   APP_NAME: acme
   VITE_DEV_SERVER_KEY: "${tls.key}"
   VITE_DEV_SERVER_CERT: "${tls.cert}"
@@ -427,7 +463,7 @@ async fn serving_transition_clears_and_restores_all_dormant_env_entries() -> Res
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "env:\n  APP_URL: \"${project_url}\"\n",
+        "env:\n  APP_URL: \"${url}\"\n",
     )?;
     write_sensitive_file(&project.path.join(".env"), "USER_VALUE=kept\n")?;
 
@@ -437,10 +473,7 @@ async fn serving_transition_clears_and_restores_all_dormant_env_entries() -> Res
         "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_URL=https://acme.test\n# <<< PV MANAGED\n"
     );
 
-    write_project_config(
-        &project,
-        "serve: false\nenv:\n  APP_URL: \"${project_url}\"\n",
-    )?;
+    write_project_config(&project, "serve: false\nenv:\n  APP_URL: \"${url}\"\n")?;
     run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
     let resource_only = database
@@ -453,7 +486,7 @@ async fn serving_transition_clears_and_restores_all_dormant_env_entries() -> Res
     );
     drop(database);
 
-    write_project_config(&project, "env:\n  APP_URL: \"${project_url}\"\n")?;
+    write_project_config(&project, "env:\n  APP_URL: \"${url}\"\n")?;
     run_project_reconciliation(&paths, &project).await?;
     let database = Database::open(&paths)?;
     let served = database
@@ -645,7 +678,7 @@ async fn project_env_reconciliation_uses_project_root_not_config_path_for_dotenv
 
     write_sensitive_file(
         &project_root.join("pv.yml"),
-        "env:\n  APP_URL: \"${project_url}\"\n  APP_NAME: canonical\n",
+        "env:\n  APP_URL: \"${url}\"\n  APP_NAME: canonical\n",
     )?;
     write_sensitive_file(
         &original_path.join(".env"),
@@ -997,7 +1030,7 @@ async fn root_env_with_resource_waits_for_resource_context_before_dotenv() -> Re
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "env:\n  APP_URL: \"${project_url}\"\npostgres:\n  version: \"8.0\"\n",
+        "env:\n  APP_URL: \"${url}\"\npostgres:\n  version: \"8.0\"\n",
     )?;
     write_sensitive_file(&project.path.join(".env"), "USER_VALUE=kept\n")?;
 
@@ -1062,7 +1095,7 @@ async fn malformed_pv_block_leaves_dotenv_unchanged_and_records_failure() -> Res
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "env:\n  APP_URL: \"${project_url}\"\n",
+        "env:\n  APP_URL: \"${url}\"\n",
     )?;
     write_sensitive_file(
         &project.path.join(".env"),
@@ -1136,7 +1169,7 @@ async fn duplicate_user_owned_key_writes_block_and_records_warning() -> Result<(
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "env:\n  APP_URL: \"${project_url}\"\n",
+        "env:\n  APP_URL: \"${url}\"\n",
     )?;
     write_sensitive_file(&project.path.join(".env"), "APP_URL=https://user.test\n")?;
 
@@ -1404,93 +1437,6 @@ async fn malformed_config_with_existing_tls_is_renewed_by_daemon_health() -> Res
 }
 
 #[tokio::test]
-async fn legacy_url_placeholder_failure_preserves_last_valid_desired_state() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        r#"hostnames:
-  - api.acme.test
-env:
-  APP_URL: "${project_url}"
-postgres:
-  version: "8.0"
-  allocations:
-    app-db:
-      env:
-        DB_DATABASE: "${database}"
-"#,
-    )?;
-    seed_postgres_context(&paths, &project)?;
-    let initial_lines = run_project_reconciliation(&paths, &project).await?;
-    let database = Database::open(&paths)?;
-    let managed_resources_before = database.project_managed_resources(&project.id)?;
-    let allocations_before = database.resource_allocations(&project.id, "postgres")?;
-    let hostnames_before = database
-        .project_by_id(&project.id)?
-        .map(|project| project.additional_hostnames);
-    let dotenv_before = read_dotenv(&project)?;
-
-    write_project_config(
-        &project,
-        r#"hostnames:
-  - changed.acme.test
-env:
-  BAD_URL: "${url}"
-redis:
-  version: "7.2"
-  allocations:
-    cache: {}
-"#,
-    )?;
-
-    let invalid_lines = run_project_reconciliation(&paths, &project).await?;
-    let database = Database::open(&paths)?;
-    let managed_resources_after = database.project_managed_resources(&project.id)?;
-    let allocations_after = database.resource_allocations(&project.id, "postgres")?;
-    let hostnames_after = database
-        .project_by_id(&project.id)?
-        .map(|project| project.additional_hostnames);
-    let dotenv_after = read_dotenv(&project)?;
-
-    assert_eq!(
-        hostnames_before, hostnames_after,
-        "invalid legacy URL placeholder config must preserve additional hostnames"
-    );
-    assert_eq!(
-        managed_resources_before, managed_resources_after,
-        "invalid legacy URL placeholder config must preserve managed resources"
-    );
-    assert_eq!(
-        allocations_before, allocations_after,
-        "invalid legacy URL placeholder config must preserve Resource allocations"
-    );
-    assert_eq!(
-        dotenv_before, dotenv_after,
-        "invalid legacy URL placeholder config must preserve the last rendered .env block"
-    );
-
-    assert_with_normalized_timestamps(
-        "legacy_url_placeholder_failure_preserves_last_valid_desired_state",
-        (
-            initial_lines,
-            invalid_lines,
-            hostnames_after,
-            managed_resources_after,
-            allocations_after,
-            database.resource_allocations(&project.id, "redis")?,
-            dotenv_after,
-            database.project_env_observed_state(&project.id)?,
-            latest_job(&database, &format!("project:{}", project.id))?,
-        ),
-    )?;
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn no_mappings_do_not_touch_existing_dotenv_and_record_noop_success() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1560,7 +1506,7 @@ async fn missing_dotenv_is_created_with_private_permissions() -> Result<()> {
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "env:\n  APP_URL: \"${project_url}\"\n",
+        "env:\n  APP_URL: \"${url}\"\n",
     )?;
 
     let lines = run_project_reconciliation(&paths, &project).await?;
@@ -1589,7 +1535,7 @@ async fn multiple_managed_dotenv_blocks_fold_to_one_and_preserve_permissions() -
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "env:\n  APP_URL: \"${project_url}\"\n",
+        "env:\n  APP_URL: \"${url}\"\n",
     )?;
     let dotenv_path = project.path.join(".env");
     write_sensitive_file(

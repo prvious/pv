@@ -197,7 +197,7 @@ For Laravel Projects, or when `APP_URL` exists in `.env.example` / `.env`, `pv i
 
 ```yaml
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 ```
 
 If Vite is detected, `pv init` should offer PV TLS placeholder values. Laravel's Vite documentation configures HTTPS through `vite.config.js` with `server.https` and `detectTls`; it does not define a universal env variable contract. Therefore PV must not claim these variables are consumed automatically.
@@ -206,7 +206,7 @@ When selected, PV should generate Laravel-oriented env values for the Project to
 
 ```yaml
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
   VITE_DEV_SERVER_CERT: "${tls_cert}"
   VITE_DEV_SERVER_KEY: "${tls_key}"
 ```

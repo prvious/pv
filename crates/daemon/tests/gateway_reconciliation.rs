@@ -2208,7 +2208,7 @@ root: public
         r#"php: "8.4"
 root: public
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
 
@@ -2533,7 +2533,7 @@ async fn targeted_project_reconciliation_touches_only_old_and_new_workers() -> R
         r#"php: "8.4"
 root: public
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     reconcile_project_gateway_runtimes_for_test(

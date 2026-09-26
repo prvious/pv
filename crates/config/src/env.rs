@@ -58,11 +58,12 @@ pub fn render_project_env(
     config: &ProjectConfig,
     context: &ProjectEnvContext,
 ) -> Result<RenderedProjectEnv, ConfigError> {
-    let project_values = project_context_values(context, config.serve)?;
-    let mut values = render_mapping("env", &config.env, &project_values, config.serve)?
+    let mut project_values = project_context_values(context, config.serve)?;
+    let mut values = render_mapping("env", &config.env, &project_values, config.serve, true)?
         .into_iter()
         .map(|(key, entry)| (key, entry.value))
         .collect::<BTreeMap<_, _>>();
+    project_values.remove("url");
 
     let mut resource_values = BTreeMap::new();
     for (resource, resource_config) in &config.resources {
@@ -81,6 +82,7 @@ pub fn render_project_env(
             &resource_config.env,
             &context_values,
             config.serve,
+            false,
         )?;
         insert_same_depth_entries(&mut resource_values, rendered)?;
     }
@@ -117,6 +119,7 @@ pub fn render_project_env(
                 &allocation_config.env,
                 &context_values,
                 config.serve,
+                false,
             )?;
             insert_same_depth_entries(&mut allocation_values, rendered)?;
         }
@@ -134,7 +137,7 @@ pub fn validate_project_env_shape(config: &ProjectConfig) -> Result<(), ConfigEr
     let mut resource_values = BTreeMap::new();
     for (resource, resource_config) in &config.resources {
         for (key, value) in &resource_config.env {
-            if !config.serve && value_uses_serving_placeholder(value) {
+            if !config.serve && value_uses_serving_placeholder(value, false) {
                 continue;
             }
             insert_same_depth_key(&mut resource_values, key, format!("{resource}.env.{key}"))?;
@@ -145,7 +148,7 @@ pub fn validate_project_env_shape(config: &ProjectConfig) -> Result<(), ConfigEr
     for (resource, resource_config) in &config.resources {
         for (allocation, allocation_config) in &resource_config.allocations {
             for (key, value) in &allocation_config.env {
-                if !config.serve && value_uses_serving_placeholder(value) {
+                if !config.serve && value_uses_serving_placeholder(value, false) {
                     continue;
                 }
                 insert_same_depth_key(
@@ -264,14 +267,14 @@ fn project_context_values(
     if serve && context.primary_hostname.is_empty() {
         return Err(ConfigError::MissingEnvContext {
             field: "project.primary_hostname".to_string(),
-            placeholder: "project_url".to_string(),
+            placeholder: "url".to_string(),
         });
     }
 
     let mut values = BTreeMap::new();
     if !context.primary_hostname.is_empty() {
         values.insert(
-            "project_url".to_string(),
+            "url".to_string(),
             format!("https://{}", context.primary_hostname),
         );
     }
@@ -319,11 +322,12 @@ fn render_mapping(
     mapping: &BTreeMap<String, String>,
     context_values: &BTreeMap<String, String>,
     serve: bool,
+    project_scope: bool,
 ) -> Result<BTreeMap<String, RenderedEnvEntry>, ConfigError> {
     let mut rendered = BTreeMap::new();
 
     for (key, value) in mapping {
-        if !serve && value_uses_serving_placeholder(value) {
+        if !serve && value_uses_serving_placeholder(value, project_scope) {
             continue;
         }
         let field = format!("{field}.{key}");

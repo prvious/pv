@@ -207,7 +207,7 @@ fn project_config_writer_updates_existing_preferred_php_track() -> Result<()> {
     let config_path = project.join("pv.yml");
     write_file(
         &config_path,
-        "hostnames:\n  - api.acme.test\nphp: 8.3\nenv:\n  APP_URL: \"${project_url}\"\n",
+        "hostnames:\n  - api.acme.test\nphp: 8.3\nenv:\n  APP_URL: \"${url}\"\n",
     )?;
 
     let written = config::write_project_php_track(&project, "8.4")?;

@@ -124,7 +124,7 @@ root: public
 hostnames:
   - api.acme.test
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 mysql:
   version: "8.4"
   allocations:
@@ -147,6 +147,8 @@ redis:
 ```
 
 Project config accepts YAML anchors, aliases, and merge keys as YAML syntax. PV resolves them before validating keys and values. Unknown keys that remain after YAML resolution fail validation.
+
+In root `env:`, `${url}` is the primary Project URL. In resource or allocation `env:`, `${url}` is that resource or allocation's URL where its placeholder contract supports it.
 
 ### PHP Extensions
 

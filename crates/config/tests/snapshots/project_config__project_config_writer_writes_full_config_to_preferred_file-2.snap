@@ -5,7 +5,7 @@ expression: "read_file(&project.join(\"pv.yml\"))?"
 php: '8.4'
 root: public
 env:
-  APP_URL: ${project_url}
+  APP_URL: ${url}
 mysql:
   version: latest
   allocations:

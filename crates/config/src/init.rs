@@ -188,7 +188,7 @@ pub fn render_project_init_config(
         config
             .env
             .entry("APP_URL".to_string())
-            .or_insert_with(|| "${project_url}".to_string());
+            .or_insert_with(|| "${url}".to_string());
     }
     if selection.include_vite_tls {
         config

@@ -11,7 +11,7 @@ use crate::discovery::validate_root_shape;
 use crate::hostname::normalize_additional_hostname;
 use crate::{AllocationConfig, ConfigError, PhpConfig, ProjectConfig, ResourceConfig};
 
-const PROJECT_ENV_PLACEHOLDERS: &[&str] = &["project_url", "tls.ca", "tls.cert", "tls.key"];
+const TLS_ENV_PLACEHOLDERS: &[&str] = &["tls.ca", "tls.cert", "tls.key"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EnvPlaceholderScope<'a> {
@@ -555,12 +555,12 @@ fn validate_env_placeholders(
 
 impl<'a> EnvPlaceholderScope<'a> {
     fn allows_placeholder(self, placeholder: &str) -> Result<bool, ConfigError> {
-        if PROJECT_ENV_PLACEHOLDERS.contains(&placeholder) {
+        if TLS_ENV_PLACEHOLDERS.contains(&placeholder) {
             return Ok(true);
         }
 
         match self {
-            Self::Project => Ok(false),
+            Self::Project => Ok(placeholder == "url"),
             Self::Resource { resource } => {
                 Ok(resource_placeholders(resource)?.contains(&placeholder))
             }

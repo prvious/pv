@@ -4,7 +4,7 @@ expression: cases
 ---
 [
     (
-        "project-url-project-env",
+        "project-url-root-env",
         Ok(
             ProjectConfig {
                 serve: true,
@@ -13,7 +13,7 @@ expression: cases
                 root: None,
                 hostnames: [],
                 env: {
-                    "APP_URL": "${project_url}",
+                    "APP_URL": "${url}",
                 },
                 resources: {},
             },
@@ -38,42 +38,11 @@ expression: cases
         ),
     ),
     (
-        "legacy-url-project-env",
-        Err(
-            UnknownEnvPlaceholder {
-                field: "env.APP_URL",
-                placeholder: "url",
-            },
-        ),
-    ),
-    (
         "unknown-project-env",
         Err(
             UnknownEnvPlaceholder {
                 field: "env.APP_URL",
                 placeholder: "missing_url",
-            },
-        ),
-    ),
-    (
-        "resource-project-url",
-        Ok(
-            ProjectConfig {
-                serve: true,
-                env_file: ".env",
-                php: None,
-                root: None,
-                hostnames: [],
-                env: {},
-                resources: {
-                    "mysql": ResourceConfig {
-                        track: None,
-                        env: {
-                            "APP_URL": "${project_url}",
-                        },
-                        allocations: {},
-                    },
-                },
             },
         ),
     ),
@@ -129,32 +98,6 @@ expression: cases
             UnknownEnvPlaceholder {
                 field: "mailpit.env.MAIL_URL",
                 placeholder: "url",
-            },
-        ),
-    ),
-    (
-        "allocation-project-url",
-        Ok(
-            ProjectConfig {
-                serve: true,
-                env_file: ".env",
-                php: None,
-                root: None,
-                hostnames: [],
-                env: {},
-                resources: {
-                    "mysql": ResourceConfig {
-                        track: None,
-                        env: {},
-                        allocations: {
-                            "app": AllocationConfig {
-                                env: {
-                                    "APP_URL": "${project_url}",
-                                },
-                            },
-                        },
-                    },
-                },
             },
         ),
     ),

@@ -174,7 +174,7 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
         write_project_config(
             &project,
             r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
         )?;
         await_cleanup_reconciliation(run_reconciliation_job(
@@ -352,7 +352,7 @@ fn link_resource_matrix_project(
 ) -> Result<ProjectRecord> {
     let config = format!(
         r#"env:
-  APP_URL: "${{project_url}}"
+  APP_URL: "${{url}}"
 mysql:
   version: "{mysql_track}"
   env:

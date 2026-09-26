@@ -443,7 +443,7 @@ fn project_link_list_and_unlink_use_injected_home() -> Result<()> {
     create_dir(&project.join("public"))?;
     write_file(
         &project.join("pv.yml"),
-        "php: 8.4\nhostnames:\n  - api.acme-store.test\nenv:\n  APP_URL: \"${project_url}\"\n",
+        "php: 8.4\nhostnames:\n  - api.acme-store.test\nenv:\n  APP_URL: \"${url}\"\n",
     )?;
 
     let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
@@ -780,10 +780,7 @@ fn project_list_reports_env_observed_status() -> Result<()> {
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("Acme Store");
     create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "env:\n  APP_URL: \"${project_url}\"\n",
-    )?;
+    write_file(&project.join("pv.yml"), "env:\n  APP_URL: \"${url}\"\n")?;
 
     let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
     let list_pending = run_pv_in_dir_with_home(&["list"], &project, &home)?;
@@ -942,10 +939,7 @@ fn project_list_reports_env_shape_validation_errors() -> Result<()> {
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("Acme Store");
     create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "env:\n  APP_URL: \"${project_url}\"\n",
-    )?;
+    write_file(&project.join("pv.yml"), "env:\n  APP_URL: \"${url}\"\n")?;
 
     let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
     write_file(
@@ -977,10 +971,7 @@ fn project_env_renders_values_from_binary_without_mutating_dotenv() -> Result<()
     let project = tempdir.path().join("Acme Store");
     let env_path = project.join(".env");
     create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "env:\n  APP_URL: \"${project_url}\"\n",
-    )?;
+    write_file(&project.join("pv.yml"), "env:\n  APP_URL: \"${url}\"\n")?;
     write_file(&env_path, "APP_URL=https://user.test\n")?;
 
     let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;

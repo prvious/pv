@@ -21,7 +21,7 @@ Project config preview:
 php: '8.4'
 root: public
 env:
-  APP_URL: ${project_url}
+  APP_URL: ${url}
   VITE_DEV_SERVER_CERT: ${tls.cert}
   VITE_DEV_SERVER_KEY: ${tls.key}
 mailpit:
