@@ -1,4 +1,4 @@
-use mysql_dump::{Patch, RewriteError, write_patched};
+use mysql_dump::{Edit, Patch, RewriteError, write_patched, write_transformed};
 
 #[test]
 fn patches_only_verified_identifier_bytes() -> Result<(), Box<dyn std::error::Error>> {
@@ -65,5 +65,39 @@ fn overlapping_patches_are_rejected() {
     assert!(matches!(
         result,
         Err(RewriteError::InvalidRange { start: 5 })
+    ));
+}
+
+#[test]
+fn whole_frame_omission_streams_past_patch_size_limit() -> Result<(), Box<dyn std::error::Error>> {
+    let body = "x".repeat(16_000);
+    let source = format!("before;{body}after;");
+    let mut output = Vec::new();
+    write_transformed(
+        source.as_bytes(),
+        &mut output,
+        [Edit::Skip(7..(7 + body.len() as u64))],
+    )?;
+    assert_eq!(output, b"before;after;");
+    Ok(())
+}
+
+#[test]
+fn overlapping_omission_and_patch_are_rejected() {
+    let result = write_transformed(
+        b"USE `admin`;".as_slice(),
+        Vec::new(),
+        [
+            Edit::Skip(0..4),
+            Edit::Patch(Patch {
+                range: 3..10,
+                expected: b" `admin".to_vec(),
+                replacement: b"x".to_vec(),
+            }),
+        ],
+    );
+    assert!(matches!(
+        result,
+        Err(RewriteError::InvalidRange { start: 3 })
     ));
 }
