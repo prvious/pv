@@ -47,7 +47,7 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
         &project_root.join("public/index.php"),
         "<?php echo 'pv-real-artifact-ok';",
     )?;
-    state::fs::write_sensitive_file(&project_root.join("pv.yml"), "document_root: public\n")?;
+    state::fs::write_sensitive_file(&project_root.join("pv.yml"), "root: public\n")?;
     let mut database = Database::open(&paths)?;
     database.link_project(LinkProjectInput {
         path: project_root.clone(),

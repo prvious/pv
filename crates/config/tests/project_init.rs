@@ -11,7 +11,7 @@ use config::{
 use insta::{assert_debug_snapshot, assert_snapshot};
 
 #[derive(Clone, Copy, Debug)]
-enum ExpectedDocumentRootError {
+enum ExpectedRootError {
     Absolute,
     Escaping,
     Missing,
@@ -161,7 +161,7 @@ fn project_init_preserves_existing_config_values_when_merging_defaults() -> Resu
   version: "8.3"
   extensions:
     - intl
-document_root: web
+root: web
 hostnames:
   - admin.acme.test
 env:
@@ -386,7 +386,7 @@ fn project_init_seeds_existing_structured_values_and_applies_edits() -> Result<(
     create_dir(&project.join("edited"))?;
     write_file(
         &project.join("pv.yml"),
-        r#"document_root: web
+        r#"root: web
 mysql:
   version: "8.4"
   allocations:
@@ -400,10 +400,7 @@ redis:
 
     let detection = detect_project_init(&project)?;
     let mut selection = default_project_init_selection(&detection);
-    assert_eq!(
-        selection.document_root.as_deref(),
-        Some(Utf8Path::new("web"))
-    );
+    assert_eq!(selection.root.as_deref(), Some(Utf8Path::new("web")));
     let mysql = selection
         .resources
         .get(&ProjectInitResourceName::Mysql)
@@ -419,7 +416,7 @@ redis:
     assert_eq!(redis.track, "7.4");
     assert_eq!(redis.allocations, ["sessions"]);
 
-    selection.document_root = Some(Utf8PathBuf::from("edited"));
+    selection.root = Some(Utf8PathBuf::from("edited"));
     selection
         .resources
         .get_mut(&ProjectInitResourceName::Mysql)
@@ -432,10 +429,7 @@ redis:
         .track = "8.0".to_string();
 
     let config = render_project_init_config(&detection, &selection)?;
-    assert_eq!(
-        config.document_root.as_deref(),
-        Some(Utf8Path::new("edited"))
-    );
+    assert_eq!(config.root.as_deref(), Some(Utf8Path::new("edited")));
     assert_eq!(
         config
             .resources
@@ -455,7 +449,7 @@ redis:
 }
 
 #[test]
-fn project_init_validates_edited_document_roots_before_returning() -> Result<()> {
+fn project_init_validates_edited_roots_before_returning() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
@@ -465,34 +459,28 @@ fn project_init_validates_edited_document_roots_before_returning() -> Result<()>
     let detection = detect_project_init(&project)?;
     let selection = default_project_init_selection(&detection);
     let cases = [
-        (project.join("public"), ExpectedDocumentRootError::Absolute),
-        (
-            Utf8PathBuf::from("../outside"),
-            ExpectedDocumentRootError::Escaping,
-        ),
-        (
-            Utf8PathBuf::from("missing"),
-            ExpectedDocumentRootError::Missing,
-        ),
+        (project.join("public"), ExpectedRootError::Absolute),
+        (Utf8PathBuf::from("../outside"), ExpectedRootError::Escaping),
+        (Utf8PathBuf::from("missing"), ExpectedRootError::Missing),
     ];
 
-    for (document_root, expected) in cases {
+    for (root, expected) in cases {
         let mut selection = selection.clone();
-        selection.document_root = Some(document_root);
+        selection.root = Some(root);
         let Err(error) = render_project_init_config(&detection, &selection) else {
             return Err(anyhow!(
                 "expected {expected:?} document root to reject the proposal"
             ));
         };
         let matches_expected = match expected {
-            ExpectedDocumentRootError::Absolute => {
-                matches!(error, ConfigError::AbsoluteDocumentRoot { .. })
+            ExpectedRootError::Absolute => {
+                matches!(error, ConfigError::AbsoluteRoot { .. })
             }
-            ExpectedDocumentRootError::Escaping => {
-                matches!(error, ConfigError::DocumentRootEscapesProject { .. })
+            ExpectedRootError::Escaping => {
+                matches!(error, ConfigError::RootEscapesProject { .. })
             }
-            ExpectedDocumentRootError::Missing => {
-                matches!(error, ConfigError::DocumentRootNotDirectory { .. })
+            ExpectedRootError::Missing => {
+                matches!(error, ConfigError::RootNotDirectory { .. })
             }
         };
         assert!(matches_expected, "unexpected {expected:?} error: {error:?}");

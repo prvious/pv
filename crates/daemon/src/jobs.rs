@@ -7589,13 +7589,13 @@ mod tests {
     async fn project_application_rereads_global_php_after_discovery() -> anyhow::Result<()> {
         let mut applied_tracks = Vec::new();
         for (name, config, global_track) in [
-            ("served", "document_root: .\n", Some("8.5")),
+            ("served", "root: .\n", Some("8.5")),
             (
                 "mapping",
                 "serve: false\nphp:\n  extensions: []\n",
                 Some("8.5"),
             ),
-            ("new-global", "document_root: .\n", None),
+            ("new-global", "root: .\n", None),
             ("latest", "serve: false\nphp: latest\n", Some("8.5")),
             (
                 "latest-to-global",

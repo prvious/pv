@@ -21,7 +21,7 @@ pub struct ProjectConfig {
         skip_serializing_if = "Option::is_none",
         serialize_with = "serialize_optional_path"
     )]
-    pub document_root: Option<Utf8PathBuf>,
+    pub root: Option<Utf8PathBuf>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hostnames: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -36,7 +36,7 @@ impl Default for ProjectConfig {
             serve: true,
             env_file: default_env_file(),
             php: None,
-            document_root: None,
+            root: None,
             hostnames: Vec::new(),
             env: BTreeMap::new(),
             resources: BTreeMap::new(),

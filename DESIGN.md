@@ -1110,7 +1110,7 @@ An empty Project config is valid and means no Project-specific overrides. PV use
 
 Project config accepts a root-level `serve` boolean. It defaults to `true`. With `serve: false`, the Project remains linked and PV still reconciles its declared Managed Resources, Resource allocations, and environment mappings, but PV does not create a Gateway route, TLS demand, or PHP worker for the Project. PV does not start framework or application development servers on the Project's behalf.
 
-Serving-only config remains valid but dormant while `serve: false`. This includes `document_root`, `hostnames:`, the primary Project hostname, and env entries that use `${project_url}`, `${tls_cert}`, `${tls_key}`, or `${tls_ca}`. PV preserves those values in user-owned config, ignores them for runtime planning, and omits env entries that depend on serving-only placeholders. If serving is enabled again, PV validates and applies those values normally and restores the omitted env entries.
+Serving-only config remains valid but dormant while `serve: false`. This includes `root`, `hostnames:`, the primary Project hostname, and env entries that use `${project_url}`, `${tls_cert}`, `${tls_key}`, or `${tls_ca}`. PV preserves those values in user-owned config, ignores them for runtime planning, and omits env entries that depend on serving-only placeholders. If serving is enabled again, PV validates and applies those values normally and restores the omitted env entries.
 
 Basic YAML types, unknown keys, env key rules, and placeholder spelling are validated in both serving modes. A malformed dormant value is still a config error when it can be validated without serving context. Hostname collision and document-root existence checks are deferred until serving is enabled. As with other invalid Project config, a failed transition keeps the last valid desired state active.
 
@@ -1130,7 +1130,7 @@ Project config `hostnames:` cannot include the Project's own primary hostname.
 
 Project config `hostnames:` cannot contain duplicates after normalization.
 
-Project config can override the served document root with `document_root:`. The value must be relative to the Project root; `.` is allowed and means the Project root. PV rejects absolute paths, document roots that escape the Project directory, or paths that do not exist as directories. PV validates document roots using canonicalized paths and rejects symlink-resolved paths that escape the canonical Project root.
+Project config can override the served document root with `root:`. The value must be relative to the Project root; `.` is allowed and means the Project root. PV rejects absolute paths, document roots that escape the Project directory, or paths that do not exist as directories. PV validates document roots using canonicalized paths and rejects symlink-resolved paths that escape the canonical Project root.
 
 Project config validation rejects unknown top-level keys and unknown nested keys with clear errors. Typos in resource, env, or allocation sections fail validation and keep the last valid desired state active.
 
@@ -1265,7 +1265,7 @@ Example Project config:
 ```yaml
 php: "8.4"
 
-document_root: public
+root: public
 
 hostnames:
   - api.acme.test

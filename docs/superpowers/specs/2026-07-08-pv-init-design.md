@@ -57,7 +57,7 @@ Inputs:
 
 - `composer.json` for Laravel/PHP shape, package hints, and PHP constraint hints.
 - Laravel files such as `artisan`, `bootstrap/app.php`, `config/app.php`, and `public/index.php`.
-- Directory layout, especially `public/`, for `document_root`.
+- Directory layout, especially `public/`, for `root`.
 - `.env.example`, then `.env` only as a fallback for key names and non-secret shape.
 - `package.json` for Vite and frontend tooling signals.
 - Existing `pv.yml` or `pv.yaml` for update/merge behavior.
@@ -257,7 +257,7 @@ Existing user config values win unless the user changes them through the structu
 Examples:
 
 - Existing `php` is preserved unless edited.
-- Existing `document_root` is preserved unless edited.
+- Existing `root` is preserved unless edited.
 - Existing resources remain present.
 - Newly selected resources are added.
 - Existing env mappings are not deleted just because detection did not rediscover them.

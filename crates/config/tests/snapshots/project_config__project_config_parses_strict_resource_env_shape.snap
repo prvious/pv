@@ -13,7 +13,7 @@ ProjectConfig {
             extensions: [],
         },
     ),
-    document_root: Some(
+    root: Some(
         "public",
     ),
     hostnames: [

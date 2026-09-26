@@ -45,7 +45,7 @@ fn worker_config_renderer_outputs_track_caddyfile() -> Result<()> {
             primary_hostname: "acme.test".to_owned(),
             hostnames: vec!["api.acme.test".to_owned()],
             project_root: Utf8PathBuf::from("/Users/alice/Code/acme"),
-            document_root: Utf8PathBuf::from("/Users/alice/Code/acme/public"),
+            root: Utf8PathBuf::from("/Users/alice/Code/acme/public"),
         }],
     };
 
@@ -90,7 +90,7 @@ fn config_renderers_quote_path_tokens_with_spaces() -> Result<()> {
             primary_hostname: "acme.test".to_owned(),
             hostnames: vec![],
             project_root: Utf8PathBuf::from("/Users/Alice Smith/Code/acme"),
-            document_root: Utf8PathBuf::from("/Users/Alice Smith/Code/acme/public"),
+            root: Utf8PathBuf::from("/Users/Alice Smith/Code/acme/public"),
         }],
     })?;
 
@@ -200,7 +200,7 @@ fn worker_project_config_renderer_outputs_project_caddyfile() -> Result<()> {
         primary_hostname: "acme.test".to_owned(),
         hostnames: vec!["api.acme.test".to_owned()],
         project_root: Utf8PathBuf::from("/Users/alice/Code/acme"),
-        document_root: Utf8PathBuf::from("/Users/alice/Code/acme/public"),
+        root: Utf8PathBuf::from("/Users/alice/Code/acme/public"),
     };
 
     assert_snapshot!(render_php_worker_project_config(&project, 45001)?);

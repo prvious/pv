@@ -361,7 +361,7 @@ async fn gateway_reconciliation_starts_gateway_and_one_worker_per_php_track() ->
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 "#,
     )?;
 
@@ -435,7 +435,7 @@ async fn gateway_fixture_cleanup_is_scoped_to_recorded_home_and_process_groups()
         create_project(
             &project_root,
             r#"php: "8.4"
-document_root: public
+root: public
 "#,
         )?;
         let mut database = Database::open(paths)?;
@@ -980,11 +980,8 @@ async fn matching_worker_recovers_after_post_load_readiness_is_cancelled() -> Re
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
     let track = "8.4";
-    let project_root = create_project_with_config(
-        tempdir.path(),
-        "acme",
-        "php: \"8.4\"\ndocument_root: public\n",
-    )?;
+    let project_root =
+        create_project_with_config(tempdir.path(), "acme", "php: \"8.4\"\nroot: public\n")?;
     let caddy_release = tempdir.path().join("fake-caddy-release");
     write_stateful_fake_caddy(&caddy_release.join("bin/caddy"))?;
 
@@ -1310,10 +1307,7 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
     assert_eq!(fs::read_to_string(&source_fragment)?, previous_source);
     assert_eq!(fs::read_to_string(&gateway_fragment)?, previous_gateway);
 
-    fs::write_sensitive_file(
-        &peer_root.join("pv.yml"),
-        "php: \"8.4\"\ndocument_root: .\n",
-    )?;
+    fs::write_sensitive_file(&peer_root.join("pv.yml"), "php: \"8.4\"\nroot: .\n")?;
     write_fake_admin_control(
         &paths.worker_root_config("8.4"),
         json!({"load_statuses": [422]}),
@@ -2099,7 +2093,7 @@ async fn fresh_worker_exit_is_reported_before_the_readiness_timeout() -> Result<
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 "#,
     )?;
 
@@ -2167,7 +2161,7 @@ async fn gateway_reconciliation_restores_generated_files_after_env_only_edit() -
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 "#,
     )?;
     let mut database = Database::open(&paths)?;
@@ -2212,7 +2206,7 @@ document_root: public
     fs::write_sensitive_file(
         &project_root.join("pv.yml"),
         r#"php: "8.4"
-document_root: public
+root: public
 env:
   APP_URL: "${project_url}"
 "#,
@@ -2326,7 +2320,7 @@ async fn unchanged_gateway_config_is_rehardened() -> Result<()> {
 
     write_stateful_fake_caddy(&caddy_executable)?;
     write_stateful_fake_frankenphp(&frankenphp_release.join("bin/frankenphp"))?;
-    create_project(&project_root, "php: \"8.4\"\ndocument_root: public\n")?;
+    create_project(&project_root, "php: \"8.4\"\nroot: public\n")?;
     let mut database = Database::open(&paths)?;
     let project = database.link_project(LinkProjectInput {
         path: project_root.clone(),
@@ -2418,11 +2412,7 @@ async fn targeted_project_reconciliation_touches_only_old_and_new_workers() -> R
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
-    let acme = create_project_with_config(
-        tempdir.path(),
-        "acme",
-        "php: \"8.4\"\ndocument_root: public\n",
-    )?;
+    let acme = create_project_with_config(tempdir.path(), "acme", "php: \"8.4\"\nroot: public\n")?;
     let other = create_project_with_config(tempdir.path(), "other", "php: \"8.4\"\n")?;
     let unrelated = create_project_with_config(tempdir.path(), "api", "php: \"8.3\"\n")?;
     let caddy_release = tempdir.path().join("fake-caddy-release");
@@ -2541,7 +2531,7 @@ async fn targeted_project_reconciliation_touches_only_old_and_new_workers() -> R
     fs::write_sensitive_file(
         &acme.config_path,
         r#"php: "8.4"
-document_root: public
+root: public
 env:
   APP_URL: "${project_url}"
 "#,
@@ -2607,7 +2597,7 @@ env:
     }
 
     fs::write_sensitive_file(&acme.path.join("web/index.php"), "<?php\n")?;
-    fs::write_sensitive_file(&acme.config_path, "php: \"8.4\"\ndocument_root: web\n")?;
+    fs::write_sensitive_file(&acme.config_path, "php: \"8.4\"\nroot: web\n")?;
     reconcile_project_gateway_runtimes_for_test(
         &paths,
         &acme.id,
@@ -2635,7 +2625,7 @@ env:
 
     fs::write_sensitive_file(
         &acme.config_path,
-        "php: \"8.4\"\ndocument_root: web\nhostnames:\n  - www.acme.test\n",
+        "php: \"8.4\"\nroot: web\nhostnames:\n  - www.acme.test\n",
     )?;
     reconcile_project_gateway_runtimes_for_test(
         &paths,
@@ -2660,7 +2650,7 @@ env:
 
     fs::write_sensitive_file(
         &acme.config_path,
-        "php: \"8.5\"\ndocument_root: web\nhostnames:\n  - www.acme.test\n",
+        "php: \"8.5\"\nroot: web\nhostnames:\n  - www.acme.test\n",
     )?;
     let mut database = Database::open(&paths)?;
     database.replace_project_php_runtime(
@@ -3104,7 +3094,7 @@ async fn targeted_project_reconciliation_promotes_split_peer_runtime_state() -> 
     );
     fs::write_sensitive_file(&peer.config_path, "php: [\n")?;
     fs::write_sensitive_file(&target.path.join("web/index.php"), "<?php\n")?;
-    fs::write_sensitive_file(&target.config_path, "php: \"8.4\"\ndocument_root: web\n")?;
+    fs::write_sensitive_file(&target.config_path, "php: \"8.4\"\nroot: web\n")?;
     reconcile_project_gateway_runtimes_for_test(
         &paths,
         &target.id,
@@ -3206,7 +3196,7 @@ async fn targeted_project_reconciliation_uses_verified_fragment_snapshot() -> Re
         json!({"load_delay_ms": 500}),
     )?;
     fs::write_sensitive_file(&target.path.join("web/index.php"), "<?php\n")?;
-    fs::write_sensitive_file(&target.config_path, "php: \"8.4\"\ndocument_root: web\n")?;
+    fs::write_sensitive_file(&target.config_path, "php: \"8.4\"\nroot: web\n")?;
 
     let mutation_paths = paths.clone();
     let mutation_fragment_path = peer_gateway_fragment_path.clone();
@@ -3265,11 +3255,8 @@ async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
-    let project_root = create_project_with_config(
-        tempdir.path(),
-        "acme",
-        "php: \"8.4\"\ndocument_root: public\n",
-    )?;
+    let project_root =
+        create_project_with_config(tempdir.path(), "acme", "php: \"8.4\"\nroot: public\n")?;
     let caddy_release = tempdir.path().join("fake-caddy-release");
     let frankenphp_84_release = tempdir.path().join("fake-frankenphp-84-release");
     let frankenphp_85_release = tempdir.path().join("fake-frankenphp-85-release");
@@ -3327,10 +3314,7 @@ async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is
     let old_worker_root = fs::read_to_string(&paths.worker_root_config("8.4"))?;
     let gateway_loads = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
 
-    fs::write_sensitive_file(
-        &project.config_path,
-        "php: \"8.5\"\ndocument_root: public\n",
-    )?;
+    fs::write_sensitive_file(&project.config_path, "php: \"8.5\"\nroot: public\n")?;
     let mut database = Database::open(&paths)?;
     database.replace_project_php_runtime(
         &project.id,
@@ -3731,7 +3715,7 @@ async fn gateway_reconciliation_replaces_legacy_runtime_identities_once() -> Res
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 "#,
     )?;
 
@@ -3901,7 +3885,7 @@ async fn gateway_reconciliation_replaces_dead_gateway_process() -> Result<()> {
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 "#,
     )?;
 
@@ -3966,7 +3950,7 @@ async fn gateway_reconciliation_rejects_unverified_live_gateway_listener() -> Re
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 "#,
     )?;
 
@@ -4030,7 +4014,7 @@ async fn gateway_reconciliation_bounds_foreign_https_listener_probe() -> Result<
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 "#,
     )?;
 
@@ -4193,13 +4177,13 @@ async fn retired_worker_cleanup_removes_runtime_identity() -> Result<()> {
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 "#,
     )?;
     create_project(
         &surviving_project_root,
         r#"php: "8.3"
-document_root: public
+root: public
 "#,
     )?;
 
@@ -4344,7 +4328,7 @@ async fn gateway_reconciliation_preserves_project_fragments_for_invalid_project_
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 hostnames:
   - api.acme.test
 "#,
@@ -4462,7 +4446,7 @@ async fn gateway_reconciliation_skips_invalid_project_without_preserved_fragment
     create_project(
         &acme_root,
         r#"php: "8.4"
-document_root: public
+root: public
 "#,
     )?;
     create_project(&broken_root, "php: [\n")?;
@@ -4547,7 +4531,7 @@ async fn gateway_reconciliation_uses_persisted_track_after_config_becomes_invali
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 "#,
     )?;
 
@@ -4589,7 +4573,7 @@ document_root: public
     fs::write_sensitive_file(
         &project_root.join("pv.yml"),
         r#"php: "8.3"
-document_root: public
+root: public
 "#,
     )?;
     let mut database = Database::open(&paths)?;
@@ -4762,7 +4746,7 @@ async fn gateway_reconciliation_preserves_fragments_for_parseable_invalid_projec
     create_project(
         &acme_root,
         r#"php: "8.4"
-document_root: public
+root: public
 hostnames:
   - api.acme.test
 "#,
@@ -4770,7 +4754,7 @@ hostnames:
     create_project(
         &other_root,
         r#"php: "8.3"
-document_root: public
+root: public
 "#,
     )?;
 
@@ -4826,7 +4810,7 @@ document_root: public
     fs::write_sensitive_file(
         &acme_root.join("pv.yml"),
         r#"php: "8.3"
-document_root: public
+root: public
 hostnames:
   - other.test
 "#,
@@ -4879,7 +4863,7 @@ async fn gateway_reconciliation_preserves_active_fragments_when_validation_fails
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 hostnames:
   - api.acme.test
 "#,
@@ -4924,7 +4908,7 @@ hostnames:
     fs::write_sensitive_file(
         &project_root.join("pv.yml"),
         r#"php: "8.4"
-document_root: public
+root: public
 hostnames:
   - changed.acme.test
 "#,
@@ -4952,7 +4936,7 @@ hostnames:
 }
 
 #[tokio::test]
-async fn retained_hostname_uses_previous_document_root() -> Result<()> {
+async fn retained_hostname_uses_previous_root() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
@@ -4960,7 +4944,7 @@ async fn retained_hostname_uses_previous_document_root() -> Result<()> {
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 hostnames:
   - old.acme.test
 "#,
@@ -5008,7 +4992,7 @@ hostnames:
     fs::write_sensitive_file(
         &project_root.join("pv.yml"),
         r#"php: "8.4"
-document_root: web
+root: web
 hostnames:
   - new.acme.test
 "#,
@@ -5090,7 +5074,7 @@ async fn post_commit_cleanup_continues_after_worker_failure() -> Result<()> {
     create_project(
         &project_a_root,
         r#"php: "8.4"
-document_root: public
+root: public
 hostnames:
   - old.acme.test
 "#,
@@ -5098,7 +5082,7 @@ hostnames:
     create_project(
         &project_b_root,
         r#"php: "8.5"
-document_root: public
+root: public
 hostnames:
   - old.api.acme.test
 "#,
@@ -5165,7 +5149,7 @@ hostnames:
     fs::write_sensitive_file(
         &project_a_root.join("pv.yml"),
         r#"php: "8.4"
-document_root: web
+root: web
 hostnames:
   - new.acme.test
 "#,
@@ -5173,7 +5157,7 @@ hostnames:
     fs::write_sensitive_file(
         &project_b_root.join("pv.yml"),
         r#"php: "8.5"
-document_root: web
+root: web
 hostnames:
   - new.api.acme.test
 "#,
@@ -5274,7 +5258,7 @@ async fn gateway_reconciliation_loads_exact_gateway_and_worker_roots_without_res
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 hostnames:
   - api.acme.test
 "#,
@@ -5282,7 +5266,7 @@ hostnames:
     create_project(
         &other_project_root,
         r#"php: "8.3"
-document_root: public
+root: public
 "#,
     )?;
 
@@ -5352,7 +5336,7 @@ document_root: public
     fs::write_sensitive_file(
         &project_root.join("pv.yml"),
         r#"php: "8.4"
-document_root: public
+root: public
 hostnames:
   - api.acme.test
   - changed.acme.test
@@ -5435,7 +5419,7 @@ async fn worker_reconciliation_restores_previous_service_port_after_readiness_fa
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 "#,
     )?;
 
@@ -6162,7 +6146,7 @@ async fn gateway_reconciliation_refuses_to_load_tampered_rollback_fragment_backu
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 "#,
     )?;
     let ports = available_loopback_ports(5)?;
@@ -6476,7 +6460,7 @@ async fn runtime_plan_groups_linked_projects_by_php_track() -> Result<()> {
     create_project(
         &acme,
         r#"php: "8.4"
-document_root: public
+root: public
 hostnames:
   - api.acme.test
 "#,
@@ -6484,7 +6468,7 @@ hostnames:
     create_project(
         &other,
         r#"php: "8.3"
-document_root: public
+root: public
 "#,
     )?;
 
@@ -6654,7 +6638,7 @@ async fn runtime_plan_resolves_latest_php_track_from_cached_manifest() -> Result
     create_project(
         &project_root,
         r#"php: latest
-document_root: public
+root: public
 "#,
     )?;
 
@@ -6683,7 +6667,7 @@ document_root: public
 }
 
 #[tokio::test]
-async fn runtime_plan_defaults_document_root_to_public_directory_without_config() -> Result<()> {
+async fn runtime_plan_defaults_root_to_public_directory_without_config() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
@@ -6706,7 +6690,7 @@ async fn runtime_plan_defaults_document_root_to_public_directory_without_config(
     let plan = build_runtime_plan(&paths)?;
 
     assert_runtime_plan_snapshot(
-        "runtime_plan_defaults_document_root_to_public_directory_without_config",
+        "runtime_plan_defaults_root_to_public_directory_without_config",
         plan,
     );
 
@@ -6716,8 +6700,7 @@ async fn runtime_plan_defaults_document_root_to_public_directory_without_config(
 }
 
 #[tokio::test]
-async fn runtime_plan_defaults_document_root_to_project_root_without_public_directory() -> Result<()>
-{
+async fn runtime_plan_defaults_root_to_project_root_without_public_directory() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone());
@@ -6740,7 +6723,7 @@ async fn runtime_plan_defaults_document_root_to_project_root_without_public_dire
     let plan = build_runtime_plan(&paths)?;
 
     assert_runtime_plan_snapshot(
-        "runtime_plan_defaults_document_root_to_project_root_without_public_directory",
+        "runtime_plan_defaults_root_to_project_root_without_public_directory",
         plan,
     );
 
@@ -6761,13 +6744,13 @@ async fn runtime_plan_uses_project_root_not_original_or_config_path() -> Result<
     create_project(
         &project_root,
         r#"php: "8.4"
-document_root: public
+root: public
 "#,
     )?;
     fs::write_sensitive_file(
         &stored_config_path,
         r#"php: "8.3"
-document_root: other-public
+root: other-public
 "#,
     )?;
 

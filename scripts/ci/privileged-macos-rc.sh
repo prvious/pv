@@ -248,7 +248,7 @@ record_status sudo-preflight required sudo -n true || {
 mkdir -p "$PV_RC_PROJECT/public"
 printf '%s\n' "<?php echo 'pv-privileged-rc-ok';" > "$PV_RC_PROJECT/public/index.php"
 cat > "$PV_RC_PROJECT/pv.yml" <<'YAML'
-document_root: public
+root: public
 env:
   VITE_DEV_SERVER_CERT: "${tls_cert}"
   VITE_DEV_SERVER_KEY: "${tls_key}"
