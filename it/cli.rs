@@ -188,6 +188,7 @@ fn mysql_commands_are_documented() -> Result<()> {
         run_pv(&["mysql:update", "--help"])?,
         run_pv(&["mysql:uninstall", "--help"])?,
         run_pv(&["mysql:list", "--help"])?,
+        run_pv(&["mysql:import", "--help"])?,
     ];
 
     assert_debug_snapshot!(output);

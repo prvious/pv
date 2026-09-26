@@ -98,6 +98,7 @@ complete -c pv -n "__fish_pv_needs_command" -f -a "mysql:install" -d 'Install a 
 complete -c pv -n "__fish_pv_needs_command" -f -a "mysql:update" -d 'Update installed MySQL tracks'
 complete -c pv -n "__fish_pv_needs_command" -f -a "mysql:uninstall" -d 'Uninstall a MySQL track'
 complete -c pv -n "__fish_pv_needs_command" -f -a "mysql:list" -d 'List installed MySQL tracks'
+complete -c pv -n "__fish_pv_needs_command" -f -a "mysql:import" -d 'Import a MySQL SQL dump into a linked Project'
 complete -c pv -n "__fish_pv_needs_command" -f -a "postgres:install" -d 'Install a Postgres track'
 complete -c pv -n "__fish_pv_needs_command" -f -a "postgres:update" -d 'Update installed Postgres tracks'
 complete -c pv -n "__fish_pv_needs_command" -f -a "postgres:uninstall" -d 'Uninstall a Postgres track'
@@ -288,6 +289,13 @@ complete -c pv -n "__fish_pv_using_subcommand mysql:uninstall" -s h -l help -d '
 complete -c pv -n "__fish_pv_using_subcommand mysql:list" -l json -d 'Print command output as JSON'
 complete -c pv -n "__fish_pv_using_subcommand mysql:list" -l no-color -d 'Disable colored output'
 complete -c pv -n "__fish_pv_using_subcommand mysql:list" -s h -l help -d 'Print help'
+complete -c pv -n "__fish_pv_using_subcommand mysql:import" -l project -d 'Linked Project slug or hostname (defaults to current Project)' -r
+complete -c pv -n "__fish_pv_using_subcommand mysql:import" -l map -d 'Map a source database to a PV allocation name' -r
+complete -c pv -n "__fish_pv_using_subcommand mysql:import" -l skip-routine -d 'Omit an explicitly named stored procedure or function' -r
+complete -c pv -n "__fish_pv_using_subcommand mysql:import" -l yes -d 'Accept the import plan without an interactive prompt'
+complete -c pv -n "__fish_pv_using_subcommand mysql:import" -l force -d 'Accept importing into targets that already contain objects'
+complete -c pv -n "__fish_pv_using_subcommand mysql:import" -l no-color -d 'Disable colored output'
+complete -c pv -n "__fish_pv_using_subcommand mysql:import" -s h -l help -d 'Print help'
 complete -c pv -n "__fish_pv_using_subcommand postgres:install" -l no-color -d 'Disable colored output'
 complete -c pv -n "__fish_pv_using_subcommand postgres:install" -s h -l help -d 'Print help'
 complete -c pv -n "__fish_pv_using_subcommand postgres:update" -l no-color -d 'Disable colored output'

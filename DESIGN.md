@@ -1152,6 +1152,20 @@ SQL database creation uses the database provider defaults in v1. PV does not cus
 
 For SQL Resource allocations, PV only ensures the database exists and is reachable. PV does not inspect schemas, run migrations, or manage application database contents. Application schema and framework setup are user-owned.
 
+An explicit, confirmed `pv mysql:import` command may import user-supplied SQL dumps into a linked Project's declared MySQL track. It preflights and transforms the complete dump before starting the `mysql` client. Ordinary reconciliation still neither inspects nor changes application schemas or data.
+
+MySQL import accepts multi-database dumps. A source database matching a declared allocation uses that allocation's persisted `generated_name`. An undeclared user database is created with the normal Project-namespaced allocation naming rule, while `pv.yml` and `pv.db` remain unchanged; the plan warns that it is unmanaged and shows the allocation snippet for later adoption. Known system-schema sections are skipped explicitly, and server-scoped statements outside those sections fail preflight.
+
+MySQL import matches source database names exactly as written. A source name that is not a valid PV allocation name requires an explicit `--map`. For a plain dump without database-routing SQL, PV may use the `mysqldump` database header; a headerless dump requires an explicit target mapping. Import accepts connection-scoped setup used by `mysqldump` and phpMyAdmin, such as `SET NAMES` and `FOREIGN_KEY_CHECKS`, but preflight rejects global settings, server-side file access, replication, account changes, dynamic SQL, and unknown syntax.
+
+MySQL import uses the track's existing `pv_root` account and does not create a separate import owner. The complete dump must pass a positive preflight allowlist before any SQL runs. Source `DEFINER` accounts are normalized to `pv_root` only for stored objects whose complete definition passes preflight; unsupported stored-object syntax fails before execution unless the user explicitly skips that routine.
+
+MySQL import rejects dynamic SQL in stored routines by default. The user may explicitly skip a named source routine with `--skip-routine <database>.<routine>`; preflight then omits both its drop and create statements and lists the missing routine in the import plan. Skip names compare case-sensitively against decoded source database and routine identifiers, with an unqualified routine name taking its database from the active `USE` statement or the plain dump header. A requested name absent from the dump is an error. Skipping a routine does not imply that objects depending on it will work after import.
+
+MySQL import may accept `TRUNCATE` inside a stored routine only when preflight proves that every table it names belongs to a source database mapped to a validated target. An unqualified table uses the routine's active source database. The plan lists each routine containing `TRUNCATE` before the user confirms the import.
+
+PV starts its local MySQL tracks with binary logging disabled. PV does not provide MySQL replication or binary-log backup commands. This setting is not an import security boundary; the current MySQL account still has server-wide privileges.
+
 PV creates and checks SQL Resource allocation databases through `sqlx` for MySQL and Postgres rather than shelling out to managed `mysql` or `psql` binaries. PV uses `sqlx` only for PV-owned admin operations such as readiness checks and database creation, not for application schema or migrations.
 
 PV uses runtime/dynamic `sqlx` queries for these admin operations. It does not require `sqlx` offline query metadata in v1.

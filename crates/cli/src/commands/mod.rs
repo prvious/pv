@@ -24,6 +24,7 @@ mod jobs;
 mod logs;
 mod mailpit;
 mod mysql;
+mod mysql_import;
 mod pf_diagnostics;
 mod php;
 mod ports;
@@ -129,6 +130,7 @@ where
         Command::MysqlUpdate => mysql::update(environment, stdout),
         Command::MysqlUninstall(args) => mysql::uninstall(args, environment, stdout),
         Command::MysqlList(args) => mysql::list(args, environment, stdout),
+        Command::MysqlImport(args) => mysql_import::run(args, environment, stdout),
         Command::PostgresInstall(args) | Command::PgInstall(args) => {
             postgres::install(args, environment, stdout)
         }
@@ -224,6 +226,7 @@ fn required_capability(command: &Command) -> Option<PlatformCapability> {
         | Command::MysqlUpdate
         | Command::MysqlUninstall(_)
         | Command::MysqlList(_)
+        | Command::MysqlImport(_)
         | Command::PostgresInstall(_)
         | Command::PgInstall(_)
         | Command::PostgresUpdate
@@ -291,6 +294,7 @@ fn command_blocked_during_update(command: &Command) -> bool {
                 | Command::MysqlInstall(_)
                 | Command::MysqlUpdate
                 | Command::MysqlUninstall(_)
+                | Command::MysqlImport(_)
                 | Command::PostgresInstall(_)
                 | Command::PgInstall(_)
                 | Command::PostgresUpdate

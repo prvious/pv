@@ -634,7 +634,7 @@ fn validate_env_key(key: &str) -> Result<(), ConfigError> {
     }
 }
 
-fn validate_allocation_name(allocation: &str) -> Result<(), ConfigError> {
+pub fn validate_allocation_name(allocation: &str) -> Result<(), ConfigError> {
     let mut bytes = allocation.bytes();
     let Some(first) = bytes.next() else {
         return Err(ConfigError::InvalidAllocationName {

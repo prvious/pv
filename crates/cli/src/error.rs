@@ -21,6 +21,9 @@ pub enum CliError {
     #[error("could not resolve a linked Project; pass a Project slug or hostname")]
     ProjectNotResolved,
 
+    #[error("MySQL import: {message}")]
+    MysqlImport { message: String },
+
     #[error(
         "Project selector `{selector}` matches slug `{selector}` and hostname `{hostname}` on different Projects; pass the full `{hostname}` hostname"
     )]

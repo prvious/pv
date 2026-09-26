@@ -31,4 +31,11 @@ expression: output
         stdout: "List installed MySQL tracks\n\nUsage: pv mysql:list [OPTIONS]\n\nOptions:\n      --json      Print command output as JSON\n      --no-color  Disable colored output\n  -h, --help      Print help\n",
         stderr: "",
     },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Import a MySQL SQL dump into a linked Project\n\nUsage: pv mysql:import [OPTIONS] <path>\n\nArguments:\n  <path>  Uncompressed MySQL SQL dump\n\nOptions:\n      --no-color\n          Disable colored output\n      --project <PROJECT>\n          Linked Project slug or hostname (defaults to current Project)\n      --map <source=allocation>\n          Map a source database to a PV allocation name\n      --skip-routine <database.routine>\n          Omit an explicitly named stored procedure or function\n      --yes\n          Accept the import plan without an interactive prompt\n      --force\n          Accept importing into targets that already contain objects\n  -h, --help\n          Print help\n",
+        stderr: "",
+    },
 ]

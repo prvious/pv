@@ -10,6 +10,7 @@ members = [
     "crates/cli",
     "crates/config",
     "crates/daemon",
+    "crates/mysql-dump",
     "crates/platform",
     "crates/privileged-helper",
     "crates/protocol",
@@ -64,10 +65,12 @@ serde_json = "1"
 sha1 = "0.11"
 sha2 = "0.10"
 sqlx = { version = "0.9.0", default-features = false, features = ["mysql", "postgres", "runtime-tokio", "tls-rustls"] }
+sqlparser = { version = "=0.63.0", features = ["visitor"] }
+squonk = { version = "=3.0.0", features = ["mysql"] }
 tar = "0.4.45"
 thiserror = "2"
 time = { version = "0", features = ["formatting", "macros"] }
-tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = ["ring", "tls12"] }
 tokio-util = { version = "0", features = ["codec"] }
 toml = "1.1.2"
