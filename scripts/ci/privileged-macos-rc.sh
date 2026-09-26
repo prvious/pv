@@ -250,8 +250,8 @@ printf '%s\n' "<?php echo 'pv-privileged-rc-ok';" > "$PV_RC_PROJECT/public/index
 cat > "$PV_RC_PROJECT/pv.yml" <<'YAML'
 root: public
 env:
-  VITE_DEV_SERVER_CERT: "${tls_cert}"
-  VITE_DEV_SERVER_KEY: "${tls_key}"
+  VITE_DEV_SERVER_CERT: "${tls.cert}"
+  VITE_DEV_SERVER_KEY: "${tls.key}"
 YAML
 cat > "$PV_RC_EVIDENCE_DIR/checklist.txt" <<'CHECKLIST'
 Privileged macOS RC evidence checklist:

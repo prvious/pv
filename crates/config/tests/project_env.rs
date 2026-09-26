@@ -225,20 +225,20 @@ fn project_env_renderer_resolves_tls_paths_across_scopes() -> Result<()> {
     let config = ProjectConfig::parse(
         r#"
 env:
-  ROOT_TLS_KEY: "${tls_key}"
-  ROOT_TLS_CERT: "${tls_cert}"
-  ROOT_TLS_CA: "${tls_ca}"
+  ROOT_TLS_KEY: "${tls.key}"
+  ROOT_TLS_CERT: "${tls.cert}"
+  ROOT_TLS_CA: "${tls.ca}"
 mysql:
   env:
-    RESOURCE_TLS_KEY: "${tls_key}"
-    RESOURCE_TLS_CERT: "${tls_cert}"
-    RESOURCE_TLS_CA: "${tls_ca}"
+    RESOURCE_TLS_KEY: "${tls.key}"
+    RESOURCE_TLS_CERT: "${tls.cert}"
+    RESOURCE_TLS_CA: "${tls.ca}"
   allocations:
     app:
       env:
-        ALLOCATION_TLS_KEY: "${tls_key}"
-        ALLOCATION_TLS_CERT: "${tls_cert}"
-        ALLOCATION_TLS_CA: "${tls_ca}"
+        ALLOCATION_TLS_KEY: "${tls.key}"
+        ALLOCATION_TLS_CERT: "${tls.cert}"
+        ALLOCATION_TLS_CA: "${tls.ca}"
 "#,
     )?;
     let context = project_context(&[(
@@ -249,9 +249,9 @@ mysql:
                 ("host", "127.0.0.1"),
                 ("password", "secret"),
                 ("port", "3306"),
-                ("tls_key", "/unexpected/resource.key"),
-                ("tls_cert", "/unexpected/resource.crt"),
-                ("tls_ca", "/unexpected/resource-ca.pem"),
+                ("tls.key", "/unexpected/resource.key"),
+                ("tls.cert", "/unexpected/resource.crt"),
+                ("tls.ca", "/unexpected/resource-ca.pem"),
                 ("username", "root"),
             ]),
             allocations: allocations(&[(
@@ -260,9 +260,9 @@ mysql:
                     generated_name: "acme_test_app".to_string(),
                     values: values(&[
                         ("database", "acme_test_app"),
-                        ("tls_key", "/unexpected/allocation.key"),
-                        ("tls_cert", "/unexpected/allocation.crt"),
-                        ("tls_ca", "/unexpected/allocation-ca.pem"),
+                        ("tls.key", "/unexpected/allocation.key"),
+                        ("tls.cert", "/unexpected/allocation.crt"),
+                        ("tls.ca", "/unexpected/allocation-ca.pem"),
                     ]),
                 },
             )]),
@@ -284,15 +284,16 @@ serve: false
 env:
   APP_ENV: local
   APP_URL: "${project_url}"
+  TLS_KEY: "${tls.key}"
 mysql:
   env:
     DB_HOST: "${host}"
-    TLS_CA: "${tls_ca}"
+    TLS_CA: "${tls.ca}"
   allocations:
     app:
       env:
         DB_DATABASE: "${database}"
-        TLS_CERT: "${tls_cert}"
+        TLS_CERT: "${tls.cert}"
 "#,
     )?;
     let context = ProjectEnvContext {

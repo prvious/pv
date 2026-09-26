@@ -32,8 +32,8 @@ php: '8.5'
 root: public
 env:
   APP_URL: ${project_url}
-  VITE_DEV_SERVER_CERT: ${tls_cert}
-  VITE_DEV_SERVER_KEY: ${tls_key}
+  VITE_DEV_SERVER_CERT: ${tls.cert}
+  VITE_DEV_SERVER_KEY: ${tls.key}
 mailpit:
   version: latest
   env:

@@ -5722,7 +5722,7 @@ mod tests {
             let project_path = tempdir.path().join("project");
             let config_path = project_path.join("pv.yml");
             let dependency = if check_tls {
-                "env:\n  CERTIFICATE: \"${tls_cert}\"\n"
+                "env:\n  CERTIFICATE: \"${tls.cert}\"\n"
             } else {
                 "hostnames:\n  - api.project.test\n"
             };

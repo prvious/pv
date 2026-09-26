@@ -72,9 +72,9 @@ fn project_env_renders_current_project_values_to_stdout() -> anyhow::Result<()> 
         r#"env:
   APP_URL: "${project_url}"
   APP_ENV: local
-  VITE_DEV_SERVER_KEY: "${tls_key}"
-  VITE_DEV_SERVER_CERT: "${tls_cert}"
-  PV_TLS_CA: "${tls_ca}"
+  VITE_DEV_SERVER_KEY: "${tls.key}"
+  VITE_DEV_SERVER_CERT: "${tls.cert}"
+  PV_TLS_CA: "${tls.ca}"
 "#,
     )?;
     let project_record = register_project(&home, &project, "acme.test")?;

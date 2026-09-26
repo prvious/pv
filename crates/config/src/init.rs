@@ -194,11 +194,11 @@ pub fn render_project_init_config(
         config
             .env
             .entry("VITE_DEV_SERVER_CERT".to_string())
-            .or_insert_with(|| "${tls_cert}".to_string());
+            .or_insert_with(|| "${tls.cert}".to_string());
         config
             .env
             .entry("VITE_DEV_SERVER_KEY".to_string())
-            .or_insert_with(|| "${tls_key}".to_string());
+            .or_insert_with(|| "${tls.key}".to_string());
     }
 
     for (name, resource) in &selection.resources {

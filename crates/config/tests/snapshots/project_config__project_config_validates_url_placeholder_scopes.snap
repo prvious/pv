@@ -29,9 +29,9 @@ expression: cases
                 root: None,
                 hostnames: [],
                 env: {
-                    "PV_TLS_CA": "${tls_ca}",
-                    "VITE_DEV_SERVER_CERT": "${tls_cert}",
-                    "VITE_DEV_SERVER_KEY": "${tls_key}",
+                    "PV_TLS_CA": "${tls.ca}",
+                    "VITE_DEV_SERVER_CERT": "${tls.cert}",
+                    "VITE_DEV_SERVER_KEY": "${tls.key}",
                 },
                 resources: {},
             },
@@ -91,9 +91,9 @@ expression: cases
                     "mysql": ResourceConfig {
                         track: None,
                         env: {
-                            "PV_TLS_CA": "${tls_ca}",
-                            "VITE_DEV_SERVER_CERT": "${tls_cert}",
-                            "VITE_DEV_SERVER_KEY": "${tls_key}",
+                            "PV_TLS_CA": "${tls.ca}",
+                            "VITE_DEV_SERVER_CERT": "${tls.cert}",
+                            "VITE_DEV_SERVER_KEY": "${tls.key}",
                         },
                         allocations: {},
                     },
@@ -175,9 +175,9 @@ expression: cases
                         allocations: {
                             "app": AllocationConfig {
                                 env: {
-                                    "PV_TLS_CA": "${tls_ca}",
-                                    "VITE_DEV_SERVER_CERT": "${tls_cert}",
-                                    "VITE_DEV_SERVER_KEY": "${tls_key}",
+                                    "PV_TLS_CA": "${tls.ca}",
+                                    "VITE_DEV_SERVER_CERT": "${tls.cert}",
+                                    "VITE_DEV_SERVER_KEY": "${tls.key}",
                                 },
                             },
                         },

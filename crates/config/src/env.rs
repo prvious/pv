@@ -276,13 +276,13 @@ fn project_context_values(
         );
     }
     if !context.tls_ca_path.is_empty() {
-        values.insert("tls_ca".to_string(), context.tls_ca_path.clone());
+        values.insert("tls.ca".to_string(), context.tls_ca_path.clone());
     }
     if !context.tls_cert_path.is_empty() {
-        values.insert("tls_cert".to_string(), context.tls_cert_path.clone());
+        values.insert("tls.cert".to_string(), context.tls_cert_path.clone());
     }
     if !context.tls_key_path.is_empty() {
-        values.insert("tls_key".to_string(), context.tls_key_path.clone());
+        values.insert("tls.key".to_string(), context.tls_key_path.clone());
     }
 
     Ok(values)

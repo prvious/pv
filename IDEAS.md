@@ -1125,18 +1125,18 @@ The first version should expose only primary-hostname TLS material:
 
 ```yaml
 env:
-  VITE_DEV_SERVER_KEY: "${tls_key}"
-  VITE_DEV_SERVER_CERT: "${tls_cert}"
-  PV_TLS_CA: "${tls_ca}"
+  VITE_DEV_SERVER_KEY: "${tls.key}"
+  VITE_DEV_SERVER_CERT: "${tls.cert}"
+  PV_TLS_CA: "${tls.ca}"
 ```
 
 The concrete placeholders are:
 
-- `${tls_key}`: path to the Project primary-hostname TLS private key
-- `${tls_cert}`: path to the Project primary-hostname TLS certificate chain
-- `${tls_ca}`: path to PV's local CA certificate
+- `${tls.key}`: path to the Project primary-hostname TLS private key
+- `${tls.cert}`: path to the Project primary-hostname TLS certificate chain
+- `${tls.ca}`: path to PV's local CA certificate
 
-`${tls_ca}` should point only to the CA certificate. PV must never expose the CA
+`${tls.ca}` should point only to the CA certificate. PV must never expose the CA
 private key through Project env placeholders.
 
 ### Product Shape

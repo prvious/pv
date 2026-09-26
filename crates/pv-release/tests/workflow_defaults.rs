@@ -871,8 +871,8 @@ fn privileged_macos_rc_system_summary(_workflow: &str) -> String {
             "record_status post-restart-serve-http required curl --fail --show-error --silent --location --retry 6 --retry-delay 2 --cacert \"$HOME/.pv/certificates/ca.pem\" http://pv-rc-project.test/"
         ),
         privileged_script_contains_exact_line("cat > \"$PV_RC_PROJECT/pv.yml\" <<'YAML'")
-            && privileged_script_contains_exact_line("  VITE_DEV_SERVER_CERT: \"${tls_cert}\"")
-            && privileged_script_contains_exact_line("  VITE_DEV_SERVER_KEY: \"${tls_key}\""),
+            && privileged_script_contains_exact_line("  VITE_DEV_SERVER_CERT: \"${tls.cert}\"")
+            && privileged_script_contains_exact_line("  VITE_DEV_SERVER_KEY: \"${tls.key}\""),
         privileged_script_contains_exact_line(
             "record_status project-tls-system-policy required security verify-cert -c \"$PROJECT_TLS_CERT\" -p ssl -s pv-rc-project.test -L"
         ),

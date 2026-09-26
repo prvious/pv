@@ -4744,8 +4744,8 @@ async fn failed_demanded_resource_still_renews_existing_project_tls_before_retur
         &tempdir.path().join("project"),
         "acme.test",
         r#"env:
-  TLS_CERT: "${tls_cert}"
-  TLS_KEY: "${tls_key}"
+  TLS_CERT: "${tls.cert}"
+  TLS_KEY: "${tls.key}"
 mailpit:
   version: "1.0"
   env:
