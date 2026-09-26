@@ -242,9 +242,9 @@ async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> R
         r#"env:
   APP_URL: "${project_url}"
   APP_NAME: acme
-  VITE_DEV_SERVER_KEY: "${tls_key}"
-  VITE_DEV_SERVER_CERT: "${tls_cert}"
-  PV_TLS_CA: "${tls_ca}"
+  VITE_DEV_SERVER_KEY: "${tls.key}"
+  VITE_DEV_SERVER_CERT: "${tls.cert}"
+  PV_TLS_CA: "${tls.ca}"
 "#,
     )?;
     let local_ca = seed_local_ca(&paths)?;
@@ -321,8 +321,8 @@ async fn tls_placeholders_generate_and_refresh_primary_hostname_certificate() ->
         &tempdir.path().join("project"),
         "acme.test",
         r#"env:
-  VITE_DEV_SERVER_KEY: "${tls_key}"
-  VITE_DEV_SERVER_CERT: "${tls_cert}"
+  VITE_DEV_SERVER_KEY: "${tls.key}"
+  VITE_DEV_SERVER_CERT: "${tls.cert}"
 "#,
     )?;
     let local_ca = seed_local_ca(&paths)?;
@@ -386,7 +386,7 @@ async fn disabling_serving_retains_tls_files_without_refreshing_them() -> Result
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "env:\n  VITE_DEV_SERVER_CERT: \"${tls_cert}\"\n",
+        "env:\n  VITE_DEV_SERVER_CERT: \"${tls.cert}\"\n",
     )?;
     let local_ca = seed_local_ca(&paths)?;
     write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 7)?;
@@ -396,7 +396,7 @@ async fn disabling_serving_retains_tls_files_without_refreshing_them() -> Result
         state::fs::read_to_string(&paths.project_tls_private_key(&project.id))?;
     write_project_config(
         &project,
-        "serve: false\nenv:\n  VITE_DEV_SERVER_CERT: \"${tls_cert}\"\n",
+        "serve: false\nenv:\n  VITE_DEV_SERVER_CERT: \"${tls.cert}\"\n",
     )?;
 
     run_project_reconciliation(&paths, &project).await?;
@@ -477,9 +477,9 @@ async fn project_tls_reconciliation_replaces_overlong_leaf_once() -> Result<()> 
         &tempdir.path().join("project"),
         "acme.test",
         r#"env:
-  PV_TLS_CA: "${tls_ca}"
-  VITE_DEV_SERVER_CERT: "${tls_cert}"
-  VITE_DEV_SERVER_KEY: "${tls_key}"
+  PV_TLS_CA: "${tls.ca}"
+  VITE_DEV_SERVER_CERT: "${tls.cert}"
+  VITE_DEV_SERVER_KEY: "${tls.key}"
 "#,
     )?;
     let local_ca = seed_local_ca(&paths)?;
@@ -585,8 +585,8 @@ async fn daemon_health_tick_replaces_expiring_tls_certificate_without_explicit_r
         &tempdir.path().join("project"),
         "acme.test",
         r#"env:
-  VITE_DEV_SERVER_CERT: "${tls_cert}"
-  VITE_DEV_SERVER_KEY: "${tls_key}"
+  VITE_DEV_SERVER_CERT: "${tls.cert}"
+  VITE_DEV_SERVER_KEY: "${tls.key}"
 "#,
     )?;
     let local_ca = seed_local_ca(&paths)?;
@@ -1324,8 +1324,8 @@ async fn malformed_config_with_existing_tls_is_renewed_by_daemon_health() -> Res
         &tempdir.path().join("project"),
         "acme.test",
         r#"env:
-  VITE_DEV_SERVER_KEY: "${tls_key}"
-  VITE_DEV_SERVER_CERT: "${tls_cert}"
+  VITE_DEV_SERVER_KEY: "${tls.key}"
+  VITE_DEV_SERVER_CERT: "${tls.cert}"
 "#,
     )?;
     let local_ca = seed_local_ca(&paths)?;
@@ -1634,7 +1634,7 @@ async fn tls_renews_before_malformed_dotenv_validation_without_mutating_primary_
         &tempdir.path().join("project"),
         "acme.test",
         r#"env:
-  VITE_DEV_SERVER_CERT: "${tls_cert}"
+  VITE_DEV_SERVER_CERT: "${tls.cert}"
 postgres:
   version: "8.0"
   env:
@@ -1697,7 +1697,7 @@ async fn masked_tls_maintenance_failure_is_written_to_structured_log() -> Result
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "env:\n  CERT: \"${tls_cert}\"\n",
+        "env:\n  CERT: \"${tls.cert}\"\n",
     )?;
     seed_local_ca(&paths)?;
     write_sensitive_file(

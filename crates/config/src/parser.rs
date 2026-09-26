@@ -11,7 +11,7 @@ use crate::discovery::validate_root_shape;
 use crate::hostname::normalize_additional_hostname;
 use crate::{AllocationConfig, ConfigError, PhpConfig, ProjectConfig, ResourceConfig};
 
-const PROJECT_ENV_PLACEHOLDERS: &[&str] = &["project_url", "tls_ca", "tls_cert", "tls_key"];
+const PROJECT_ENV_PLACEHOLDERS: &[&str] = &["project_url", "tls.ca", "tls.cert", "tls.key"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EnvPlaceholderScope<'a> {
@@ -586,6 +586,10 @@ fn allocation_placeholders(resource: &str) -> Result<&'static [&'static str], Co
 }
 
 fn validate_placeholder_name(field: &str, placeholder: &str) -> Result<(), ConfigError> {
+    if matches!(placeholder, "tls.ca" | "tls.cert" | "tls.key") {
+        return Ok(());
+    }
+
     let mut bytes = placeholder.bytes();
     let Some(first) = bytes.next() else {
         return Err(ConfigError::InvalidEnvPlaceholder {

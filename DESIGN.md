@@ -1110,7 +1110,7 @@ An empty Project config is valid and means no Project-specific overrides. PV use
 
 Project config accepts a root-level `serve` boolean. It defaults to `true`. With `serve: false`, the Project remains linked and PV still reconciles its declared Managed Resources, Resource allocations, and environment mappings, but PV does not create a Gateway route, TLS demand, or PHP worker for the Project. PV does not start framework or application development servers on the Project's behalf.
 
-Serving-only config remains valid but dormant while `serve: false`. This includes `root`, `hostnames:`, the primary Project hostname, and env entries that use `${project_url}`, `${tls_cert}`, `${tls_key}`, or `${tls_ca}`. PV preserves those values in user-owned config, ignores them for runtime planning, and omits env entries that depend on serving-only placeholders. If serving is enabled again, PV validates and applies those values normally and restores the omitted env entries.
+Serving-only config remains valid but dormant while `serve: false`. This includes `root`, `hostnames:`, the primary Project hostname, and env entries that use `${project_url}`, `${tls.cert}`, `${tls.key}`, or `${tls.ca}`. PV preserves those values in user-owned config, ignores them for runtime planning, and omits env entries that depend on serving-only placeholders. If serving is enabled again, PV validates and applies those values normally and restores the omitted env entries.
 
 Basic YAML types, unknown keys, env key rules, and placeholder spelling are validated in both serving modes. A malformed dormant value is still a config error when it can be validated without serving context. Hostname collision and document-root existence checks are deferred until serving is enabled. As with other invalid Project config, a failed transition keeps the last valid desired state active.
 
@@ -1234,13 +1234,15 @@ Project config env values support PV's simple placeholder syntax: `${name}`. PV 
 
 `$$` escapes a literal dollar sign in env values. For example, `$${name}` renders `${name}`, and `$$${name}` renders `$` followed by the resolved value of `${name}`.
 
-Placeholder names must use lowercase snake_case, such as `${project_url}`, `${access_key}`, `${secret_key}`, and `${smtp_port}`.
+Placeholder names must use lowercase snake_case, such as `${project_url}`, `${access_key}`, `${secret_key}`, and `${smtp_port}`. `${tls.ca}`, `${tls.cert}`, and `${tls.key}` are the only dotted placeholder names.
 
 `${project_url}` renders the URL for the primary Project hostname, such as `https://acme.test`. It does not vary by additional hostnames.
 
-`${tls_key}` renders the stable PV-owned path to the TLS private key for the Project's primary hostname. `${tls_cert}` renders the stable PV-owned path to the TLS certificate chain for the Project's primary hostname. `${tls_ca}` renders the path to PV's local CA certificate. PV must never expose the local CA private key through Project env placeholders.
+`${tls.key}` renders the stable PV-owned path to the TLS private key for the Project's primary hostname. `${tls.cert}` renders the stable PV-owned path to the TLS certificate chain for the Project's primary hostname. `${tls.ca}` renders the path to PV's local CA certificate. PV must never expose the local CA private key through Project env placeholders.
 
-While `serve: false`, `${project_url}`, `${tls_key}`, `${tls_cert}`, and `${tls_ca}` remain recognized placeholders, but PV omits any complete env entry containing one of them instead of rendering a partial or fake serving value. Other entries at the same mapping scope continue to render.
+Existing Project config must replace `${tls_ca}` with `${tls.ca}`, `${tls_cert}` with `${tls.cert}`, and `${tls_key}` with `${tls.key}`. PV does not accept the old names or edit user-owned config for this rename.
+
+While `serve: false`, `${project_url}`, `${tls.key}`, `${tls.cert}`, and `${tls.ca}` remain recognized placeholders, but PV omits any complete env entry containing one of them instead of rendering a partial or fake serving value. Other entries at the same mapping scope continue to render.
 
 TLS placeholders are scoped to the primary Project hostname only. They do not render files for additional `hostnames:`, do not imply wildcard certificate support, and do not imply wildcard Project routing. Additional hostnames remain explicit Gateway routes with standalone Caddy-managed TLS certificates.
 

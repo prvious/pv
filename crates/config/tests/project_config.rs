@@ -254,11 +254,23 @@ fn project_config_rejects_invalid_env_placeholders() -> Result<()> {
     assert!(ProjectConfig::parse("env:\n  APP_URL: \"$${missing_value}\"\n").is_ok());
     assert!(
         ProjectConfig::parse(
-            "env:\n  VITE_DEV_SERVER_KEY: \"${tls_key}\"\n  VITE_DEV_SERVER_CERT: \"${tls_cert}\"\n  PV_TLS_CA: \"${tls_ca}\"\n"
+            "env:\n  VITE_DEV_SERVER_KEY: \"${tls.key}\"\n  VITE_DEV_SERVER_CERT: \"${tls.cert}\"\n  PV_TLS_CA: \"${tls.ca}\"\n"
         )
         .is_ok()
     );
     assert!(ProjectConfig::parse("rustfs:\n  env:\n    PUBLIC_URL: \"${url}\"\n").is_ok());
+    for placeholder in ["tls_ca", "tls_cert", "tls_key"] {
+        assert!(matches!(
+            ProjectConfig::parse(&format!("env:\n  TLS_PATH: \"${{{placeholder}}}\"\n")),
+            Err(ConfigError::UnknownEnvPlaceholder { placeholder: rejected, .. })
+                if rejected == placeholder
+        ));
+    }
+    assert!(matches!(
+        ProjectConfig::parse("env:\n  TLS_PATH: \"${tls.other}\"\n"),
+        Err(ConfigError::InvalidEnvPlaceholder { placeholder, .. })
+            if placeholder == "tls.other"
+    ));
 
     Ok(())
 }
@@ -280,9 +292,9 @@ env:
             ProjectConfig::parse(
                 r#"
 env:
-  VITE_DEV_SERVER_KEY: "${tls_key}"
-  VITE_DEV_SERVER_CERT: "${tls_cert}"
-  PV_TLS_CA: "${tls_ca}"
+  VITE_DEV_SERVER_KEY: "${tls.key}"
+  VITE_DEV_SERVER_CERT: "${tls.cert}"
+  PV_TLS_CA: "${tls.ca}"
 "#,
             ),
         ),
@@ -320,9 +332,9 @@ mysql:
                 r#"
 mysql:
   env:
-    VITE_DEV_SERVER_KEY: "${tls_key}"
-    VITE_DEV_SERVER_CERT: "${tls_cert}"
-    PV_TLS_CA: "${tls_ca}"
+    VITE_DEV_SERVER_KEY: "${tls.key}"
+    VITE_DEV_SERVER_CERT: "${tls.cert}"
+    PV_TLS_CA: "${tls.ca}"
 "#,
             ),
         ),
@@ -366,9 +378,9 @@ mysql:
   allocations:
     app:
       env:
-        VITE_DEV_SERVER_KEY: "${tls_key}"
-        VITE_DEV_SERVER_CERT: "${tls_cert}"
-        PV_TLS_CA: "${tls_ca}"
+        VITE_DEV_SERVER_KEY: "${tls.key}"
+        VITE_DEV_SERVER_CERT: "${tls.cert}"
+        PV_TLS_CA: "${tls.ca}"
 "#,
             ),
         ),
@@ -403,12 +415,12 @@ mysql:
 
 #[test]
 fn project_config_reports_tls_placeholder_usage() -> Result<()> {
-    let project_tls = ProjectConfig::parse("env:\n  VITE_DEV_SERVER_KEY: \"${tls_key}\"\n")?;
-    let resource_tls = ProjectConfig::parse("mysql:\n  env:\n    TLS_CERT: \"${tls_cert}\"\n")?;
+    let project_tls = ProjectConfig::parse("env:\n  VITE_DEV_SERVER_KEY: \"${tls.key}\"\n")?;
+    let resource_tls = ProjectConfig::parse("mysql:\n  env:\n    TLS_CERT: \"${tls.cert}\"\n")?;
     let allocation_tls = ProjectConfig::parse(
-        "postgres:\n  allocations:\n    app:\n      env:\n        TLS_CA: \"${tls_ca}\"\n",
+        "postgres:\n  allocations:\n    app:\n      env:\n        TLS_CA: \"${tls.ca}\"\n",
     )?;
-    let escaped_tls = ProjectConfig::parse("env:\n  LITERAL: \"$${tls_key}\"\n")?;
+    let escaped_tls = ProjectConfig::parse("env:\n  LITERAL: \"$${tls.key}\"\n")?;
     let no_tls = ProjectConfig::parse("env:\n  APP_URL: \"${project_url}\"\n")?;
 
     assert!(project_tls.uses_tls_placeholders());
