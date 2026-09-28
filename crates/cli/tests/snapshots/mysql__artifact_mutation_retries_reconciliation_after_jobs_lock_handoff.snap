@@ -8,7 +8,7 @@ expression: snapshot
             0,
         ),
     ),
-    "Installed MySQL track 8.0\nSystem reconciliation requested: job_lock_2\n",
+    "Installed MySQL track 8.0 (8.0.36-pv1)\nSystem reconciliation requested: job_lock_2\n",
     [
         Object {
             "command": String("run_job"),

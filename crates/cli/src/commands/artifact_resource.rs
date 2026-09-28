@@ -47,10 +47,17 @@ pub(crate) fn install(
     let output = &mut streams.out;
 
     super::write_revoked_latest_warning(&installed, &mut streams.err);
-    output.success(Line::field(
+    let mut summary = Line::field(
         &format!("Installed {} track ", spec.display_name),
         installed.track(),
-    ))?;
+    );
+    if !output.surface().decorated() {
+        summary = summary
+            .text(" (")
+            .value(installed.artifact_version().as_str())
+            .text(")");
+    }
+    output.success(summary)?;
     if output.surface().decorated() {
         output.detail(Line::from("·  ").value(installed.artifact_version().as_str()))?;
     }
