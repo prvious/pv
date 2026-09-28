@@ -30,7 +30,7 @@ pub(crate) fn run(
         ExitCode::SUCCESS
     };
     if args.json {
-        streams.out.json(&report.json())?;
+        streams.out.json(&report)?;
 
         return Ok(exit_code);
     }
@@ -39,20 +39,16 @@ pub(crate) fn run(
     Ok(exit_code)
 }
 
-/// The checks, grouped the way the decorated report shows them. Plain and
-/// JSON output list the same checks in the same order.
+/// The checks grouped for every output surface.
+#[derive(Serialize)]
 struct DoctorReport {
     sections: [DoctorSection; 3],
 }
 
+#[derive(Serialize)]
 struct DoctorSection {
     title: &'static str,
     checks: Vec<DoctorCheck>,
-}
-
-#[derive(Serialize)]
-struct DoctorJson<'report> {
-    checks: Vec<&'report DoctorCheck>,
 }
 
 impl DoctorReport {
@@ -107,12 +103,6 @@ impl DoctorReport {
         self.count(CheckStatus::Fail) > 0
     }
 
-    fn json(&self) -> DoctorJson<'_> {
-        DoctorJson {
-            checks: self.checks().collect(),
-        }
-    }
-
     fn write(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
         let decorated = output.surface().decorated();
         let name_width = self
@@ -122,7 +112,12 @@ impl DoctorReport {
             .unwrap_or(0);
         output.report_heading("doctor", Some("PV doctor"))?;
         for section in &self.sections {
-            output.section(section.title)?;
+            if decorated {
+                output.section(section.title)?;
+            } else {
+                output.line("")?;
+                output.line(section.title)?;
+            }
             for check in &section.checks {
                 if decorated {
                     let message_tone = match check.status {
