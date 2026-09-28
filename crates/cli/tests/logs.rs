@@ -14,6 +14,7 @@ use state::{Database, ManagedResourceTrackInstallInput, PvPaths};
 struct TestEnvironment {
     home: PathBuf,
     current_dir: PathBuf,
+    decorated: bool,
 }
 
 impl TestEnvironment {
@@ -21,7 +22,13 @@ impl TestEnvironment {
         Self {
             home: home.as_std_path().to_path_buf(),
             current_dir: home.as_std_path().to_path_buf(),
+            decorated: false,
         }
+    }
+
+    fn decorated(mut self) -> Self {
+        self.decorated = true;
+        self
     }
 }
 
@@ -46,9 +53,28 @@ impl Environment for TestEnvironment {
         false
     }
 
+    fn stdout_is_terminal(&self) -> bool {
+        self.decorated
+    }
+
     fn open_url(&self, _url: &str) -> io::Result<()> {
         Ok(())
     }
+}
+
+#[test]
+fn logs_without_daemon_logs_suggests_setup_on_a_terminal() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let environment = TestEnvironment::new(&home).decorated();
+
+    let output = run_pv(&["logs", "--no-color"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stderr.is_empty());
+    assert_debug_snapshot!(output);
+
+    Ok(())
 }
 
 #[test]
