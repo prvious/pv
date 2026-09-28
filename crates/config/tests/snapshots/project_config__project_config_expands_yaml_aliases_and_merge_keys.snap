@@ -6,7 +6,7 @@ ProjectConfig {
     serve: true,
     env_file: ".env",
     php: None,
-    document_root: None,
+    root: None,
     hostnames: [],
     env: {
         "MATH": "2 * 3",

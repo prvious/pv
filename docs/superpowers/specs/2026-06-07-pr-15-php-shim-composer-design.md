@@ -74,7 +74,7 @@ PR 15 should preserve the existing crate boundaries:
 
 The global PHP default should be stored in `pv.db` as a narrow setting or preference. Stored values must be concrete tracks, never `latest`. If the setting is absent, PV falls back to the current manifest default PHP track. The fallback is resolved when needed, but commands that write state should store the concrete track.
 
-Project-level `php:use` should reuse `ProjectConfigFile::read_from_root`. If `pv.yml` exists, update it. If only `pv.yaml` exists, update it. If neither exists, create `pv.yml`. If both exist, fail with the existing config-conflict behavior. The update must preserve unrelated semantic config fields such as `hostnames`, `document_root`, `env`, and resource blocks. Comment and formatting preservation is desirable only if the YAML tooling makes it practical; semantic preservation is required.
+Project-level `php:use` should reuse `ProjectConfigFile::read_from_root`. If `pv.yml` exists, update it. If only `pv.yaml` exists, update it. If neither exists, create `pv.yml`. If both exist, fail with the existing config-conflict behavior. The update must preserve unrelated semantic config fields such as `hostnames`, `root`, `env`, and resource blocks. Comment and formatting preservation is desirable only if the YAML tooling makes it practical; semantic preservation is required.
 
 The `php` shim should resolve the current Project by walking from the process working directory through linked Project roots. Inside a linked Project, it uses that Project's resolved concrete PHP track. Outside a linked Project, it uses the global default. It then runs the installed standalone PHP executable for that track.
 

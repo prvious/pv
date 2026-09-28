@@ -3,11 +3,11 @@ source: crates/config/tests/project_config.rs
 expression: "read_file(&project.join(\"pv.yml\"))?"
 ---
 php: '8.4'
-document_root: public
+root: public
 hostnames:
 - admin.acme.test
 env:
-  APP_URL: ${project_url}
+  APP_URL: ${url}
 mysql:
   version: '8.0'
   env:

@@ -68,64 +68,58 @@ fn validate_project_paths(
 ) -> Result<ProjectConfig, ConfigError> {
     resolve_project_env_file_path(project_root, &config)?;
 
-    if let Some(document_root) = &config.document_root {
-        validate_document_root_shape(document_root)?;
+    if let Some(root) = &config.root {
+        validate_root_shape(root)?;
     }
     if !config.serve {
         return Ok(config);
     }
 
-    let Some(document_root) = &config.document_root else {
+    let Some(root) = &config.root else {
         return Ok(config);
     };
 
-    let absolute_document_root = project_root.join(document_root);
-    let canonical_document_root = match canonicalize_utf8(&absolute_document_root) {
+    let absolute_root = project_root.join(root);
+    let canonical_root = match canonicalize_utf8(&absolute_root) {
         Ok(path) => path,
         Err(ConfigError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-            return Err(ConfigError::DocumentRootNotDirectory {
-                document_root: document_root.clone(),
-            });
+            return Err(ConfigError::RootNotDirectory { root: root.clone() });
         }
         Err(error) => return Err(error),
     };
 
-    if !canonical_document_root.starts_with(project_root) {
-        return Err(ConfigError::DocumentRootEscapesProject {
-            document_root: document_root.clone(),
-        });
+    if !canonical_root.starts_with(project_root) {
+        return Err(ConfigError::RootEscapesProject { root: root.clone() });
     }
 
-    if !is_directory(&canonical_document_root)? {
-        return Err(ConfigError::DocumentRootNotDirectory {
-            document_root: document_root.clone(),
-        });
+    if !is_directory(&canonical_root)? {
+        return Err(ConfigError::RootNotDirectory { root: root.clone() });
     }
 
     Ok(config)
 }
 
-pub(crate) fn validate_document_root_shape(document_root: &Utf8Path) -> Result<(), ConfigError> {
-    if document_root.is_absolute() {
-        return Err(ConfigError::AbsoluteDocumentRoot {
-            document_root: document_root.to_path_buf(),
+pub(crate) fn validate_root_shape(root: &Utf8Path) -> Result<(), ConfigError> {
+    if root.is_absolute() {
+        return Err(ConfigError::AbsoluteRoot {
+            root: root.to_path_buf(),
         });
     }
 
     let mut depth = 0_u32;
-    for component in document_root.components() {
+    for component in root.components() {
         match component {
             camino::Utf8Component::Normal(_) => depth += 1,
             camino::Utf8Component::ParentDir if depth == 0 => {
-                return Err(ConfigError::DocumentRootEscapesProject {
-                    document_root: document_root.to_path_buf(),
+                return Err(ConfigError::RootEscapesProject {
+                    root: root.to_path_buf(),
                 });
             }
             camino::Utf8Component::ParentDir => depth -= 1,
             camino::Utf8Component::CurDir => {}
             camino::Utf8Component::RootDir | camino::Utf8Component::Prefix(_) => {
-                return Err(ConfigError::AbsoluteDocumentRoot {
-                    document_root: document_root.to_path_buf(),
+                return Err(ConfigError::AbsoluteRoot {
+                    root: root.to_path_buf(),
                 });
             }
         }

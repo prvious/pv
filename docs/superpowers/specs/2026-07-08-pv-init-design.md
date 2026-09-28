@@ -57,7 +57,7 @@ Inputs:
 
 - `composer.json` for Laravel/PHP shape, package hints, and PHP constraint hints.
 - Laravel files such as `artisan`, `bootstrap/app.php`, `config/app.php`, and `public/index.php`.
-- Directory layout, especially `public/`, for `document_root`.
+- Directory layout, especially `public/`, for `root`.
 - `.env.example`, then `.env` only as a fallback for key names and non-secret shape.
 - `package.json` for Vite and frontend tooling signals.
 - Existing `pv.yml` or `pv.yaml` for update/merge behavior.
@@ -197,7 +197,7 @@ For Laravel Projects, or when `APP_URL` exists in `.env.example` / `.env`, `pv i
 
 ```yaml
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 ```
 
 If Vite is detected, `pv init` should offer PV TLS placeholder values. Laravel's Vite documentation configures HTTPS through `vite.config.js` with `server.https` and `detectTls`; it does not define a universal env variable contract. Therefore PV must not claim these variables are consumed automatically.
@@ -206,7 +206,7 @@ When selected, PV should generate Laravel-oriented env values for the Project to
 
 ```yaml
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
   VITE_DEV_SERVER_CERT: "${tls_cert}"
   VITE_DEV_SERVER_KEY: "${tls_key}"
 ```
@@ -257,7 +257,7 @@ Existing user config values win unless the user changes them through the structu
 Examples:
 
 - Existing `php` is preserved unless edited.
-- Existing `document_root` is preserved unless edited.
+- Existing `root` is preserved unless edited.
 - Existing resources remain present.
 - Newly selected resources are added.
 - Existing env mappings are not deleted just because detection did not rediscover them.

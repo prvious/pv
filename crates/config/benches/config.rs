@@ -14,19 +14,19 @@ fn main() {
 
 const SIMPLE_CONFIG: &str = r#"
 php: 8.4
-document_root: public
+root: public
 hostnames:
   - api.acme.test
 "#;
 
 const COMPLEX_CONFIG: &str = r#"
 php: 8.4
-document_root: public
+root: public
 hostnames:
   - api.acme.test
   - admin.acme.test
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
   APP_ENV: production
 mysql:
   version: "8.4"

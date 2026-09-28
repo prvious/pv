@@ -138,7 +138,7 @@ fn linked_project_with_env_warning(
     create_dir(project)?;
     write_file(
         &project.join("pv.yml"),
-        "env:\n  APP_URL: \"${project_url}\"\n",
+        "env:\n  APP_URL: \"${url}\"\n",
     )?;
     write_file(
         &project.join(".env"),

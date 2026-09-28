@@ -201,14 +201,14 @@ fn run_structured_edit(
 ) -> Result<ExitCode, ExecuteError> {
     selection.php = prompt::text(environment, output, "PHP track", &selection.php, None)?;
 
-    let document_root = selection
-        .document_root
+    let root = selection
+        .root
         .as_ref()
         .map_or(".", |path| path.as_str())
         .to_string();
-    let answer = prompt::text(environment, output, "Document root", &document_root, None)?;
-    if answer != document_root {
-        selection.document_root = Some(Utf8PathBuf::from(answer));
+    let answer = prompt::text(environment, output, "Document root", &root, None)?;
+    if answer != root {
+        selection.root = Some(Utf8PathBuf::from(answer));
     }
 
     select_resources(&mut selection, environment, output)?;

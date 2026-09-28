@@ -24,7 +24,7 @@ expression: "(output, config_after, config_file.config,\nproject_snapshot(&proje
                 extensions: [],
             },
         ),
-        document_root: None,
+        root: None,
         hostnames: [
             "api.acme.test",
         ],

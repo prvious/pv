@@ -191,7 +191,7 @@ fn list_on_a_terminal_aligns_columns_or_stacks_records_by_width() -> anyhow::Res
     create_dir(&resource_only)?;
     write_file(
         &served.join("pv.yml"),
-        "env:\n  APP_URL: \"${project_url}\"\nmysql:\n  version: \"8.0\"\nredis:\n  version: \"7.4\"\n",
+        "env:\n  APP_URL: \"${url}\"\nmysql:\n  version: \"8.0\"\nredis:\n  version: \"7.4\"\n",
     )?;
     write_file(&resource_only.join("pv.yml"), "unexpected: true\n")?;
     let paths = PvPaths::for_home(home.clone());
@@ -240,7 +240,7 @@ fn list_on_a_terminal_aligns_columns_or_stacks_records_by_width() -> anyhow::Res
     let compact = render_list_on_terminal(&environment, 40)?;
     write_file(
         &served.join("pv.yml"),
-        "env:\n  APP_URL: \"${project_url}\"\nmysql:\n  version: \"8.0\"\n",
+        "env:\n  APP_URL: \"${url}\"\nmysql:\n  version: \"8.0\"\n",
     )?;
     let edited = render_list_on_terminal(&environment, 60)?;
 

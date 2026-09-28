@@ -101,7 +101,7 @@ Worker config should:
 
 - listen on the assigned loopback worker port;
 - serve only Projects assigned to that PHP track;
-- use each Project's configured `document_root`, or the Project root when no document root is configured;
+- use each Project's configured `root`, or the Project root when no document root is configured;
 - support static files and front-controller routing for PHP applications;
 - include Project hostname context in access logs where FrankenPHP/Caddy supports it cleanly.
 

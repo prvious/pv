@@ -890,7 +890,7 @@ async fn fallback_shutdown_preserves_pending_matching_worker_reload() -> Result<
     let (project_id, mut port_handoff) = seed_foundation_php_project_in_range(
         &paths,
         &project_path,
-        "php: \"8.4\"\ndocument_root: public\n",
+        "php: \"8.4\"\nroot: public\n",
         55_000,
         59_999,
     )?;
@@ -908,10 +908,7 @@ async fn fallback_shutdown_preserves_pending_matching_worker_reload() -> Result<
         .worker_projects_config_dir("8.4")
         .join(format!("{project_id}.Caddyfile"));
     let previous_fragment = state::fs::read_to_string(&worker_fragment)?;
-    state::fs::write_sensitive_file(
-        &project_path.join("pv.yml"),
-        "php: \"8.4\"\ndocument_root: web\n",
-    )?;
+    state::fs::write_sensitive_file(&project_path.join("pv.yml"), "php: \"8.4\"\nroot: web\n")?;
 
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
@@ -970,7 +967,7 @@ async fn fallback_shutdown_cancels_watcher_reload_and_preserves_pending_worker()
     let (project_id, mut port_handoff) = seed_foundation_php_project_in_range(
         &paths,
         &project_path,
-        "php: \"8.4\"\ndocument_root: public\n",
+        "php: \"8.4\"\nroot: public\n",
         55_000,
         59_999,
     )?;
@@ -993,10 +990,7 @@ async fn fallback_shutdown_cancels_watcher_reload_and_preserves_pending_worker()
     gateway_guard.attach_daemon(daemon);
     wait_for_succeeded_job_scope(&paths, "system").await?;
 
-    state::fs::write_sensitive_file(
-        &project_path.join("pv.yml"),
-        "php: \"8.4\"\ndocument_root: web\n",
-    )?;
+    state::fs::write_sensitive_file(&project_path.join("pv.yml"), "php: \"8.4\"\nroot: web\n")?;
     wait_for_path(&load_started).await?;
     let job =
         wait_for_job_scope_status(&paths, &format!("project:{project_id}"), JobStatus::Running)
@@ -1055,7 +1049,7 @@ async fn matching_cancellation_preserves_pending_runtime_without_restore_proof()
     let (project_id, mut port_handoff) = seed_foundation_php_project_in_range(
         &paths,
         &project_path,
-        "php: \"8.4\"\ndocument_root: public\n",
+        "php: \"8.4\"\nroot: public\n",
         60_000,
         64_999,
     )?;
@@ -1083,10 +1077,7 @@ async fn matching_cancellation_preserves_pending_runtime_without_restore_proof()
         .remove("applied_config_fingerprint");
     state::fs::write_sensitive_file(&metadata_path, &serde_json::to_string_pretty(&metadata)?)
         .context("remove matching runtime fingerprint")?;
-    state::fs::write_sensitive_file(
-        &project_path.join("pv.yml"),
-        "php: \"8.4\"\ndocument_root: web\n",
-    )?;
+    state::fs::write_sensitive_file(&project_path.join("pv.yml"), "php: \"8.4\"\nroot: web\n")?;
 
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
@@ -3058,7 +3049,7 @@ async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
     let (_project_id, mut worker_port_handoff) = seed_foundation_php_project(
         &paths,
         &project_path,
-        "php: \"8.4\"\nenv:\n  APP_URL: \"${project_url}\"\n  APP_NAME: setup\n",
+        "php: \"8.4\"\nenv:\n  APP_URL: \"${url}\"\n  APP_NAME: setup\n",
     )?;
     let php_track = "8.4";
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
@@ -3892,7 +3883,7 @@ async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> 
 
     write_file_after_modified_time_tick(
         &config_path,
-        "env:\n  APP_URL: \"${project_url}\"\n  APP_NAME: watched\n",
+        "env:\n  APP_URL: \"${url}\"\n  APP_NAME: watched\n",
     )
     .await?;
 
@@ -3942,7 +3933,7 @@ async fn daemon_shutdown_cancels_watcher_retry_waiting_for_jobs_lock() -> Result
 
     write_file_after_modified_time_tick(
         &config_path,
-        "env:\n  APP_URL: \"${project_url}\"\n  APP_NAME: watched\n",
+        "env:\n  APP_URL: \"${url}\"\n  APP_NAME: watched\n",
     )
     .await?;
     // Give the config watcher time to observe the change and enter its jobs-lock retry loop.

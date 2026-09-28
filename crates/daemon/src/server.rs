@@ -920,7 +920,7 @@ mod tests {
             &paths,
             &tempdir.path().join("valid"),
             "m-valid.test",
-            "env:\n  CERT: \"${tls_cert}\"\n",
+            "env:\n  CERT: \"${tls.cert}\"\n",
         )?;
         let non_tls_project = link_health_project(
             &paths,
@@ -951,7 +951,7 @@ mod tests {
             &paths,
             &tempdir.path().join("expiring"),
             "z-expiring.test",
-            "env:\n  CERT: \"${tls_cert}\"\n",
+            "env:\n  CERT: \"${tls.cert}\"\n",
         )?;
         write_project_certificate(&paths, &valid_project, &local_ca, 365)?;
         write_project_certificate(&paths, &expiring_project, &local_ca, 7)?;

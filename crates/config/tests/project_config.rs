@@ -12,11 +12,11 @@ fn project_config_parses_strict_resource_env_shape() -> Result<()> {
     let config = ProjectConfig::parse(
         r#"
 php: 8.4
-document_root: public
+root: public
 hostnames:
   - Api.Acme.test.
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 mysql:
   version: 8.0
   env:
@@ -42,11 +42,11 @@ fn project_config_parses_resource_only_controls_and_defaults() -> Result<()> {
         r#"
 serve: false
 env_file: .env.local
-document_root: missing
+root: missing
 hostnames:
   - Api.Example.test.
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
   APP_ENV: local
 "#,
     )?;
@@ -76,14 +76,14 @@ fn project_config_rejects_invalid_resource_only_control_shapes() {
             if env_file == "config/../../acme.env"
     ));
     assert!(matches!(
-        ProjectConfig::parse("serve: false\ndocument_root: /tmp/public\n"),
-        Err(ConfigError::AbsoluteDocumentRoot { document_root })
-            if document_root == "/tmp/public"
+        ProjectConfig::parse("serve: false\nroot: /tmp/public\n"),
+        Err(ConfigError::AbsoluteRoot { root })
+            if root == "/tmp/public"
     ));
     assert!(matches!(
-        ProjectConfig::parse("serve: false\ndocument_root: public/../../outside\n"),
-        Err(ConfigError::DocumentRootEscapesProject { document_root })
-            if document_root == "public/../../outside"
+        ProjectConfig::parse("serve: false\nroot: public/../../outside\n"),
+        Err(ConfigError::RootEscapesProject { root })
+            if root == "public/../../outside"
     ));
     assert!(matches!(
         ProjectConfig::parse("serve: false\nhostnames:\n  - '*.acme.test'\n"),
@@ -130,8 +130,8 @@ fn project_config_rejects_invalid_scalar_shapes() -> Result<()> {
         Err(ConfigError::InvalidFieldType { field, .. }) if field == "mysql.version"
     ));
     assert!(matches!(
-        ProjectConfig::parse("document_root: true\n"),
-        Err(ConfigError::InvalidFieldType { field, .. }) if field == "document_root"
+        ProjectConfig::parse("root: true\n"),
+        Err(ConfigError::InvalidFieldType { field, .. }) if field == "root"
     ));
 
     let config = ProjectConfig::parse("env:\n  FEATURE_ENABLED: true\n")?;
@@ -254,11 +254,23 @@ fn project_config_rejects_invalid_env_placeholders() -> Result<()> {
     assert!(ProjectConfig::parse("env:\n  APP_URL: \"$${missing_value}\"\n").is_ok());
     assert!(
         ProjectConfig::parse(
-            "env:\n  VITE_DEV_SERVER_KEY: \"${tls_key}\"\n  VITE_DEV_SERVER_CERT: \"${tls_cert}\"\n  PV_TLS_CA: \"${tls_ca}\"\n"
+            "env:\n  VITE_DEV_SERVER_KEY: \"${tls.key}\"\n  VITE_DEV_SERVER_CERT: \"${tls.cert}\"\n  PV_TLS_CA: \"${tls.ca}\"\n"
         )
         .is_ok()
     );
     assert!(ProjectConfig::parse("rustfs:\n  env:\n    PUBLIC_URL: \"${url}\"\n").is_ok());
+    for placeholder in ["tls_ca", "tls_cert", "tls_key"] {
+        assert!(matches!(
+            ProjectConfig::parse(&format!("env:\n  TLS_PATH: \"${{{placeholder}}}\"\n")),
+            Err(ConfigError::UnknownEnvPlaceholder { placeholder: rejected, .. })
+                if rejected == placeholder
+        ));
+    }
+    assert!(matches!(
+        ProjectConfig::parse("env:\n  TLS_PATH: \"${tls.other}\"\n"),
+        Err(ConfigError::InvalidEnvPlaceholder { placeholder, .. })
+            if placeholder == "tls.other"
+    ));
 
     Ok(())
 }
@@ -267,11 +279,11 @@ fn project_config_rejects_invalid_env_placeholders() -> Result<()> {
 fn project_config_validates_url_placeholder_scopes() {
     let cases = vec![
         (
-            "project-url-project-env",
+            "project-url-root-env",
             ProjectConfig::parse(
                 r#"
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
             ),
         ),
@@ -280,18 +292,9 @@ env:
             ProjectConfig::parse(
                 r#"
 env:
-  VITE_DEV_SERVER_KEY: "${tls_key}"
-  VITE_DEV_SERVER_CERT: "${tls_cert}"
-  PV_TLS_CA: "${tls_ca}"
-"#,
-            ),
-        ),
-        (
-            "legacy-url-project-env",
-            ProjectConfig::parse(
-                r#"
-env:
-  APP_URL: "${url}"
+  VITE_DEV_SERVER_KEY: "${tls.key}"
+  VITE_DEV_SERVER_CERT: "${tls.cert}"
+  PV_TLS_CA: "${tls.ca}"
 "#,
             ),
         ),
@@ -305,24 +308,14 @@ env:
             ),
         ),
         (
-            "resource-project-url",
-            ProjectConfig::parse(
-                r#"
-mysql:
-  env:
-    APP_URL: "${project_url}"
-"#,
-            ),
-        ),
-        (
             "resource-project-tls",
             ProjectConfig::parse(
                 r#"
 mysql:
   env:
-    VITE_DEV_SERVER_KEY: "${tls_key}"
-    VITE_DEV_SERVER_CERT: "${tls_cert}"
-    PV_TLS_CA: "${tls_ca}"
+    VITE_DEV_SERVER_KEY: "${tls.key}"
+    VITE_DEV_SERVER_CERT: "${tls.cert}"
+    PV_TLS_CA: "${tls.ca}"
 "#,
             ),
         ),
@@ -347,18 +340,6 @@ mailpit:
             ),
         ),
         (
-            "allocation-project-url",
-            ProjectConfig::parse(
-                r#"
-mysql:
-  allocations:
-    app:
-      env:
-        APP_URL: "${project_url}"
-"#,
-            ),
-        ),
-        (
             "allocation-project-tls",
             ProjectConfig::parse(
                 r#"
@@ -366,9 +347,9 @@ mysql:
   allocations:
     app:
       env:
-        VITE_DEV_SERVER_KEY: "${tls_key}"
-        VITE_DEV_SERVER_CERT: "${tls_cert}"
-        PV_TLS_CA: "${tls_ca}"
+        VITE_DEV_SERVER_KEY: "${tls.key}"
+        VITE_DEV_SERVER_CERT: "${tls.cert}"
+        PV_TLS_CA: "${tls.ca}"
 "#,
             ),
         ),
@@ -403,13 +384,13 @@ mysql:
 
 #[test]
 fn project_config_reports_tls_placeholder_usage() -> Result<()> {
-    let project_tls = ProjectConfig::parse("env:\n  VITE_DEV_SERVER_KEY: \"${tls_key}\"\n")?;
-    let resource_tls = ProjectConfig::parse("mysql:\n  env:\n    TLS_CERT: \"${tls_cert}\"\n")?;
+    let project_tls = ProjectConfig::parse("env:\n  VITE_DEV_SERVER_KEY: \"${tls.key}\"\n")?;
+    let resource_tls = ProjectConfig::parse("mysql:\n  env:\n    TLS_CERT: \"${tls.cert}\"\n")?;
     let allocation_tls = ProjectConfig::parse(
-        "postgres:\n  allocations:\n    app:\n      env:\n        TLS_CA: \"${tls_ca}\"\n",
+        "postgres:\n  allocations:\n    app:\n      env:\n        TLS_CA: \"${tls.ca}\"\n",
     )?;
-    let escaped_tls = ProjectConfig::parse("env:\n  LITERAL: \"$${tls_key}\"\n")?;
-    let no_tls = ProjectConfig::parse("env:\n  APP_URL: \"${project_url}\"\n")?;
+    let escaped_tls = ProjectConfig::parse("env:\n  LITERAL: \"$${tls.key}\"\n")?;
+    let no_tls = ProjectConfig::parse("env:\n  APP_URL: \"${url}\"\n")?;
 
     assert!(project_tls.uses_tls_placeholders());
     assert!(resource_tls.uses_tls_placeholders());
@@ -451,8 +432,8 @@ redis:
             if field == "redis.allocations.app.env.S3_BUCKET" && placeholder == "bucket"
     ));
 
-    assert!(ProjectConfig::parse("env:\n  APP_URL: \"${project_url}\"\n").is_ok());
-    assert!(ProjectConfig::parse("mysql:\n  env:\n    APP_URL: \"${project_url}\"\n").is_ok());
+    assert!(ProjectConfig::parse("env:\n  APP_URL: \"${url}\"\n").is_ok());
+    assert!(ProjectConfig::parse("mysql:\n  env:\n    APP_URL: \"${url}\"\n").is_ok());
     assert!(ProjectConfig::parse("mysql:\n  env:\n    DB_HOST: \"${host}\"\n").is_ok());
     assert!(
         ProjectConfig::parse(
@@ -461,7 +442,7 @@ mysql:
   allocations:
     app:
       env:
-        APP_URL: "${project_url}"
+        APP_URL: "${url}"
 "#
         )
         .is_ok()
@@ -620,7 +601,7 @@ fn project_config_discovery_validates_paths_and_conflicts() -> Result<()> {
     create_dir(&public)?;
     write_file(
         &project.join("pv.yml"),
-        "document_root: public\nhostnames:\n  - admin.acme.test\n",
+        "root: public\nhostnames:\n  - admin.acme.test\n",
     )?;
 
     let config_file = ProjectConfigFile::read_from_root(&project)?;
@@ -650,11 +631,11 @@ fn project_config_writer_updates_php_in_discovered_file() -> Result<()> {
     write_file(
         &project.join("pv.yml"),
         r#"
-document_root: public
+root: public
 hostnames:
   - Admin.Acme.test.
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 mysql:
   version: 8.0
   env:
@@ -690,9 +671,9 @@ fn project_config_writer_writes_full_config_to_preferred_file() -> Result<()> {
     let config = ProjectConfig::parse(
         r#"
 php: 8.4
-document_root: public
+root: public
 env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 mysql:
   version: latest
   allocations:
@@ -717,7 +698,7 @@ fn project_config_writer_preserves_resource_only_controls() -> Result<()> {
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
     let config = ProjectConfig::parse(
-        "serve: false\nenv_file: .env.local\ndocument_root: missing\nhostnames:\n  - api.example.test\n",
+        "serve: false\nenv_file: .env.local\nroot: missing\nhostnames:\n  - api.example.test\n",
     )?;
 
     config::write_project_config(&project, &config)?;
@@ -730,18 +711,18 @@ fn project_config_writer_preserves_resource_only_controls() -> Result<()> {
 }
 
 #[test]
-fn project_config_writer_rejects_invalid_document_root_without_writing() -> Result<()> {
+fn project_config_writer_rejects_invalid_root_without_writing() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    let config = ProjectConfig::parse("document_root: missing\n")?;
+    let config = ProjectConfig::parse("root: missing\n")?;
 
     let result = config::write_project_config(&project, &config);
 
     assert!(matches!(
         result,
-        Err(ConfigError::DocumentRootNotDirectory { document_root })
-            if document_root == "missing"
+        Err(ConfigError::RootNotDirectory { root })
+            if root == "missing"
     ));
     assert!(!path_exists(&project.join("pv.yml"))?);
 
@@ -913,38 +894,38 @@ fn project_config_discovery_reports_broken_config_symlinks() -> Result<()> {
 }
 
 #[test]
-fn project_config_rejects_document_roots_that_escape_project() -> Result<()> {
+fn project_config_rejects_roots_that_escape_project() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "document_root: ../outside\n")?;
+    write_file(&project.join("pv.yml"), "root: ../outside\n")?;
     create_dir(&tempdir.path().join("outside"))?;
 
     let result = ProjectConfigFile::read_from_root(&project);
 
     assert!(matches!(
         result,
-        Err(ConfigError::DocumentRootEscapesProject { document_root }) if document_root.as_str() == "../outside"
+        Err(ConfigError::RootEscapesProject { root }) if root.as_str() == "../outside"
     ));
 
     Ok(())
 }
 
 #[test]
-fn resource_only_config_defers_document_root_existence_validation() -> Result<()> {
+fn resource_only_config_defers_root_existence_validation() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
     write_file(
         &project.join("pv.yml"),
-        "serve: false\ndocument_root: missing\nhostnames:\n  - Api.Acme.test.\n",
+        "serve: false\nroot: missing\nhostnames:\n  - Api.Acme.test.\n",
     )?;
 
     let config_file = ProjectConfigFile::read_from_root(&project)?;
 
     assert!(!config_file.config.serve);
     assert_eq!(
-        config_file.config.document_root.as_deref(),
+        config_file.config.root.as_deref(),
         Some(Utf8Path::new("missing"))
     );
     assert_eq!(config_file.config.hostnames, ["api.acme.test"]);
@@ -981,25 +962,22 @@ fn project_config_validates_env_file_parent_and_symlink_boundaries() -> Result<(
 }
 
 #[test]
-fn project_config_distinguishes_missing_document_roots_from_filesystem_errors() -> Result<()> {
+fn project_config_distinguishes_missing_roots_from_filesystem_errors() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "document_root: missing\n")?;
+    write_file(&project.join("pv.yml"), "root: missing\n")?;
 
     let missing = ProjectConfigFile::read_from_root(&project);
 
     assert!(matches!(
         missing,
-        Err(ConfigError::DocumentRootNotDirectory { document_root })
-            if document_root.as_str() == "missing"
+        Err(ConfigError::RootNotDirectory { root })
+            if root.as_str() == "missing"
     ));
 
     write_file(&project.join("not-a-directory"), "")?;
-    write_file(
-        &project.join("pv.yml"),
-        "document_root: not-a-directory/public\n",
-    )?;
+    write_file(&project.join("pv.yml"), "root: not-a-directory/public\n")?;
     let filesystem_error = ProjectConfigFile::read_from_root(&project);
 
     assert!(matches!(

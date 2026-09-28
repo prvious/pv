@@ -18,14 +18,14 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
                 extensions: [],
             },
         ),
-        document_root: Some(
+        root: Some(
             "public",
         ),
         hostnames: [
             "admin.acme.test",
         ],
         env: {
-            "APP_URL": "${project_url}",
+            "APP_URL": "${url}",
         },
         resources: {
             "mysql": ResourceConfig {
@@ -63,14 +63,14 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
                 extensions: [],
             },
         ),
-        document_root: Some(
+        root: Some(
             "public",
         ),
         hostnames: [
             "admin.acme.test",
         ],
         env: {
-            "APP_URL": "${project_url}",
+            "APP_URL": "${url}",
         },
         resources: {
             "mysql": ResourceConfig {

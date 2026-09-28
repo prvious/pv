@@ -207,7 +207,7 @@ fn project_config_writer_updates_existing_preferred_php_track() -> Result<()> {
     let config_path = project.join("pv.yml");
     write_file(
         &config_path,
-        "hostnames:\n  - api.acme.test\nphp: 8.3\nenv:\n  APP_URL: \"${project_url}\"\n",
+        "hostnames:\n  - api.acme.test\nphp: 8.3\nenv:\n  APP_URL: \"${url}\"\n",
     )?;
 
     let written = config::write_project_php_track(&project, "8.4")?;
@@ -228,14 +228,14 @@ fn project_config_writer_updates_existing_alternate_php_track() -> Result<()> {
     let project = tempdir.path().join("project");
     create_dir(&project)?;
     let config_path = project.join("pv.yaml");
-    write_file(&config_path, "document_root: public\n")?;
+    write_file(&config_path, "root: public\n")?;
 
     let written = config::write_project_php_track(&project, "8.4")?;
     let parsed = ProjectConfigFile::read_from_root(&project)?;
 
     assert_eq!(written.path, config_path);
     assert_eq!(parsed.config.php.as_deref(), Some("8.4"));
-    assert_eq!(parsed.config.document_root.as_deref(), Some(camino::Utf8Path::new("public")));
+    assert_eq!(parsed.config.root.as_deref(), Some(camino::Utf8Path::new("public")));
 
     Ok(())
 }

@@ -18,7 +18,7 @@ expression: "(updated.path.file_name(), updated.exists, updated.config)"
                 extensions: [],
             },
         ),
-        document_root: None,
+        root: None,
         hostnames: [],
         env: {},
         resources: {},

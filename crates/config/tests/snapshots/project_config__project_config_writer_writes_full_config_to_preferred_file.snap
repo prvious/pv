@@ -18,12 +18,12 @@ expression: "(written.path.file_name(), written.exists, reloaded.config)"
                 extensions: [],
             },
         ),
-        document_root: Some(
+        root: Some(
             "public",
         ),
         hostnames: [],
         env: {
-            "APP_URL": "${project_url}",
+            "APP_URL": "${url}",
         },
         resources: {
             "mysql": ResourceConfig {

@@ -7,11 +7,11 @@ use resources::{
 };
 use yaml_serde::{Mapping, Number, Value};
 
-use crate::discovery::validate_document_root_shape;
+use crate::discovery::validate_root_shape;
 use crate::hostname::normalize_additional_hostname;
 use crate::{AllocationConfig, ConfigError, PhpConfig, ProjectConfig, ResourceConfig};
 
-const PROJECT_ENV_PLACEHOLDERS: &[&str] = &["project_url", "tls_ca", "tls_cert", "tls_key"];
+const TLS_ENV_PLACEHOLDERS: &[&str] = &["tls.ca", "tls.cert", "tls.key"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum EnvPlaceholderScope<'a> {
@@ -63,11 +63,11 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
             "php" => {
                 config.php = Some(php_config(&value)?);
             }
-            "document_root" => {
-                let document_root = non_empty_string("document_root", &value)?;
-                let document_root = Utf8PathBuf::from(document_root);
-                validate_document_root_shape(&document_root)?;
-                config.document_root = Some(document_root);
+            "root" => {
+                let root = non_empty_string("root", &value)?;
+                let root = Utf8PathBuf::from(root);
+                validate_root_shape(&root)?;
+                config.root = Some(root);
             }
             "hostnames" => {
                 hostnames = Some(value);
@@ -555,12 +555,12 @@ fn validate_env_placeholders(
 
 impl<'a> EnvPlaceholderScope<'a> {
     fn allows_placeholder(self, placeholder: &str) -> Result<bool, ConfigError> {
-        if PROJECT_ENV_PLACEHOLDERS.contains(&placeholder) {
+        if TLS_ENV_PLACEHOLDERS.contains(&placeholder) {
             return Ok(true);
         }
 
         match self {
-            Self::Project => Ok(false),
+            Self::Project => Ok(placeholder == "url"),
             Self::Resource { resource } => {
                 Ok(resource_placeholders(resource)?.contains(&placeholder))
             }
@@ -586,6 +586,10 @@ fn allocation_placeholders(resource: &str) -> Result<&'static [&'static str], Co
 }
 
 fn validate_placeholder_name(field: &str, placeholder: &str) -> Result<(), ConfigError> {
+    if matches!(placeholder, "tls.ca" | "tls.cert" | "tls.key") {
+        return Ok(());
+    }
+
     let mut bytes = placeholder.bytes();
     let Some(first) = bytes.next() else {
         return Err(ConfigError::InvalidEnvPlaceholder {

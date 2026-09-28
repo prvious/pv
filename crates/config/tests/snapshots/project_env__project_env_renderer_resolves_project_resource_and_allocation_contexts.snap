@@ -18,9 +18,9 @@ expression: "(&rendered, format_project_env(&rendered))"
             "DB_PORT": "3306",
             "ESCAPED_VALUE": "${database} $acme_test_app $",
             "NUMBER_VALUE": "42",
-            "RESOURCE_URL": "https://acme.test/mysql",
+            "RESOURCE_URL": "mysql://root:secret@127.0.0.1:3306",
             "SHARED_VALUE": "allocation",
         },
     },
-    "APP_URL=https://acme.test\nAWS_ACCESS_KEY_ID=pv-access\nAWS_BUCKET=acme-test-uploads\nAWS_ENDPOINT=http://127.0.0.1:9000\nAWS_SECRET_ACCESS_KEY=pv-secret\nAWS_URL=http://127.0.0.1:9001\nBOOL_VALUE=true\nDATABASE_URL=mysql://root:secret@127.0.0.1:3306/acme_test_app\nDB_DATABASE=acme_test_app\nDB_HOST=127.0.0.1\nDB_PORT=3306\nESCAPED_VALUE=\"\\${database} \\$acme_test_app \\$\"\nNUMBER_VALUE=42\nRESOURCE_URL=https://acme.test/mysql\nSHARED_VALUE=allocation\n",
+    "APP_URL=https://acme.test\nAWS_ACCESS_KEY_ID=pv-access\nAWS_BUCKET=acme-test-uploads\nAWS_ENDPOINT=http://127.0.0.1:9000\nAWS_SECRET_ACCESS_KEY=pv-secret\nAWS_URL=http://127.0.0.1:9001\nBOOL_VALUE=true\nDATABASE_URL=mysql://root:secret@127.0.0.1:3306/acme_test_app\nDB_DATABASE=acme_test_app\nDB_HOST=127.0.0.1\nDB_PORT=3306\nESCAPED_VALUE=\"\\${database} \\$acme_test_app \\$\"\nNUMBER_VALUE=42\nRESOURCE_URL=mysql://root:secret@127.0.0.1:3306\nSHARED_VALUE=allocation\n",
 )

@@ -21,7 +21,7 @@ pub struct ProjectConfig {
         skip_serializing_if = "Option::is_none",
         serialize_with = "serialize_optional_path"
     )]
-    pub document_root: Option<Utf8PathBuf>,
+    pub root: Option<Utf8PathBuf>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub hostnames: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -36,7 +36,7 @@ impl Default for ProjectConfig {
             serve: true,
             env_file: default_env_file(),
             php: None,
-            document_root: None,
+            root: None,
             hostnames: Vec::new(),
             env: BTreeMap::new(),
             resources: BTreeMap::new(),
@@ -148,11 +148,15 @@ impl ProjectConfig {
 }
 
 fn value_uses_tls_placeholder(value: &str) -> bool {
-    value_uses_any_placeholder(value, &["tls_ca", "tls_cert", "tls_key"])
+    value_uses_any_placeholder(value, &["tls.ca", "tls.cert", "tls.key"])
 }
 
-pub(crate) fn value_uses_serving_placeholder(value: &str) -> bool {
-    value_uses_any_placeholder(value, &["project_url", "tls_ca", "tls_cert", "tls_key"])
+pub(crate) fn value_uses_serving_placeholder(value: &str, project_scope: bool) -> bool {
+    if project_scope {
+        value_uses_any_placeholder(value, &["url", "tls.ca", "tls.cert", "tls.key"])
+    } else {
+        value_uses_tls_placeholder(value)
+    }
 }
 
 fn value_uses_any_placeholder(value: &str, placeholders: &[&str]) -> bool {

@@ -25,7 +25,7 @@ RuntimePlan {
                     primary_hostname: "acme.test",
                     hostnames: [],
                     project_root: "<tempdir>/canonical-project",
-                    document_root: "<tempdir>/canonical-project/public",
+                    root: "<tempdir>/canonical-project/public",
                 },
             ],
         },

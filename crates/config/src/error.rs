@@ -109,14 +109,14 @@ pub enum ConfigError {
     #[error("duplicate Project config hostname `{hostname}`")]
     DuplicateHostname { hostname: String },
 
-    #[error("Project config document_root must be relative to the Project root: {document_root}")]
-    AbsoluteDocumentRoot { document_root: Utf8PathBuf },
+    #[error("Project config root must be relative to the Project root: {root}")]
+    AbsoluteRoot { root: Utf8PathBuf },
 
-    #[error("Project config document_root escapes the Project root: {document_root}")]
-    DocumentRootEscapesProject { document_root: Utf8PathBuf },
+    #[error("Project config root escapes the Project root: {root}")]
+    RootEscapesProject { root: Utf8PathBuf },
 
-    #[error("Project config document_root must be an existing directory: {document_root}")]
-    DocumentRootNotDirectory { document_root: Utf8PathBuf },
+    #[error("Project config root must be an existing directory: {root}")]
+    RootNotDirectory { root: Utf8PathBuf },
 
     #[error("Project config env_file must be relative to the Project root: {env_file}")]
     AbsoluteEnvFile { env_file: Utf8PathBuf },

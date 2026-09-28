@@ -639,7 +639,7 @@ fn worker_config_renderer_outputs_track_caddyfile() -> Result<()> {
             primary_hostname: "acme.test".to_string(),
             hostnames: vec!["acme.test".to_string(), "api.acme.test".to_string()],
             project_root: Utf8PathBuf::from("/Users/alice/Code/acme"),
-            document_root: Utf8PathBuf::from("/Users/alice/Code/acme/public"),
+            root: Utf8PathBuf::from("/Users/alice/Code/acme/public"),
         }],
     })?;
 
@@ -696,7 +696,7 @@ pub struct PhpWorkerProject {
     pub primary_hostname: String,
     pub hostnames: Vec<String>,
     pub project_root: Utf8PathBuf,
-    pub document_root: Utf8PathBuf,
+    pub root: Utf8PathBuf,
 }
 ```
 
@@ -801,8 +801,8 @@ fn runtime_plan_groups_linked_projects_by_php_track() -> Result<()> {
     let api_root = tempdir.path().join("api");
     state::fs::write_sensitive_file(&acme_root.join("public/index.php"), "<?php echo 'acme';")?;
     state::fs::write_sensitive_file(&api_root.join("public/index.php"), "<?php echo 'api';")?;
-    state::fs::write_sensitive_file(&acme_root.join("pv.yml"), "php: \"8.4\"\ndocument_root: public\nhostnames:\n  - api.acme.test\n")?;
-    state::fs::write_sensitive_file(&api_root.join("pv.yml"), "php: \"8.3\"\ndocument_root: public\n")?;
+    state::fs::write_sensitive_file(&acme_root.join("pv.yml"), "php: \"8.4\"\nroot: public\nhostnames:\n  - api.acme.test\n")?;
+    state::fs::write_sensitive_file(&api_root.join("pv.yml"), "php: \"8.3\"\nroot: public\n")?;
 
     let mut database = Database::open(&paths)?;
     database.link_project(LinkProjectInput {
@@ -881,7 +881,7 @@ pub struct RuntimeProject {
     pub primary_hostname: String,
     pub hostnames: Vec<String>,
     pub project_root: Utf8PathBuf,
-    pub document_root: Utf8PathBuf,
+    pub root: Utf8PathBuf,
 }
 ```
 
@@ -898,11 +898,11 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
     for project in database.projects()? {
         let config_file = ProjectConfigFile::read_from_root(&project.path)?;
         let php_track = resolve_project_php_track(paths, &project, config_file.config.php.as_deref())?;
-        let document_root = config_file
+        let root = config_file
             .config
-            .document_root
+            .root
             .as_ref()
-            .map(|document_root| project.path.join(document_root))
+            .map(|root| project.path.join(root))
             .unwrap_or_else(|| project.path.clone());
         if !workers.contains_key(&php_track) {
             let assignment = database.assign_port(
@@ -938,7 +938,7 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
             primary_hostname: project.primary_hostname,
             hostnames,
             project_root: project.path,
-            document_root,
+            root,
         });
     }
 
@@ -1252,7 +1252,7 @@ async fn gateway_reconciliation_starts_gateway_and_one_worker_per_php_track() ->
     let fake_frankenphp = write_fake_frankenphp(&tempdir.path().join("fake-frankenphp"))?;
     let project_root = tempdir.path().join("acme");
     state::fs::write_sensitive_file(&project_root.join("public/index.php"), "<?php echo 'acme';")?;
-    state::fs::write_sensitive_file(&project_root.join("pv.yml"), "php: \"8.4\"\ndocument_root: public\n")?;
+    state::fs::write_sensitive_file(&project_root.join("pv.yml"), "php: \"8.4\"\nroot: public\n")?;
     seed_linked_project(&paths, &project_root, "acme.test", "8.4")?;
     seed_installed_runtime_tracks(&paths, &fake_frankenphp, "8.4")?;
 
@@ -1619,7 +1619,7 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
     )?;
     state::fs::write_sensitive_file(
         &project_root.join("pv.yml"),
-        "document_root: public\n",
+        "root: public\n",
     )?;
     let mut database = Database::open(&paths)?;
     database.link_project(LinkProjectInput {

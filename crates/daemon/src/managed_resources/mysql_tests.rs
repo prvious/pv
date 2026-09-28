@@ -234,7 +234,7 @@ fn link_project_with_mysql_database_env(
         project_path,
         "acme.test",
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 mysql:
   version: "8.0"
   env:

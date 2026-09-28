@@ -13,14 +13,14 @@ ProjectConfig {
             extensions: [],
         },
     ),
-    document_root: Some(
+    root: Some(
         "public",
     ),
     hostnames: [
         "api.acme.test",
     ],
     env: {
-        "APP_URL": "${project_url}",
+        "APP_URL": "${url}",
     },
     resources: {
         "mysql": ResourceConfig {

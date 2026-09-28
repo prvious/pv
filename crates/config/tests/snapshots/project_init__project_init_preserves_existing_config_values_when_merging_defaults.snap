@@ -6,14 +6,14 @@ php:
   version: '8.3'
   extensions:
   - intl
-document_root: web
+root: web
 hostnames:
 - admin.acme.test
 env:
   APP_URL: https://custom.test
   CUSTOM_VALUE: preserved
-  VITE_DEV_SERVER_CERT: ${tls_cert}
-  VITE_DEV_SERVER_KEY: ${tls_key}
+  VITE_DEV_SERVER_CERT: ${tls.cert}
+  VITE_DEV_SERVER_KEY: ${tls.key}
 mailpit:
   version: latest
   env:

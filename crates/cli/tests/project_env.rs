@@ -66,11 +66,11 @@ fn project_env_renders_current_project_values_to_stdout() -> anyhow::Result<()> 
     write_file(
         &project.join("pv.yml"),
         r#"env:
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
   APP_ENV: local
-  VITE_DEV_SERVER_KEY: "${tls_key}"
-  VITE_DEV_SERVER_CERT: "${tls_cert}"
-  PV_TLS_CA: "${tls_ca}"
+  VITE_DEV_SERVER_KEY: "${tls.key}"
+  VITE_DEV_SERVER_CERT: "${tls.cert}"
+  PV_TLS_CA: "${tls.ca}"
 "#,
     )?;
     let project_record = register_project(&home, &project, "acme.test")?;
@@ -101,15 +101,18 @@ fn project_env_resolves_additional_hostname_and_resource_values() -> anyhow::Res
         &project.join("pv.yml"),
         r#"hostnames:
   - api.acme.test
+env:
+  APP_URL: "${url}"
 mysql:
   version: "8.0"
   env:
     DB_HOST: "${host}"
     DB_PORT: "${port}"
+    RESOURCE_URL: "${url}"
   allocations:
     app:
       env:
-        DATABASE_URL: "mysql://${username}:${password}@${host}:${port}/${database}"
+        DATABASE_URL: "${url}"
         DB_DATABASE: "${database}"
 "#,
     )?;
@@ -212,7 +215,7 @@ fn project_env_resolves_resource_only_slug_and_reads_configured_env_file() -> an
 env_file: config/development.env
 env:
   APP_NAME: resource-project
-  APP_URL: "${project_url}"
+  APP_URL: "${url}"
 "#,
     )?;
     let env_path = project.join("config/development.env");
@@ -227,7 +230,6 @@ env:
     assert_eq!(output.stdout, "APP_NAME=resource-project\n");
     assert!(output.stderr.is_empty());
     assert_eq!(read_file(&env_path)?, env_before);
-    assert!(!output.stdout.contains("project_url"));
     assert_debug_snapshot!((output, env_before));
 
     Ok(())
@@ -276,10 +278,7 @@ fn project_env_writes_duplicate_warnings_to_stderr_without_mutating_dotenv() -> 
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "env:\n  APP_URL: \"${project_url}\"\n",
-    )?;
+    write_file(&project.join("pv.yml"), "env:\n  APP_URL: \"${url}\"\n")?;
     let env_path = project.join(".env");
     let existing_env = "APP_URL=https://user.test\nOTHER=value\n";
     write_file(&env_path, existing_env)?;
@@ -305,10 +304,7 @@ fn project_env_json_keeps_duplicate_warnings_on_stderr() -> anyhow::Result<()> {
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "env:\n  APP_URL: \"${project_url}\"\n",
-    )?;
+    write_file(&project.join("pv.yml"), "env:\n  APP_URL: \"${url}\"\n")?;
     let env_path = project.join(".env");
     let existing_env = "APP_URL=https://user.test\nOTHER=value\n";
     write_file(&env_path, existing_env)?;
@@ -331,10 +327,7 @@ fn project_env_reports_config_errors_to_stderr() -> anyhow::Result<()> {
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "env:\n  APP_URL: \"${project_url}\"\n",
-    )?;
+    write_file(&project.join("pv.yml"), "env:\n  APP_URL: \"${url}\"\n")?;
     let project_record = register_project(&home, &project, "acme.test")?;
     write_file(&project.join("pv.yml"), "unexpected: true\n")?;
     let environment = TestEnvironment::new(&home, &project_record.path);
@@ -354,10 +347,7 @@ fn project_env_reports_malformed_env_blocks_without_stdout() -> anyhow::Result<(
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "env:\n  APP_URL: \"${project_url}\"\n",
-    )?;
+    write_file(&project.join("pv.yml"), "env:\n  APP_URL: \"${url}\"\n")?;
     let env_path = project.join(".env");
     let existing_env = "# >>> PV MANAGED\nAPP_URL=old\n";
     write_file(&env_path, existing_env)?;
@@ -449,6 +439,7 @@ fn record_mysql_context(home: &Utf8Path, project: &ProjectRecord) -> anyhow::Res
             ("host", "127.0.0.1"),
             ("password", "root-secret"),
             ("port", "3306"),
+            ("url", "mysql://root:root-secret@127.0.0.1:3306"),
             ("username", "root"),
         ]),
     )?;
@@ -469,6 +460,7 @@ fn record_mysql_context(home: &Utf8Path, project: &ProjectRecord) -> anyhow::Res
         &env_values(&[
             ("database", "acme_test_app"),
             ("password", "app-secret"),
+            ("url", "mysql://app:app-secret@127.0.0.1:3306/acme_test_app"),
             ("username", "app"),
         ]),
     )?;
