@@ -199,6 +199,36 @@ impl Line {
         self
     }
 
+    /// Wraps diagnostic prose while keeping paths in their own spans.
+    pub(crate) fn prose_with_paths(mut self, text: &str) -> Self {
+        let mut remaining = text;
+        while let Some(start) = remaining.match_indices('/').find_map(|(index, _)| {
+            let prefix = &remaining[..index];
+            match prefix.chars().next_back() {
+                None => Some(index),
+                Some(character) if character.is_whitespace() || "`\"".contains(character) => {
+                    Some(index)
+                }
+                Some(':' | '/') => None,
+                Some(_) => prefix.rfind(": ").map(|separator| separator + 2),
+            }
+        }) {
+            let path = &remaining[start..];
+            let end = if let Some(quote @ ('`' | '"')) = remaining[..start].chars().next_back() {
+                path.find(quote).unwrap_or(path.len())
+            } else {
+                [": ", ", ", "; ", " and /", " exist", "\n"]
+                    .into_iter()
+                    .filter_map(|separator| path.find(separator))
+                    .min()
+                    .unwrap_or(path.len())
+            };
+            self = self.prose_value(&remaining[..start]).value(&path[..end]);
+            remaining = &path[end..];
+        }
+        self.prose_value(remaining)
+    }
+
     pub(crate) fn toned(mut self, tone: Tone, text: impl Into<String>) -> Self {
         self.spans.push(Span::Text(tone, text.into()));
         self

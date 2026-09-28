@@ -174,15 +174,8 @@ pub(crate) fn setup(
         output.detail("DNS resolver · port redirect · CA trust · daemon registration")?;
     }
 
-    let summary = Line::from("System reconciliation completed: ");
-    // Failure details may contain paths with spaces.
-    let summary = if let Some((result, failures)) = completed.summary.split_once("; failures: ") {
-        summary
-            .prose_value(format!("{result}; failures: "))
-            .value(failures)
-    } else {
-        summary.prose_value(&completed.summary)
-    };
+    let summary =
+        Line::from("System reconciliation completed: ").prose_with_paths(&completed.summary);
     output.flow_step(Mark::Done, summary)?;
     if !default_resource_plan.failures.is_empty() {
         output.flow_step(

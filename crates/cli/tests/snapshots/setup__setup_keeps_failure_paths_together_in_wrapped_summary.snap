@@ -4,7 +4,18 @@ expression: "&setup.stdout[summary..]"
 ---
 ◇  System reconciliation completed:
 │  Project env reconciled for
-│  1 of 2 Projects; failures:
-│  /Users/me/My Project/pv.yml
+│  1 of 5 Projects; failures:
+│  app.test: filesystem error at
+│  /Users/me/My Project/pv.yml:
+│  permission denied, blog.test:
+│  Project config file conflict:
+│  both /Users/me/My Project/pv.yml
+│  and /Users/me/My Project/pv.yaml
+│  exist, cache.test: filesystem error
+│  at `/Users/me/My Project/cache`:
+│  inaccessible, env.test: Project
+│  config env_file must point to a file:
+│  config files/.env; Gateway runtime
+│  reconciled
 │
 └  PV setup complete
