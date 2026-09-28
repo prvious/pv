@@ -145,12 +145,20 @@ pub(crate) fn uninstall(
         format!("Queued removal for {} track ", spec.display_name)
     };
     output.success(Line::field(&summary, removal.track()))?;
-    if output.surface().decorated() && prune {
-        output.detail("·  data will be pruned")?;
-    } else if output.surface().decorated() {
+    let prefix = if output.surface().decorated() {
+        "·  "
+    } else {
+        ""
+    };
+    if prune {
+        output.detail(format!("{prefix}data will be pruned"))?;
+    } else {
         let data_path = paths.resource_data_dir(spec.resource_name, removal.track().as_str());
         if data_path.exists() {
-            output.detail(Line::field("·  data preserved under ", data_path))?;
+            output.detail(Line::field(
+                &format!("{prefix}data preserved under "),
+                data_path,
+            ))?;
         }
     }
     super::request_system_reconciliation(&paths, streams)?;

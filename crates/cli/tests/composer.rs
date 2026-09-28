@@ -502,6 +502,35 @@ fn composer_uninstall_force_prune_queues_removal_intent() -> anyhow::Result<()> 
 }
 
 #[test]
+fn composer_uninstall_reports_preserved_home_on_both_surfaces() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let terminal_home = tempdir.path().join("terminal-home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    record_installed_composer(&home, "2", &composer_fixture_artifact("2.8.1-pv1"))?;
+    record_installed_composer(&terminal_home, "2", &composer_fixture_artifact("2.8.1-pv1"))?;
+    let plain_environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+    let terminal_environment =
+        TestEnvironment::new(&terminal_home, &current_dir, ScriptedClient::new()).with_terminal();
+
+    let plain = run_pv(&["composer:uninstall", "--force"], &plain_environment)?;
+    let terminal = run_pv(
+        &["composer:uninstall", "--force", "--no-color"],
+        &terminal_environment,
+    )?;
+
+    assert_eq!(plain.exit_code, ExitCode::SUCCESS);
+    assert_eq!(terminal.exit_code, ExitCode::SUCCESS);
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!((plain, terminal));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
 fn composer_uninstall_prune_refuses_without_terminal() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

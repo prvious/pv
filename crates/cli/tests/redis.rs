@@ -146,6 +146,71 @@ fn redis_uninstall_force_prune_queues_removal_intent() -> anyhow::Result<()> {
         &(output, resource_record_snapshots(&records, tempdir.path())?),
     );
 
+    let terminal_home = tempdir.path().join("terminal-home");
+    record_installed_resource(&terminal_home, DEFAULT_TRACK, &artifact, RESOURCE)?;
+    let mut environment = TestEnvironment::new(&terminal_home, &current_dir, ScriptedClient::new());
+    environment.terminal_width = Some(120);
+    let terminal = run_pv(
+        &[
+            "redis:uninstall",
+            DEFAULT_TRACK,
+            "--force",
+            "--prune",
+            "--no-color",
+        ],
+        &environment,
+    )?;
+    assert_eq!(terminal.exit_code, ExitCode::SUCCESS);
+    assert_resource_snapshot(
+        "redis_uninstall_prune_on_a_terminal",
+        tempdir.path(),
+        &terminal,
+    );
+
+    Ok(())
+}
+
+#[test]
+fn redis_uninstall_reports_preserved_data_on_both_surfaces() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let terminal_home = tempdir.path().join("terminal-home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let paths = pv_paths(&home);
+    record_installed_resource(
+        &home,
+        DEFAULT_TRACK,
+        &fixture_artifact(NEW_VERSION),
+        RESOURCE,
+    )?;
+    create_dir(&paths.resource_data_dir("redis", DEFAULT_TRACK))?;
+    record_installed_resource(
+        &terminal_home,
+        DEFAULT_TRACK,
+        &fixture_artifact(NEW_VERSION),
+        RESOURCE,
+    )?;
+    create_dir(&pv_paths(&terminal_home).resource_data_dir("redis", DEFAULT_TRACK))?;
+    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+
+    let plain = run_pv(&["redis:uninstall", DEFAULT_TRACK, "--force"], &environment)?;
+    let mut terminal_environment =
+        TestEnvironment::new(&terminal_home, &current_dir, ScriptedClient::new());
+    terminal_environment.terminal_width = Some(120);
+    let terminal = run_pv(
+        &["redis:uninstall", DEFAULT_TRACK, "--force", "--no-color"],
+        &terminal_environment,
+    )?;
+
+    assert_eq!(plain.exit_code, ExitCode::SUCCESS);
+    assert_eq!(terminal.exit_code, ExitCode::SUCCESS);
+    assert_resource_snapshot(
+        "redis_uninstall_preserves_data_on_both_surfaces",
+        tempdir.path(),
+        &(plain, terminal),
+    );
+
     Ok(())
 }
 

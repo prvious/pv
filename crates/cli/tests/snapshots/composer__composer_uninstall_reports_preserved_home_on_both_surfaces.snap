@@ -1,0 +1,24 @@
+---
+source: crates/cli/tests/composer.rs
+expression: "(plain, terminal)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Queued removal for Composer track 2\n  home and cache preserved\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "✓  Removal requested for Composer track 2\n   ·  home and cache preserved\n",
+        stderr: "⚠  warning: PV is not running. Start it with `pv setup`\n",
+    },
+)
