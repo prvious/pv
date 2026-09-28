@@ -22,6 +22,11 @@ expression: uninstall.stdout
 │
 ✓  CA trust removal
 │  ✓ Prepared PV local CA trust removal
+│  ✓ Local CA files: current
+│    certificate: <tempdir>/home/.pv/certificates/ca.pem
+│    private key: <tempdir>/home/.pv/certificates/ca-key.pem
+│    common name: PV Local Development CA
+│    fingerprint: <fingerprint>
 │  ✓ Removed trust for PV’s local HTTPS certificate
 │
 ◇  privileged helper removal

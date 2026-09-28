@@ -60,6 +60,33 @@ impl Write for ClosedStderr {
     }
 }
 
+#[derive(Default)]
+struct RejectSetupSummary {
+    observed: Vec<u8>,
+    rejected: bool,
+}
+
+impl Write for RejectSetupSummary {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        let summary = b"Local HTTPS, .test domains and startup configured";
+        self.observed.extend_from_slice(buffer);
+        if !self.rejected
+            && self
+                .observed
+                .windows(summary.len())
+                .any(|part| part == summary)
+        {
+            self.rejected = true;
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
@@ -648,6 +675,31 @@ fn setup_continues_when_nonfatal_warnings_cannot_be_written() -> anyhow::Result<
             .iter()
             .any(|operation| operation.starts_with("install helper"))
     );
+    assert_eq!(reconciliation_request_count(&daemon_requests), 1);
+
+    Ok(())
+}
+
+#[test]
+fn setup_reconciles_when_the_terminal_summary_cannot_be_written() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    fixture.environment.set_terminal_surfaces(true, false, 200);
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+    let mut stdout = RejectSetupSummary::default();
+    let mut stderr = Vec::new();
+
+    let exit_code = run_with_environment(
+        ["pv", "setup", "--no-path", "--yes", "--no-color"],
+        fixture.environment.as_ref(),
+        &mut stdout,
+        &mut stderr,
+    )?;
+    let daemon_requests = daemon.finish()?;
+
+    assert_eq!(exit_code, ExitCode::FAILURE);
+    assert!(stdout.rejected);
     assert_eq!(reconciliation_request_count(&daemon_requests), 1);
 
     Ok(())

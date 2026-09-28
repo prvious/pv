@@ -150,21 +150,19 @@ pub(crate) fn setup(
     })? {
         return Ok(ExitCode::FAILURE);
     }
-    if streams.out.surface().decorated() {
-        streams.out.flow_step(
-            Mark::Success,
-            "Local HTTPS, .test domains and startup configured",
-        )?;
-        streams
-            .out
-            .detail("DNS resolver · port redirect · CA trust · daemon registration")?;
-    }
-
     let mut progress = DownloadProgressRenderer::with_output(&mut streams.err);
     let completed =
         ::daemon::run_job_with_events_blocking(paths, "reconcile", "system", &mut progress)?;
     drop(progress);
     let output = &mut streams.out;
+
+    if output.surface().decorated() {
+        output.flow_step(
+            Mark::Success,
+            "Local HTTPS, .test domains and startup configured",
+        )?;
+        output.detail("DNS resolver · port redirect · CA trust · daemon registration")?;
+    }
 
     output.flow_step(
         Mark::Done,
