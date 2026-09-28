@@ -858,15 +858,15 @@ fn run_app_update_phase(
                 }
                 .into());
             }
-            write_download_cleanup_warning(stderr, download_cleanup_error)?;
+            let _ = write_download_cleanup_warning(stderr, download_cleanup_error);
         }
     }
 
     if !app_update_required {
-        write_helper_rollback_cleanup_warning(
+        let _ = write_helper_rollback_cleanup_warning(
             stderr,
             cleanup_helper_rollback(helper_rollback.as_ref()).err(),
-        )?;
+        );
         output.flow_step(
             Mark::Done,
             format!(
@@ -875,7 +875,10 @@ fn run_app_update_phase(
                 asset.helper().protocol_version()
             ),
         )?;
-        write_privileged_helper_cleanup_warning(stderr, helper_install_cleanup_warning.as_deref())?;
+        let _ = write_privileged_helper_cleanup_warning(
+            stderr,
+            helper_install_cleanup_warning.as_deref(),
+        );
         if manifest.version() < &current_version {
             output.flow_step(
                 Mark::Done,
@@ -934,7 +937,10 @@ fn run_app_update_phase(
                 asset.helper().protocol_version()
             ),
         )?;
-        write_privileged_helper_cleanup_warning(stderr, helper_install_cleanup_warning.as_deref())?;
+        let _ = write_privileged_helper_cleanup_warning(
+            stderr,
+            helper_install_cleanup_warning.as_deref(),
+        );
     } else if let InstalledHelperState::Ready(status) = &installed_helper {
         output.flow_step(
             Mark::Done,
@@ -952,12 +958,12 @@ fn run_app_update_phase(
         ),
     )?;
     output.flow_step(Mark::Done, "Daemon restarted and healthy")?;
-    write_helper_rollback_cleanup_warning(
+    let _ = write_helper_rollback_cleanup_warning(
         stderr,
         cleanup_helper_rollback(helper_rollback.as_ref()).err(),
-    )?;
+    );
     if let Err(error) = layout.prune_releases(&previous_version) {
-        stderr.warning(&format!("failed to prune old PV app releases: {error}"))?;
+        let _ = stderr.warning(&format!("failed to prune old PV app releases: {error}"));
     }
 
     Ok(AppUpdateOutcome::Updated { paths })

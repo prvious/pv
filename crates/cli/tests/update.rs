@@ -38,6 +38,18 @@ mod update_tests {
         "f15b9ec9f06fc9e7e92af6e7cdfe82ae574bdc11f09bf796e44280989b1378d2";
     const CURRENT_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+    struct ClosedStderr;
+
+    impl Write for ClosedStderr {
+        fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
     struct TestEnvironment {
         home: PathBuf,
         client: Box<dyn ResourceHttpClient>,
@@ -1372,6 +1384,49 @@ mod update_tests {
             output
                 .stdout
                 .contains("Privileged helper: updated to 1.1.0 (protocol 2)")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn update_reexecs_after_helper_cleanup_warning_cannot_be_written() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let layout = install_current_release(&paths)?;
+        write_launch_agent(&paths, &paths.active_pv_binary())?;
+        let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
+        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
+            .replace("\"version\": \"1.0.0\"", "\"version\": \"1.1.0\"")
+            .replace("\"protocol_version\": 1", "\"protocol_version\": 2")
+            .replace("pv-helper-1.0.0", "pv-helper-1.1.0");
+        let environment = TestEnvironment::new(
+            &home,
+            ScriptedClient::new()
+                .with_text(&manifest)
+                .with_download(APP_BINARY),
+        )
+        .with_helper_rollback_cleanup_warning("helper transaction cleanup failed");
+
+        let mut stdout = Vec::new();
+        let exit_code = run_with_environment(
+            ["pv", "update"],
+            &environment,
+            &mut stdout,
+            &mut ClosedStderr,
+        )?;
+        let _requests = daemon.join()?;
+
+        assert_eq!(exit_code, ExitCode::SUCCESS);
+        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(
+            environment.execs(),
+            vec![(
+                paths.active_pv_binary().as_std_path().to_path_buf(),
+                vec!["internal:update-managed-resources".to_string()]
+            )]
         );
 
         Ok(())
