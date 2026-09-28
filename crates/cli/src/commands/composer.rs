@@ -48,9 +48,14 @@ pub(crate) fn install(
         super::write_php_pair_install_lines(php_pair, streams)?;
     }
     super::write_revoked_latest_warning(composer, &mut streams.err);
-    streams
-        .out
-        .success(Line::field("Installed Composer track ", composer.track()))?;
+    let mut summary = Line::field("Installed Composer track ", composer.track());
+    if !streams.out.surface().decorated() {
+        summary = summary
+            .text(" (")
+            .value(composer.artifact_version().as_str())
+            .text(")");
+    }
+    streams.out.success(summary)?;
     if streams.out.surface().decorated() {
         streams
             .out
