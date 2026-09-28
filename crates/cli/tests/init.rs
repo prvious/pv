@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, Write};
 use std::iter::repeat_n;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -97,6 +97,18 @@ struct Session {
     stdout: String,
     stderr: String,
     prompts: Vec<String>,
+}
+
+struct ClosedStdout;
+
+impl Write for ClosedStdout {
+    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+        Err(io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[test]
@@ -383,6 +395,26 @@ fn init_yes_writes_detected_defaults_without_prompting() -> anyhow::Result<()> {
         tempdir.path(),
         &session,
     );
+
+    Ok(())
+}
+
+#[test]
+fn init_yes_writes_config_when_plain_stdout_is_closed() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let project = laravel_project(tempdir.path())?;
+    let environment = TestEnvironment::non_interactive(&project);
+    let mut stderr = Vec::new();
+
+    let result = run_with_environment(
+        ["pv", "init", "--yes"],
+        &environment,
+        &mut ClosedStdout,
+        &mut stderr,
+    );
+
+    assert!(!matches!(result, Ok(ExitCode::SUCCESS)));
+    assert!(path_exists(&project.join("pv.yml"))?);
 
     Ok(())
 }

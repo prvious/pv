@@ -63,9 +63,9 @@ pub(crate) fn run(
             }
             return Ok(ExitCode::SUCCESS);
         }
+        let written = write_project_config(&project_root, &config)?;
         output.flow_start("init", "PV init", project_root.file_name())?;
         write_detection_summary(output, &detection, &selection)?;
-        let written = write_project_config(&project_root, &config)?;
         finish_written(output, &written.path, selection.include_vite_tls)?;
         return Ok(ExitCode::SUCCESS);
     }
