@@ -199,10 +199,10 @@ fn refresh_setup_artifact_manifest(
         with_resource_http_client(environment, |client| cache.refresh(&manifest_url, client))?;
 
     if let ArtifactManifestSource::Cached { reason } = refresh.source() {
-        streams.err.warning(&format!(
+        let _ = streams.err.warning(&format!(
             "artifact manifest refresh failed ({reason}); using cached manifest at {}",
             cache.path()
-        ))?;
+        ));
     }
 
     resolve_default_resource_plan(refresh.manifest(), target_platform(environment)?)
@@ -582,7 +582,7 @@ fn ensure_privileged_helper(
         )?;
     }
     if let Some(warning) = install_outcome.cleanup_warning() {
-        streams.err.warning(warning)?;
+        let _ = streams.err.warning(warning);
     }
 
     Ok(ExitCode::SUCCESS)

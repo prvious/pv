@@ -25,6 +25,29 @@ use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
 
+#[derive(Default)]
+struct RejectWarnings {
+    rejected: usize,
+}
+
+impl Write for RejectWarnings {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if buffer
+            .windows(b"warning:".len())
+            .any(|part| part == b"warning:")
+        {
+            self.rejected += 1;
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
@@ -41,6 +64,7 @@ struct TestEnvironment {
     client: ScriptedClient,
     target_platform: TargetPlatform,
     helper_status: Mutex<Option<PrivilegedHelperStatus>>,
+    helper_cleanup_warning: Mutex<Option<String>>,
     terminal_width: Mutex<Option<usize>>,
     terminal_surfaces: Mutex<Option<(bool, bool)>>,
 }
@@ -70,6 +94,7 @@ impl TestEnvironment {
                 protocol_version: HELPER_PROTOCOL_VERSION,
                 owner_uid: 501,
             })),
+            helper_cleanup_warning: Mutex::new(None),
             terminal_width: Mutex::new(None),
             terminal_surfaces: Mutex::new(None),
         }
@@ -101,6 +126,10 @@ impl TestEnvironment {
 
     fn set_helper_missing(&self) {
         *lock(&self.helper_status) = None;
+    }
+
+    fn set_helper_cleanup_warning(&self, warning: &str) {
+        *lock(&self.helper_cleanup_warning) = Some(warning.to_string());
     }
 
     fn set_terminal_surfaces(&self, stdout: bool, stderr: bool, width: usize) {
@@ -380,7 +409,12 @@ impl Environment for TestEnvironment {
             "install helper {candidate_path} prepared {prepared_directory} version {helper_version} protocol {protocol_version} sha256 {expected_sha256}"
         ));
 
-        Ok(platform::PrivilegedHelperInstallOutcome::successful(status))
+        let mut outcome = platform::PrivilegedHelperInstallOutcome::successful(status);
+        if let Some(warning) = lock(&self.helper_cleanup_warning).take() {
+            outcome = outcome.with_cleanup_warning(warning);
+        }
+
+        Ok(outcome)
     }
 
     fn remove_privileged_helper(&self) -> Result<(), platform::PlatformError> {
@@ -561,6 +595,48 @@ fn setup_uses_cached_manifest_with_warning_when_refresh_fails() -> anyhow::Resul
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((output, fixture.environment.operations()));
     });
+
+    Ok(())
+}
+
+#[test]
+fn setup_continues_when_nonfatal_warnings_cannot_be_written() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_setup_manifest(&fixture)?;
+    fixture
+        .environment
+        .script_manifest_error(ResourcesError::HttpRequestFailed {
+            url: MANIFEST_URL.to_string(),
+            reason: "offline".to_string(),
+        });
+    fixture.environment.set_helper_missing();
+    fixture
+        .environment
+        .set_helper_cleanup_warning("helper transaction cleanup failed");
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+
+    let mut stdout = Vec::new();
+    let mut stderr = RejectWarnings::default();
+    let exit_code = run_with_environment(
+        ["pv", "setup", "--no-path", "--yes"],
+        fixture.environment.as_ref(),
+        &mut stdout,
+        &mut stderr,
+    )?;
+    let daemon_requests = daemon.finish()?;
+
+    assert_eq!(exit_code, ExitCode::SUCCESS);
+    assert_eq!(stderr.rejected, 2);
+    assert!(String::from_utf8(stdout)?.contains("PV setup complete"));
+    assert!(
+        fixture
+            .environment
+            .operations()
+            .iter()
+            .any(|operation| operation.starts_with("install helper"))
+    );
+    assert_eq!(reconciliation_request_count(&daemon_requests), 1);
 
     Ok(())
 }
