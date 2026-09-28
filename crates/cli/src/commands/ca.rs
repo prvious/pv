@@ -121,9 +121,7 @@ pub(crate) fn untrust(
     let decorated = output.surface().decorated();
 
     output.success("Prepared PV local CA trust removal")?;
-    if !decorated {
-        write_local_ca_state(output, &local_state)?;
-    }
+    write_local_ca_state(output, &local_state)?;
     if !decorated || !matches!(trust_state, TrustDomainState::Current { .. }) {
         write_system_trust_state(output, &trust_state)?;
     }

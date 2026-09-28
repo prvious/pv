@@ -310,6 +310,32 @@ fn ca_untrust_leaves_local_ca_files_and_removes_system_keychain_trust() -> anyho
 }
 
 #[test]
+fn ca_untrust_on_a_terminal_reports_local_ca_state() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let paths = pv_paths(&home);
+    let generated = generate_local_ca()?;
+    write_file(&paths.ca_certificate(), &generated.certificate_pem)?;
+    write_file(&paths.ca_private_key(), &generated.private_key_pem)?;
+    let environment = TestEnvironment::new(&home, &current_dir)
+        .with_certificate(KeychainCertificate {
+            metadata: generated.metadata.clone(),
+            trust: KeychainTrustResult::TrustRoot,
+        })
+        .on_terminal(120);
+
+    let output = run_pv(&["ca:untrust", "--no-color"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!(output);
+    });
+
+    Ok(())
+}
+
+#[test]
 fn ca_untrust_succeeds_when_system_trust_is_absent_and_preserves_local_ca_files()
 -> anyhow::Result<()> {
     let tempdir = tempdir()?;
