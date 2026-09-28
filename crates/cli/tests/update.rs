@@ -580,13 +580,16 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
+        let resource_status = managed_resource_update_check_response(
+            paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+        );
         let daemon = FakeDaemon::start(
             &paths,
             vec![
                 health_response(),
-                managed_resource_update_check_response(
-                    paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-                ),
+                resource_status.clone(),
+                health_response(),
+                resource_status,
             ],
         )?;
         let manifest = app_manifest(
@@ -600,14 +603,23 @@ mod update_tests {
         let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest));
 
         let output = run_pv(&["update", "--check"], &environment)?;
+        let terminal_environment =
+            TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest));
+        terminal_environment.terminal_width.set(Some(100));
+        let terminal = run_pv(&["update", "--check", "--no-color"], &terminal_environment)?;
 
         daemon.join()?;
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert_eq!(terminal.exit_code, ExitCode::SUCCESS);
         assert!(output.stdout.contains("Privileged helper: unavailable"));
         assert!(
             output
                 .stdout
                 .contains("protocol change requires a matching PV application update")
+        );
+        assert_update_snapshot(
+            "update_check_marks_helper_only_protocol_change_unavailable_terminal",
+            terminal,
         );
 
         Ok(())

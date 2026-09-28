@@ -1667,14 +1667,18 @@ impl PrivilegedHelperUpdateStatus {
             };
             output.status(self.status.mark(), line)?;
             let protocol = match self.status {
-                AppUpdateStatusValue::Current => self
-                    .current_protocol_version
-                    .map_or_else(|| "unknown".to_string(), |version| version.to_string()),
-                AppUpdateStatusValue::UpdateAvailable | AppUpdateStatusValue::Unavailable => {
-                    self.latest_protocol_version.to_string()
+                AppUpdateStatusValue::Current => Some(
+                    self.current_protocol_version
+                        .map_or_else(|| "unknown".to_string(), |version| version.to_string()),
+                ),
+                AppUpdateStatusValue::UpdateAvailable => {
+                    Some(self.latest_protocol_version.to_string())
                 }
+                AppUpdateStatusValue::Unavailable => None,
             };
-            output.detail(format!("protocol {protocol}"))?;
+            if let Some(protocol) = protocol {
+                output.detail(format!("protocol {protocol}"))?;
+            }
             return Ok(());
         }
         let line = match self.status {

@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/update.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "[pv] update --check                                                                           v0.2.4\n────────────────────────────────────────────────────────────────────────────────────────────────────\n✓  PV application  current 0.2.4\n⚠  Privileged helper  unavailable (PV privileged helper installation failed: a privileged-helper\n   protocol change requires a matching PV application update)\n\nMANAGED RESOURCES\n↑  redis 8.8  8.8.0-pv1 → 8.8.1-pv1\n\n↑  1 update available\n   ↳ run  pv update\n⚠  1 check needs attention\n",
+    stderr: "",
+}
