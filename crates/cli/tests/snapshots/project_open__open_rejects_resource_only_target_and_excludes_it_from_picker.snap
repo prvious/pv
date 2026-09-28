@@ -36,7 +36,7 @@ expression: "(link_resource_only, explicit_open, current_open, link_served, pick
                 0,
             ),
         ),
-        stdout: "Linked web.test -> <tempdir>/web\n",
+        stdout: "Linked https://web.test -> <tempdir>/web\n",
         stderr: "\u{1b}[33m⚠\u{1b}[0m  \u{1b}[33mwarning:\u{1b}[0m PV is not running. Start it with `pv setup`\n",
     },
     RunOutput {

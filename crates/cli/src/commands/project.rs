@@ -71,6 +71,8 @@ pub(crate) fn link(
     let output = &mut streams.out;
     let project_name = if result.project.mode == ProjectMode::ResourceOnly {
         format!("{} (resource-only)", result.project.slug)
+    } else if let Some(hostname) = result.project.primary_hostname.as_deref() {
+        format!("https://{hostname}")
     } else {
         super::project_display_name(&result.project).to_string()
     };
