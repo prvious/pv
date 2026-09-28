@@ -51,14 +51,7 @@ pub(crate) fn trust(
         }
         None => output.detail("existing local CA is current")?,
     }
-    if !decorated
-        || !matches!(
-            trust_state,
-            TrustDomainState::Current { .. } | TrustDomainState::NotTrusted { .. }
-        )
-    {
-        write_system_trust_state(output, &trust_state)?;
-    }
+    write_system_trust_state(output, &trust_state)?;
 
     match trust_state {
         TrustDomainState::Current { .. } => {

@@ -36,6 +36,8 @@ expression: setup.stdout
 │    certificate: <tempdir>/home/.pv/certificates/ca.pem
 │    private key: <tempdir>/home/.pv/certificates/ca-key.pem
 │    fingerprint: <fingerprint>
+│  ⚠ System keychain trust: not trusted
+│    fingerprint: <fingerprint>
 │  ✓ PV’s local HTTPS certificate is trusted
 │
 ✓  PV starts at login

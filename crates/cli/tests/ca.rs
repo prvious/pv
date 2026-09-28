@@ -177,6 +177,35 @@ fn ca_trust_reuses_existing_current_local_ca() -> anyhow::Result<()> {
 }
 
 #[test]
+fn ca_trust_on_a_terminal_reports_system_trust_state() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let paths = pv_paths(&home);
+    let generated = generate_local_ca()?;
+    write_file(&paths.ca_certificate(), &generated.certificate_pem)?;
+    write_file(&paths.ca_private_key(), &generated.private_key_pem)?;
+    let current_environment = TestEnvironment::new(&home, &current_dir)
+        .with_certificate(KeychainCertificate {
+            metadata: generated.metadata.clone(),
+            trust: KeychainTrustResult::TrustRoot,
+        })
+        .on_terminal(120);
+    let untrusted_environment = TestEnvironment::new(&home, &current_dir).on_terminal(120);
+
+    let current = run_pv(&["ca:trust", "--no-color"], &current_environment)?;
+    let untrusted = run_pv(&["ca:trust", "--no-color"], &untrusted_environment)?;
+
+    assert_eq!(current.exit_code, ExitCode::SUCCESS);
+    assert_eq!(untrusted.exit_code, ExitCode::SUCCESS);
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((current, untrusted));
+    });
+
+    Ok(())
+}
+
+#[test]
 fn ca_trust_repairs_malformed_local_ca_files() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
