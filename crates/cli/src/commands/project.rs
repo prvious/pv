@@ -79,10 +79,30 @@ pub(crate) fn link(
         LinkProjectStatus::Updated => (Mark::Success, "Updated"),
         LinkProjectStatus::Unchanged => (Mark::Idle, "Already linked"),
     };
-    output.status(
-        mark,
-        Line::field(&format!("{verb} {project_name} -> "), &result.project.path),
-    )?;
+    if output.surface().decorated() {
+        if let Some(hostname) = result.project.primary_hostname.as_deref() {
+            let verb = if result.status == LinkProjectStatus::Updated {
+                "Link updated"
+            } else {
+                verb
+            };
+            output.status(
+                mark,
+                Line::field(&format!("{verb} "), format!("https://{hostname}")),
+            )?;
+        } else {
+            output.status(
+                mark,
+                format!("{verb} {} · resources only", result.project.slug),
+            )?;
+        }
+        output.detail(Line::default().value(result.project.path.as_str()))?;
+    } else {
+        output.status(
+            mark,
+            Line::field(&format!("{verb} {project_name} -> "), &result.project.path),
+        )?;
+    }
     super::request_project_reconciliation(&paths, &result.project, streams)?;
 
     Ok(ExitCode::SUCCESS)
@@ -123,10 +143,20 @@ pub(crate) fn unlink(
     let project = resolve_project(&database, args.hostname.as_deref(), environment)?;
     delete_optional_project_tls_dir(&paths, &project)?;
     let project = database.unlink_project(&project.id)?;
-    streams.out.success(Line::field(
-        &format!("Unlinked {} -> ", super::project_display_name(&project)),
-        &project.path,
-    ))?;
+    if streams.out.surface().decorated() {
+        streams.out.success(Line::field(
+            "Unlinked ",
+            super::project_display_name(&project),
+        ))?;
+        streams
+            .out
+            .detail(Line::default().value(project.path.as_str()))?;
+    } else {
+        streams.out.success(Line::field(
+            &format!("Unlinked {} -> ", super::project_display_name(&project)),
+            &project.path,
+        ))?;
+    }
     super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
@@ -167,10 +197,15 @@ pub(crate) fn open(
 
     environment.open_url(&url)?;
 
+    let displayed_hostname = if streams.out.surface().decorated() {
+        hostname.as_str()
+    } else {
+        super::project_display_name(&project)
+    };
     streams.out.success(
         Line::from("Opened ")
             .value(url)
-            .text(format!(" for {}", super::project_display_name(&project))),
+            .text(format!(" for {displayed_hostname}")),
     )?;
 
     Ok(ExitCode::SUCCESS)
@@ -254,6 +289,103 @@ pub(crate) fn list(
 
     if projects.is_empty() {
         streams.out.note("No linked Projects")?;
+        if streams.out.surface().decorated() {
+            streams
+                .out
+                .hint("In your Project directory, run", "pv link")?;
+        }
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    streams.out.report_heading("list", None)?;
+    if streams.out.surface().decorated() {
+        streams.out.line("")?;
+        const HEADER: &str = "PROJECT  MODE  PHP  STATUS  RESOURCES  ENV  PATH";
+        streams
+            .out
+            .line(if streams.out.surface().width() >= HEADER.len() {
+                HEADER
+            } else {
+                "PROJECTS"
+            })?;
+        let mut warnings = 0;
+        let mut failures = 0;
+        for project in &projects {
+            let status = project_list_status(&database, project)?;
+            let resources = database.project_managed_resources(&project.id)?.len();
+            let failed = matches!(status.project, ProjectStatus::ConfigInvalid)
+                || matches!(
+                    status.env,
+                    ProjectEnvStatus::Failed | ProjectEnvStatus::Invalid
+                );
+            let warning = matches!(status.env, ProjectEnvStatus::Warning);
+            let displayed_status = if matches!(status.env, ProjectEnvStatus::Failed) {
+                "failed"
+            } else {
+                status.project.as_str()
+            };
+            failures += usize::from(failed);
+            warnings += usize::from(warning);
+            streams.out.line("")?;
+            streams.out.status(
+                if failed {
+                    Mark::Failure
+                } else if warning {
+                    Mark::Warning
+                } else {
+                    Mark::Idle
+                },
+                format!(
+                    "{} · {}",
+                    super::project_display_name(project),
+                    displayed_status
+                ),
+            )?;
+            streams.out.detail(format!(
+                "{} · PHP {} · {resources} resources · env {}",
+                project.mode.as_str(),
+                project.desired_php_track.as_deref().unwrap_or("default"),
+                status.env.as_str(),
+            ))?;
+            streams
+                .out
+                .detail(Line::default().value(project.path.as_str()))?;
+            if let Some(error) = status.config_error {
+                streams
+                    .out
+                    .detail(Line::default().toned(Tone::Failure, format!("✗ {error}")))?;
+            }
+            if let Some(detail) = status.env_detail {
+                streams.out.detail(Line::default().toned(
+                    if failed { Tone::Failure } else { Tone::Warning },
+                    format!(
+                        "{} {}",
+                        if failed { "✗" } else { "⚠" },
+                        detail.strip_prefix("warning: ").unwrap_or(&detail),
+                    ),
+                ))?;
+            }
+        }
+        streams.out.line("")?;
+        streams.out.status(
+            if failures > 0 {
+                Mark::Failure
+            } else if warnings > 0 {
+                Mark::Warning
+            } else {
+                Mark::Running
+            },
+            format!(
+                "{} linked · {warnings} warning{} · {failures} failed",
+                projects.len(),
+                if warnings == 1 { "" } else { "s" }
+            ),
+        )?;
+        if let Some(default_php) = database.global_php_default_track()? {
+            streams
+                .out
+                .detail(Line::field("default php ", default_php))?;
+        }
         return Ok(ExitCode::SUCCESS);
     }
 

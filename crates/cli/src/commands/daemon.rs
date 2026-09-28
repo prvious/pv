@@ -36,12 +36,17 @@ fn enable_inner(
     let path = launch_agent_path(environment)?;
     let state = platform::inspect_launch_agent_file(&path, Some(&config));
     let output = &mut streams.out;
+    let started_message = if output.surface().decorated() {
+        "PV started · starts at login"
+    } else {
+        "Daemon started"
+    };
 
     match state {
         LaunchAgentFileState::Current { .. } => {
             environment.kickstart_launch_agent()?;
             output.note("LaunchAgent already installed")?;
-            output.success("Daemon started")?;
+            output.success(started_message)?;
             wait_for_daemon(paths.clone(), output)?;
             if request_reconciliation {
                 submit_system_reconciliation(paths, output)?;
@@ -55,7 +60,7 @@ fn enable_inner(
             &config,
             paths,
             output,
-            "Daemon started",
+            started_message,
             request_reconciliation,
         ),
         LaunchAgentFileState::Stale { .. } => {
@@ -66,7 +71,7 @@ fn enable_inner(
                 &config,
                 paths,
                 output,
-                "Daemon started",
+                started_message,
                 request_reconciliation,
             )
         }
@@ -87,14 +92,22 @@ pub(crate) fn disable(
     match state {
         LaunchAgentFileState::Missing { .. } => {
             bootout_launch_agent_if_loaded(environment)?;
-            output.note("LaunchAgent already absent")?;
+            output.note(if output.surface().decorated() {
+                "PV is already disabled"
+            } else {
+                "LaunchAgent already absent"
+            })?;
 
             Ok(ExitCode::SUCCESS)
         }
         LaunchAgentFileState::Current { .. } | LaunchAgentFileState::Stale { .. } => {
             bootout_launch_agent_if_loaded(environment)?;
             platform::remove_launch_agent_file(&path)?;
-            output.success("Daemon disabled")?;
+            output.success(if output.surface().decorated() {
+                "PV stopped · automatic startup disabled"
+            } else {
+                "Daemon disabled"
+            })?;
             output.success(Line::field("LaunchAgent removed: ", &path))?;
 
             Ok(ExitCode::SUCCESS)
@@ -116,11 +129,16 @@ pub(crate) fn restart(
     let path = launch_agent_path(environment)?;
     let state = platform::inspect_launch_agent_file(&path, Some(&config));
     let output = &mut streams.out;
+    let restarted_message = if output.surface().decorated() {
+        "PV restarted"
+    } else {
+        "Daemon restarted"
+    };
 
     match state {
         LaunchAgentFileState::Current { .. } => {
             environment.kickstart_launch_agent()?;
-            output.success("Daemon restarted")?;
+            output.success(restarted_message)?;
             wait_for_daemon_and_submit_reconciliation(paths, output)?;
 
             Ok(ExitCode::SUCCESS)
@@ -131,7 +149,7 @@ pub(crate) fn restart(
             &config,
             paths,
             output,
-            "Daemon restarted",
+            restarted_message,
             true,
         ),
         LaunchAgentFileState::Stale { .. } => {
@@ -142,7 +160,7 @@ pub(crate) fn restart(
                 &config,
                 paths,
                 output,
-                "Daemon restarted",
+                restarted_message,
                 true,
             )
         }

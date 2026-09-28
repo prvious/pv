@@ -64,6 +64,9 @@ pub(crate) fn open(
     let database = Database::open(&paths)?;
     let Some(url) = running_dashboard_url(&database)? else {
         streams.out.note(NOT_RUNNING_MESSAGE)?;
+        if streams.out.surface().decorated() {
+            streams.out.hint("inspect", "pv status")?;
+        }
 
         return Ok(ExitCode::SUCCESS);
     };

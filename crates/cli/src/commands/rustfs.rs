@@ -62,6 +62,9 @@ pub(crate) fn open(
 
     let Some(url) = running_console_url(&database)? else {
         output.note(NOT_RUNNING_MESSAGE)?;
+        if output.surface().decorated() {
+            output.hint("inspect", "pv status")?;
+        }
         return Ok(ExitCode::SUCCESS);
     };
 

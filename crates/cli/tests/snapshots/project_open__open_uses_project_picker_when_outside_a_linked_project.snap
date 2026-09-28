@@ -10,7 +10,7 @@ expression: "(link, open, opened_urls)"
             ),
         ),
         stdout: "Linked acme.test -> <tempdir>/acme\n",
-        stderr: "\u{1b}[33m⚠\u{1b}[0m  \u{1b}[33mwarning:\u{1b}[0m PV daemon is not running; reconciliation will run after `pv setup`\n   starts it\n",
+        stderr: "\u{1b}[33m⚠\u{1b}[0m  \u{1b}[33mwarning:\u{1b}[0m PV is not running. Start it with `pv setup`\n",
     },
     RunOutput {
         exit_code: ExitCode(

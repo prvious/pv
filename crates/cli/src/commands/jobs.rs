@@ -34,9 +34,16 @@ pub(crate) fn run(
 fn write_jobs(jobs: &[JobRecord], output: &mut Output<'_>) -> Result<(), ExecuteError> {
     if jobs.is_empty() {
         output.note("No recent daemon jobs")?;
+        if output.surface().decorated() {
+            output.hint("start", "pv daemon:enable")?;
+        }
         return Ok(());
     }
 
+    output.report_heading("jobs", None)?;
+    if output.surface().decorated() {
+        output.line("")?;
+    }
     let mut table = Table::new(&[
         "ID", "Kind", "Scope", "Status", "Started", "Finished", "Summary",
     ]);
@@ -57,6 +64,28 @@ fn write_jobs(jobs: &[JobRecord], output: &mut Output<'_>) -> Result<(), Execute
         ]);
     }
     output.table(&table)?;
+    if output.surface().decorated() {
+        let running = jobs
+            .iter()
+            .filter(|job| job.status == JobStatus::Running)
+            .count();
+        let failed = jobs
+            .iter()
+            .filter(|job| job.status == JobStatus::Failed)
+            .count();
+        output.line("")?;
+        output.status(
+            if running > 0 {
+                Mark::Running
+            } else if failed > 0 {
+                Mark::Failure
+            } else {
+                Mark::Success
+            },
+            format!("{} jobs · {running} running · {failed} failed", jobs.len()),
+        )?;
+        output.hint("json", "pv jobs --json")?;
+    }
 
     Ok(())
 }

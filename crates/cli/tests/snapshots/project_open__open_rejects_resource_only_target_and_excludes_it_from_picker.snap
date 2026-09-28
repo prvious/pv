@@ -10,7 +10,7 @@ expression: "(link_resource_only, explicit_open, current_open, link_served, pick
             ),
         ),
         stdout: "Linked resources (resource-only) -> <tempdir>/resources\n",
-        stderr: "\u{1b}[33m⚠\u{1b}[0m  \u{1b}[33mwarning:\u{1b}[0m PV daemon is not running; reconciliation will run after `pv setup`\n   starts it\n",
+        stderr: "\u{1b}[33m⚠\u{1b}[0m  \u{1b}[33mwarning:\u{1b}[0m PV is not running. Start it with `pv setup`\n",
     },
     RunOutput {
         exit_code: ExitCode(
@@ -19,7 +19,7 @@ expression: "(link_resource_only, explicit_open, current_open, link_served, pick
             ),
         ),
         stdout: "",
-        stderr: "\u{1b}[31m✗\u{1b}[0m  \u{1b}[31merror:\u{1b}[0m \u{1b}[1mProject `resources` is resource-only and cannot be opened\u{1b}[0m\n",
+        stderr: "\u{1b}[31m✗\u{1b}[0m  \u{1b}[31merror:\u{1b}[0m \u{1b}[1mProject `resources` is resource-only and cannot be opened\u{1b}[0m\n   \u{1b}[2m↳\u{1b}[0m \u{1b}[2mtry\u{1b}[0m\u{1b}[2m  \u{1b}[0m\u{1b}[36mpv list\u{1b}[0m\n",
     },
     RunOutput {
         exit_code: ExitCode(
@@ -37,7 +37,7 @@ expression: "(link_resource_only, explicit_open, current_open, link_served, pick
             ),
         ),
         stdout: "Linked web.test -> <tempdir>/web\n",
-        stderr: "\u{1b}[33m⚠\u{1b}[0m  \u{1b}[33mwarning:\u{1b}[0m PV daemon is not running; reconciliation will run after `pv setup`\n   starts it\n",
+        stderr: "\u{1b}[33m⚠\u{1b}[0m  \u{1b}[33mwarning:\u{1b}[0m PV is not running. Start it with `pv setup`\n",
     },
     RunOutput {
         exit_code: ExitCode(

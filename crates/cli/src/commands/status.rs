@@ -191,11 +191,52 @@ impl StatusSnapshot {
     /// The terminal report: the daemon, then one section per area, then the
     /// overall outcome. It carries the same facts as the plain report.
     fn write_decorated(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
-        output.heading("status", None)?;
+        output.report_heading("status", None)?;
         output.line("")?;
+        let project_attention = self
+            .projects
+            .iter()
+            .filter(|project| matches!(project.mark, Mark::Warning | Mark::Failure))
+            .count();
+        let summary = if project_attention > 0 {
+            format!(
+                "PV is {} · {project_attention} Project{} need{} attention",
+                self.daemon.state,
+                if project_attention == 1 { "" } else { "s" },
+                if project_attention == 1 { "s" } else { "" },
+            )
+        } else if self.has_failure() {
+            format!("PV is {} · system needs attention", self.daemon.state)
+        } else {
+            format!("PV is {}", self.daemon.state)
+        };
+        let mark = if self.has_failure() {
+            Mark::Failure
+        } else if project_attention > 0 {
+            Mark::Warning
+        } else {
+            self.daemon.mark
+        };
+        output.status(mark, Line::default().toned(Tone::Strong, summary.clone()))?;
+        let gateway = self
+            .runtimes
+            .iter()
+            .find(|runtime| runtime.subject == "gateway");
+        let daemon_line = if let Some(gateway) = gateway.filter(|_| self.daemon.state == "running")
+        {
+            format!("Daemon {} · Gateway {}", self.daemon.state, gateway.status)
+        } else {
+            format!("Daemon {}", self.daemon.state)
+        };
         output.status(
-            self.daemon.mark,
-            Line::default().toned(Tone::Strong, format!("Daemon {}", self.daemon.state)),
+            gateway.map_or(self.daemon.mark, |gateway| {
+                if self.daemon.state != "running" {
+                    self.daemon.mark
+                } else {
+                    gateway.mark
+                }
+            }),
+            Line::default().toned(Tone::Strong, daemon_line),
         )?;
         output.detail(
             Line::field("LaunchAgent ", self.daemon.launch_agent)
@@ -212,8 +253,17 @@ impl StatusSnapshot {
         )?;
         output.status(
             self.integrations.ports_mark,
-            integration("Ports", ports.state.as_str()),
+            if ports.is_active() {
+                Line::from("Ports active · HTTP 80 / HTTPS 443")
+            } else {
+                integration("Ports", ports.state.as_str())
+            },
         )?;
+        if ports.is_active()
+            && let (Some(http), Some(https)) = (ports.active_http_port, ports.active_https_port)
+        {
+            output.detail(format!("80→{http}  ·  443→{https}"))?;
+        }
         if !ports.is_active() {
             output.hint("repair", "pv ports:install")?;
         }
@@ -239,9 +289,14 @@ impl StatusSnapshot {
             output.table(&table)?;
         }
 
-        if !self.runtimes.is_empty() {
+        let other_runtimes = self
+            .runtimes
+            .iter()
+            .filter(|runtime| self.daemon.state != "running" || runtime.subject != "gateway")
+            .collect::<Vec<_>>();
+        if !other_runtimes.is_empty() {
             output.section("Runtimes")?;
-            for runtime in &self.runtimes {
+            for runtime in other_runtimes {
                 output.status(
                     runtime.mark,
                     Line::from(format!("{}  ", runtime.subject)).text(runtime.status),
@@ -283,13 +338,8 @@ impl StatusSnapshot {
         }
 
         output.line("")?;
-        let overall_mark = if self.has_failure() {
-            Mark::Failure
-        } else {
-            Mark::Success
-        };
-        output.status(overall_mark, format!("Overall: {}", self.overall))?;
-        output.hint("logs", &self.log_directory)?;
+        output.status(mark, summary)?;
+        output.detail(Line::field("Logs: ", &self.log_directory))?;
 
         Ok(())
     }
@@ -740,4 +790,70 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
 fn resolver_test_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
     Utf8PathBuf::from_path_buf(environment.resolver_test_path())
         .map_err(|path| CliError::NonUtf8Path { path }.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_snapshot;
+
+    use super::super::pf_diagnostics::PfRoutingEvidence;
+    use super::*;
+    use crate::output::Surface;
+
+    #[test]
+    fn running_status_shows_gateway_ports_and_project_attention() -> anyhow::Result<()> {
+        let snapshot = StatusSnapshot {
+            overall: "ok",
+            daemon: DaemonStatus {
+                state: "running",
+                launch_agent: "current",
+                socket: "healthy",
+                failure: false,
+                mark: Mark::Running,
+            },
+            integrations: IntegrationStatuses {
+                dns: "active",
+                ports: PfRoutingDiagnostic {
+                    state: PfRoutingState::Active,
+                    evidence: PfRoutingEvidence::Pfctl,
+                    expected_http_port: Some(48080),
+                    expected_https_port: Some(48443),
+                    active_http_port: Some(48080),
+                    active_https_port: Some(48443),
+                    observed_at: "2026-09-26T12:00:00Z".to_string(),
+                },
+                ca: "trusted",
+                failure: false,
+                dns_mark: Mark::Success,
+                ports_mark: Mark::Success,
+                ca_mark: Mark::Success,
+            },
+            managed_resources: Vec::new(),
+            runtimes: vec![RuntimeStatus {
+                subject: "gateway".to_string(),
+                status: "running",
+                message: None,
+                observed_at: "2026-09-26T12:00:00Z".to_string(),
+                failure: false,
+                mark: Mark::Running,
+            }],
+            projects: vec![ProjectStatus {
+                mode: "served",
+                slug: "acme".to_string(),
+                hostname: Some("acme.test".to_string()),
+                env_status: "warning",
+                message: Some("APP_URL already exists outside the PV block".to_string()),
+                observed_at: Some("2026-09-26T12:00:00Z".to_string()),
+                mark: Mark::Warning,
+            }],
+            recent_errors: Vec::new(),
+            log_directory: "/home/acme/.pv/logs".to_string(),
+        };
+        let mut bytes = Vec::new();
+        snapshot.write(&mut Output::new(&mut bytes, Surface::terminal(false, 100)))?;
+
+        assert_snapshot!(String::from_utf8(bytes)?);
+
+        Ok(())
+    }
 }

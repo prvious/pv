@@ -327,7 +327,11 @@ fn submit_reconciliation(
         match ::daemon::submit_job_blocking(paths.clone(), RECONCILE_KIND, scope) {
             Ok(job) => return Ok(Some(job)),
             Err(::daemon::DaemonError::Io(error)) if daemon_is_unavailable(&error) => {
-                stderr.warning(DAEMON_UNAVAILABLE_WARNING)?;
+                if stderr.surface().decorated() {
+                    stderr.warning("PV is not running. Start it with `pv setup`")?;
+                } else {
+                    stderr.warning(DAEMON_UNAVAILABLE_WARNING)?;
+                }
 
                 return Ok(None);
             }
@@ -418,6 +422,12 @@ fn write_php_pair_install_lines(
     streams
         .out
         .success(Line::field("Installed PHP track ", installed.php().track()))?;
+    if streams.out.surface().decorated() {
+        streams
+            .out
+            .detail(Line::from("·  ").value(installed.php().artifact_version().as_str()))?;
+        return Ok(());
+    }
     streams.out.success(Line::field(
         "Installed FrankenPHP track ",
         installed.frankenphp().track(),

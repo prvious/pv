@@ -120,7 +120,7 @@ impl DoctorReport {
             .map(|check| check.name.chars().count())
             .max()
             .unwrap_or(0);
-        output.heading("doctor", Some("PV doctor"))?;
+        output.report_heading("doctor", Some("PV doctor"))?;
         for section in &self.sections {
             output.section(section.title)?;
             for check in &section.checks {
@@ -167,10 +167,12 @@ impl DoctorReport {
             .map_or(Mark::Success, CheckStatus::mark);
         let warning_noun = if warnings == 1 { "warning" } else { "warnings" };
         output.line("")?;
-        output.status(
-            mark,
-            format!("{passed} passed · {warnings} {warning_noun} · {failures} failed"),
-        )?;
+        let summary = if failures == 0 && warnings == 0 {
+            format!("All {passed} checks passed · 0 warnings · 0 failed")
+        } else {
+            format!("{failures} failed · {warnings} {warning_noun} · {passed} passed")
+        };
+        output.status(mark, summary)?;
 
         Ok(())
     }

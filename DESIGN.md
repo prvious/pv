@@ -1560,7 +1560,7 @@ If the daemon is intentionally disabled while DNS, ports, or CA integrations rem
 
 ## Terminal Presentation
 
-PV is a persistent, composable command-line application. Output stays in shell history: PV never switches to an alternate screen or a full-screen renderer. The terminal designs in `design.pen` ("Terminal 1…7") are the visual reference for hierarchy, spacing, symbols, and prompt states; the wording and facts in this document and the code remain authoritative. Literal pixel and hex identity is not a goal because the terminal controls fonts, glyph metrics, and palette.
+PV is a persistent, composable command-line application. Output stays in shell history: PV never switches to an alternate screen or a full-screen renderer. The terminal designs in `design.pen` ("Terminal 1…7") are the reference for hierarchy, spacing, symbols, prompt states, and human-facing wording. PV reports actual application state; sample values in a mockup never create a new behavior or imply data PV cannot observe. Literal pixel and hex identity is not a goal because the terminal controls fonts, glyph metrics, and palette.
 
 ### Streams
 
@@ -1575,7 +1575,7 @@ Each human-facing stream is rendered in one of two forms, chosen independently f
 - **Decorated** when the stream is a terminal: the glyph column, `┌ │ └` gutter flows for multi-step commands, command headings, section headings, report tables, repair hints, and semantic color, as in the terminal designs.
 - **Plain** when the stream is not a terminal: the plain lines documented throughout this document, with no glyphs, ANSI escapes, spinners, or bars.
 
-Plain output keeps each command's words and documented facts, in that command's documented plain order. Decorated output may arrange the same facts around terminal-specific headings, gutters, and tables:
+Plain output keeps each command's documented words and facts in its documented plain order. Decorated output may arrange the same facts around terminal headings, gutters, and tables. `pv init --yes` leads its decorated result with the written path, followed by detection details; the plain form keeps its detection summary before the final write result.
 
 - Lines that explain the row above them, such as a refusal's `Leaving it in place.` or the fields of `pv ports:status`, are indented two spaces like other sub-lines, and repair commands read `  repair: `<command>``.
 - `pv doctor` lists its checks grouped as System, Routing, and Daemon & jobs, in plain and JSON output alike.
@@ -1583,15 +1583,15 @@ Plain output keeps each command's words and documented facts, in that command's 
 
 Decorated output uses color only when neither `NO_COLOR` nor the global `--no-color` flag is set; without color it keeps its layout and glyphs. Color never carries meaning alone: every glyph accompanies a status word or outcome text. PV uses the terminal's default foreground for ordinary text plus a small ANSI palette (success green, warning yellow, error red, values cyan, active/prompt magenta, labels dim). PV does not detect the terminal background and does not offer user themes.
 
-Glyph vocabulary: `✓` success, `✗` failure, `⚠` warning, `○` no-op or idle, `●` running or default, `◇` completed flow step or answered prompt, `◆` active step or prompt, `│` gutter (`┌` opens, `└` closes a flow), `↳` hint or repair command, `◐` spinner. When a command's outcome depends on the states it reports, such as `pv status`, `pv doctor`, and `pv ports:status` exiting non-zero, each row's glyph agrees with that outcome: `✗` marks exactly what fails the command, and `⚠` marks something worth attention that does not.
+Glyph vocabulary: `✓` success, `✗` failure, `⚠` warning, `○` no-op or idle, `●` running or default, `↑` update available, `◇` completed flow step or answered prompt, `◆` active step or prompt, `│` gutter (`┌` opens, `└` closes a flow), `↳` hint or repair command, `◐` spinner. When a command's outcome depends on the states it reports, such as `pv status`, `pv doctor`, and `pv ports:status` exiting non-zero, each row's glyph agrees with that outcome: `✗` marks exactly what fails the command, and `⚠` marks something worth attention that does not.
 
 Decorated output reflows to the terminal width (80 columns when the width is unknown) and is designed to avoid horizontal scrolling. A table that does not fit reflows each record into a stacked block, the first field as its title and then one `label  value` line per remaining field, without dropping fields. Secondary prose wraps at word boundaries; paths, hostnames, URLs, versions, and identifiers are never split, so a single indivisible value may extend past the target width when it cannot be shortened. Plain output does not depend on width.
 
 ### Flows
 
-Multi-step commands (`pv setup`, `pv uninstall`, `pv update`, and `pv init`) render as a `┌ │ └` flow on a decorated stdout. Each completed milestone is a `◇` step, prompts join the gutter, and the command's outcome closes the flow.
+Multi-step commands (`pv setup`, `pv uninstall`, `pv update`, and interactive `pv init`) render as a `┌ │ └` flow on a decorated stdout. `pv init --yes` prints a compact result followed by detection details. Completed prompts and ordinary milestones use `◇`; completed required setup steps use `✓` or `✗`. Prompts join the gutter, and the command's outcome closes the flow.
 
-- **Required steps** whose output is only meaningful once they finish, such as setup's DNS, port-redirect, CA, and daemon steps, show a spinner naming the step when stderr is a terminal, independently of stdout's rendering. On decorated stdout, the completed title appears marked `◇` or `✗`, with the step's rows beneath it; plain stdout streams the rows without that title. A failed required step closes a decorated flow with `└ ✗ PV stopped during <step>.`
+- **Required steps** whose output is only meaningful once they finish, such as setup's DNS, port-redirect, CA, and daemon steps, show a spinner naming the step when stderr is a terminal, independently of stdout's rendering. On decorated stdout, the completed title appears marked `✓` or `✗`, with the step's rows beneath it; plain stdout streams the rows without that title. A failed required step closes a decorated flow with `└ ✗ PV stopped during <step>.`
 - **The helper installation** is announced as an active `◆` step on stderr just before macOS asks for an administrator password.
 - **A command that fails with its flow still open** closes it with `└ ✗ <title> stopped` before the error is printed on stderr. A cancelled prompt closes the flow with its own cancelled state instead.
 - **`pv update`'s re-executed continuation** resumes the flow the updating process opened instead of starting a new one.
@@ -1626,12 +1626,12 @@ Live progress uses `indicatif` on stderr and is enabled only when stderr is a te
 
 ### Terminal design mapping
 
-Every terminal row in `design.pen` maps to one command state. "Stream" names where the visible content is written; prompts and progress are always stderr. "Not rendered" lists mock content that PV intentionally does not print because the code has no such data or because it would violate a contract above. Report headings never show the PV version, and summaries never show elapsed time, because both would make otherwise identical output differ between runs and releases.
+Every terminal row in `design.pen` maps to one command state. "Stream" names where the visible content is written; prompts and progress are always stderr. "Not rendered" lists mock content that PV intentionally does not print because the code has no such data or because it would violate a contract above. Full report headings show the version of the running PV binary when it fits; at narrow widths the heading omits the version. Summaries omit elapsed time because it is not part of the command result. Mock version deltas are illustrative where the command result exposes only the new artifact version.
 
 | Mock row | Command and state | Stream | Rendering | Not rendered |
 | --- | --- | --- | --- | --- |
 | `A7m5z` | Design system reference | — | Rules for this section | — |
-| `Rurb6` | `pv setup` helper confirmation | stdout flow, stderr prompt | Confirm, default Yes | `y / yes` legend (keys are in the prompt hint) |
+| `Rurb6` | `pv setup` helper confirmation | stdout flow, stderr prompt | Confirm, default Yes | Mock default No and `y / yes` legend; the documented prompt contract keeps default Yes and shows keys in the prompt hint |
 | `KqQlC` | `pv setup` administrator password | stderr | Active step, then sudo's own `Password:` prompt | — |
 | `c9hnGM` | `pv setup` helper installed, shell profile confirmation | stdout flow, stderr prompt | Confirm, default Yes | — |
 | `goXWS` | `pv setup` profile updated, required steps | stdout | Flow steps as each required step completes | Live "2 of 4" step list |
@@ -1655,30 +1655,30 @@ Every terminal row in `design.pen` maps to one command state. "Stream" names whe
 | `IJvHi` | `pv init --print` | stdout | Raw YAML | YAML coloring |
 | `z21m1m` | `pv init --yes` | stdout | Status rows plus Vite note | — |
 | `T2ldI` | `pv init` finished session | stdout, stderr | Answered prompts collapse to their values | — |
-| `IueHq` | `pv link` | stdout, stderr warning | Status row plus job line | — |
-| `QZGEG` | `pv open`, `pv unlink` | stdout, stderr errors | Status rows | Hint chips on errors |
+| `IueHq` | `pv link` | stdout, stderr warning | Full HTTPS URL for served Projects, path detail, status row plus job line | — |
+| `QZGEG` | `pv open`, `pv unlink` | stdout, stderr errors | Full opened HTTPS URL and exact opened hostname, status rows and relevant repair hints | — |
 | `wlvuh` | `pv open` Project picker | stderr | Select by keyboard; resource-only Projects excluded | Typed numbers; `pv unlink` picker (unlink has none) |
 | `D40aND` | `pv open`, `pv unlink` after selection | stdout | Status rows | — |
-| `hTBHd` | `pv list` | stdout | Report table, stacked rows when narrow | Summary counts |
+| `hTBHd` | `pv list` | stdout | Grouped Project report with table labels, path and env details, summary counts | Sample `running` state when PV has no serving observation; report `unknown` instead |
 | `U0FXx` | `pv project:env` | stdout raw, stderr warning | Raw `KEY=value` | Heading, rule, value coloring |
 | `iz40G` | `pv project:env --json` | stdout raw, stderr warning | Raw JSON | Heading, rule, JSON coloring |
 | `glhPM` | `pv doctor` healthy | stdout | Heading, grouped status rows, summary | Elapsed time |
 | `D3tQw` | `pv doctor` needs attention | stdout | Failed rows with detail and repair hint | Elapsed time |
-| `E06oP` | `pv status` | stdout | Heading, sections, resource table | Daemon uptime and pid |
-| `NwDwS` | `pv jobs` | stdout | Report table | Summary counts |
+| `E06oP` | `pv status` | stdout | Heading, summary, daemon and gateway observation, sections, resource table | Daemon uptime and pid |
+| `NwDwS` | `pv jobs` | stdout | Report table and summary counts | — |
 | `qgTVJ` | `pv logs --all` | stdout | Prefixed lines, only the prefix styled | Severity tinting of bodies, heading, summary |
 | `vmsp3` | `pv logs --all --follow` | stdout | Same, streaming | Severity tinting, footer |
-| `Q3MhoA` | Empty `pv list`, `pv jobs`, `pv logs` | stdout | `○` status row | Suggested next commands |
+| `Q3MhoA` | Empty `pv list`, `pv jobs`, `pv logs` | stdout | `○` status row with a relevant next command | — |
 | `YFsqg` | Errors in a shell session | stderr | `✗ error:` summary, dim continuation lines; clap errors keep clap's own format | Hint chips |
-| `VudiT` | `pv update --check` | stdout | Status rows per component | Summary footer |
+| `VudiT` | `pv update --check` | stdout | Status rows per component, `↑` for available updates, summary footer | — |
 | `AIBcI` | `pv update` | stdout flow, stderr progress | Flow steps | Elapsed time |
 | `KRCXi` | `pv php:install` downloading | stderr | One bar per artifact | Resolved-artifact step |
 | `FN4cW` | `pv php:install` complete | stdout, stderr warnings | Status rows | Byte totals |
 | `Z8n4Uf` | `pv php:use` Project and global | stdout | Status rows (missing tracks are installed) | — |
 | `r692j` | `pv php:list`, `php:update`, `php:uninstall` | stdout, stderr error | Table and status rows | Version deltas |
-| `O5ORTC` | `pv composer:*` | stdout | Status rows | PATH note |
-| `wiFpO` | `pv <resource>:install` / `:update` | stdout | Status rows | "starts when" note |
-| `I2QUwp` | `pv <resource>:list` | stdout | Report table, stacked rows when narrow | Path as a line under each row (PATH stays a column, as in `hTBHd` and `r692j`) |
+| `O5ORTC` | `pv composer:*` | stdout | Status rows | PATH note and update version delta |
+| `wiFpO` | `pv <resource>:install` / `:update` | stdout | Status rows | "starts when" note and update version delta |
+| `I2QUwp` | `pv <resource>:list` | stdout | Report table with path under each backing-service row, stacked rows when narrow | — |
 | `wbsN6` | `pv <resource>:uninstall --prune` confirmation | stderr | Confirm, default No | Typed `yes`, data size |
 | `MveUZ` | `pv <resource>:uninstall` outcomes | stdout, stderr error | Status rows | — |
 | `BIc96` | `pv mailpit:open`, `pv rustfs:open` | stdout | Status rows | "it starts when" note |

@@ -2,9 +2,10 @@
 source: crates/cli/tests/status.rs
 expression: output.stdout
 ---
-[pv] status
+[pv] status                                                                                                       v0.2.4
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
+✗  PV is disabled · system needs attention
 ○  Daemon disabled
    LaunchAgent missing  ·  Socket missing
 
@@ -34,5 +35,5 @@ RECENT ERRORS
 ✗  job_000001 reconcile resource:redis:7 failed at <timestamp>
    Redis failed readiness
 
-✗  Overall: failed
-   ↳ logs  <tempdir>/home/.pv/logs
+✗  PV is disabled · system needs attention
+   Logs: <tempdir>/home/.pv/logs

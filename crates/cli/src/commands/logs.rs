@@ -283,6 +283,9 @@ fn write_initial_tail(
 
     if available_count == 0 {
         output.note(empty_message)?;
+        if output.surface().decorated() && empty_message == "No PV log files found" {
+            output.hint("start", "pv setup")?;
+        }
         return Ok(());
     }
 

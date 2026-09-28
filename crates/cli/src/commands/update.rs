@@ -1431,7 +1431,7 @@ impl UpdateCheckOutput {
         if !output.surface().decorated() {
             return self.write_plain(output);
         }
-        output.heading("update --check", None)?;
+        output.report_heading("update --check", None)?;
         self.app.write(output)?;
         output.section("Managed Resources")?;
         if self.managed_resources.is_empty() {
@@ -1440,7 +1440,68 @@ impl UpdateCheckOutput {
         for resource in &self.managed_resources {
             output.status(
                 resource_update_mark(resource.status),
-                managed_resource_line(resource),
+                match resource.status {
+                    ResourceUpdateStatus::Current => format!(
+                        "{} {}  current {}",
+                        resource.resource, resource.track, resource.current_artifact_version
+                    ),
+                    ResourceUpdateStatus::UpdateAvailable => format!(
+                        "{} {}  {} → {}",
+                        resource.resource,
+                        resource.track,
+                        resource.current_artifact_version,
+                        resource
+                            .latest_artifact_version
+                            .as_deref()
+                            .unwrap_or("unknown")
+                    ),
+                    _ => managed_resource_line(resource),
+                },
+            )?;
+        }
+
+        let updates = usize::from(matches!(
+            self.app.status,
+            AppUpdateStatusValue::UpdateAvailable
+        )) + self.app.helper.as_ref().map_or(0, |helper| {
+            usize::from(matches!(
+                helper.status,
+                AppUpdateStatusValue::UpdateAvailable
+            ))
+        }) + self
+            .managed_resources
+            .iter()
+            .filter(|resource| resource.status == ResourceUpdateStatus::UpdateAvailable)
+            .count();
+        let needs_attention =
+            usize::from(matches!(self.app.status, AppUpdateStatusValue::Unavailable))
+                + self.app.helper.as_ref().map_or(0, |helper| {
+                    usize::from(matches!(helper.status, AppUpdateStatusValue::Unavailable))
+                })
+                + self
+                    .managed_resources
+                    .iter()
+                    .filter(|resource| {
+                        !matches!(
+                            resource.status,
+                            ResourceUpdateStatus::Current | ResourceUpdateStatus::UpdateAvailable
+                        )
+                    })
+                    .count();
+        output.line("")?;
+        if updates == 0 && needs_attention == 0 {
+            output.success("Everything is up to date")?;
+        } else if updates > 0 {
+            output.status(
+                Mark::UpdateAvailable,
+                format!("{updates} updates available"),
+            )?;
+            output.hint("run", "pv update")?;
+        }
+        if needs_attention > 0 {
+            output.status(
+                Mark::Warning,
+                format!("{needs_attention} checks need attention"),
             )?;
         }
 
@@ -1468,8 +1529,8 @@ impl UpdateCheckOutput {
 fn resource_update_mark(status: ResourceUpdateStatus) -> Mark {
     match status {
         ResourceUpdateStatus::Current => Mark::Success,
-        ResourceUpdateStatus::UpdateAvailable
-        | ResourceUpdateStatus::Blocked
+        ResourceUpdateStatus::UpdateAvailable => Mark::UpdateAvailable,
+        ResourceUpdateStatus::Blocked
         | ResourceUpdateStatus::Revoked
         | ResourceUpdateStatus::Unavailable => Mark::Warning,
     }
@@ -1488,6 +1549,27 @@ struct AppUpdateStatus {
 
 impl AppUpdateStatus {
     fn write(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
+        if output.surface().decorated() {
+            let line = match self.status {
+                AppUpdateStatusValue::Current => {
+                    format!("PV application  current {}", self.current_version)
+                }
+                AppUpdateStatusValue::UpdateAvailable => format!(
+                    "PV application  update {} → {}",
+                    self.current_version,
+                    self.latest_version.as_deref().unwrap_or("unknown")
+                ),
+                AppUpdateStatusValue::Unavailable => format!(
+                    "PV application  unavailable ({})",
+                    self.reason.as_deref().unwrap_or("unknown reason")
+                ),
+            };
+            output.status(self.status.mark(), line)?;
+            if let Some(helper) = &self.helper {
+                helper.write(output)?;
+            }
+            return Ok(());
+        }
         let line = match self.status {
             AppUpdateStatusValue::Current => {
                 format!("PV application: current {}", self.current_version)
@@ -1526,7 +1608,8 @@ impl AppUpdateStatusValue {
     const fn mark(&self) -> Mark {
         match self {
             Self::Current => Mark::Success,
-            Self::UpdateAvailable | Self::Unavailable => Mark::Warning,
+            Self::UpdateAvailable => Mark::UpdateAvailable,
+            Self::Unavailable => Mark::Warning,
         }
     }
 }
@@ -1553,6 +1636,26 @@ struct PrivilegedHelperUpdateStatus {
 
 impl PrivilegedHelperUpdateStatus {
     fn write(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
+        if output.surface().decorated() {
+            let line = match self.status {
+                AppUpdateStatusValue::Current => format!(
+                    "Privileged helper  current {}",
+                    self.current_version.as_deref().unwrap_or("unknown")
+                ),
+                AppUpdateStatusValue::UpdateAvailable => format!(
+                    "Privileged helper  update {} → {}",
+                    self.current_version.as_deref().unwrap_or("not installed"),
+                    self.latest_version
+                ),
+                AppUpdateStatusValue::Unavailable => format!(
+                    "Privileged helper  unavailable ({})",
+                    self.reason.as_deref().unwrap_or("unknown reason")
+                ),
+            };
+            output.status(self.status.mark(), line)?;
+            output.detail(format!("protocol {}", self.latest_protocol_version))?;
+            return Ok(());
+        }
         let line = match self.status {
             AppUpdateStatusValue::Current => format!(
                 "Privileged helper: current {} (protocol {})",

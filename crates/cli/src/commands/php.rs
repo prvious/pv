@@ -41,7 +41,11 @@ pub(crate) fn use_track(
         database.record_global_php_default_track(&track)?;
         drop(jobs_lock);
 
-        output.success(Line::field("Set global PHP track to ", track))?;
+        if output.surface().decorated() {
+            output.success(Line::field("Global PHP set to ", track))?;
+        } else {
+            output.success(Line::field("Set global PHP track to ", track))?;
+        }
         super::write_php_pair_install_lines(&installed, streams)?;
         super::request_system_reconciliation(&paths, streams)?;
 
@@ -61,13 +65,20 @@ pub(crate) fn use_track(
     let project = database.replace_project_desired_php_track(&project.id, Some(&track))?;
     drop(jobs_lock);
 
-    output.success(Line::field(
-        &format!(
-            "Set {} PHP track to ",
-            super::project_display_name(&project)
-        ),
-        track,
-    ))?;
+    if output.surface().decorated() {
+        output.success(Line::field(
+            &format!("{} · PHP ", super::project_display_name(&project)),
+            &track,
+        ))?;
+    } else {
+        output.success(Line::field(
+            &format!(
+                "Set {} PHP track to ",
+                super::project_display_name(&project)
+            ),
+            &track,
+        ))?;
+    }
     output.detail(Line::field("Updated Project config: ", config_file.path))?;
     super::write_php_pair_install_lines(&installed, streams)?;
     super::request_project_reconciliation(&paths, &project, streams)?;
@@ -94,7 +105,17 @@ pub(crate) fn install(
     drop(progress);
     drop(jobs_lock);
 
-    super::write_php_pair_install_lines(&installed, streams)?;
+    if streams.out.surface().decorated() {
+        super::write_revoked_latest_warning(installed.php(), &mut streams.err)?;
+        super::write_revoked_latest_warning(installed.frankenphp(), &mut streams.err)?;
+        streams.out.success(
+            Line::from("PHP ")
+                .value(installed.php().track().as_str())
+                .text(" installed · includes FrankenPHP"),
+        )?;
+    } else {
+        super::write_php_pair_install_lines(&installed, streams)?;
+    }
     super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
@@ -116,7 +137,20 @@ pub(crate) fn update(
     let output = &mut streams.out;
 
     super::write_revoked_latest_warnings(updated.installs(), &mut streams.err)?;
-    super::write_updated(output, updated.installs().len(), "PHP runtime artifact(s)")?;
+    let what = if output.surface().decorated() {
+        "PHP runtime artifacts"
+    } else {
+        "PHP runtime artifact(s)"
+    };
+    super::write_updated(output, updated.installs().len(), what)?;
+    if output.surface().decorated() {
+        for install in updated.installs() {
+            output.detail(
+                Line::from(format!("{} {}  ", install.resource_name(), install.track()))
+                    .value(install.artifact_version().as_str()),
+            )?;
+        }
+    }
     super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
@@ -163,14 +197,21 @@ pub(crate) fn uninstall(
     let removal = commands.uninstall_php_pair(&track, options)?;
     let output = &mut streams.out;
 
-    output.success(Line::field(
-        "Queued removal for PHP track ",
-        removal.php().track(),
-    ))?;
-    output.success(Line::field(
-        "Queued removal for FrankenPHP track ",
-        removal.frankenphp().track(),
-    ))?;
+    if output.surface().decorated() {
+        output.success(Line::field(
+            "Removal requested for PHP track ",
+            removal.php().track(),
+        ))?;
+    } else {
+        output.success(Line::field(
+            "Queued removal for PHP track ",
+            removal.php().track(),
+        ))?;
+        output.success(Line::field(
+            "Queued removal for FrankenPHP track ",
+            removal.frankenphp().track(),
+        ))?;
+    }
     super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)

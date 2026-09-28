@@ -75,6 +75,12 @@ fn finish_execution(
     result: Result<ExitCode, ExecuteError>,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode> {
+    let terminal_hint = match &result {
+        Err(ExecuteError::User(CliError::ResourceOnlyProjectCannotOpen { .. })) => {
+            Some(("try", "pv list"))
+        }
+        _ => None,
+    };
     // A failed command's open flow closes before its error. A cancelled
     // prompt has already closed it with its own footer. The close is reported
     // after the error, so a broken stdout never hides the real failure.
@@ -96,6 +102,11 @@ fn finish_execution(
         Err(error) => error.to_string(),
     };
     streams.err.error(&message)?;
+    if let Some((label, command)) = terminal_hint
+        && streams.err.surface().decorated()
+    {
+        streams.err.hint(label, command)?;
+    }
     closed?;
 
     Ok(ExitCode::FAILURE)

@@ -38,6 +38,7 @@ pub(crate) fn trust(
     let local_metadata = metadata_from_local_state(&local_state);
     let trust_state = trust_state(environment, local_metadata.as_ref());
     let output = &mut streams.out;
+    let decorated = output.surface().decorated();
 
     output.success("Prepared PV local CA")?;
     match generated {
@@ -50,23 +51,42 @@ pub(crate) fn trust(
         }
         None => output.detail("existing local CA is current")?,
     }
-    write_system_trust_state(output, &trust_state)?;
+    if !decorated
+        || !matches!(
+            trust_state,
+            TrustDomainState::Current { .. } | TrustDomainState::NotTrusted { .. }
+        )
+    {
+        write_system_trust_state(output, &trust_state)?;
+    }
 
     match trust_state {
         TrustDomainState::Current { .. } => {
-            output.note("System keychain trust already matches PV.")?;
+            output.note(if decorated {
+                "PV’s local HTTPS certificate is already trusted"
+            } else {
+                "System keychain trust already matches PV."
+            })?;
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::NotTrusted { .. } => {
             environment.trust_system_ca(&paths.ca_certificate())?;
-            output.success("Trusted PV local CA in the System keychain.")?;
+            output.success(if decorated {
+                "PV’s local HTTPS certificate is trusted"
+            } else {
+                "Trusted PV local CA in the System keychain."
+            })?;
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::Denied { fingerprint } => {
             environment.untrust_system_ca(&fingerprint)?;
             environment.trust_system_ca(&paths.ca_certificate())?;
             output.success("Removed denied PV local CA trust from the System keychain.")?;
-            output.success("Trusted PV local CA in the System keychain.")?;
+            output.success(if decorated {
+                "PV’s local HTTPS certificate is trusted"
+            } else {
+                "Trusted PV local CA in the System keychain."
+            })?;
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::Stale {
@@ -75,7 +95,11 @@ pub(crate) fn trust(
             environment.untrust_system_ca(&actual_fingerprint)?;
             environment.trust_system_ca(&paths.ca_certificate())?;
             output.success("Removed stale PV local CA trust from the System keychain.")?;
-            output.success("Trusted PV local CA in the System keychain.")?;
+            output.success(if decorated {
+                "PV’s local HTTPS certificate is trusted"
+            } else {
+                "Trusted PV local CA in the System keychain."
+            })?;
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::Unknown { .. } | TrustDomainState::Unreadable { .. } => {
@@ -94,19 +118,32 @@ pub(crate) fn untrust(
     let local_metadata = metadata_from_local_state(&local_state);
     let trust_state = trust_state(environment, local_metadata.as_ref());
     let output = &mut streams.out;
+    let decorated = output.surface().decorated();
 
     output.success("Prepared PV local CA trust removal")?;
-    write_local_ca_state(output, &local_state)?;
-    write_system_trust_state(output, &trust_state)?;
+    if !decorated {
+        write_local_ca_state(output, &local_state)?;
+    }
+    if !decorated || !matches!(trust_state, TrustDomainState::Current { .. }) {
+        write_system_trust_state(output, &trust_state)?;
+    }
 
     match trust_state {
         TrustDomainState::NotTrusted { .. } => {
-            output.note("System keychain trust is already absent.")?;
+            output.note(if decorated {
+                "PV’s local HTTPS certificate is already untrusted"
+            } else {
+                "System keychain trust is already absent."
+            })?;
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::Current { fingerprint } | TrustDomainState::Denied { fingerprint } => {
             environment.untrust_system_ca(&fingerprint)?;
-            output.success("Removed PV local CA trust from the System keychain.")?;
+            output.success(if decorated {
+                "Removed trust for PV’s local HTTPS certificate"
+            } else {
+                "Removed PV local CA trust from the System keychain."
+            })?;
             Ok(ExitCode::SUCCESS)
         }
         TrustDomainState::Stale {

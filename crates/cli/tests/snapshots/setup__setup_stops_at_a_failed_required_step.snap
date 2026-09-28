@@ -8,10 +8,14 @@ expression: decorated.stdout
 │
 ◇  Ensured PV state layout: <tempdir>/home/.pv
 │
-◇  Privileged helper: current 1.0.0 (protocol 1)
+✓  Administrator helper installed
+│  1.0.0 (protocol 1)
 │
 ○  Shell profile integration skipped by --no-path.
-│  ↳ Run `pv env --shell zsh`, `pv env --shell bash`, or `pv env --shell fish` for manual shell integration.
+│  ↳ Activate PV manually in this terminal:
+│  ↳ zsh  eval "$(pv env --shell zsh)"
+│  ↳ bash  eval "$(pv env --shell bash)"
+│  ↳ fish  pv env --shell fish | source
 │
 ✗  DNS resolver setup
 │  ✓ Prepared PV DNS resolver config

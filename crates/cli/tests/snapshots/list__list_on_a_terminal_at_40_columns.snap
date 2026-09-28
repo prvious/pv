@@ -1,0 +1,24 @@
+---
+source: crates/cli/tests/list.rs
+expression: compact
+---
+[pv] list                         v0.2.4
+────────────────────────────────────────
+
+PROJECTS
+
+⚠  acme.test · unknown
+   served · PHP 8.4 · 2 resources ·
+   env warning
+   <tempdir>/acme
+   ⚠ APP_URL already exists outside the
+   PV block
+
+✗  billing-worker · config-invalid
+   resource-only · PHP default · 0
+   resources · env invalid
+   <tempdir>/Billing Worker
+   ✗ unknown Project config key
+   `unexpected`
+
+✗  2 linked · 1 warning · 1 failed

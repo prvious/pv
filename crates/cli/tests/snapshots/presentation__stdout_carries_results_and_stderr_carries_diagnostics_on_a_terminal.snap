@@ -9,8 +9,8 @@ expression: "(link, unlink)"
                 0,
             ),
         ),
-        stdout: "✓  Linked acme.test -> <tempdir>/acme\n",
-        stderr: "⚠  warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+        stdout: "✓  Linked https://acme.test\n   <tempdir>/acme\n",
+        stderr: "⚠  warning: PV is not running. Start it with `pv setup`\n",
     },
     RunOutput {
         exit_code: ExitCode(

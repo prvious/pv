@@ -243,15 +243,17 @@ fn list_on_a_terminal_aligns_columns_or_stacks_records_by_width() -> anyhow::Res
     )?;
     drop(database);
 
-    // Temp paths differ in length across machines, so the aligned render uses
-    // a width every path fits in, and the stacked render one that none does.
+    // Temp paths differ in length across machines; all three widths keep the
+    // path whole while the narrowest switches to a compact header.
     let wide = render_list_on_terminal(&environment, 200)?;
     let narrow = render_list_on_terminal(&environment, 60)?;
+    let compact = render_list_on_terminal(&environment, 40)?;
 
     tempdir_settings(tempdir.path()).bind(|| {
         assert_snapshot!("list_on_a_terminal_empty", empty);
         assert_snapshot!("list_on_a_terminal_at_200_columns", wide);
         assert_snapshot!("list_on_a_terminal_at_60_columns", narrow);
+        assert_snapshot!("list_on_a_terminal_at_40_columns", compact);
     });
 
     Ok(())

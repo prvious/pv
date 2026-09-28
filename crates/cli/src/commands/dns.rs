@@ -123,7 +123,12 @@ fn install_inner(
 
                 return Err(error.into());
             }
-            output.success(Line::field("Installed system resolver config: ", &path))?;
+            if output.surface().decorated() {
+                output.success(".test domain routing configured")?;
+                output.detail(Line::default().value(path.as_str()))?;
+            } else {
+                output.success(Line::field("Installed system resolver config: ", &path))?;
+            }
         }
         ResolverFileState::Conflict { .. } | ResolverFileState::Unreadable { .. } => {
             return Ok(ExitCode::FAILURE);
@@ -215,10 +220,15 @@ pub(crate) fn uninstall(
         }
         ResolverFileState::Current { path, .. } | ResolverFileState::Stale { path, .. } => {
             environment.remove_resolver_config(&system_path)?;
-            output.success(Line::field(
-                "Removed PV-owned system resolver config: ",
-                &path,
-            ))?;
+            if output.surface().decorated() {
+                output.success(".test domain routing removed")?;
+                output.detail(Line::default().value(path.as_str()))?;
+            } else {
+                output.success(Line::field(
+                    "Removed PV-owned system resolver config: ",
+                    &path,
+                ))?;
+            }
             database.release_port(PortOwner::Dns)?;
 
             Ok(ExitCode::SUCCESS)

@@ -206,6 +206,40 @@ fn open_picker_lists_served_projects_and_escape_cancels() -> Result<()> {
 }
 
 #[test]
+fn linked_project_uses_full_https_url_and_grouped_list_report() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+
+    let mut link = Session::spawn(&["link", "--hostname", "acme"], &project, &home)?;
+    link.wait_for("https://acme.test")?;
+    assert_eq!(link.wait_for_exit()?, 0);
+    assert_screen_snapshot("link_full_https_url", tempdir.path(), &link);
+
+    let mut list = Session::spawn(&["list", "--no-color"], &project, &home)?;
+    list.wait_for("1 linked")?;
+    assert_eq!(list.wait_for_exit()?, 0);
+    assert_screen_snapshot("list_grouped_report", tempdir.path(), &list);
+
+    Ok(())
+}
+
+#[test]
+fn init_yes_reports_written_config_before_detection_details() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = laravel_project(tempdir.path())?;
+    let mut session = Session::spawn(&["init", "--yes"], &project, tempdir.path())?;
+
+    session.wait_for("Vite HTTPS")?;
+    assert_eq!(session.wait_for_exit()?, 0);
+    assert!(project.join("pv.yml").is_file());
+    assert_screen_snapshot("init_yes_result", tempdir.path(), &session);
+
+    Ok(())
+}
+
+#[test]
 fn json_on_a_real_terminal_parses_and_is_never_decorated() -> Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

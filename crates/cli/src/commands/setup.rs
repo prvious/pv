@@ -112,7 +112,7 @@ pub(crate) fn setup(
             environment,
             streams,
             CliError::HelperConfirmationRequired,
-            "Install or replace the PV privileged helper?\nmacOS will request administrator authentication.",
+            "Allow PV to configure local HTTPS and .test domains?\nInstalls PV's administrator helper. macOS will ask for your password.",
             true,
         )?
     {
@@ -149,6 +149,15 @@ pub(crate) fn setup(
         daemon_command::enable_without_reconciliation(environment, streams)
     })? {
         return Ok(ExitCode::FAILURE);
+    }
+    if streams.out.surface().decorated() {
+        streams.out.flow_step(
+            Mark::Success,
+            "Local HTTPS, .test domains and startup configured",
+        )?;
+        streams
+            .out
+            .detail("DNS resolver · port redirect · CA trust · daemon registration")?;
     }
 
     let mut progress = DownloadProgressRenderer::with_output(&mut streams.err);
@@ -417,7 +426,13 @@ fn run_required_step(
     streams: &mut Streams<'_>,
     command: impl FnOnce(&mut Streams<'_>) -> Result<ExitCode, ExecuteError>,
 ) -> Result<bool, ExecuteError> {
-    let spinner = step_spinner(&streams.err, label);
+    let active_label = match label {
+        "port redirect setup" => "Configuring local HTTP and HTTPS",
+        "CA trust setup" => "Trust local HTTPS certificates",
+        "daemon registration" => "Start PV at login",
+        _ => label,
+    };
+    let spinner = step_spinner(&streams.err, active_label);
     if !streams.out.surface().decorated() {
         let result = command(streams);
         spinner.finish_and_clear();
@@ -434,11 +449,26 @@ fn run_required_step(
     let result = streams.capture(&mut out, &mut err, command);
     spinner.finish_and_clear();
     let succeeded = matches!(result, Ok(exit_code) if exit_code == ExitCode::SUCCESS);
-    let mark = if succeeded { Mark::Done } else { Mark::Failure };
+    let mark = if succeeded {
+        Mark::Success
+    } else {
+        Mark::Failure
+    };
+    let displayed_label = if succeeded {
+        match label {
+            "DNS resolver setup" => ".test domains configured",
+            "port redirect setup" => "Local HTTP and HTTPS configured",
+            "CA trust setup" => "Local HTTPS certificates trusted",
+            "daemon registration" => "PV starts at login",
+            _ => label,
+        }
+    } else {
+        label
+    };
     // The step's own error outranks a failure to replay its rows.
     let replayed = streams
         .out
-        .flow_step(mark, label)
+        .flow_step(mark, displayed_label)
         .and_then(|()| streams.out.writer().write_all(&out))
         .and_then(|()| streams.err.writer().write_all(&err));
     if succeeded {
@@ -491,13 +521,23 @@ fn ensure_privileged_helper(
         privileged_helper_installation_required(environment, &candidate)?;
     if !current_installation_required {
         let status = environment.privileged_helper_status()?;
-        streams.out.flow_step(
-            Mark::Done,
-            format!(
-                "Privileged helper: current {} (protocol {})",
+        if streams.out.surface().decorated() {
+            streams
+                .out
+                .flow_step(Mark::Success, "Administrator helper installed")?;
+            streams.out.detail(format!(
+                "{} (protocol {})",
                 status.version, status.protocol_version
-            ),
-        )?;
+            ))?;
+        } else {
+            streams.out.flow_step(
+                Mark::Done,
+                format!(
+                    "Privileged helper: current {} (protocol {})",
+                    status.version, status.protocol_version
+                ),
+            )?;
+        }
 
         return Ok(ExitCode::SUCCESS);
     }
@@ -510,7 +550,7 @@ fn ensure_privileged_helper(
     super::write_administrator_step(
         &mut streams.err,
         format!(
-            "Installing privileged helper {} (protocol {})",
+            "Installing administrator helper {} (protocol {})",
             candidate.metadata.version(),
             candidate.metadata.protocol_version()
         ),
@@ -524,13 +564,23 @@ fn ensure_privileged_helper(
         candidate.metadata.protocol_version(),
     )?;
     let status = install_outcome.status();
-    streams.out.flow_step(
-        Mark::Done,
-        format!(
-            "Installed privileged helper {} (protocol {})",
-            status.version, status.protocol_version,
-        ),
-    )?;
+    if streams.out.surface().decorated() {
+        streams
+            .out
+            .flow_step(Mark::Success, "Administrator helper installed")?;
+        streams.out.detail(format!(
+            "{} (protocol {})",
+            status.version, status.protocol_version
+        ))?;
+    } else {
+        streams.out.flow_step(
+            Mark::Done,
+            format!(
+                "Installed privileged helper {} (protocol {})",
+                status.version, status.protocol_version,
+            ),
+        )?;
+    }
     if let Some(warning) = install_outcome.cleanup_warning() {
         streams.err.warning(warning)?;
     }
@@ -672,7 +722,9 @@ fn configure_shell_integration(
                 action,
                 path: profile_path.to_string(),
             },
-            &format!("Update shell profile for PV ENV integration ({action})?\n{profile_path}"),
+            &format!(
+                "Add PV to your shell profile ({action})?\nUpdates {profile_path} so PHP and Composer work in new terminals."
+            ),
             true,
         )?
     {
@@ -690,8 +742,19 @@ fn configure_shell_integration(
 
     let output = &mut streams.out;
     output.flow_step(
-        Mark::Done,
-        Line::field("Updated shell profile integration: ", &profile_path),
+        if output.surface().decorated() {
+            Mark::Success
+        } else {
+            Mark::Done
+        },
+        Line::field(
+            if output.surface().decorated() {
+                "Shell profile updated: "
+            } else {
+                "Updated shell profile integration: "
+            },
+            &profile_path,
+        ),
     )?;
     write_manual_shell_integration(output, Some(shell))?;
 
@@ -894,6 +957,19 @@ end
 }
 
 fn write_manual_shell_integration(output: &mut Output<'_>, shell: Option<Shell>) -> io::Result<()> {
+    if output.surface().decorated() {
+        return match shell {
+            Some(Shell::Zsh) => output.hint("Activate now", "eval \"$(pv env --shell zsh)\""),
+            Some(Shell::Bash) => output.hint("Activate now", "eval \"$(pv env --shell bash)\""),
+            Some(Shell::Fish) => output.hint("Activate now", "pv env --shell fish | source"),
+            None => {
+                output.follow_up("Activate PV manually in this terminal:")?;
+                output.hint("zsh", "eval \"$(pv env --shell zsh)\"")?;
+                output.hint("bash", "eval \"$(pv env --shell bash)\"")?;
+                output.hint("fish", "pv env --shell fish | source")
+            }
+        };
+    }
     match shell {
         Some(shell) => output.follow_up(format!(
             "Open a new terminal, or run `pv env --shell {}` for current-session shell integration.",

@@ -1181,7 +1181,11 @@ fn setup_required_steps_follow_independent_stream_surfaces() -> anyhow::Result<(
     assert_eq!(decorated_stdout.exit_code, ExitCode::SUCCESS);
     assert_eq!(decorated_stderr.exit_code, ExitCode::SUCCESS);
 
-    assert!(decorated_stdout.stdout.contains("◇  DNS resolver setup"));
+    assert!(
+        decorated_stdout
+            .stdout
+            .contains("✓  .test domains configured")
+    );
     assert!(
         decorated_stdout
             .stdout

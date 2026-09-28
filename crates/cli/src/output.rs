@@ -57,6 +57,10 @@ impl Surface {
     pub(crate) fn color(self) -> bool {
         self.color
     }
+
+    pub(crate) fn width(self) -> usize {
+        self.width
+    }
 }
 
 /// The presentation facts that change rendering, observed once at the CLI
@@ -252,6 +256,8 @@ pub(crate) enum Mark {
     /// A no-op, idle, or empty outcome.
     Idle,
     Running,
+    /// An available update, distinct from a warning about a problem.
+    UpdateAvailable,
     /// A completed flow step or answered prompt.
     Done,
     /// The flow step in progress.
@@ -266,6 +272,7 @@ impl Mark {
             Self::Warning => "⚠",
             Self::Idle => "○",
             Self::Running => "●",
+            Self::UpdateAvailable => "↑",
             Self::Done => "◇",
             Self::Active => "◆",
         }
@@ -275,7 +282,7 @@ impl Mark {
         match self {
             Self::Success | Self::Running | Self::Done => Tone::Success,
             Self::Failure => Tone::Failure,
-            Self::Warning => Tone::Warning,
+            Self::Warning | Self::UpdateAvailable => Tone::Warning,
             Self::Idle => Tone::Dim,
             Self::Active => Tone::Accent,
         }
@@ -380,6 +387,14 @@ impl<'writer> Output<'writer> {
         if !self.surface.decorated {
             return self.line(&format!("  {}", line.plain()));
         }
+        if let [Span::Text(Tone::Value, value)] = line.spans.as_slice() {
+            return writeln!(
+                self.writer,
+                "{}{}",
+                self.continuation,
+                Tone::Value.paint(value, self.surface.color)
+            );
+        }
         let body = line.paint(Tone::Dim, self.surface.color);
         let prefix = self.continuation.clone();
         self.write_wrapped(&prefix, &prefix, &body)
@@ -480,6 +495,43 @@ impl<'writer> Output<'writer> {
             self.writer,
             "{}",
             Tone::Dim.paint(&rule, self.surface.color)
+        )
+    }
+
+    /// A full report heading includes the version shown in the terminal designs.
+    pub(crate) fn report_heading(
+        &mut self,
+        command: &str,
+        plain_title: Option<&str>,
+    ) -> io::Result<()> {
+        if !self.surface.decorated {
+            return self.heading(command, plain_title);
+        }
+        let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+        let label_width = 5 + command.chars().count();
+        if label_width + version.len() + 1 > self.surface.width {
+            return self.heading(command, plain_title);
+        }
+        let padding = " ".repeat(self.surface.width - label_width - version.len());
+        let color = self.surface.color;
+        let badge = if color {
+            let style = Tone::Accent
+                .style()
+                .effects(Effects::INVERT | Effects::BOLD);
+            format!("{style} pv {style:#}")
+        } else {
+            "[pv]".to_string()
+        };
+        writeln!(
+            self.writer,
+            "{badge} {}{padding}{}",
+            Tone::Strong.paint(command, color),
+            Tone::Dim.paint(&version, color),
+        )?;
+        writeln!(
+            self.writer,
+            "{}",
+            Tone::Dim.paint(&"─".repeat(self.surface.width), color)
         )
     }
 

@@ -8,6 +8,6 @@ RunOutput {
             0,
         ),
     ),
-    stdout: "TRACK  STATUS     PORTS     PROJECTS  VERSION   PATH\n16     ● running  tcp=5432  0         16.4-pv1  <tempdir>/home/.pv/resources/postgres/16/releases/16.4-pv1\n",
+    stdout: "TRACK  STATUS     PORTS     PROJECTS  VERSION\n16     ● running  tcp=5432  0         16.4-pv1\n   <tempdir>/home/.pv/resources/postgres/16/releases/16.4-pv1\n",
     stderr: "",
 }

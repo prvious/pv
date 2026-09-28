@@ -42,15 +42,24 @@ pub(crate) fn status(
     output.heading("ports:status", Some("Port redirect status"))?;
     output.status(mark, format!("State: {}", diagnostic.state.as_str()))?;
     output.detail(Line::field("Evidence: ", diagnostic.evidence.as_str()))?;
+    let decorated = output.surface().decorated();
+    let redirect = |source: u16, target: Option<u16>| {
+        let target = display_port(target);
+        if decorated && target != "-" {
+            format!("{source}→{target}")
+        } else {
+            target
+        }
+    };
     output.detail(format!(
         "Expected redirects: HTTP {}, HTTPS {}",
-        display_port(diagnostic.expected_http_port),
-        display_port(diagnostic.expected_https_port),
+        redirect(80, diagnostic.expected_http_port),
+        redirect(443, diagnostic.expected_https_port),
     ))?;
     output.detail(format!(
         "Active redirects: HTTP {}, HTTPS {}",
-        display_port(diagnostic.active_http_port),
-        display_port(diagnostic.active_https_port),
+        redirect(80, diagnostic.active_http_port),
+        redirect(443, diagnostic.active_https_port),
     ))?;
     output.detail(Line::field("Observed: ", &diagnostic.observed_at))?;
     if !diagnostic.is_active() {
@@ -75,10 +84,15 @@ pub(crate) fn install(
 
     if !low_port_conflicts.is_empty() {
         output.failure("Port redirect preparation failed")?;
-        for port in low_port_conflicts {
+        for port in &low_port_conflicts {
             output.detail(format!("Loopback TCP port {port} already has a listener."))?;
         }
         output.detail("Stop the conflicting service, then run `pv ports:install` again.")?;
+        if output.surface().decorated()
+            && let Some(port) = low_port_conflicts.first()
+        {
+            output.hint("find it", &format!("lsof -nP -iTCP:{port} -sTCP:LISTEN"))?;
+        }
 
         return Ok(ExitCode::FAILURE);
     }
@@ -192,7 +206,11 @@ pub(crate) fn install(
         had_https_assignment,
     )?;
     refresh_gateway_observation_after_pf_repair(environment, &paths, &config, &mut database)?;
-    output.success("Installed system pf redirect config")?;
+    output.success(if output.surface().decorated() {
+        "Local HTTP and HTTPS redirects installed"
+    } else {
+        "Installed system pf redirect config"
+    })?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -322,7 +340,11 @@ pub(crate) fn uninstall(
     }
 
     environment.remove_pf_redirects(&system_anchor_path, &system_pf_conf_path, &candidate_dir)?;
-    output.success("Removed PV-owned system pf redirect config")?;
+    output.success(if output.surface().decorated() {
+        "Local HTTP and HTTPS redirects removed"
+    } else {
+        "Removed PV-owned system pf redirect config"
+    })?;
 
     Ok(ExitCode::SUCCESS)
 }

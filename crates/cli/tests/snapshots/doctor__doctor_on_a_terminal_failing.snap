@@ -2,7 +2,7 @@
 source: crates/cli/tests/doctor.rs
 expression: failing.stdout
 ---
-[pv] doctor
+[pv] doctor                                                                                                                                               v0.2.4
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 SYSTEM
@@ -31,4 +31,4 @@ DAEMON & JOBS
 ✓  Artifact manifest cache  cached manifest is present
    path: <tempdir>/home/.pv/downloads/manifest.json
 
-✗  8 passed · 0 warnings · 3 failed
+✗  3 failed · 0 warnings · 8 passed

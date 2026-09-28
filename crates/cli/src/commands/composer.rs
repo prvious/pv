@@ -36,11 +36,21 @@ pub(crate) fn install(
     drop(jobs_lock);
     let php_pair = installed.php_pair();
     let composer = installed.composer();
-    super::write_php_pair_install_lines(php_pair, streams)?;
+    if streams.out.surface().decorated() {
+        super::write_revoked_latest_warning(php_pair.php(), &mut streams.err)?;
+        super::write_revoked_latest_warning(php_pair.frankenphp(), &mut streams.err)?;
+    } else {
+        super::write_php_pair_install_lines(php_pair, streams)?;
+    }
     super::write_revoked_latest_warning(composer, &mut streams.err)?;
     streams
         .out
         .success(Line::field("Installed Composer track ", composer.track()))?;
+    if streams.out.surface().decorated() {
+        streams
+            .out
+            .detail(Line::from("·  ").value(composer.artifact_version().as_str()))?;
+    }
     super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
@@ -62,7 +72,22 @@ pub(crate) fn update(
     let output = &mut streams.out;
 
     super::write_revoked_latest_warnings(updated.installs(), &mut streams.err)?;
-    super::write_updated(output, updated.installs().len(), "Composer track(s)")?;
+    if output.surface().decorated() && updated.installs().len() == 1 {
+        output.success(
+            Line::from("Composer updated · ")
+                .value(updated.installs()[0].artifact_version().as_str()),
+        )?;
+    } else {
+        super::write_updated(output, updated.installs().len(), "Composer track(s)")?;
+    }
+    if output.surface().decorated() && updated.installs().len() > 1 {
+        for install in updated.installs() {
+            output.detail(
+                Line::from(format!("{}  ", install.track()))
+                    .value(install.artifact_version().as_str()),
+            )?;
+        }
+    }
     super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
@@ -94,10 +119,15 @@ pub(crate) fn uninstall(
     let removal = commands.uninstall_composer(options)?;
     let output = &mut streams.out;
 
-    output.success(Line::field(
-        "Queued removal for Composer track ",
-        removal.track(),
-    ))?;
+    let summary = if output.surface().decorated() {
+        "Removal requested for Composer track "
+    } else {
+        "Queued removal for Composer track "
+    };
+    output.success(Line::field(summary, removal.track()))?;
+    if output.surface().decorated() && !args.prune {
+        output.detail("·  home and cache preserved")?;
+    }
     super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)

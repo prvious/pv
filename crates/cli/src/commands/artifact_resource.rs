@@ -50,6 +50,9 @@ pub(crate) fn install(
         &format!("Installed {} track ", spec.display_name),
         installed.track(),
     ))?;
+    if output.surface().decorated() {
+        output.detail(Line::from("·  ").value(installed.artifact_version().as_str()))?;
+    }
     super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
@@ -73,11 +76,28 @@ pub(crate) fn update(
     let output = &mut streams.out;
 
     super::write_revoked_latest_warnings(updated.installs(), &mut streams.err)?;
-    super::write_updated(
-        output,
-        updated.installs().len(),
-        &format!("{} track(s)", spec.display_name),
-    )?;
+    if output.surface().decorated() && updated.installs().is_empty() {
+        output.success(format!("{} is up to date.", spec.display_name))?;
+    } else if output.surface().decorated() && updated.installs().len() == 1 {
+        output.success(
+            Line::from(format!("{} updated · ", spec.display_name))
+                .value(updated.installs()[0].artifact_version().as_str()),
+        )?;
+    } else {
+        super::write_updated(
+            output,
+            updated.installs().len(),
+            &format!("{} track(s)", spec.display_name),
+        )?;
+    }
+    if output.surface().decorated() && updated.installs().len() > 1 {
+        for install in updated.installs() {
+            output.detail(
+                Line::from(format!("{}  ", install.track()))
+                    .value(install.artifact_version().as_str()),
+            )?;
+        }
+    }
     super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
@@ -107,6 +127,9 @@ pub(crate) fn uninstall(
         );
         if !prompt::confirm_or(environment, streams, refusal, &message, false)? {
             streams.out.note("Prune cancelled.")?;
+            if streams.out.surface().decorated() {
+                streams.out.detail("·  nothing changed")?;
+            }
             return Ok(ExitCode::SUCCESS);
         }
     }
@@ -116,10 +139,20 @@ pub(crate) fn uninstall(
     let removal = commands.uninstall(&resource_name, &track, options)?;
     let output = &mut streams.out;
 
-    output.success(Line::field(
-        &format!("Queued removal for {} track ", spec.display_name),
-        removal.track(),
-    ))?;
+    let summary = if output.surface().decorated() {
+        format!("Removal requested for {} track ", spec.display_name)
+    } else {
+        format!("Queued removal for {} track ", spec.display_name)
+    };
+    output.success(Line::field(&summary, removal.track()))?;
+    if output.surface().decorated() && prune {
+        output.detail("·  data will be pruned")?;
+    } else if output.surface().decorated() {
+        let data_path = paths.resource_data_dir(spec.resource_name, removal.track().as_str());
+        if data_path.exists() {
+            output.detail(Line::field("·  data preserved under ", data_path))?;
+        }
+    }
     super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)
@@ -152,6 +185,9 @@ pub(crate) fn list(
 
     if tracks.is_empty() {
         output.note(format!("No {} tracks installed", spec.display_name))?;
+        if output.surface().decorated() {
+            output.hint("install one", &format!("pv {}:install", spec.resource_name))?;
+        }
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -182,7 +218,12 @@ fn write_backing_resource_list(
 ) -> Result<(), ExecuteError> {
     let observation = backing_resource_observation(paths, resource_name)?;
 
-    let mut table = Table::new(&["Track", "Status", "Ports", "Projects", "Version", "Path"]);
+    let decorated = output.surface().decorated();
+    let mut table = if decorated {
+        Table::new(&["Track", "Status", "Ports", "Projects", "Version"])
+    } else {
+        Table::new(&["Track", "Status", "Ports", "Projects", "Version", "Path"])
+    };
     for track in tracks {
         let track_name = track.track().as_str();
         let status = observation.runtime_statuses.get(track_name).copied();
@@ -193,14 +234,20 @@ fn write_backing_resource_list(
             "-".to_string()
         };
 
-        table.row(vec![
+        let mut cells = vec![
             Line::from(track.track().as_str()),
             Line::marked(super::runtime_mark(status), runtime_status_label(status)),
             Line::default().value(ports),
             Line::from(track.usage_count().to_string()),
             Line::default().value(track.installed_version().as_str()),
-            Line::from(track.current_artifact_path().as_str()),
-        ]);
+        ];
+        if !decorated {
+            cells.push(Line::from(track.current_artifact_path().as_str()));
+        }
+        table.row(cells);
+        if decorated {
+            table.detail(Line::default().value(track.current_artifact_path().as_str()));
+        }
     }
     output.table(&table)?;
 

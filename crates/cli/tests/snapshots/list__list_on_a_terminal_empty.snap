@@ -3,3 +3,4 @@ source: crates/cli/tests/list.rs
 expression: empty
 ---
 ○  No linked Projects
+   ↳ In your Project directory, run  pv link

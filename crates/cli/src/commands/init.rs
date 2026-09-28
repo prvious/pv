@@ -34,6 +34,35 @@ pub(crate) fn run(
 
     if args.yes {
         let output = &mut streams.out;
+        if output.surface().decorated() {
+            let written = write_project_config(&project_root, &config)?;
+            output.success(Line::from("Wrote Project config: ").value(written.path.as_str()))?;
+            output.hint("Link this Project:", "pv link")?;
+            for signal in &detection.signals {
+                output.detail(format!("{}: {}", signal.label, signal.detail))?;
+            }
+            let selected_resources = detection
+                .resources
+                .iter()
+                .filter(|(name, resource)| {
+                    resource.selected
+                        && selection
+                            .resources
+                            .get(name)
+                            .is_some_and(|selected| selected.selected)
+                })
+                .collect::<Vec<_>>();
+            if !selected_resources.is_empty() {
+                output.detail("Selected Project resources:")?;
+            }
+            for (name, resource) in selected_resources {
+                output.detail(format!("{}: {}", resource_name(*name), resource.reason))?;
+            }
+            if selection.include_vite_tls {
+                output.follow_up(VITE_NOTE)?;
+            }
+            return Ok(ExitCode::SUCCESS);
+        }
         output.flow_start("init", "PV init", project_root.file_name())?;
         write_detection_summary(output, &detection, &selection)?;
         let written = write_project_config(&project_root, &config)?;
@@ -112,10 +141,19 @@ fn finish_written(
     path: &Utf8Path,
     include_vite_tls: bool,
 ) -> Result<(), ExecuteError> {
-    output.flow_end(
-        Mark::Done,
-        Line::from("Wrote Project config: ").value(path.as_str()),
-    )?;
+    if output.surface().decorated() {
+        output.flow_end(
+            Mark::Done,
+            format!("Wrote {}", path.file_name().unwrap_or("Project config")),
+        )?;
+        output.detail(Line::default().value(path.as_str()))?;
+        output.hint("Link this Project:", "pv link")?;
+    } else {
+        output.flow_end(
+            Mark::Done,
+            Line::from("Wrote Project config: ").value(path.as_str()),
+        )?;
+    }
     if include_vite_tls {
         output.status(Mark::Warning, VITE_NOTE)?;
     }
@@ -132,7 +170,14 @@ fn write_resource_checklist(
     output: &mut Output<'_>,
     selection: &ProjectInitSelection,
 ) -> Result<(), ExecuteError> {
-    output.flow_step(Mark::Done, "Resource checklist:")?;
+    output.flow_step(
+        Mark::Done,
+        if output.surface().decorated() {
+            "Suggested resources"
+        } else {
+            "Resource checklist:"
+        },
+    )?;
     for name in available_resources(selection) {
         let selected = selection
             .resources
@@ -352,7 +397,17 @@ fn write_detection_summary(
             "No framework-specific Project signals detected.",
         )?;
     } else {
-        output.flow_step(Mark::Done, "Detected Project signals:")?;
+        if output.surface().decorated() {
+            let detected = detection
+                .signals
+                .iter()
+                .map(|signal| signal.label.as_str())
+                .collect::<Vec<_>>()
+                .join(" · ");
+            output.flow_step(Mark::Done, format!("Detected {detected}"))?;
+        } else {
+            output.flow_step(Mark::Done, "Detected Project signals:")?;
+        }
         for signal in &detection.signals {
             output.detail(format!("{}: {}", signal.label, signal.detail))?;
         }
