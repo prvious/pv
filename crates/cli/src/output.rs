@@ -413,7 +413,7 @@ impl<'writer> Output<'writer> {
     /// A runnable next step, such as a repair command.
     pub(crate) fn hint(&mut self, label: &str, command: &str) -> io::Result<()> {
         if !self.surface.decorated {
-            return self.line(&format!("  {label}: `{command}`"));
+            return self.line(&format!("  {label}: {command}"));
         }
         self.arrow_row(&Line::from(label).text("  ").value(command))
     }

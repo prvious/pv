@@ -9,7 +9,7 @@ expression: "(missing, prepared_only, current, current_json, current_on_terminal
                 1,
             ),
         ),
-        stdout: "Port redirect status\nState: inactive\n  Evidence: pfctl\n  Expected redirects: HTTP -, HTTPS -\n  Active redirects: HTTP -, HTTPS -\n  Observed: <timestamp>\n  repair: `pv ports:install`\n",
+        stdout: "Port redirect status\nState: inactive\n  Evidence: pfctl\n  Expected redirects: HTTP -, HTTPS -\n  Active redirects: HTTP -, HTTPS -\n  Observed: <timestamp>\n  repair: pv ports:install\n",
         stderr: "",
     },
     RunOutput {
@@ -18,7 +18,7 @@ expression: "(missing, prepared_only, current, current_json, current_on_terminal
                 1,
             ),
         ),
-        stdout: "Port redirect status\nState: inactive\n  Evidence: pfctl\n  Expected redirects: HTTP 48080, HTTPS 48443\n  Active redirects: HTTP -, HTTPS -\n  Observed: <timestamp>\n  repair: `pv ports:install`\n",
+        stdout: "Port redirect status\nState: inactive\n  Evidence: pfctl\n  Expected redirects: HTTP 48080, HTTPS 48443\n  Active redirects: HTTP -, HTTPS -\n  Observed: <timestamp>\n  repair: pv ports:install\n",
         stderr: "",
     },
     RunOutput {
@@ -54,7 +54,7 @@ expression: "(missing, prepared_only, current, current_json, current_on_terminal
                 1,
             ),
         ),
-        stdout: "Port redirect status\nState: drifted\n  Evidence: pfctl\n  Expected redirects: HTTP 48080, HTTPS 48443\n  Active redirects: HTTP 48080, HTTPS 48443\n  Observed: <timestamp>\n  repair: `pv ports:install`\n",
+        stdout: "Port redirect status\nState: drifted\n  Evidence: pfctl\n  Expected redirects: HTTP 48080, HTTPS 48443\n  Active redirects: HTTP 48080, HTTPS 48443\n  Observed: <timestamp>\n  repair: pv ports:install\n",
         stderr: "",
     },
     RunOutput {

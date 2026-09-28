@@ -130,7 +130,7 @@ impl StatusSnapshot {
             self.integrations.ports.state.as_str()
         ))?;
         if !self.integrations.ports.is_active() {
-            output.line("    repair: `pv ports:install`")?;
+            output.line("    repair: pv ports:install")?;
         }
         output.line(&format!("  CA: {}", self.integrations.ca))?;
         output.line(&format!("Logs: {}", self.log_directory))?;
