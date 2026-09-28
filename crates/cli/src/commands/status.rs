@@ -125,11 +125,14 @@ impl StatusSnapshot {
         output.line(&format!("  Socket: {}", self.daemon.socket))?;
         output.line("Integrations:")?;
         output.line(&format!("  DNS: {}", self.integrations.dns))?;
-        output.line(&format!(
-            "  Ports: {}",
-            self.integrations.ports.state.as_str()
-        ))?;
-        if !self.integrations.ports.is_active() {
+        let ports = &self.integrations.ports;
+        output.line(&format!("  Ports: {}", ports.state.as_str()))?;
+        if ports.is_active()
+            && let (Some(http), Some(https)) = (ports.active_http_port, ports.active_https_port)
+        {
+            output.line(&format!("    HTTP 80 -> {http}, HTTPS 443 -> {https}"))?;
+        }
+        if !ports.is_active() {
             output.line("    repair: pv ports:install")?;
         }
         output.line(&format!("  CA: {}", self.integrations.ca))?;
@@ -862,6 +865,13 @@ mod tests {
         snapshot.write(&mut Output::new(&mut bytes, Surface::terminal(false, 100)))?;
 
         assert_snapshot!(String::from_utf8(bytes)?);
+
+        let mut bytes = Vec::new();
+        snapshot.write(&mut Output::new(&mut bytes, Surface::plain()))?;
+        assert_snapshot!(
+            "running_status_shows_active_ports_in_plain_output",
+            String::from_utf8(bytes)?
+        );
 
         snapshot.overall = "failed";
         snapshot.system_failure = true;
