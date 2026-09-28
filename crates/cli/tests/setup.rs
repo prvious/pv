@@ -763,6 +763,35 @@ fn setup_manifest_missing_default_continues_core_setup_and_records_remaining_def
     assert_eq!(fixture.environment.certificates().len(), 1);
     assert_eq!(observed, expected_setup_tracks_except(&["mysql"]));
     assert_eq!(reconciliation_request_count(&daemon_requests), 1);
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_snapshot!("setup_manifest_missing_default_plain", output.stdout);
+    });
+
+    Ok(())
+}
+
+#[test]
+fn setup_manifest_missing_default_closes_terminal_flow_after_details() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_bundled_helper_metadata(&fixture)?;
+    fixture
+        .environment
+        .script_manifest_text(setup_manifest_json_without("mysql")?);
+    fixture.environment.set_terminal_surfaces(true, false, 200);
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+
+    let output = run_pv(
+        &["setup", "--no-path", "--no-color"],
+        fixture.environment.as_ref(),
+    )?;
+    let daemon_requests = daemon.finish()?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(reconciliation_request_count(&daemon_requests), 1);
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_snapshot!("setup_manifest_missing_default_terminal", output.stdout);
+    });
 
     Ok(())
 }

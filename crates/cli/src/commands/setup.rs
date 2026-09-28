@@ -169,7 +169,7 @@ pub(crate) fn setup(
         Line::field("System reconciliation completed: ", &completed.summary),
     )?;
     if !default_resource_plan.failures.is_empty() {
-        output.flow_end(
+        output.flow_step(
             Mark::Failure,
             "Default Managed Resource planning failed for some defaults:",
         )?;
@@ -177,6 +177,7 @@ pub(crate) fn setup(
             output.detail(format!("- {failure}"))?;
         }
         output.follow_up("PV setup completed core integrations; rerun `pv setup` after fixing the default Managed Resource manifest.")?;
+        output.flow_end(Mark::Failure, "PV setup incomplete")?;
 
         return Ok(ExitCode::FAILURE);
     }
