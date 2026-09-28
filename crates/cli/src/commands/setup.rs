@@ -129,25 +129,35 @@ pub(crate) fn setup(
     if configure_shell_integration(&args, environment, &paths, streams)? != ExitCode::SUCCESS {
         return Ok(ExitCode::FAILURE);
     }
-    if !run_required_step("DNS resolver setup", streams, |streams| {
-        dns::install_config_only(environment, streams)
-    })? {
+    let mut replay_error = None;
+    if !run_required_step(
+        "DNS resolver setup",
+        streams,
+        &mut replay_error,
+        |streams| dns::install_config_only(environment, streams),
+    )? {
         return Ok(ExitCode::FAILURE);
     }
-    if !run_required_step("port redirect setup", streams, |streams| {
-        ports::install(environment, streams)
-    })? {
+    if !run_required_step(
+        "port redirect setup",
+        streams,
+        &mut replay_error,
+        |streams| ports::install(environment, streams),
+    )? {
         return Ok(ExitCode::FAILURE);
     }
-    if !run_required_step("CA trust setup", streams, |streams| {
+    if !run_required_step("CA trust setup", streams, &mut replay_error, |streams| {
         ca::trust(environment, streams)
     })? {
         return Ok(ExitCode::FAILURE);
     }
     record_default_resource_desired_state(&paths, &default_resource_plan.plans)?;
-    if !run_required_step("daemon registration", streams, |streams| {
-        daemon_command::enable_without_reconciliation(environment, streams)
-    })? {
+    if !run_required_step(
+        "daemon registration",
+        streams,
+        &mut replay_error,
+        |streams| daemon_command::enable_without_reconciliation(environment, streams),
+    )? {
         return Ok(ExitCode::FAILURE);
     }
     let mut progress = DownloadProgressRenderer::with_output(&mut streams.err);
@@ -178,8 +188,14 @@ pub(crate) fn setup(
         }
         output.follow_up("PV setup completed core integrations; rerun `pv setup` after fixing the default Managed Resource manifest.")?;
         output.flow_end(Mark::Failure, "PV setup incomplete")?;
+        if let Some(error) = replay_error {
+            return Err(error.into());
+        }
 
         return Ok(ExitCode::FAILURE);
+    }
+    if let Some(error) = replay_error {
+        return Err(error.into());
     }
     output.flow_end(Mark::Done, "PV setup complete")?;
 
@@ -366,22 +382,29 @@ pub(crate) fn uninstall(
         .flow_start("uninstall", "PV uninstall", Some(subtitle))?;
 
     let _helper_lifecycle_lock = state::HelperLifecycleLock::acquire(&paths)?;
-    if !run_required_step("daemon removal", streams, |streams| {
+    let mut replay_error = None;
+    if !run_required_step("daemon removal", streams, &mut replay_error, |streams| {
         daemon_command::disable(environment, streams)
     })? {
         return Ok(ExitCode::FAILURE);
     }
-    if !run_required_step("DNS resolver removal", streams, |streams| {
-        dns::uninstall(environment, streams)
-    })? {
+    if !run_required_step(
+        "DNS resolver removal",
+        streams,
+        &mut replay_error,
+        |streams| dns::uninstall(environment, streams),
+    )? {
         return Ok(ExitCode::FAILURE);
     }
-    if !run_required_step("port redirect removal", streams, |streams| {
-        ports::uninstall(environment, streams)
-    })? {
+    if !run_required_step(
+        "port redirect removal",
+        streams,
+        &mut replay_error,
+        |streams| ports::uninstall(environment, streams),
+    )? {
         return Ok(ExitCode::FAILURE);
     }
-    if !run_required_step("CA trust removal", streams, |streams| {
+    if !run_required_step("CA trust removal", streams, &mut replay_error, |streams| {
         untrust_ca_for_uninstall(environment, streams)
     })? {
         return Ok(ExitCode::FAILURE);
@@ -404,7 +427,7 @@ pub(crate) fn uninstall(
         return Ok(ExitCode::FAILURE);
     }
 
-    run_required_step("PV state removal", streams, |streams| {
+    run_required_step("PV state removal", streams, &mut replay_error, |streams| {
         if args.prune {
             prune_state(&paths, streams)?;
         } else {
@@ -414,6 +437,9 @@ pub(crate) fn uninstall(
         Ok(ExitCode::SUCCESS)
     })?;
 
+    if let Some(error) = replay_error {
+        return Err(error.into());
+    }
     streams.out.flow_end(Mark::Done, "PV uninstall complete")?;
 
     Ok(ExitCode::SUCCESS)
@@ -427,6 +453,7 @@ pub(crate) fn uninstall(
 fn run_required_step(
     label: &str,
     streams: &mut Streams<'_>,
+    replay_error: &mut Option<io::Error>,
     command: impl FnOnce(&mut Streams<'_>) -> Result<ExitCode, ExecuteError>,
 ) -> Result<bool, ExecuteError> {
     let active_label = match label {
@@ -477,7 +504,10 @@ fn run_required_step(
         .and_then(|()| streams.out.writer().write_all(&out))
         .and_then(|()| streams.err.writer().write_all(&err));
     if succeeded {
-        replayed?;
+        // A display failure cannot undo the completed step or skip later work.
+        if let Err(error) = replayed {
+            replay_error.get_or_insert(error);
+        }
         return Ok(true);
     }
     let stopped = streams
@@ -1177,10 +1207,14 @@ mod tests {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let mut streams = Streams::new(&mut stdout, &mut stderr, Presentation::plain());
+        let mut replay_error = None;
 
-        let result = run_required_step("DNS resolver setup", &mut streams, |_streams| {
-            Err(io::Error::other("resolver failed").into())
-        });
+        let result = run_required_step(
+            "DNS resolver setup",
+            &mut streams,
+            &mut replay_error,
+            |_streams| Err(io::Error::other("resolver failed").into()),
+        );
 
         assert_eq!(
             result.err().map(|error| error.to_string()).as_deref(),
@@ -1211,10 +1245,14 @@ mod tests {
         let mut stderr = Vec::new();
         let mut stdout = BrokenOutput;
         let mut streams = Streams::new(&mut stdout, &mut stderr, Presentation::plain());
+        let mut replay_error = None;
 
-        let result = run_required_step("DNS resolver setup", &mut streams, |_streams| {
-            Err(io::Error::other("resolver failed").into())
-        });
+        let result = run_required_step(
+            "DNS resolver setup",
+            &mut streams,
+            &mut replay_error,
+            |_streams| Err(io::Error::other("resolver failed").into()),
+        );
 
         assert_eq!(
             result.err().map(|error| error.to_string()).as_deref(),

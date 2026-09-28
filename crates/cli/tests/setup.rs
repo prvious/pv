@@ -60,21 +60,30 @@ impl Write for ClosedStderr {
     }
 }
 
-#[derive(Default)]
-struct RejectSetupSummary {
+struct RejectOnce {
+    marker: &'static [u8],
     observed: Vec<u8>,
     rejected: bool,
 }
 
-impl Write for RejectSetupSummary {
+impl RejectOnce {
+    fn new(marker: &'static [u8]) -> Self {
+        Self {
+            marker,
+            observed: Vec::new(),
+            rejected: false,
+        }
+    }
+}
+
+impl Write for RejectOnce {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        let summary = b"Local HTTPS, .test domains and startup configured";
         self.observed.extend_from_slice(buffer);
         if !self.rejected
             && self
                 .observed
-                .windows(summary.len())
-                .any(|part| part == summary)
+                .windows(self.marker.len())
+                .any(|part| part == self.marker)
         {
             self.rejected = true;
             return Err(io::ErrorKind::BrokenPipe.into());
@@ -687,7 +696,7 @@ fn setup_reconciles_when_the_terminal_summary_cannot_be_written() -> anyhow::Res
     seed_online_setup_manifest(&fixture)?;
     fixture.environment.set_terminal_surfaces(true, false, 200);
     let daemon = DaemonFixture::start(&fixture.paths)?;
-    let mut stdout = RejectSetupSummary::default();
+    let mut stdout = RejectOnce::new(b"Local HTTPS, .test domains and startup configured");
     let mut stderr = Vec::new();
 
     let exit_code = run_with_environment(
@@ -700,6 +709,42 @@ fn setup_reconciles_when_the_terminal_summary_cannot_be_written() -> anyhow::Res
 
     assert_eq!(exit_code, ExitCode::FAILURE);
     assert!(stdout.rejected);
+    assert_eq!(reconciliation_request_count(&daemon_requests), 1);
+
+    Ok(())
+}
+
+#[test]
+fn setup_continues_after_completed_step_cannot_be_replayed() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    fixture.environment.set_terminal_surfaces(true, false, 200);
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+    let mut stdout = RejectOnce::new(b"Prepared PV DNS resolver config");
+    let mut stderr = Vec::new();
+
+    let exit_code = run_with_environment(
+        ["pv", "setup", "--no-path", "--yes", "--no-color"],
+        fixture.environment.as_ref(),
+        &mut stdout,
+        &mut stderr,
+    )?;
+    let daemon_requests = daemon.finish()?;
+
+    assert_eq!(exit_code, ExitCode::FAILURE);
+    assert!(stdout.rejected);
+    assert!(
+        stdout
+            .observed
+            .ends_with("└  ✗ PV setup stopped\n".as_bytes())
+    );
+    assert!(String::from_utf8(stderr)?.contains("broken pipe"));
+    assert!(read_optional_file(&fixture.system_resolver_path)?.is_some());
+    assert!(read_optional_file(&fixture.system_anchor_path)?.is_some());
+    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_some());
+    assert!(read_optional_file(&fixture.launch_agent_path)?.is_some());
+    assert_eq!(fixture.environment.certificates().len(), 1);
     assert_eq!(reconciliation_request_count(&daemon_requests), 1);
 
     Ok(())
@@ -1158,6 +1203,48 @@ fn uninstall_finishes_when_administrator_step_cannot_be_written() -> anyhow::Res
             .contains(&"remove helper".to_string())
     );
     assert!(read_optional_file(&fixture.launch_agent_path)?.is_none());
+
+    Ok(())
+}
+
+#[test]
+fn uninstall_continues_after_completed_step_cannot_be_replayed() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+    let setup = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    let _requests = daemon.finish()?;
+    assert_eq!(setup.exit_code, ExitCode::SUCCESS);
+    fixture.environment.set_terminal_surfaces(true, false, 200);
+    let mut stdout = RejectOnce::new(b"LaunchAgent removed:");
+    let mut stderr = Vec::new();
+
+    let exit_code = run_with_environment(
+        ["pv", "uninstall", "--no-color"],
+        fixture.environment.as_ref(),
+        &mut stdout,
+        &mut stderr,
+    )?;
+
+    assert_eq!(exit_code, ExitCode::FAILURE);
+    assert!(stdout.rejected);
+    assert!(
+        stdout
+            .observed
+            .ends_with("└  ✗ PV uninstall stopped\n".as_bytes())
+    );
+    assert!(String::from_utf8(stderr)?.contains("broken pipe"));
+    assert!(read_optional_file(&fixture.launch_agent_path)?.is_none());
+    assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
+    assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
+    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
+    assert!(fixture.environment.certificates().is_empty());
+    assert!(fixture.environment.privileged_helper_status().is_err());
+    assert!(!path_exists(fixture.paths.bin()));
+    assert!(!path_exists(fixture.paths.run()));
+    assert!(!path_exists(fixture.paths.config()));
+    assert!(!path_exists(fixture.paths.downloads()));
 
     Ok(())
 }
