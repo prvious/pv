@@ -106,8 +106,8 @@ pub(crate) fn install(
     drop(jobs_lock);
 
     if streams.out.surface().decorated() {
-        super::write_revoked_latest_warning(installed.php(), &mut streams.err)?;
-        super::write_revoked_latest_warning(installed.frankenphp(), &mut streams.err)?;
+        super::write_revoked_latest_warning(installed.php(), &mut streams.err);
+        super::write_revoked_latest_warning(installed.frankenphp(), &mut streams.err);
         streams.out.success(
             Line::from("PHP ")
                 .value(installed.php().track().as_str())
@@ -136,7 +136,7 @@ pub(crate) fn update(
     drop(jobs_lock);
     let output = &mut streams.out;
 
-    super::write_revoked_latest_warnings(updated.installs(), &mut streams.err)?;
+    super::write_revoked_latest_warnings(updated.installs(), &mut streams.err);
     let what = if output.surface().decorated() {
         "PHP runtime artifacts"
     } else {

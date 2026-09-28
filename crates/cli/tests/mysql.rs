@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
+#[cfg(target_os = "macos")]
+use cli::run_with_environment;
 use insta::{Settings, assert_debug_snapshot};
 use state::{Database, JobsLock};
 use support::resource_cli::{
@@ -30,6 +32,20 @@ const RESOURCE: ResourceCliSpec = ResourceCliSpec {
 const DEFAULT_TRACK: &str = "8.0";
 const OLD_VERSION: &str = "8.0.35-pv1";
 const NEW_VERSION: &str = "8.0.36-pv1";
+
+#[cfg(target_os = "macos")]
+struct ClosedStderr;
+
+#[cfg(target_os = "macos")]
+impl Write for ClosedStderr {
+    fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+        Err(std::io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 const DIRECT_ARTIFACT_MUTATIONS: &[&[&str]] = &[
     &["mysql:install"],
@@ -225,7 +241,13 @@ fn artifact_mutation_retries_reconciliation_after_jobs_lock_handoff() -> anyhow:
         ScriptedClient::new().with_text(&resource_manifest(DEFAULT_TRACK, &[&artifact], RESOURCE)),
     );
 
-    let output = run_pv(&["mysql:install"], &environment)?;
+    let mut stdout = Vec::new();
+    let exit_code = run_with_environment(
+        ["pv", "mysql:install"],
+        &environment,
+        &mut stdout,
+        &mut ClosedStderr,
+    )?;
     let requests = daemon_thread
         .join()
         .map_err(|_error| anyhow::anyhow!("fake daemon thread panicked"))??;
@@ -237,7 +259,8 @@ fn artifact_mutation_retries_reconciliation_after_jobs_lock_handoff() -> anyhow:
         "artifact_mutation_retries_reconciliation_after_jobs_lock_handoff",
         tempdir.path(),
         &(
-            output,
+            exit_code,
+            String::from_utf8(stdout)?,
             requests,
             resource_record_snapshots(&records, tempdir.path())?,
         ),

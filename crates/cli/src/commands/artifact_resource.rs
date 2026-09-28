@@ -45,7 +45,7 @@ pub(crate) fn install(
     drop(jobs_lock);
     let output = &mut streams.out;
 
-    super::write_revoked_latest_warning(&installed, &mut streams.err)?;
+    super::write_revoked_latest_warning(&installed, &mut streams.err);
     output.success(Line::field(
         &format!("Installed {} track ", spec.display_name),
         installed.track(),
@@ -75,7 +75,7 @@ pub(crate) fn update(
     drop(jobs_lock);
     let output = &mut streams.out;
 
-    super::write_revoked_latest_warnings(updated.installs(), &mut streams.err)?;
+    super::write_revoked_latest_warnings(updated.installs(), &mut streams.err);
     if output.surface().decorated() && updated.installs().is_empty() {
         output.success(format!("{} is up to date.", spec.display_name))?;
     } else if output.surface().decorated() && updated.installs().len() == 1 {

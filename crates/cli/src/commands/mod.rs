@@ -328,9 +328,9 @@ fn submit_reconciliation(
             Ok(job) => return Ok(Some(job)),
             Err(::daemon::DaemonError::Io(error)) if daemon_is_unavailable(&error) => {
                 if stderr.surface().decorated() {
-                    stderr.warning("PV is not running. Start it with `pv setup`")?;
+                    let _ = stderr.warning("PV is not running. Start it with `pv setup`");
                 } else {
-                    stderr.warning(DAEMON_UNAVAILABLE_WARNING)?;
+                    let _ = stderr.warning(DAEMON_UNAVAILABLE_WARNING);
                 }
 
                 return Ok(None);
@@ -340,7 +340,7 @@ fn submit_reconciliation(
             {
                 if !deferred {
                     deferred = true;
-                    stderr.warning(DEFERRED_RECONCILIATION_WARNING)?;
+                    let _ = stderr.warning(DEFERRED_RECONCILIATION_WARNING);
                 }
                 std::thread::sleep(JOBS_LOCK_RETRY_INTERVAL);
             }
@@ -417,8 +417,8 @@ fn write_php_pair_install_lines(
     installed: &resources::PhpPairInstall,
     streams: &mut Streams<'_>,
 ) -> Result<(), ExecuteError> {
-    write_revoked_latest_warning(installed.php(), &mut streams.err)?;
-    write_revoked_latest_warning(installed.frankenphp(), &mut streams.err)?;
+    write_revoked_latest_warning(installed.php(), &mut streams.err);
+    write_revoked_latest_warning(installed.frankenphp(), &mut streams.err);
     streams
         .out
         .success(Line::field("Installed PHP track ", installed.php().track()))?;
@@ -493,32 +493,28 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
 fn write_revoked_latest_warnings(
     installs: &[resources::ManagedResourceInstall],
     stderr: &mut Output<'_>,
-) -> Result<(), ExecuteError> {
+) {
     for install in installs {
-        write_revoked_latest_warning(install, stderr)?;
+        write_revoked_latest_warning(install, stderr);
     }
-
-    Ok(())
 }
 
 fn write_revoked_latest_warning(
     install: &resources::ManagedResourceInstall,
     stderr: &mut Output<'_>,
-) -> Result<(), ExecuteError> {
+) {
     let Some(revoked_latest) = install.revoked_latest() else {
-        return Ok(());
+        return;
     };
 
-    stderr.warning(&format!(
+    let _ = stderr.warning(&format!(
         "newest {} artifact {} for track {} was revoked ({}); installed fallback {}",
         install.resource_name(),
         revoked_latest.artifact_version(),
         install.track(),
         revoked_latest.reason(),
         install.artifact_version(),
-    ))?;
-
-    Ok(())
+    ));
 }
 
 #[cfg(test)]

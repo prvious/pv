@@ -19,6 +19,18 @@ use state::{
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
 
+struct ClosedStderr;
+
+impl Write for ClosedStderr {
+    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+        Err(io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
@@ -1320,7 +1332,9 @@ fn php_install_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()> {
     let environment = TestEnvironment::new(
         &home,
         &current_dir,
-        ScriptedClient::new().with_text(&manifest),
+        ScriptedClient::new()
+            .with_text(&manifest)
+            .with_text(&manifest),
     );
 
     let output = run_pv(&["php:install", "8.4"], &environment)?;
@@ -1336,6 +1350,15 @@ fn php_install_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()> {
         environment.text_request_count(),
         environment.byte_request_count(),
     ));
+
+    let mut stdout = Vec::new();
+    let exit_code = run_with_environment(
+        ["pv", "php:install", "8.4"],
+        &environment,
+        &mut stdout,
+        &mut ClosedStderr,
+    )?;
+    assert_eq!(exit_code, ExitCode::SUCCESS);
 
     Ok(())
 }

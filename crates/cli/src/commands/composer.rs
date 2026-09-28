@@ -37,12 +37,12 @@ pub(crate) fn install(
     let php_pair = installed.php_pair();
     let composer = installed.composer();
     if streams.out.surface().decorated() {
-        super::write_revoked_latest_warning(php_pair.php(), &mut streams.err)?;
-        super::write_revoked_latest_warning(php_pair.frankenphp(), &mut streams.err)?;
+        super::write_revoked_latest_warning(php_pair.php(), &mut streams.err);
+        super::write_revoked_latest_warning(php_pair.frankenphp(), &mut streams.err);
     } else {
         super::write_php_pair_install_lines(php_pair, streams)?;
     }
-    super::write_revoked_latest_warning(composer, &mut streams.err)?;
+    super::write_revoked_latest_warning(composer, &mut streams.err);
     streams
         .out
         .success(Line::field("Installed Composer track ", composer.track()))?;
@@ -71,7 +71,7 @@ pub(crate) fn update(
     drop(jobs_lock);
     let output = &mut streams.out;
 
-    super::write_revoked_latest_warnings(updated.installs(), &mut streams.err)?;
+    super::write_revoked_latest_warnings(updated.installs(), &mut streams.err);
     if output.surface().decorated() && updated.installs().len() == 1 {
         output.success(
             Line::from("Composer updated · ")
