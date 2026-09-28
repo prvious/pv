@@ -712,6 +712,7 @@ fn run_app_update_phase(
     if helper_update_required {
         super::write_administrator_step(
             stderr,
+            output.surface().decorated(),
             format!(
                 "Installing privileged helper {} (protocol {})",
                 asset.helper().version(),

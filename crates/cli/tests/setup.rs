@@ -1251,8 +1251,8 @@ fn setup_stops_at_a_failed_required_step_on_both_surfaces() -> anyhow::Result<()
 
 #[test]
 fn setup_required_steps_follow_independent_stream_surfaces() -> anyhow::Result<()> {
-    let decorated_stdout = run_setup_with_stream_surfaces(true, false)?;
-    let decorated_stderr = run_setup_with_stream_surfaces(false, true)?;
+    let decorated_stdout = run_setup_with_stream_surfaces(true, false, false)?;
+    let decorated_stderr = run_setup_with_stream_surfaces(false, true, true)?;
 
     assert_eq!(decorated_stdout.exit_code, ExitCode::SUCCESS);
     assert_eq!(decorated_stderr.exit_code, ExitCode::SUCCESS);
@@ -1282,6 +1282,12 @@ fn setup_required_steps_follow_independent_stream_surfaces() -> anyhow::Result<(
     assert!(decorated_stderr.stdout.contains("PV setup complete"));
     assert!(!decorated_stderr.stdout.contains('◇'));
     assert!(!decorated_stderr.stdout.contains('\u{1b}'));
+    assert!(
+        decorated_stderr
+            .stderr
+            .contains("◆  Installing administrator helper")
+    );
+    assert!(!decorated_stderr.stderr.contains("│  ◆"));
 
     Ok(())
 }
@@ -1496,17 +1502,21 @@ fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOu
 fn run_setup_with_stream_surfaces(
     stdout_terminal: bool,
     stderr_terminal: bool,
+    helper_missing: bool,
 ) -> anyhow::Result<RunOutput> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
     seed_online_setup_manifest(&fixture)?;
+    if helper_missing {
+        fixture.environment.set_helper_missing();
+    }
     let daemon = DaemonFixture::start(&fixture.paths)?;
     fixture
         .environment
         .set_terminal_surfaces(stdout_terminal, stderr_terminal, 200);
 
     let output = run_pv(
-        &["setup", "--no-path", "--no-color"],
+        &["setup", "--no-path", "--no-color", "--yes"],
         fixture.environment.as_ref(),
     )?;
     let _daemon_requests = daemon.finish()?;

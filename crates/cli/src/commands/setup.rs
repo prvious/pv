@@ -389,7 +389,11 @@ pub(crate) fn uninstall(
     }
     // sudo asks for the password in this terminal, so the step runs live
     // and is titled once it finishes, like the captured steps.
-    super::write_administrator_step(&mut streams.err, "Removing privileged helper".to_string())?;
+    super::write_administrator_step(
+        &mut streams.err,
+        streams.out.surface().decorated(),
+        "Removing privileged helper".to_string(),
+    )?;
     environment.remove_privileged_helper()?;
     if streams.out.surface().decorated() {
         streams
@@ -436,10 +440,12 @@ fn run_required_step(
     if !streams.out.surface().decorated() {
         let result = command(streams);
         spinner.finish_and_clear();
-        if result? == ExitCode::SUCCESS {
+        if matches!(&result, Ok(exit_code) if *exit_code == ExitCode::SUCCESS) {
             return Ok(true);
         }
-        streams.out.line(&format!("PV stopped during {label}."))?;
+        let stopped = streams.out.line(&format!("PV stopped during {label}."));
+        result?;
+        stopped?;
 
         return Ok(false);
     }
@@ -549,6 +555,7 @@ fn ensure_privileged_helper(
     }
     super::write_administrator_step(
         &mut streams.err,
+        streams.out.surface().decorated(),
         format!(
             "Installing administrator helper {} (protocol {})",
             candidate.metadata.version(),
@@ -1157,4 +1164,62 @@ fn path_io_error(path: &Utf8Path, source: io::Error) -> io::Error {
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r#"'\''"#))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{self, Write};
+
+    use super::run_required_step;
+    use crate::output::{Presentation, Streams};
+
+    #[test]
+    fn plain_required_step_reports_stop_before_returning_error() -> anyhow::Result<()> {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut streams = Streams::new(&mut stdout, &mut stderr, Presentation::plain());
+
+        let result = run_required_step("DNS resolver setup", &mut streams, |_streams| {
+            Err(io::Error::other("resolver failed").into())
+        });
+
+        assert_eq!(
+            result.err().map(|error| error.to_string()).as_deref(),
+            Some("resolver failed")
+        );
+        assert_eq!(
+            String::from_utf8(stdout)?,
+            "PV stopped during DNS resolver setup.\n"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn plain_required_step_keeps_original_error_when_stop_line_fails() {
+        struct BrokenOutput;
+
+        impl Write for BrokenOutput {
+            fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut stderr = Vec::new();
+        let mut stdout = BrokenOutput;
+        let mut streams = Streams::new(&mut stdout, &mut stderr, Presentation::plain());
+
+        let result = run_required_step("DNS resolver setup", &mut streams, |_streams| {
+            Err(io::Error::other("resolver failed").into())
+        });
+
+        assert_eq!(
+            result.err().map(|error| error.to_string()).as_deref(),
+            Some("resolver failed")
+        );
+    }
 }
