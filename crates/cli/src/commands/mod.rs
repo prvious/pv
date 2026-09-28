@@ -424,9 +424,16 @@ fn write_php_pair_install_lines(
     } else {
         "Installed PHP track "
     };
-    streams
-        .out
-        .success(Line::field(label, installed.php().track()))?;
+    let track = if streams.out.surface().decorated() {
+        installed.php().track().to_string()
+    } else {
+        format!(
+            "{} ({})",
+            installed.php().track(),
+            installed.php().artifact_version().as_str()
+        )
+    };
+    streams.out.success(Line::field(label, track))?;
     if streams.out.surface().decorated() {
         streams
             .out
