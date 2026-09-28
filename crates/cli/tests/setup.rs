@@ -48,6 +48,18 @@ impl Write for RejectWarnings {
     }
 }
 
+struct ClosedStderr;
+
+impl Write for ClosedStderr {
+    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+        Err(io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
@@ -1033,6 +1045,38 @@ fn uninstall_preserves_user_data_by_default() -> anyhow::Result<()> {
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((uninstall, fixture.environment.operations()));
     });
+
+    Ok(())
+}
+
+#[test]
+fn uninstall_finishes_when_administrator_step_cannot_be_written() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+    let setup = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    let _requests = daemon.finish()?;
+    assert_eq!(setup.exit_code, ExitCode::SUCCESS);
+    fixture.environment.set_terminal_surfaces(false, true, 80);
+
+    let mut stdout = Vec::new();
+    let exit_code = run_with_environment(
+        ["pv", "uninstall", "--no-color"],
+        fixture.environment.as_ref(),
+        &mut stdout,
+        &mut ClosedStderr,
+    )?;
+
+    assert_eq!(exit_code, ExitCode::SUCCESS);
+    assert!(String::from_utf8(stdout)?.contains("PV uninstall complete"));
+    assert!(
+        fixture
+            .environment
+            .operations()
+            .contains(&"remove helper".to_string())
+    );
+    assert!(read_optional_file(&fixture.launch_agent_path)?.is_none());
 
     Ok(())
 }

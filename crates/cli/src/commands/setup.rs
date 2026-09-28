@@ -393,7 +393,7 @@ pub(crate) fn uninstall(
         &mut streams.err,
         streams.out.surface().decorated(),
         "Removing privileged helper".to_string(),
-    )?;
+    );
     environment.remove_privileged_helper()?;
     if streams.out.surface().decorated() {
         streams
@@ -561,7 +561,7 @@ fn ensure_privileged_helper(
             candidate.metadata.version(),
             candidate.metadata.protocol_version()
         ),
-    )?;
+    );
     let prepared_directory = paths.config().join("helper");
     let install_outcome = environment.install_privileged_helper(
         &candidate.path,

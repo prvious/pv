@@ -449,19 +449,15 @@ fn runtime_mark(status: Option<RuntimeObservedStatus>) -> Mark {
 /// Announces a step that sudo will ask an administrator password for, as an
 /// active stderr step like the prompt it introduces. The step must then run
 /// live, without a spinner or captured rows, so the prompt stays visible.
-fn write_administrator_step(
-    stderr: &mut Output<'_>,
-    stdout_decorated: bool,
-    line: String,
-) -> io::Result<()> {
+fn write_administrator_step(stderr: &mut Output<'_>, stdout_decorated: bool, line: String) {
     if !stderr.surface().decorated() {
-        return Ok(());
+        return;
     }
-    if stdout_decorated {
+    let _ = if stdout_decorated {
         stderr.flow_step(Mark::Active, line)
     } else {
         stderr.status(Mark::Active, line)
-    }
+    };
 }
 
 /// Reports how many tracks an update changed; nothing changed is a no-op.

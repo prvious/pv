@@ -136,10 +136,7 @@ fn linked_project_with_env_warning(
     project: &Utf8Path,
 ) -> anyhow::Result<Utf8PathBuf> {
     create_dir(project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "env:\n  APP_URL: \"${url}\"\n",
-    )?;
+    write_file(&project.join("pv.yml"), "env:\n  APP_URL: \"${url}\"\n")?;
     write_file(
         &project.join(".env"),
         "APP_URL=https://user.test\nOTHER=value\n",

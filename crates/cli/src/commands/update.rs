@@ -718,7 +718,7 @@ fn run_app_update_phase(
                 asset.helper().version(),
                 asset.helper().protocol_version()
             ),
-        )?;
+        );
         let prepared_directory = paths.config().join("helper");
         let install_result = environment.install_privileged_helper(
             &helper_candidate,
