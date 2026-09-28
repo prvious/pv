@@ -45,6 +45,8 @@ pub(crate) fn run(
 #[derive(Serialize)]
 struct StatusSnapshot {
     overall: &'static str,
+    #[serde(skip)]
+    system_failure: bool,
     daemon: DaemonStatus,
     integrations: IntegrationStatuses,
     managed_resources: Vec<ManagedResourceStatus>,
@@ -86,16 +88,18 @@ impl StatusSnapshot {
                 .collect::<Vec<_>>(),
             None => Vec::new(),
         };
-        let has_failure = daemon.failure
+        let system_failure = daemon.failure
             || integrations.failure
             || managed_resources.iter().any(|resource| resource.failure)
             || runtimes.iter().any(|runtime| runtime.failure)
-            || projects.iter().any(|project| project.mark == Mark::Failure)
             || !recent_errors.is_empty();
+        let has_failure =
+            system_failure || projects.iter().any(|project| project.mark == Mark::Failure);
         let overall = if has_failure { "failed" } else { "ok" };
 
         Ok(Self {
             overall,
+            system_failure,
             daemon,
             integrations,
             managed_resources,
@@ -198,18 +202,17 @@ impl StatusSnapshot {
             .iter()
             .filter(|project| matches!(project.mark, Mark::Warning | Mark::Failure))
             .count();
-        let summary = if project_attention > 0 {
-            format!(
-                "PV is {} · {project_attention} Project{} need{} attention",
-                self.daemon.state,
+        let mut summary = format!("PV is {}", self.daemon.state);
+        if self.system_failure {
+            summary.push_str(" · system needs attention");
+        }
+        if project_attention > 0 {
+            summary.push_str(&format!(
+                " · {project_attention} Project{} need{} attention",
                 if project_attention == 1 { "" } else { "s" },
                 if project_attention == 1 { "s" } else { "" },
-            )
-        } else if self.has_failure() {
-            format!("PV is {} · system needs attention", self.daemon.state)
-        } else {
-            format!("PV is {}", self.daemon.state)
-        };
+            ));
+        }
         let mark = if self.has_failure() {
             Mark::Failure
         } else if project_attention > 0 {
@@ -809,6 +812,7 @@ mod tests {
     fn running_status_shows_gateway_ports_and_project_attention() -> anyhow::Result<()> {
         let mut snapshot = StatusSnapshot {
             overall: "ok",
+            system_failure: false,
             daemon: DaemonStatus {
                 state: "running",
                 launch_agent: "current",
@@ -860,6 +864,7 @@ mod tests {
         assert_snapshot!(String::from_utf8(bytes)?);
 
         snapshot.overall = "failed";
+        snapshot.system_failure = true;
         snapshot.runtimes[0].status = "failed";
         snapshot.runtimes[0].message =
             Some("Gateway failed to start: port 48443 is occupied".to_string());
