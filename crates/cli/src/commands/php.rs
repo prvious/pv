@@ -143,13 +143,11 @@ pub(crate) fn update(
         "PHP runtime artifact(s)"
     };
     super::write_updated(output, updated.installs().len(), what)?;
-    if output.surface().decorated() {
-        for install in updated.installs() {
-            output.detail(
-                Line::from(format!("{} {}  ", install.resource_name(), install.track()))
-                    .value(install.artifact_version().as_str()),
-            )?;
-        }
+    for install in updated.installs() {
+        output.detail(
+            Line::from(format!("{} {}  ", install.resource_name(), install.track()))
+                .value(install.artifact_version().as_str()),
+        )?;
     }
     super::request_system_reconciliation(&paths, streams)?;
 

@@ -98,7 +98,7 @@ pub(crate) fn update(
             &format!("{} track(s)", spec.display_name),
         )?;
     }
-    if output.surface().decorated() && updated.installs().len() > 1 {
+    if !output.surface().decorated() || updated.installs().len() > 1 {
         for install in updated.installs() {
             output.detail(
                 Line::from(format!("{}  ", install.track()))

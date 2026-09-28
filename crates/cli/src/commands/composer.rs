@@ -90,7 +90,7 @@ pub(crate) fn update(
     } else {
         super::write_updated(output, updated.installs().len(), "Composer track(s)")?;
     }
-    if output.surface().decorated() && updated.installs().len() > 1 {
+    if !output.surface().decorated() || updated.installs().len() > 1 {
         for install in updated.installs() {
             output.detail(
                 Line::from(format!("{}  ", install.track()))
