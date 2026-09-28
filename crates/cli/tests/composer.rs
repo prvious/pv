@@ -11,7 +11,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Answer, Environment, Prompt, PromptKind, run_with_environment};
 use config::ProjectConfigFile;
-use insta::assert_debug_snapshot;
+use insta::{assert_debug_snapshot, assert_snapshot};
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use state::{
     Database, JobsLock, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackRecord,
@@ -214,6 +214,39 @@ fn composer_install_uses_manifest_default_php_track_without_cached_manifest() ->
             environment.text_request_count(),
             environment.byte_request_count(),
         ));
+        Ok(())
+    })?;
+
+    Ok(())
+}
+
+#[test]
+fn composer_install_on_a_terminal_reports_the_php_pair() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    let php_artifacts = php_pair_artifacts("8.4.8-pv1");
+    let composer_artifact = composer_fixture_artifact("2.8.1-pv1");
+    let manifest = composer_manifest("8.4", &php_artifacts, &[&composer_artifact]);
+    prepare_existing_php_pair_releases(&home, "8.4", &php_artifacts)?;
+    prepare_existing_release(&home, "2", &composer_artifact)?;
+    let environment = TestEnvironment::new(
+        &home,
+        &current_dir,
+        ScriptedClient::new().with_text(&manifest),
+    )
+    .with_terminal();
+
+    let output = run_pv(&["composer:install", "--no-color"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(!output.stderr.contains("error:"));
+    with_tempdir_filters(tempdir.path(), || {
+        assert_snapshot!(
+            "composer_install_on_a_terminal_reports_the_php_pair",
+            output.stdout
+        );
         Ok(())
     })?;
 

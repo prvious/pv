@@ -1,0 +1,7 @@
+---
+source: crates/cli/tests/composer.rs
+expression: output.stdout
+---
+✓  PHP 8.4 installed · includes FrankenPHP
+✓  Installed Composer track 2
+   ·  2.8.1-pv1

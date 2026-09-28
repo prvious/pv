@@ -39,6 +39,11 @@ pub(crate) fn install(
     if streams.out.surface().decorated() {
         super::write_revoked_latest_warning(php_pair.php(), &mut streams.err);
         super::write_revoked_latest_warning(php_pair.frankenphp(), &mut streams.err);
+        streams.out.success(
+            Line::from("PHP ")
+                .value(php_pair.php().track().as_str())
+                .text(" installed · includes FrankenPHP"),
+        )?;
     } else {
         super::write_php_pair_install_lines(php_pair, streams)?;
     }
