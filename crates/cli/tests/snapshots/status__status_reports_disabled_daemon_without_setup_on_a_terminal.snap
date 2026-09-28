@@ -1,0 +1,27 @@
+---
+source: crates/cli/tests/status.rs
+expression: terminal_output.stdout
+---
+[pv] status                                                                                   v0.2.4
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+○  PV is disabled
+○  Daemon disabled
+   LaunchAgent missing  ·  Socket missing
+
+INTEGRATIONS
+○  DNS    missing
+○  Ports  inactive
+○  CA     missing
+
+MANAGED RESOURCES
+○  none
+
+PROJECTS
+○  none
+
+RECENT ERRORS
+○  none
+
+○  PV is disabled
+   Logs: <tempdir>/home/.pv/logs

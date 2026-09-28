@@ -152,6 +152,17 @@ fn status_reports_disabled_daemon_without_setup() -> anyhow::Result<()> {
         output,
     );
 
+    let terminal = TestEnvironment::new(&home).on_terminal(100);
+    let terminal_output = run_pv(&["status", "--no-color"], &terminal)?;
+    assert_eq!(terminal_output.exit_code, ExitCode::SUCCESS);
+    assert!(terminal_output.stderr.is_empty());
+    status_settings(tempdir.path()).bind(|| {
+        assert_snapshot!(
+            "status_reports_disabled_daemon_without_setup_on_a_terminal",
+            terminal_output.stdout
+        );
+    });
+
     Ok(())
 }
 

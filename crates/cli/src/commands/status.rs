@@ -132,7 +132,7 @@ impl StatusSnapshot {
         {
             output.line(&format!("    HTTP 80 -> {http}, HTTPS 443 -> {https}"))?;
         }
-        if !ports.is_active() {
+        if !ports.is_active() && self.integrations.ports_mark != Mark::Idle {
             output.line("    repair: pv ports:install")?;
         }
         output.line(&format!("  CA: {}", self.integrations.ca))?;
@@ -275,7 +275,7 @@ impl StatusSnapshot {
         {
             output.detail(format!("80→{http}  ·  443→{https}"))?;
         }
-        if !ports.is_active() {
+        if !ports.is_active() && self.integrations.ports_mark != Mark::Idle {
             output.hint("repair", "pv ports:install")?;
         }
         output.status(
