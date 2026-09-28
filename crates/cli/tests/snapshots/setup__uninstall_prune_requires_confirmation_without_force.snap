@@ -9,5 +9,5 @@ RunOutput {
         ),
     ),
     stdout: "",
-    stderr: "error: Refusing to prune PV state without an interactive confirmation.\nRerun with `pv uninstall --prune --force` to remove ~/.pv non-interactively.\n",
+    stderr: "error: Refusing to prune PV state without an interactive confirmation.\n  Rerun with `pv uninstall --prune --force` to remove ~/.pv non-interactively.\n",
 }

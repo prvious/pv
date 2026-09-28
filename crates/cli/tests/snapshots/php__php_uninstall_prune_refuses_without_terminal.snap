@@ -10,7 +10,7 @@ expression: "(output, resource_record_snapshots(&records, tempdir.path())?,)"
             ),
         ),
         stdout: "",
-        stderr: "error: Refusing to prune PHP track 8.4 without an interactive confirmation.\nRerun with `pv php:uninstall 8.4 --prune --force` to prune non-interactively.\n",
+        stderr: "error: Refusing to prune PHP track 8.4 without an interactive confirmation.\n  Rerun with `pv php:uninstall 8.4 --prune --force` to prune non-interactively.\n",
     },
     [
         ResourceRecordSnapshot {

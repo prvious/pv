@@ -1577,7 +1577,7 @@ Each human-facing stream is rendered in one of two forms, chosen independently f
 
 Plain output keeps each command's documented words and facts in its documented plain order. Decorated output may arrange the same facts around terminal headings, gutters, and tables. `pv init --yes` leads its decorated result with the written path, followed by detection details; the plain form keeps its detection summary before the final write result.
 
-- Lines that explain the row above them, such as a refusal's `Leaving it in place.` or the fields of `pv ports:status`, are indented two spaces like other sub-lines, and repair commands read `  repair: `<command>``.
+- Lines that explain the row above them, such as a refusal's `Leaving it in place.` or the fields of `pv ports:status`, are indented two spaces like other sub-lines, and repair commands read `  repair: pv setup`.
 - `pv doctor` lists its checks grouped as System, Routing, and Daemon & jobs, in plain and JSON output alike.
 - A flow's plain output starts with its title (`PV setup`, `PV update`, `PV init`) and reports its outcome last. `pv init` prints its detection summary before `Wrote Project config: <path>`.
 

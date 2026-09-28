@@ -451,10 +451,14 @@ impl<'writer> Output<'writer> {
     /// An error, normally written to stderr. Lines after the first are cause
     /// and repair details.
     pub(crate) fn error(&mut self, message: &str) -> io::Result<()> {
-        if !self.surface.decorated {
-            return writeln!(self.writer, "error: {message}");
-        }
         let mut lines = message.lines();
+        if !self.surface.decorated {
+            writeln!(self.writer, "error: {}", lines.next().unwrap_or_default())?;
+            for cause in lines {
+                writeln!(self.writer, "  {cause}")?;
+            }
+            return Ok(());
+        }
         self.labelled(
             Mark::Failure,
             "error:",
@@ -875,7 +879,7 @@ mod tests {
         assert_snapshot!(render(Surface::plain(), write), @"
         warning: PV daemon is not running; reconciliation will run after `pv setup` starts it
         error: PHP track 8.3 is not installed.
-        Run `pv php:install 8.3` to install it.
+          Run `pv php:install 8.3` to install it.
         ");
         assert_snapshot!(render(Surface::terminal(false, 60), write), @"
         ⚠  warning: PV daemon is not running; reconciliation will

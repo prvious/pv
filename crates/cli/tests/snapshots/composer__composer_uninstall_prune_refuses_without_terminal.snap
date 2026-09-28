@@ -10,7 +10,7 @@ expression: "(output, resource_record_snapshots(&records, tempdir.path())?,)"
             ),
         ),
         stdout: "",
-        stderr: "error: Refusing to prune Composer data without an interactive confirmation.\nRerun with `pv composer:uninstall --prune --force` to prune non-interactively.\n",
+        stderr: "error: Refusing to prune Composer data without an interactive confirmation.\n  Rerun with `pv composer:uninstall --prune --force` to prune non-interactively.\n",
     },
     [
         ResourceRecordSnapshot {

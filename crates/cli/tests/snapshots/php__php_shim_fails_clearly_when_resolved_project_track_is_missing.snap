@@ -9,5 +9,5 @@ RunOutput {
         ),
     ),
     stdout: "",
-    stderr: "error: PHP track 8.4 is not installed.\nRun `pv php:install 8.4` to install it.\n",
+    stderr: "error: PHP track 8.4 is not installed.\n  Run `pv php:install 8.4` to install it.\n",
 }
