@@ -15,7 +15,7 @@ PROJECTS
    PV block
 
 ✗  billing-worker · config-invalid
-   resource-only · PHP default · 0
+   resource-only · PHP default · unknown
    resources · env invalid
    <tempdir>/Billing Worker
    ✗ unknown Project config key

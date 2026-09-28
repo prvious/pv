@@ -191,7 +191,7 @@ fn list_on_a_terminal_aligns_columns_or_stacks_records_by_width() -> anyhow::Res
     create_dir(&resource_only)?;
     write_file(
         &served.join("pv.yml"),
-        "env:\n  APP_URL: \"${project_url}\"\n",
+        "env:\n  APP_URL: \"${project_url}\"\nmysql:\n  version: \"8.0\"\nredis:\n  version: \"7.4\"\n",
     )?;
     write_file(&resource_only.join("pv.yml"), "unexpected: true\n")?;
     let paths = PvPaths::for_home(home.clone());
@@ -217,19 +217,6 @@ fn list_on_a_terminal_aligns_columns_or_stacks_records_by_width() -> anyhow::Res
             message: "APP_URL already exists outside the PV block".to_string(),
         }],
     )?;
-    database.replace_project_managed_resources(
-        &project.id,
-        &[
-            ProjectManagedResourceInput {
-                resource_name: "mysql".to_string(),
-                track: "8.0".to_string(),
-            },
-            ProjectManagedResourceInput {
-                resource_name: "redis".to_string(),
-                track: "7.4".to_string(),
-            },
-        ],
-    )?;
     database.link_project_with_mode(
         LinkProjectInput {
             path: resource_only.clone(),
@@ -243,17 +230,27 @@ fn list_on_a_terminal_aligns_columns_or_stacks_records_by_width() -> anyhow::Res
     )?;
     drop(database);
 
+    let plain = run_pv(&["list"], &environment)?;
+    assert_eq!(plain.exit_code, ExitCode::SUCCESS);
+    assert!(plain.stderr.is_empty());
     // Temp paths differ in length across machines; all three widths keep the
     // path whole while the narrowest switches to a compact header.
     let wide = render_list_on_terminal(&environment, 200)?;
     let narrow = render_list_on_terminal(&environment, 60)?;
     let compact = render_list_on_terminal(&environment, 40)?;
+    write_file(
+        &served.join("pv.yml"),
+        "env:\n  APP_URL: \"${project_url}\"\nmysql:\n  version: \"8.0\"\n",
+    )?;
+    let edited = render_list_on_terminal(&environment, 60)?;
 
     tempdir_settings(tempdir.path()).bind(|| {
         assert_snapshot!("list_on_a_terminal_empty", empty);
+        assert_snapshot!("list_plain_counts_unreconciled_resources", plain.stdout);
         assert_snapshot!("list_on_a_terminal_at_200_columns", wide);
         assert_snapshot!("list_on_a_terminal_at_60_columns", narrow);
         assert_snapshot!("list_on_a_terminal_at_40_columns", compact);
+        assert_snapshot!("list_on_a_terminal_uses_edited_resource_count", edited);
     });
 
     Ok(())

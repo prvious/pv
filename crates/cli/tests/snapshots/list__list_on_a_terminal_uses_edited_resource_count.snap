@@ -1,6 +1,6 @@
 ---
 source: crates/cli/tests/list.rs
-expression: narrow
+expression: edited
 ---
 [pv] list                                             v0.2.4
 ────────────────────────────────────────────────────────────
@@ -8,7 +8,7 @@ expression: narrow
 PROJECT  MODE  PHP  STATUS  RESOURCES  ENV  PATH
 
 ⚠  acme.test · unknown
-   served · PHP 8.4 · 2 resources · env warning
+   served · PHP 8.4 · 1 resource · env warning
    <tempdir>/acme
    ⚠ APP_URL already exists outside the PV block
 

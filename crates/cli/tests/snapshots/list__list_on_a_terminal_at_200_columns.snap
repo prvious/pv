@@ -13,7 +13,7 @@ PROJECT  MODE  PHP  STATUS  RESOURCES  ENV  PATH
    ⚠ APP_URL already exists outside the PV block
 
 ✗  billing-worker · config-invalid
-   resource-only · PHP default · 0 resources · env invalid
+   resource-only · PHP default · unknown resources · env invalid
    <tempdir>/Billing Worker
    ✗ unknown Project config key `unexpected`
 

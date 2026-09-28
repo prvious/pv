@@ -312,7 +312,14 @@ pub(crate) fn list(
         let mut failures = 0;
         for project in &projects {
             let status = project_list_status(&database, project)?;
-            let resources = database.project_managed_resources(&project.id)?.len();
+            let resources = status
+                .declared_resources
+                .map_or_else(|| "unknown".to_string(), |count| count.to_string());
+            let resource_label = if status.declared_resources == Some(1) {
+                "resource"
+            } else {
+                "resources"
+            };
             let failed = matches!(status.project, ProjectStatus::ConfigInvalid)
                 || matches!(
                     status.env,
@@ -342,7 +349,7 @@ pub(crate) fn list(
                 ),
             )?;
             streams.out.detail(format!(
-                "{} · PHP {} · {resources} resources · env {}",
+                "{} · PHP {} · {resources} {resource_label} · env {}",
                 project.mode.as_str(),
                 project.desired_php_track.as_deref().unwrap_or("default"),
                 status.env.as_str(),
@@ -400,13 +407,15 @@ pub(crate) fn list(
     ]);
     for project in projects {
         let status = project_list_status(&database, &project)?;
-        let resources = database.project_managed_resources(&project.id)?.len();
+        let resources = status
+            .declared_resources
+            .map_or_else(|| "unknown".to_string(), |count| count.to_string());
         table.row(vec![
             Line::from(super::project_display_name(&project)),
             Line::from(project.mode.as_str()),
             Line::from(project.desired_php_track.as_deref().unwrap_or("default")),
             status.project.cell(),
-            Line::from(resources.to_string()),
+            Line::from(resources),
             status.env.cell(),
             Line::default().value(project.path.to_string()),
         ]);
@@ -690,6 +699,7 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
 struct ProjectListStatus {
     project: ProjectStatus,
     env: ProjectEnvStatus,
+    declared_resources: Option<usize>,
     config_error: Option<String>,
     env_detail: Option<String>,
 }
@@ -791,11 +801,13 @@ fn project_list_status(
             return Ok(ProjectListStatus {
                 project: ProjectStatus::ConfigInvalid,
                 env: ProjectEnvStatus::Invalid,
+                declared_resources: None,
                 config_error: Some(error.to_string()),
                 env_detail: None,
             });
         }
     };
+    let declared_resources = Some(config_file.config.resources.len());
     if project.mode == ProjectMode::Served
         && config_file.config.serve
         && let Some(primary_hostname) = project.primary_hostname.as_deref()
@@ -808,6 +820,7 @@ fn project_list_status(
         return Ok(ProjectListStatus {
             project: ProjectStatus::ConfigInvalid,
             env: ProjectEnvStatus::Invalid,
+            declared_resources,
             config_error: Some(error.to_string()),
             env_detail: None,
         });
@@ -816,6 +829,7 @@ fn project_list_status(
         return Ok(ProjectListStatus {
             project: ProjectStatus::ConfigInvalid,
             env: ProjectEnvStatus::Invalid,
+            declared_resources,
             config_error: Some(error.to_string()),
             env_detail: None,
         });
@@ -829,6 +843,7 @@ fn project_list_status(
     Ok(ProjectListStatus {
         project: ProjectStatus::Unknown,
         env,
+        declared_resources,
         config_error: None,
         env_detail,
     })
