@@ -461,6 +461,42 @@ mod update_tests {
     }
 
     #[test]
+    fn update_check_on_a_terminal_reports_unavailable_app_version() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let daemon = FakeDaemon::start(
+            &paths,
+            vec![
+                health_response(),
+                managed_resource_update_check_response(
+                    paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+                ),
+            ],
+        )?;
+        let mut manifest: serde_json::Value = serde_json::from_str(APP_MANIFEST)?;
+        if let Some(assets) = manifest["assets"].as_array_mut() {
+            assets.remove(0);
+        }
+        let manifest = serde_json::to_string(&manifest)?;
+        let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest));
+        environment.terminal_width.set(Some(100));
+
+        let output = run_pv(&["update", "--check", "--no-color"], &environment)?;
+
+        daemon.join()?;
+        assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert!(output.stderr.is_empty());
+        assert_update_snapshot(
+            "update_check_on_a_terminal_reports_unavailable_app_version",
+            output,
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn update_check_on_a_terminal_reports_retained_helper_protocol() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let home = tempdir.path().join("home");

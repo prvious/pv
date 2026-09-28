@@ -1572,7 +1572,8 @@ impl AppUpdateStatus {
                     self.platform,
                 ),
                 AppUpdateStatusValue::Unavailable => format!(
-                    "PV application  unavailable ({})",
+                    "PV application  unavailable {} ({})",
+                    self.current_version,
                     self.reason.as_deref().unwrap_or("unknown reason")
                 ),
             };
