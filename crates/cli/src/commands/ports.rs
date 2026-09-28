@@ -41,7 +41,7 @@ pub(crate) fn status(
 
     output.heading("ports:status", Some("Port redirect status"))?;
     output.status(mark, format!("State: {}", diagnostic.state.as_str()))?;
-    output.detail(Line::field("Evidence: ", diagnostic.evidence.as_str()))?;
+    output.detail(Line::from("Evidence: ").prose_value(diagnostic.evidence.as_str()))?;
     let decorated = output.surface().decorated();
     let redirect = |source: u16, target: Option<u16>| {
         let target = display_port(target);

@@ -176,7 +176,7 @@ pub(crate) fn setup(
 
     output.flow_step(
         Mark::Done,
-        Line::field("System reconciliation completed: ", &completed.summary),
+        Line::from("System reconciliation completed: ").prose_value(&completed.summary),
     )?;
     if !default_resource_plan.failures.is_empty() {
         output.flow_step(

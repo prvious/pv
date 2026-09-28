@@ -172,12 +172,13 @@ pub(crate) struct Line {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Span {
     Text(Tone, String),
+    ProseValue(String),
     /// A glyph shown only when decorated, such as a table status cell's `✗`.
     Mark(Mark),
 }
 
 impl Line {
-    /// A label span followed by a value span. The label carries its own
+    /// A label followed by an indivisible value. The label carries its own
     /// separator, as in `Line::field("path: ", path)`.
     pub(crate) fn field(label: &str, value: impl std::fmt::Display) -> Self {
         Self::from(label).value(value.to_string())
@@ -187,8 +188,15 @@ impl Line {
         self.toned(Tone::Plain, text)
     }
 
+    /// A value such as a path or URL whose spaces must stay together.
     pub(crate) fn value(self, text: impl Into<String>) -> Self {
         self.toned(Tone::Value, text)
+    }
+
+    /// A value such as a summary sentence that may wrap at spaces.
+    pub(crate) fn prose_value(mut self, text: impl Into<String>) -> Self {
+        self.spans.push(Span::ProseValue(text.into()));
+        self
     }
 
     pub(crate) fn toned(mut self, tone: Tone, text: impl Into<String>) -> Self {
@@ -209,6 +217,7 @@ impl Line {
             .iter()
             .filter_map(|span| match span {
                 Span::Text(_tone, text) => Some(text.as_str()),
+                Span::ProseValue(text) => Some(text.as_str()),
                 Span::Mark(_mark) => None,
             })
             .collect()
@@ -216,16 +225,34 @@ impl Line {
 
     /// Paints every span, using `base` for spans without their own tone.
     fn paint(&self, base: Tone, color: bool) -> String {
+        self.paint_with_value_space(base, color, None)
+    }
+
+    fn paint_with_value_space(&self, base: Tone, color: bool, space: Option<char>) -> String {
         self.spans
             .iter()
             .map(|span| match span {
                 Span::Text(tone, text) => {
+                    let is_value = *tone == Tone::Value;
                     let tone = if *tone == Tone::Plain { base } else { *tone };
-                    tone.paint(text, color)
+                    if let Some(space) = space
+                        && is_value
+                    {
+                        tone.paint(&text.replace(' ', &space.to_string()), color)
+                    } else {
+                        tone.paint(text, color)
+                    }
                 }
+                Span::ProseValue(text) => Tone::Value.paint(text, color),
                 Span::Mark(mark) => format!("{} ", mark.paint(color)),
             })
             .collect()
+    }
+
+    fn has_spaced_value(&self) -> bool {
+        self.spans
+            .iter()
+            .any(|span| matches!(span, Span::Text(Tone::Value, text) if text.contains(' ')))
     }
 }
 
@@ -368,14 +395,13 @@ impl<'writer> Output<'writer> {
         } else {
             Tone::Plain
         };
-        let body = line.paint(body_tone, self.surface.color);
         let (first, rest) = if self.flow.is_some() {
             let gutter = self.gutter_prefix();
             (format!("{gutter}  {glyph} "), format!("{gutter}    "))
         } else {
             (format!("{glyph}  "), INDENT.to_string())
         };
-        self.write_wrapped(&first, &rest, &body)?;
+        self.write_wrapped_line(&first, &rest, "", &line, body_tone)?;
         self.continuation = rest;
 
         Ok(())
@@ -395,9 +421,8 @@ impl<'writer> Output<'writer> {
                 Tone::Value.paint(value, self.surface.color)
             );
         }
-        let body = line.paint(Tone::Dim, self.surface.color);
         let prefix = self.continuation.clone();
-        self.write_wrapped(&prefix, &prefix, &body)
+        self.write_wrapped_line(&prefix, &prefix, "", &line, Tone::Dim)
     }
 
     /// A consequence of the latest row, such as the reconciliation job it
@@ -421,13 +446,9 @@ impl<'writer> Output<'writer> {
     /// A dim `↳ …` row under the latest row, keeping value spans colored.
     fn arrow_row(&mut self, line: &Line) -> io::Result<()> {
         let color = self.surface.color;
-        let body = format!(
-            "{} {}",
-            Tone::Dim.paint("↳", color),
-            line.paint(Tone::Dim, color)
-        );
+        let leading = format!("{} ", Tone::Dim.paint("↳", color));
         let prefix = self.continuation.clone();
-        self.write_wrapped(&prefix, &format!("{prefix}  "), &body)
+        self.write_wrapped_line(&prefix, &format!("{prefix}  "), &leading, line, Tone::Dim)
     }
 
     /// Verbatim content such as a config preview: unchanged on a plain
@@ -614,9 +635,14 @@ impl<'writer> Output<'writer> {
         }
         let color = self.surface.color;
         writeln!(self.writer, "{}", self.gutter_prefix())?;
-        let body = line.paint(Tone::Strong, color);
         let rest = format!("{}  ", self.gutter_prefix());
-        self.write_wrapped(&format!("{}  ", mark.paint(color)), &rest, &body)?;
+        self.write_wrapped_line(
+            &format!("{}  ", mark.paint(color)),
+            &rest,
+            "",
+            &line,
+            Tone::Strong,
+        )?;
         self.continuation = rest;
 
         Ok(())
@@ -637,8 +663,13 @@ impl<'writer> Output<'writer> {
         } else {
             format!("{} ", mark.paint(color))
         };
-        let body = format!("{outcome}{}", line.paint(Tone::Strong, color));
-        self.write_wrapped(&format!("{}  ", Tone::Dim.paint("└", color)), INDENT, &body)
+        self.write_wrapped_line(
+            &format!("{}  ", Tone::Dim.paint("└", color)),
+            INDENT,
+            &outcome,
+            &line,
+            Tone::Strong,
+        )
     }
 
     fn badge(&mut self, command: &str) -> io::Result<()> {
@@ -667,6 +698,46 @@ impl<'writer> Output<'writer> {
     /// including paths, URLs, and identifiers, are never split; a word longer
     /// than the line overflows instead.
     fn write_wrapped(&mut self, first: &str, rest: &str, body: &str) -> io::Result<()> {
+        self.write_wrapped_with_space(first, rest, body, None)
+    }
+
+    fn write_wrapped_line(
+        &mut self,
+        first: &str,
+        rest: &str,
+        leading: &str,
+        line: &Line,
+        base: Tone,
+    ) -> io::Result<()> {
+        if !line.has_spaced_value() {
+            return self.write_wrapped(
+                first,
+                rest,
+                &format!("{leading}{}", line.paint(base, self.surface.color)),
+            );
+        }
+        let plain = line.plain();
+        let Some(space) = ('\u{e000}'..='\u{f8ff}').find(|space| !plain.contains(*space)) else {
+            return writeln!(
+                self.writer,
+                "{first}{leading}{}",
+                line.paint(base, self.surface.color)
+            );
+        };
+        let body = format!(
+            "{leading}{}",
+            line.paint_with_value_space(base, self.surface.color, Some(space))
+        );
+        self.write_wrapped_with_space(first, rest, &body, Some(space))
+    }
+
+    fn write_wrapped_with_space(
+        &mut self,
+        first: &str,
+        rest: &str,
+        body: &str,
+        space: Option<char>,
+    ) -> io::Result<()> {
         if body.is_empty() {
             return writeln!(self.writer, "{}", first.trim_end());
         }
@@ -681,7 +752,12 @@ impl<'writer> Output<'writer> {
             .word_separator(WordSeparator::AsciiSpace)
             .word_splitter(WordSplitter::NoHyphenation);
 
-        writeln!(self.writer, "{}", textwrap::fill(body, options))
+        let wrapped = textwrap::fill(body, options);
+        if let Some(space) = space {
+            writeln!(self.writer, "{}", wrapped.replace(space, " "))
+        } else {
+            writeln!(self.writer, "{wrapped}")
+        }
     }
 }
 
@@ -812,6 +888,61 @@ mod tests {
            VITE_DEV_SERVER_CERT and VITE_DEV_SERVER_KEY.
         ○  No framework-specific Project signals detected.
              APP_URL: ${project_url}
+        ");
+    }
+
+    #[test]
+    fn decorated_rows_keep_whitespace_bearing_values_together() {
+        let write = |output: &mut Output<'_>| {
+            let path = "/Users/me/My Project/pv.yml";
+            output.status(Mark::Done, Line::field("Wrote Project config: ", path))?;
+            output.flow_start("init", "pv init", None)?;
+            output.flow_step(Mark::Done, Line::field("Detected config: ", path))?;
+            output.detail(Line::field(
+                "path: ",
+                "/Users/me/My\u{a0}Project/\u{2007}Source Files",
+            ))?;
+            output.detail(Line::from("summary: ").prose_value(
+                "Project env reconciled for 1 of 2 Projects; failures: gateway unavailable",
+            ))?;
+            output.flow_end(Mark::Done, Line::field("Wrote Project config: ", path))
+        };
+
+        assert_snapshot!(render(Surface::terminal(false, 40), write), @"
+        ◇  Wrote Project config:
+           /Users/me/My Project/pv.yml
+        [pv] init
+
+        ┌  pv init
+        │
+        ◇  Detected config:
+        │  /Users/me/My Project/pv.yml
+        │  path:
+        │  /Users/me/My Project/ Source Files
+        │  summary: Project env reconciled for
+        │  1 of 2 Projects; failures: gateway
+        │  unavailable
+        │
+        └  Wrote Project config:
+           /Users/me/My Project/pv.yml
+        ");
+        assert_snapshot!(render(Surface::terminal(true, 40), write), @"
+        ␛[32m◇␛[0m  Wrote Project config:
+           ␛[36m/Users/me/My Project/pv.yml␛[0m
+        ␛[1m␛[7m␛[35m pv ␛[0m ␛[1minit␛[0m
+
+        ␛[2m┌␛[0m  ␛[1mpv init␛[0m
+        ␛[2m│␛[0m
+        ␛[32m◇␛[0m  ␛[1mDetected config:
+        ␛[2m│␛[0m  ␛[0m␛[36m/Users/me/My Project/pv.yml␛[0m
+        ␛[2m│␛[0m  ␛[2mpath:
+        ␛[2m│␛[0m  ␛[0m␛[36m/Users/me/My Project/ Source Files␛[0m
+        ␛[2m│␛[0m  ␛[2msummary: ␛[0m␛[36mProject env reconciled for
+        ␛[2m│␛[0m  1 of 2 Projects; failures: gateway
+        ␛[2m│␛[0m  unavailable␛[0m
+        ␛[2m│␛[0m
+        ␛[2m└␛[0m  ␛[1mWrote Project config:
+           ␛[0m␛[36m/Users/me/My Project/pv.yml␛[0m
         ");
     }
 
