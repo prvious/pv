@@ -1433,6 +1433,35 @@ fn setup_and_uninstall_on_a_terminal_render_flows() -> anyhow::Result<()> {
 }
 
 #[test]
+fn setup_keeps_failure_paths_together_in_wrapped_summary() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    let daemon = DaemonFixture::start_with_summary(
+        &fixture.paths,
+        "Project env reconciled for 1 of 2 Projects; failures: /Users/me/My Project/pv.yml",
+    )?;
+    *lock(&fixture.environment.terminal_width) = Some(40);
+
+    let setup = run_pv(
+        &["setup", "--no-path", "--no-color"],
+        fixture.environment.as_ref(),
+    )?;
+    let _requests = daemon.finish()?;
+
+    assert_eq!(setup.exit_code, ExitCode::SUCCESS);
+    let Some(summary) = setup.stdout.find("◇  System reconciliation completed:") else {
+        anyhow::bail!("setup output omitted the reconciliation summary");
+    };
+    assert_snapshot!(
+        "setup_keeps_failure_paths_together_in_wrapped_summary",
+        &setup.stdout[summary..]
+    );
+
+    Ok(())
+}
+
+#[test]
 fn setup_stops_at_a_failed_required_step_on_both_surfaces() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
@@ -1577,6 +1606,10 @@ struct DaemonFixture {
 
 impl DaemonFixture {
     fn start(paths: &PvPaths) -> anyhow::Result<Self> {
+        Self::start_with_summary(paths, "stub job completed")
+    }
+
+    fn start_with_summary(paths: &PvPaths, summary: &str) -> anyhow::Result<Self> {
         state::fs::ensure_layout(paths)?;
         delete_optional_file(&paths.daemon_socket())?;
         let listener = UnixListener::bind(paths.daemon_socket().as_std_path())?;
@@ -1585,6 +1618,7 @@ impl DaemonFixture {
 
         let requests = Arc::new(Mutex::new(Vec::new()));
         let thread_requests = Arc::clone(&requests);
+        let summary = summary.to_owned();
         let thread = spawn_daemon_fixture_thread(move || {
             loop {
                 let (mut stream, _address) = accept_with_timeout(&listener)?;
@@ -1650,7 +1684,7 @@ impl DaemonFixture {
                     json!({
                         "type": "job_completed",
                         "job_id": "job_setup_1",
-                        "summary": "stub job completed",
+                        "summary": summary,
                     }),
                 )?;
 

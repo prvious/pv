@@ -1,0 +1,10 @@
+---
+source: crates/cli/tests/setup.rs
+expression: "&setup.stdout[summary..]"
+---
+◇  System reconciliation completed:
+│  Project env reconciled for
+│  1 of 2 Projects; failures:
+│  /Users/me/My Project/pv.yml
+│
+└  PV setup complete
