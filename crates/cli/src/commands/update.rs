@@ -1566,9 +1566,10 @@ impl AppUpdateStatus {
                     format!("PV application  current {}", self.current_version)
                 }
                 AppUpdateStatusValue::UpdateAvailable => format!(
-                    "PV application  update {} → {}",
+                    "PV application  update {} → {} ({})",
                     self.current_version,
-                    self.latest_version.as_deref().unwrap_or("unknown")
+                    self.latest_version.as_deref().unwrap_or("unknown"),
+                    self.platform,
                 ),
                 AppUpdateStatusValue::Unavailable => format!(
                     "PV application  unavailable ({})",
