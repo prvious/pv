@@ -148,16 +148,18 @@ fn finish_written(
         )?;
         output.detail(Line::default().value(path.as_str()))?;
         output.hint("Link this Project:", "pv link")?;
+        if include_vite_tls {
+            output.status(Mark::Warning, VITE_NOTE)?;
+        }
     } else {
+        if include_vite_tls {
+            output.status(Mark::Warning, VITE_NOTE)?;
+        }
         output.flow_end(
             Mark::Done,
             Line::from("Wrote Project config: ").value(path.as_str()),
         )?;
     }
-    if include_vite_tls {
-        output.status(Mark::Warning, VITE_NOTE)?;
-    }
-
     Ok(())
 }
 
