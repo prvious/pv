@@ -238,6 +238,11 @@ impl StatusSnapshot {
             }),
             Line::default().toned(Tone::Strong, daemon_line),
         )?;
+        if self.daemon.state == "running"
+            && let Some(message) = gateway.and_then(|gateway| gateway.message.as_deref())
+        {
+            output.detail(message)?;
+        }
         output.detail(
             Line::field("LaunchAgent ", self.daemon.launch_agent)
                 .text("  ·  Socket ")
@@ -802,7 +807,7 @@ mod tests {
 
     #[test]
     fn running_status_shows_gateway_ports_and_project_attention() -> anyhow::Result<()> {
-        let snapshot = StatusSnapshot {
+        let mut snapshot = StatusSnapshot {
             overall: "ok",
             daemon: DaemonStatus {
                 state: "running",
@@ -853,6 +858,19 @@ mod tests {
         snapshot.write(&mut Output::new(&mut bytes, Surface::terminal(false, 100)))?;
 
         assert_snapshot!(String::from_utf8(bytes)?);
+
+        snapshot.overall = "failed";
+        snapshot.runtimes[0].status = "failed";
+        snapshot.runtimes[0].message =
+            Some("Gateway failed to start: port 48443 is occupied".to_string());
+        snapshot.runtimes[0].failure = true;
+        snapshot.runtimes[0].mark = Mark::Failure;
+        let mut bytes = Vec::new();
+        snapshot.write(&mut Output::new(&mut bytes, Surface::terminal(false, 100)))?;
+        assert_snapshot!(
+            "running_status_shows_gateway_failure",
+            String::from_utf8(bytes)?
+        );
 
         Ok(())
     }
