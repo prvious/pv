@@ -1,9 +1,11 @@
+use std::io::{self, Write};
 use std::process::ExitCode;
 
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
+use cli::run_with_environment;
 use insta::{Settings, assert_debug_snapshot};
-use state::{Database, fs};
+use state::{Database, ManagedResourceDesiredState, fs};
 use support::resource_cli::{
     ResourceCliSpec, ScriptedClient, TestEnvironment, create_dir, fixture_artifact,
     managed_resource_records, prepare_existing_release, pv_paths, record_installed_resource,
@@ -20,6 +22,25 @@ const RESOURCE: ResourceCliSpec = ResourceCliSpec {
 const DEFAULT_TRACK: &str = "7";
 const OLD_VERSION: &str = "7.2.4-pv1";
 const NEW_VERSION: &str = "7.2.5-pv1";
+
+#[derive(Default)]
+struct FirstLineOnly {
+    line_written: bool,
+}
+
+impl Write for FirstLineOnly {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if self.line_written {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        self.line_written = buffer.contains(&b'\n');
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 #[test]
 fn redis_install_uses_manifest_default_and_installs_without_network_download() -> anyhow::Result<()>
@@ -210,6 +231,43 @@ fn redis_uninstall_reports_preserved_data_on_both_surfaces() -> anyhow::Result<(
         tempdir.path(),
         &(plain, terminal),
     );
+
+    Ok(())
+}
+
+#[test]
+fn redis_uninstall_reconciles_after_output_closes() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    record_installed_resource(
+        &home,
+        DEFAULT_TRACK,
+        &fixture_artifact(NEW_VERSION),
+        RESOURCE,
+    )?;
+    create_dir(&pv_paths(&home).resource_data_dir("redis", DEFAULT_TRACK))?;
+    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+    let mut stdout = FirstLineOnly::default();
+    let mut stderr = Vec::new();
+
+    let exit_code = run_with_environment(
+        ["pv", "redis:uninstall", DEFAULT_TRACK, "--force"],
+        &environment,
+        &mut stdout,
+        &mut stderr,
+    )?;
+    let records = managed_resource_records(&Database::open(&pv_paths(&home))?, RESOURCE)?;
+
+    assert_eq!(exit_code, ExitCode::FAILURE);
+    assert!(stdout.line_written);
+    assert!(
+        records
+            .iter()
+            .all(|record| record.desired_state == ManagedResourceDesiredState::Removed)
+    );
+    assert!(String::from_utf8(stderr)?.contains("reconciliation will run"));
 
     Ok(())
 }

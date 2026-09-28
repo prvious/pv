@@ -20,6 +20,25 @@ use state::{
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
 
+#[derive(Default)]
+struct FirstLineOnly {
+    line_written: bool,
+}
+
+impl Write for FirstLineOnly {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if self.line_written {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        self.line_written = buffer.contains(&b'\n');
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
@@ -526,6 +545,37 @@ fn composer_uninstall_reports_preserved_home_on_both_surfaces() -> anyhow::Resul
         assert_debug_snapshot!((plain, terminal));
         Ok(())
     })?;
+
+    Ok(())
+}
+
+#[test]
+fn composer_uninstall_reconciles_after_output_closes() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("outside");
+    create_dir(&current_dir)?;
+    record_installed_composer(&home, "2", &composer_fixture_artifact("2.8.1-pv1"))?;
+    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+    let mut stdout = FirstLineOnly::default();
+    let mut stderr = Vec::new();
+
+    let exit_code = run_with_environment(
+        ["pv", "composer:uninstall", "--force"],
+        &environment,
+        &mut stdout,
+        &mut stderr,
+    )?;
+    let records = managed_resource_records(&Database::open(&pv_paths(&home))?)?;
+
+    assert_eq!(exit_code, ExitCode::FAILURE);
+    assert!(stdout.line_written);
+    assert!(
+        records
+            .iter()
+            .all(|record| record.desired_state == ManagedResourceDesiredState::Removed)
+    );
+    assert!(String::from_utf8(stderr)?.contains("reconciliation will run"));
 
     Ok(())
 }

@@ -129,15 +129,19 @@ pub(crate) fn uninstall(
     } else {
         "Queued removal for Composer track "
     };
-    output.success(Line::field(summary, removal.track()))?;
-    if !args.prune {
-        output.detail(if output.surface().decorated() {
-            "·  home and cache preserved"
-        } else {
-            "home and cache preserved"
-        })?;
-    }
+    let displayed = (|| -> io::Result<()> {
+        output.success(Line::field(summary, removal.track()))?;
+        if !args.prune {
+            output.detail(if output.surface().decorated() {
+                "·  home and cache preserved"
+            } else {
+                "home and cache preserved"
+            })?;
+        }
+        Ok(())
+    })();
     super::request_system_reconciliation(&paths, streams)?;
+    displayed?;
 
     Ok(ExitCode::SUCCESS)
 }

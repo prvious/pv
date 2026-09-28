@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io;
 use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
@@ -144,24 +145,28 @@ pub(crate) fn uninstall(
     } else {
         format!("Queued removal for {} track ", spec.display_name)
     };
-    output.success(Line::field(&summary, removal.track()))?;
-    let prefix = if output.surface().decorated() {
-        "·  "
-    } else {
-        ""
-    };
-    if prune {
-        output.detail(format!("{prefix}data will be pruned"))?;
-    } else {
-        let data_path = paths.resource_data_dir(spec.resource_name, removal.track().as_str());
-        if data_path.exists() {
-            output.detail(Line::field(
-                &format!("{prefix}data preserved under "),
-                data_path,
-            ))?;
+    let displayed = (|| -> io::Result<()> {
+        output.success(Line::field(&summary, removal.track()))?;
+        let prefix = if output.surface().decorated() {
+            "·  "
+        } else {
+            ""
+        };
+        if prune {
+            output.detail(format!("{prefix}data will be pruned"))?;
+        } else {
+            let data_path = paths.resource_data_dir(spec.resource_name, removal.track().as_str());
+            if data_path.exists() {
+                output.detail(Line::field(
+                    &format!("{prefix}data preserved under "),
+                    data_path,
+                ))?;
+            }
         }
-    }
+        Ok(())
+    })();
     super::request_system_reconciliation(&paths, streams)?;
+    displayed?;
 
     Ok(ExitCode::SUCCESS)
 }
