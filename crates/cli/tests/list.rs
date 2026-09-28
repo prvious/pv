@@ -257,6 +257,39 @@ fn list_on_a_terminal_aligns_columns_or_stacks_records_by_width() -> anyhow::Res
 }
 
 #[test]
+fn list_reports_global_php_default_on_both_surfaces() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "")?;
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home, &project);
+    let mut database = Database::open(&paths)?;
+    database.link_project(LinkProjectInput {
+        path: project.clone(),
+        original_path: project.clone(),
+        primary_hostname: "acme.test".to_string(),
+        config_path: project.join("pv.yml"),
+        desired_php_track: None,
+        additional_hostnames: Vec::new(),
+    })?;
+    database.record_global_php_default_track("8.4")?;
+    drop(database);
+
+    let plain = run_pv(&["list"], &environment)?;
+    let decorated = render_list_on_terminal(&environment, 120)?;
+
+    assert_eq!(plain.exit_code, ExitCode::SUCCESS);
+    tempdir_settings(tempdir.path()).bind(|| {
+        assert_snapshot!("list_plain_global_php_default", plain.stdout);
+        assert_snapshot!("list_terminal_global_php_default", decorated);
+    });
+
+    Ok(())
+}
+
+#[test]
 fn resource_list_json_outputs_installed_tracks_and_aliases() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

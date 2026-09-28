@@ -427,6 +427,11 @@ pub(crate) fn list(
         }
     }
     streams.out.table(&table)?;
+    if let Some(default_php) = database.global_php_default_track()? {
+        streams
+            .out
+            .detail(Line::field("default php ", default_php))?;
+    }
 
     Ok(ExitCode::SUCCESS)
 }
