@@ -1492,17 +1492,21 @@ impl UpdateCheckOutput {
         if updates == 0 && needs_attention == 0 {
             output.success("Everything is up to date")?;
         } else if updates > 0 {
-            output.status(
-                Mark::UpdateAvailable,
-                format!("{updates} updates available"),
-            )?;
+            let label = if updates == 1 {
+                "update available"
+            } else {
+                "updates available"
+            };
+            output.status(Mark::UpdateAvailable, format!("{updates} {label}"))?;
             output.hint("run", "pv update")?;
         }
         if needs_attention > 0 {
-            output.status(
-                Mark::Warning,
-                format!("{needs_attention} checks need attention"),
-            )?;
+            let label = if needs_attention == 1 {
+                "check needs attention"
+            } else {
+                "checks need attention"
+            };
+            output.status(Mark::Warning, format!("{needs_attention} {label}"))?;
         }
 
         Ok(())
@@ -1653,7 +1657,15 @@ impl PrivilegedHelperUpdateStatus {
                 ),
             };
             output.status(self.status.mark(), line)?;
-            output.detail(format!("protocol {}", self.latest_protocol_version))?;
+            let protocol = match self.status {
+                AppUpdateStatusValue::Current => self
+                    .current_protocol_version
+                    .map_or_else(|| "unknown".to_string(), |version| version.to_string()),
+                AppUpdateStatusValue::UpdateAvailable | AppUpdateStatusValue::Unavailable => {
+                    self.latest_protocol_version.to_string()
+                }
+            };
+            output.detail(format!("protocol {protocol}"))?;
             return Ok(());
         }
         let line = match self.status {

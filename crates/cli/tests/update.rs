@@ -449,6 +449,43 @@ mod update_tests {
     }
 
     #[test]
+    fn update_check_on_a_terminal_reports_retained_helper_protocol() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        state::fs::ensure_layout(&paths)?;
+        let daemon = FakeDaemon::start(
+            &paths,
+            vec![
+                health_response(),
+                managed_resource_update_check_response(
+                    paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+                ),
+            ],
+        )?;
+        let manifest = app_manifest(
+            "0.1.0",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            12_345_678,
+        );
+        let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest))
+            .with_helper_status("2.0.0", 2);
+        environment.terminal_width.set(Some(100));
+
+        let output = run_pv(&["update", "--check", "--no-color"], &environment)?;
+
+        daemon.join()?;
+        assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert!(output.stderr.is_empty());
+        assert_update_snapshot(
+            "update_check_on_a_terminal_reports_retained_helper_protocol",
+            output,
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn update_check_json_reports_app_and_managed_resource_updates() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let home = tempdir.path().join("home");
