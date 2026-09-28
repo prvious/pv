@@ -217,11 +217,39 @@ impl Line {
             let end = if let Some(quote @ ('`' | '"')) = remaining[..start].chars().next_back() {
                 path.find(quote).unwrap_or(path.len())
             } else {
-                [": ", ", ", "; ", " and /", " exist", "\n"]
-                    .into_iter()
-                    .filter_map(|separator| path.find(separator))
-                    .min()
-                    .unwrap_or(path.len())
+                let next_failure = path.match_indices(", ").find_map(|(index, _)| {
+                    let (label, _) = path[index + 2..].split_once(": ")?;
+                    (!label.is_empty()
+                        && label.bytes().all(|byte| {
+                            byte.is_ascii_lowercase()
+                                || byte.is_ascii_digit()
+                                || b"._-".contains(&byte)
+                        }))
+                    .then_some(index)
+                });
+                let clause_end = [
+                    next_failure,
+                    path.find("; Gateway runtime"),
+                    path.find('\n'),
+                ]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or(path.len());
+                let clause = &path[..clause_end];
+                if let Some(index) = clause.find(" and /") {
+                    index
+                } else if remaining[..start].ends_with("filesystem error at ")
+                    && let Some(index) = clause.rfind(": ")
+                {
+                    index
+                } else if remaining[..start].ends_with(" and ")
+                    && let Some(prefix) = clause.strip_suffix(" exist")
+                {
+                    prefix.len()
+                } else {
+                    clause_end
+                }
             };
             self = self.prose_value(&remaining[..start]).value(&path[..end]);
             remaining = &path[end..];

@@ -1439,7 +1439,7 @@ fn setup_keeps_failure_paths_together_in_wrapped_summary() -> anyhow::Result<()>
     seed_online_setup_manifest(&fixture)?;
     let daemon = DaemonFixture::start_with_summary(
         &fixture.paths,
-        "Project env reconciled for 1 of 5 Projects; failures: app.test: filesystem error at /Users/me/My Project/pv.yml: permission denied, blog.test: Project config file conflict: both /Users/me/My Project/pv.yml and /Users/me/My Project/pv.yaml exist, cache.test: filesystem error at `/Users/me/My Project/cache`: inaccessible, env.test: Project config env_file must point to a file: config files/.env; Gateway runtime reconciled",
+        "Project env reconciled for 1 of 5 Projects; failures: app.test: filesystem error at /Users/me/Code, Archive: Draft/pv.yml: permission denied, blog.test: Project config file conflict: both /Users/me/Code, Archive: Draft/pv.yml and /Users/me/Code, Archive: Draft/pv.yaml exist, cache.test: filesystem error at `/Users/me/My Project/cache`: inaccessible, env.test: Project config env_file must point to a file: config files/.env; Gateway runtime reconciled",
     )?;
     *lock(&fixture.environment.terminal_width) = Some(40);
 

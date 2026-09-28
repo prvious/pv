@@ -6,11 +6,12 @@ expression: "&setup.stdout[summary..]"
 │  Project env reconciled for
 │  1 of 5 Projects; failures:
 │  app.test: filesystem error at
-│  /Users/me/My Project/pv.yml:
+│  /Users/me/Code, Archive: Draft/pv.yml:
 │  permission denied, blog.test:
-│  Project config file conflict:
-│  both /Users/me/My Project/pv.yml
-│  and /Users/me/My Project/pv.yaml
+│  Project config file conflict: both
+│  /Users/me/Code, Archive: Draft/pv.yml
+│  and
+│  /Users/me/Code, Archive: Draft/pv.yaml
 │  exist, cache.test: filesystem error
 │  at `/Users/me/My Project/cache`:
 │  inaccessible, env.test: Project
