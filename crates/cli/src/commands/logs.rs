@@ -289,7 +289,7 @@ fn write_initial_tail(
         return Ok(());
     }
 
-    let prefixed = available_count > 1;
+    let prefixed = sources.len() > 1;
     for tail in tails {
         let prefix = log_prefix(&tail.source.label, prefixed, color_enabled);
         for line in tail.lines {
