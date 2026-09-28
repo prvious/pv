@@ -10,6 +10,7 @@ use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
 use platform::{ActivePfRedirectInspection, PfConfReference, PfRedirectConfig};
+use serde_json::Value;
 use state::{
     Database, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, PortOwner, PvPaths,
     RuntimeObservedStatus, RuntimeSubject, StateError,
@@ -662,7 +663,12 @@ fn ports_status_reports_canonical_routing_states_without_mutating_state() -> any
     assert!(prepared_anchor_after_missing.is_none());
     assert!(prepared_reference_after_missing.is_none());
     assert_eq!(*environment.active_pf_inspections.borrow(), 0);
-    assert_eq!(current_json_on_terminal.stdout, current_json.stdout);
+    let mut current_json_value: Value = serde_json::from_str(&current_json.stdout)?;
+    let mut terminal_json_value: Value = serde_json::from_str(&current_json_on_terminal.stdout)?;
+    // Separate invocations may observe different seconds.
+    current_json_value["observed_at"] = Value::Null;
+    terminal_json_value["observed_at"] = Value::Null;
+    assert_eq!(terminal_json_value, current_json_value);
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((
