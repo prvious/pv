@@ -1,0 +1,23 @@
+---
+source: crates/cli/tests/init.rs
+expression: session.prompts
+---
+[
+    "Use these selections? -> Selected(2)",
+    "PHP track -> rejected \"bad track\": invalid track `bad track`",
+    "PHP track -> Text(\"8.4\")",
+    "Document root -> rejected \"/tmp\": Project config root must be relative to the Project root: /tmp",
+    "Document root -> rejected \"../escape\": Project config root escapes the Project root: ../escape",
+    "Document root -> rejected \"missing\": Project config root must be an existing directory: missing",
+    "Document root -> Text(\"public\")",
+    "Select Project resources -> SelectedMany([0, 2, 3, 4])",
+    "MySQL track -> rejected \"bad track\": invalid track `bad track`",
+    "MySQL track -> Text(\"latest\")",
+    "MySQL allocations -> Text(\"app\")",
+    "Redis track -> Text(\"latest\")",
+    "Redis allocations -> Text(\"cache\")",
+    "Mailpit track -> Text(\"latest\")",
+    "RustFS/S3 track -> Text(\"latest\")",
+    "RustFS/S3 allocations -> Text(\"uploads\")",
+    "Write Project config? -> Confirmed(true)",
+]

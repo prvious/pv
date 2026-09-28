@@ -1,4 +1,5 @@
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use config::{
@@ -6,6 +7,7 @@ use config::{
     default_project_init_selection, detect_project_init, render_project_init_config,
     write_project_config,
 };
+use resources::TrackSelector;
 
 use crate::args::InitArgs;
 use crate::environment::Environment;
@@ -199,14 +201,35 @@ fn run_structured_edit(
     environment: &impl Environment,
     output: &mut Output<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    selection.php = prompt::text(environment, output, "PHP track", &selection.php, None)?;
+    selection.php = prompt::text(
+        environment,
+        output,
+        "PHP track",
+        &selection.php,
+        Some(Arc::new(validate_track)),
+    )?;
 
     let root = selection
         .root
         .as_ref()
         .map_or(".", |path| path.as_str())
         .to_string();
-    let answer = prompt::text(environment, output, "Document root", &root, None)?;
+    let root_detection = detection.clone();
+    let root_selection = selection.clone();
+    let validate_root = move |value: &str| {
+        let mut candidate = root_selection.clone();
+        candidate.root = Some(Utf8PathBuf::from(value));
+        render_project_init_config(&root_detection, &candidate)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    };
+    let answer = prompt::text(
+        environment,
+        output,
+        "Document root",
+        &root,
+        Some(Arc::new(validate_root)),
+    )?;
     if answer != root {
         selection.root = Some(Utf8PathBuf::from(answer));
     }
@@ -295,7 +318,7 @@ fn prompt_resource_details(
         output,
         &format!("{label} track"),
         &resource.track,
-        None,
+        Some(Arc::new(validate_track)),
     )?;
 
     if name == ProjectInitResourceName::Mailpit {
@@ -306,7 +329,7 @@ fn prompt_resource_details(
         output,
         &format!("{label} allocations"),
         &resource.allocations.join(","),
-        Some(validate_allocations),
+        Some(Arc::new(validate_allocations)),
     )?;
     let allocations = parse_csv(&answer);
     if allocations == resource.allocations {
@@ -324,6 +347,12 @@ fn validate_allocations(value: &str) -> Result<(), String> {
         .map_err(|error| {
             format!("{error}; start with a lowercase letter and use only a-z, 0-9, _, or -")
         })
+}
+
+fn validate_track(value: &str) -> Result<(), String> {
+    TrackSelector::parse(value.to_string())
+        .map(|_| ())
+        .map_err(|error| error.to_string())
 }
 
 fn prune_explicitly_edited_allocations(

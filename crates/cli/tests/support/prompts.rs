@@ -46,10 +46,14 @@ impl ScriptedPrompts {
                 Step::Answer(answer) => answer,
                 Step::Cancel => Answer::Cancelled,
             };
-            if let (PromptKind::Text { validator, .. }, Answer::Text(text)) =
+            if let (PromptKind::Text { default, validator }, Answer::Text(text)) =
                 (&prompt.kind, &answer)
                 && let Some(validator) = validator
-                && let Err(error) = validator(text)
+                && let Err(error) = validator(if text.trim().is_empty() {
+                    default
+                } else {
+                    text.trim()
+                })
             {
                 self.record(prompt, &format!("rejected {text:?}: {error}"));
                 continue;

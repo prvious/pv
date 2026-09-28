@@ -344,6 +344,35 @@ fn init_interactive_rejects_invalid_allocation_names_and_asks_again() -> anyhow:
 }
 
 #[test]
+fn init_interactive_retries_invalid_tracks_and_document_roots() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let project = laravel_project(tempdir.path())?;
+    let steps = [
+        EDIT,
+        text("bad track"),
+        Step::Accept,
+        text("/tmp"),
+        text("../escape"),
+        text("missing"),
+        Step::Accept,
+        Step::Accept,
+        text("bad track"),
+        Step::Accept,
+        Step::Accept,
+    ]
+    .into_iter()
+    .chain(repeat_n(Step::Accept, 6));
+    let environment = TestEnvironment::interactive(&project, steps);
+
+    let session = run_init(&[], &environment)?;
+
+    assert_eq!(session.exit_code, ExitCode::SUCCESS);
+    assert_debug_snapshot!(session.prompts);
+
+    Ok(())
+}
+
+#[test]
 fn init_without_a_terminal_refuses_with_rerun_flags() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let project = laravel_project(tempdir.path())?;

@@ -7,6 +7,7 @@
 //! its own non-interactive behavior.
 
 use std::io;
+use std::sync::Arc;
 
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
@@ -16,9 +17,8 @@ mod theme;
 
 /// A validator for text answers; the error is shown inline and the prompt
 /// asks again.
-pub type Validator = fn(&str) -> Result<(), String>;
+pub type Validator = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
-#[derive(Debug)]
 pub struct Prompt<'a> {
     pub message: &'a str,
     /// Whether the prompt continues an open `┌ │ └` flow on the terminal.
@@ -26,7 +26,6 @@ pub struct Prompt<'a> {
     pub kind: PromptKind<'a>,
 }
 
-#[derive(Debug)]
 pub enum PromptKind<'a> {
     Confirm {
         default: bool,
@@ -189,13 +188,13 @@ fn unexpected(answer: &Answer) -> ExecuteError {
 pub(crate) fn interact(prompt: &Prompt<'_>) -> io::Result<Answer> {
     cliclack::set_theme(theme::PvTheme::for_prompt(prompt));
     let message = prompt.message;
-    let answer = match prompt.kind {
+    let answer = match &prompt.kind {
         PromptKind::Confirm { default } => cliclack::confirm(message)
-            .initial_value(default)
+            .initial_value(*default)
             .interact()
             .map(Answer::Confirmed),
         PromptKind::Select { choices, initial } => {
-            let mut select = cliclack::select(message).initial_value(initial);
+            let mut select = cliclack::select(message).initial_value(*initial);
             for (index, choice) in choices.iter().enumerate() {
                 select = select.item(index, choice.label, choice.hint);
             }
@@ -219,7 +218,15 @@ pub(crate) fn interact(prompt: &Prompt<'_>) -> io::Result<Answer> {
             };
             if let Some(validator) = validator {
                 // The answer is trimmed, so validate what will be used.
-                input = input.validate(move |value: &String| validator(value.trim()));
+                let validator = Arc::clone(validator);
+                let default = default.to_string();
+                input = input.validate(move |value: &String| {
+                    validator(if value.trim().is_empty() {
+                        &default
+                    } else {
+                        value.trim()
+                    })
+                });
             }
             input.interact::<String>().map(Answer::Text)
         }
