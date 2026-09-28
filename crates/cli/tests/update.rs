@@ -461,18 +461,21 @@ mod update_tests {
     }
 
     #[test]
-    fn update_check_on_a_terminal_reports_unavailable_app_version() -> anyhow::Result<()> {
+    fn update_check_reports_unavailable_app_version_on_both_surfaces() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
+        let resource_status = managed_resource_update_check_response(
+            paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+        );
         let daemon = FakeDaemon::start(
             &paths,
             vec![
                 health_response(),
-                managed_resource_update_check_response(
-                    paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-                ),
+                resource_status.clone(),
+                health_response(),
+                resource_status,
             ],
         )?;
         let mut manifest: serde_json::Value = serde_json::from_str(APP_MANIFEST)?;
@@ -480,17 +483,24 @@ mod update_tests {
             assets.remove(0);
         }
         let manifest = serde_json::to_string(&manifest)?;
-        let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest));
-        environment.terminal_width.set(Some(100));
+        let plain_environment =
+            TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest));
+        let plain = run_pv(&["update", "--check"], &plain_environment)?;
+        let terminal_environment =
+            TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest));
+        terminal_environment.terminal_width.set(Some(100));
 
-        let output = run_pv(&["update", "--check", "--no-color"], &environment)?;
+        let terminal = run_pv(&["update", "--check", "--no-color"], &terminal_environment)?;
 
         daemon.join()?;
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert!(output.stderr.is_empty());
+        assert_eq!(plain.exit_code, ExitCode::SUCCESS);
+        assert_eq!(terminal.exit_code, ExitCode::SUCCESS);
+        assert!(plain.stderr.is_empty());
+        assert!(terminal.stderr.is_empty());
+        assert_update_snapshot("update_check_reports_unavailable_app_version_plain", plain);
         assert_update_snapshot(
             "update_check_on_a_terminal_reports_unavailable_app_version",
-            output,
+            terminal,
         );
 
         Ok(())
