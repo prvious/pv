@@ -1031,6 +1031,14 @@ fn php_use_updates_project_config_state_and_reports_missing_daemon() -> anyhow::
         Ok(())
     })?;
 
+    environment.terminal_width.set(Some(120));
+    let terminal = run_pv(&["php:use", "8.4", "--no-color"], &environment)?;
+    assert_eq!(terminal.exit_code, ExitCode::SUCCESS);
+    with_tempdir_filters(tempdir.path(), || {
+        assert_snapshot!("php_use_project_on_a_terminal", terminal.stdout);
+        Ok(())
+    })?;
+
     Ok(())
 }
 
@@ -1115,6 +1123,14 @@ fn php_use_global_records_default_and_reports_missing_daemon() -> anyhow::Result
         environment.text_request_count(),
         environment.byte_request_count(),
     ));
+
+    environment.terminal_width.set(Some(120));
+    let terminal = run_pv(&["php:use", "8.4", "--global", "--no-color"], &environment)?;
+    assert_eq!(terminal.exit_code, ExitCode::SUCCESS);
+    with_tempdir_filters(tempdir.path(), || {
+        assert_snapshot!("php_use_global_on_a_terminal", terminal.stdout);
+        Ok(())
+    })?;
 
     Ok(())
 }
@@ -1700,8 +1716,9 @@ fn php_uninstall_force_prune_queues_both_removal_intents() -> anyhow::Result<()>
     );
     let install = run_pv(&["php:install", "8.4"], &environment)?;
 
+    environment.terminal_width.set(Some(120));
     let uninstall = run_pv(
-        &["php:uninstall", "8.4", "--force", "--prune"],
+        &["php:uninstall", "8.4", "--force", "--prune", "--no-color"],
         &environment,
     )?;
     let database = Database::open(&pv_paths(&home))?;

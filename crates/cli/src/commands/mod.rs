@@ -419,9 +419,14 @@ fn write_php_pair_install_lines(
 ) -> Result<(), ExecuteError> {
     write_revoked_latest_warning(installed.php(), &mut streams.err);
     write_revoked_latest_warning(installed.frankenphp(), &mut streams.err);
+    let label = if streams.out.surface().decorated() {
+        "Installed PHP and FrankenPHP track "
+    } else {
+        "Installed PHP track "
+    };
     streams
         .out
-        .success(Line::field("Installed PHP track ", installed.php().track()))?;
+        .success(Line::field(label, installed.php().track()))?;
     if streams.out.surface().decorated() {
         streams
             .out

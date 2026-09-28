@@ -199,7 +199,7 @@ pub(crate) fn uninstall(
 
     if output.surface().decorated() {
         output.success(Line::field(
-            "Removal requested for PHP track ",
+            "Removal requested for PHP/FrankenPHP track ",
             removal.php().track(),
         ))?;
     } else {
