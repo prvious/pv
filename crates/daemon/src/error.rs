@@ -125,7 +125,7 @@ pub enum DaemonError {
         source: Box<DaemonError>,
     },
 
-    #[error("daemon socket is already in use at {path}")]
+    #[error("daemon socket is already in use at {path:?}")]
     SocketInUse { path: String },
 
     #[error("daemon protocol JSON error: {0}")]
@@ -301,7 +301,7 @@ pub enum DaemonError {
     },
 
     #[error(
-        "PostgreSQL track `{track}` cannot preload `{library}` because its module is missing at {path}; install an artifact that supplies the library or remove it from the track preload desired state"
+        "PostgreSQL track `{track}` cannot preload `{library}` because its module is missing at {path:?}; install an artifact that supplies the library or remove it from the track preload desired state"
     )]
     PostgresPreloadLibraryMissing {
         track: String,

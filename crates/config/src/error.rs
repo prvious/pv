@@ -27,13 +27,13 @@ pub enum ConfigError {
     #[error("Project path is not valid UTF-8: {path:?}")]
     NonUtf8Path { path: std::path::PathBuf },
 
-    #[error("Project config file conflict: both {preferred} and {alternate} exist")]
+    #[error("Project config file conflict: both {preferred:?} and {alternate:?} exist")]
     ConfigFileConflict {
         preferred: Utf8PathBuf,
         alternate: Utf8PathBuf,
     },
 
-    #[error("filesystem error at {path}: {source}")]
+    #[error("filesystem error at {path:?}: {source}")]
     Filesystem {
         path: Utf8PathBuf,
         #[source]
@@ -46,10 +46,10 @@ pub enum ConfigError {
         target: &'static str,
     },
 
-    #[error("Project root must be an existing directory: {path}")]
+    #[error("Project root must be an existing directory: {path:?}")]
     ProjectRootNotDirectory { path: Utf8PathBuf },
 
-    #[error("Project config symlink escapes the Project root: {path}")]
+    #[error("Project config symlink escapes the Project root: {path:?}")]
     ConfigPathEscapesRoot { path: Utf8PathBuf },
 
     #[error("Project config YAML parse error: {source}")]
@@ -58,7 +58,7 @@ pub enum ConfigError {
         source: yaml_serde::Error,
     },
 
-    #[error("Project init could not parse JSON file {path}: {reason}")]
+    #[error("Project init could not parse JSON file {path:?}: {reason}")]
     InvalidInitJson { path: Utf8PathBuf, reason: String },
 
     #[error("Project config root must be a mapping, found {found}")]
@@ -109,25 +109,25 @@ pub enum ConfigError {
     #[error("duplicate Project config hostname `{hostname}`")]
     DuplicateHostname { hostname: String },
 
-    #[error("Project config root must be relative to the Project root: {root}")]
+    #[error("Project config root must be relative to the Project root: {root:?}")]
     AbsoluteRoot { root: Utf8PathBuf },
 
-    #[error("Project config root escapes the Project root: {root}")]
+    #[error("Project config root escapes the Project root: {root:?}")]
     RootEscapesProject { root: Utf8PathBuf },
 
-    #[error("Project config root must be an existing directory: {root}")]
+    #[error("Project config root must be an existing directory: {root:?}")]
     RootNotDirectory { root: Utf8PathBuf },
 
-    #[error("Project config env_file must be relative to the Project root: {env_file}")]
+    #[error("Project config env_file must be relative to the Project root: {env_file:?}")]
     AbsoluteEnvFile { env_file: Utf8PathBuf },
 
-    #[error("Project config env_file escapes the Project root: {env_file}")]
+    #[error("Project config env_file escapes the Project root: {env_file:?}")]
     EnvFileEscapesProject { env_file: Utf8PathBuf },
 
-    #[error("Project config env_file parent must be an existing directory: {env_file}")]
+    #[error("Project config env_file parent must be an existing directory: {env_file:?}")]
     EnvFileParentNotDirectory { env_file: Utf8PathBuf },
 
-    #[error("Project config env_file must point to a file: {env_file}")]
+    #[error("Project config env_file must point to a file: {env_file:?}")]
     EnvFileNotFile { env_file: Utf8PathBuf },
 
     #[error("invalid Project config env key `{key}`")]
@@ -206,7 +206,31 @@ pub(crate) const fn unsupported_current_target(capability: ConfigCapability) -> 
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
+    use camino::Utf8PathBuf;
+
     use super::{ConfigCapability, ConfigError, unsupported_target_name};
+
+    #[test]
+    fn path_errors_quote_punctuation_and_relative_names() {
+        let filesystem = ConfigError::Filesystem {
+            path: Utf8PathBuf::from("/Users/me/foo, bar: \"baz\"/pv.yml"),
+            source: io::Error::new(io::ErrorKind::PermissionDenied, "denied"),
+        };
+        let env_file = ConfigError::EnvFileNotFile {
+            env_file: Utf8PathBuf::from("My Env"),
+        };
+
+        assert_eq!(
+            filesystem.to_string(),
+            r#"filesystem error at "/Users/me/foo, bar: \"baz\"/pv.yml": denied"#
+        );
+        assert_eq!(
+            env_file.to_string(),
+            r#"Project config env_file must point to a file: "My Env""#
+        );
+    }
 
     #[test]
     fn unsupported_error_names_capability_and_target() {

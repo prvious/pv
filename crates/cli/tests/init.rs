@@ -347,27 +347,33 @@ fn init_interactive_rejects_invalid_allocation_names_and_asks_again() -> anyhow:
 fn init_interactive_retries_invalid_tracks_and_document_roots() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let project = laravel_project(tempdir.path())?;
+    create_dir(&project.join("web"))?;
     let steps = [
         EDIT,
         text("bad track"),
-        Step::Accept,
+        text("8.5"),
         text("/tmp"),
         text("../escape"),
         text("missing"),
-        Step::Accept,
+        text("web"),
         Step::Accept,
         text("bad track"),
-        Step::Accept,
+        text("8.4"),
         Step::Accept,
     ]
     .into_iter()
-    .chain(repeat_n(Step::Accept, 6));
+    .chain([text("  ")])
+    .chain(repeat_n(Step::Accept, 5));
     let environment = TestEnvironment::interactive(&project, steps);
 
     let session = run_init(&[], &environment)?;
 
     assert_eq!(session.exit_code, ExitCode::SUCCESS);
     assert_debug_snapshot!(session.prompts);
+    assert_snapshot!(
+        "init_interactive_retries_invalid_tracks_and_document_roots_config",
+        read_file(&project.join("pv.yml"))?
+    );
 
     Ok(())
 }

@@ -199,62 +199,42 @@ impl Line {
         self
     }
 
-    /// Wraps diagnostic prose while keeping paths in their own spans.
-    pub(crate) fn prose_with_paths(mut self, text: &str) -> Self {
+    /// Wraps diagnostic prose while keeping quoted paths in their own spans.
+    pub(crate) fn prose_with_quoted_values(mut self, text: &str, tone: Tone) -> Self {
         let mut remaining = text;
-        while let Some(start) = remaining.match_indices('/').find_map(|(index, _)| {
-            let prefix = &remaining[..index];
-            match prefix.chars().next_back() {
-                None => Some(index),
-                Some(character) if character.is_whitespace() || "`\"".contains(character) => {
-                    Some(index)
-                }
-                Some(':' | '/') => None,
-                Some(_) => prefix.rfind(": ").map(|separator| separator + 2),
-            }
-        }) {
-            let path = &remaining[start..];
-            let end = if let Some(quote @ ('`' | '"')) = remaining[..start].chars().next_back() {
-                path.find(quote).unwrap_or(path.len())
-            } else {
-                let next_failure = path.match_indices(", ").find_map(|(index, _)| {
-                    let (label, _) = path[index + 2..].split_once(": ")?;
-                    (!label.is_empty()
-                        && label.bytes().all(|byte| {
-                            byte.is_ascii_lowercase()
-                                || byte.is_ascii_digit()
-                                || b"._-".contains(&byte)
-                        }))
-                    .then_some(index)
-                });
-                let clause_end = [
-                    next_failure,
-                    path.find("; Gateway runtime"),
-                    path.find('\n'),
-                ]
-                .into_iter()
-                .flatten()
-                .min()
-                .unwrap_or(path.len());
-                let clause = &path[..clause_end];
-                if let Some(index) = clause.find(" and /") {
-                    index
-                } else if remaining[..start].ends_with("filesystem error at ")
-                    && let Some(index) = clause.rfind(": ")
-                {
-                    index
-                } else if remaining[..start].ends_with(" and ")
-                    && let Some(prefix) = clause.strip_suffix(" exist")
-                {
-                    prefix.len()
-                } else {
-                    clause_end
-                }
+        while let Some(start) = remaining.find('"') {
+            let quoted = &remaining[start..];
+            let mut escaped = false;
+            let Some(end) = quoted
+                .char_indices()
+                .skip(1)
+                .find_map(|(index, character)| {
+                    if escaped {
+                        escaped = false;
+                    } else if character == '\\' {
+                        escaped = true;
+                    } else if character == '"' {
+                        return Some(index + character.len_utf8());
+                    }
+                    None
+                })
+            else {
+                break;
             };
-            self = self.prose_value(&remaining[..start]).value(&path[..end]);
-            remaining = &path[end..];
+            self = self
+                .wrappable(&remaining[..start], tone)
+                .value(&quoted[..end]);
+            remaining = &quoted[end..];
         }
-        self.prose_value(remaining)
+        self.wrappable(remaining, tone)
+    }
+
+    fn wrappable(self, text: &str, tone: Tone) -> Self {
+        if tone == Tone::Value {
+            self.prose_value(text)
+        } else {
+            self.toned(tone, text)
+        }
     }
 
     pub(crate) fn toned(mut self, tone: Tone, text: impl Into<String>) -> Self {
@@ -544,9 +524,14 @@ impl<'writer> Output<'writer> {
             Tone::Strong,
             lines.next().unwrap_or_default(),
         )?;
-        let color = self.surface.color;
         for cause in lines {
-            self.write_wrapped(INDENT, INDENT, &Tone::Dim.paint(cause, color))?;
+            self.write_wrapped_line(
+                INDENT,
+                INDENT,
+                "",
+                &Line::default().prose_with_quoted_values(cause, Tone::Dim),
+                Tone::Plain,
+            )?;
         }
 
         Ok(())
@@ -555,12 +540,17 @@ impl<'writer> Output<'writer> {
     /// A decorated `glyph  label summary` row, colored by the mark.
     fn labelled(&mut self, mark: Mark, label: &str, tone: Tone, summary: &str) -> io::Result<()> {
         let color = self.surface.color;
-        let body = format!(
-            "{} {}",
-            mark.tone().paint(label, color),
-            tone.paint(summary, color)
-        );
-        self.write_wrapped(&format!("{}  ", mark.paint(color)), INDENT, &body)
+        let line = Line::default()
+            .toned(mark.tone(), label)
+            .text(" ")
+            .prose_with_quoted_values(summary, tone);
+        self.write_wrapped_line(
+            &format!("{}  ", mark.paint(color)),
+            INDENT,
+            "",
+            &line,
+            Tone::Plain,
+        )
     }
 
     /// A report heading: the `pv` badge and the command, then a rule. A plain
@@ -1082,5 +1072,31 @@ mod tests {
         ␛[31m✗␛[0m  ␛[31merror:␛[0m ␛[1mPHP track 8.3 is not installed.␛[0m
            ␛[2mRun `pv php:install 8.3` to install it.␛[0m
         ");
+    }
+
+    #[test]
+    fn errors_and_warnings_keep_quoted_paths_together() {
+        let write = |output: &mut Output<'_>| {
+            output.warning("using cached manifest at \"/Users/me/My PV Home/manifest.json\"")?;
+            output.error(
+                "filesystem error at \"/Users/me/My Project/pv.yml\": denied\nProject apply failed with `state error: filesystem error at \"/Users/me/My Project/pv.yml\": denied`; try again",
+            )
+        };
+
+        assert_snapshot!(render(Surface::terminal(false, 40), write), @r#"
+        ⚠  warning: using cached manifest at
+           "/Users/me/My PV Home/manifest.json"
+        ✗  error: filesystem error at
+           "/Users/me/My Project/pv.yml": denied
+           Project apply failed with `state
+           error: filesystem error at
+           "/Users/me/My Project/pv.yml":
+           denied`; try again
+        "#);
+        assert_snapshot!(render(Surface::plain(), write), @r#"
+        warning: using cached manifest at "/Users/me/My PV Home/manifest.json"
+        error: filesystem error at "/Users/me/My Project/pv.yml": denied
+          Project apply failed with `state error: filesystem error at "/Users/me/My Project/pv.yml": denied`; try again
+        "#);
     }
 }

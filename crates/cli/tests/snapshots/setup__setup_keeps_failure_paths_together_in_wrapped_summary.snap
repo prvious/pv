@@ -6,17 +6,17 @@ expression: "&setup.stdout[summary..]"
 │  Project env reconciled for
 │  1 of 5 Projects; failures:
 │  app.test: filesystem error at
-│  /Users/me/Code, Archive: Draft/pv.yml:
+│  "/Users/me/foo, bar: baz; Gateway runtime/pv.yml":
 │  permission denied, blog.test:
 │  Project config file conflict: both
-│  /Users/me/Code, Archive: Draft/pv.yml
+│  "/Users/me/Code, archive: Draft/pv.yml"
 │  and
-│  /Users/me/Code, Archive: Draft/pv.yaml
-│  exist, cache.test: filesystem error
-│  at `/Users/me/My Project/cache`:
+│  "/Users/me/Code, archive: Draft/pv.yaml"
+│  exist, cache.test:
+│  filesystem error at
+│  "/Users/me/My \"Quoted\" Project/cache":
 │  inaccessible, env.test: Project
 │  config env_file must point to a file:
-│  config files/.env; Gateway runtime
-│  reconciled
+│  "My Env"; Gateway runtime reconciled
 │
 └  PV setup complete

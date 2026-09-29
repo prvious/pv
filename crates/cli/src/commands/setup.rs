@@ -15,7 +15,7 @@ use crate::args::{SetupArgs, UninstallArgs};
 use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
 use crate::helper_release::{HelperReleaseMetadata, metadata_path as helper_metadata_path};
-use crate::output::{Line, Mark, Output, Streams};
+use crate::output::{Line, Mark, Output, Streams, Tone};
 use crate::progress::{DownloadProgressRenderer, step_spinner};
 use crate::prompt;
 use crate::shell::Shell;
@@ -174,8 +174,8 @@ pub(crate) fn setup(
         output.detail("DNS resolver · port redirect · CA trust · daemon registration")?;
     }
 
-    let summary =
-        Line::from("System reconciliation completed: ").prose_with_paths(&completed.summary);
+    let summary = Line::from("System reconciliation completed: ")
+        .prose_with_quoted_values(&completed.summary, Tone::Value);
     output.flow_step(Mark::Done, summary)?;
     if !default_resource_plan.failures.is_empty() {
         output.flow_step(
@@ -214,7 +214,7 @@ fn refresh_setup_artifact_manifest(
 
     if let ArtifactManifestSource::Cached { reason } = refresh.source() {
         let _ = streams.err.warning(&format!(
-            "artifact manifest refresh failed ({reason}); using cached manifest at {}",
+            "artifact manifest refresh failed ({reason}); using cached manifest at {:?}",
             cache.path()
         ));
     }
