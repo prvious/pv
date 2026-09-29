@@ -5,7 +5,7 @@ use std::sync::{Arc, Barrier, LazyLock, Mutex};
 
 use camino::Utf8PathBuf;
 use config::{
-    AllocationEnvContext, ProjectConfig, ProjectConfigFile, ProjectEnvContext, ProjectEnvWarning,
+    AllocationEnvContext, ProjectConfig, ProjectConfigFile, ProjectEnvContext, RenderedProjectEnv,
     ResourceEnvContext,
 };
 use resources::{
@@ -1328,7 +1328,7 @@ fn validate_project_config_and_plan(
         &config_file.config,
         discovered_demand,
     )?;
-    if config_file.config.has_env_mappings() {
+    if config_file.exists {
         let existing_content = read_optional_project_env_file(project, &config_file.config)?;
         config::validate_managed_env_block(existing_content.as_deref())?;
     }
@@ -1588,19 +1588,34 @@ fn render_project_env(
     project: &ProjectRecord,
     config_file: &ProjectConfigFile,
     context: Option<&ProjectEnvContext>,
-    mut warnings: Vec<ProjectEnvObservedWarningInput>,
+    warnings: Vec<ProjectEnvObservedWarningInput>,
 ) -> Result<ProjectEnvRender, DaemonError> {
     if !config_file.config.has_env_mappings() {
-        let (message, summary) = if warnings.is_empty() {
-            (
+        // Removing the last mapping still clears PV's block and restores the lines PV commented.
+        let cleared = if config_file.exists {
+            let env_file_path =
+                config::resolve_project_env_file_path(&project.path, &config_file.config)?;
+            config::write_project_env_file(&env_file_path, &RenderedProjectEnv::default())?.changed
+        } else {
+            false
+        };
+        let (message, summary) = match (cleared, warnings.is_empty()) {
+            (false, true) => (
                 "no Project env mappings configured",
                 "Project env unchanged; no mappings configured",
-            )
-        } else {
-            (
+            ),
+            (true, true) => (
+                "no Project env mappings configured",
+                "Project env block cleared; no mappings configured",
+            ),
+            (false, false) => (
                 "Project runtime has warnings",
                 "Project env unchanged with warnings",
-            )
+            ),
+            (true, false) => (
+                "Project runtime has warnings",
+                "Project env block cleared with warnings",
+            ),
         };
 
         return Ok(ProjectEnvRender {
@@ -1618,8 +1633,7 @@ fn render_project_env(
     })?;
     let rendered = config::render_project_env(&config_file.config, context)?;
     let env_file_path = config::resolve_project_env_file_path(&project.path, &config_file.config)?;
-    let transform = config::write_project_env_file(&env_file_path, &rendered)?;
-    warnings.splice(0..0, observed_warnings(&transform.warnings));
+    config::write_project_env_file(&env_file_path, &rendered)?;
     let (message, summary) = if warnings.is_empty() {
         ("rendered Project env", "Project env rendered")
     } else {
@@ -1975,20 +1989,6 @@ fn served_project_hostname(project: &ProjectRecord) -> Result<&str, DaemonError>
             project_id: project.id.clone(),
         })
         .map_err(Into::into)
-}
-
-fn observed_warnings(warnings: &[ProjectEnvWarning]) -> Vec<ProjectEnvObservedWarningInput> {
-    warnings
-        .iter()
-        .map(|warning| match warning {
-            ProjectEnvWarning::DuplicateExistingKey { key } => ProjectEnvObservedWarningInput {
-                kind: "duplicate_key".to_string(),
-                message: format!(
-                    "generated Project env key `{key}` already exists outside the PV-managed block"
-                ),
-            },
-        })
-        .collect()
 }
 
 fn ignored_php_extension_warnings(

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use camino::Utf8Path;
 
@@ -7,6 +7,7 @@ use crate::{ConfigError, ProjectConfig, filesystem};
 
 pub const MANAGED_ENV_START_MARKER: &str = "# >>> PV MANAGED";
 pub const MANAGED_ENV_END_MARKER: &str = "# <<< PV MANAGED";
+const OVERRIDDEN_ENV_PREFIX: &str = "# pv: ";
 const CREATED_PROJECT_ENV_FILE_MODE: u32 = 0o600;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -39,13 +40,7 @@ pub struct RenderedProjectEnv {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagedEnvBlockTransform {
     pub content: String,
-    pub warnings: Vec<ProjectEnvWarning>,
     pub changed: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ProjectEnvWarning {
-    DuplicateExistingKey { key: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -206,17 +201,19 @@ pub fn transform_managed_env_block(
     let existing_content = existing_content.unwrap_or_default();
     let lines = split_env_lines(existing_content);
     let blocks = managed_blocks(&lines)?;
-    if rendered.values.is_empty() && blocks.is_empty() {
+    let overridden_lines = comment_overridden_assignments(&lines, &blocks, rendered);
+    if rendered.values.is_empty() && blocks.is_empty() && overridden_lines == lines {
         return Ok(ManagedEnvBlockTransform {
             content: existing_content.to_string(),
-            warnings: Vec::new(),
             changed: false,
         });
     }
-    let warnings = duplicate_existing_key_warnings(&lines, &blocks, rendered);
+    let lines = overridden_lines;
     let block_lines = managed_block_lines(rendered);
 
-    let transformed_lines = if blocks.is_empty() {
+    let transformed_lines = if blocks.is_empty() && rendered.values.is_empty() {
+        lines
+    } else if blocks.is_empty() {
         append_managed_block(lines, block_lines)
     } else if let [(start, end)] = blocks.as_slice() {
         replace_managed_block(lines, *start, *end, block_lines)
@@ -228,7 +225,6 @@ pub fn transform_managed_env_block(
     Ok(ManagedEnvBlockTransform {
         changed: content != existing_content,
         content,
-        warnings,
     })
 }
 
@@ -554,38 +550,87 @@ fn fold_managed_blocks(
     transformed
 }
 
-fn duplicate_existing_key_warnings(
+/// Comments out user-owned assignments of rendered keys and restores PV-commented lines whose
+/// keys are no longer rendered. A multiline double-quoted value moves with its assignment, and its
+/// continuation lines are never read as assignments. Lines map one-to-one, so managed block
+/// indices stay valid.
+fn comment_overridden_assignments(
     lines: &[String],
     blocks: &[(usize, usize)],
     rendered: &RenderedProjectEnv,
-) -> Vec<ProjectEnvWarning> {
-    let generated_keys = rendered
-        .values
-        .keys()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let mut duplicate_keys = BTreeSet::new();
+) -> Vec<String> {
+    let mut transformed = Vec::with_capacity(lines.len());
+    // While a multiline value is open: whether its lines carry the PV prefix, and whether to
+    // toggle it.
+    let mut multiline_value = None;
 
     for (index, line) in lines.iter().enumerate() {
         if blocks
             .iter()
             .any(|(start, end)| (*start..=*end).contains(&index))
         {
+            transformed.push(line.clone());
             continue;
         }
 
-        let Some(key) = assignment_key(line) else {
-            continue;
+        let (tagged, toggle, content) = if let Some((tagged, toggle)) = multiline_value {
+            let content = if tagged {
+                line.strip_prefix(OVERRIDDEN_ENV_PREFIX).unwrap_or(line)
+            } else {
+                line
+            };
+            if has_closing_quote(content) {
+                multiline_value = None;
+            }
+            (tagged, toggle, content)
+        } else {
+            let (tagged, toggle, content) = if let Some(key) = assignment_key(line) {
+                (false, rendered.values.contains_key(key), line.as_str())
+            } else if let Some(original) = line.strip_prefix(OVERRIDDEN_ENV_PREFIX)
+                && let Some(key) = assignment_key(original)
+            {
+                (true, !rendered.values.contains_key(key), original)
+            } else {
+                transformed.push(line.clone());
+                continue;
+            };
+            if opens_multiline_value(content) {
+                multiline_value = Some((tagged, toggle));
+            }
+            (tagged, toggle, content)
         };
-        if generated_keys.contains(key) {
-            duplicate_keys.insert(key.to_string());
+
+        transformed.push(match (toggle, tagged) {
+            (false, _) => line.clone(),
+            (true, false) => format!("{OVERRIDDEN_ENV_PREFIX}{line}"),
+            (true, true) => content.to_string(),
+        });
+    }
+
+    transformed
+}
+
+/// Whether an assignment's value opens a double quote that it does not close, which dotenv
+/// parsers continue onto the following lines.
+fn opens_multiline_value(assignment: &str) -> bool {
+    assignment
+        .split_once('=')
+        .and_then(|(_, value)| value.strip_prefix('"'))
+        .is_some_and(|value| !has_closing_quote(value))
+}
+
+fn has_closing_quote(text: &str) -> bool {
+    let mut escaped = false;
+    for character in text.chars() {
+        match character {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '"' => return true,
+            _ => {}
         }
     }
 
-    duplicate_keys
-        .into_iter()
-        .map(|key| ProjectEnvWarning::DuplicateExistingKey { key })
-        .collect()
+    false
 }
 
 fn assignment_key(line: &str) -> Option<&str> {
@@ -594,7 +639,10 @@ fn assignment_key(line: &str) -> Option<&str> {
         return None;
     }
 
-    let assignment = line.strip_prefix("export ").unwrap_or(line);
+    let assignment = line
+        .strip_prefix("export")
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+        .map_or(line, str::trim_start);
     let (key, _) = assignment.split_once('=')?;
     let key = key.trim();
     if is_env_key(key) { Some(key) } else { None }

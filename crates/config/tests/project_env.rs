@@ -529,7 +529,7 @@ fn project_env_formatting_quotes_and_escapes_dotenv_values() {
 }
 
 #[test]
-fn managed_env_block_transformer_replaces_appends_folds_and_warns() -> Result<()> {
+fn managed_env_block_transformer_replaces_appends_and_folds() -> Result<()> {
     let rendered = RenderedProjectEnv {
         values: values(&[
             ("APP_URL", "https://acme.test"),
@@ -546,7 +546,7 @@ fn managed_env_block_transformer_replaces_appends_folds_and_warns() -> Result<()
             transform_managed_env_block(Some(""), &rendered)?,
         ),
         (
-            "append-with-duplicate-warning",
+            "append-comments-out-conflict",
             transform_managed_env_block(
                 Some(
                     r#"APP_URL=https://user.test
@@ -591,6 +591,81 @@ AFTER=1
     ];
 
     assert_debug_snapshot!(cases);
+
+    Ok(())
+}
+
+#[test]
+fn managed_env_block_transformer_comments_out_and_restores_overridden_assignments() -> Result<()> {
+    let both_keys = RenderedProjectEnv {
+        values: values(&[("APP_URL", "https://acme.test"), ("DB_HOST", "127.0.0.1")]),
+    };
+    let app_url_only = RenderedProjectEnv {
+        values: values(&[("APP_URL", "https://acme.test")]),
+    };
+    let existing = r#"APP_URL=https://user.test
+  export DB_HOST=localhost
+# APP_URL=https://commented.test
+# pv: keep this note
+APP_URL=https://second.test
+# >>> PV MANAGED
+OLD_VALUE=stale
+# <<< PV MANAGED
+DB_HOST=between
+# >>> PV MANAGED
+# <<< PV MANAGED
+USER_ONLY=1
+"#;
+
+    let commented = transform_managed_env_block(Some(existing), &both_keys)?;
+    let repeated = transform_managed_env_block(Some(&commented.content), &both_keys)?;
+    let key_removed = transform_managed_env_block(Some(&repeated.content), &app_url_only)?;
+    let all_removed =
+        transform_managed_env_block(Some(&key_removed.content), &RenderedProjectEnv::default())?;
+    let block_deleted = transform_managed_env_block(
+        Some("# pv: APP_URL=https://user.test\nUSER_ONLY=1\n"),
+        &RenderedProjectEnv::default(),
+    )?;
+
+    assert_eq!(repeated.content, commented.content);
+    assert!(!repeated.changed);
+    assert_debug_snapshot!(vec![
+        ("commented", commented),
+        ("repeated", repeated),
+        ("key-removed", key_removed),
+        ("all-removed", all_removed),
+        ("block-deleted", block_deleted),
+    ]);
+
+    Ok(())
+}
+
+#[test]
+fn managed_env_block_transformer_moves_multiline_values_and_tab_exports_with_their_assignment()
+-> Result<()> {
+    let rendered = RenderedProjectEnv {
+        values: values(&[("APP_KEY", "base64:key"), ("APP_URL", "https://acme.test")]),
+    };
+    let existing = concat!(
+        r#"APP_KEY="first
+second \" still quoted
+last"
+CERT="-----BEGIN-----
+APP_URL=https://embedded.test
+-----END-----"
+"#,
+        "export\tAPP_URL=https://user.test\n",
+    );
+
+    let commented = transform_managed_env_block(Some(existing), &rendered)?;
+    let restored =
+        transform_managed_env_block(Some(&commented.content), &RenderedProjectEnv::default())?;
+
+    assert_eq!(
+        restored.content,
+        format!("{existing}# >>> PV MANAGED\n# <<< PV MANAGED\n")
+    );
+    assert_debug_snapshot!((commented, restored));
 
     Ok(())
 }

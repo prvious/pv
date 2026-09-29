@@ -273,7 +273,7 @@ fn project_env_rejects_bare_slug_hostname_ambiguity() -> anyhow::Result<()> {
 }
 
 #[test]
-fn project_env_writes_duplicate_warnings_to_stderr_without_mutating_dotenv() -> anyhow::Result<()> {
+fn project_env_previews_conflicting_keys_without_mutating_dotenv() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
@@ -299,7 +299,7 @@ fn project_env_writes_duplicate_warnings_to_stderr_without_mutating_dotenv() -> 
 }
 
 #[test]
-fn project_env_json_keeps_duplicate_warnings_on_stderr() -> anyhow::Result<()> {
+fn project_env_json_previews_conflicting_keys_without_warnings() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");

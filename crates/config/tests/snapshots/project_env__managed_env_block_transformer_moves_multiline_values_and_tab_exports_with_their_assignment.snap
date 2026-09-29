@@ -1,0 +1,14 @@
+---
+source: crates/config/tests/project_env.rs
+expression: "(commented, restored)"
+---
+(
+    ManagedEnvBlockTransform {
+        content: "# pv: APP_KEY=\"first\n# pv: second \\\" still quoted\n# pv: last\"\nCERT=\"-----BEGIN-----\nAPP_URL=https://embedded.test\n-----END-----\"\n# pv: export\tAPP_URL=https://user.test\n# >>> PV MANAGED\nAPP_KEY=base64:key\nAPP_URL=https://acme.test\n# <<< PV MANAGED\n",
+        changed: true,
+    },
+    ManagedEnvBlockTransform {
+        content: "APP_KEY=\"first\nsecond \\\" still quoted\nlast\"\nCERT=\"-----BEGIN-----\nAPP_URL=https://embedded.test\n-----END-----\"\nexport\tAPP_URL=https://user.test\n# >>> PV MANAGED\n# <<< PV MANAGED\n",
+        changed: true,
+    },
+)

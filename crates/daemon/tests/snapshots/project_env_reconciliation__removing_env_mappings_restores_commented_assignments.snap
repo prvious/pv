@@ -1,0 +1,78 @@
+---
+source: crates/daemon/tests/project_env_reconciliation.rs
+expression: snapshot
+---
+[
+    (
+        "first-render",
+        "# pv: APP_NAME=user\n# pv: APP_URL=https://user.test\nUSER_ONLY=1\n# >>> PV MANAGED\nAPP_NAME=acme\nAPP_URL=https://acme.test\n# <<< PV MANAGED\n",
+        Some(
+            "Project env rendered",
+        ),
+        Some(
+            ProjectEnvObservedStateRecord {
+                project_id: "<project_id>",
+                status: Rendered,
+                message: Some(
+                    "rendered Project env",
+                ),
+                observed_at: "<timestamp>",
+                warnings: [],
+            },
+        ),
+    ),
+    (
+        "repeated-render",
+        "# pv: APP_NAME=user\n# pv: APP_URL=https://user.test\nUSER_ONLY=1\n# >>> PV MANAGED\nAPP_NAME=acme\nAPP_URL=https://acme.test\n# <<< PV MANAGED\n",
+        Some(
+            "Project env rendered",
+        ),
+        Some(
+            ProjectEnvObservedStateRecord {
+                project_id: "<project_id>",
+                status: Rendered,
+                message: Some(
+                    "rendered Project env",
+                ),
+                observed_at: "<timestamp>",
+                warnings: [],
+            },
+        ),
+    ),
+    (
+        "one-mapping-removed",
+        "APP_NAME=user\n# pv: APP_URL=https://user.test\nUSER_ONLY=1\n# >>> PV MANAGED\nAPP_URL=https://acme.test\n# <<< PV MANAGED\n",
+        Some(
+            "Project env rendered",
+        ),
+        Some(
+            ProjectEnvObservedStateRecord {
+                project_id: "<project_id>",
+                status: Rendered,
+                message: Some(
+                    "rendered Project env",
+                ),
+                observed_at: "<timestamp>",
+                warnings: [],
+            },
+        ),
+    ),
+    (
+        "last-mapping-removed",
+        "APP_NAME=user\nAPP_URL=https://user.test\nUSER_ONLY=1\n# >>> PV MANAGED\n# <<< PV MANAGED\n",
+        Some(
+            "Project env block cleared; no mappings configured",
+        ),
+        Some(
+            ProjectEnvObservedStateRecord {
+                project_id: "<project_id>",
+                status: Rendered,
+                message: Some(
+                    "no Project env mappings configured",
+                ),
+                observed_at: "<timestamp>",
+                warnings: [],
+            },
+        ),
+    ),
+]

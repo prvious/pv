@@ -1308,7 +1308,7 @@ rustfs:
 
 Any `env:` mapping in Project config is explicit opt-in to PV-managed `.env` rendering, including root-level `env:` without Managed Resource mappings.
 
-When a Project opts in with environment mappings, the daemon reconciles the requested Managed Resources and updates only a PV-owned delimited block inside the configured env file. PV never rewrites user-owned lines outside that block. If the configured env file does not exist, PV creates it automatically with the PV-owned block.
+When a Project opts in with environment mappings, the daemon reconciles the requested Managed Resources and updates a PV-owned delimited block inside the configured env file. Outside that block, PV only comments out user-owned assignments that PV overrides, and later restores them, as described below. If the configured env file does not exist, PV creates it automatically with the PV-owned block.
 
 PV renders `.env` only after required Managed Resource ports and Resource allocations are known. Env rendering is all-or-nothing for the full Project config. If a required allocation or resource reconciliation fails, PV keeps the last valid managed block and records the failure instead of rendering incomplete values.
 
@@ -1316,7 +1316,7 @@ Project config accepts a root-level `env_file` path and defaults it to `.env`. T
 
 When creating a missing configured env file, PV creates a user-owned file containing only the PV-owned block with `0600` permissions. It does not copy `.env.example`. When updating an existing env file, PV preserves the existing file permissions.
 
-If `env_file` changes, PV writes or updates only the newly configured target. PV leaves the prior target and its last PV-managed block untouched and does not track historical env targets for cleanup. If config later switches back to a previous target, PV updates the existing block there normally.
+If `env_file` changes, PV writes or updates only the newly configured target. PV leaves the prior target, its last PV-managed block, and its `# pv: ` lines untouched and does not track historical env targets for cleanup. If config later switches back to a previous target, PV updates the existing block there normally.
 
 PV uses these exact `.env` delimiters:
 
@@ -1334,15 +1334,23 @@ Malformed PV-managed block markers fail safely. A start marker without an end ma
 
 PV appends the managed block at the end of `.env` and preserves surrounding formatting, including final newline, where practical.
 
-During `.env` rendering, PV warns if generated env keys already exist outside the PV-managed block. It still writes the managed block, does not remove user-owned keys, and records the duplicate-key warning in observed state/logs.
+During `.env` rendering, PV comments out every active assignment outside the PV-managed block whose key PV renders, including `export` and indented assignments. PV prefixes each original line, unchanged, with `# pv: `. This includes every line of a multiline double-quoted value. Lines inside such a value are never treated as assignments. A `# pv: ` line stays as is while PV still renders its key, so repeated renders are idempotent. When PV no longer renders a key, it removes the prefix from that key's `# pv: ` lines and restores them exactly. PV restores only `# pv: ` lines whose remainder is an env assignment and never changes other comments or assignments.
 
-Duplicate env key warnings appear as compact Project warnings in `pv list`, with details in `pv status` and logs. `pv project:env` also warns when duplicates exist, while still printing generated values.
+```env
+# pv: APP_URL=https://user.test
+USER_ONLY=1
+# >>> PV MANAGED
+APP_URL=https://acme.test
+# <<< PV MANAGED
+```
+
+Overridden keys are not reported as warnings. `pv project:env` prints generated values without warning about keys a render would comment out.
 
 PV writes `.env` values unquoted when safe and quotes/escapes values when necessary, such as values containing spaces, `#`, quotes, or newlines.
 
-If a Project has no Project config, or its Project config has no environment mappings, PV does not touch the configured env file. If a previously generated PV-managed block exists, PV leaves the last generated values in place and stops updating the block. A served Project still uses the default PHP version, or the `php` version requested in Project config when present.
+If a Project has no Project config, PV does not touch the env file. If its Project config has no environment mappings, including after the last mapping is removed, PV clears any PV-managed block in the configured env file down to its delimiters and restores the `# pv: ` lines there. PV does not create a missing env file for this cleanup, and malformed markers fail safely as above. A served Project still uses the default PHP version, or the `php` version requested in Project config when present.
 
-PV does not watch `.env` files. It only writes the PV-managed block during reconciliation when Project config or Managed Resource state requires an update.
+PV does not watch `.env` files. It only writes the PV-managed block and `# pv: ` lines during reconciliation when Project config or Managed Resource state requires an update.
 
 PV v1 includes `pv init [path]` as a guided Project config initializer for existing directories. By default, it inspects local Project files, suggests conservative PHP, document root, env, and Managed Resource config, allows structured edits (text prompts for tracks, document root, and allocations; a multi-select for Managed Resources), previews the generated YAML, and writes only after confirmation. `pv init --yes` writes the detected defaults without prompting, while `pv init --print` prints the generated YAML without writing. Existing Project config values are preserved unless changed through the guided flow.
 
@@ -1434,7 +1442,7 @@ If a bare selector could resolve both an exact Project slug and a normalized hos
 
 `pv unlink` removes the Project from desired state and requests reconciliation. It never deletes the Project directory. Resource allocations, databases, Redis data, RustFS data, and other managed service data remain unless a separate destructive command is introduced. PV stops reconciling and watching them for that Project.
 
-If PV previously generated a Project `.env` block, `pv unlink` leaves the block in place and stops updating it.
+If PV previously generated a Project `.env` block, `pv unlink` leaves the block and any `# pv: ` lines in place and stops updating them.
 
 ## Opening Projects
 

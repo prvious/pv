@@ -1162,7 +1162,7 @@ postgres:
 }
 
 #[tokio::test]
-async fn duplicate_user_owned_key_writes_block_and_records_warning() -> Result<()> {
+async fn conflicting_user_owned_key_is_commented_out_and_records_rendered_state() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project(
@@ -1177,13 +1177,57 @@ async fn duplicate_user_owned_key_writes_block_and_records_warning() -> Result<(
     let database = Database::open(&paths)?;
 
     assert_with_normalized_timestamps(
-        "duplicate_user_owned_key_writes_block_and_records_warning",
+        "conflicting_user_owned_key_is_commented_out_and_records_rendered_state",
         (
             lines,
             read_dotenv(&project)?,
             database.project_env_observed_state(&project.id)?,
             latest_job(&database, &format!("project:{}", project.id))?,
         ),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn removing_env_mappings_restores_commented_assignments() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "env:\n  APP_NAME: acme\n  APP_URL: \"${url}\"\n",
+    )?;
+    write_sensitive_file(
+        &project.path.join(".env"),
+        "APP_NAME=user\nAPP_URL=https://user.test\nUSER_ONLY=1\n",
+    )?;
+    let project_scope = format!("project:{}", project.id);
+    let mut stages = Vec::new();
+
+    for (stage, config_source) in [
+        ("first-render", None),
+        ("repeated-render", None),
+        ("one-mapping-removed", Some("env:\n  APP_URL: \"${url}\"\n")),
+        ("last-mapping-removed", Some("php: \"8.4\"\n")),
+    ] {
+        if let Some(config_source) = config_source {
+            write_project_config(&project, config_source)?;
+        }
+        run_project_reconciliation(&paths, &project).await?;
+        let database = Database::open(&paths)?;
+        stages.push((
+            stage,
+            read_dotenv(&project)?,
+            latest_job(&database, &project_scope)?.summary,
+            database.project_env_observed_state(&project.id)?,
+        ));
+    }
+
+    assert_with_normalized_timestamps(
+        "removing_env_mappings_restores_commented_assignments",
+        stages,
     )?;
 
     Ok(())
@@ -1453,6 +1497,37 @@ async fn no_mappings_do_not_touch_existing_dotenv_and_record_noop_success() -> R
 
     assert_with_normalized_timestamps(
         "no_mappings_do_not_touch_existing_dotenv_and_record_noop_success",
+        (
+            lines,
+            read_dotenv(&project)?,
+            database.project_env_observed_state(&project.id)?,
+            latest_job(&database, &format!("project:{}", project.id))?,
+        ),
+    )?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn no_mappings_cleanup_leaves_malformed_dotenv_unchanged_and_records_failure() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "php: \"8.4\"\n",
+    )?;
+    write_sensitive_file(
+        &project.path.join(".env"),
+        "# pv: APP_URL=https://user.test\n# >>> PV MANAGED\nAPP_URL=https://old.test\n",
+    )?;
+
+    let lines = run_project_reconciliation(&paths, &project).await?;
+    let database = Database::open(&paths)?;
+
+    assert_with_normalized_timestamps(
+        "no_mappings_cleanup_leaves_malformed_dotenv_unchanged_and_records_failure",
         (
             lines,
             read_dotenv(&project)?,

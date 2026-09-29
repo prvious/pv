@@ -5563,10 +5563,12 @@ mod tests {
                         id: project.id.clone(),
                     });
                 }
-                let expected_env = if healthy && with_mappings {
-                    previous_env.replace("MAIL_HOST=previous", "MAIL_HOST=127.0.0.1")
-                } else {
-                    previous_env.to_owned()
+                let expected_env = match (healthy, with_mappings) {
+                    (true, true) => {
+                        previous_env.replace("MAIL_HOST=previous", "MAIL_HOST=127.0.0.1")
+                    }
+                    (true, false) => previous_env.replace("MAIL_HOST=previous\n", ""),
+                    (false, _) => previous_env.to_owned(),
                 };
                 let observed = database
                     .project_env_observed_state(&project.id)?
