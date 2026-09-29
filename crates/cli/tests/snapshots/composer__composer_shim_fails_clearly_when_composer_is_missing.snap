@@ -9,5 +9,5 @@ RunOutput {
         ),
     ),
     stdout: "",
-    stderr: "error: Composer track 2 is not installed.\nRun `pv composer:install` to install it.\n",
+    stderr: "error: Composer track 2 is not installed.\n  Run `pv composer:install` to install it.\n",
 }

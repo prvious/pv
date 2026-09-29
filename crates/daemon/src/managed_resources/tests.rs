@@ -445,11 +445,14 @@ fn fixture_identity_is_absent(pid: u64) -> Result<bool> {
     let leader_absent = match test_kill_process(process_pid) {
         Ok(()) => false,
         Err(rustix::io::Errno::SRCH) => true,
+        Err(rustix::io::Errno::PERM) => false,
         Err(error) => bail!("failed to inspect fixture pid {pid}: {error}"),
     };
     let group_absent = match test_kill_process_group(process_pid) {
         Ok(()) => false,
-        Err(rustix::io::Errno::SRCH) => true,
+        // Fixture runtimes run as this user. A group we cannot signal is not
+        // the owned group, even if its numeric PGID has been reused.
+        Err(rustix::io::Errno::SRCH | rustix::io::Errno::PERM) => true,
         Err(error) => bail!("failed to inspect fixture process group {pid}: {error}"),
     };
 

@@ -7,5 +7,5 @@ CommandOutput {
         1,
     ),
     stdout: "",
-    stderr: "error: Project config file conflict: both <tempdir>/Acme Store/pv.yml and <tempdir>/Acme Store/pv.yaml exist\n",
+    stderr: "error: Project config file conflict: both \"<tempdir>/Acme Store/pv.yml\" and \"<tempdir>/Acme Store/pv.yaml\" exist\n",
 }

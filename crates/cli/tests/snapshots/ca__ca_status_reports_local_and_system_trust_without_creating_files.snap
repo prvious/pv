@@ -1,6 +1,6 @@
 ---
 source: crates/cli/tests/ca.rs
-expression: "(missing, current, unreadable)"
+expression: "(missing, current, current_on_terminal, unreadable)"
 ---
 (
     RunOutput {
@@ -19,6 +19,15 @@ expression: "(missing, current, unreadable)"
             ),
         ),
         stdout: "CA trust status\nLocal CA files: current\n  certificate: <tempdir>/home/.pv/certificates/ca.pem\n  private key: <tempdir>/home/.pv/certificates/ca-key.pem\n  common name: PV Local Development CA\n  fingerprint: <fingerprint>\nSystem keychain trust: current\n  fingerprint: <fingerprint>\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "[pv] ca:status\n────────────────────────────────────────────────────────────────────────────────\n✓  Local CA files: current\n   certificate:\n   <tempdir>/home/.pv/certificates/ca.pem\n   private key:\n   <tempdir>/home/.pv/certificates/ca-key.pem\n   common name: PV Local Development CA\n   fingerprint: <fingerprint>\n✓  System keychain trust: current\n   fingerprint: <fingerprint>\n",
         stderr: "",
     },
     RunOutput {

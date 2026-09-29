@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/update.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "PV application: unavailable 0.2.4 (PV app update manifest has no asset for darwin-arm64)\nManaged Resources:\n  redis 8.8: update available 8.8.0-pv1 -> 8.8.1-pv1\n",
+    stderr: "",
+}

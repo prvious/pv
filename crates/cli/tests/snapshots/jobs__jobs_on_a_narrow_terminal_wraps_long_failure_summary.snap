@@ -1,0 +1,19 @@
+---
+source: crates/cli/tests/jobs.rs
+assertion_line: 141
+expression: output.stdout
+---
+[pv] jobs                                                                 v0.2.4
+────────────────────────────────────────────────────────────────────────────────
+
+job_000001
+   kind      reconcile
+   scope     project:acme
+   status    ✗ failed
+   started   <timestamp>
+   finished  <timestamp>
+   summary   Gateway failed to start because the configured local port is
+             already occupied by another process
+
+✗  1 jobs · 0 running · 1 failed
+   ↳ json  pv jobs --json

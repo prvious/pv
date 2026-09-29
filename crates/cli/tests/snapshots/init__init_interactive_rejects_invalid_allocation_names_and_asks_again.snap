@@ -1,0 +1,19 @@
+---
+source: crates/cli/tests/init.rs
+expression: session.prompts
+---
+[
+    "Use these selections? -> Selected(2)",
+    "PHP track -> Text(\"8.4\")",
+    "Document root -> Text(\"public\")",
+    "Select Project resources -> SelectedMany([0, 2, 3, 4])",
+    "MySQL track -> Text(\"latest\")",
+    "MySQL allocations -> rejected \"App Db\": invalid Project config allocation name `App Db`; start with a lowercase letter and use only a-z, 0-9, _, or -",
+    "MySQL allocations -> Text(\"app,analytics\")",
+    "Redis track -> Text(\"latest\")",
+    "Redis allocations -> Text(\"cache\")",
+    "Mailpit track -> Text(\"latest\")",
+    "RustFS/S3 track -> Text(\"latest\")",
+    "RustFS/S3 allocations -> Text(\"uploads\")",
+    "Write Project config? -> Confirmed(true)",
+]

@@ -1,0 +1,7 @@
+---
+source: crates/cli/tests/php.rs
+expression: terminal.stdout
+---
+✓  Global PHP set to 8.4
+✓  Installed PHP and FrankenPHP track 8.4
+   ·  8.4.8-pv1

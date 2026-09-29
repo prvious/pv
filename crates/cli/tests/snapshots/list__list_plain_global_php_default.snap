@@ -1,0 +1,7 @@
+---
+source: crates/cli/tests/list.rs
+expression: plain.stdout
+---
+Project  Mode  PHP  Status  Resources  Env  Path
+acme.test  served  default  unknown  0  none  <tempdir>/acme
+  default php 8.4

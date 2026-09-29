@@ -20,6 +20,7 @@ struct TestEnvironment {
     certificates: RefCell<Vec<KeychainCertificate>>,
     keychain_error: Option<String>,
     operations: RefCell<Vec<String>>,
+    terminal_width: Option<usize>,
 }
 
 impl TestEnvironment {
@@ -30,6 +31,7 @@ impl TestEnvironment {
             certificates: RefCell::new(Vec::new()),
             keychain_error: None,
             operations: RefCell::new(Vec::new()),
+            terminal_width: None,
         }
     }
 
@@ -40,6 +42,12 @@ impl TestEnvironment {
 
     fn with_keychain_error(mut self, message: &str) -> Self {
         self.keychain_error = Some(message.to_string());
+        self
+    }
+
+    /// Stdout is a terminal of `width` columns, so rows render decorated.
+    fn on_terminal(mut self, width: usize) -> Self {
+        self.terminal_width = Some(width);
         self
     }
 }
@@ -65,8 +73,12 @@ impl Environment for TestEnvironment {
         false
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(String::new())
+    fn stdout_is_terminal(&self) -> bool {
+        self.terminal_width.is_some()
+    }
+
+    fn terminal_width(&self) -> Option<usize> {
+        self.terminal_width
     }
 
     fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -165,6 +177,35 @@ fn ca_trust_reuses_existing_current_local_ca() -> anyhow::Result<()> {
 }
 
 #[test]
+fn ca_trust_on_a_terminal_reports_system_trust_state() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let paths = pv_paths(&home);
+    let generated = generate_local_ca()?;
+    write_file(&paths.ca_certificate(), &generated.certificate_pem)?;
+    write_file(&paths.ca_private_key(), &generated.private_key_pem)?;
+    let current_environment = TestEnvironment::new(&home, &current_dir)
+        .with_certificate(KeychainCertificate {
+            metadata: generated.metadata.clone(),
+            trust: KeychainTrustResult::TrustRoot,
+        })
+        .on_terminal(120);
+    let untrusted_environment = TestEnvironment::new(&home, &current_dir).on_terminal(120);
+
+    let current = run_pv(&["ca:trust", "--no-color"], &current_environment)?;
+    let untrusted = run_pv(&["ca:trust", "--no-color"], &untrusted_environment)?;
+
+    assert_eq!(current.exit_code, ExitCode::SUCCESS);
+    assert_eq!(untrusted.exit_code, ExitCode::SUCCESS);
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((current, untrusted));
+    });
+
+    Ok(())
+}
+
+#[test]
 fn ca_trust_repairs_malformed_local_ca_files() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -240,6 +281,15 @@ fn ca_status_reports_local_and_system_trust_without_creating_files() -> anyhow::
             trust: KeychainTrustResult::TrustRoot,
         });
     let current = run_pv(&["ca:status"], &current_environment)?;
+    let current_on_terminal = run_pv(
+        &["ca:status", "--no-color"],
+        &TestEnvironment::new(&home, &current_dir)
+            .with_certificate(KeychainCertificate {
+                metadata: generated.metadata.clone(),
+                trust: KeychainTrustResult::TrustRoot,
+            })
+            .on_terminal(80),
+    )?;
 
     let unreadable_environment =
         TestEnvironment::new(&home, &current_dir).with_keychain_error("fixture keychain failure");
@@ -252,7 +302,7 @@ fn ca_status_reports_local_and_system_trust_without_creating_files() -> anyhow::
     assert!(key_after_missing.is_none());
 
     with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!((missing, current, unreadable));
+        assert_debug_snapshot!((missing, current, current_on_terminal, unreadable));
     });
 
     Ok(())
@@ -283,6 +333,32 @@ fn ca_untrust_leaves_local_ca_files_and_removes_system_keychain_trust() -> anyho
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((output, environment.operations.borrow().clone()));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn ca_untrust_on_a_terminal_reports_local_ca_state() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let paths = pv_paths(&home);
+    let generated = generate_local_ca()?;
+    write_file(&paths.ca_certificate(), &generated.certificate_pem)?;
+    write_file(&paths.ca_private_key(), &generated.private_key_pem)?;
+    let environment = TestEnvironment::new(&home, &current_dir)
+        .with_certificate(KeychainCertificate {
+            metadata: generated.metadata.clone(),
+            trust: KeychainTrustResult::TrustRoot,
+        })
+        .on_terminal(120);
+
+    let output = run_pv(&["ca:untrust", "--no-color"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!(output);
     });
 
     Ok(())

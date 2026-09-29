@@ -1,0 +1,7 @@
+---
+source: it/terminal.rs
+expression: session.screen()
+---
+✓  Linked https://acme.test
+   <tempdir>/acme
+⚠  warning: PV is not running. Start it with `pv setup`

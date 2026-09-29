@@ -9,7 +9,7 @@ expression: "(supervisor_only, split)"
                 0,
             ),
         ),
-        stdout: "supervisor diagnostic\n",
+        stdout: "gateway:supervisor | supervisor diagnostic\n",
         stderr: "",
     },
     RunOutput {

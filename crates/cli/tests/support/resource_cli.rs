@@ -29,6 +29,8 @@ pub(crate) struct TestEnvironment {
     current_dir: PathBuf,
     client: ScriptedClient,
     pub(crate) target_platform_resolution_fails: bool,
+    /// Renders stdout as a terminal of this width.
+    pub(crate) terminal_width: Option<usize>,
 }
 
 impl TestEnvironment {
@@ -38,6 +40,7 @@ impl TestEnvironment {
             current_dir: current_dir.as_std_path().to_path_buf(),
             client,
             target_platform_resolution_fails: false,
+            terminal_width: None,
         }
     }
 
@@ -67,12 +70,16 @@ impl Environment for TestEnvironment {
         Ok(PathBuf::from("/bin/pv"))
     }
 
-    fn stdin_is_terminal(&self) -> bool {
-        false
+    fn stdout_is_terminal(&self) -> bool {
+        self.terminal_width.is_some()
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(String::new())
+    fn terminal_width(&self) -> Option<usize> {
+        self.terminal_width
+    }
+
+    fn stdin_is_terminal(&self) -> bool {
+        false
     }
 
     fn open_url(&self, _url: &str) -> io::Result<()> {

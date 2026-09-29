@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Write as _};
 use std::net::{Ipv4Addr, TcpListener, UdpSocket};
@@ -23,6 +23,7 @@ struct TestEnvironment {
     current_dir: RefCell<PathBuf>,
     resolver_path: PathBuf,
     operations: RefCell<Vec<String>>,
+    terminal_width: Cell<Option<usize>>,
 }
 
 impl TestEnvironment {
@@ -32,6 +33,7 @@ impl TestEnvironment {
             current_dir: RefCell::new(current_dir.as_std_path().to_path_buf()),
             resolver_path: resolver_path.as_std_path().to_path_buf(),
             operations: RefCell::new(Vec::new()),
+            terminal_width: Cell::new(None),
         }
     }
 }
@@ -53,12 +55,16 @@ impl Environment for TestEnvironment {
         Ok(PathBuf::from("/bin/pv"))
     }
 
-    fn stdin_is_terminal(&self) -> bool {
-        false
+    fn stdout_is_terminal(&self) -> bool {
+        self.terminal_width.get().is_some()
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(String::new())
+    fn terminal_width(&self) -> Option<usize> {
+        self.terminal_width.get()
+    }
+
+    fn stdin_is_terminal(&self) -> bool {
+        false
     }
 
     fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -336,6 +342,9 @@ fn dns_status_reports_prepared_and_system_resolver_states() -> anyhow::Result<()
 
     write_file(&system_resolver_path, &stale_config)?;
     let stale = run_pv(&["dns:status"], &environment)?;
+    environment.terminal_width.set(Some(80));
+    let stale_on_terminal = run_pv(&["dns:status", "--no-color"], &environment)?;
+    environment.terminal_width.set(None);
 
     write_file(&system_resolver_path, conflict_config)?;
     let conflict = run_pv(&["dns:status"], &environment)?;
@@ -360,6 +369,7 @@ fn dns_status_reports_prepared_and_system_resolver_states() -> anyhow::Result<()
             prepared_only,
             current,
             stale,
+            stale_on_terminal,
             conflict,
         ));
     });

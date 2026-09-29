@@ -1,0 +1,30 @@
+---
+source: crates/cli/src/commands/status.rs
+expression: "String::from_utf8(bytes)?"
+---
+[pv] status                                                                                   v0.2.4
+────────────────────────────────────────────────────────────────────────────────────────────────────
+
+✗  PV is running · system needs attention · 1 Project needs attention
+✗  Daemon running · Gateway failed
+   Gateway failed to start: port 48443 is occupied
+   LaunchAgent current  ·  Socket healthy
+
+INTEGRATIONS
+✓  DNS    active
+✓  Ports active · HTTP 80 / HTTPS 443
+   80→48080  ·  443→48443
+✓  CA     trusted
+
+MANAGED RESOURCES
+○  none
+
+PROJECTS
+⚠  acme.test  env warning
+   APP_URL already exists outside the PV block
+
+RECENT ERRORS
+○  none
+
+✗  PV is running · system needs attention · 1 Project needs attention
+   Logs: /home/acme/.pv/logs

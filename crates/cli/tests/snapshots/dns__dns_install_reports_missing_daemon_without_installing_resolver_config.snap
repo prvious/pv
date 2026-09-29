@@ -9,7 +9,7 @@ expression: "(output, prepared_path, prepared_config, system_resolver_config,\ne
                 1,
             ),
         ),
-        stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nPV daemon is not running; .test lookups will not resolve yet.\nRun `pv setup` or `pv daemon:enable`, then retry `pv dns:install`.\n  socket: <tempdir>/home/.pv/run/pv.sock\n",
+        stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nPV daemon is not running; .test lookups will not resolve yet.\n  Run `pv setup` or `pv daemon:enable`, then retry `pv dns:install`.\n  socket: <tempdir>/home/.pv/run/pv.sock\n",
         stderr: "",
     },
     "<tempdir>/home/.pv/config/resolver/test",

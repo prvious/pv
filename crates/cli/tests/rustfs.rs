@@ -53,10 +53,6 @@ impl Environment for TestEnvironment {
         false
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(String::new())
-    }
-
     fn open_url(&self, url: &str) -> io::Result<()> {
         self.opened_urls.borrow_mut().push(url.to_string());
 

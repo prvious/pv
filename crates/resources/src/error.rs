@@ -127,7 +127,7 @@ pub enum ResourcesError {
         actual: String,
     },
 
-    #[error("invalid artifact archive `{path}`: {reason}")]
+    #[error("invalid artifact archive {path:?}: {reason}")]
     InvalidArtifactArchive { path: String, reason: String },
 
     #[error("no prefetched download is available for {resource} artifact {artifact_version}")]
@@ -139,7 +139,7 @@ pub enum ResourcesError {
     #[error("invalid artifact layout for `{resource}`: {reason}")]
     InvalidArtifactLayout { resource: String, reason: String },
 
-    #[error("filesystem error at `{path}`: {reason}")]
+    #[error("filesystem error at {path:?}: {reason}")]
     Filesystem { path: String, reason: String },
 
     #[error("unsupported host capability `{capability}` on `{target}`")]

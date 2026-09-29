@@ -1,0 +1,24 @@
+---
+source: crates/cli/tests/ca.rs
+expression: "(current, untrusted)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "✓  Prepared PV local CA\n   existing local CA is current\n✓  System keychain trust: current\n   fingerprint: <fingerprint>\n○  PV’s local HTTPS certificate is already trusted\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "✓  Prepared PV local CA\n   existing local CA is current\n⚠  System keychain trust: not trusted\n   fingerprint: <fingerprint>\n✓  PV’s local HTTPS certificate is trusted\n",
+        stderr: "",
+    },
+)

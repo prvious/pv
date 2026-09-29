@@ -1,0 +1,6 @@
+---
+source: crates/cli/tests/php.rs
+expression: decorated.stdout
+---
+TRACK  DEFAULT  PROJECTS  VERSION    PATH
+8.4    ● yes    2         8.4.8-pv1  <tempdir>/home/.pv/resources/php/8.4/releases/8.4.8-pv1

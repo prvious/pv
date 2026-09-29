@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/update.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "│\n◇  Managed Resources: updated 2 artifact(s)\n│\n└  Managed Resources reconciled: Gateway runtime skipped\n",
+    stderr: "Waiting for the reconciliation slot (elapsed: 0s)\n",
+}

@@ -1,24 +1,21 @@
-use std::io::Write;
 use std::process::ExitCode;
 
 use crate::args::EnvArgs;
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Output, OutputMode};
+use crate::output::Streams;
 use crate::shell::Shell;
 
 pub(crate) fn run(
     args: EnvArgs,
-    no_color: bool,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let shell = match args.shell {
         Some(shell) => shell,
         None => detect_shell(environment)?,
     };
-    let mut output = Output::new(stdout, OutputMode::from_no_color(no_color));
-    output.line(shell.env_script())?;
+    streams.out.line(shell.env_script())?;
 
     Ok(ExitCode::SUCCESS)
 }

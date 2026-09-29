@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/update.rs
+expression: snapshot
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    stdout: "[pv] update\n\n┌  PV update\n│\n◇  Privileged helper: current 1.0.0 (protocol 1)\n│\n◇  PV application: updated 0.2.4 -> 0.3.0\n│\n◇  Daemon restarted and healthy\n",
+    stderr: "",
+}

@@ -1,0 +1,15 @@
+---
+source: crates/cli/tests/setup.rs
+expression: plain.stdout
+---
+PV setup
+Ensured PV state layout: <tempdir>/home/.pv
+Privileged helper: current 1.0.0 (protocol 1)
+Shell profile integration skipped by --no-path.
+Run `pv env --shell zsh`, `pv env --shell bash`, or `pv env --shell fish` for manual shell integration.
+Prepared PV DNS resolver config
+  path: <tempdir>/home/.pv/config/resolver/test
+  DNS resolver port: <dns-port>
+System resolver config is not PV-owned: <tempdir>/etc/resolver/test
+  Leaving it in place.
+PV stopped during DNS resolver setup.

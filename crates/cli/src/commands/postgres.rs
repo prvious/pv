@@ -1,10 +1,10 @@
-use std::io::Write;
 use std::process::ExitCode;
 
 use crate::args::{ListArgs, PostgresInstallArgs, PostgresUninstallArgs};
 use crate::commands::artifact_resource::{self, ArtifactResourceCommandSpec};
 use crate::environment::Environment;
 use crate::error::ExecuteError;
+use crate::output::Streams;
 
 const SPEC: ArtifactResourceCommandSpec = ArtifactResourceCommandSpec {
     resource_name: "postgres",
@@ -15,22 +15,22 @@ const SPEC: ArtifactResourceCommandSpec = ArtifactResourceCommandSpec {
 pub(crate) fn install(
     args: PostgresInstallArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    artifact_resource::install(SPEC, args.track.as_deref(), environment, stdout)
+    artifact_resource::install(SPEC, args.track.as_deref(), environment, streams)
 }
 
 pub(crate) fn update(
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    artifact_resource::update(SPEC, environment, stdout)
+    artifact_resource::update(SPEC, environment, streams)
 }
 
 pub(crate) fn uninstall(
     args: PostgresUninstallArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     artifact_resource::uninstall(
         SPEC,
@@ -38,14 +38,14 @@ pub(crate) fn uninstall(
         args.prune,
         args.force,
         environment,
-        stdout,
+        streams,
     )
 }
 
 pub(crate) fn list(
     args: ListArgs,
     environment: &impl Environment,
-    stdout: &mut impl Write,
+    streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    artifact_resource::list(SPEC, args, environment, stdout)
+    artifact_resource::list(SPEC, args, environment, streams)
 }

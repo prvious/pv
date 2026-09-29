@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
-use insta::{Settings, assert_debug_snapshot};
+use insta::{Settings, assert_debug_snapshot, assert_snapshot};
 use platform::{
     ActivePfRedirectInspection, HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult,
     LaunchAgentConfig, PRIVILEGED_HELPER_VERSION, PfConfReference, PfRedirectConfig,
@@ -33,6 +33,7 @@ struct TestEnvironment {
     trusted_certificates: std::cell::RefCell<Vec<KeychainCertificate>>,
     helper_status: std::cell::RefCell<Option<PrivilegedHelperStatus>>,
     helper_authentication_error: std::cell::Cell<bool>,
+    terminal_width: std::cell::Cell<Option<usize>>,
 }
 
 impl TestEnvironment {
@@ -58,6 +59,7 @@ impl TestEnvironment {
                 owner_uid: 501,
             })),
             helper_authentication_error: std::cell::Cell::new(false),
+            terminal_width: std::cell::Cell::new(None),
         }
     }
 
@@ -112,12 +114,16 @@ impl Environment for TestEnvironment {
         Ok(PathBuf::from("/bin/pv"))
     }
 
-    fn stdin_is_terminal(&self) -> bool {
-        false
+    fn stdout_is_terminal(&self) -> bool {
+        self.terminal_width.get().is_some()
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(String::new())
+    fn terminal_width(&self) -> Option<usize> {
+        self.terminal_width.get()
+    }
+
+    fn stdin_is_terminal(&self) -> bool {
+        false
     }
 
     fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -307,6 +313,41 @@ fn doctor_fails_with_repair_commands() -> anyhow::Result<()> {
     assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert!(output.stderr.is_empty());
     assert_doctor_snapshot("doctor_fails_with_repair_commands", tempdir.path(), output);
+
+    Ok(())
+}
+
+#[test]
+fn doctor_on_a_terminal_groups_checks_with_repair_hints() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home);
+    seed_required_checks(&paths, &environment, true)?;
+    // Wide enough that no detail wraps, so wrap points never depend on how
+    // long this machine's temp path is.
+    environment.terminal_width.set(Some(160));
+    let health_server = spawn_health_server(&paths.daemon_socket())?;
+    let healthy = run_pv(&["doctor", "--no-color"], &environment)?;
+    join_health_server(health_server)?;
+    let mut database = Database::open(&paths)?;
+    let job = database.start_job("reconcile", "system")?;
+    database.fail_job(&job.id, "Gateway failed to start")?;
+    database.record_runtime_observed_snapshot(
+        RuntimeSubject::Gateway,
+        RuntimeObservedStatus::Degraded,
+        Some("Gateway restarted twice"),
+    )?;
+    let failing = run_pv(&["doctor", "--no-color"], &environment)?;
+
+    assert_eq!(healthy.exit_code, ExitCode::SUCCESS);
+    assert_eq!(failing.exit_code, ExitCode::FAILURE);
+    assert!(healthy.stderr.is_empty());
+    assert!(failing.stderr.is_empty());
+    doctor_settings(tempdir.path()).bind(|| {
+        assert_snapshot!("doctor_on_a_terminal_healthy", healthy.stdout);
+        assert_snapshot!("doctor_on_a_terminal_failing", failing.stdout);
+    });
 
     Ok(())
 }
@@ -658,13 +699,17 @@ fn delete_optional_file(path: &Utf8Path) -> anyhow::Result<()> {
 }
 
 fn assert_doctor_snapshot(name: &'static str, tempdir: &Utf8Path, snapshot: impl std::fmt::Debug) {
+    doctor_settings(tempdir).bind(|| {
+        assert_debug_snapshot!(name, snapshot);
+    });
+}
+
+fn doctor_settings(tempdir: &Utf8Path) -> Settings {
     let mut settings = Settings::clone_current();
     settings.add_filter(tempdir.as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.add_filter(r"job_[0-9]+", "<job-id>");
     settings.add_filter(r"[0-9a-f]{64}", "<fingerprint>");
     settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
-    settings.bind(|| {
-        assert_debug_snapshot!(name, snapshot);
-    });
+    settings
 }

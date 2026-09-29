@@ -8,6 +8,6 @@ RunOutput {
             1,
         ),
     ),
-    stdout: "Port redirect preparation failed\nLoopback TCP port 80 already has a listener.\nStop the conflicting service, then run `pv ports:install` again.\n",
+    stdout: "Port redirect preparation failed\n  Loopback TCP port 80 already has a listener.\n  Stop the conflicting service, then run `pv ports:install` again.\n",
     stderr: "",
 }

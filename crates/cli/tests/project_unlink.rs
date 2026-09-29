@@ -45,10 +45,6 @@ impl Environment for TestEnvironment {
         false
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(String::new())
-    }
-
     fn open_url(&self, _url: &str) -> io::Result<()> {
         Ok(())
     }
@@ -73,7 +69,7 @@ fn unlink_removes_project_tls_directory() -> anyhow::Result<()> {
     let database = Database::open(&paths)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert!(database.project_by_id(&project.id)?.is_none());
     assert!(!path_exists(&project_tls_dir));
     assert!(path_exists(&project.path));
@@ -114,6 +110,26 @@ fn unlink_resolves_resource_only_slug_and_leaves_managed_env_block() -> anyhow::
     settings.bind(|| {
         assert_debug_snapshot!((link, unlink, env_before));
     });
+
+    Ok(())
+}
+
+#[test]
+fn unlink_names_an_unknown_selector_instead_of_the_directory() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project_path = tempdir.path().join("acme");
+    let paths = PvPaths::for_home(home.clone());
+    seed_project(&paths, &project_path)?;
+    let environment = TestEnvironment::new(&home, &project_path);
+
+    let hostname = run_pv(&["unlink", "typo.test"], &environment)?;
+    let slug = run_pv(&["unlink", "typo"], &environment)?;
+
+    assert_eq!(hostname.exit_code, ExitCode::FAILURE);
+    assert_eq!(slug.exit_code, ExitCode::FAILURE);
+    assert_eq!(Database::open(&paths)?.projects()?.len(), 1);
+    assert_debug_snapshot!((hostname.stderr, slug.stderr));
 
     Ok(())
 }

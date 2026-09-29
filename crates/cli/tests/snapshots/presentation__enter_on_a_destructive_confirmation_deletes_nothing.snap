@@ -1,0 +1,5 @@
+---
+source: crates/cli/tests/presentation.rs
+expression: output.stdout
+---
+"\u{1b}[2m○\u{1b}[0m  \u{1b}[2mPrune cancelled.\u{1b}[0m\n   \u{1b}[2m·  nothing changed\u{1b}[0m\n"

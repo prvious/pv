@@ -1,0 +1,14 @@
+---
+source: crates/cli/tests/init.rs
+expression: session
+---
+Session {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "",
+    stderr: "error: pv init requires an interactive terminal; rerun with --yes or --print.\n",
+    prompts: [],
+}

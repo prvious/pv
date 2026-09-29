@@ -1,0 +1,27 @@
+---
+source: crates/cli/tests/setup.rs
+expression: decorated.stdout
+---
+[pv] setup
+
+┌  PV setup  ·  macOS integration
+│
+◇  Ensured PV state layout: <tempdir>/home/.pv
+│
+✓  Administrator helper installed
+│  1.0.0 (protocol 1)
+│
+○  Shell profile integration skipped by --no-path.
+│  ↳ Activate PV manually in this terminal:
+│  ↳ zsh  eval "$(pv env --shell zsh)"
+│  ↳ bash  eval "$(pv env --shell bash)"
+│  ↳ fish  pv env --shell fish | source
+│
+✗  DNS resolver setup
+│  ✓ Prepared PV DNS resolver config
+│    path: <tempdir>/home/.pv/config/resolver/test
+│    DNS resolver port: <dns-port>
+│  ✗ System resolver config is not PV-owned: <tempdir>/etc/resolver/test
+│    Leaving it in place.
+│
+└  ✗ PV stopped during DNS resolver setup.

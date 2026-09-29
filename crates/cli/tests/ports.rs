@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io;
@@ -10,6 +10,7 @@ use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
 use platform::{ActivePfRedirectInspection, PfConfReference, PfRedirectConfig};
+use serde_json::Value;
 use state::{
     Database, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, PortOwner, PvPaths,
     RuntimeObservedStatus, RuntimeSubject, StateError,
@@ -30,6 +31,7 @@ struct TestEnvironment {
     accepts_reconciliation_requests: bool,
     reconciliation_requests: RefCell<u32>,
     operations: RefCell<Vec<String>>,
+    terminal_width: Cell<Option<usize>>,
 }
 
 impl TestEnvironment {
@@ -53,6 +55,7 @@ impl TestEnvironment {
             accepts_reconciliation_requests: false,
             reconciliation_requests: RefCell::new(0),
             operations: RefCell::new(Vec::new()),
+            terminal_width: Cell::new(None),
         }
     }
 
@@ -99,12 +102,16 @@ impl Environment for TestEnvironment {
         Ok(PathBuf::from("/bin/pv"))
     }
 
-    fn stdin_is_terminal(&self) -> bool {
-        false
+    fn stdout_is_terminal(&self) -> bool {
+        self.terminal_width.get().is_some()
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(String::new())
+    fn terminal_width(&self) -> Option<usize> {
+        self.terminal_width.get()
+    }
+
+    fn stdin_is_terminal(&self) -> bool {
+        false
     }
 
     fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -635,10 +642,17 @@ fn ports_status_reports_canonical_routing_states_without_mutating_state() -> any
     *environment.active_pf_config.borrow_mut() = Some(PfRedirectConfig::new(48080, 48443));
     let current = run_pv(&["ports:status"], &environment)?;
     let current_json = run_pv(&["ports:status", "--json"], &environment)?;
+    environment.terminal_width.set(Some(120));
+    let current_on_terminal = run_pv(&["ports:status", "--no-color"], &environment)?;
+    let current_json_on_terminal = run_pv(&["ports:status", "--json"], &environment)?;
+    environment.terminal_width.set(None);
 
     write_file(&system_anchor_path, &stale_anchor)?;
     write_file(&system_pf_conf_path, "anchor \"com.prvious.pv\"\n")?;
     let stale_and_conflict = run_pv(&["ports:status"], &environment)?;
+    environment.terminal_width.set(Some(60));
+    let stale_on_narrow_terminal = run_pv(&["ports:status", "--no-color"], &environment)?;
+    environment.terminal_width.set(None);
 
     assert_eq!(missing.exit_code, ExitCode::FAILURE);
     assert_eq!(prepared_only.exit_code, ExitCode::FAILURE);
@@ -649,6 +663,12 @@ fn ports_status_reports_canonical_routing_states_without_mutating_state() -> any
     assert!(prepared_anchor_after_missing.is_none());
     assert!(prepared_reference_after_missing.is_none());
     assert_eq!(*environment.active_pf_inspections.borrow(), 0);
+    let mut current_json_value: Value = serde_json::from_str(&current_json.stdout)?;
+    let mut terminal_json_value: Value = serde_json::from_str(&current_json_on_terminal.stdout)?;
+    // Separate invocations may observe different seconds.
+    current_json_value["observed_at"] = Value::Null;
+    terminal_json_value["observed_at"] = Value::Null;
+    assert_eq!(terminal_json_value, current_json_value);
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -656,7 +676,9 @@ fn ports_status_reports_canonical_routing_states_without_mutating_state() -> any
             prepared_only,
             current,
             current_json,
+            current_on_terminal,
             stale_and_conflict,
+            stale_on_narrow_terminal,
         ));
     });
 

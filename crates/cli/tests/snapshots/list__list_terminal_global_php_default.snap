@@ -1,0 +1,15 @@
+---
+source: crates/cli/tests/list.rs
+expression: decorated
+---
+[pv] list                                                                                                         v0.2.4
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+PROJECT  MODE  PHP  STATUS  RESOURCES  ENV  PATH
+
+○  acme.test · unknown
+   served · PHP default · 0 resources · env none
+   <tempdir>/acme
+
+●  1 linked · 0 warnings · 0 failed
+   default php 8.4

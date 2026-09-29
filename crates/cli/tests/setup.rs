@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
-use insta::assert_debug_snapshot;
+use insta::{assert_debug_snapshot, assert_snapshot};
 use platform::{
     HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult, LAUNCH_AGENT_LABEL,
     LaunchAgentConfig, LocalCaMetadata, PRIVILEGED_HELPER_VERSION, PfConfReference,
@@ -24,6 +24,77 @@ use sha2::{Digest, Sha256};
 use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
+
+#[derive(Default)]
+struct RejectWarnings {
+    rejected: usize,
+}
+
+impl Write for RejectWarnings {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if buffer
+            .windows(b"warning:".len())
+            .any(|part| part == b"warning:")
+        {
+            self.rejected += 1;
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+struct ClosedStderr;
+
+impl Write for ClosedStderr {
+    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
+        Err(io::ErrorKind::BrokenPipe.into())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+struct RejectOnce {
+    marker: &'static [u8],
+    observed: Vec<u8>,
+    rejected: bool,
+}
+
+impl RejectOnce {
+    fn new(marker: &'static [u8]) -> Self {
+        Self {
+            marker,
+            observed: Vec::new(),
+            rejected: false,
+        }
+    }
+}
+
+impl Write for RejectOnce {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.observed.extend_from_slice(buffer);
+        if !self.rejected
+            && self
+                .observed
+                .windows(self.marker.len())
+                .any(|part| part == self.marker)
+        {
+            self.rejected = true;
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 #[derive(Debug)]
 struct TestEnvironment {
@@ -38,11 +109,12 @@ struct TestEnvironment {
     certificates: Mutex<Vec<KeychainCertificate>>,
     active_pf_config: Mutex<Option<PfRedirectConfig>>,
     operations: Mutex<Vec<String>>,
-    stdin_terminal: bool,
-    input: Mutex<VecDeque<String>>,
     client: ScriptedClient,
     target_platform: TargetPlatform,
     helper_status: Mutex<Option<PrivilegedHelperStatus>>,
+    helper_cleanup_warning: Mutex<Option<String>>,
+    terminal_width: Mutex<Option<usize>>,
+    terminal_surfaces: Mutex<Option<(bool, bool)>>,
 }
 
 impl TestEnvironment {
@@ -63,8 +135,6 @@ impl TestEnvironment {
             certificates: Mutex::new(Vec::new()),
             active_pf_config: Mutex::new(None),
             operations: Mutex::new(Vec::new()),
-            stdin_terminal: false,
-            input: Mutex::new(VecDeque::new()),
             client: ScriptedClient::new(),
             target_platform,
             helper_status: Mutex::new(Some(PrivilegedHelperStatus {
@@ -72,6 +142,9 @@ impl TestEnvironment {
                 protocol_version: HELPER_PROTOCOL_VERSION,
                 owner_uid: 501,
             })),
+            helper_cleanup_warning: Mutex::new(None),
+            terminal_width: Mutex::new(None),
+            terminal_surfaces: Mutex::new(None),
         }
     }
 
@@ -101,6 +174,15 @@ impl TestEnvironment {
 
     fn set_helper_missing(&self) {
         *lock(&self.helper_status) = None;
+    }
+
+    fn set_helper_cleanup_warning(&self, warning: &str) {
+        *lock(&self.helper_cleanup_warning) = Some(warning.to_string());
+    }
+
+    fn set_terminal_surfaces(&self, stdout: bool, stderr: bool, width: usize) {
+        *lock(&self.terminal_surfaces) = Some((stdout, stderr));
+        *lock(&self.terminal_width) = Some(width);
     }
 }
 
@@ -186,12 +268,26 @@ impl Environment for TestEnvironment {
         Ok(self.current_exe.clone())
     }
 
-    fn stdin_is_terminal(&self) -> bool {
-        self.stdin_terminal
+    fn stdout_is_terminal(&self) -> bool {
+        (*lock(&self.terminal_surfaces)).map_or_else(
+            || lock(&self.terminal_width).is_some(),
+            |(stdout, _)| stdout,
+        )
     }
 
-    fn read_line(&self) -> io::Result<String> {
-        Ok(lock(&self.input).pop_front().unwrap_or_default())
+    fn stderr_is_terminal(&self) -> bool {
+        (*lock(&self.terminal_surfaces)).map_or_else(
+            || lock(&self.terminal_width).is_some(),
+            |(_, stderr)| stderr,
+        )
+    }
+
+    fn terminal_width(&self) -> Option<usize> {
+        *lock(&self.terminal_width)
+    }
+
+    fn stdin_is_terminal(&self) -> bool {
+        false
     }
 
     fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -361,7 +457,12 @@ impl Environment for TestEnvironment {
             "install helper {candidate_path} prepared {prepared_directory} version {helper_version} protocol {protocol_version} sha256 {expected_sha256}"
         ));
 
-        Ok(platform::PrivilegedHelperInstallOutcome::successful(status))
+        let mut outcome = platform::PrivilegedHelperInstallOutcome::successful(status);
+        if let Some(warning) = lock(&self.helper_cleanup_warning).take() {
+            outcome = outcome.with_cleanup_warning(warning);
+        }
+
+        Ok(outcome)
     }
 
     fn remove_privileged_helper(&self) -> Result<(), platform::PlatformError> {
@@ -404,7 +505,7 @@ fn setup_no_path_configures_system_integrations_and_waits_for_reconciliation() -
     let parsed_launch_agent = LaunchAgentConfig::parse(&launch_agent);
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
+    assert!(!output.stderr.contains("error:"));
     assert!(parsed_resolver.is_some());
     assert_eq!(system_resolver, prepared_resolver);
     assert_eq!(system_anchor, prepared_anchor);
@@ -531,7 +632,7 @@ fn setup_uses_cached_manifest_with_warning_when_refresh_fails() -> anyhow::Resul
     assert_eq!(fixture.environment.text_request_count(), 1);
     assert!(
         output
-            .stdout
+            .stderr
             .contains("warning: artifact manifest refresh failed")
     );
     assert_eq!(observed, expected_setup_tracks());
@@ -542,6 +643,109 @@ fn setup_uses_cached_manifest_with_warning_when_refresh_fails() -> anyhow::Resul
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((output, fixture.environment.operations()));
     });
+
+    Ok(())
+}
+
+#[test]
+fn setup_continues_when_nonfatal_warnings_cannot_be_written() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_setup_manifest(&fixture)?;
+    fixture
+        .environment
+        .script_manifest_error(ResourcesError::HttpRequestFailed {
+            url: MANIFEST_URL.to_string(),
+            reason: "offline".to_string(),
+        });
+    fixture.environment.set_helper_missing();
+    fixture
+        .environment
+        .set_helper_cleanup_warning("helper transaction cleanup failed");
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+
+    let mut stdout = Vec::new();
+    let mut stderr = RejectWarnings::default();
+    let exit_code = run_with_environment(
+        ["pv", "setup", "--no-path", "--yes"],
+        fixture.environment.as_ref(),
+        &mut stdout,
+        &mut stderr,
+    )?;
+    let daemon_requests = daemon.finish()?;
+
+    assert_eq!(exit_code, ExitCode::SUCCESS);
+    assert_eq!(stderr.rejected, 2);
+    assert!(String::from_utf8(stdout)?.contains("PV setup complete"));
+    assert!(
+        fixture
+            .environment
+            .operations()
+            .iter()
+            .any(|operation| operation.starts_with("install helper"))
+    );
+    assert_eq!(reconciliation_request_count(&daemon_requests), 1);
+
+    Ok(())
+}
+
+#[test]
+fn setup_reconciles_when_the_terminal_summary_cannot_be_written() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    fixture.environment.set_terminal_surfaces(true, false, 200);
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+    let mut stdout = RejectOnce::new(b"Local HTTPS, .test domains and startup configured");
+    let mut stderr = Vec::new();
+
+    let exit_code = run_with_environment(
+        ["pv", "setup", "--no-path", "--yes", "--no-color"],
+        fixture.environment.as_ref(),
+        &mut stdout,
+        &mut stderr,
+    )?;
+    let daemon_requests = daemon.finish()?;
+
+    assert_eq!(exit_code, ExitCode::FAILURE);
+    assert!(stdout.rejected);
+    assert_eq!(reconciliation_request_count(&daemon_requests), 1);
+
+    Ok(())
+}
+
+#[test]
+fn setup_continues_after_completed_step_cannot_be_replayed() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    fixture.environment.set_terminal_surfaces(true, false, 200);
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+    let mut stdout = RejectOnce::new(b"Prepared PV DNS resolver config");
+    let mut stderr = Vec::new();
+
+    let exit_code = run_with_environment(
+        ["pv", "setup", "--no-path", "--yes", "--no-color"],
+        fixture.environment.as_ref(),
+        &mut stdout,
+        &mut stderr,
+    )?;
+    let daemon_requests = daemon.finish()?;
+
+    assert_eq!(exit_code, ExitCode::FAILURE);
+    assert!(stdout.rejected);
+    assert!(
+        stdout
+            .observed
+            .ends_with("└  ✗ PV setup stopped\n".as_bytes())
+    );
+    assert!(String::from_utf8(stderr)?.contains("broken pipe"));
+    assert!(read_optional_file(&fixture.system_resolver_path)?.is_some());
+    assert!(read_optional_file(&fixture.system_anchor_path)?.is_some());
+    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_some());
+    assert!(read_optional_file(&fixture.launch_agent_path)?.is_some());
+    assert_eq!(fixture.environment.certificates().len(), 1);
+    assert_eq!(reconciliation_request_count(&daemon_requests), 1);
 
     Ok(())
 }
@@ -604,6 +808,35 @@ fn setup_manifest_missing_default_continues_core_setup_and_records_remaining_def
     assert_eq!(fixture.environment.certificates().len(), 1);
     assert_eq!(observed, expected_setup_tracks_except(&["mysql"]));
     assert_eq!(reconciliation_request_count(&daemon_requests), 1);
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_snapshot!("setup_manifest_missing_default_plain", output.stdout);
+    });
+
+    Ok(())
+}
+
+#[test]
+fn setup_manifest_missing_default_closes_terminal_flow_after_details() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_bundled_helper_metadata(&fixture)?;
+    fixture
+        .environment
+        .script_manifest_text(setup_manifest_json_without("mysql")?);
+    fixture.environment.set_terminal_surfaces(true, false, 200);
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+
+    let output = run_pv(
+        &["setup", "--no-path", "--no-color"],
+        fixture.environment.as_ref(),
+    )?;
+    let daemon_requests = daemon.finish()?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(reconciliation_request_count(&daemon_requests), 1);
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_snapshot!("setup_manifest_missing_default_terminal", output.stdout);
+    });
 
     Ok(())
 }
@@ -708,7 +941,7 @@ fn setup_non_interactive_fails_before_privileged_system_changes() -> anyhow::Res
     )?;
 
     assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stdout.contains("requires macOS authentication"));
+    assert!(output.stderr.contains("requires macOS authentication"));
     assert!(fixture.environment.operations().is_empty());
     assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
     assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
@@ -831,7 +1064,7 @@ fn setup_requires_confirmation_before_installing_missing_helper() -> anyhow::Res
     let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
 
     assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stdout.contains("requires confirmation"));
+    assert!(output.stderr.contains("requires confirmation"));
     assert!(fixture.environment.operations().is_empty());
 
     Ok(())
@@ -877,7 +1110,7 @@ fn setup_non_interactive_fails_before_shell_profile_mutation() -> anyhow::Result
     assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert!(
         output
-            .stdout
+            .stderr
             .contains("Shell profile integration requires update")
     );
     assert_eq!(profile_after_setup, "export EXISTING=1\n");
@@ -938,6 +1171,80 @@ fn uninstall_preserves_user_data_by_default() -> anyhow::Result<()> {
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((uninstall, fixture.environment.operations()));
     });
+
+    Ok(())
+}
+
+#[test]
+fn uninstall_finishes_when_administrator_step_cannot_be_written() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+    let setup = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    let _requests = daemon.finish()?;
+    assert_eq!(setup.exit_code, ExitCode::SUCCESS);
+    fixture.environment.set_terminal_surfaces(false, true, 80);
+
+    let mut stdout = Vec::new();
+    let exit_code = run_with_environment(
+        ["pv", "uninstall", "--no-color"],
+        fixture.environment.as_ref(),
+        &mut stdout,
+        &mut ClosedStderr,
+    )?;
+
+    assert_eq!(exit_code, ExitCode::SUCCESS);
+    assert!(String::from_utf8(stdout)?.contains("PV uninstall complete"));
+    assert!(
+        fixture
+            .environment
+            .operations()
+            .contains(&"remove helper".to_string())
+    );
+    assert!(read_optional_file(&fixture.launch_agent_path)?.is_none());
+
+    Ok(())
+}
+
+#[test]
+fn uninstall_continues_after_completed_step_cannot_be_replayed() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+    let setup = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    let _requests = daemon.finish()?;
+    assert_eq!(setup.exit_code, ExitCode::SUCCESS);
+    fixture.environment.set_terminal_surfaces(true, false, 200);
+    let mut stdout = RejectOnce::new(b"LaunchAgent removed:");
+    let mut stderr = Vec::new();
+
+    let exit_code = run_with_environment(
+        ["pv", "uninstall", "--no-color"],
+        fixture.environment.as_ref(),
+        &mut stdout,
+        &mut stderr,
+    )?;
+
+    assert_eq!(exit_code, ExitCode::FAILURE);
+    assert!(stdout.rejected);
+    assert!(
+        stdout
+            .observed
+            .ends_with("└  ✗ PV uninstall stopped\n".as_bytes())
+    );
+    assert!(String::from_utf8(stderr)?.contains("broken pipe"));
+    assert!(read_optional_file(&fixture.launch_agent_path)?.is_none());
+    assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
+    assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
+    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
+    assert!(fixture.environment.certificates().is_empty());
+    assert!(fixture.environment.privileged_helper_status().is_err());
+    assert!(!path_exists(fixture.paths.bin()));
+    assert!(!path_exists(fixture.paths.run()));
+    assert!(!path_exists(fixture.paths.config()));
+    assert!(!path_exists(fixture.paths.downloads()));
 
     Ok(())
 }
@@ -1093,6 +1400,139 @@ fn setup_yes_creates_and_uninstall_removes_shell_profile_block() -> anyhow::Resu
     Ok(())
 }
 
+#[test]
+fn setup_and_uninstall_on_a_terminal_render_flows() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new_with_shell(tempdir.path(), "/bin/zsh");
+    seed_online_setup_manifest(&fixture)?;
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+    write_file(
+        &fixture.paths.home().join(".zprofile"),
+        "export EXISTING=1\n",
+    )?;
+    // Wide enough that no row wraps, so wrap points never depend on how long
+    // this machine's temp path is.
+    *lock(&fixture.environment.terminal_width) = Some(200);
+
+    let setup = run_pv(
+        &["setup", "--yes", "--no-color"],
+        fixture.environment.as_ref(),
+    )?;
+    let _daemon_requests = daemon.finish()?;
+    let uninstall = run_pv(&["uninstall", "--no-color"], fixture.environment.as_ref())?;
+
+    assert_eq!(setup.exit_code, ExitCode::SUCCESS);
+    assert_eq!(uninstall.exit_code, ExitCode::SUCCESS);
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_snapshot!("setup_on_a_terminal", setup.stdout);
+        assert_snapshot!("uninstall_on_a_terminal", uninstall.stdout);
+        assert_snapshot!("uninstall_on_a_terminal_stderr", uninstall.stderr);
+    });
+
+    Ok(())
+}
+
+#[test]
+fn setup_keeps_failure_paths_together_in_wrapped_summary() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    let daemon = DaemonFixture::start_with_summary(
+        &fixture.paths,
+        r#"Project env reconciled for 1 of 5 Projects; failures: app.test: filesystem error at "/Users/me/foo, bar: baz; Gateway runtime/pv.yml": permission denied, blog.test: Project config file conflict: both "/Users/me/Code, archive: Draft/pv.yml" and "/Users/me/Code, archive: Draft/pv.yaml" exist, cache.test: filesystem error at "/Users/me/My \"Quoted\" Project/cache": inaccessible, env.test: Project config env_file must point to a file: "My Env"; Gateway runtime reconciled"#,
+    )?;
+    *lock(&fixture.environment.terminal_width) = Some(40);
+
+    let setup = run_pv(
+        &["setup", "--no-path", "--no-color"],
+        fixture.environment.as_ref(),
+    )?;
+    let _requests = daemon.finish()?;
+
+    assert_eq!(setup.exit_code, ExitCode::SUCCESS);
+    let Some(summary) = setup.stdout.find("◇  System reconciliation completed:") else {
+        anyhow::bail!("setup output omitted the reconciliation summary");
+    };
+    assert_snapshot!(
+        "setup_keeps_failure_paths_together_in_wrapped_summary",
+        &setup.stdout[summary..]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn setup_stops_at_a_failed_required_step_on_both_surfaces() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    write_file(&fixture.system_resolver_path, "nameserver 192.0.2.1\n")?;
+
+    let plain = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    script_setup_manifest(&fixture)?;
+    *lock(&fixture.environment.terminal_width) = Some(200);
+    let decorated = run_pv(
+        &["setup", "--no-path", "--no-color"],
+        fixture.environment.as_ref(),
+    )?;
+
+    assert_eq!(plain.exit_code, ExitCode::FAILURE);
+    assert_eq!(decorated.exit_code, ExitCode::FAILURE);
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_snapshot!("setup_stops_at_a_failed_required_step_plain", plain.stdout);
+        assert_snapshot!("setup_stops_at_a_failed_required_step", decorated.stdout);
+        assert_snapshot!(
+            "setup_stops_at_a_failed_required_step_stderr",
+            format!("plain:\n{}decorated:\n{}", plain.stderr, decorated.stderr)
+        );
+    });
+
+    Ok(())
+}
+
+#[test]
+fn setup_required_steps_follow_independent_stream_surfaces() -> anyhow::Result<()> {
+    let decorated_stdout = run_setup_with_stream_surfaces(true, false, false)?;
+    let decorated_stderr = run_setup_with_stream_surfaces(false, true, true)?;
+
+    assert_eq!(decorated_stdout.exit_code, ExitCode::SUCCESS);
+    assert_eq!(decorated_stderr.exit_code, ExitCode::SUCCESS);
+
+    assert!(
+        decorated_stdout
+            .stdout
+            .contains("✓  .test domains configured")
+    );
+    assert!(
+        decorated_stdout
+            .stdout
+            .contains("◇  System reconciliation completed: stub job completed")
+    );
+    assert!(
+        decorated_stdout
+            .stderr
+            .contains("Reconciliation slot acquired after <1s")
+    );
+    assert!(!decorated_stdout.stderr.contains("DNS resolver setup"));
+
+    assert!(
+        decorated_stderr
+            .stdout
+            .contains("Prepared PV DNS resolver config")
+    );
+    assert!(decorated_stderr.stdout.contains("PV setup complete"));
+    assert!(!decorated_stderr.stdout.contains('◇'));
+    assert!(!decorated_stderr.stdout.contains('\u{1b}'));
+    assert!(
+        decorated_stderr
+            .stderr
+            .contains("◆  Installing administrator helper")
+    );
+    assert!(!decorated_stderr.stderr.contains("│  ◆"));
+
+    Ok(())
+}
+
 #[derive(Debug)]
 struct Fixture {
     paths: PvPaths,
@@ -1166,6 +1606,10 @@ struct DaemonFixture {
 
 impl DaemonFixture {
     fn start(paths: &PvPaths) -> anyhow::Result<Self> {
+        Self::start_with_summary(paths, "stub job completed")
+    }
+
+    fn start_with_summary(paths: &PvPaths, summary: &str) -> anyhow::Result<Self> {
         state::fs::ensure_layout(paths)?;
         delete_optional_file(&paths.daemon_socket())?;
         let listener = UnixListener::bind(paths.daemon_socket().as_std_path())?;
@@ -1174,6 +1618,7 @@ impl DaemonFixture {
 
         let requests = Arc::new(Mutex::new(Vec::new()));
         let thread_requests = Arc::clone(&requests);
+        let summary = summary.to_owned();
         let thread = spawn_daemon_fixture_thread(move || {
             loop {
                 let (mut stream, _address) = accept_with_timeout(&listener)?;
@@ -1239,7 +1684,7 @@ impl DaemonFixture {
                     json!({
                         "type": "job_completed",
                         "job_id": "job_setup_1",
-                        "summary": "stub job completed",
+                        "summary": summary,
                     }),
                 )?;
 
@@ -1298,6 +1743,31 @@ fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOu
         stdout: String::from_utf8(stdout)?,
         stderr: String::from_utf8(stderr)?,
     })
+}
+
+fn run_setup_with_stream_surfaces(
+    stdout_terminal: bool,
+    stderr_terminal: bool,
+    helper_missing: bool,
+) -> anyhow::Result<RunOutput> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    if helper_missing {
+        fixture.environment.set_helper_missing();
+    }
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+    fixture
+        .environment
+        .set_terminal_surfaces(stdout_terminal, stderr_terminal, 200);
+
+    let output = run_pv(
+        &["setup", "--no-path", "--no-color", "--yes"],
+        fixture.environment.as_ref(),
+    )?;
+    let _daemon_requests = daemon.finish()?;
+
+    Ok(output)
 }
 
 fn seed_uninstall_files(paths: &PvPaths) -> anyhow::Result<()> {

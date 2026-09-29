@@ -1,0 +1,8 @@
+---
+source: crates/cli/tests/php.rs
+expression: terminal.stdout
+---
+✓  acme.test · PHP 8.4
+   Updated Project config: <tempdir>/acme/pv.yml
+✓  Installed PHP and FrankenPHP track 8.4
+   ·  8.4.8-pv1

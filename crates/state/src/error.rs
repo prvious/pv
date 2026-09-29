@@ -34,7 +34,7 @@ pub enum StateError {
     #[error("home directory is not valid UTF-8: {path:?}")]
     NonUtf8Home { path: std::path::PathBuf },
 
-    #[error("filesystem error at {path}: {source}")]
+    #[error("filesystem error at {path:?}: {source}")]
     Filesystem {
         path: Utf8PathBuf,
         #[source]
@@ -50,26 +50,28 @@ pub enum StateError {
     #[error("invalid PV app release version `{version}`")]
     InvalidAppReleaseVersion { version: String },
 
-    #[error("PV app release `{version}` is missing at {path}")]
+    #[error("PV app release `{version}` is missing at {path:?}")]
     AppReleaseMissing { version: String, path: Utf8PathBuf },
 
-    #[error("active PV binary symlink at {path} targets invalid release `{target}`")]
+    #[error("active PV binary symlink at {path:?} targets invalid release `{target}`")]
     InvalidAppReleasePointer { path: Utf8PathBuf, target: String },
 
-    #[error("PV self-update/daemon mutation coordination is active; the OS lock is held on {path}")]
+    #[error(
+        "PV self-update/daemon mutation coordination is active; the OS lock is held on {path:?}"
+    )]
     CoordinationLockHeld { path: Utf8PathBuf },
 
-    #[error("PV privileged-helper lifecycle is active; the OS lock is held on {path}")]
+    #[error("PV privileged-helper lifecycle is active; the OS lock is held on {path:?}")]
     HelperLifecycleLockHeld { path: Utf8PathBuf },
 
-    #[error("unsafe permissions for {path}: expected {expected:o}, found {actual:o}")]
+    #[error("unsafe permissions for {path:?}: expected {expected:o}, found {actual:o}")]
     UnsafePermissions {
         path: Utf8PathBuf,
         expected: u32,
         actual: u32,
     },
 
-    #[error("unexpected owner for {path}: expected uid {expected}, found uid {actual}")]
+    #[error("unexpected owner for {path:?}: expected uid {expected}, found uid {actual}")]
     UnexpectedOwner {
         path: Utf8PathBuf,
         expected: u32,
@@ -118,7 +120,7 @@ pub enum StateError {
     #[error("Project `{target}` was not found")]
     ProjectNotFound { target: String },
 
-    #[error("invalid Project {kind} `{path}`: {reason}")]
+    #[error("invalid Project {kind} {path:?}: {reason}")]
     InvalidProjectPath {
         kind: &'static str,
         path: Utf8PathBuf,
@@ -232,7 +234,7 @@ pub enum StateError {
     #[error("time formatting failed: {0}")]
     TimeFormat(#[from] time::error::Format),
 
-    #[error("could not allocate a unique migration backup name under {path}")]
+    #[error("could not allocate a unique migration backup name under {path:?}")]
     BackupNameExhausted { path: Utf8PathBuf },
 }
 

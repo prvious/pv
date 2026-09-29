@@ -1,6 +1,5 @@
 ---
 source: crates/cli/tests/php.rs
-assertion_line: 492
 expression: "(output, preferred_after, alternate_after,\nproject_snapshot(&project_after, tempdir.path())?,\nresource_record_snapshots(&records, tempdir.path())?,\nenvironment.text_request_count(), environment.byte_request_count(),)"
 ---
 (
@@ -11,7 +10,7 @@ expression: "(output, preferred_after, alternate_after,\nproject_snapshot(&proje
             ),
         ),
         stdout: "",
-        stderr: "error: Project config file conflict: both <tempdir>/acme/pv.yml and <tempdir>/acme/pv.yaml exist\n",
+        stderr: "error: Project config file conflict: both \"<tempdir>/acme/pv.yml\" and \"<tempdir>/acme/pv.yaml\" exist\n",
     },
     "php: '8.3'\nhostnames:\n  - api.acme.test\n",
     "php: '8.2'\n",
