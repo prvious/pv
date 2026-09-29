@@ -7,7 +7,7 @@ expression: failing.stdout
 
 SYSTEM
 ✓  State layout             9 PV-owned directories have user-only permissions
-✓  Database                 read-only open succeeded; 12 migrations applied
+✓  Database                 read-only open succeeded; 13 migrations applied
 ✓  Privileged helper        available at version 1.0.0 with protocol 1
 
 ROUTING

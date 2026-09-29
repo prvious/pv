@@ -162,8 +162,6 @@ fn project_init_preserves_existing_config_values_when_merging_defaults() -> Resu
   extensions:
     - intl
 root: web
-hostnames:
-  - admin.acme.test
 env:
   APP_URL: "https://custom.test"
   CUSTOM_VALUE: preserved

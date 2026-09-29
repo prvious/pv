@@ -693,7 +693,6 @@ async fn project_env_reconciliation_uses_project_root_not_config_path_for_dotenv
         primary_hostname: "acme.test".to_owned(),
         config_path: stored_config_path.clone(),
         desired_php_track: None,
-        additional_hostnames: Vec::new(),
     })?;
     drop(database);
 
@@ -901,7 +900,7 @@ async fn project_env_reconciliation_persists_default_php_track_when_config_omits
 
     run_project_reconciliation(&paths, &project).await?;
     seed_manifest(&paths, "8.0")?;
-    write_project_config(&project, "hostnames: []\n")?;
+    write_project_config(&project, "")?;
     run_project_reconciliation(&paths, &project).await?;
 
     let database = Database::open(&paths)?;
@@ -1126,9 +1125,7 @@ async fn malformed_pv_block_preflight_preserves_resource_and_hostname_state() ->
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        r#"hostnames:
-  - api.acme.test
-postgres:
+        r#"postgres:
   version: "8.0"
   env:
     DB_HOST: "${host}"
@@ -1143,7 +1140,7 @@ postgres:
     let database = Database::open(&paths)?;
     let hostnames = database
         .project_by_id(&project.id)?
-        .map(|project| project.additional_hostnames);
+        .map(|project| project.primary_hostname);
 
     assert_with_normalized_timestamps(
         "malformed_pv_block_preflight_preserves_resource_and_hostname_state",
@@ -1317,9 +1314,7 @@ async fn invalid_config_failure_rolls_back_resource_state_mutations() -> Result<
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        r#"hostnames:
-  - api.acme.test
-postgres:
+        r#"postgres:
   version: "8.0"
   allocations:
     app-db:
@@ -1332,16 +1327,11 @@ postgres:
     let database = Database::open(&paths)?;
     let managed_resources_before = database.project_managed_resources(&project.id)?;
     let allocations_before = database.resource_allocations(&project.id, "postgres")?;
-    let hostnames_before = database
-        .project_by_id(&project.id)?
-        .map(|project| project.additional_hostnames);
     let dotenv_before = read_dotenv(&project)?;
 
     write_project_config(
         &project,
-        r#"hostnames:
-  - changed.acme.test
-redis:
+        r#"redis:
   version: "7.2"
   env:
     REDIS_HOST: "${missing_value}"
@@ -1352,15 +1342,8 @@ redis:
     let database = Database::open(&paths)?;
     let managed_resources_after = database.project_managed_resources(&project.id)?;
     let allocations_after = database.resource_allocations(&project.id, "postgres")?;
-    let hostnames_after = database
-        .project_by_id(&project.id)?
-        .map(|project| project.additional_hostnames);
     let dotenv_after = read_dotenv(&project)?;
 
-    assert_eq!(
-        hostnames_before, hostnames_after,
-        "invalid Project config must preserve the last valid additional hostnames"
-    );
     assert_eq!(
         managed_resources_before, managed_resources_after,
         "invalid Project config must preserve the last valid managed resources"
@@ -1379,7 +1362,6 @@ redis:
         (
             initial_lines,
             invalid_lines,
-            hostnames_after,
             managed_resources_after,
             allocations_after,
             database.resource_allocations(&project.id, "redis")?,
@@ -1785,39 +1767,6 @@ async fn project_env_reconciliation_uses_global_php_default_for_extension_only_c
 }
 
 #[tokio::test]
-async fn config_declared_hostnames_are_persisted_during_reconciliation() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "hostnames:\n  - api.acme.test\nphp: \"8.4\"\n",
-    )?;
-
-    let lines = run_project_reconciliation(&paths, &project).await?;
-    let database = Database::open(&paths)?;
-    let linked_hostnames = database
-        .project_by_id(&project.id)?
-        .map(|project| project.additional_hostnames);
-    let resolved_primary = database
-        .project_by_hostname("api.acme.test")?
-        .map(|project| project.primary_hostname);
-
-    assert_with_normalized_timestamps(
-        "config_declared_hostnames_are_persisted_during_reconciliation",
-        (
-            lines,
-            linked_hostnames,
-            resolved_primary,
-            latest_job(&database, &format!("project:{}", project.id))?,
-        ),
-    )?;
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn latest_resource_track_resolves_default_track_before_state_and_dotenv_writes() -> Result<()>
 {
     let tempdir = tempdir()?;
@@ -2193,7 +2142,6 @@ fn link_project(
         primary_hostname: primary_hostname.to_string(),
         config_path,
         desired_php_track: None,
-        additional_hostnames: Vec::new(),
     })?;
 
     Ok(result.project)
@@ -2215,7 +2163,6 @@ fn link_resource_only_project(
             primary_hostname: "ignored.test".to_string(),
             config_path,
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         },
         ProjectMode::ResourceOnly,
     )?;
@@ -2241,7 +2188,6 @@ fn update_project_primary_hostname(
         primary_hostname: primary_hostname.to_string(),
         config_path: project.config_path.clone(),
         desired_php_track: project.desired_php_track.clone(),
-        additional_hostnames: project.additional_hostnames.clone(),
     })?;
 
     Ok(result.project)

@@ -1,12 +1,9 @@
 use std::time::Duration;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use daemon::ProcessSupervisor;
-use daemon::gateway::{
-    CaddyCliCommand, PhpWorkerRuntimePlan, gateway_process_spec, worker_process_spec,
-};
 use resources::{
     ManagedResourceCommands, TargetPlatform, TrackSelector, caddy_adapter, frankenphp_adapter,
     php_adapter,
@@ -33,7 +30,7 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
     let commands = ManagedResourceCommands::new(paths.clone(), manifest_url, target_platform());
     let client = resources::UreqResourceHttpClient::new();
 
-    let caddy_install = commands.install(&caddy_adapter()?, TrackSelector::Latest, &client)?;
+    commands.install(&caddy_adapter()?, TrackSelector::Latest, &client)?;
     let php_install = commands.install(&php_adapter()?, TrackSelector::Latest, &client)?;
     let frankenphp_install = commands.install(
         &frankenphp_adapter()?,
@@ -42,45 +39,114 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
     )?;
     seed_local_ca(&paths)?;
 
-    let project_root = tempdir.path().join("project");
-    state::fs::write_sensitive_file(
-        &project_root.join("public/index.php"),
-        "<?php echo 'pv-real-artifact-ok';",
+    let parent = create_php_project(tempdir.path(), "parent", "root: public\n")?;
+    let child = create_php_project(tempdir.path(), "child", "root: public\n")?;
+    // The extension gives this Project its own worker, so only the Gateway can pick it.
+    let admin = create_php_project(
+        tempdir.path(),
+        "admin",
+        "root: public\nphp:\n  extensions: [apcu]\n",
     )?;
-    state::fs::write_sensitive_file(&project_root.join("pv.yml"), "root: public\n")?;
     let mut database = Database::open(&paths)?;
-    database.link_project(LinkProjectInput {
-        path: project_root.clone(),
-        original_path: project_root.clone(),
-        primary_hostname: "real-artifact.test".to_string(),
-        config_path: project_root.join("pv.yml"),
-        desired_php_track: None,
-        additional_hostnames: vec![],
-    })?;
+    link_project(&mut database, &parent, "laravel.test")?;
+    link_project(&mut database, &child, "api.laravel.test")?;
+    link_project(&mut database, &admin, "admin.laravel.test")?;
     drop(database);
 
-    let caddy_command =
-        CaddyCliCommand::caddy(caddy_install.current_artifact_path().join("bin/caddy"));
-    let frankenphp_command = CaddyCliCommand::frankenphp(
-        frankenphp_install
-            .current_artifact_path()
-            .join("bin/frankenphp"),
-    );
-    let response = preserve_gateway_request_result(
-        request_real_artifact_project(&paths).await,
-        stop_gateway_runtimes(
-            &paths,
-            php_install.track().as_str(),
-            &caddy_command,
-            &frankenphp_command,
-            frankenphp_install.current_artifact_path(),
-        )
-        .await,
-        || real_artifact_diagnostics(&paths, php_install.track().as_str()),
+    let php_track = php_install.track().as_str();
+    let worker_runtime_keys = [
+        php_track.to_owned(),
+        state::php_runtime_key(php_track, &["apcu".to_owned()])?,
+    ];
+    preserve_gateway_request_result(
+        verify_wildcard_routing(&paths, &parent, &child, &worker_runtime_keys[1]).await,
+        stop_gateway_runtimes(&paths, &worker_runtime_keys).await,
+        || real_artifact_diagnostics(&paths, &worker_runtime_keys),
     )?;
 
-    assert_eq!(response, "pv-real-artifact-ok");
     assert_eq!(frankenphp_install.track(), php_install.track());
+
+    Ok(())
+}
+
+async fn verify_wildcard_routing(
+    paths: &PvPaths,
+    parent: &Utf8Path,
+    child: &Utf8Path,
+    admin_runtime_key: &str,
+) -> Result<()> {
+    // Fragment files are named by Project ID, so swapping the two hostnames flips which
+    // Project's fragment Caddy imports first.
+    for (laravel, api) in [("parent", "child"), ("child", "parent")] {
+        if laravel == "child" {
+            let mut database = Database::open(paths)?;
+            link_project(&mut database, parent, "swap.test")?;
+            link_project(&mut database, child, "laravel.test")?;
+            link_project(&mut database, parent, "api.laravel.test")?;
+        }
+        daemon::gateway::reconcile_gateway_runtimes(paths).await?;
+        ensure!(
+            paths.worker_pid(admin_runtime_key).exists(),
+            "admin.laravel.test is not on its own `{admin_runtime_key}` worker"
+        );
+
+        for (hostname, project) in [
+            ("laravel.test", laravel),
+            ("tenant.laravel.test", laravel),
+            ("api.laravel.test", api),
+            ("x.api.laravel.test", api),
+            ("admin.laravel.test", "admin"),
+        ] {
+            let response = request_gateway_https_with_curl(
+                paths,
+                hostname,
+                &["--retry", "10", "--retry-delay", "1", "--retry-all-errors"],
+            )?;
+            ensure!(
+                response == format!("{project}|{hostname}|https"),
+                "{hostname} returned {response:?}"
+            );
+        }
+
+        let deeper = request_gateway_https_with_curl(
+            paths,
+            "laravel.test",
+            &["--header", "Host: v1.foo.laravel.test"],
+        );
+        ensure!(
+            !matches!(&deeper, Ok(body) if body.contains('|')),
+            "v1.foo.laravel.test reached a Project: {deeper:?}"
+        );
+        ensure!(
+            request_gateway_https_with_curl(paths, "v1.foo.laravel.test", &[]).is_err(),
+            "v1.foo.laravel.test completed a trusted TLS handshake"
+        );
+    }
+
+    Ok(())
+}
+
+fn create_php_project(root: &Utf8Path, name: &str, config: &str) -> Result<Utf8PathBuf> {
+    let project_root = root.join(name);
+    state::fs::write_sensitive_file(
+        &project_root.join("public/index.php"),
+        &format!(
+            "<?php echo '{name}|', $_SERVER['HTTP_HOST'] ?? '', '|', $_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '';"
+        ),
+    )?;
+    state::fs::write_sensitive_file(&project_root.join("pv.yml"), config)?;
+
+    Ok(project_root)
+}
+
+fn link_project(database: &mut Database, project_root: &Utf8Path, hostname: &str) -> Result<()> {
+    database.link_project(LinkProjectInput {
+        path: project_root.to_path_buf(),
+        original_path: project_root.to_path_buf(),
+        primary_hostname: hostname.to_owned(),
+        config_path: project_root.join("pv.yml"),
+        desired_php_track: None,
+    })?;
 
     Ok(())
 }
@@ -111,7 +177,7 @@ fn real_artifact_diagnostics_includes_gateway_supervisor_log() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::write_sensitive_file(&paths.gateway_supervisor_log(), "supervisor failure\n")?;
 
-    let diagnostics = real_artifact_diagnostics(&paths, "8.4");
+    let diagnostics = real_artifact_diagnostics(&paths, &["8.4".to_owned()]);
 
     assert!(diagnostics.contains(&format!(
         "--- {} ---\nsupervisor failure\n",
@@ -139,19 +205,26 @@ fn preserve_gateway_request_result<T>(
     }
 }
 
-fn real_artifact_diagnostics(paths: &PvPaths, php_track: &str) -> String {
+fn real_artifact_diagnostics(paths: &PvPaths, worker_runtime_keys: &[String]) -> String {
     let mut diagnostics = format!("PV real-artifact diagnostics root: {}\n", paths.root());
+    let worker_paths = worker_runtime_keys.iter().flat_map(|runtime_key| {
+        [
+            paths.worker_root_config(runtime_key),
+            paths.worker_log(runtime_key),
+            paths.worker_runtime_metadata(runtime_key),
+        ]
+    });
     for path in [
         paths.gateway_root_config(),
-        paths.worker_root_config(php_track),
         paths.gateway_log(),
-        paths.worker_log(php_track),
         paths.gateway_access_log(),
         paths.gateway_error_log(),
         paths.gateway_supervisor_log(),
         paths.gateway_runtime_metadata(),
-        paths.worker_runtime_metadata(php_track),
-    ] {
+    ]
+    .into_iter()
+    .chain(worker_paths)
+    {
         append_optional_file(&mut diagnostics, &path);
     }
 
@@ -163,11 +236,6 @@ fn append_optional_file(diagnostics: &mut String, path: &Utf8Path) {
         Ok(content) => diagnostics.push_str(&format!("--- {path} ---\n{content}\n")),
         Err(error) => diagnostics.push_str(&format!("--- {path} unavailable: {error} ---\n")),
     }
-}
-
-async fn request_real_artifact_project(paths: &PvPaths) -> Result<String> {
-    daemon::gateway::reconcile_gateway_runtimes(paths).await?;
-    request_gateway_https_with_curl(paths, "real-artifact.test")
 }
 
 fn target_platform() -> TargetPlatform {
@@ -186,67 +254,57 @@ fn seed_local_ca(paths: &PvPaths) -> Result<()> {
     Ok(())
 }
 
-async fn stop_gateway_runtimes(
-    paths: &PvPaths,
-    php_track: &str,
-    gateway_command: &CaddyCliCommand,
-    worker_command: &CaddyCliCommand,
-    worker_artifact_root: &Utf8Path,
-) -> Result<()> {
+async fn stop_gateway_runtimes(paths: &PvPaths, worker_runtime_keys: &[String]) -> Result<()> {
     let supervisor = ProcessSupervisor::new(paths.clone());
+    let worker_records = worker_runtime_keys.iter().map(|runtime_key| {
+        (
+            paths.worker_pid(runtime_key),
+            paths.worker_runtime_metadata(runtime_key),
+        )
+    });
 
-    if let Some(gateway) = supervisor.adopt(&gateway_process_spec(paths, gateway_command))? {
-        gateway.stop(Duration::from_secs(1)).await?;
-    }
-    let worker_plan = default_worker_plan(php_track);
-    if let Some(worker) = supervisor.adopt(&worker_process_spec(
-        paths,
-        &worker_plan,
-        worker_command,
-        worker_artifact_root,
-    )?)? {
-        worker.stop(Duration::from_secs(1)).await?;
+    for (pid_path, metadata_path) in
+        std::iter::once((paths.gateway_pid(), paths.gateway_runtime_metadata()))
+            .chain(worker_records)
+    {
+        if let Some(runtime) = supervisor.adopt_recorded(&pid_path, &metadata_path)? {
+            runtime.stop(Duration::from_secs(1)).await?;
+        }
     }
 
     Ok(())
-}
-
-fn default_worker_plan(php_track: &str) -> PhpWorkerRuntimePlan {
-    PhpWorkerRuntimePlan {
-        php_track: php_track.to_owned(),
-        runtime_key: php_track.to_owned(),
-        loaded_modules: Vec::new(),
-        port: 0,
-        admin_socket_path: Utf8PathBuf::from("/tmp/pv-worker-admin.sock"),
-        projects: Vec::new(),
-    }
 }
 
 #[expect(
     clippy::disallowed_types,
     reason = "ignored real-artifact E2E shells out to curl to verify TLS with PV's CA"
 )]
-fn request_gateway_https_with_curl(paths: &PvPaths, hostname: &str) -> Result<String> {
+fn request_gateway_https_with_curl(
+    paths: &PvPaths,
+    hostname: &str,
+    extra_arguments: &[&str],
+) -> Result<String> {
     let mut database = Database::open(paths)?;
     let gateway_ports = database.assign_gateway_ports(|_port| true)?;
     let ca_certificate = paths.ca_certificate().to_string();
     let resolve = format!("{hostname}:{}:127.0.0.1", gateway_ports.https.port);
     let url = format!("https://{hostname}:{}/", gateway_ports.https.port);
     let output = std::process::Command::new("/usr/bin/curl")
-        .args(vec![
-            "--silent".to_string(),
-            "--show-error".to_string(),
-            "--fail".to_string(),
-            "--connect-timeout".to_string(),
-            "5".to_string(),
-            "--max-time".to_string(),
-            "30".to_string(),
-            "--cacert".to_string(),
-            ca_certificate,
-            "--resolve".to_string(),
-            resolve,
-            url,
+        .args([
+            "--silent",
+            "--show-error",
+            "--fail",
+            "--connect-timeout",
+            "5",
+            "--max-time",
+            "30",
+            "--cacert",
+            &ca_certificate,
+            "--resolve",
+            &resolve,
         ])
+        .args(extra_arguments)
+        .arg(url)
         .output()?;
 
     if !output.status.success() {

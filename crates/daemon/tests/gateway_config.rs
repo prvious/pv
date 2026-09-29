@@ -43,7 +43,6 @@ fn worker_config_renderer_outputs_track_caddyfile() -> Result<()> {
         ),
         projects: vec![PhpWorkerProject {
             primary_hostname: "acme.test".to_owned(),
-            hostnames: vec!["api.acme.test".to_owned()],
             project_root: Utf8PathBuf::from("/Users/alice/Code/acme"),
             root: Utf8PathBuf::from("/Users/alice/Code/acme/public"),
         }],
@@ -88,7 +87,6 @@ fn config_renderers_quote_path_tokens_with_spaces() -> Result<()> {
         ),
         projects: vec![PhpWorkerProject {
             primary_hostname: "acme.test".to_owned(),
-            hostnames: vec![],
             project_root: Utf8PathBuf::from("/Users/Alice Smith/Code/acme"),
             root: Utf8PathBuf::from("/Users/Alice Smith/Code/acme/public"),
         }],
@@ -184,7 +182,6 @@ fn gateway_project_config_renderer_outputs_project_caddyfile() -> Result<()> {
         id: "project_acme".to_owned(),
         render_config: true,
         primary_hostname: "acme.test".to_owned(),
-        hostnames: vec!["api.acme.test".to_owned()],
         worker_port: 45001,
         access_log_path: Utf8PathBuf::from("/Users/alice/.pv/logs/gateway/access.log"),
     };
@@ -198,7 +195,6 @@ fn gateway_project_config_renderer_outputs_project_caddyfile() -> Result<()> {
 fn worker_project_config_renderer_outputs_project_caddyfile() -> Result<()> {
     let project = PhpWorkerProject {
         primary_hostname: "acme.test".to_owned(),
-        hostnames: vec!["api.acme.test".to_owned()],
         project_root: Utf8PathBuf::from("/Users/alice/Code/acme"),
         root: Utf8PathBuf::from("/Users/alice/Code/acme/public"),
     };

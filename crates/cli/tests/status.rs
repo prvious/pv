@@ -278,7 +278,6 @@ fn status_reports_project_env_failures_as_failure() -> anyhow::Result<()> {
             primary_hostname: "app.test".to_string(),
             config_path: project_path.join("pv.toml"),
             desired_php_track: Some("8.4".to_string()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     database.record_project_env_observed_snapshot(
@@ -316,7 +315,6 @@ fn status_reports_pending_project_env_as_success() -> anyhow::Result<()> {
             primary_hostname: "app.test".to_string(),
             config_path: project_path.join("pv.toml"),
             desired_php_track: Some("8.4".to_string()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     database.record_project_env_observed_snapshot(
@@ -354,7 +352,6 @@ fn status_reports_warning_project_env_as_success() -> anyhow::Result<()> {
             primary_hostname: "app.test".to_string(),
             config_path: project_path.join("pv.toml"),
             desired_php_track: Some("8.4".to_string()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     database.record_project_env_observed_snapshot(
@@ -398,7 +395,6 @@ fn status_prefers_ignored_php_extension_over_other_project_env_warnings() -> any
             primary_hostname: "app.test".to_string(),
             config_path: project_path.join("pv.toml"),
             desired_php_track: Some("8.4".to_string()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     database.record_project_env_observed_snapshot(

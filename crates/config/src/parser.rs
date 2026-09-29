@@ -8,7 +8,6 @@ use resources::{
 use yaml_serde::{Mapping, Number, Value};
 
 use crate::discovery::validate_root_shape;
-use crate::hostname::normalize_additional_hostname;
 use crate::{AllocationConfig, ConfigError, PhpConfig, ProjectConfig, ResourceConfig};
 
 const TLS_ENV_PLACEHOLDERS: &[&str] = &["tls.ca", "tls.cert", "tls.key"];
@@ -48,7 +47,6 @@ impl ProjectConfig {
 
 fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError> {
     let mut config = ProjectConfig::default();
-    let mut hostnames = None;
 
     for (key, value) in mapping {
         let key = string_key(key)?;
@@ -69,9 +67,6 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
                 validate_root_shape(&root)?;
                 config.root = Some(root);
             }
-            "hostnames" => {
-                hostnames = Some(value);
-            }
             "env" => {
                 config.env = parse_env_mapping("env", EnvPlaceholderScope::Project, &value)?;
             }
@@ -91,10 +86,6 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
                 }
             }
         }
-    }
-
-    if let Some(hostnames) = hostnames {
-        config.hostnames = parse_hostnames(&hostnames)?;
     }
 
     Ok(config)
@@ -229,33 +220,6 @@ fn parse_allocation_config(
     }
 
     Ok(config)
-}
-
-fn parse_hostnames(value: &Value) -> Result<Vec<String>, ConfigError> {
-    let sequence = match value {
-        Value::Null => return Ok(Vec::new()),
-        Value::Sequence(sequence) => sequence,
-        value => {
-            return Err(ConfigError::InvalidFieldType {
-                field: "hostnames".to_string(),
-                expected: "a sequence",
-                found: value_type(value),
-            });
-        }
-    };
-    let mut hostnames = Vec::new();
-
-    for value in sequence {
-        let hostname = non_empty_string("hostnames", value)?;
-        let hostname = normalize_additional_hostname(&hostname)?;
-        if hostnames.contains(&hostname) {
-            return Err(ConfigError::DuplicateHostname { hostname });
-        }
-
-        hostnames.push(hostname);
-    }
-
-    Ok(hostnames)
 }
 
 fn validate_env_file(env_file: Utf8PathBuf) -> Result<Utf8PathBuf, ConfigError> {

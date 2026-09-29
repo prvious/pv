@@ -16,9 +16,6 @@ ProjectConfig {
     root: Some(
         "public",
     ),
-    hostnames: [
-        "api.acme.test",
-    ],
     env: {
         "APP_URL": "${url}",
     },

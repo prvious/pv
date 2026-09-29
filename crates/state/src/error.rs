@@ -142,9 +142,6 @@ pub enum StateError {
         project_id: String,
     },
 
-    #[error("Project hostname `{hostname}` appears more than once for the same Project")]
-    DuplicateProjectHostname { hostname: String },
-
     #[error("could not allocate a unique Project ID after {attempts} attempts")]
     ProjectIdExhausted { attempts: usize },
 

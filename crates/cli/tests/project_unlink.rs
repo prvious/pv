@@ -145,7 +145,6 @@ fn seed_project(paths: &PvPaths, project_path: &Utf8Path) -> anyhow::Result<Proj
             primary_hostname: "acme.test".to_string(),
             config_path: project_path.join("pv.yml"),
             desired_php_track: Some("8.4".to_string()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
 

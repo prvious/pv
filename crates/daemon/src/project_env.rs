@@ -1313,11 +1313,8 @@ fn validate_project_config_and_plan(
     discovered_demand: Option<&ProjectDemand>,
 ) -> Result<ProjectResourcePlan, DaemonError> {
     if project.mode == ProjectMode::Served && config_file.config.serve {
-        database.validate_project_hostnames(
-            &project.id,
-            served_project_hostname(project)?,
-            &config_file.config.hostnames,
-        )?;
+        database
+            .validate_project_primary_hostname(&project.id, served_project_hostname(project)?)?;
     }
     config::validate_project_env_shape(&config_file.config)?;
 
@@ -1370,7 +1367,6 @@ fn finalize_project_reconciliation_state(
             primary_hostname,
             config_path: config_file.path.clone(),
             desired_php_track: None,
-            additional_hostnames: config_file.config.hostnames.clone(),
         },
         mode,
         php_runtime,
@@ -1672,9 +1668,6 @@ fn validate_persisted_project_env_dependencies(
         })
         .collect::<Vec<_>>();
     let resources_match = plan.resources == persisted_resources;
-    let configured_hostnames = config_file.config.hostnames.iter().collect::<BTreeSet<_>>();
-    let persisted_hostnames = project.additional_hostnames.iter().collect::<BTreeSet<_>>();
-    let hostnames_match = configured_hostnames == persisted_hostnames;
     let mut allocations_match = true;
     for resource in &plan.resources {
         let planned = plan
@@ -1699,14 +1692,10 @@ fn validate_persisted_project_env_dependencies(
                     })
                     .collect::<Vec<_>>();
     }
-    if candidate_project.mode != project.mode
-        || !hostnames_match
-        || !resources_match
-        || !allocations_match
-    {
+    if candidate_project.mode != project.mode || !resources_match || !allocations_match {
         return Err(DaemonError::ProjectEnvDependenciesNotApplied {
             project_id: project.id.clone(),
-            reason: "serving mode, hostnames, resource tracks, or allocation identities differ from their last applied state".to_owned(),
+            reason: "serving mode, resource tracks, or allocation identities differ from their last applied state".to_owned(),
         });
     }
     let global_version_selector = database.global_php_default_track()?;

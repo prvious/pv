@@ -23,7 +23,6 @@ RuntimePlan {
                     id: "<project_id>",
                     render_config: true,
                     primary_hostname: "latest.test",
-                    hostnames: [],
                     project_root: "<tempdir>/latest-project",
                     root: "<tempdir>/latest-project/public",
                 },

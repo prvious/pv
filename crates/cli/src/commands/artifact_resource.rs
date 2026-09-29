@@ -559,7 +559,6 @@ mod tests {
                 primary_hostname: "acme.test".to_string(),
                 config_path: project_path.join("pv.yml"),
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?
             .project;
         database.replace_project_managed_resources(

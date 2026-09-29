@@ -19,7 +19,6 @@ expression: "(updated.path.file_name(), updated.exists, updated.config)"
             },
         ),
         root: None,
-        hostnames: [],
         env: {},
         resources: {
             "redis": ResourceConfig {

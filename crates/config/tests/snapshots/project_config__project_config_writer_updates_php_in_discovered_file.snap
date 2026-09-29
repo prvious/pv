@@ -21,9 +21,6 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
         root: Some(
             "public",
         ),
-        hostnames: [
-            "admin.acme.test",
-        ],
         env: {
             "APP_URL": "${url}",
         },
@@ -66,9 +63,6 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
         root: Some(
             "public",
         ),
-        hostnames: [
-            "admin.acme.test",
-        ],
         env: {
             "APP_URL": "${url}",
         },

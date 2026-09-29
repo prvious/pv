@@ -1894,7 +1894,7 @@ fn unready_established_resource_projects(
                 project.id.clone(),
                 DaemonError::ProjectEnvDependenciesNotApplied {
                     project_id: project.id.clone(),
-                    reason: "serving mode, hostnames, resource tracks, or allocation identities differ from their last applied state"
+                    reason: "serving mode, resource tracks, or allocation identities differ from their last applied state"
                         .to_owned(),
                 },
             );
@@ -3918,7 +3918,6 @@ mod tests {
                 primary_hostname: "project.test".to_owned(),
                 config_path: config_path.clone(),
                 desired_php_track: Some("8.4".to_owned()),
-                additional_hostnames: Vec::new(),
             })?
             .project;
         database.record_managed_resource_track_installed(
@@ -4003,7 +4002,6 @@ mod tests {
                 primary_hostname: "project.test".to_owned(),
                 config_path,
                 desired_php_track: Some("8.4".to_owned()),
-                additional_hostnames: Vec::new(),
             })?
             .project;
         let result = run_background_reconciliation_job(
@@ -4047,7 +4045,6 @@ mod tests {
                     primary_hostname: "ignored.test".to_owned(),
                     config_path,
                     desired_php_track: None,
-                    additional_hostnames: Vec::new(),
                 },
                 ProjectMode::ResourceOnly,
             )?
@@ -4069,7 +4066,6 @@ mod tests {
                 primary_hostname: "uncertain.test".to_owned(),
                 config_path: uncertain_config_path,
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?
             .project;
         drop(database);
@@ -4138,7 +4134,6 @@ mod tests {
                     primary_hostname: "ignored.test".to_owned(),
                     config_path,
                     desired_php_track: None,
-                    additional_hostnames: Vec::new(),
                 },
                 ProjectMode::ResourceOnly,
             )?
@@ -4263,7 +4258,6 @@ mod tests {
                     primary_hostname: "ignored.test".to_owned(),
                     config_path: target_config_path,
                     desired_php_track: None,
-                    additional_hostnames: Vec::new(),
                 },
                 ProjectMode::ResourceOnly,
             )?
@@ -4275,7 +4269,6 @@ mod tests {
                 primary_hostname: "uncertain.test".to_owned(),
                 config_path: uncertain_config_path,
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?
             .project;
         drop(database);
@@ -4356,7 +4349,6 @@ mod tests {
                             primary_hostname: format!("{name}.test"),
                             config_path,
                             desired_php_track: None,
-                            additional_hostnames: Vec::new(),
                         },
                         ProjectMode::ResourceOnly,
                     )?
@@ -4481,7 +4473,6 @@ mod tests {
                 primary_hostname: format!("{name}.test"),
                 config_path,
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?;
             projects.push(linked.project);
         }
@@ -4813,7 +4804,6 @@ mod tests {
                         primary_hostname: format!("{name}.test"),
                         config_path,
                         desired_php_track: None,
-                        additional_hostnames: Vec::new(),
                     })?
                     .project;
                 database.record_project_env_observed_snapshot(
@@ -4984,7 +4974,6 @@ mod tests {
                     primary_hostname: format!("{name}.test"),
                     config_path,
                     desired_php_track: None,
-                    additional_hostnames: Vec::new(),
                 })?
                 .project;
             database.replace_project_managed_resources(
@@ -5138,7 +5127,6 @@ mod tests {
                         primary_hostname: "project.test".to_owned(),
                         config_path,
                         desired_php_track: Some("8.5".to_owned()),
-                        additional_hostnames: Vec::new(),
                     },
                     ProjectMode::ResourceOnly,
                 )?
@@ -5259,7 +5247,6 @@ mod tests {
                     primary_hostname: "project.test".to_owned(),
                     config_path,
                     desired_php_track: Some(PHP_TEST_TRACK.to_owned()),
-                    additional_hostnames: Vec::new(),
                 })?
                 .project;
             database.replace_project_managed_resources(
@@ -5402,7 +5389,6 @@ mod tests {
                     primary_hostname: "project.test".to_owned(),
                     config_path,
                     desired_php_track: None,
-                    additional_hostnames: Vec::new(),
                 })?
                 .project;
             database.replace_project_managed_resources(
@@ -5635,7 +5621,6 @@ mod tests {
                 primary_hostname: "project.test".to_owned(),
                 config_path,
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?
             .project;
         database.replace_project_managed_resources(
@@ -5716,80 +5701,60 @@ mod tests {
     }
 
     #[test]
-    fn targeted_resource_scope_requires_applied_hostnames_and_tls_artifacts() -> anyhow::Result<()>
-    {
-        for check_tls in [false, true] {
-            let tempdir = tempdir()?;
-            let paths = PvPaths::for_home(tempdir.path().join("home"));
-            let project_path = tempdir.path().join("project");
-            let config_path = project_path.join("pv.yml");
-            let dependency = if check_tls {
-                "env:\n  CERTIFICATE: \"${tls.cert}\"\n"
-            } else {
-                "hostnames:\n  - api.project.test\n"
-            };
-            state::fs::write_sensitive_file(
-                &config_path,
-                &format!(
-                    "{dependency}mailpit:\n  version: \"1.0\"\n  env:\n    MAIL_HOST: \"${{smtp_host}}\"\n"
-                ),
-            )?;
-            let mut database = Database::open(&paths)?;
-            let project = database
-                .link_project(LinkProjectInput {
-                    path: project_path.clone(),
-                    original_path: project_path.clone(),
-                    primary_hostname: "project.test".to_owned(),
-                    config_path,
-                    desired_php_track: None,
-                    additional_hostnames: Vec::new(),
-                })?
-                .project;
-            database.replace_project_managed_resources(
-                &project.id,
-                &[ProjectManagedResourceInput {
-                    resource_name: "mailpit".to_owned(),
-                    track: "1.0".to_owned(),
-                }],
-            )?;
-            database.record_managed_resource_track_env_context(
-                "mailpit",
-                "1.0",
-                &BTreeMap::from([("smtp_host".to_owned(), "127.0.0.1".to_owned())]),
-            )?;
-            database.record_runtime_observed_snapshot(
-                RuntimeSubject::Resource {
-                    name: "mailpit".to_owned(),
-                    track: "1.0".to_owned(),
-                },
-                RuntimeObservedStatus::Running,
-                Some("fixture mailpit is ready"),
-            )?;
+    fn targeted_resource_scope_requires_applied_tls_artifacts() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("project");
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(
+            &config_path,
+            "env:\n  CERTIFICATE: \"${tls.cert}\"\nmailpit:\n  version: \"1.0\"\n  env:\n    MAIL_HOST: \"${smtp_host}\"\n",
+        )?;
+        let mut database = Database::open(&paths)?;
+        let project = database
+            .link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path.clone(),
+                primary_hostname: "project.test".to_owned(),
+                config_path,
+                desired_php_track: None,
+            })?
+            .project;
+        database.replace_project_managed_resources(
+            &project.id,
+            &[ProjectManagedResourceInput {
+                resource_name: "mailpit".to_owned(),
+                track: "1.0".to_owned(),
+            }],
+        )?;
+        database.record_managed_resource_track_env_context(
+            "mailpit",
+            "1.0",
+            &BTreeMap::from([("smtp_host".to_owned(), "127.0.0.1".to_owned())]),
+        )?;
+        database.record_runtime_observed_snapshot(
+            RuntimeSubject::Resource {
+                name: "mailpit".to_owned(),
+                track: "1.0".to_owned(),
+            },
+            RuntimeObservedStatus::Running,
+            Some("fixture mailpit is ready"),
+        )?;
 
-            let result =
-                reconcile_project_env_from_persisted_state(&paths, &mut database, &project.id);
+        let result = reconcile_project_env_from_persisted_state(&paths, &mut database, &project.id);
 
-            if check_tls {
-                assert!(matches!(
-                    result,
-                    Err(DaemonError::State(StateError::Filesystem { ref path, .. }))
-                        if path == &paths.ca_certificate()
-                ));
-            } else {
-                assert!(matches!(
-                    result,
-                    Err(DaemonError::ProjectEnvDependenciesNotApplied { ref reason, .. })
-                        if reason.contains("hostnames")
-                ));
-            }
-            assert_eq!(
-                database
-                    .project_env_observed_state(&project.id)?
-                    .map(|observed| observed.status),
-                Some(ProjectEnvObservedStatus::Failed)
-            );
-            assert!(!state::fs::path_entry_exists(&project.path.join(".env"))?);
-        }
+        assert!(matches!(
+            result,
+            Err(DaemonError::State(StateError::Filesystem { ref path, .. }))
+                if path == &paths.ca_certificate()
+        ));
+        assert_eq!(
+            database
+                .project_env_observed_state(&project.id)?
+                .map(|observed| observed.status),
+            Some(ProjectEnvObservedStatus::Failed)
+        );
+        assert!(!state::fs::path_entry_exists(&project.path.join(".env"))?);
 
         Ok(())
     }
@@ -5824,7 +5789,6 @@ mod tests {
             primary_hostname: "successful.test".to_owned(),
             config_path: successful_path.join("pv.yml"),
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         })?;
         database.replace_project_managed_resources(
             &successful.project.id,
@@ -5840,7 +5804,6 @@ mod tests {
             primary_hostname: "failed.test".to_owned(),
             config_path: failed_path.join("pv.yml"),
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         })?;
         database.replace_project_managed_resources(
             &failed.project.id,
@@ -5938,7 +5901,6 @@ mod tests {
                                 primary_hostname: "invalid-env.test".to_owned(),
                                 config_path: env_config_path,
                                 desired_php_track: None,
-                                additional_hostnames: Vec::new(),
                             },
                             ProjectMode::ResourceOnly,
                         )?
@@ -5958,7 +5920,7 @@ mod tests {
                     project: LinkProjectInput {
                         path: project_path.clone(), original_path: project_path.clone(),
                         primary_hostname: "late.test".to_owned(), config_path,
-                        desired_php_track: None, additional_hostnames: Vec::new(),
+                        desired_php_track: None,
                     },
                 },
             )?;
@@ -6249,7 +6211,6 @@ mod tests {
             primary_hostname: "project.test".to_owned(),
             config_path,
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         })?;
         let catalog = crate::managed_resources::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
 
@@ -6359,7 +6320,6 @@ mod tests {
                 primary_hostname: "project.test".to_owned(),
                 config_path: config_path.clone(),
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?;
             drop(database);
             let write_counter = Connection::open(paths.db().as_std_path())?;
@@ -6482,7 +6442,6 @@ mod tests {
                 primary_hostname: format!("{name}.test"),
                 config_path,
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?;
             projects.push(linked.project);
         }
@@ -6628,7 +6587,6 @@ mod tests {
             primary_hostname: "project.test".to_owned(),
             config_path: config_path.clone(),
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         })?;
         let mut port_guards = Vec::new();
         for port_name in ["smtp", "dashboard"] {
@@ -6679,7 +6637,6 @@ mod tests {
                 primary_hostname: "ready.test".to_owned(),
                 config_path: ready_config,
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?;
             state::fs::write_sensitive_file(&config_path, &config.replace("1.0", "1.1"))?;
             let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
@@ -6829,7 +6786,6 @@ mod tests {
                 primary_hostname: "project.test".to_owned(),
                 config_path,
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?;
             let download_attempts = Arc::new(AtomicUsize::new(0));
             let manifest_requests = Arc::new(AtomicUsize::new(0));
@@ -7048,7 +7004,6 @@ mod tests {
                 primary_hostname: "project.test".to_owned(),
                 config_path: config_path.clone(),
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?;
             let catalog = crate::managed_resources::fake_runtime_catalog_with_manifest_client(
                 OFFLINE_TEST_MANIFEST_URL,
@@ -7231,7 +7186,6 @@ mod tests {
                 primary_hostname: "project.test".to_owned(),
                 config_path: config_path.clone(),
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?;
             drop(database);
             state::fs::write_sensitive_file(
@@ -7329,7 +7283,6 @@ mod tests {
                 primary_hostname: format!("{name}.test"),
                 config_path,
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?;
             project_ids.push(linked.project.id);
         }
@@ -7382,7 +7335,6 @@ mod tests {
             primary_hostname: "project.test".to_owned(),
             config_path,
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         })?;
         database.replace_project_managed_resources(
             &linked.project.id,
@@ -7450,7 +7402,6 @@ mod tests {
             primary_hostname: "project.test".to_owned(),
             config_path: config_path.clone(),
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         })?;
         database.record_managed_resource_track_installed(
             "mailpit",
@@ -7551,7 +7502,6 @@ mod tests {
                 primary_hostname: "project.test".to_owned(),
                 config_path,
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?;
             let before = database.record_managed_resource_track_removal_intent(
                 removed_resource,
@@ -7634,7 +7584,6 @@ mod tests {
                 primary_hostname: "project.test".to_owned(),
                 config_path: config_path.clone(),
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?;
             if let Some(global_track) = global_track {
                 database.record_global_php_default_track(global_track)?;
@@ -7771,7 +7720,6 @@ mod tests {
             primary_hostname: "project.test".to_owned(),
             config_path,
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         })?;
         database.finalize_project_reconciliation(ProjectReconciliationStateInput {
             project_id: linked.project.id.clone(),
@@ -7781,7 +7729,6 @@ mod tests {
                 primary_hostname: "project.test".to_owned(),
                 config_path: linked.project.config_path.clone(),
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             },
             mode: ProjectMode::ResourceOnly,
             php_runtime: None,
@@ -8086,7 +8033,6 @@ mod tests {
             primary_hostname: "project.test".to_owned(),
             config_path,
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         })?;
         database.replace_project_managed_resources(
             &linked.project.id,
@@ -8116,7 +8062,6 @@ mod tests {
                 primary_hostname: "project.test".to_owned(),
                 config_path: linked.project.config_path.clone(),
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             },
             mode: ProjectMode::ResourceOnly,
             php_runtime: None,
@@ -8171,7 +8116,6 @@ mod tests {
             primary_hostname: "project.test".to_owned(),
             config_path,
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         })?;
         drop(database);
 
@@ -8253,7 +8197,6 @@ mod tests {
             primary_hostname: "project.test".to_owned(),
             config_path,
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         })?;
         drop(database);
         let catalog = crate::managed_resources::fake_runtime_catalog_with_manifest_client(
@@ -9134,7 +9077,6 @@ mod tests {
             primary_hostname: "project.test".to_owned(),
             config_path,
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         })?;
         drop(database);
         let scope = format!("project:{}", linked.project.id).parse::<ReconciliationScope>()?;
@@ -11189,7 +11131,6 @@ mod tests {
                 primary_hostname: primary_hostname.to_owned(),
                 config_path,
                 desired_php_track: Some("8.4".to_owned()),
-                additional_hostnames: Vec::new(),
             })?
             .project;
 
@@ -11373,7 +11314,6 @@ mod tests {
             primary_hostname: "project.test".to_owned(),
             config_path,
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         })?;
         drop(database);
         let scope = format!("project:{}", linked.project.id).parse::<ReconciliationScope>()?;

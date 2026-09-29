@@ -7,7 +7,6 @@ ProjectConfig {
     env_file: ".env",
     php: None,
     root: None,
-    hostnames: [],
     env: {
         "MATH": "2 * 3",
         "TEAM": "R&D & QA",

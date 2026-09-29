@@ -92,16 +92,14 @@ fn project_env_renders_current_project_values_to_stdout() -> anyhow::Result<()> 
 }
 
 #[test]
-fn project_env_resolves_additional_hostname_and_resource_values() -> anyhow::Result<()> {
+fn project_env_resolves_hostname_and_resource_values() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
     write_file(
         &project.join("pv.yml"),
-        r#"hostnames:
-  - api.acme.test
-env:
+        r#"env:
   APP_URL: "${url}"
 mysql:
   version: "8.0"
@@ -120,7 +118,7 @@ mysql:
     record_mysql_context(&home, &project_record)?;
     let environment = TestEnvironment::new(&home, &project);
 
-    let output = run_pv(&["project:env", "api.acme.test"], &environment)?;
+    let output = run_pv(&["project:env", "acme.test"], &environment)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
@@ -137,9 +135,7 @@ fn project_env_json_renders_generated_values() -> anyhow::Result<()> {
     create_dir(&project)?;
     write_file(
         &project.join("pv.yml"),
-        r#"hostnames:
-  - api.acme.test
-mysql:
+        r#"mysql:
   version: "8.0"
   env:
     DB_HOST: "${host}"
@@ -154,7 +150,7 @@ mysql:
     record_mysql_context(&home, &project_record)?;
     let environment = TestEnvironment::new(&home, &project);
 
-    let output = run_pv(&["project:env", "--json", "api.acme.test"], &environment)?;
+    let output = run_pv(&["project:env", "--json", "acme.test"], &environment)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
@@ -415,7 +411,6 @@ fn register_project_with_mode(
             primary_hostname: primary_hostname.to_string(),
             config_path: config_file.path,
             desired_php_track,
-            additional_hostnames: config_file.config.hostnames,
         },
         mode,
     )?;

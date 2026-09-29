@@ -72,10 +72,7 @@ fn list_json_outputs_linked_projects() -> anyhow::Result<()> {
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "hostnames:\n  - api.acme.test\nmysql:\n  version: \"8.0\"\n",
-    )?;
+    write_file(&project.join("pv.yml"), "mysql:\n  version: \"8.0\"\n")?;
     let paths = PvPaths::for_home(home.clone());
     let environment = TestEnvironment::new(&home, &project);
     seed_project(&paths, &project)?;
@@ -108,7 +105,6 @@ fn list_json_exposes_resource_only_mode_slug_and_env_file_without_sentinel() -> 
             primary_hostname: "ignored.test".to_string(),
             config_path: project.join("pv.yml"),
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         },
         ProjectMode::ResourceOnly,
     )?;
@@ -151,7 +147,6 @@ fn list_json_sorts_projects_by_displayed_value() -> anyhow::Result<()> {
         primary_hostname: "alpha.test".to_string(),
         config_path: served.join("pv.yml"),
         desired_php_track: None,
-        additional_hostnames: Vec::new(),
     })?;
     database.link_project_with_mode(
         LinkProjectInput {
@@ -160,7 +155,6 @@ fn list_json_sorts_projects_by_displayed_value() -> anyhow::Result<()> {
             primary_hostname: "ignored.test".to_string(),
             config_path: resource_only.join("pv.yml"),
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         },
         ProjectMode::ResourceOnly,
     )?;
@@ -205,7 +199,6 @@ fn list_on_a_terminal_aligns_columns_or_stacks_records_by_width() -> anyhow::Res
             primary_hostname: "acme.test".to_string(),
             config_path: served.join("pv.yml"),
             desired_php_track: Some("8.4".to_string()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     database.record_project_env_observed_snapshot(
@@ -224,7 +217,6 @@ fn list_on_a_terminal_aligns_columns_or_stacks_records_by_width() -> anyhow::Res
             primary_hostname: "ignored.test".to_string(),
             config_path: resource_only.join("pv.yml"),
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         },
         ProjectMode::ResourceOnly,
     )?;
@@ -272,7 +264,6 @@ fn list_reports_global_php_default_on_both_surfaces() -> anyhow::Result<()> {
         primary_hostname: "acme.test".to_string(),
         config_path: project.join("pv.yml"),
         desired_php_track: None,
-        additional_hostnames: Vec::new(),
     })?;
     database.record_global_php_default_track("8.4")?;
     drop(database);
@@ -415,7 +406,6 @@ fn seed_project(paths: &PvPaths, project_path: &Utf8Path) -> anyhow::Result<()> 
             primary_hostname: "acme.test".to_string(),
             config_path: project_path.join("pv.yml"),
             desired_php_track: Some("8.4".to_string()),
-            additional_hostnames: vec!["api.acme.test".to_string()],
         })?
         .project;
     database.replace_project_managed_resources(

@@ -5,9 +5,6 @@ expression: snapshot
 Object {
     "projects": Array [
         Object {
-            "additional_hostnames": Array [
-                String("api.acme.test"),
-            ],
             "config_path": String("<tempdir>/acme/pv.yml"),
             "env": String("none"),
             "env_file": String(".env"),

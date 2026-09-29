@@ -350,7 +350,6 @@ fn link_project(
         primary_hostname: primary_hostname.to_string(),
         config_path,
         desired_php_track: None,
-        additional_hostnames: Vec::new(),
     })?;
 
     Ok(result.project)

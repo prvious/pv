@@ -372,7 +372,6 @@ root: public
         primary_hostname: "acme.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: None,
-        additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
         "frankenphp",
@@ -445,7 +444,6 @@ root: public
             primary_hostname: hostname.to_owned(),
             config_path: project_root.join("pv.yml"),
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         })?;
         database.record_managed_resource_track_installed(
             "frankenphp",
@@ -817,7 +815,6 @@ async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled(
             primary_hostname: hostname.to_owned(),
             config_path: project_root.join("pv.yml"),
             desired_php_track: Some(track.to_owned()),
-            additional_hostnames: Vec::new(),
         })?;
     }
     drop(database);
@@ -996,7 +993,6 @@ async fn matching_worker_recovers_after_post_load_readiness_is_cancelled() -> Re
         primary_hostname: "acme.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: Some(track.to_owned()),
-        additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
         "caddy",
@@ -1612,11 +1608,7 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
     let track = "8.4";
     let base_project =
         create_project_with_config(tempdir.path(), "base", "php:\n  version: \"8.4\"\n")?;
-    let peer_project = create_project_with_config(
-        tempdir.path(),
-        "peer",
-        "php: \"8.4\"\nhostnames: [old.acme.test]\n",
-    )?;
+    let peer_project = create_project_with_config(tempdir.path(), "peer", "php: \"8.4\"\n")?;
     let redis_project = create_project_with_config(
         tempdir.path(),
         "redis",
@@ -1628,7 +1620,7 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
         "php:\n  version: \"8.4\"\n  extensions: [xdebug]\n",
     )?;
     link_project_record(&paths, &base_project, "acme.test", Some(track))?;
-    link_project_record(&paths, &peer_project, "changed.acme.test", Some(track))?;
+    link_project_record(&paths, &peer_project, "old.acme.test", Some(track))?;
     let base_record = Database::open(&paths)?
         .projects()?
         .into_iter()
@@ -1681,10 +1673,7 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
         &base_record.config_path,
         "php:\n  version: \"8.4\"\n  extensions: [xdebug]\n",
     )?;
-    fs::write_sensitive_file(
-        &peer_project.join("pv.yml"),
-        "php: \"8.4\"\nhostnames: [new.acme.test]\n",
-    )?;
+    link_project_record(&paths, &peer_project, "new.acme.test", Some(track))?;
     link_project_record(&paths, &redis_project, "api.acme.test", Some(track))?;
     link_project_record(&paths, &xdebug_project, "other.test", Some(track))?;
     let redis_failure_marker = Utf8PathBuf::from(format!(
@@ -2104,7 +2093,6 @@ root: public
         primary_hostname: "acme.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: Some("8.4".to_owned()),
-        additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
         "frankenphp",
@@ -2171,7 +2159,6 @@ root: public
         primary_hostname: "acme.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: Some("8.4".to_owned()),
-        additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
         "caddy",
@@ -2328,7 +2315,6 @@ async fn unchanged_gateway_config_is_rehardened() -> Result<()> {
         primary_hostname: "acme.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: Some("8.4".to_owned()),
-        additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
         "caddy",
@@ -2436,7 +2422,6 @@ async fn targeted_project_reconciliation_touches_only_old_and_new_workers() -> R
             primary_hostname: "acme.test".to_owned(),
             config_path: acme.join("pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     let mut other_project_id = None;
@@ -2451,7 +2436,6 @@ async fn targeted_project_reconciliation_touches_only_old_and_new_workers() -> R
             primary_hostname: hostname.to_owned(),
             config_path: project.join("pv.yml"),
             desired_php_track: Some(track.to_owned()),
-            additional_hostnames: Vec::new(),
         })?;
         if track == "8.3" {
             unrelated_project_id = Some(linked.project.id);
@@ -2623,10 +2607,7 @@ env:
         other_worker_fragment
     );
 
-    fs::write_sensitive_file(
-        &acme.config_path,
-        "php: \"8.4\"\nroot: web\nhostnames:\n  - www.acme.test\n",
-    )?;
+    link_project_record(&paths, &acme.path, "www.acme.test", Some("8.4"))?;
     reconcile_project_gateway_runtimes_for_test(
         &paths,
         &acme.id,
@@ -2648,10 +2629,7 @@ env:
         worker_83_requests
     );
 
-    fs::write_sensitive_file(
-        &acme.config_path,
-        "php: \"8.5\"\nroot: web\nhostnames:\n  - www.acme.test\n",
-    )?;
+    fs::write_sensitive_file(&acme.config_path, "php: \"8.5\"\nroot: web\n")?;
     let mut database = Database::open(&paths)?;
     database.replace_project_php_runtime(
         &acme.id,
@@ -2762,7 +2740,6 @@ env:
                 primary_hostname: "acme.test".to_owned(),
                 config_path: acme.config_path.clone(),
                 desired_php_track: Some("8.5".to_owned()),
-                additional_hostnames: Vec::new(),
             },
             ProjectMode::ResourceOnly,
         )?;
@@ -2796,7 +2773,6 @@ env:
                 primary_hostname: "acme.test".to_owned(),
                 config_path: acme.config_path.clone(),
                 desired_php_track: Some("8.5".to_owned()),
-                additional_hostnames: Vec::new(),
             },
             ProjectMode::Served,
         )?;
@@ -2865,7 +2841,6 @@ async fn targeted_project_reconciliation_does_not_activate_tampered_unrelated_fr
             primary_hostname: "acme.test".to_owned(),
             config_path: target.join("pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     let peer = database
@@ -2875,7 +2850,6 @@ async fn targeted_project_reconciliation_does_not_activate_tampered_unrelated_fr
             primary_hostname: "other.test".to_owned(),
             config_path: peer.join("pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     database.record_managed_resource_track_installed(
@@ -3004,7 +2978,6 @@ async fn targeted_project_reconciliation_promotes_split_peer_runtime_state() -> 
             primary_hostname: "acme.test".to_owned(),
             config_path: target.join("pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     let peer = database
@@ -3014,7 +2987,6 @@ async fn targeted_project_reconciliation_promotes_split_peer_runtime_state() -> 
             primary_hostname: "other.test".to_owned(),
             config_path: peer.join("pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     database.record_managed_resource_track_installed(
@@ -3149,7 +3121,6 @@ async fn targeted_project_reconciliation_uses_verified_fragment_snapshot() -> Re
             primary_hostname: "acme.test".to_owned(),
             config_path: target.join("pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     let peer = database
@@ -3159,7 +3130,6 @@ async fn targeted_project_reconciliation_uses_verified_fragment_snapshot() -> Re
             primary_hostname: "other.test".to_owned(),
             config_path: peer.join("pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     database.record_managed_resource_track_installed(
@@ -3276,7 +3246,6 @@ async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is
             primary_hostname: "acme.test".to_owned(),
             config_path: tempdir.path().join("acme/pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     database.record_managed_resource_track_installed(
@@ -3393,7 +3362,6 @@ async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is
             primary_hostname: "ignored.test".to_owned(),
             config_path: project.config_path.clone(),
             desired_php_track: Some("8.5".to_owned()),
-            additional_hostnames: Vec::new(),
         },
         ProjectMode::ResourceOnly,
     )?;
@@ -3726,7 +3694,6 @@ root: public
         primary_hostname: "acme.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: Some("8.4".to_owned()),
-        additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
         "frankenphp",
@@ -3896,7 +3863,6 @@ root: public
         primary_hostname: "acme.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: None,
-        additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
         "frankenphp",
@@ -3961,7 +3927,6 @@ root: public
         primary_hostname: "acme.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: None,
-        additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
         "frankenphp",
@@ -4039,7 +4004,6 @@ root: public
         primary_hostname: "acme.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: None,
-        additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
         "frankenphp",
@@ -4194,7 +4158,6 @@ root: public
         primary_hostname: "acme.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: Some("8.4".to_owned()),
-        additional_hostnames: Vec::new(),
     })?;
     let surviving_project = database.link_project(LinkProjectInput {
         path: surviving_project_root.clone(),
@@ -4202,7 +4165,6 @@ root: public
         primary_hostname: "other.test".to_owned(),
         config_path: surviving_project_root.join("pv.yml"),
         desired_php_track: Some("8.3".to_owned()),
-        additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
         "frankenphp",
@@ -4329,8 +4291,6 @@ async fn gateway_reconciliation_preserves_project_fragments_for_invalid_project_
         &project_root,
         r#"php: "8.4"
 root: public
-hostnames:
-  - api.acme.test
 "#,
     )?;
 
@@ -4341,7 +4301,6 @@ hostnames:
         primary_hostname: "acme.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: Some("8.4".to_owned()),
-        additional_hostnames: vec!["api.acme.test".to_owned()],
     })?;
     database.record_managed_resource_track_installed(
         "caddy",
@@ -4458,7 +4417,6 @@ root: public
         primary_hostname: "acme.test".to_owned(),
         config_path: acme_root.join("pv.yml"),
         desired_php_track: Some("8.4".to_owned()),
-        additional_hostnames: Vec::new(),
     })?;
     let broken = database.link_project(LinkProjectInput {
         path: broken_root.clone(),
@@ -4466,7 +4424,6 @@ root: public
         primary_hostname: "broken.test".to_owned(),
         config_path: broken_root.join("pv.yml"),
         desired_php_track: Some("8.4".to_owned()),
-        additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
         "frankenphp",
@@ -4542,7 +4499,6 @@ root: public
         primary_hostname: "acme.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: Some("8.4".to_owned()),
-        additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
         "frankenphp",
@@ -4626,7 +4582,6 @@ async fn gateway_runtime_plan_fails_when_persisted_extension_runtime_cannot_be_r
         primary_hostname: "acme.test".to_owned(),
         config_path: tempdir.path().join("acme/pv.yml"),
         desired_php_track: Some("8.4".to_owned()),
-        additional_hostnames: Vec::new(),
     })?;
     database.replace_project_php_runtime(
         &project.project.id,
@@ -4684,7 +4639,6 @@ async fn gateway_runtime_plan_recovers_preserved_worker_tree_without_metadata() 
             primary_hostname: "acme.test".to_owned(),
             config_path: tempdir.path().join("acme/pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     let ports = available_loopback_ports(3)?;
@@ -4747,8 +4701,6 @@ async fn gateway_reconciliation_preserves_fragments_for_parseable_invalid_projec
         &acme_root,
         r#"php: "8.4"
 root: public
-hostnames:
-  - api.acme.test
 "#,
     )?;
     create_project(
@@ -4765,7 +4717,6 @@ root: public
         primary_hostname: "acme.test".to_owned(),
         config_path: acme_root.join("pv.yml"),
         desired_php_track: Some("8.4".to_owned()),
-        additional_hostnames: vec!["api.acme.test".to_owned()],
     })?;
     database.link_project(LinkProjectInput {
         path: other_root.clone(),
@@ -4773,7 +4724,6 @@ root: public
         primary_hostname: "other.test".to_owned(),
         config_path: other_root.join("pv.yml"),
         desired_php_track: Some("8.3".to_owned()),
-        additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
         "frankenphp",
@@ -4811,8 +4761,8 @@ root: public
         &acme_root.join("pv.yml"),
         r#"php: "8.3"
 root: public
-hostnames:
-  - other.test
+env:
+  APP_URL: "${missing_value}"
 "#,
     )?;
 
@@ -4864,8 +4814,6 @@ async fn gateway_reconciliation_preserves_active_fragments_when_validation_fails
         &project_root,
         r#"php: "8.4"
 root: public
-hostnames:
-  - api.acme.test
 "#,
     )?;
 
@@ -4876,7 +4824,6 @@ hostnames:
         primary_hostname: "acme.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: Some("8.4".to_owned()),
-        additional_hostnames: vec!["api.acme.test".to_owned()],
     })?;
     database.record_managed_resource_track_installed(
         "frankenphp",
@@ -4908,9 +4855,7 @@ hostnames:
     fs::write_sensitive_file(
         &project_root.join("pv.yml"),
         r#"php: "8.4"
-root: public
-hostnames:
-  - changed.acme.test
+root: .
 "#,
     )?;
 
@@ -4945,8 +4890,6 @@ async fn retained_hostname_uses_previous_root() -> Result<()> {
         &project_root,
         r#"php: "8.4"
 root: public
-hostnames:
-  - old.acme.test
 "#,
     )?;
 
@@ -4955,10 +4898,9 @@ hostnames:
         .link_project(LinkProjectInput {
             path: project_root.clone(),
             original_path: project_root.clone(),
-            primary_hostname: "acme.test".to_owned(),
+            primary_hostname: "old.acme.test".to_owned(),
             config_path: project_root.join("pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     let release = paths.home().join("8.4-php-release");
@@ -4993,10 +4935,9 @@ hostnames:
         &project_root.join("pv.yml"),
         r#"php: "8.4"
 root: web
-hostnames:
-  - new.acme.test
 "#,
     )?;
+    link_project_record(&paths, &project_root, "new.acme.test", Some("8.4"))?;
     let redis_failure_marker = Utf8PathBuf::from(format!(
         "{}.readiness-fail",
         paths.worker_root_config(&redis_runtime_key)
@@ -5022,7 +4963,7 @@ hostnames:
         2,
         "expected retained and desired site blocks: {merged:?}"
     );
-    assert_eq!(merged.matches("old.acme.test").count(), 1);
+    assert_eq!(merged.matches("old.acme.test").count(), 2);
     let (old_labels, old_body) = blocks
         .iter()
         .find(|(labels, _)| labels.contains("old.acme.test"))
@@ -5034,7 +4975,7 @@ hostnames:
         .iter()
         .find(|(labels, _)| labels.contains("new.acme.test"))
         .ok_or_else(|| anyhow::anyhow!("desired block is missing: {merged:?}"))?;
-    assert!(new_labels.contains("acme.test"));
+    assert!(new_labels.contains("*.new.acme.test"));
     assert!(new_body.contains("web"));
     assert!(!new_body.contains("public"));
 
@@ -5075,21 +5016,17 @@ async fn post_commit_cleanup_continues_after_worker_failure() -> Result<()> {
         &project_a_root,
         r#"php: "8.4"
 root: public
-hostnames:
-  - old.acme.test
 "#,
     )?;
     create_project(
         &project_b_root,
         r#"php: "8.5"
 root: public
-hostnames:
-  - old.api.acme.test
 "#,
     )?;
     create_project(&project_c_root, "php: \"8.3\"\n")?;
-    link_project_record(&paths, &project_a_root, "acme.test", Some("8.4"))?;
-    link_project_record(&paths, &project_b_root, "api.acme.test", Some("8.5"))?;
+    link_project_record(&paths, &project_a_root, "old.acme.test", Some("8.4"))?;
+    link_project_record(&paths, &project_b_root, "old.api.acme.test", Some("8.5"))?;
     link_project_record(&paths, &project_c_root, "other.test", Some("8.3"))?;
     let caddy_release = tempdir.path().join("caddy");
     let release_83 = tempdir.path().join("frankenphp-83");
@@ -5150,18 +5087,16 @@ hostnames:
         &project_a_root.join("pv.yml"),
         r#"php: "8.4"
 root: web
-hostnames:
-  - new.acme.test
 "#,
     )?;
     fs::write_sensitive_file(
         &project_b_root.join("pv.yml"),
         r#"php: "8.5"
 root: web
-hostnames:
-  - new.api.acme.test
 "#,
     )?;
+    link_project_record(&paths, &project_a_root, "new.acme.test", Some("8.4"))?;
+    link_project_record(&paths, &project_b_root, "new.api.acme.test", Some("8.5"))?;
     fs::write_sensitive_file(&project_c_root.join("pv.yml"), "php: \"8.5\"\n")?;
     write_fake_admin_control(
         &paths.worker_root_config("8.4"),
@@ -5259,8 +5194,6 @@ async fn gateway_reconciliation_loads_exact_gateway_and_worker_roots_without_res
         &project_root,
         r#"php: "8.4"
 root: public
-hostnames:
-  - api.acme.test
 "#,
     )?;
     create_project(
@@ -5278,7 +5211,6 @@ root: public
             primary_hostname: "acme.test".to_owned(),
             config_path: project_root.join("pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     database.link_project(LinkProjectInput {
@@ -5287,7 +5219,6 @@ root: public
         primary_hostname: "other.test".to_owned(),
         config_path: other_project_root.join("pv.yml"),
         desired_php_track: Some("8.3".to_owned()),
-        additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
         "caddy",
@@ -5333,15 +5264,7 @@ root: public
     let previous_gateway_fragment = fs::read_to_string(&gateway_fragment_path)?;
     let previous_worker_fragment = fs::read_to_string(&worker_fragment_path)?;
 
-    fs::write_sensitive_file(
-        &project_root.join("pv.yml"),
-        r#"php: "8.4"
-root: public
-hostnames:
-  - api.acme.test
-  - changed.acme.test
-"#,
-    )?;
+    link_project_record(&paths, &project_root, "changed.acme.test", Some("8.4"))?;
 
     reconcile_gateway_runtimes(&paths).await?;
     let second_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
@@ -5373,7 +5296,12 @@ hostnames:
         fs::read_to_string(&worker_fragment_path)?
     );
     assert_eq!(gateway_load_bodies, vec![gateway_root.clone()]);
-    assert_eq!(worker_load_bodies, vec![worker_root.clone()]);
+    // The rename keeps the old sites on the worker until the Gateway stops routing them,
+    // then a cleanup load removes them.
+    assert_eq!(
+        worker_load_bodies,
+        vec![worker_root.clone(), worker_root.clone()]
+    );
     assert!(fake_admin_load_bodies(&paths.worker_root_config("8.3"))?.is_empty());
     assert!(gateway_load_bodies[0].ends_with(b"\n"));
     assert!(worker_load_bodies[0].ends_with(b"\n"));
@@ -5394,7 +5322,7 @@ hostnames:
             .iter()
             .filter(|request| request["method"] == "POST" && request["path"] == "/load")
             .count(),
-        1
+        2
     );
     assert!(
         worker_requests
@@ -5434,7 +5362,6 @@ root: public
             primary_hostname: "acme.test".to_owned(),
             config_path: project_root.join("pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     database.record_managed_resource_track_installed(
@@ -6158,7 +6085,6 @@ root: public
         primary_hostname: "acme.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: Some("8.4".to_owned()),
-        additional_hostnames: Vec::new(),
     })?;
     database.record_managed_resource_track_installed(
         "caddy",
@@ -6461,8 +6387,6 @@ async fn runtime_plan_groups_linked_projects_by_php_track() -> Result<()> {
         &acme,
         r#"php: "8.4"
 root: public
-hostnames:
-  - api.acme.test
 "#,
     )?;
     create_project(
@@ -6479,7 +6403,6 @@ root: public
         primary_hostname: "acme.test".to_owned(),
         config_path: acme.join("pv.yml"),
         desired_php_track: None,
-        additional_hostnames: vec!["api.acme.test".to_owned()],
     })?;
     database.link_project(LinkProjectInput {
         path: other.clone(),
@@ -6487,7 +6410,6 @@ root: public
         primary_hostname: "other.test".to_owned(),
         config_path: other.join("pv.yml"),
         desired_php_track: None,
-        additional_hostnames: Vec::new(),
     })?;
     seed_stable_runtime_plan_ports(&mut database, &["8.4", "8.3"])?;
     drop(database);
@@ -6519,7 +6441,6 @@ async fn runtime_plan_excludes_resource_only_project_with_explicit_php() -> Resu
             primary_hostname: "served.test".to_owned(),
             config_path: served.join("pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     let resource_only = database
@@ -6530,7 +6451,6 @@ async fn runtime_plan_excludes_resource_only_project_with_explicit_php() -> Resu
                 primary_hostname: "ignored.test".to_owned(),
                 config_path: resource_only.join("pv.yml"),
                 desired_php_track: Some("8.4".to_owned()),
-                additional_hostnames: Vec::new(),
             },
             ProjectMode::ResourceOnly,
         )?
@@ -6571,7 +6491,6 @@ async fn runtime_plan_preserves_served_project_while_resource_only_transition_is
             primary_hostname: "served.test".to_owned(),
             config_path: project_root.join("pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     seed_stable_runtime_plan_ports(&mut database, &["8.4"])?;
@@ -6649,7 +6568,6 @@ root: public
         primary_hostname: "latest.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: None,
-        additional_hostnames: Vec::new(),
     })?;
     seed_stable_runtime_plan_ports(&mut database, &["8.4"])?;
     drop(database);
@@ -6682,7 +6600,6 @@ async fn runtime_plan_defaults_root_to_public_directory_without_config() -> Resu
         primary_hostname: "configless.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: None,
-        additional_hostnames: Vec::new(),
     })?;
     seed_stable_runtime_plan_ports(&mut database, &["8.4"])?;
     drop(database);
@@ -6715,7 +6632,6 @@ async fn runtime_plan_defaults_root_to_project_root_without_public_directory() -
         primary_hostname: "static.test".to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: None,
-        additional_hostnames: Vec::new(),
     })?;
     seed_stable_runtime_plan_ports(&mut database, &["8.4"])?;
     drop(database);
@@ -6761,7 +6677,6 @@ root: other-public
         primary_hostname: "acme.test".to_owned(),
         config_path: stored_config_path,
         desired_php_track: None,
-        additional_hostnames: Vec::new(),
     })?;
     seed_stable_runtime_plan_ports(&mut database, &["8.4"])?;
     drop(database);
@@ -7482,7 +7397,6 @@ fn link_project_record(
         primary_hostname: primary_hostname.to_owned(),
         config_path: project_root.join("pv.yml"),
         desired_php_track: desired_php_track.map(str::to_owned),
-        additional_hostnames: Vec::new(),
     })?;
 
     Ok(())
@@ -7594,7 +7508,12 @@ fn seed_gateway_test_tls(paths: &PvPaths) -> Result<()> {
         "api.acme.test".to_owned(),
         "broken.test".to_owned(),
         "changed.acme.test".to_owned(),
+        "new.acme.test".to_owned(),
+        "new.api.acme.test".to_owned(),
+        "old.acme.test".to_owned(),
+        "old.api.acme.test".to_owned(),
         "other.test".to_owned(),
+        "www.acme.test".to_owned(),
         "pv-gateway.localhost".to_owned(),
     ])?;
     fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;
@@ -8530,7 +8449,6 @@ async fn resource_only_target_recovers_alive_unready_gateway_with_invalid_config
                 primary_hostname: "ignored.test".to_owned(),
                 config_path: project_root.join("pv.yml"),
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             },
             ProjectMode::ResourceOnly,
         )?
@@ -8612,7 +8530,6 @@ async fn targeted_inspection_promotes_only_recoverable_uncertainty() -> Result<(
                 primary_hostname: "acme.test".to_owned(),
                 config_path: project_root.join("pv.yml"),
                 desired_php_track: Some("8.4".to_owned()),
-                additional_hostnames: Vec::new(),
             })?
             .project;
         database.record_managed_resource_track_installed(
@@ -8671,7 +8588,6 @@ async fn targeted_inspection_promotes_only_recoverable_uncertainty() -> Result<(
                 primary_hostname: "acme.test".to_owned(),
                 config_path: project_root.join("pv.yml"),
                 desired_php_track: Some("8.4".to_owned()),
-                additional_hostnames: Vec::new(),
             })?
             .project;
         database.record_managed_resource_track_installed(
@@ -8777,7 +8693,6 @@ async fn gateway_failure_preserves_primary_error_when_observation_write_fails() 
             primary_hostname: "acme.test".to_owned(),
             config_path: project_root.join("pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     database.record_managed_resource_track_installed(
@@ -8861,7 +8776,6 @@ async fn targeted_reconciliation_reports_alive_unready_worker() -> Result<()> {
             primary_hostname: "acme.test".to_owned(),
             config_path: project_root.join("pv.yml"),
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?
         .project;
     database.record_managed_resource_track_installed(

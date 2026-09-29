@@ -15,13 +15,11 @@ expression: "(link, open, opened_urls)"
     RunOutput {
         exit_code: ExitCode(
             unix_exit_status(
-                0,
+                1,
             ),
         ),
-        stdout: "Opened https://api.acme.test for acme.test\n",
-        stderr: "",
+        stdout: "",
+        stderr: "error: no linked Project matches `tenant.acme.test`\n  Run `pv list` to see linked Projects and their hostnames.\n",
     },
-    [
-        "https://api.acme.test",
-    ],
+    [],
 )

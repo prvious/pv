@@ -65,7 +65,6 @@ expression: snapshot
             loaded_extensions: [],
             ignored_extensions: [],
         },
-        additional_hostnames: [],
         created_at: "<timestamp>",
         updated_at: "<timestamp>",
     },

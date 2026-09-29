@@ -27,9 +27,6 @@ expression: "(created.status, updated.status, database.projects()?)"
                 loaded_extensions: [],
                 ignored_extensions: [],
             },
-            additional_hostnames: [
-                "admin.store.test",
-            ],
             created_at: "<timestamp>",
             updated_at: "<timestamp>",
         },

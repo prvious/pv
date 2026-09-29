@@ -190,26 +190,24 @@ postgres:
 }
 
 #[test]
-fn open_additional_hostname_argument_opens_exact_hostname() -> anyhow::Result<()> {
+fn open_subdomain_argument_does_not_resolve_parent_project() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
     let outside = tempdir.path().join("outside");
     create_dir(&project)?;
     create_dir(&outside)?;
-    write_file(&project.join("pv.yml"), "hostnames:\n  - api.acme.test\n")?;
     let environment = TestEnvironment::new(&home, &project);
 
     let link = run_pv(&["link"], &environment)?;
     environment.set_current_dir(&outside);
-    let open = run_pv(&["open", "api.acme.test"], &environment)?;
+    let open = run_pv(&["open", "tenant.acme.test"], &environment)?;
     let opened_urls = environment.opened_urls();
 
     assert_eq!(link.exit_code, ExitCode::SUCCESS);
-    assert_eq!(open.exit_code, ExitCode::SUCCESS);
-    assert_eq!(opened_urls, vec!["https://api.acme.test"]);
+    assert_eq!(open.exit_code, ExitCode::FAILURE);
+    assert!(opened_urls.is_empty());
     assert!(!link.stderr.contains("error:"));
-    assert!(open.stderr.is_empty());
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
@@ -227,7 +225,6 @@ fn open_without_hostname_uses_current_project_primary_hostname() -> anyhow::Resu
     let project = tempdir.path().join("acme");
     let nested = project.join("nested");
     create_dir(&nested)?;
-    write_file(&project.join("pv.yml"), "hostnames:\n  - api.acme.test\n")?;
     let environment = TestEnvironment::new(&home, &project);
 
     let link = run_pv(&["link"], &environment)?;

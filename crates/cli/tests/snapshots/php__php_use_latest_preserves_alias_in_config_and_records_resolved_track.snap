@@ -12,7 +12,7 @@ expression: "(output, config_after, config_file.config,\nproject_snapshot(&proje
         stdout: "Set acme.test PHP track to 8.4\n  Updated Project config: <tempdir>/acme/pv.yml\nInstalled PHP track 8.4 (8.4.8-pv1)\nInstalled FrankenPHP track 8.4\n",
         stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
-    "php: latest\nhostnames:\n- api.acme.test\n",
+    "php: latest\nroot: .\n",
     ProjectConfig {
         serve: true,
         env_file: ".env",
@@ -24,10 +24,9 @@ expression: "(output, config_after, config_file.config,\nproject_snapshot(&proje
                 extensions: [],
             },
         ),
-        root: None,
-        hostnames: [
-            "api.acme.test",
-        ],
+        root: Some(
+            ".",
+        ),
         env: {},
         resources: {},
     },
