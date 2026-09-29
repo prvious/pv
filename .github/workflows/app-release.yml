@@ -239,9 +239,9 @@ jobs:
               'BEGIN {
                 split(current, current_parts, ".");
                 split(candidate, candidate_parts, ".");
-                for (index = 1; index <= 3; index++) {
-                  if (candidate_parts[index] > current_parts[index]) { print "newer"; exit }
-                  if (candidate_parts[index] < current_parts[index]) { print "older"; exit }
+                for (component = 1; component <= 3; component++) {
+                  if (candidate_parts[component] > current_parts[component]) { print "newer"; exit }
+                  if (candidate_parts[component] < current_parts[component]) { print "older"; exit }
                 }
                 print "same";
               }')

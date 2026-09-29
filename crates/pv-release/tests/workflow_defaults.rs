@@ -1,6 +1,15 @@
+#[cfg(target_os = "macos")]
+use anyhow::Context;
 use anyhow::Result;
 use camino::Utf8Path;
 use insta::assert_snapshot;
+
+#[cfg(target_os = "macos")]
+#[expect(
+    clippy::disallowed_types,
+    reason = "workflow test executes the macOS awk used by app release"
+)]
+type StdCommand = std::process::Command;
 
 const ARTIFACT_RECIPES_UPLOAD_PATHS: [&str; 3] = [
     "${{ runner.temp }}/pv-artifacts/*.tar.gz",
@@ -401,6 +410,54 @@ fn app_release_workflow_keeps_helper_and_app_reuse_branches_ordered() -> Result<
     printf '%s\n' "current stable app asset failed helper-only reuse verification" >&2
     cargo build --locked --release --package pv --bin pv --target "${{ matrix.rust_target }}"
     "#);
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn app_release_workflow_compares_helper_versions_with_macos_awk() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let workflow = read_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
+    let build_step = workflow_step(&workflow, "Build app and privileged helper binaries")
+        .context("missing app build step")?;
+    let start = build_step.find("'BEGIN {").context("missing awk program")? + 1;
+    let end = build_step[start..]
+        .find("}')")
+        .context("missing awk program end")?
+        + start
+        + 1;
+    let program = &build_step[start..end];
+    let mut results = Vec::new();
+
+    for (current, candidate) in [
+        ("1.0.0", "1.0.0"),
+        ("1.0.0", "1.0.1"),
+        ("1.0.9", "1.0.10"),
+        ("1.1.0", "1.0.9"),
+    ] {
+        let output = StdCommand::new("/usr/bin/awk")
+            .args(["-v", &format!("current={current}")])
+            .args(["-v", &format!("candidate={candidate}")])
+            .arg(program)
+            .output()?;
+        anyhow::ensure!(
+            output.status.success(),
+            "awk rejected the helper comparison: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        results.push(format!(
+            "{current} -> {candidate}: {}",
+            String::from_utf8(output.stdout)?.trim()
+        ));
+    }
+
+    assert_snapshot!(results.join("\n"), @"
+    1.0.0 -> 1.0.0: same
+    1.0.0 -> 1.0.1: newer
+    1.0.9 -> 1.0.10: newer
+    1.1.0 -> 1.0.9: older
+    ");
 
     Ok(())
 }
