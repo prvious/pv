@@ -2,10 +2,7 @@ use std::io;
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use config::{
-    AllocationEnvContext, ProjectConfigFile, ProjectEnvContext, ProjectEnvWarning,
-    ResourceEnvContext,
-};
+use config::{AllocationEnvContext, ProjectConfigFile, ProjectEnvContext, ResourceEnvContext};
 use resources::{ArtifactManifestCache, ConcreteTrackName, ResourceName, TrackSelector};
 use serde::Serialize;
 use state::{
@@ -17,7 +14,7 @@ use state::{
 use crate::args::{LinkArgs, ListArgs, OpenArgs, ProjectEnvArgs, UnlinkArgs};
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
-use crate::output::{Line, Mark, Output, Streams, Table, Tone};
+use crate::output::{Line, Mark, Streams, Table, Tone};
 use crate::prompt::{self, Choice};
 
 pub(crate) fn link(
@@ -238,18 +235,15 @@ pub(crate) fn env(
         serves_http,
     );
     let rendered = config::render_project_env(&config_file.config, &context)?;
-    let warnings = if config_file.config.has_env_mappings() {
+    if config_file.config.has_env_mappings() {
         let env_file_path =
             config::resolve_project_env_file_path(&project.path, &config_file.config)?;
         let existing_env = read_project_env_file(&env_file_path)?;
-        config::transform_managed_env_block(existing_env.as_deref(), &rendered)?.warnings
-    } else {
-        Vec::new()
-    };
+        config::validate_managed_env_block(existing_env.as_deref())?;
+    }
 
     if args.json {
         streams.out.json(&rendered.values)?;
-        write_project_env_warnings(&warnings, &mut streams.err)?;
 
         return Ok(ExitCode::SUCCESS);
     }
@@ -260,7 +254,6 @@ pub(crate) fn env(
     }
 
     write!(streams.out.writer(), "{content}")?;
-    write_project_env_warnings(&warnings, &mut streams.err)?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -554,25 +547,6 @@ fn read_project_env_file(env_file_path: &Utf8Path) -> Result<Option<String>, Exe
             }
 
             Err(error.into())
-        }
-    }
-}
-
-fn write_project_env_warnings(
-    warnings: &[ProjectEnvWarning],
-    output: &mut Output<'_>,
-) -> Result<(), ExecuteError> {
-    for warning in warnings {
-        output.warning(&project_env_warning(warning))?;
-    }
-
-    Ok(())
-}
-
-fn project_env_warning(warning: &ProjectEnvWarning) -> String {
-    match warning {
-        ProjectEnvWarning::DuplicateExistingKey { key } => {
-            format!("generated Project env key `{key}` already exists outside the PV-managed block")
         }
     }
 }

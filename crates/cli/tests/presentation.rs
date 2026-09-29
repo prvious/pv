@@ -128,19 +128,14 @@ fn run_pv(args: &[&str], environment: &TestEnvironment) -> anyhow::Result<RunOut
     })
 }
 
-/// Links a Project whose `.env` already defines a mapped key outside the PV
-/// block, so `pv project:env` warns on stderr, and returns the canonical path
-/// commands resolve it from.
-fn linked_project_with_env_warning(
+/// Links a Project with an env mapping, so `pv project:env` prints values, and
+/// returns the canonical path commands resolve it from.
+fn linked_project_with_env_mappings(
     home: &Utf8Path,
     project: &Utf8Path,
 ) -> anyhow::Result<Utf8PathBuf> {
     create_dir(project)?;
     write_file(&project.join("pv.yml"), "env:\n  APP_URL: \"${url}\"\n")?;
-    write_file(
-        &project.join(".env"),
-        "APP_URL=https://user.test\nOTHER=value\n",
-    )?;
     let environment = TestEnvironment::new(home, project, TERMINAL);
     let link = run_pv(&["link"], &environment)?;
     assert_eq!(link.exit_code, ExitCode::SUCCESS);
@@ -159,7 +154,7 @@ fn linked_project_with_env_warning(
 fn json_output_is_valid_and_undecorated_on_a_color_terminal() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
-    let project = linked_project_with_env_warning(&home, &tempdir.path().join("acme"))?;
+    let project = linked_project_with_env_mappings(&home, &tempdir.path().join("acme"))?;
     let environment = TestEnvironment::new(&home, &project, TERMINAL);
 
     for args in [
@@ -179,10 +174,6 @@ fn json_output_is_valid_and_undecorated_on_a_color_terminal() -> anyhow::Result<
         );
         serde_json::from_str::<serde_json::Value>(&output.stdout)?;
     }
-    // Warnings stay on stderr, decorated for the terminal they reach.
-    let env = run_pv(&["project:env", "--json"], &environment)?;
-    assert!(env.stderr.contains("warning:"));
-    assert!(env.stderr.contains(ESCAPE));
 
     Ok(())
 }
@@ -191,7 +182,7 @@ fn json_output_is_valid_and_undecorated_on_a_color_terminal() -> anyhow::Result<
 fn raw_payloads_are_byte_identical_on_and_off_a_terminal() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
-    let project = linked_project_with_env_warning(&home, &tempdir.path().join("acme"))?;
+    let project = linked_project_with_env_mappings(&home, &tempdir.path().join("acme"))?;
     let terminal = TestEnvironment::new(&home, &project, TERMINAL);
     let piped = TestEnvironment::new(&home, &project, PIPED);
 

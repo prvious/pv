@@ -29,16 +29,6 @@ expression: snapshot
         },
         Object {
             "job_id": String("job_000002"),
-            "message": String("resources"),
-            "type": String("progress"),
-        },
-        Object {
-            "job_id": String("job_000002"),
-            "message": String("project_apply"),
-            "type": String("progress"),
-        },
-        Object {
-            "job_id": String("job_000002"),
             "message": String("workers"),
             "type": String("progress"),
         },
@@ -53,42 +43,35 @@ expression: snapshot
             "type": String("progress"),
         },
         Object {
+            "error": String("Project config error: malformed PV-managed .env block: start marker without end marker"),
             "job_id": String("job_000002"),
-            "summary": String("Project env rendered with warnings"),
-            "type": String("job_completed"),
+            "type": String("job_failed"),
         },
     ],
-    "APP_URL=https://user.test\n# >>> PV MANAGED\nAPP_URL=https://acme.test\n# <<< PV MANAGED\n",
+    "# pv: APP_URL=https://user.test\n# >>> PV MANAGED\nAPP_URL=https://old.test\n",
     Some(
         ProjectEnvObservedStateRecord {
             project_id: "<project_id>",
-            status: Warning,
+            status: Failed,
             message: Some(
-                "rendered Project env with warnings",
+                "Project config error: malformed PV-managed .env block: start marker without end marker",
             ),
             observed_at: "<timestamp>",
-            warnings: [
-                ProjectEnvObservedWarningRecord {
-                    project_id: "<project_id>",
-                    kind: "duplicate_key",
-                    message: "generated Project env key `APP_URL` already exists outside the PV-managed block",
-                    observed_at: "<timestamp>",
-                },
-            ],
+            warnings: [],
         },
     ),
     JobRecord {
         id: "job_000002",
         kind: "reconcile",
         scope: "project:<project_id>",
-        status: Succeeded,
+        status: Failed,
         started_at: "<timestamp>",
         finished_at: Some(
             "<timestamp>",
         ),
-        summary: Some(
-            "Project env rendered with warnings",
+        summary: None,
+        error: Some(
+            "Project config error: malformed PV-managed .env block: start marker without end marker",
         ),
-        error: None,
     },
 )

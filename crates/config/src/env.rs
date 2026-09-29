@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use camino::Utf8Path;
 
@@ -7,6 +7,7 @@ use crate::{ConfigError, ProjectConfig, filesystem};
 
 pub const MANAGED_ENV_START_MARKER: &str = "# >>> PV MANAGED";
 pub const MANAGED_ENV_END_MARKER: &str = "# <<< PV MANAGED";
+const OVERRIDDEN_ENV_PREFIX: &str = "# pv: ";
 const CREATED_PROJECT_ENV_FILE_MODE: u32 = 0o600;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -39,13 +40,7 @@ pub struct RenderedProjectEnv {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagedEnvBlockTransform {
     pub content: String,
-    pub warnings: Vec<ProjectEnvWarning>,
     pub changed: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ProjectEnvWarning {
-    DuplicateExistingKey { key: String },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -206,17 +201,19 @@ pub fn transform_managed_env_block(
     let existing_content = existing_content.unwrap_or_default();
     let lines = split_env_lines(existing_content);
     let blocks = managed_blocks(&lines)?;
-    if rendered.values.is_empty() && blocks.is_empty() {
+    let overridden_lines = comment_overridden_assignments(&lines, &blocks, rendered);
+    if rendered.values.is_empty() && blocks.is_empty() && overridden_lines == lines {
         return Ok(ManagedEnvBlockTransform {
             content: existing_content.to_string(),
-            warnings: Vec::new(),
             changed: false,
         });
     }
-    let warnings = duplicate_existing_key_warnings(&lines, &blocks, rendered);
+    let lines = overridden_lines;
     let block_lines = managed_block_lines(rendered);
 
-    let transformed_lines = if blocks.is_empty() {
+    let transformed_lines = if blocks.is_empty() && rendered.values.is_empty() {
+        lines
+    } else if blocks.is_empty() {
         append_managed_block(lines, block_lines)
     } else if let [(start, end)] = blocks.as_slice() {
         replace_managed_block(lines, *start, *end, block_lines)
@@ -228,7 +225,6 @@ pub fn transform_managed_env_block(
     Ok(ManagedEnvBlockTransform {
         changed: content != existing_content,
         content,
-        warnings,
     })
 }
 
@@ -554,37 +550,39 @@ fn fold_managed_blocks(
     transformed
 }
 
-fn duplicate_existing_key_warnings(
+/// Comments out user-owned assignments of rendered keys and restores PV-commented lines whose
+/// keys are no longer rendered. Lines map one-to-one, so managed block indices stay valid.
+fn comment_overridden_assignments(
     lines: &[String],
     blocks: &[(usize, usize)],
     rendered: &RenderedProjectEnv,
-) -> Vec<ProjectEnvWarning> {
-    let generated_keys = rendered
-        .values
-        .keys()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let mut duplicate_keys = BTreeSet::new();
+) -> Vec<String> {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            if blocks
+                .iter()
+                .any(|(start, end)| (*start..=*end).contains(&index))
+            {
+                return line.clone();
+            }
 
-    for (index, line) in lines.iter().enumerate() {
-        if blocks
-            .iter()
-            .any(|(start, end)| (*start..=*end).contains(&index))
-        {
-            continue;
-        }
+            if let Some(key) = assignment_key(line)
+                && rendered.values.contains_key(key)
+            {
+                return format!("{OVERRIDDEN_ENV_PREFIX}{line}");
+            }
 
-        let Some(key) = assignment_key(line) else {
-            continue;
-        };
-        if generated_keys.contains(key) {
-            duplicate_keys.insert(key.to_string());
-        }
-    }
+            if let Some(original) = line.strip_prefix(OVERRIDDEN_ENV_PREFIX)
+                && let Some(key) = assignment_key(original)
+                && !rendered.values.contains_key(key)
+            {
+                return original.to_string();
+            }
 
-    duplicate_keys
-        .into_iter()
-        .map(|key| ProjectEnvWarning::DuplicateExistingKey { key })
+            line.clone()
+        })
         .collect()
 }
 

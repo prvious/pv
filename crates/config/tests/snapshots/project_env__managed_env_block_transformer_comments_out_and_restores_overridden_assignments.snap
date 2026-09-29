@@ -1,0 +1,41 @@
+---
+source: crates/config/tests/project_env.rs
+expression: "vec![(\"commented\", commented), (\"repeated\", repeated),\n(\"key-removed\", key_removed), (\"all-removed\", all_removed),\n(\"block-deleted\", block_deleted),]"
+---
+[
+    (
+        "commented",
+        ManagedEnvBlockTransform {
+            content: "# pv: APP_URL=https://user.test\n# pv:   export DB_HOST=localhost\n# APP_URL=https://commented.test\n# pv: keep this note\n# pv: APP_URL=https://second.test\n# pv: DB_HOST=between\nUSER_ONLY=1\n# >>> PV MANAGED\nAPP_URL=https://acme.test\nDB_HOST=127.0.0.1\n# <<< PV MANAGED\n",
+            changed: true,
+        },
+    ),
+    (
+        "repeated",
+        ManagedEnvBlockTransform {
+            content: "# pv: APP_URL=https://user.test\n# pv:   export DB_HOST=localhost\n# APP_URL=https://commented.test\n# pv: keep this note\n# pv: APP_URL=https://second.test\n# pv: DB_HOST=between\nUSER_ONLY=1\n# >>> PV MANAGED\nAPP_URL=https://acme.test\nDB_HOST=127.0.0.1\n# <<< PV MANAGED\n",
+            changed: false,
+        },
+    ),
+    (
+        "key-removed",
+        ManagedEnvBlockTransform {
+            content: "# pv: APP_URL=https://user.test\n  export DB_HOST=localhost\n# APP_URL=https://commented.test\n# pv: keep this note\n# pv: APP_URL=https://second.test\nDB_HOST=between\nUSER_ONLY=1\n# >>> PV MANAGED\nAPP_URL=https://acme.test\n# <<< PV MANAGED\n",
+            changed: true,
+        },
+    ),
+    (
+        "all-removed",
+        ManagedEnvBlockTransform {
+            content: "APP_URL=https://user.test\n  export DB_HOST=localhost\n# APP_URL=https://commented.test\n# pv: keep this note\nAPP_URL=https://second.test\nDB_HOST=between\nUSER_ONLY=1\n# >>> PV MANAGED\n# <<< PV MANAGED\n",
+            changed: true,
+        },
+    ),
+    (
+        "block-deleted",
+        ManagedEnvBlockTransform {
+            content: "APP_URL=https://user.test\nUSER_ONLY=1\n",
+            changed: true,
+        },
+    ),
+]

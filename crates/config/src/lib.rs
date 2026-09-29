@@ -11,10 +11,9 @@ mod writer;
 pub use discovery::resolve_project_env_file_path;
 pub use env::{
     AllocationEnvContext, MANAGED_ENV_END_MARKER, MANAGED_ENV_START_MARKER,
-    ManagedEnvBlockTransform, ProjectEnvContext, ProjectEnvWarning, RenderedProjectEnv,
-    ResourceEnvContext, format_env_value, format_project_env, render_project_env,
-    transform_managed_env_block, validate_managed_env_block, validate_project_env_shape,
-    write_project_env_file,
+    ManagedEnvBlockTransform, ProjectEnvContext, RenderedProjectEnv, ResourceEnvContext,
+    format_env_value, format_project_env, render_project_env, transform_managed_env_block,
+    validate_managed_env_block, validate_project_env_shape, write_project_env_file,
 };
 pub use error::{ConfigCapability, ConfigError};
 pub use hostname::{
