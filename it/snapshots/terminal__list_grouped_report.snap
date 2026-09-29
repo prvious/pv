@@ -2,7 +2,7 @@
 source: it/terminal.rs
 expression: session.screen()
 ---
-[pv] list                                                                                     v0.2.4
+[pv] list                                                                                     v0.2.5
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 PROJECT  MODE  PHP  STATUS  RESOURCES  ENV  PATH

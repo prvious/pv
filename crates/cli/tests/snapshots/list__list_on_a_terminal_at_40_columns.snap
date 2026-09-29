@@ -2,7 +2,7 @@
 source: crates/cli/tests/list.rs
 expression: compact
 ---
-[pv] list                         v0.2.4
+[pv] list                         v0.2.5
 ────────────────────────────────────────
 
 PROJECTS

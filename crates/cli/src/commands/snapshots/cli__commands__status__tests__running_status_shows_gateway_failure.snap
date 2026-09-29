@@ -2,7 +2,7 @@
 source: crates/cli/src/commands/status.rs
 expression: "String::from_utf8(bytes)?"
 ---
-[pv] status                                                                                   v0.2.4
+[pv] status                                                                                   v0.2.5
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ✗  PV is running · system needs attention · 1 Project needs attention

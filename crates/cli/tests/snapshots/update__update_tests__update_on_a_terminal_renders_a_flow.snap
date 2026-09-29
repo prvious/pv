@@ -8,6 +8,6 @@ RunOutput {
             0,
         ),
     ),
-    stdout: "[pv] update\n\n┌  PV update\n│\n◇  PV application: current 0.2.4\n│\n◇  Privileged helper: current 1.0.0 (protocol 1)\n│\n◇  Managed Resources: updated 2 artifact(s)\n│\n└  Managed Resources reconciled: system ok\n",
+    stdout: "[pv] update\n\n┌  PV update\n│\n◇  PV application: current 0.2.5\n│\n◇  Privileged helper: current 1.0.0 (protocol 1)\n│\n◇  Managed Resources: updated 2 artifact(s)\n│\n└  Managed Resources reconciled: system ok\n",
     stderr: "Waiting for the reconciliation slot (elapsed: 0s)\n",
 }

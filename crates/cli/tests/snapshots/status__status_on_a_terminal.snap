@@ -2,7 +2,7 @@
 source: crates/cli/tests/status.rs
 expression: output.stdout
 ---
-[pv] status                                                                                                       v0.2.4
+[pv] status                                                                                                       v0.2.5
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ✗  PV is disabled · system needs attention
