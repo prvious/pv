@@ -91,6 +91,8 @@ pv link ~/Code/acme --hostname acme.test
 
 `pv link` records desired Project state and requests daemon reconciliation. It can run before setup, but the Project is not reachable until setup completes.
 
+Every one-label subdomain of a served Project's hostname reaches the same Project over HTTPS, so `https://tenant.acme.test` is served by `acme.test`. Deeper names such as `v1.tenant.acme.test` are not. To send a subdomain to a different Project, link that Project with the exact hostname, such as `pv link ~/Code/api --hostname api.acme.test`. While that Project is served, its exact hostname always wins, and it gets its own subdomains. While it is resource-only (`serve: false`), the parent answers that hostname.
+
 Open a linked Project:
 
 ```shell
@@ -121,8 +123,6 @@ Example:
 ```yaml
 php: "8.5"
 root: public
-hostnames:
-  - api.acme.test
 env:
   APP_URL: "${url}"
 mysql:

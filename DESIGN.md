@@ -348,7 +348,7 @@ export COMPOSER_CACHE_DIR="/Users/<user>/.pv/composer/cache";
 
 `pv env` only prints shell code. It does not create directories or otherwise mutate filesystem state during shell startup.
 
-`pv project:env` prints the generated Project environment values PV would render into the PV-managed block, without editing the configured env file. With no argument, it resolves the current directory's Project. With a selector argument, it resolves an exact Project slug or Project hostname, including additional hostnames declared in `hostnames:`. Bare slug/normalized-hostname ambiguity fails and suggests the full `.test` hostname. It prints actual rendered values, including secrets. Broad status commands should avoid printing secrets.
+`pv project:env` prints the generated Project environment values PV would render into the PV-managed block, without editing the configured env file. With no argument, it resolves the current directory's Project. With a selector argument, it resolves an exact Project slug or primary Project hostname. Bare slug/normalized-hostname ambiguity fails and suggests the full `.test` hostname. It prints actual rendered values, including secrets. Broad status commands should avoid printing secrets.
 
 ## Multi-version PHP
 
@@ -412,11 +412,13 @@ Gateway access logs are enabled by default, stored locally under `~/.pv/logs/`, 
 
 When routing or Gateway config changes, PV loads the Gateway config through the Caddy admin API contract above. A matching owned Gateway is kept running on load rejection or API unavailability; only an absent or obsolete process may be replaced.
 
-PV owns one local CA and passes that CA to the standalone Caddy Gateway configuration. Caddy generates and manages Project certificates from that CA as needed for hostnames in PV's desired routing table: primary Project hostnames plus additional `hostnames:` from valid Project config. The Gateway selects certificates by SNI.
+PV owns one local CA and passes that CA to the standalone Caddy Gateway configuration. Caddy generates and manages Project certificates from that CA as needed for hostnames in PV's desired routing table: each served Project's primary hostname and its one-label wildcard, such as `acme.test` and `*.acme.test`. The Gateway selects certificates by SNI.
 
 While a Project is resource-only, PV retains any existing stable Project TLS files but does not refresh them or include the Project in Gateway TLS demand. Re-enabling serving resumes normal TLS reconciliation after hostname and document-root validation succeeds.
 
-The Gateway does not automatically route `*.project.test` to a Project. Subdomain routing must be explicitly requested in Project config, which allows `acme.test` and `api.acme.test` to belong to different Projects.
+The Gateway routes each served Project's primary hostname and every one-label subdomain of it to that Project: `acme.test` also answers `tenant.acme.test`, but not `v1.tenant.acme.test`. PHP-serving workers accept the same Host values after the Gateway proxies them. A Project linked with its own exact hostname, such as `api.acme.test`, wins over the parent's wildcard regardless of generated config order, and it gets its own one-label wildcard in turn. Deeper names reach a Project only through such an explicitly linked intermediate Project. PV relies on Caddy for both rules: site blocks with a wildcard sort after exact site blocks, and `*` matches exactly one label.
+
+A resource-only Project has no Gateway route, so while a sub-Project such as `api.acme.test` is resource-only, the parent's wildcard answers its hostname.
 
 For unknown `.test` hostnames, the Gateway should return a simple self-contained HTML response explaining that no PV Project is linked for the hostname and suggesting `pv link` when technically feasible.
 
@@ -1110,7 +1112,7 @@ An empty Project config is valid and means no Project-specific overrides. PV use
 
 Project config accepts a root-level `serve` boolean. It defaults to `true`. With `serve: false`, the Project remains linked and PV still reconciles its declared Managed Resources, Resource allocations, and environment mappings, but PV does not create a Gateway route, TLS demand, or PHP worker for the Project. PV does not start framework or application development servers on the Project's behalf.
 
-Serving-only config remains valid but dormant while `serve: false`. This includes `root`, `hostnames:`, the primary Project hostname, root env entries that use `${url}`, and env entries at any scope that use `${tls.cert}`, `${tls.key}`, or `${tls.ca}`. PV preserves those values in user-owned config, ignores them for runtime planning, and omits env entries that depend on serving-only placeholders. If serving is enabled again, PV validates and applies those values normally and restores the omitted env entries. Resource and allocation `${url}` values remain active while serving is disabled.
+Serving-only config remains valid but dormant while `serve: false`. This includes `root`, the primary Project hostname, root env entries that use `${url}`, and env entries at any scope that use `${tls.cert}`, `${tls.key}`, or `${tls.ca}`. PV preserves those values in user-owned config, ignores them for runtime planning, and omits env entries that depend on serving-only placeholders. If serving is enabled again, PV validates and applies those values normally and restores the omitted env entries. Resource and allocation `${url}` values remain active while serving is disabled.
 
 Basic YAML types, unknown keys, env key rules, and placeholder spelling are validated in both serving modes. A malformed dormant value is still a config error when it can be validated without serving context. Hostname collision and document-root existence checks are deferred until serving is enabled. As with other invalid Project config, a failed transition keeps the last valid desired state active.
 
@@ -1120,15 +1122,11 @@ Version/track fields may be YAML strings or numbers. PV normalizes them to strin
 
 Project config can request Managed Resource tracks and define environment variable mappings for a Project. The mappings may use PV-provided placeholder values such as resource username, password, database, bucket, prefix, endpoint, and assigned port.
 
-Project config can declare additional Project hostnames with `hostnames:`. These hostnames are routed to the same Project and receive Gateway TLS certificates for their own hostnames. `hostnames:` is additive and does not include or redefine the primary Project hostname, which comes from `pv link --hostname` or the directory-derived default. Additional hostnames must be full `.test` hostnames; PV v1 rejects non-`.test` hostnames and wildcard hostnames.
+A Project's only configured hostname is its primary hostname, which comes from `pv link --hostname` or the directory-derived default; its one-label subdomains are routed automatically. Project config has no hostname key, so `hostnames:` fails validation as an unknown key.
 
-All hostnames in PV's desired routing table are unique across primary and additional hostnames. If an additional hostname conflicts with another Project's primary or additional hostname, the Project config is invalid. If `pv link --hostname` tries to use a hostname that is already primary or additional for another Project, it fails with a clear collision error. PV keeps serving the last valid desired state and surfaces conflicts in `pv list` and `pv status`.
+Primary Project hostnames are unique. If `pv link --hostname` tries to use another Project's primary hostname, it fails with a clear collision error. A subdomain of another Project's hostname is not a collision.
 
-When a served Project changes to `serve: false`, it retains its primary and additional hostname reservations so another Project cannot take them during a temporary serving pause. A Project first linked with `serve: false` does not need or reserve a real `.test` hostname.
-
-Project config `hostnames:` cannot include the Project's own primary hostname.
-
-Project config `hostnames:` cannot contain duplicates after normalization.
+When a served Project changes to `serve: false`, it retains its primary hostname reservation so another Project cannot take it during a temporary serving pause. A Project first linked with `serve: false` does not need or reserve a real `.test` hostname.
 
 Project config can override the served document root with `root:`. The value must be relative to the Project root; `.` is allowed and means the Project root. PV rejects absolute paths, document roots that escape the Project directory, or paths that do not exist as directories. PV validates document roots using canonicalized paths and rejects symlink-resolved paths that escape the canonical Project root.
 
@@ -1236,7 +1234,7 @@ Project config env values support PV's simple placeholder syntax: `${name}`. PV 
 
 Placeholder names must use lowercase snake_case, such as `${url}`, `${access_key}`, `${secret_key}`, and `${smtp_port}`. `${tls.ca}`, `${tls.cert}`, and `${tls.key}` are the only dotted placeholder names.
 
-At root `env:`, `${url}` renders the URL for the primary Project hostname, such as `https://acme.test`. It does not vary by additional hostnames. In resource and allocation `env:`, `${url}` renders that resource or allocation's URL where its placeholder contract provides one.
+At root `env:`, `${url}` renders the URL for the primary Project hostname, such as `https://acme.test`. It does not vary by the requested subdomain. In resource and allocation `env:`, `${url}` renders that resource or allocation's URL where its placeholder contract provides one.
 
 `${tls.key}` renders the stable PV-owned path to the TLS private key for the Project's primary hostname. `${tls.cert}` renders the stable PV-owned path to the TLS certificate chain for the Project's primary hostname. `${tls.ca}` renders the path to PV's local CA certificate. PV must never expose the local CA private key through Project env placeholders.
 
@@ -1244,7 +1242,7 @@ Existing Project config must replace `${tls_ca}` with `${tls.ca}`, `${tls_cert}`
 
 While `serve: false`, root `${url}` and `${tls.key}`, `${tls.cert}`, and `${tls.ca}` at any scope remain recognized placeholders, but PV omits any complete env entry containing one of them instead of rendering a partial or fake serving value. Other entries at the same mapping scope continue to render.
 
-TLS placeholders are scoped to the primary Project hostname only. They do not render files for additional `hostnames:`, do not imply wildcard certificate support, and do not imply wildcard Project routing. Additional hostnames remain explicit Gateway routes with standalone Caddy-managed TLS certificates.
+TLS placeholders are scoped to the primary Project hostname only. Their files do not cover the Project's wildcard subdomains; those use the Gateway's standalone Caddy-managed TLS certificates.
 
 PV owns stable Project TLS files under Project-specific storage in `~/.pv/certificates/` and refreshes them during reconciliation when the Project's primary hostname or local CA changes. Placeholder values must not point at Caddy's internal certificate storage; that layout is an implementation detail of the managed Gateway.
 
@@ -1268,10 +1266,6 @@ Example Project config:
 php: "8.4"
 
 root: public
-
-hostnames:
-  - api.acme.test
-  - admin.acme.test
 
 env:
   APP_URL: "${url}"
@@ -1422,7 +1416,7 @@ Primary Project hostnames may contain multiple labels as long as they end in `.t
 
 If `pv link` is run for an already linked Project with a different `--hostname`, PV updates that Project's hostname after checking for collisions, then requests reconciliation.
 
-Changing a Project's primary hostname triggers full Project reconciliation, including additional hostname validation, Gateway routing updates, certificate configuration updates, and PV-managed `.env` updates when the Project has opted into env rendering.
+Changing a Project's primary hostname triggers full Project reconciliation, including Gateway routing updates, certificate configuration updates, and PV-managed `.env` updates when the Project has opted into env rendering.
 
 If `pv link` is run for an already linked Project with the same hostname, it is idempotent: PV refreshes desired state, requests reconciliation, reports that the Project was already linked, and exits successfully.
 
@@ -1432,11 +1426,11 @@ If `pv link` is run for an already linked Project without `--hostname`, PV prese
 
 `pv unlink` with no argument unlinks the Project resolved from the current directory, using the nearest linked Project ancestor rule.
 
-`pv unlink <selector>` unlinks the Project resolved by an exact Project slug or hostname. Hostname selectors accept the same forms as `pv link --hostname`, so `acme` and `acme.test` can normalize to `acme.test`. Additional hostnames declared in `hostnames:` may also resolve the owning Project. Output identifies the owning primary Project hostname for a served Project and the Project slug for a resource-only Project.
+`pv unlink <selector>` unlinks the Project resolved by an exact Project slug or hostname. Hostname selectors accept the same forms as `pv link --hostname`, so `acme` and `acme.test` can normalize to `acme.test`. Selectors match exact primary hostnames only; a wildcard subdomain such as `tenant.acme.test` does not resolve the Project that serves it. Output identifies the primary Project hostname for a served Project and the Project slug for a resource-only Project.
 
 If a bare selector could resolve both an exact Project slug and a normalized hostname belonging to different Projects, PV fails clearly and suggests using the full `.test` hostname to select the served Project.
 
-`pv unlink <additional-hostname>` does not require confirmation in v1 because unlink is non-destructive, but output must make the resolved primary Project explicit.
+`pv unlink <selector>` does not require confirmation in v1 because unlink is non-destructive, but output must make the resolved Project explicit.
 
 `pv unlink` exits non-zero if the target cannot be resolved to a linked Project.
 
@@ -1450,11 +1444,9 @@ If PV previously generated a Project `.env` block, `pv unlink` leaves the block 
 
 With a hostname argument, `pv open <hostname>` opens that Project directly. With no argument, it opens the current Project or falls back to the picker.
 
-When opening a Project without a hostname argument, PV opens the primary Project hostname even if the Project has additional hostnames.
+PV opens the Project's primary hostname.
 
-The hostname argument accepts the same normalized forms as `pv unlink`, so `acme` and `acme.test` both resolve to `acme.test`.
-
-If the hostname argument matches an additional hostname from a Project's `hostnames:`, `pv open` opens that exact hostname.
+The hostname argument accepts the same normalized forms as `pv unlink`, so `acme` and `acme.test` both resolve to `acme.test`. Like `pv unlink`, it does not resolve wildcard subdomains.
 
 If no current Project can be resolved and the terminal is non-interactive, `pv open` exits non-zero unless a hostname argument was provided.
 
@@ -1470,7 +1462,7 @@ An explicit resource-only Project target returns a clear non-zero error and neve
 
 If `pv open` is run outside a linked Project, it shows a keyboard picker of linked Projects (see Terminal Presentation) and opens the selected Project in the user's browser.
 
-The picker displays each Project's primary hostname first, followed by its canonical absolute path. For example: `acme.test  /Users/me/Code/acme`. Additional hostnames are not separate picker entries in v1.
+The picker displays each Project's primary hostname first, followed by its canonical absolute path. For example: `acme.test  /Users/me/Code/acme`.
 
 The picker sorts Projects by primary Project hostname.
 
@@ -1482,7 +1474,7 @@ Status values use words such as `ok`, `pending`, `failed`, `degraded`, or `unkno
 
 If the daemon has not reconciled a Project yet, the Project still appears with pending or unknown observed status.
 
-In the Project field, `pv list` normally shows the primary hostname for a served Project and the immutable slug for a resource-only Project. It may show a compact indicator for additional hostnames, such as a count. Full additional hostname detail belongs in broader status/detail output.
+In the Project field, `pv list` normally shows the primary hostname for a served Project and the immutable slug for a resource-only Project.
 
 `pv list --json` includes `mode`, `slug`, nullable `hostname`, and `env_file` for every Project. The internal `.invalid` compatibility hostname is represented as `null`, never as a string.
 

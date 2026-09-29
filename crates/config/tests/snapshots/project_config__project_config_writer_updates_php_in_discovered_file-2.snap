@@ -4,8 +4,6 @@ expression: "read_file(&project.join(\"pv.yml\"))?"
 ---
 php: '8.4'
 root: public
-hostnames:
-- admin.acme.test
 env:
   APP_URL: ${url}
 mysql:

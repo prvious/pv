@@ -12,7 +12,7 @@ expression: "(output, config_after, project_snapshot(&project_after, tempdir.pat
         stdout: "",
         stderr: "error: artifact manifest is unavailable from `https://artifacts.example.test/manifest.json` and cache `<tempdir>/home/.pv/downloads/manifest.json`: HTTP request failed for `https://artifacts.example.test/manifest.json`: no scripted text response; cache fallback failed: filesystem error at \"<tempdir>/home/.pv/downloads/manifest.json\": No such file or directory (os error 2)\n",
     },
-    "php: '8.3'\nhostnames:\n  - api.acme.test\n",
+    "php: '8.3'\nroot: .\n",
     ProjectSnapshot {
         primary_hostname: "acme.test",
         path: "acme",

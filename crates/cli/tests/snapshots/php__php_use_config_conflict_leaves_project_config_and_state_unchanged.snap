@@ -12,7 +12,7 @@ expression: "(output, preferred_after, alternate_after,\nproject_snapshot(&proje
         stdout: "",
         stderr: "error: Project config file conflict: both \"<tempdir>/acme/pv.yml\" and \"<tempdir>/acme/pv.yaml\" exist\n",
     },
-    "php: '8.3'\nhostnames:\n  - api.acme.test\n",
+    "php: '8.3'\nroot: .\n",
     "php: '8.2'\n",
     ProjectSnapshot {
         primary_hostname: "acme.test",

@@ -23,10 +23,9 @@ expression: "(output, config_file.config,\nproject_snapshot(&project_after, temp
                 extensions: [],
             },
         ),
-        root: None,
-        hostnames: [
-            "api.acme.test",
-        ],
+        root: Some(
+            ".",
+        ),
         env: {},
         resources: {},
     },

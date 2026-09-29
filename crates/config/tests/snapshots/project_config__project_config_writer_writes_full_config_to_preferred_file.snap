@@ -21,7 +21,6 @@ expression: "(written.path.file_name(), written.exists, reloaded.config)"
         root: Some(
             "public",
         ),
-        hostnames: [],
         env: {
             "APP_URL": "${url}",
         },

@@ -5,5 +5,3 @@ expression: "read_file(&project.join(\"pv.yml\"))?"
 serve: false
 env_file: .env.local
 root: missing
-hostnames:
-- api.example.test

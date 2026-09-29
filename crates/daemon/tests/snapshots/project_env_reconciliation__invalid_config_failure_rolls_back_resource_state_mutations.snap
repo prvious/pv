@@ -103,11 +103,6 @@ expression: snapshot
             "type": String("job_failed"),
         },
     ],
-    Some(
-        [
-            "api.acme.test",
-        ],
-    ),
     [
         ProjectManagedResourceRecord {
             project_id: "<project_id>",

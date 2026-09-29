@@ -23,7 +23,6 @@ RuntimePlan {
                     id: "<project_id>",
                     render_config: true,
                     primary_hostname: "other.test",
-                    hostnames: [],
                     project_root: "<tempdir>/other/api",
                     root: "<tempdir>/other/api/public",
                 },
@@ -40,9 +39,6 @@ RuntimePlan {
                     id: "<project_id>",
                     render_config: true,
                     primary_hostname: "acme.test",
-                    hostnames: [
-                        "api.acme.test",
-                    ],
                     project_root: "<tempdir>/acme",
                     root: "<tempdir>/acme/public",
                 },

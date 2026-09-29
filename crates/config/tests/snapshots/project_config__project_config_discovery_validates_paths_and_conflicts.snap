@@ -14,9 +14,6 @@ expression: "(config_file.path.file_name(), config_file.exists, config_file.conf
         root: Some(
             "public",
         ),
-        hostnames: [
-            "admin.acme.test",
-        ],
         env: {},
         resources: {},
     },

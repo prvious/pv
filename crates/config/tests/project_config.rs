@@ -4,7 +4,10 @@ use std::os::unix::fs::PermissionsExt;
 use anyhow::{Result, anyhow};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
-use config::{ConfigError, ProjectConfig, ProjectConfigFile, write_project_php_track};
+use config::{
+    ConfigError, ProjectConfig, ProjectConfigFile, normalize_primary_hostname,
+    write_project_php_track,
+};
 use insta::{assert_debug_snapshot, assert_snapshot};
 
 #[test]
@@ -13,8 +16,6 @@ fn project_config_parses_strict_resource_env_shape() -> Result<()> {
         r#"
 php: 8.4
 root: public
-hostnames:
-  - Api.Acme.test.
 env:
   APP_URL: "${url}"
 mysql:
@@ -43,8 +44,6 @@ fn project_config_parses_resource_only_controls_and_defaults() -> Result<()> {
 serve: false
 env_file: .env.local
 root: missing
-hostnames:
-  - Api.Example.test.
 env:
   APP_URL: "${url}"
   APP_ENV: local
@@ -84,16 +83,6 @@ fn project_config_rejects_invalid_resource_only_control_shapes() {
         ProjectConfig::parse("serve: false\nroot: public/../../outside\n"),
         Err(ConfigError::RootEscapesProject { root })
             if root == "public/../../outside"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse("serve: false\nhostnames:\n  - '*.acme.test'\n"),
-        Err(ConfigError::InvalidHostname { hostname, .. }) if hostname == "*.acme.test"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse(
-            "serve: false\nhostnames:\n  - api.acme.test\n  - API.ACME.TEST.\n"
-        ),
-        Err(ConfigError::DuplicateHostname { hostname }) if hostname == "api.acme.test"
     ));
 }
 
@@ -570,8 +559,10 @@ postgres:
 "#,
     );
     let unknown = ProjectConfig::parse("php: 8.4\nunexpected: true\n");
-    let invalid_hostname = ProjectConfig::parse("hostnames:\n  - api.example.com\n");
-    let long_label = ProjectConfig::parse(&format!("hostnames:\n  - {}.test\n", "a".repeat(64)));
+    let removed_hostnames = ProjectConfig::parse("hostnames:\n  - api.acme.test\n");
+    let invalid_hostname = normalize_primary_hostname("api.example.com");
+    let long_label = normalize_primary_hostname(&format!("{}.test", "a".repeat(64)));
+    let wildcard = normalize_primary_hostname("*.acme.test");
 
     assert!(matches!(
         helper,
@@ -580,6 +571,14 @@ postgres:
     assert!(matches!(
         unknown,
         Err(ConfigError::UnknownTopLevelKey { key }) if key == "unexpected"
+    ));
+    assert!(matches!(
+        removed_hostnames,
+        Err(ConfigError::UnknownTopLevelKey { key }) if key == "hostnames"
+    ));
+    assert!(matches!(
+        wildcard,
+        Err(ConfigError::InvalidHostname { hostname, .. }) if hostname == "*.acme.test"
     ));
     assert!(matches!(
         invalid_hostname,
@@ -599,10 +598,7 @@ fn project_config_discovery_validates_paths_and_conflicts() -> Result<()> {
     let project = tempdir.path().join("acme");
     let public = project.join("public");
     create_dir(&public)?;
-    write_file(
-        &project.join("pv.yml"),
-        "root: public\nhostnames:\n  - admin.acme.test\n",
-    )?;
+    write_file(&project.join("pv.yml"), "root: public\n")?;
 
     let config_file = ProjectConfigFile::read_from_root(&project)?;
 
@@ -632,8 +628,6 @@ fn project_config_writer_updates_php_in_discovered_file() -> Result<()> {
         &project.join("pv.yml"),
         r#"
 root: public
-hostnames:
-  - Admin.Acme.test.
 env:
   APP_URL: "${url}"
 mysql:
@@ -697,9 +691,7 @@ fn project_config_writer_preserves_resource_only_controls() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    let config = ProjectConfig::parse(
-        "serve: false\nenv_file: .env.local\nroot: missing\nhostnames:\n  - api.example.test\n",
-    )?;
+    let config = ProjectConfig::parse("serve: false\nenv_file: .env.local\nroot: missing\n")?;
 
     config::write_project_config(&project, &config)?;
     let reloaded = ProjectConfigFile::read_from_root(&project)?;
@@ -916,10 +908,7 @@ fn resource_only_config_defers_root_existence_validation() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "serve: false\nroot: missing\nhostnames:\n  - Api.Acme.test.\n",
-    )?;
+    write_file(&project.join("pv.yml"), "serve: false\nroot: missing\n")?;
 
     let config_file = ProjectConfigFile::read_from_root(&project)?;
 
@@ -928,7 +917,6 @@ fn resource_only_config_defers_root_existence_validation() -> Result<()> {
         config_file.config.root.as_deref(),
         Some(Utf8Path::new("missing"))
     );
-    assert_eq!(config_file.config.hostnames, ["api.acme.test"]);
 
     Ok(())
 }

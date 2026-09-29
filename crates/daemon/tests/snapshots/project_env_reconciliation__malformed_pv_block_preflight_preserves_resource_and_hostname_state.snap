@@ -50,7 +50,9 @@ expression: snapshot
     ],
     "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_URL=https://old.test\n",
     Some(
-        [],
+        Some(
+            "acme.test",
+        ),
     ),
     [],
     [],

@@ -5,7 +5,6 @@ expression: snapshot
 Object {
     "projects": Array [
         Object {
-            "additional_hostnames": Array [],
             "config_path": String("<tempdir>/Resource Project/pv.yml"),
             "env": String("none"),
             "env_file": String("config/development.env"),

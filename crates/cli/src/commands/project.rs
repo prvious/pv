@@ -60,7 +60,6 @@ pub(crate) fn link(
             primary_hostname,
             config_path: config_file.path,
             desired_php_track,
-            additional_hostnames: config_file.config.hostnames,
         },
         mode,
     )?;
@@ -183,12 +182,9 @@ pub(crate) fn open(
     let database = Database::open(&paths)?;
     let (project, hostname) = match args.hostname {
         Some(selector) => {
-            let resolved = resolve_project_selector(&database, &selector)?;
-            let hostname = served_project_hostname(&resolved.project)?.to_string();
-            (
-                resolved.project,
-                resolved.matched_hostname.unwrap_or(hostname),
-            )
+            let project = resolve_project_selector(&database, &selector)?;
+            let hostname = served_project_hostname(&project)?.to_string();
+            (project, hostname)
         }
         None => resolve_open_project(&database, environment, streams)?,
     };
@@ -221,11 +217,8 @@ pub(crate) fn env(
     let config_file = ProjectConfigFile::read_from_root(&project.path)?;
     let serves_http = project.mode == ProjectMode::Served && config_file.config.serve;
     if serves_http {
-        database.validate_project_hostnames(
-            &project.id,
-            served_project_hostname(&project)?,
-            &config_file.config.hostnames,
-        )?;
+        database
+            .validate_project_primary_hostname(&project.id, served_project_hostname(&project)?)?;
     }
     config::validate_project_env_shape(&config_file.config)?;
 
@@ -557,7 +550,7 @@ fn resolve_project(
     environment: &impl Environment,
 ) -> Result<ProjectRecord, ExecuteError> {
     if let Some(selector) = selector {
-        return Ok(resolve_project_selector(database, selector)?.project);
+        return resolve_project_selector(database, selector);
     }
 
     let current_dir = current_dir(environment)?;
@@ -566,26 +559,18 @@ fn resolve_project(
         .ok_or_else(|| CliError::ProjectNotResolved.into())
 }
 
-struct ResolvedProjectSelector {
-    project: ProjectRecord,
-    matched_hostname: Option<String>,
-}
-
 fn resolve_project_selector(
     database: &Database,
     selector: &str,
-) -> Result<ResolvedProjectSelector, ExecuteError> {
+) -> Result<ProjectRecord, ExecuteError> {
     if selector.contains('.') {
         let hostname = config::normalize_primary_hostname(selector)?;
-        let project = database.project_by_hostname(&hostname)?.ok_or_else(|| {
+
+        return database.project_by_hostname(&hostname)?.ok_or_else(|| {
             CliError::ProjectSelectorNotFound {
                 selector: selector.to_string(),
             }
-        })?;
-
-        return Ok(ResolvedProjectSelector {
-            project,
-            matched_hostname: Some(hostname),
+            .into()
         });
     }
 
@@ -603,17 +588,8 @@ fn resolve_project_selector(
         .into());
     }
 
-    if let Some(project) = slug_project {
-        return Ok(ResolvedProjectSelector {
-            project,
-            matched_hostname: None,
-        });
-    }
-    if let Some(project) = hostname_project {
-        return Ok(ResolvedProjectSelector {
-            project,
-            matched_hostname: Some(hostname),
-        });
+    if let Some(project) = slug_project.or(hostname_project) {
+        return Ok(project);
     }
 
     Err(CliError::ProjectSelectorNotFound {
@@ -696,7 +672,6 @@ struct ProjectListItem {
     mode: &'static str,
     slug: String,
     hostname: Option<String>,
-    additional_hostnames: Vec<String>,
     env_file: Option<String>,
     php: String,
     status: &'static str,
@@ -792,11 +767,8 @@ fn project_list_status(
     if project.mode == ProjectMode::Served
         && config_file.config.serve
         && let Some(primary_hostname) = project.primary_hostname.as_deref()
-        && let Err(error) = database.validate_project_hostnames(
-            &project.id,
-            primary_hostname,
-            &config_file.config.hostnames,
-        )
+        && let Err(error) =
+            database.validate_project_primary_hostname(&project.id, primary_hostname)
     {
         return Ok(ProjectListStatus {
             project: ProjectStatus::ConfigInvalid,
@@ -852,7 +824,6 @@ fn project_list_item(
         mode: project.mode.as_str(),
         slug: project.slug,
         hostname: project.primary_hostname,
-        additional_hostnames: project.additional_hostnames,
         env_file,
         php: project
             .desired_php_track

@@ -442,12 +442,12 @@ fn project_link_list_and_unlink_use_injected_home() -> Result<()> {
     create_dir(&project.join("public"))?;
     write_file(
         &project.join("pv.yml"),
-        "php: 8.4\nhostnames:\n  - api.acme-store.test\nenv:\n  APP_URL: \"${url}\"\n",
+        "php: 8.4\nenv:\n  APP_URL: \"${url}\"\n",
     )?;
 
     let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
     let list_after_link = run_pv_in_dir_with_home(&["list"], &project, &home)?;
-    let unlink = run_pv_in_dir_with_home(&["unlink", "api.acme-store.test"], &project, &home)?;
+    let unlink = run_pv_in_dir_with_home(&["unlink", "acme-store.test"], &project, &home)?;
     let list_after_unlink = run_pv_in_dir_with_home(&["list"], &project, &home)?;
 
     let mut settings = insta::Settings::clone_current();
@@ -749,7 +749,7 @@ fn project_list_reports_invalid_linked_config() -> Result<()> {
 }
 
 #[test]
-fn project_list_reports_config_hostname_validation_errors() -> Result<()> {
+fn project_list_reports_removed_hostnames_config_key() -> Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("Acme Store");
@@ -759,7 +759,7 @@ fn project_list_reports_config_hostname_validation_errors() -> Result<()> {
     let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
     write_file(
         &project.join("pv.yml"),
-        "php: 8.4\nhostnames:\n  - acme-store.test\n",
+        "php: 8.4\nhostnames:\n  - api.acme-store.test\n",
     )?;
     let list = run_pv_in_dir_with_home(&["list"], &project, &home)?;
 

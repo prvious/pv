@@ -1118,7 +1118,6 @@ mod tests {
             primary_hostname: "health.test".to_owned(),
             config_path,
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         })?;
         database.record_managed_resource_track_desired(
             "frankenphp",
@@ -1196,7 +1195,6 @@ mod tests {
                 primary_hostname: "health.test".to_owned(),
                 config_path,
                 desired_php_track: Some("8.4".to_owned()),
-                additional_hostnames: Vec::new(),
             })?
             .project;
         database.record_managed_resource_track_installed(
@@ -1538,7 +1536,6 @@ mod tests {
                 primary_hostname: hostname.to_owned(),
                 config_path,
                 desired_php_track: Some(php_track.to_owned()),
-                additional_hostnames: Vec::new(),
             })?
             .project;
 

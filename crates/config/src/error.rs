@@ -106,9 +106,6 @@ pub enum ConfigError {
         reason: &'static str,
     },
 
-    #[error("duplicate Project config hostname `{hostname}`")]
-    DuplicateHostname { hostname: String },
-
     #[error("Project config root must be relative to the Project root: {root:?}")]
     AbsoluteRoot { root: Utf8PathBuf },
 

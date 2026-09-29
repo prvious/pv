@@ -8,7 +8,6 @@ expression: "(defaults, resource_only)"
         env_file: ".env",
         php: None,
         root: None,
-        hostnames: [],
         env: {},
         resources: {},
     },
@@ -19,9 +18,6 @@ expression: "(defaults, resource_only)"
         root: Some(
             "missing",
         ),
-        hostnames: [
-            "api.example.test",
-        ],
         env: {
             "APP_ENV": "local",
             "APP_URL": "${url}",

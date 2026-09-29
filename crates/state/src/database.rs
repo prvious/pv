@@ -296,7 +296,6 @@ pub struct LinkProjectInput {
     pub primary_hostname: String,
     pub config_path: Utf8PathBuf,
     pub desired_php_track: Option<String>,
-    pub additional_hostnames: Vec<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -353,7 +352,6 @@ pub struct ProjectRecord {
     pub config_path: Utf8PathBuf,
     pub desired_php_track: Option<String>,
     pub php_runtime: ProjectPhpRuntimeRecord,
-    pub additional_hostnames: Vec<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -1007,21 +1005,12 @@ impl Database {
             None => generate_project_slug(&transaction, &input.path)?,
         };
         if mode == ProjectMode::ResourceOnly {
-            match &existing {
-                Some(project) => {
-                    input.primary_hostname = project
-                        .primary_hostname
-                        .clone()
-                        .unwrap_or_else(|| internal_project_hostname(&project_id));
-                    input.additional_hostnames = project.additional_hostnames.clone();
-                }
-                None => {
-                    input.primary_hostname = internal_project_hostname(&project_id);
-                    input.additional_hostnames.clear();
-                }
-            }
+            input.primary_hostname = existing
+                .as_ref()
+                .and_then(|project| project.primary_hostname.clone())
+                .unwrap_or_else(|| internal_project_hostname(&project_id));
         } else {
-            validate_project_hostnames_in_transaction(&transaction, &project_id, &input)?;
+            validate_project_hostname_owner(&transaction, &project_id, &input.primary_hostname)?;
         }
         let status = match &existing {
             Some(project) if project_matches_input(project, &input, mode) => {
@@ -1033,11 +1022,6 @@ impl Database {
 
         match &existing {
             Some(project) => {
-                delete_same_project_additional_hostname_in_transaction(
-                    &transaction,
-                    &project.id,
-                    &input.primary_hostname,
-                )?;
                 update_project_in_transaction(&transaction, &project.id, &input, mode)?;
             }
             None => insert_project_in_transaction(
@@ -1053,7 +1037,11 @@ impl Database {
                 .as_ref()
                 .is_some_and(|project| project.primary_hostname.is_some())
         {
-            replace_project_hostnames_in_transaction(&transaction, &project_id, &input)?;
+            insert_project_primary_hostname_in_transaction(
+                &transaction,
+                &project_id,
+                &input.primary_hostname,
+            )?;
         }
         let project =
             project_by_id_in_transaction(&transaction, &project_id)?.ok_or_else(|| {
@@ -1092,69 +1080,12 @@ impl Database {
         Ok(project)
     }
 
-    pub fn validate_project_hostnames(
+    pub fn validate_project_primary_hostname(
         &self,
         project_id: &str,
         primary_hostname: &str,
-        additional_hostnames: &[String],
     ) -> Result<(), StateError> {
-        validate_project_hostname_set(
-            &self.connection,
-            project_id,
-            primary_hostname,
-            additional_hostnames,
-        )
-    }
-
-    pub fn replace_project_additional_hostnames(
-        &mut self,
-        project_id: &str,
-        additional_hostnames: &[String],
-    ) -> Result<ProjectRecord, StateError> {
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let project = project_by_id_in_transaction(&transaction, project_id)?.ok_or_else(|| {
-            StateError::ProjectNotFound {
-                target: project_id.to_string(),
-            }
-        })?;
-        let primary_hostname =
-            project
-                .primary_hostname
-                .clone()
-                .ok_or_else(|| StateError::ProjectNotServed {
-                    project_id: project_id.to_string(),
-                })?;
-        validate_project_hostname_set(
-            &transaction,
-            project_id,
-            &primary_hostname,
-            additional_hostnames,
-        )?;
-
-        if sorted_hostnames(&project.additional_hostnames) != sorted_hostnames(additional_hostnames)
-        {
-            let input = LinkProjectInput {
-                path: project.path.clone(),
-                original_path: project.original_path.clone(),
-                primary_hostname,
-                config_path: project.config_path.clone(),
-                desired_php_track: project.desired_php_track.clone(),
-                additional_hostnames: additional_hostnames.to_vec(),
-            };
-            update_project_in_transaction(&transaction, project_id, &input, ProjectMode::Served)?;
-            replace_project_hostnames_in_transaction(&transaction, project_id, &input)?;
-        }
-
-        let project = project_by_id_in_transaction(&transaction, project_id)?.ok_or_else(|| {
-            StateError::ProjectNotFound {
-                target: project_id.to_string(),
-            }
-        })?;
-        transaction.commit()?;
-
-        Ok(project)
+        validate_project_hostname_owner(&self.connection, project_id, primary_hostname)
     }
 
     pub fn replace_project_desired_php_track(
@@ -1212,18 +1143,20 @@ impl Database {
                 .primary_hostname
                 .clone()
                 .unwrap_or_else(|| internal_project_hostname(&project.id));
-            input.link.additional_hostnames = project.additional_hostnames.clone();
         } else {
-            validate_project_hostnames_in_transaction(&transaction, &project.id, &input.link)?;
+            validate_project_hostname_owner(
+                &transaction,
+                &project.id,
+                &input.link.primary_hostname,
+            )?;
         }
-        delete_same_project_additional_hostname_in_transaction(
-            &transaction,
-            &project.id,
-            &input.link.primary_hostname,
-        )?;
         update_project_in_transaction(&transaction, &project.id, &input.link, input.mode)?;
         if input.mode == ProjectMode::Served || project.primary_hostname.is_some() {
-            replace_project_hostnames_in_transaction(&transaction, &project.id, &input.link)?;
+            insert_project_primary_hostname_in_transaction(
+                &transaction,
+                &project.id,
+                &input.link.primary_hostname,
+            )?;
         }
         replace_project_php_runtime_in_connection(&transaction, &project.id, &runtime)?;
         record_project_env_observed_snapshot_in_transaction(
@@ -3137,7 +3070,6 @@ impl RuntimeObservedStateRow {
 
 impl ProjectRow {
     fn into_record(self, connection: &Connection) -> Result<ProjectRecord, StateError> {
-        let additional_hostnames = additional_hostnames_for_project(connection, &self.id)?;
         let php_runtime =
             project_php_runtime_for_project(connection, &self.id, self.desired_php_track.clone())?;
         let path = Utf8PathBuf::from(self.path);
@@ -3168,7 +3100,6 @@ impl ProjectRow {
             config_path,
             desired_php_track: self.desired_php_track,
             php_runtime,
-            additional_hostnames,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -3663,9 +3594,6 @@ fn validate_link_project_input(
     validate_project_path("config path", &input.config_path)?;
     if mode == ProjectMode::Served {
         validate_project_hostname(&input.primary_hostname)?;
-        for hostname in &input.additional_hostnames {
-            validate_project_hostname(hostname)?;
-        }
     }
     if let Some(track) = &input.desired_php_track {
         validate_project_php_track(track)?;
@@ -3866,15 +3794,6 @@ fn project_matches_input(
         && project.mode == mode
         && project.config_path == input.config_path
         && project.desired_php_track == input.desired_php_track
-        && sorted_hostnames(&project.additional_hostnames)
-            == sorted_hostnames(&input.additional_hostnames)
-}
-
-fn sorted_hostnames(hostnames: &[String]) -> Vec<String> {
-    let mut hostnames = hostnames.to_vec();
-    hostnames.sort();
-
-    hostnames
 }
 
 fn insert_project_in_transaction(
@@ -3951,84 +3870,33 @@ fn update_project_in_transaction(
     Ok(())
 }
 
-fn delete_same_project_additional_hostname_in_transaction(
+fn insert_project_primary_hostname_in_transaction(
     transaction: &Transaction<'_>,
     project_id: &str,
     hostname: &str,
 ) -> Result<(), StateError> {
     transaction.execute(
-        "DELETE FROM project_hostnames WHERE project_id = ?1 AND hostname = ?2 AND is_primary = 0",
-        params![project_id, hostname],
-    )?;
-
-    Ok(())
-}
-
-fn replace_project_hostnames_in_transaction(
-    transaction: &Transaction<'_>,
-    project_id: &str,
-    input: &LinkProjectInput,
-) -> Result<(), StateError> {
-    let created_at = timestamp()?;
-    transaction.execute(
         "INSERT OR IGNORE INTO project_hostnames (hostname, project_id, is_primary, created_at)
         VALUES (?1, ?2, 1, ?3)",
-        params![input.primary_hostname.as_str(), project_id, created_at],
+        params![hostname, project_id, timestamp()?],
     )?;
-    transaction.execute(
-        "DELETE FROM project_hostnames WHERE project_id = ?1 AND is_primary = 0",
-        params![project_id],
-    )?;
-
-    for hostname in &input.additional_hostnames {
-        transaction.execute(
-            "INSERT INTO project_hostnames (hostname, project_id, is_primary, created_at)
-            VALUES (?1, ?2, 0, ?3)",
-            params![hostname.as_str(), project_id, created_at],
-        )?;
-    }
 
     Ok(())
 }
 
-fn validate_project_hostnames_in_transaction(
-    transaction: &Transaction<'_>,
-    project_id: &str,
-    input: &LinkProjectInput,
-) -> Result<(), StateError> {
-    validate_project_hostname_set(
-        transaction,
-        project_id,
-        &input.primary_hostname,
-        &input.additional_hostnames,
-    )
-}
-
-fn validate_project_hostname_set(
+fn validate_project_hostname_owner(
     connection: &Connection,
     project_id: &str,
-    primary_hostname: &str,
-    additional_hostnames: &[String],
+    hostname: &str,
 ) -> Result<(), StateError> {
-    let mut hostnames = BTreeMap::new();
-    for hostname in
-        std::iter::once(primary_hostname).chain(additional_hostnames.iter().map(String::as_str))
+    validate_project_hostname(hostname)?;
+    if let Some(owner) = project_owner_for_hostname(connection, hostname)?
+        && owner != project_id
     {
-        validate_project_hostname(hostname)?;
-        if hostnames.insert(hostname, ()).is_some() {
-            return Err(StateError::DuplicateProjectHostname {
-                hostname: hostname.to_string(),
-            });
-        }
-
-        if let Some(owner) = project_owner_for_hostname(connection, hostname)?
-            && owner != project_id
-        {
-            return Err(StateError::ProjectHostnameCollision {
-                hostname: hostname.to_string(),
-                project_id: owner,
-            });
-        }
+        return Err(StateError::ProjectHostnameCollision {
+            hostname: hostname.to_string(),
+            project_id: owner,
+        });
     }
 
     Ok(())
@@ -4149,26 +4017,6 @@ fn random_project_id(rng: &mut fastrand::Rng) -> String {
     }
 
     id
-}
-
-fn additional_hostnames_for_project(
-    connection: &Connection,
-    project_id: &str,
-) -> Result<Vec<String>, StateError> {
-    let mut statement = connection.prepare(
-        "SELECT hostname
-        FROM project_hostnames
-        WHERE project_id = ?1 AND is_primary = 0
-        ORDER BY hostname",
-    )?;
-    let rows = statement.query_map(params![project_id], |row| row.get::<_, String>(0))?;
-    let mut hostnames = Vec::new();
-
-    for row in rows {
-        hostnames.push(row?);
-    }
-
-    Ok(hostnames)
 }
 
 fn project_php_runtime_for_project(

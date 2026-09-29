@@ -990,7 +990,7 @@ fn php_use_updates_project_config_state_and_reports_missing_daemon() -> anyhow::
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "hostnames:\n  - api.acme.test\n")?;
+    write_file(&project.join("pv.yml"), "root: .\n")?;
     let project_record = register_project(&home, &project, "acme.test")?;
     let artifacts = php_pair_artifacts("8.4.8-pv1")?;
     prepare_existing_php_pair_releases(&home, "8.4", &artifacts)?;
@@ -1048,7 +1048,7 @@ fn php_use_latest_preserves_alias_in_config_and_records_resolved_track() -> anyh
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "hostnames:\n  - api.acme.test\n")?;
+    write_file(&project.join("pv.yml"), "root: .\n")?;
     let project_record = register_project(&home, &project, "acme.test")?;
     let artifacts = php_pair_artifacts("8.4.8-pv1")?;
     prepare_existing_php_pair_releases(&home, "8.4", &artifacts)?;
@@ -1184,7 +1184,7 @@ fn php_use_install_failure_leaves_project_config_and_state_unchanged() -> anyhow
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    let original_config = "php: '8.3'\nhostnames:\n  - api.acme.test\n";
+    let original_config = "php: '8.3'\nroot: .\n";
     write_file(&project.join("pv.yml"), original_config)?;
     let project_record = register_project(&home, &project, "acme.test")?;
     select_project_php_track(&home, &project_record, "8.3")?;
@@ -1224,7 +1224,7 @@ fn php_use_config_conflict_leaves_project_config_and_state_unchanged() -> anyhow
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    let preferred_config = "php: '8.3'\nhostnames:\n  - api.acme.test\n";
+    let preferred_config = "php: '8.3'\nroot: .\n";
     let alternate_config = "php: '8.2'\n";
     write_file(&project.join("pv.yml"), preferred_config)?;
     let project_record = register_project(&home, &project, "acme.test")?;
@@ -1637,7 +1637,7 @@ fn php_uninstall_refuses_manifest_default_track_inherited_by_project_without_for
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "hostnames:\n  - api.acme.test\n")?;
+    write_file(&project.join("pv.yml"), "root: .\n")?;
     let artifacts = php_pair_artifacts("8.4.8-pv1")?;
     cache_manifest(&home, &php_pair_manifest("8.4", &artifacts))?;
     record_installed_php_pair(&home, "8.4", &artifacts)?;
@@ -1803,14 +1803,8 @@ fn php_list_marks_global_default_track() -> anyhow::Result<()> {
     let default_project = tempdir.path().join("default");
     create_dir(&explicit_project)?;
     create_dir(&default_project)?;
-    write_file(
-        &explicit_project.join("pv.yml"),
-        "hostnames:\n  - api.explicit.test\n",
-    )?;
-    write_file(
-        &default_project.join("pv.yml"),
-        "hostnames:\n  - api.default.test\n",
-    )?;
+    write_file(&explicit_project.join("pv.yml"), "root: .\n")?;
+    write_file(&default_project.join("pv.yml"), "root: .\n")?;
     let artifacts = php_pair_artifacts("8.4.8-pv1")?;
     prepare_existing_php_pair_releases(&home, "8.4", &artifacts)?;
     let environment = TestEnvironment::new(
@@ -1850,10 +1844,7 @@ fn php_list_marks_manifest_default_track_for_inherited_projects() -> anyhow::Res
     let home = tempdir.path().join("home");
     let default_project = tempdir.path().join("default");
     create_dir(&default_project)?;
-    write_file(
-        &default_project.join("pv.yml"),
-        "hostnames:\n  - api.default.test\n",
-    )?;
+    write_file(&default_project.join("pv.yml"), "root: .\n")?;
     let artifacts = php_pair_artifacts("8.4.8-pv1")?;
     cache_manifest(&home, &php_pair_manifest("8.4", &artifacts))?;
     record_installed_php_pair(&home, "8.4", &artifacts)?;
@@ -1916,7 +1907,6 @@ fn register_project_with_mode(
             primary_hostname: primary_hostname.to_string(),
             config_path: config_file.path,
             desired_php_track: None,
-            additional_hostnames: config_file.config.hostnames,
         },
         mode,
     )?;

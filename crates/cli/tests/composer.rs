@@ -1399,7 +1399,6 @@ fn register_project(
         primary_hostname: primary_hostname.to_string(),
         config_path: config_file.path,
         desired_php_track: None,
-        additional_hostnames: config_file.config.hostnames,
     })?;
 
     Ok(result.project)

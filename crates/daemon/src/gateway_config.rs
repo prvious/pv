@@ -38,7 +38,6 @@ pub struct GatewayProjectRoute {
     pub id: String,
     pub render_config: bool,
     pub primary_hostname: String,
-    pub hostnames: Vec<String>,
     pub worker_port: u16,
     pub access_log_path: Utf8PathBuf,
 }
@@ -55,7 +54,6 @@ pub struct PhpWorkerConfigInput {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PhpWorkerProject {
     pub primary_hostname: String,
-    pub hostnames: Vec<String>,
     pub project_root: Utf8PathBuf,
     pub root: Utf8PathBuf,
 }
@@ -151,7 +149,7 @@ pub fn render_gateway_project_config(route: &GatewayProjectRoute) -> Result<Stri
 
     output.push_str(&format!(
         "{} {{\n",
-        comma_separated_hostnames(&route.primary_hostname, &route.hostnames)?
+        comma_separated_hostnames(&route.primary_hostname)?
     ));
     output.push_str("    bind 127.0.0.1 ::1\n");
     append_file_log(&mut output, "    ", route.access_log_path.as_str())?;
@@ -182,7 +180,7 @@ pub fn render_php_worker_project_config(
 
     output.push_str(&format!(
         "{} {{\n",
-        comma_separated_worker_sites(&project.primary_hostname, &project.hostnames, port)?
+        comma_separated_worker_sites(&project.primary_hostname, port)?
     ));
     output.push_str("    bind 127.0.0.1 ::1\n");
     output.push_str(&format!(
@@ -447,45 +445,28 @@ pub(crate) fn promote_validated_config(
     Ok(())
 }
 
-fn comma_separated_hostnames(
-    primary_hostname: &str,
-    hostnames: &[String],
-) -> Result<String, DaemonError> {
-    let hostnames = sorted_hostnames(primary_hostname, hostnames)?;
-
-    Ok(hostnames.join(", "))
+fn comma_separated_hostnames(primary_hostname: &str) -> Result<String, DaemonError> {
+    Ok(project_site_hostnames(primary_hostname)?.join(", "))
 }
 
-fn comma_separated_worker_sites(
-    primary_hostname: &str,
-    hostnames: &[String],
-    port: u16,
-) -> Result<String, DaemonError> {
-    let hostnames = sorted_hostnames(primary_hostname, hostnames)?;
-    let sites = hostnames
-        .into_iter()
-        .map(|hostname| format!("http://{hostname}:{port}"))
-        .collect::<Vec<_>>();
+fn comma_separated_worker_sites(primary_hostname: &str, port: u16) -> Result<String, DaemonError> {
+    let sites = project_site_hostnames(primary_hostname)?
+        .map(|hostname| format!("http://{hostname}:{port}"));
 
     Ok(sites.join(", "))
 }
 
-fn sorted_hostnames<'input>(
-    primary_hostname: &'input str,
-    hostnames: &'input [String],
-) -> Result<Vec<&'input str>, DaemonError> {
+/// The primary hostname stays first because preserved fragments are read back by their first site.
+fn project_site_hostnames(primary_hostname: &str) -> Result<[String; 2], DaemonError> {
     if primary_hostname.is_empty() {
         return Err(DaemonError::UnexpectedProtocolResponse {
             reason: "gateway config requires a primary hostname per route".to_owned(),
         });
     }
 
-    let mut hostnames = hostnames.iter().map(String::as_str).collect::<Vec<_>>();
-    hostnames.push(primary_hostname);
-    hostnames.sort_unstable();
-    hostnames.dedup();
-
-    Ok(hostnames)
+    // Caddy orders site blocks with a `*` after exact ones and longest host first, so a
+    // Project linked as `<label>.<primary>` always wins over this one-label wildcard.
+    Ok([primary_hostname.to_owned(), format!("*.{primary_hostname}")])
 }
 
 fn quoted_caddyfile_token(value: &str) -> Result<String, DaemonError> {

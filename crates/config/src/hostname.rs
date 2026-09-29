@@ -7,11 +7,23 @@ const MAX_DNS_LABEL_LENGTH: usize = 63;
 const MAX_HOSTNAME_LENGTH: usize = 253;
 
 pub fn normalize_primary_hostname(input: &str) -> Result<String, ConfigError> {
-    normalize_hostname(input, true)
-}
+    let original = input.trim();
+    if original.is_empty() {
+        return Err(ConfigError::InvalidHostname {
+            hostname: input.to_string(),
+            reason: "hostname must not be empty",
+        });
+    }
 
-pub fn normalize_additional_hostname(input: &str) -> Result<String, ConfigError> {
-    normalize_hostname(input, false)
+    let trimmed = original.strip_suffix('.').unwrap_or(original);
+    let mut hostname = trimmed.to_ascii_lowercase();
+    if !hostname.contains('.') {
+        hostname.push_str(".test");
+    }
+
+    validate_hostname(&hostname, input)?;
+
+    Ok(hostname)
 }
 
 pub fn hostname_from_project_path(path: &Utf8Path) -> Result<String, ConfigError> {
@@ -48,31 +60,7 @@ pub fn hostname_from_project_path(path: &Utf8Path) -> Result<String, ConfigError
     normalize_primary_hostname(&slug)
 }
 
-fn normalize_hostname(input: &str, allow_bare_label: bool) -> Result<String, ConfigError> {
-    let original = input.trim();
-    if original.is_empty() {
-        return Err(ConfigError::InvalidHostname {
-            hostname: input.to_string(),
-            reason: "hostname must not be empty",
-        });
-    }
-
-    let trimmed = original.strip_suffix('.').unwrap_or(original);
-    let mut hostname = trimmed.to_ascii_lowercase();
-    if allow_bare_label && !hostname.contains('.') {
-        hostname.push_str(".test");
-    }
-
-    validate_hostname(&hostname, input, allow_bare_label)?;
-
-    Ok(hostname)
-}
-
-fn validate_hostname(
-    hostname: &str,
-    original: &str,
-    allow_bare_label: bool,
-) -> Result<(), ConfigError> {
+fn validate_hostname(hostname: &str, original: &str) -> Result<(), ConfigError> {
     if hostname == RESERVED_HOSTNAME {
         return Err(ConfigError::InvalidHostname {
             hostname: original.to_string(),
@@ -90,11 +78,7 @@ fn validate_hostname(
     if !hostname.ends_with(".test") {
         return Err(ConfigError::InvalidHostname {
             hostname: original.to_string(),
-            reason: if allow_bare_label {
-                "hostname must be a bare label or end in `.test`"
-            } else {
-                "additional hostnames must be full `.test` hostnames"
-            },
+            reason: "hostname must be a bare label or end in `.test`",
         });
     }
 

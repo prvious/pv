@@ -418,7 +418,6 @@ rustfs:
         primary_hostname: "real-artifact-resources.test".to_string(),
         config_path: project_path.join("pv.yml"),
         desired_php_track: None,
-        additional_hostnames: vec![],
     })?;
 
     Ok(result.project)

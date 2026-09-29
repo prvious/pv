@@ -7,8 +7,6 @@ php:
   extensions:
   - intl
 root: web
-hostnames:
-- admin.acme.test
 env:
   APP_URL: https://custom.test
   CUSTOM_VALUE: preserved

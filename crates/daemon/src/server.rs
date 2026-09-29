@@ -599,7 +599,6 @@ mod tests {
             primary_hostname: "health-queue.test".to_owned(),
             config_path,
             desired_php_track: Some("8.4".to_owned()),
-            additional_hostnames: Vec::new(),
         };
         let mut database = Database::open(&paths)?;
         let project = database.link_project(project_input)?.project;
@@ -855,7 +854,6 @@ mod tests {
                 primary_hostname: "invalid-project.test".to_owned(),
                 config_path,
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?
             .project;
         Connection::open(paths.db().as_std_path())?.execute_batch(
@@ -1026,7 +1024,6 @@ mod tests {
                 primary_hostname: primary_hostname.to_owned(),
                 config_path,
                 desired_php_track: None,
-                additional_hostnames: Vec::new(),
             })?
             .project)
     }

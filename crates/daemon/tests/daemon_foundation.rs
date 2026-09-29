@@ -2335,7 +2335,6 @@ fn seed_foundation_php_project_after_caddy(
             primary_hostname: "project.test".to_owned(),
             config_path,
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         })?
         .project;
 
@@ -3326,7 +3325,6 @@ async fn run_targeted_gateway_phase_scenario(
             primary_hostname: "target.test".to_owned(),
             config_path: target_config_path.clone(),
             desired_php_track: None,
-            additional_hostnames: Vec::new(),
         })?
         .project;
     let retained_path = tempdir.path().join("retained-project");
@@ -3338,7 +3336,6 @@ async fn run_targeted_gateway_phase_scenario(
         primary_hostname: "retained.test".to_owned(),
         config_path: retained_config_path,
         desired_php_track: None,
-        additional_hostnames: Vec::new(),
     })?;
     drop(database);
 

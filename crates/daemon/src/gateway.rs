@@ -196,7 +196,6 @@ pub struct RuntimeProject {
     pub id: String,
     pub render_config: bool,
     pub primary_hostname: String,
-    pub hostnames: Vec<String>,
     pub project_root: Utf8PathBuf,
     pub root: Utf8PathBuf,
 }
@@ -2722,15 +2721,7 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
         let runtime_project = RuntimeProject {
             id: project.id,
             render_config: true,
-            primary_hostname: primary_hostname.clone(),
-            hostnames: additional_hostnames(
-                &primary_hostname,
-                project.additional_hostnames,
-                config
-                    .as_ref()
-                    .map(|config| config.hostnames.clone())
-                    .unwrap_or_default(),
-            ),
+            primary_hostname,
             project_root: project.path,
             root,
         };
@@ -2804,12 +2795,7 @@ fn build_target_runtime_plan(
         let runtime_project = RuntimeProject {
             id: project.id,
             render_config: true,
-            primary_hostname: primary_hostname.clone(),
-            hostnames: additional_hostnames(
-                &primary_hostname,
-                project.additional_hostnames,
-                config_file.config.hostnames,
-            ),
+            primary_hostname,
             project_root: project.path,
             root,
         };
@@ -3226,12 +3212,7 @@ fn append_targeted_persisted_runtime_project(
     let runtime_project = RuntimeProject {
         id: project.id,
         render_config: false,
-        primary_hostname: primary_hostname.clone(),
-        hostnames: additional_hostnames(
-            &primary_hostname,
-            project.additional_hostnames,
-            Vec::new(),
-        ),
+        primary_hostname,
         project_root: project.path.clone(),
         root: project.path,
     };
@@ -3246,7 +3227,6 @@ fn append_targeted_persisted_runtime_project(
         id: runtime_project.id,
         render_config: false,
         primary_hostname: runtime_project.primary_hostname,
-        hostnames: runtime_project.hostnames,
         worker_port,
         access_log_path: paths.gateway_access_log(),
     })?;
@@ -3359,12 +3339,7 @@ fn append_persisted_runtime_project(
     let runtime_project = RuntimeProject {
         id: project.id,
         render_config: false,
-        primary_hostname: primary_hostname.clone(),
-        hostnames: additional_hostnames(
-            &primary_hostname,
-            project.additional_hostnames,
-            Vec::new(),
-        ),
+        primary_hostname,
         project_root: project.path.clone(),
         root: project.path,
     };
@@ -3628,7 +3603,6 @@ fn desired_worker_config(
         .filter(|project| fragment_project_ids.contains(project.id.as_str()))
         .map(|project| PhpWorkerProject {
             primary_hostname: project.primary_hostname.clone(),
-            hostnames: project.hostnames.clone(),
             project_root: project.project_root.clone(),
             root: project.root.clone(),
         })
@@ -5037,7 +5011,6 @@ fn gateway_project_routes(paths: &PvPaths, plan: &RuntimePlan) -> Vec<GatewayPro
                 id: project.id.clone(),
                 render_config: project.render_config,
                 primary_hostname: project.primary_hostname.clone(),
-                hostnames: project.hostnames.clone(),
                 worker_port: worker.port,
                 access_log_path: paths.gateway_access_log(),
             })
@@ -5153,7 +5126,6 @@ fn worker_project_config_fragments(
         let content = if project.render_config {
             let input = PhpWorkerProject {
                 primary_hostname: project.primary_hostname.clone(),
-                hostnames: project.hostnames.clone(),
                 project_root: project.project_root.clone(),
                 root: project.root.clone(),
             };
@@ -5669,22 +5641,6 @@ fn record_runtime_observed(
     Ok(())
 }
 
-fn additional_hostnames(
-    primary_hostname: &str,
-    state_hostnames: Vec<String>,
-    config_hostnames: Vec<String>,
-) -> Vec<String> {
-    let mut hostnames = state_hostnames
-        .into_iter()
-        .chain(config_hostnames)
-        .filter(|hostname| hostname != primary_hostname)
-        .collect::<Vec<_>>();
-
-    hostnames.sort();
-    hostnames.dedup();
-    hostnames
-}
-
 fn local_loopback_port_available(port: u16) -> bool {
     TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
@@ -5944,7 +5900,6 @@ mod tests {
                 primary_hostname: "project.test".to_owned(),
                 config_path,
                 desired_php_track: Some("8.4".to_owned()),
-                additional_hostnames: Vec::new(),
             })?
             .project;
         drop(database);
@@ -6212,7 +6167,6 @@ mod tests {
                 id: project_id.to_owned(),
                 render_config: false,
                 primary_hostname: "preserved.test".to_owned(),
-                hostnames: Vec::new(),
                 worker_port: 8123,
                 access_log_path: paths.gateway_access_log(),
             }],
