@@ -1670,8 +1670,8 @@ Every terminal row in `design.pen` maps to one command state. "Stream" names whe
 | `wlvuh` | `pv open` Project picker | stderr | Select by keyboard; resource-only Projects excluded | Typed numbers; `pv unlink` picker (unlink has none) |
 | `D40aND` | `pv open`, `pv unlink` after selection | stdout | Status rows | — |
 | `hTBHd` | `pv list` | stdout | Grouped Project report with table labels, path and env details, summary counts | Sample `running` state when PV has no serving observation; report `unknown` instead |
-| `U0FXx` | `pv project:env` | stdout raw, stderr warning | Raw `KEY=value` | Heading, rule, value coloring |
-| `iz40G` | `pv project:env --json` | stdout raw, stderr warning | Raw JSON | Heading, rule, JSON coloring |
+| `U0FXx` | `pv project:env` | stdout raw | Raw `KEY=value` | Heading, rule, value coloring |
+| `iz40G` | `pv project:env --json` | stdout raw | Raw JSON | Heading, rule, JSON coloring |
 | `glhPM` | `pv doctor` healthy | stdout | Heading, grouped status rows, summary | Elapsed time |
 | `D3tQw` | `pv doctor` needs attention | stdout | Failed rows with detail and repair hint | Elapsed time |
 | `E06oP` | `pv status` | stdout | Heading, summary, daemon and gateway observation, sections, resource table | Daemon uptime and pid |

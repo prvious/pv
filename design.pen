@@ -9672,7 +9672,7 @@
                                   "id": "dmntB",
                                   "name": "M",
                                   "fill": "$ink",
-                                  "content": "env:write acme failed at 08:57:21: refusing to overwrite MAIL_HOST — manual edit detected",
+                                  "content": "env:write acme failed at 08:57:21: malformed PV-managed .env block: start marker without end marker",
                                   "fontFamily": "$font-mono",
                                   "fontSize": 11,
                                   "fontWeight": "normal"
@@ -23240,7 +23240,7 @@
                                       "id": "hjy5p",
                                       "name": "Source",
                                       "fill": "$ink-3",
-                                      "content": "project ${url}",
+                                      "content": "project ${project_url}",
                                       "fontFamily": "$font-mono",
                                       "fontSize": 11,
                                       "fontWeight": "normal"
@@ -86891,7 +86891,7 @@
                               "id": "lMXyr",
                               "name": "seg",
                               "fill": "$td-fg",
-                              "content": "root:",
+                              "content": "document_root:",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -86979,7 +86979,7 @@
                               "id": "bcXXQ",
                               "name": "seg",
                               "fill": "$td-violet",
-                              "content": " ${url}",
+                              "content": " ${project_url}",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -87023,7 +87023,7 @@
                               "id": "ZiBSw",
                               "name": "seg",
                               "fill": "$td-violet",
-                              "content": " ${tls.cert}",
+                              "content": " ${tls_cert}",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -87067,7 +87067,7 @@
                               "id": "aZpN5",
                               "name": "seg",
                               "fill": "$td-violet",
-                              "content": " ${tls.key}",
+                              "content": " ${tls_key}",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -89060,7 +89060,7 @@
                               "id": "b6esHY",
                               "name": "seg",
                               "fill": "$tl-fg",
-                              "content": "root:",
+                              "content": "document_root:",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -89148,7 +89148,7 @@
                               "id": "BPfMn",
                               "name": "seg",
                               "fill": "$tl-violet",
-                              "content": " ${url}",
+                              "content": " ${project_url}",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -89192,7 +89192,7 @@
                               "id": "tWU3W",
                               "name": "seg",
                               "fill": "$tl-violet",
-                              "content": " ${tls.cert}",
+                              "content": " ${tls_cert}",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -89236,7 +89236,7 @@
                               "id": "o2mpTc",
                               "name": "seg",
                               "fill": "$tl-violet",
-                              "content": " ${tls.key}",
+                              "content": " ${tls_key}",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -94774,7 +94774,7 @@
                               "id": "XAory",
                               "name": "seg",
                               "fill": "$td-fg",
-                              "content": "root:",
+                              "content": "document_root:",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -94848,7 +94848,7 @@
                               "id": "KGiRj",
                               "name": "seg",
                               "fill": "$td-violet",
-                              "content": " ${url}",
+                              "content": " ${project_url}",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -94885,7 +94885,7 @@
                               "id": "uAb19",
                               "name": "seg",
                               "fill": "$td-violet",
-                              "content": " ${tls.cert}",
+                              "content": " ${tls_cert}",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -94922,7 +94922,7 @@
                               "id": "rEvsb",
                               "name": "seg",
                               "fill": "$td-violet",
-                              "content": " ${tls.key}",
+                              "content": " ${tls_key}",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -96292,7 +96292,7 @@
                               "id": "SKo15",
                               "name": "seg",
                               "fill": "$tl-fg",
-                              "content": "root:",
+                              "content": "document_root:",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -96366,7 +96366,7 @@
                               "id": "j3tb80",
                               "name": "seg",
                               "fill": "$tl-violet",
-                              "content": " ${url}",
+                              "content": " ${project_url}",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -96403,7 +96403,7 @@
                               "id": "f5UgdC",
                               "name": "seg",
                               "fill": "$tl-violet",
-                              "content": " ${tls.cert}",
+                              "content": " ${tls_cert}",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -96440,7 +96440,7 @@
                               "id": "t5Mr1",
                               "name": "seg",
                               "fill": "$tl-violet",
-                              "content": " ${tls.key}",
+                              "content": " ${tls_key}",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -108320,7 +108320,7 @@
                               "fill": "$td-amber",
                               "textGrowth": "fixed-width",
                               "width": "fill_container",
-                              "content": "  ⚠ APP_URL also exists outside the PV block.",
+                              "content": "  ⚠ ignored unsupported PHP extension `imagick`",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -108348,7 +108348,7 @@
                               "name": "seg",
                               "enabled": false,
                               "fill": "$td-dim",
-                              "content": "APP_URL already exists outside the PV block",
+                              "content": "ignored unsupported PHP extension `imagick`",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
@@ -109547,7 +109547,7 @@
                               "fill": "$tl-amber",
                               "textGrowth": "fixed-width",
                               "width": "fill_container",
-                              "content": "  ⚠ APP_URL also exists outside the PV block.",
+                              "content": "  ⚠ ignored unsupported PHP extension `imagick`",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -109575,7 +109575,7 @@
                               "name": "seg",
                               "enabled": false,
                               "fill": "$tl-dim",
-                              "content": "APP_URL already exists outside the PV block",
+                              "content": "ignored unsupported PHP extension `imagick`",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 12,
@@ -110198,7 +110198,7 @@
                   "id": "PRLpf",
                   "name": "s",
                   "fill": "$ink-2",
-                  "content": "Render the PV-managed env block for the current Project · values on stdout, warnings on stderr",
+                  "content": "Render the PV-managed env block for the current Project · values on stdout, no warnings: keys a render would comment out (`# pv: `) are not reported",
                   "fontFamily": "$font-ui",
                   "fontSize": 13,
                   "fontWeight": "normal"
@@ -110882,89 +110882,6 @@
                               "fontWeight": "normal"
                             }
                           ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "AeGA7",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 12
-                        },
-                        {
-                          "type": "frame",
-                          "id": "mJIrc",
-                          "name": "warn",
-                          "width": "fill_container",
-                          "children": [
-                            {
-                              "type": "text",
-                              "id": "UJ4s9",
-                              "name": "⚠",
-                              "fill": "$td-amber",
-                              "textGrowth": "fixed-width",
-                              "width": 22,
-                              "content": "⚠",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "OuaFk",
-                              "name": "APP_URL also exists outside the PV-managed bl",
-                              "fill": "$td-fg",
-                              "textGrowth": "fixed-width",
-                              "width": "fill_container",
-                              "content": "APP_URL also exists outside the PV-managed block.",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "pEaxO",
-                              "x": 93,
-                              "y": 0,
-                              "name": "seg",
-                              "enabled": false,
-                              "fill": "$td-dim",
-                              "content": "generated Project env key ",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "XUrsb",
-                              "x": 296,
-                              "y": 0,
-                              "name": "seg",
-                              "enabled": false,
-                              "fill": "$td-cyan",
-                              "content": "`APP_URL`",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "krCsf",
-                              "x": 367,
-                              "y": 0,
-                              "name": "seg",
-                              "enabled": false,
-                              "fill": "$td-dim",
-                              "content": " already exists outside the PV-managed block",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            }
-                          ]
                         }
                       ]
                     }
@@ -111641,89 +111558,6 @@
                               "fontWeight": "normal"
                             }
                           ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "T3YGSL",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 12
-                        },
-                        {
-                          "type": "frame",
-                          "id": "D1W6U",
-                          "name": "warn",
-                          "width": "fill_container",
-                          "children": [
-                            {
-                              "type": "text",
-                              "id": "E8vbw",
-                              "name": "⚠",
-                              "fill": "$tl-amber",
-                              "textGrowth": "fixed-width",
-                              "width": 22,
-                              "content": "⚠",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "Kenz6",
-                              "name": "APP_URL also exists outside the PV-managed bl",
-                              "fill": "$tl-fg",
-                              "textGrowth": "fixed-width",
-                              "width": "fill_container",
-                              "content": "APP_URL also exists outside the PV-managed block.",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "Rrdzh",
-                              "x": 93,
-                              "y": 0,
-                              "name": "seg",
-                              "enabled": false,
-                              "fill": "$tl-dim",
-                              "content": "generated Project env key ",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "C3usWQ",
-                              "x": 296,
-                              "y": 0,
-                              "name": "seg",
-                              "enabled": false,
-                              "fill": "$tl-cyan",
-                              "content": "`APP_URL`",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "BL0gg",
-                              "x": 367,
-                              "y": 0,
-                              "name": "seg",
-                              "enabled": false,
-                              "fill": "$tl-dim",
-                              "content": " already exists outside the PV-managed block",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            }
-                          ]
                         }
                       ]
                     }
@@ -111763,7 +111597,7 @@
                   "id": "R4pJw",
                   "name": "s",
                   "fill": "$ink-2",
-                  "content": "Same values as a JSON object for tooling · warnings still go to stderr",
+                  "content": "Same values as a JSON object for tooling · nothing on stderr",
                   "fontFamily": "$font-ui",
                   "fontSize": 13,
                   "fontWeight": "normal"
@@ -112680,89 +112514,6 @@
                               "fontWeight": "normal"
                             }
                           ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "wYkTF",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 12
-                        },
-                        {
-                          "type": "frame",
-                          "id": "hEFMA",
-                          "name": "warn",
-                          "width": "fill_container",
-                          "children": [
-                            {
-                              "type": "text",
-                              "id": "NSDve",
-                              "name": "⚠",
-                              "fill": "$td-amber",
-                              "textGrowth": "fixed-width",
-                              "width": 22,
-                              "content": "⚠",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "wwg7u",
-                              "name": "APP_URL also exists outside the PV-managed bl",
-                              "fill": "$td-fg",
-                              "textGrowth": "fixed-width",
-                              "width": "fill_container",
-                              "content": "APP_URL also exists outside the PV-managed block.",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "FEd0l",
-                              "x": 93,
-                              "y": 0,
-                              "name": "seg",
-                              "enabled": false,
-                              "fill": "$td-dim",
-                              "content": "generated Project env key ",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "LajOI",
-                              "x": 296,
-                              "y": 0,
-                              "name": "seg",
-                              "enabled": false,
-                              "fill": "$td-cyan",
-                              "content": "`APP_URL`",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "aSeMV",
-                              "x": 367,
-                              "y": 0,
-                              "name": "seg",
-                              "enabled": false,
-                              "fill": "$td-dim",
-                              "content": " already exists outside the PV-managed block",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            }
-                          ]
                         }
                       ]
                     }
@@ -113666,89 +113417,6 @@
                               "name": "seg",
                               "fill": "$tl-dim",
                               "content": "}",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            }
-                          ]
-                        },
-                        {
-                          "type": "frame",
-                          "id": "ax2Cx",
-                          "name": "gap",
-                          "width": "fill_container",
-                          "height": 12
-                        },
-                        {
-                          "type": "frame",
-                          "id": "PswCb",
-                          "name": "warn",
-                          "width": "fill_container",
-                          "children": [
-                            {
-                              "type": "text",
-                              "id": "K7POb",
-                              "name": "⚠",
-                              "fill": "$tl-amber",
-                              "textGrowth": "fixed-width",
-                              "width": 22,
-                              "content": "⚠",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "b35rS",
-                              "name": "APP_URL also exists outside the PV-managed bl",
-                              "fill": "$tl-fg",
-                              "textGrowth": "fixed-width",
-                              "width": "fill_container",
-                              "content": "APP_URL also exists outside the PV-managed block.",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "MfgYU",
-                              "x": 93,
-                              "y": 0,
-                              "name": "seg",
-                              "enabled": false,
-                              "fill": "$tl-dim",
-                              "content": "generated Project env key ",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "M5fPKJ",
-                              "x": 296,
-                              "y": 0,
-                              "name": "seg",
-                              "enabled": false,
-                              "fill": "$tl-cyan",
-                              "content": "`APP_URL`",
-                              "lineHeight": 1.55,
-                              "fontFamily": "$font-mono",
-                              "fontSize": 13,
-                              "fontWeight": "normal"
-                            },
-                            {
-                              "type": "text",
-                              "id": "OwctS",
-                              "x": 367,
-                              "y": 0,
-                              "name": "seg",
-                              "enabled": false,
-                              "fill": "$tl-dim",
-                              "content": " already exists outside the PV-managed block",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -119801,7 +119469,7 @@
                               "fill": "$td-dim",
                               "textGrowth": "fixed-width",
                               "width": "fill_container",
-                              "content": "  APP_URL also exists outside the PV block in .env.\n  Logs: ~/.pv/logs",
+                              "content": "  ignored unsupported PHP extension `imagick`\n  Logs: ~/.pv/logs",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -121181,7 +120849,7 @@
                               "fill": "$tl-dim",
                               "textGrowth": "fixed-width",
                               "width": "fill_container",
-                              "content": "  APP_URL also exists outside the PV block in .env.\n  Logs: ~/.pv/logs",
+                              "content": "  ignored unsupported PHP extension `imagick`\n  Logs: ~/.pv/logs",
                               "lineHeight": 1.55,
                               "fontFamily": "$font-mono",
                               "fontSize": 13,
@@ -174790,11 +174458,11 @@
     },
     "tl-green": {
       "type": "color",
-      "value": "#1F9E57"
+      "value": "#167A40"
     },
     "tl-amber": {
       "type": "color",
-      "value": "#B0741C"
+      "value": "#925D10"
     },
     "tl-red": {
       "type": "color",
@@ -174802,7 +174470,7 @@
     },
     "tl-cyan": {
       "type": "color",
-      "value": "#0E8CA0"
+      "value": "#087386"
     },
     "tl-violet": {
       "type": "color",
@@ -174818,7 +174486,7 @@
     },
     "tl-blue": {
       "type": "color",
-      "value": "#2F6FE4"
+      "value": "#245CC7"
     }
   },
   "fileToken": "4221fcce-e65a-47c0-9e3e-6d2a5afbfe26"
