@@ -551,39 +551,86 @@ fn fold_managed_blocks(
 }
 
 /// Comments out user-owned assignments of rendered keys and restores PV-commented lines whose
-/// keys are no longer rendered. Lines map one-to-one, so managed block indices stay valid.
+/// keys are no longer rendered. A multiline double-quoted value moves with its assignment, and its
+/// continuation lines are never read as assignments. Lines map one-to-one, so managed block
+/// indices stay valid.
 fn comment_overridden_assignments(
     lines: &[String],
     blocks: &[(usize, usize)],
     rendered: &RenderedProjectEnv,
 ) -> Vec<String> {
-    lines
-        .iter()
-        .enumerate()
-        .map(|(index, line)| {
-            if blocks
-                .iter()
-                .any(|(start, end)| (*start..=*end).contains(&index))
-            {
-                return line.clone();
-            }
+    let mut transformed = Vec::with_capacity(lines.len());
+    // While a multiline value is open: whether its lines carry the PV prefix, and whether to
+    // toggle it.
+    let mut multiline_value = None;
 
-            if let Some(key) = assignment_key(line)
-                && rendered.values.contains_key(key)
-            {
-                return format!("{OVERRIDDEN_ENV_PREFIX}{line}");
-            }
+    for (index, line) in lines.iter().enumerate() {
+        if blocks
+            .iter()
+            .any(|(start, end)| (*start..=*end).contains(&index))
+        {
+            transformed.push(line.clone());
+            continue;
+        }
 
-            if let Some(original) = line.strip_prefix(OVERRIDDEN_ENV_PREFIX)
+        let (tagged, toggle, content) = if let Some((tagged, toggle)) = multiline_value {
+            let content = if tagged {
+                line.strip_prefix(OVERRIDDEN_ENV_PREFIX).unwrap_or(line)
+            } else {
+                line
+            };
+            if has_closing_quote(content) {
+                multiline_value = None;
+            }
+            (tagged, toggle, content)
+        } else {
+            let (tagged, toggle, content) = if let Some(key) = assignment_key(line) {
+                (false, rendered.values.contains_key(key), line.as_str())
+            } else if let Some(original) = line.strip_prefix(OVERRIDDEN_ENV_PREFIX)
                 && let Some(key) = assignment_key(original)
-                && !rendered.values.contains_key(key)
             {
-                return original.to_string();
+                (true, !rendered.values.contains_key(key), original)
+            } else {
+                transformed.push(line.clone());
+                continue;
+            };
+            if opens_multiline_value(content) {
+                multiline_value = Some((tagged, toggle));
             }
+            (tagged, toggle, content)
+        };
 
-            line.clone()
-        })
-        .collect()
+        transformed.push(match (toggle, tagged) {
+            (false, _) => line.clone(),
+            (true, false) => format!("{OVERRIDDEN_ENV_PREFIX}{line}"),
+            (true, true) => content.to_string(),
+        });
+    }
+
+    transformed
+}
+
+/// Whether an assignment's value opens a double quote that it does not close, which dotenv
+/// parsers continue onto the following lines.
+fn opens_multiline_value(assignment: &str) -> bool {
+    assignment
+        .split_once('=')
+        .and_then(|(_, value)| value.strip_prefix('"'))
+        .is_some_and(|value| !has_closing_quote(value))
+}
+
+fn has_closing_quote(text: &str) -> bool {
+    let mut escaped = false;
+    for character in text.chars() {
+        match character {
+            _ if escaped => escaped = false,
+            '\\' => escaped = true,
+            '"' => return true,
+            _ => {}
+        }
+    }
+
+    false
 }
 
 fn assignment_key(line: &str) -> Option<&str> {
@@ -592,7 +639,10 @@ fn assignment_key(line: &str) -> Option<&str> {
         return None;
     }
 
-    let assignment = line.strip_prefix("export ").unwrap_or(line);
+    let assignment = line
+        .strip_prefix("export")
+        .filter(|rest| rest.starts_with(char::is_whitespace))
+        .map_or(line, str::trim_start);
     let (key, _) = assignment.split_once('=')?;
     let key = key.trim();
     if is_env_key(key) { Some(key) } else { None }

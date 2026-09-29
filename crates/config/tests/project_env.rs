@@ -641,6 +641,36 @@ USER_ONLY=1
 }
 
 #[test]
+fn managed_env_block_transformer_moves_multiline_values_and_tab_exports_with_their_assignment()
+-> Result<()> {
+    let rendered = RenderedProjectEnv {
+        values: values(&[("APP_KEY", "base64:key"), ("APP_URL", "https://acme.test")]),
+    };
+    let existing = concat!(
+        r#"APP_KEY="first
+second \" still quoted
+last"
+CERT="-----BEGIN-----
+APP_URL=https://embedded.test
+-----END-----"
+"#,
+        "export\tAPP_URL=https://user.test\n",
+    );
+
+    let commented = transform_managed_env_block(Some(existing), &rendered)?;
+    let restored =
+        transform_managed_env_block(Some(&commented.content), &RenderedProjectEnv::default())?;
+
+    assert_eq!(
+        restored.content,
+        format!("{existing}# >>> PV MANAGED\n# <<< PV MANAGED\n")
+    );
+    assert_debug_snapshot!((commented, restored));
+
+    Ok(())
+}
+
+#[test]
 fn managed_env_block_transformer_rejects_malformed_markers() {
     let rendered = RenderedProjectEnv {
         values: values(&[("APP_URL", "https://acme.test")]),

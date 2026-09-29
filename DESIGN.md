@@ -1334,7 +1334,7 @@ Malformed PV-managed block markers fail safely. A start marker without an end ma
 
 PV appends the managed block at the end of `.env` and preserves surrounding formatting, including final newline, where practical.
 
-During `.env` rendering, PV comments out every active assignment outside the PV-managed block whose key PV renders, including `export` and indented assignments. PV prefixes the original line, unchanged, with `# pv: `. A `# pv: ` line stays as is while PV still renders its key, so repeated renders are idempotent. When PV no longer renders a key, it removes the prefix from that key's `# pv: ` lines and restores them exactly. PV restores only `# pv: ` lines whose remainder is an env assignment and never changes other comments or assignments.
+During `.env` rendering, PV comments out every active assignment outside the PV-managed block whose key PV renders, including `export` and indented assignments. PV prefixes each original line, unchanged, with `# pv: `. This includes every line of a multiline double-quoted value. Lines inside such a value are never treated as assignments. A `# pv: ` line stays as is while PV still renders its key, so repeated renders are idempotent. When PV no longer renders a key, it removes the prefix from that key's `# pv: ` lines and restores them exactly. PV restores only `# pv: ` lines whose remainder is an env assignment and never changes other comments or assignments.
 
 ```env
 # pv: APP_URL=https://user.test
