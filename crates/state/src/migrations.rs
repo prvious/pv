@@ -21,8 +21,6 @@ const JOB_DIAGNOSTIC_OUTCOMES_SQL: &str = include_str!("sql/010_job_diagnostic_o
 const REMOVE_ADMIN_PORTS_SQL: &str = include_str!("sql/011_remove_admin_ports.sql");
 const POSTGRES_TRACK_PRELOAD_LIBRARIES_SQL: &str =
     include_str!("sql/012_postgres_track_preload_libraries.sql");
-const REMOVE_ADDITIONAL_HOSTNAMES_SQL: &str =
-    include_str!("sql/013_remove_additional_hostnames.sql");
 
 pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
     Migration::new(1, "core_state_schema", CORE_SCHEMA_SQL),
@@ -56,11 +54,6 @@ pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
         12,
         "postgres_track_preload_libraries",
         POSTGRES_TRACK_PRELOAD_LIBRARIES_SQL,
-    ),
-    Migration::new(
-        13,
-        "remove_additional_hostnames",
-        REMOVE_ADDITIONAL_HOSTNAMES_SQL,
     ),
 ];
 

@@ -499,7 +499,7 @@ fn admin_port_migration_removes_current_and_legacy_rows() -> Result<()> {
 }
 
 #[test]
-fn additional_hostname_migration_releases_alias_hostnames() -> Result<()> {
+fn legacy_alias_rows_keep_reserving_their_hostnames() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let old_migrations = [
@@ -561,24 +561,22 @@ fn additional_hostname_migration_releases_alias_hostnames() -> Result<()> {
     drop(old_database);
 
     let mut database = Database::open(&paths)?;
-
-    assert_eq!(
-        state::testing::query_i64(
-            &database,
-            "SELECT COUNT(*) FROM project_hostnames WHERE is_primary = 0",
-        )?,
-        0
-    );
-    assert!(database.project_by_hostname("acme.test")?.is_some());
-    assert!(database.project_by_hostname("api.acme.test")?.is_none());
-    let subdomain = database.link_project(state::LinkProjectInput {
+    let collision = database.link_project(state::LinkProjectInput {
         path: tempdir.path().join("api"),
         original_path: tempdir.path().join("api"),
         primary_hostname: "api.acme.test".to_string(),
         config_path: tempdir.path().join("api/pv.yml"),
         desired_php_track: None,
-    })?;
-    assert_eq!(subdomain.status, state::LinkProjectStatus::Created);
+    });
+
+    // The owner may still serve its last-valid fragment for this alias, so the name stays taken.
+    assert!(matches!(
+        collision,
+        Err(StateError::ProjectHostnameCollision {
+            hostname,
+            project_id,
+        }) if hostname == "api.acme.test" && project_id == "project_1"
+    ));
 
     Ok(())
 }
