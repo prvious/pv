@@ -1,7 +1,8 @@
 //! Keyboard prompts behind a PV-owned adapter.
 //!
-//! Commands describe a [`Prompt`] and receive a PV [`Answer`]; only this
-//! module knows about Cliclack. Prompts render on stderr and require
+//! Commands call the typed helpers here; [`Prompt`] and [`Answer`] are the
+//! [`Environment::prompt`] seam that tests script. Only this module knows
+//! about Cliclack. Prompts render on stderr and require
 //! stdin and stderr to be terminals, which callers check through
 //! `Streams::interactive` before prompting, because each command documents
 //! its own non-interactive behavior.

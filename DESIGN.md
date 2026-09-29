@@ -1579,7 +1579,7 @@ Each human-facing stream is rendered in one of two forms, chosen independently f
 
 Plain output keeps each command's documented words and facts in its documented plain order. Decorated output may arrange the same facts around terminal headings, gutters, and tables. `pv init --yes` leads its decorated result with the written path, followed by detection details; the plain form keeps its detection summary before the final write result.
 
-- Lines that explain the row above them, such as a refusal's `Leaving it in place.` or the fields of `pv ports:status`, are indented two spaces like other sub-lines, and repair commands read `  repair: pv setup`.
+- Lines that explain the row above them, such as `Leaving it in place.` under a file PV does not own or the fields of `pv ports:status`, are indented two spaces like other sub-lines, and repair commands read `  repair: pv setup`.
 - `pv doctor` lists its checks grouped as System, Routing, and Daemon & jobs, in plain and JSON output alike.
 - A flow's plain output starts with its title (`PV setup`, `PV update`, `PV init`) and reports its outcome last. `pv init` prints its detection summary before `Wrote Project config: <path>`.
 
@@ -1616,7 +1616,7 @@ PV prompts only when the command contract permits it, stdin and stderr are both 
 - **Select:** Up/Down (also Left/Right, `j`/`k`, `h`/`l`) move; Enter submits the highlighted choice.
 - **Multi-select:** Up/Down (also Left/Right, `j`/`k`, `h`/`l`) move; Space toggles; Enter submits.
 - **Text:** Enter submits; an empty answer keeps the shown default; an invalid value is explained inline and asked again.
-- **Destructive confirmation** (`pv uninstall --prune` and `pv <resource>:uninstall --prune`): the same confirm prompt, defaulting to No, so Enter alone never deletes data. `--force` skips it.
+- **Destructive confirmation** (`pv uninstall --prune` and `pv <resource>:uninstall --prune`): the same confirm prompt, defaulting to No, so Enter alone never deletes data. Declining prints `Prune cancelled.`, changes nothing, and exits 0. `--force` skips it.
 - **Cancellation:** Escape or Ctrl-C cancels the prompt, restores the terminal, shows the prompt as cancelled, and exits with status 130 without a panic or backtrace. Steps that completed before the prompt stay completed.
 - **Completed prompt:** once answered, a prompt collapses to its question and the chosen value instead of leaving the full list behind.
 

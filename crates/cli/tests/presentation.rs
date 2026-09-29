@@ -354,7 +354,7 @@ fn enter_on_a_destructive_confirmation_deletes_nothing() -> anyhow::Result<()> {
 
     let output = run_pv(&["uninstall", "--prune"], &environment)?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert_eq!(
         *environment.confirmations.borrow(),
         [(
@@ -363,6 +363,7 @@ fn enter_on_a_destructive_confirmation_deletes_nothing() -> anyhow::Result<()> {
         )]
     );
     assert!(marker.as_std_path().exists());
+    assert_debug_snapshot!(output.stdout);
 
     Ok(())
 }

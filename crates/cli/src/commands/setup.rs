@@ -368,7 +368,8 @@ pub(crate) fn uninstall(
             false,
         )?
     {
-        return Ok(ExitCode::FAILURE);
+        super::write_prune_cancelled(&mut streams.out)?;
+        return Ok(ExitCode::SUCCESS);
     }
 
     let subtitle = if args.prune {

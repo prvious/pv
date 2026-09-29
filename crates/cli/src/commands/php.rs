@@ -184,7 +184,7 @@ pub(crate) fn uninstall(
         };
         let message = format!("Prune PV-owned data for PHP/FrankenPHP track {track}?");
         if !prompt::confirm_or(environment, streams, refusal, &message, false)? {
-            streams.out.note("Prune cancelled.")?;
+            super::write_prune_cancelled(&mut streams.out)?;
             return Ok(ExitCode::SUCCESS);
         }
     }

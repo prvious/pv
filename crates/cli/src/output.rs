@@ -831,8 +831,8 @@ impl<'writer> Streams<'writer> {
 
     /// Runs `step` with its stdout and stderr captured into `out` and `err`,
     /// so the caller can title the rows once the outcome is known. Captured
-    /// stdout keeps its open flow. A captured step cannot prompt: its prompt
-    /// would show above rows that are still held back, so prompts refuse.
+    /// stdout keeps its open flow. A captured step must not prompt: its prompt
+    /// would show above rows that are still held back.
     pub(crate) fn capture<T>(
         &mut self,
         out: &mut Vec<u8>,

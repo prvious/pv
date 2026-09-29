@@ -165,7 +165,7 @@ fn prune_confirmation_declines_with_n_or_the_default_answer() -> Result<()> {
 
         session.wait_for(CONFIRM_HINT)?;
         session.press(key)?;
-        session.wait_for("Prune cancelled.")?;
+        session.wait_for("nothing changed")?;
         let exit_code = session.wait_for_exit()?;
 
         assert_eq!(exit_code, 0);
@@ -213,7 +213,7 @@ fn linked_project_uses_full_https_url_and_grouped_list_report() -> Result<()> {
     create_dir(&project)?;
 
     let mut link = Session::spawn(&["link", "--hostname", "acme"], &project, &home)?;
-    link.wait_for("https://acme.test")?;
+    link.wait_for("Start it with `pv setup`")?;
     assert_eq!(link.wait_for_exit()?, 0);
     assert_screen_snapshot("link_full_https_url", tempdir.path(), &link);
 
@@ -231,7 +231,7 @@ fn init_yes_reports_written_config_before_detection_details() -> Result<()> {
     let project = laravel_project(tempdir.path())?;
     let mut session = Session::spawn(&["init", "--yes"], &project, tempdir.path())?;
 
-    session.wait_for("Vite HTTPS")?;
+    session.wait_for("VITE_DEV_SERVER_KEY.")?;
     assert_eq!(session.wait_for_exit()?, 0);
     assert!(project.join("pv.yml").is_file());
     assert_screen_snapshot("init_yes_result", tempdir.path(), &session);

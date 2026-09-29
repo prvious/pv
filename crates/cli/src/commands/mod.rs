@@ -408,6 +408,16 @@ fn write_left_in_place(
     output.detail("Leaving it in place.")
 }
 
+/// Reports a declined `--prune` confirmation, which changes nothing.
+fn write_prune_cancelled(output: &mut Output<'_>) -> io::Result<()> {
+    output.note("Prune cancelled.")?;
+    if output.surface().decorated() {
+        output.detail("·  nothing changed")?;
+    }
+
+    Ok(())
+}
+
 /// The follow-up line for an accepted system reconciliation request.
 fn write_reconciliation_requested(output: &mut Output<'_>, job_id: &str) -> io::Result<()> {
     output.follow_up(Line::field("System reconciliation requested: ", job_id))

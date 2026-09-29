@@ -134,10 +134,7 @@ pub(crate) fn uninstall(
             spec.display_name
         );
         if !prompt::confirm_or(environment, streams, refusal, &message, false)? {
-            streams.out.note("Prune cancelled.")?;
-            if streams.out.surface().decorated() {
-                streams.out.detail("·  nothing changed")?;
-            }
+            super::write_prune_cancelled(&mut streams.out)?;
             return Ok(ExitCode::SUCCESS);
         }
     }

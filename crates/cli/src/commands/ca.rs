@@ -265,8 +265,8 @@ fn write_system_trust_state(output: &mut Output<'_>, state: &TrustDomainState) -
         TrustDomainState::Current { .. } => (Mark::Success, "current"),
         TrustDomainState::NotTrusted { .. } => (Mark::Warning, "not trusted"),
         TrustDomainState::Stale { .. } => (Mark::Warning, "stale"),
-        TrustDomainState::Denied { .. } => (Mark::Failure, "denied"),
-        TrustDomainState::Unknown { .. } => (Mark::Warning, "unknown"),
+        TrustDomainState::Denied { .. } => (Mark::Warning, "denied"),
+        TrustDomainState::Unknown { .. } => (Mark::Failure, "unknown"),
         TrustDomainState::Unreadable { .. } => (Mark::Failure, "unreadable"),
     };
     output.status(mark, format!("System keychain trust: {status}"))?;
