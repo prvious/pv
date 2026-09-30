@@ -11,6 +11,7 @@ use daemon::{
 };
 use insta::{Settings, allow_duplicates, assert_debug_snapshot};
 use platform::ProcessStartIdentity;
+use pv_fake::Persona;
 use rcgen::generate_simple_self_signed;
 use resources::{PHP_TRACK_DEFAULT_INI, php_track_defaults};
 use rusqlite::Connection;
@@ -40,14 +41,6 @@ const FAKE_FRANKENPHP_SCRIPT: &str = include_str!(concat!(
 const FAKE_FRANKENPHP_SERVER_SCRIPT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/gateway/fake-frankenphp-server.py"
-));
-const FAKE_CADDY_SCRIPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/gateway/fake-caddy.sh"
-));
-const FAKE_CADDY_SERVER_SCRIPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/gateway/fake-caddy-server.py"
 ));
 const FAKE_CADDY_NO_ADMIN_SCRIPT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -1345,7 +1338,7 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
     assert_eq!(fs::read_to_string(&source_fragment)?, previous_source);
     assert_eq!(fs::read_to_string(&gateway_fragment)?, previous_gateway);
 
-    write_fake_frankenphp(&source_release.join("bin/frankenphp"))?;
+    write_script_fake_frankenphp(&source_release.join("bin/frankenphp"))?;
     let source_failure_marker = Utf8PathBuf::from(format!(
         "{}.readiness-fail",
         paths.worker_root_config("8.4")
@@ -7132,6 +7125,15 @@ exit 2
 }
 
 fn write_fake_frankenphp(path: &Utf8Path) -> Result<()> {
+    pv_fake::install(path, Persona::FrankenPhp)?;
+
+    Ok(())
+}
+
+/// Replaces a running stateful script fixture in place. PV verifies a running script runtime by
+/// reading the file at its command path, so the replacement must stay a script until the stateful
+/// fixture is a pv-fake persona too.
+fn write_script_fake_frankenphp(path: &Utf8Path) -> Result<()> {
     write_runtime_fixture(path, FAKE_FRANKENPHP_SCRIPT, FAKE_FRANKENPHP_SERVER_SCRIPT)
 }
 
@@ -7159,7 +7161,9 @@ fn ensure_fake_caddy(paths: &PvPaths) -> Result<()> {
 }
 
 fn write_fake_caddy(path: &Utf8Path) -> Result<()> {
-    write_fake_caddy_fixture(path, FAKE_CADDY_SCRIPT, FAKE_CADDY_SERVER_SCRIPT)
+    pv_fake::install(path, Persona::Caddy)?;
+
+    Ok(())
 }
 
 fn write_stateful_fake_caddy(path: &Utf8Path) -> Result<()> {

@@ -18,6 +18,8 @@ mod events;
 #[cfg(unix)]
 mod fake;
 #[cfg(unix)]
+mod gateway;
+#[cfg(unix)]
 mod install;
 #[cfg(unix)]
 mod lifeline;
@@ -26,6 +28,19 @@ mod lifeline;
 pub use events::{Event, EventKind};
 #[cfg(unix)]
 pub use install::{InstalledFake, binary, install, install_with};
+
+/// Identifies this pv-fake build; see `build.rs`.
+#[cfg(unix)]
+const BUILD_ID: &str = env!("PV_FAKE_BUILD_ID");
+
+/// A scenario file: the scenario plus the pv-fake build that wrote it.
+#[cfg(unix)]
+#[derive(Deserialize, Serialize)]
+struct ScenarioFile<S> {
+    build_id: String,
+    #[serde(flatten)]
+    scenario: S,
+}
 
 /// How an installed fake behaves.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -41,6 +56,11 @@ pub struct Scenario {
 pub enum Persona {
     /// Stays alive until SIGTERM or SIGINT, then exits 0.
     LongRunning,
+    /// Caddy's `validate` and `run`: HTTP, HTTPS, the admin socket, and PV's health route.
+    Caddy,
+    /// FrankenPHP embeds Caddy, so this behaves like [`Persona::Caddy`].
+    #[serde(rename = "frankenphp")]
+    FrankenPhp,
 }
 
 /// Entry point shared by the `pv-fake` binary and the daemon's `pv-fake` example.

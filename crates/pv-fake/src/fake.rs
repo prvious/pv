@@ -5,7 +5,9 @@ use camino::Utf8PathBuf;
 use tokio::signal::unix::{SignalKind, signal};
 
 use crate::events::{EventKind, EventLog};
-use crate::{Persona, Scenario, events_path, lifeline, scenario_path};
+use crate::{
+    BUILD_ID, Persona, Scenario, ScenarioFile, events_path, gateway, lifeline, scenario_path,
+};
 
 pub(crate) fn run() -> Result<ExitCode> {
     let argv = std::env::args_os()
@@ -27,7 +29,17 @@ pub(crate) fn run() -> Result<ExitCode> {
     if !state::fs::path_is_file(&scenario_path)? {
         bail!("no scenario file at {scenario_path}; install fakes with pv_fake::install");
     }
-    let scenario: Scenario = serde_json::from_str(&state::fs::read_to_string(&scenario_path)?)
+    let scenario_file: ScenarioFile<serde_json::Value> =
+        serde_json::from_str(&state::fs::read_to_string(&scenario_path)?)
+            .with_context(|| format!("parsing {scenario_path}"))?;
+    if scenario_file.build_id != BUILD_ID {
+        bail!(
+            "{executable} is an older pv-fake build than the one that installed it; rebuild the \
+             daemon's examples (`cargo nextest run -p daemon` without `--test`, or `cargo build -p \
+             daemon --examples`)"
+        );
+    }
+    let scenario: Scenario = serde_json::from_value(scenario_file.scenario)
         .with_context(|| format!("parsing {scenario_path}"))?;
     let events = EventLog::new(events_path(&executable));
 
@@ -51,12 +63,17 @@ async fn run_persona(scenario: Scenario, argv: Vec<String>, events: EventLog) ->
     };
     events.record(EventKind::Started {
         persona: scenario.persona,
-        argv,
+        argv: argv.clone(),
         lifeline_armed,
     })?;
 
-    let code = match scenario.persona {
-        Persona::LongRunning => {
+    let exit_now = match scenario.persona {
+        Persona::LongRunning => None,
+        Persona::Caddy | Persona::FrankenPhp => gateway::start(&argv, &events).await?,
+    };
+    let code = match exit_now {
+        Some(code) => code,
+        None => {
             let received = tokio::select! {
                 _ = terminate.recv() => "SIGTERM",
                 _ = interrupt.recv() => "SIGINT",

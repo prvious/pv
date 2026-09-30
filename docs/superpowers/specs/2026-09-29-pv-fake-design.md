@@ -137,7 +137,7 @@ These crates are dependencies of `pv-fake` only. Versions of shared crates come 
 ## Contract Fidelity
 
 1. **Record before implementing.** Before each persona is written, run the real artifact (installed from the artifact manifest, as `real_artifact_resource_matrix.rs` does) through exactly the interactions pv performs. Save what comes back as `insta` snapshots: status codes, relevant headers, body shapes (e.g. Caddy's `/load` error `{"error": …}`), CLI exit codes and stderr, startup parameters and greetings, and exit status after SIGTERM.
-2. **One contract suite, two targets.** Contract tests in `crates/pv-fake/tests/` run against the fake by default. With the real-artifact lane's `PV_E2E_REAL_ARTIFACTS=1` and `PV_E2E_ARTIFACT_MANIFEST_URL`, they run against the real binary. Both must match the same snapshot, with ports, PIDs, paths, and timestamps masked by `insta` filters. `.github/workflows/real-artifact-e2e.yml` gains a step that runs this suite, so an artifact update that changes real behavior fails there.
+2. **One contract suite, two targets.** Persona contracts live in the daemon crate, e.g. `crates/daemon/tests/gateway_runtime_contracts.rs`. That way they drive each binary with PV's own renderers, `ProcessSupervisor`, admin client, and readiness checks, so the contract is exactly what PV depends on. Each runs against the fake by default. An ignored twin runs it against the real artifact, installed from the manifest, when `PV_E2E_REAL_ARTIFACTS=1` and `PV_E2E_ARTIFACT_MANIFEST_URL` are set. `.github/workflows/real-artifact-e2e.yml` runs the real twins, so an artifact update that changes behavior PV relies on fails there. Test configs for real Caddy add `skip_install_trust` so a fresh test CA never triggers a trust-store prompt.
 3. **Failure scenarios are fake-only.** Crash on start, never ready, ignore SIGTERM, slow shutdown, and escaping descendants have no real-binary equivalent. Their contract tests run against the fake alone.
 4. **Plumbing contracts.** Contract tests also cover:
    - process identity at the install path
@@ -148,6 +148,27 @@ These crates are dependencies of `pv-fake` only. Versions of shared crates come 
    A daemon test starts a fake through the real supervisor. It checks that the lifeline arrives armed, that ownership verifies, and that no script executable identity is recorded.
 
 The matching cases in `crates/daemon/tests/fixture_contracts.rs` move here as their fixtures are deleted.
+
+## Recorded Behavior
+
+### Caddy 2.11.4 (2026-09-30)
+
+These were recorded with PV's Gateway config shape and a real test CA.
+
+| Interaction | Real Caddy | `caddy` persona |
+|---|---|---|
+| `validate`, valid config | exit 0; JSON logs on stderr | exit 0 if the file exists |
+| `validate`, missing file | exit 1; `Error: reading config from file: open <path>: no such file or directory` | same message and exit code |
+| Root CA lifetime | refuses a root that expires before its 7-day intermediate | n/a |
+| Admin socket | Unix socket, mode `0600` | same |
+| `GET /config/` | `200 application/json`, full config | `200 application/json`, `{}` (PV checks only the status) |
+| `/__pv/health` over HTTP | `200 text/plain` for `Host: pv-gateway.localhost`; `308` to HTTPS for other hosts | `200` for any host, body from the config's `respond` line; `404` without one |
+| HTTPS | leaf per SNI (empty subject, critical SAN) signed by Caddy's own intermediate under PV's root | leaf per SNI signed directly by PV's root |
+| `POST /load`, valid | `200`, JSON warnings array (PV's Caddyfile is not `caddy fmt` formatted) | `200`, empty body; PV accepts both |
+| `POST /load`, invalid | `400 application/json` `{"error":"adapting config using caddyfile adapter: …"}` | not emulated; the stateful persona covers load failures |
+| SIGTERM | graceful shutdown in milliseconds, exit 0 | same |
+
+The persona issues leaves only when the configured certificate is a CA. For now it serves a non-CA certificate as-is, because daemon tests still seed a self-signed leaf as the "CA" and share it with Python Gateway fakes. Step 2b removes that fallback.
 
 ## Lints And Errors
 
@@ -161,7 +182,16 @@ Each step is one pull request. Each starts by recording the relevant real artifa
    - Create the crate, the daemon example target and dev-dependency, `pv_fake::install`, the scenario file, the event log, the lifeline, and the plumbing contract tests.
    - Add the `long_running` persona, replacing the `health.rs` `sleep` runtime and the inline `fake_sql_script`.
    - Leave the supervisor tests that exercise script handling unchanged: `owned-python-runtime.py` and the `/bin/sh` descendant and argument scripts. They cover the supervisor's script-identity fallback and shell process groups, which still exist in production. They go when that fallback is removed.
-2. **Gateway.** Add the `caddy` and `frankenphp` personas, including the stateful control-file, no-admin, admin-only and legacy variants. Replace the inline `FAKE_CADDY_SCRIPT`.
+2. **Gateway**, in two parts:
+   - **2a** (implemented).
+     - Record real Caddy (see Recorded Behavior).
+     - Add the `caddy` and `frankenphp` personas and the dual-target Gateway and worker contracts.
+     - Port the plain install sites in `gateway_reconciliation.rs` and `jobs.rs`, and the inline `FAKE_CADDY_SCRIPT` in `daemon_foundation.rs`.
+   - **2b.**
+     - Port `daemon_foundation.rs`'s barrier helpers, which patch fixture source text today, to scenario settings.
+     - Port the stateful control-file, no-admin, admin-only and legacy variants.
+     - Seed a real CA in every Gateway test and drop the TLS fallback below.
+     - Remove `write_script_fake_frankenphp` in `gateway_reconciliation.rs`. It stays a script only because PV verifies a running script runtime by reading the file at its command path, and that test replaces a running stateful script fixture in place.
 3. **Simple services.** Add `redis-server`, the three Mailpit variants, and `rustfs`.
 4. **SQL.** Start with the `opensrv-mysql` + `sqlx` compatibility spike, then add `postgres`, `initdb`, the unready Postgres variant, and `mysqld`.
 5. **Cleanup.**
@@ -187,7 +217,9 @@ For every step:
 
 ### Stale or missing fake binary
 
-`--lib`-only runs don't build examples. `pv_fake::binary()` fails with an actionable message when the binary is missing. `CONTRIBUTING.md` documents that nextest's package and workspace runs build it.
+`--lib`-only and `--test <name>` runs don't build examples. `pv_fake::binary()` fails with an actionable message when the binary is missing.
+
+A stale binary is caught too. `build.rs` hashes the crate's sources into a build ID, `install` writes that ID into the scenario file, and a fake from a different build refuses to start with instructions to rebuild the examples.
 
 ### Descriptor inheritance
 

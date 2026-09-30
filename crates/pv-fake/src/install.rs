@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::events::{Event, read_events};
-use crate::{Persona, Scenario, events_path, lifeline, scenario_path};
+use crate::{BUILD_ID, Persona, Scenario, ScenarioFile, events_path, lifeline, scenario_path};
 
 /// A fake installed at a runtime's executable path.
 #[derive(Clone, Debug)]
@@ -43,9 +43,13 @@ pub fn install_with(
         state::fs::ensure_user_dir(parent)?;
     }
     link_or_copy(binary, executable)?;
+    let scenario_file = ScenarioFile {
+        build_id: BUILD_ID.to_owned(),
+        scenario,
+    };
     state::fs::write_sensitive_file(
         &scenario_path(executable),
-        &serde_json::to_string_pretty(scenario)?,
+        &serde_json::to_string_pretty(&scenario_file)?,
     )?;
 
     Ok(InstalledFake {
@@ -75,7 +79,8 @@ pub fn binary() -> Result<Utf8PathBuf> {
     Ok(binary)
 }
 
-/// Hard-links the fake into place, copying across filesystems.
+/// Hard-links the fake into place, replacing any earlier fixture atomically, and copies across
+/// filesystems.
 ///
 /// A hard link is a regular file, so PV's artifact validation, which rejects symlinked
 /// executables, accepts it. The process executable is the path the fake was started from, so the
@@ -85,8 +90,13 @@ pub fn binary() -> Result<Utf8PathBuf> {
     reason = "pv-fake links its own binary into fake artifact directories"
 )]
 fn link_or_copy(binary: &Utf8Path, executable: &Utf8Path) -> Result<()> {
-    match std::fs::hard_link(binary, executable) {
-        Ok(()) => Ok(()),
+    let staged = Utf8PathBuf::from(format!("{executable}.pv-fake-install"));
+    state::fs::remove_file_if_exists(&staged)?;
+    match std::fs::hard_link(binary, &staged) {
+        Ok(()) => {
+            state::fs::rename(&staged, executable)?;
+            Ok(())
+        }
         Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
             state::fs::copy_file_atomically(binary, executable)?;
             Ok(())
