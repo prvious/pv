@@ -1154,6 +1154,7 @@ dependencies = [
  "object_store",
  "platform",
  "protocol",
+ "pv-fake",
  "rcgen",
  "redis",
  "resources",
@@ -2725,6 +2726,22 @@ dependencies = [
  "serde_json",
  "state",
  "vt100",
+]
+
+[[package]]
+name = "pv-fake"
+version = "0.2.5"
+dependencies = [
+ "anyhow",
+ "camino",
+ "camino-tempfile",
+ "platform",
+ "rustix",
+ "serde",
+ "serde_json",
+ "state",
+ "time",
+ "tokio",
 ]
 
 [[package]]

@@ -13,6 +13,7 @@ members = [
     "crates/platform",
     "crates/privileged-helper",
     "crates/protocol",
+    "crates/pv-fake",
     "crates/pv-release",
     "crates/resources",
     "crates/self-update",

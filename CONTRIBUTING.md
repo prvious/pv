@@ -61,6 +61,14 @@ shell wrappers stop and reap only the child they directly spawned, including
 parent-loss races before readiness. The Rust guard or supervisor owns
 whole-process-group cleanup.
 
+New long-running fixtures that stand in for a runtime use `pv-fake` instead of
+a script. `pv_fake::install(executable, persona)` places a native fake at the
+runtime's executable path. The fake exits when the test process that installed
+it dies, SIGKILL included, so it needs no parent watcher. It records its
+lifecycle in `<executable>.pv-fake.events.jsonl`. `cargo nextest run` builds it
+as the daemon's `pv-fake` example, and `cargo test --lib` does not. Guard
+registration and explicit cleanup still apply.
+
 Use the CI nextest profile for CI runs (`cargo nextest run --profile ci`). It
 warns after 60 seconds, terminates a wedged test after 120 seconds, and allows
 10 seconds for graceful exit. The default profile remains available for tests

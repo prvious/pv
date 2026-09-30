@@ -644,13 +644,9 @@ fn php_runtime_subject(runtime_key: &str) -> RuntimeSubject {
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
-    #[cfg(target_os = "macos")]
-    use std::fs;
     use std::io;
     #[cfg(target_os = "macos")]
     use std::net::TcpListener as StdTcpListener;
-    #[cfg(target_os = "macos")]
-    use std::os::unix::fs::PermissionsExt;
     #[cfg(target_os = "macos")]
     use std::sync::Arc;
 
@@ -659,6 +655,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
+    #[cfg(target_os = "macos")]
+    use pv_fake::Persona;
     #[cfg(target_os = "macos")]
     use state::{
         Database, LinkProjectInput, ManagedResourceDesiredState, PortRequest,
@@ -1590,8 +1588,7 @@ mod tests {
     ) -> anyhow::Result<Utf8PathBuf> {
         let artifact_root = root.join(format!("frankenphp-{php_track}"));
         let runtime = artifact_root.join("bin/frankenphp");
-        state::fs::write_sensitive_file(&runtime, "#!/bin/sh\nsleep \"$1\"\n")?;
-        set_executable(&runtime)?;
+        pv_fake::install(&runtime, Persona::LongRunning)?;
         database.record_managed_resource_track_installed(
             "frankenphp",
             php_track,
@@ -1600,19 +1597,6 @@ mod tests {
         )?;
 
         Ok(runtime)
-    }
-
-    #[cfg(target_os = "macos")]
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "runtime health tests set fixture executable bits directly"
-    )]
-    fn set_executable(path: &Utf8Path) -> anyhow::Result<()> {
-        let mut permissions = fs::metadata(path)?.permissions();
-        permissions.set_mode(0o700);
-        fs::set_permissions(path, permissions)?;
-
-        Ok(())
     }
 
     #[cfg(target_os = "macos")]

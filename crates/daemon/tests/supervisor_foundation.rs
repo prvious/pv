@@ -13,6 +13,8 @@ use daemon::{
     wait_for_readiness,
 };
 use insta::{Settings, assert_debug_snapshot};
+#[cfg(target_os = "macos")]
+use pv_fake::{EventKind, InstalledFake, Persona};
 use rustix::process::{Pid, test_kill_process};
 use rustls::pki_types::PrivateKeyDer;
 use serde_json::json;
@@ -735,6 +737,32 @@ async fn supervisor_verifies_owned_python_shebang_script() -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn supervisor_owns_pv_fake_by_direct_identity_with_an_armed_lifeline() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let fake = pv_fake::install(
+        &paths.root().join("fake-release/bin/mysqld"),
+        Persona::LongRunning,
+    )?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let spec = process_spec(&paths, "pv-fake-runtime", fake.executable(), Vec::new());
+    let process = supervisor.start(spec.clone()).await?;
+    let lifeline_armed = wait_for_fake_start(&fake).await;
+    let owned = supervisor.verify_ownership(&spec);
+    let metadata = runtime_metadata(&spec.metadata_path);
+    process.stop(Duration::from_secs(1)).await?;
+
+    assert!(lifeline_armed?);
+    assert!(owned?.is_some());
+    // Script runtimes record an executable identity; a directly matched binary does not.
+    assert_eq!(metadata?.get("process_executable_identity"), None);
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn supervisor_rejects_owned_runtime_when_private_environment_changes() -> Result<()> {
     let tempdir = tempdir()?;
@@ -1320,6 +1348,30 @@ async fn wait_for_process_exit(pid: u32) -> Result<()> {
     }
 
     Err(anyhow!("process {pid:?} was still running"))
+}
+
+/// Waits for the fake's `started` event and returns whether its lifeline is armed.
+#[cfg(target_os = "macos")]
+async fn wait_for_fake_start(fake: &InstalledFake) -> Result<bool> {
+    for _attempt in 0..50 {
+        let started = fake
+            .events()?
+            .into_iter()
+            .find_map(|event| match event.kind {
+                EventKind::Started { lifeline_armed, .. } => Some(lifeline_armed),
+                _ => None,
+            });
+        if let Some(lifeline_armed) = started {
+            return Ok(lifeline_armed);
+        }
+
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    Err(anyhow!(
+        "fake {} did not record a started event",
+        fake.executable()
+    ))
 }
 
 async fn wait_for_path(path: &camino::Utf8Path) -> Result<()> {
