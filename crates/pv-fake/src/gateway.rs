@@ -93,12 +93,8 @@ async fn serve(config_path: &Utf8Path, events: &EventLog) -> Result<()> {
         .clone()
         .ok_or_else(|| anyhow!("{config_path} has no `admin \"unix/<path>|0600\"` setting"))?;
     let https_port = config.https_port;
-    let health_body = config.health_body.clone().unwrap_or_else(|| {
-        let https_port = https_port.map_or_else(|| "None".to_owned(), |port| port.to_string());
-        format!("pv-gateway-health-v1:{http_port}:{https_port}")
-    });
     let routes = Arc::new(Routes {
-        health_body,
+        health_body: config.health_body.clone(),
         readiness_gate: Utf8PathBuf::from(format!("{config_path}.readiness-gate")),
         readiness_probed: Utf8PathBuf::from(format!("{config_path}.readiness-probed")),
         readiness_failure: Utf8PathBuf::from(format!("{config_path}.readiness-fail")),
@@ -300,7 +296,8 @@ impl ResolvesServerCert for LeafIssuer {
 }
 
 struct Routes {
-    health_body: String,
+    /// Served only when the config has a `respond /__pv/health` line, as with real Caddy.
+    health_body: Option<String>,
     readiness_gate: Utf8PathBuf,
     readiness_probed: Utf8PathBuf,
     readiness_failure: Utf8PathBuf,
@@ -317,11 +314,10 @@ impl Routes {
                 self.hold_readiness().await;
                 response(StatusCode::OK, "application/json", "{}\n")
             }
-            (&Method::GET, "/__pv/health") => response(
-                StatusCode::OK,
-                "text/plain; charset=utf-8",
-                self.health_body.clone(),
-            ),
+            (&Method::GET, "/__pv/health") => match &self.health_body {
+                Some(body) => response(StatusCode::OK, "text/plain; charset=utf-8", body.clone()),
+                None => response(StatusCode::NOT_FOUND, "text/plain; charset=utf-8", ""),
+            },
             (&Method::POST, "/load") => {
                 let _body = request.into_body().collect().await;
                 response(StatusCode::OK, "text/plain; charset=utf-8", "")

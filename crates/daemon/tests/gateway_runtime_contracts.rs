@@ -98,8 +98,9 @@ async fn real_frankenphp_satisfies_the_worker_contract() -> Result<()> {
 }
 
 /// PV's Gateway lifecycle: validate the rendered root config, start it through the supervisor,
-/// wait for the admin API and the public identity route over HTTP and HTTPS, reload the config
-/// through the admin API, and stop within the grace period.
+/// wait for the admin API and the public identity route over HTTP and HTTPS, have the admin API
+/// accept a reload, and stop within the grace period. Whether a reload is applied is the stateful
+/// persona's contract.
 async fn gateway_contract(paths: &PvPaths, executable: &Utf8Path) -> Result<()> {
     seed_local_ca(paths)?;
     let [http_port, https_port] = available_ports()?;
@@ -164,8 +165,9 @@ async fn gateway_contract(paths: &PvPaths, executable: &Utf8Path) -> Result<()> 
 }
 
 /// PV's PHP worker lifecycle: validate the rendered worker root config with its imported project
-/// site, start it through the supervisor, wait for the admin API and the worker port, reload the
-/// config through the admin API, and stop within the grace period.
+/// site, start it through the supervisor, wait for the admin API and the worker port, have the
+/// admin API accept a reload, and stop within the grace period. Whether a reload is applied is
+/// the stateful persona's contract.
 async fn worker_contract(paths: &PvPaths, artifact_root: &Utf8Path, php_track: &str) -> Result<()> {
     let [port] = available_ports()?;
     let runtime_key = php_track.to_owned();

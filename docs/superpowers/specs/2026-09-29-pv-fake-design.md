@@ -162,7 +162,7 @@ These were recorded with PV's Gateway config shape and a real test CA.
 | Root CA lifetime | refuses a root that expires before its 7-day intermediate | n/a |
 | Admin socket | Unix socket, mode `0600` | same |
 | `GET /config/` | `200 application/json`, full config | `200 application/json`, `{}` (PV checks only the status) |
-| `/__pv/health` over HTTP | `200 text/plain` for `Host: pv-gateway.localhost`; `308` to HTTPS for other hosts | `200` for any host, body from the config's `respond` line |
+| `/__pv/health` over HTTP | `200 text/plain` for `Host: pv-gateway.localhost`; `308` to HTTPS for other hosts | `200` for any host, body from the config's `respond` line; `404` without one |
 | HTTPS | leaf per SNI (empty subject, critical SAN) signed by Caddy's own intermediate under PV's root | leaf per SNI signed directly by PV's root |
 | `POST /load`, valid | `200`, JSON warnings array (PV's Caddyfile is not `caddy fmt` formatted) | `200`, empty body; PV accepts both |
 | `POST /load`, invalid | `400 application/json` `{"error":"adapting config using caddyfile adapter: …"}` | not emulated; the stateful persona covers load failures |
