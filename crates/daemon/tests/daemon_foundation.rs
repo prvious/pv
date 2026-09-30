@@ -6,6 +6,7 @@ use hickory_proto::rr::rdata::{A, AAAA};
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::serialize::binary::BinEncodable;
 use insta::{Settings, assert_debug_snapshot};
+use pv_fake::Persona;
 use rcgen::generate_simple_self_signed;
 use rusqlite::{Connection, params};
 #[cfg(unix)]
@@ -40,36 +41,6 @@ const JOB_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const REQUEST_LINES_TIMEOUT: Duration = Duration::from_secs(30);
 const TARGETED_SCENARIO_TIMEOUT: Duration = Duration::from_secs(60);
 const TEST_ARTIFACT_MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
-const FAKE_CADDY_SCRIPT: &str = r#"#!/bin/sh
-set -eu
-
-if [ "$1" = "validate" ]; then
-  test -f "$3"
-  exit 0
-fi
-
-if [ "$1" = "run" ]; then
-  python3 - "$3" < "$0.server.py" &
-  child="$!"
-
-  cleanup() {
-    trap - TERM INT
-    kill "$child" 2>/dev/null || true
-    wait "$child" 2>/dev/null || true
-    exit 0
-  }
-
-  trap cleanup TERM INT
-  wait "$child"
-  exit "$?"
-fi
-
-exit 2
-"#;
-const FAKE_CADDY_SERVER_SCRIPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/gateway/fake-frankenphp-server.py"
-));
 const EMPTY_ARTIFACT_MANIFEST: &str = r#"
 {
   "schema_version": 1,
@@ -2033,11 +2004,7 @@ async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_suc
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let caddy_path = paths.resources().join("caddy/2/releases/2.11.4-pv1");
     let caddy_executable = caddy_path.join("bin/caddy");
-    state::fs::write_sensitive_file(&caddy_executable, FAKE_CADDY_SCRIPT)?;
-    state::fs::write_sensitive_file(
-        &caddy_path.join("bin/caddy.server.py"),
-        FAKE_CADDY_SERVER_SCRIPT,
-    )?;
+    pv_fake::install(&caddy_executable, Persona::Caddy)?;
     let executable_install =
         AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.0", &caddy_executable)?;
     state::fs::rename(executable_install.binary_path(), &caddy_executable)?;

@@ -669,7 +669,7 @@ fn real_artifact_e2e_runs_gateway_and_resource_matrix_for_manifest_input() -> Re
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let workflow = read_file(&workspace_root.join(REAL_ARTIFACT_E2E_WORKFLOW_PATH))?;
     let summary = format!(
-        "workflow_name={}\nmanifest_url_required={}\napp_update_manifest_input={}\ninstaller_url_input={}\nprivileged_rc_input={}\nreal_artifact_env_count={}\nmanifest_url_env_count={}\ngateway_command={}\nresource_matrix_command={}\nrun_ignored_count={}\nprivileged_job_uses_rc_workflow={}\nprivileged_job_is_optional={}\nprivileged_job_passes_manifest_inputs={}\nprivileged_job_passes_installer_input={}\nunpinned_uses={:?}",
+        "workflow_name={}\nmanifest_url_required={}\napp_update_manifest_input={}\ninstaller_url_input={}\nprivileged_rc_input={}\nreal_artifact_env_count={}\nmanifest_url_env_count={}\ngateway_command={}\nresource_matrix_command={}\nruntime_contracts_command={}\nrun_ignored_count={}\nprivileged_job_uses_rc_workflow={}\nprivileged_job_is_optional={}\nprivileged_job_passes_manifest_inputs={}\nprivileged_job_passes_installer_input={}\nunpinned_uses={:?}",
         workflow_name(&workflow).unwrap_or(""),
         workflow.contains("manifest_url:") && workflow.contains("required: true"),
         workflow.contains("app_update_manifest_url:") && workflow.contains("required: false"),
@@ -687,6 +687,9 @@ fn real_artifact_e2e_runs_gateway_and_resource_matrix_for_manifest_input() -> Re
         workflow.contains(
             "cargo nextest run -p daemon --locked --run-ignored ignored-only --test real_artifact_resource_matrix"
         ),
+        workflow.contains(
+            "cargo nextest run -p daemon --locked --run-ignored ignored-only --test gateway_runtime_contracts"
+        ),
         workflow.matches("--run-ignored ignored-only").count(),
         workflow.contains("uses: ./.github/workflows/privileged-macos-rc.yml"),
         workflow.contains("if: ${{ inputs.privileged_rc }}"),
@@ -696,23 +699,24 @@ fn real_artifact_e2e_runs_gateway_and_resource_matrix_for_manifest_input() -> Re
         unpinned_uses_references(&workflow),
     );
 
-    assert_snapshot!(summary, @r#"
+    assert_snapshot!(summary, @"
     workflow_name=Real Artifact E2E
     manifest_url_required=true
     app_update_manifest_input=true
     installer_url_input=true
     privileged_rc_input=true
-    real_artifact_env_count=2
-    manifest_url_env_count=2
+    real_artifact_env_count=3
+    manifest_url_env_count=3
     gateway_command=true
     resource_matrix_command=true
-    run_ignored_count=2
+    runtime_contracts_command=true
+    run_ignored_count=3
     privileged_job_uses_rc_workflow=true
     privileged_job_is_optional=true
     privileged_job_passes_manifest_inputs=true
     privileged_job_passes_installer_input=true
     unpinned_uses=[]
-    "#);
+    ");
 
     Ok(())
 }

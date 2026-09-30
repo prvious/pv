@@ -1798,6 +1798,7 @@ dependencies = [
  "http 1.4.1",
  "http-body 1.0.1",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -2733,15 +2734,23 @@ name = "pv-fake"
 version = "0.2.5"
 dependencies = [
  "anyhow",
+ "bytes",
  "camino",
  "camino-tempfile",
+ "http-body-util",
+ "hyper 1.10.1",
+ "hyper-util",
  "platform",
+ "rcgen",
  "rustix",
+ "rustls 0.23.40",
  "serde",
  "serde_json",
  "state",
  "time",
  "tokio",
+ "tokio-rustls 0.26.4",
+ "x509-parser",
 ]
 
 [[package]]

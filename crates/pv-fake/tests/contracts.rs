@@ -8,7 +8,7 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow, bail};
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use pv_fake::{EventKind, InstalledFake, Persona, Scenario};
 use rustix::io::{FdFlags, fcntl_setfd};
@@ -142,6 +142,34 @@ fn fake_without_a_scenario_fails_with_an_actionable_error() -> Result<()> {
         String::from_utf8(output.stderr)?,
         format!(
             "pv-fake: no scenario file at {scenario_path}; install fakes with pv_fake::install\n"
+        )
+    );
+
+    Ok(())
+}
+
+#[test]
+fn fake_from_another_build_refuses_to_start() -> Result<()> {
+    let tempdir = tempdir()?;
+    let fake = install_long_running(tempdir.path(), "caddy", None)?;
+    let scenario_path = Utf8PathBuf::from(format!("{}.pv-fake.json", fake.executable()));
+    // What a newer pv-fake library leaves for a stale binary, e.g. after `--test` skipped examples.
+    state::fs::write_sensitive_file(
+        &scenario_path,
+        r#"{"build_id":"newer-build","persona":"long_running","lifeline_fd":null}"#,
+    )?;
+    let output = FakeCommand::new(fake.executable())
+        .stdin(Stdio::null())
+        .output()?;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(output.stderr)?,
+        format!(
+            "pv-fake: {} is an older pv-fake build than the one that installed it; rebuild the \
+             daemon's examples (`cargo nextest run -p daemon` without `--test`, or `cargo build -p \
+             daemon --examples`)\n",
+            fake.executable()
         )
     );
 

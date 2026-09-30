@@ -3793,6 +3793,7 @@ mod tests {
     use config::ConfigError;
     use futures_util::StreamExt;
     use insta::{Settings, allow_duplicates, assert_debug_snapshot, assert_snapshot};
+    use pv_fake::Persona;
     use rcgen::generate_simple_self_signed;
     use resources::{ManagedResourceCommandError, ResourceHttpClient, ResourcesError};
     use rusqlite::{Connection, Error as SqliteError};
@@ -3870,14 +3871,6 @@ mod tests {
     const FAKE_MAILPIT_SCRIPT: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/test-fixtures/managed-resources/fake-mailpit.py"
-    ));
-    const FAKE_CADDY_SCRIPT: &str = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/test-fixtures/gateway/fake-caddy.sh"
-    ));
-    const FAKE_CADDY_SERVER_SCRIPT: &str = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/test-fixtures/gateway/fake-caddy-server.py"
     ));
 
     #[tokio::test]
@@ -11613,12 +11606,9 @@ mod tests {
     }
 
     fn write_caddy_fixture(executable: &Utf8Path) -> anyhow::Result<()> {
-        state::fs::write_sensitive_file(executable, FAKE_CADDY_SCRIPT)?;
-        state::fs::write_sensitive_file(
-            &Utf8PathBuf::from(format!("{executable}.server.py")),
-            FAKE_CADDY_SERVER_SCRIPT,
-        )?;
-        set_executable(executable)
+        pv_fake::install(executable, Persona::Caddy)?;
+
+        Ok(())
     }
 
     struct SeededRuntimeRecord {
