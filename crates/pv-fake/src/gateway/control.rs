@@ -85,6 +85,8 @@ impl AdminControl {
 /// What the controls say to do with one `POST /load`. Settings that only matter for an accepted
 /// load are used up only by accepted loads.
 pub(crate) struct LoadControl {
+    /// The response status: `400` for a config the adapter couldn't read, as with Caddy, and
+    /// otherwise `load_statuses`.
     pub(crate) status: u16,
     pub(crate) apply: bool,
     pub(crate) retain_listeners: bool,
@@ -98,8 +100,9 @@ pub(crate) struct LoadControl {
 }
 
 impl LoadControl {
-    pub(crate) fn take(control: &mut Control) -> Self {
+    pub(crate) fn take(control: &mut Control, adapted: bool) -> Self {
         let status = next(&mut control.load_statuses).unwrap_or(200);
+        let status = if adapted { status } else { 400 };
         let accepted = is_success(status);
 
         Self {
@@ -114,7 +117,9 @@ impl LoadControl {
                 next(&mut control.late_apply_delay_ms).unwrap_or(0),
             ),
             response_body: next(&mut control.load_response_body),
-            accepted_marker: next(&mut control.load_accepted_marker),
+            accepted_marker: accepted
+                .then(|| next(&mut control.load_accepted_marker))
+                .flatten(),
             exit_after: accepted && next(&mut control.exit_after_load).unwrap_or(false),
         }
     }

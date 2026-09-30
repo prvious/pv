@@ -193,7 +193,7 @@ The persona issues leaves only when the configured certificate is a CA. For now 
   - `load_response_body`, `load_accepted_marker`, and `exit_after_load`.
 - `stop_service`: closes the HTTP listener on its next connection and keeps the process running.
 
-Settings that only matter for an accepted load (`apply_load`, `retain_previous_listeners`, `exit_after_load`) are used up only by accepted loads.
+Settings that only matter for an accepted load (`apply_load`, `retain_previous_listeners`, `load_accepted_marker`, `exit_after_load`) are used up only by accepted loads. A load the persona can't read is rejected with `400`, whatever `load_statuses` says.
 
 The persona records every request in `fake-admin-requests.jsonl` before holding it, and every load body in `fake-admin-load-NNN.bin`, numbered from 0 in each process. It writes the served config to `fake-admin-current.bin` at startup and after each applied load.
 

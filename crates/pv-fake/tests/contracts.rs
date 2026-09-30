@@ -258,6 +258,39 @@ fn gateway_controls_are_used_up_per_request_and_single_values_persist() -> Resul
 }
 
 #[test]
+fn rejected_loads_leave_accepted_load_controls_queued() -> Result<()> {
+    let tempdir = tempdir()?;
+    let [port] = available_ports()?;
+    let gateway = GatewayFake::start(tempdir.path(), port)?;
+    let marker = tempdir.path().join("load-accepted");
+    gateway.control(json!({"load_statuses": [422], "load_accepted_marker": [marker]}))?;
+    let unreadable = gateway
+        .config(port, "unreadable")
+        .replace(&format!("http_port {port}"), "http_port nope");
+
+    let rejected = gateway.admin("POST", "/load", &gateway.config(port, "rejected"))?;
+    let unadapted = gateway.admin("POST", "/load", &unreadable)?;
+    let marked_early = state::fs::path_entry_exists(&marker)?;
+    let accepted = gateway.admin("POST", "/load", &gateway.config(port, "accepted"))?;
+
+    assert_eq!(rejected.0, 422);
+    assert_eq!(
+        unadapted,
+        (
+            400,
+            "{\"error\":\"adapting config using caddyfile adapter: http_port nope: invalid digit \
+             found in string\"}\n"
+                .to_owned()
+        )
+    );
+    assert!(!marked_early);
+    assert_eq!(accepted, (200, UNFORMATTED_WARNING.to_owned()));
+    assert_eq!(state::fs::read_to_string(&marker)?, "accepted\n");
+
+    Ok(())
+}
+
+#[test]
 fn gateway_controls_reject_unknown_keys_and_malformed_files() -> Result<()> {
     let tempdir = tempdir()?;
     let [port] = available_ports()?;

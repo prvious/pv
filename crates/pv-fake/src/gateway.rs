@@ -467,20 +467,18 @@ impl Runtime {
     async fn load(self: Arc<Self>, request: Request<Incoming>) -> Result<Response<Full<Bytes>>> {
         let body = request.into_body().collect().await?.to_bytes();
         let source = String::from_utf8_lossy(&body).into_owned();
-        let control = self.records.take_control(LoadControl::take)?;
         // Caddy adapts the config, reading its imports, as soon as it arrives.
-        let adapted = control.accepted().then(|| adapt(&source));
-        let status = match &adapted {
-            Some(Err(_error)) => 400,
-            _ => control.status,
-        };
+        let adapted = adapt(&source);
+        let control = self
+            .records
+            .take_control(|control| LoadControl::take(control, adapted.is_ok()))?;
         self.records
-            .request(&Method::POST, "/load", status, body.len())?;
+            .request(&Method::POST, "/load", control.status, body.len())?;
         self.records.load(&source)?;
 
         let (sender, receiver) = oneshot::channel();
         tokio::spawn(async move {
-            let response = self.finish_load(control, status, adapted, &source).await;
+            let response = self.finish_load(control, adapted, &source).await;
             let _send_result = sender.send(response);
         });
 
@@ -490,25 +488,24 @@ impl Runtime {
     async fn finish_load(
         self: &Arc<Self>,
         control: LoadControl,
-        status: u16,
-        adapted: Option<Result<(GatewayConfig, ListenerPlan), String>>,
+        adapted: Result<(GatewayConfig, ListenerPlan), String>,
         source: &str,
     ) -> Result<Response<Full<Bytes>>> {
         if let Some(gate) = &control.gate {
             wait_for_path(gate).await;
         }
         let (applied, adapt_error) = match adapted {
-            Some(Ok((config, plan))) if control.apply => (
+            Ok((config, plan)) if control.apply => (
                 self.apply_after(&control, config, &plan, source).await,
                 None,
             ),
-            Some(Err(error)) => {
-                tokio::time::sleep(control.delay).await;
-                (Ok(()), Some(error))
-            }
-            _ => {
+            Ok(_adapted) => {
                 tokio::time::sleep(control.delay).await;
                 (Ok(()), None)
+            }
+            Err(error) => {
+                tokio::time::sleep(control.delay).await;
+                (Ok(()), Some(error))
             }
         };
         let body = match (&control.response_body, adapt_error, applied) {
@@ -517,7 +514,8 @@ impl Runtime {
                 error_body(&format!("adapting config using caddyfile adapter: {error}"))
             }
             (None, None, _) if !control.accepted() => error_body(&format!(
-                "pv-fake: fake-admin-control.json rejected this load with status {status}"
+                "pv-fake: fake-admin-control.json rejected this load with status {}",
+                control.status
             )),
             (None, None, Ok(())) => UNFORMATTED_WARNING.to_owned(),
             // Caddy has already sent its adapter warnings with a 200 when applying fails.
@@ -538,7 +536,7 @@ impl Runtime {
         }
 
         Ok(response(
-            StatusCode::from_u16(status)?,
+            StatusCode::from_u16(control.status)?,
             "application/json",
             body,
         ))
