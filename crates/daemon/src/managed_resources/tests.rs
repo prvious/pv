@@ -23,6 +23,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
+use pv_fake::Persona;
 use rcgen::{
     CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose,
     PKCS_ECDSA_P256_SHA256,
@@ -7385,8 +7386,7 @@ fn seed_fake_sql_artifact(paths: &PvPaths, resource: &str, track: &str) -> Resul
         .join(format!("releases/{FAKE_SQL_ARTIFACT_VERSION}"));
     let executable = release_path.join("bin/pv-fake-sql");
 
-    state::fs::write_sensitive_file(&executable, fake_sql_script())?;
-    set_executable(&executable)?;
+    pv_fake::install(&executable, Persona::LongRunning)?;
     let mut database = Database::open(paths)?;
     database.record_managed_resource_track_installed(
         resource,
@@ -8219,31 +8219,6 @@ fn postgres_fixture_manifest(sha256: &str, size: u64) -> String {
 }}
 "#
     )
-}
-
-fn fake_sql_script() -> &'static str {
-    r#"#!/bin/bash
-set -eu
-
-parent_pid="$PPID"
-if [ "$parent_pid" -eq 1 ]; then
-  exit 0
-fi
-
-stop() {
-  exit 0
-}
-
-trap stop TERM INT
-
-while true; do
-  current_parent_pid="$(ps -o ppid= -p "$$" 2>/dev/null | tr -d '[:space:]')"
-  if [ "$current_parent_pid" != "$parent_pid" ]; then
-    exit 0
-  fi
-  sleep 0.1
-done
-"#
 }
 
 #[derive(Clone, Debug)]
