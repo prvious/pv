@@ -1,10 +1,10 @@
 # pv-fake Test Service Design
 
-Status: approved 2026-09-29. Step 1 (foundation) is implemented.
+Status: approved 2026-09-29. Steps 1, 2a and 2b-1 are implemented.
 
 ## Summary
 
-PV will replace the daemon's shell and Python test fixtures with `pv-fake`: one native Rust executable that emulates each Managed Resource and Gateway runtime pv supervises. Tests install it at each real executable path, e.g. `bin/caddy` or `bin/mysqld`, as a hard link. The fake reads its persona from a scenario file next to it, runs as a single process, and exits by itself when the test process that installed it dies.
+PV will replace the daemon's shell and Python test fixtures with `pv-fake`: one native Rust executable that emulates each Managed Resource and Gateway runtime pv supervises. Tests install it at each real executable path, e.g. `bin/caddy` or `bin/mysqld`, as a copy. The fake reads its persona from a scenario file next to it, runs as a single process, and exits by itself when the test process that installed it dies.
 
 Protocol layers come from established libraries wherever pv talks a real protocol. Each persona's answers are recorded from the real artifact first, and one contract suite runs against both the fake and, in the real-artifact lane, the real binary. That keeps the fakes from drifting.
 
@@ -53,14 +53,16 @@ The chaos baseline (2026-09-29) measured the current fixtures:
 Tests install a fake with `pv_fake::install(executable, persona)`. It:
 
 - sets up this test process's lifeline pipe (below) on first use,
-- hard-links the `pv-fake` binary to `executable`, copying instead if the link would cross filesystems, and
+- copies the `pv-fake` binary to `executable`, which on APFS is a clone that costs no disk space, and
 - writes the scenario file next to it.
 
-The link is a hard link, not a symlink, because PV's artifact validation (`RuntimeArtifactAdapter::validate_installation`, via `symlink_metadata`) rejects symlinked executables. That's a production policy the fakes must not work around.
+The fake is a copy, not a symlink, because PV's artifact validation (`RuntimeArtifactAdapter::validate_installation`, via `symlink_metadata`) rejects symlinked executables. That's a production policy the fakes must not work around.
 
-A hard link is a regular file, and the process executable is the path the fake was started from. macOS reports the path passed to exec, not a resolved one (verified with a `KERN_PROCARGS2` probe), so the supervisor's `executable_matches` succeeds directly.
+It isn't a hard link either. Hard links share one inode across every install, and Gatekeeper (`syspolicyd`) scans each new path on its first launch and records the result on the file. With hard links, fakes launched under parallel test load died with SIGKILL before running any code, in about half of parallel `pv-fake` suite runs. Copies stopped it. The mechanism is inferred from `syspolicyd`'s logs; the fix was measured.
 
-Control files that tests change while a fake is running keep their current names and meaning: `<config>.readiness-gate`, `<config>.readiness-fail`, `fake-admin-control.json` and the marker files. Ported tests only change their install helpers, not their bodies or snapshots.
+A copy is a regular file, and the process executable is the path the fake was started from. macOS reports the path passed to exec, not a resolved one (verified with a `KERN_PROCARGS2` probe), so the supervisor's `executable_matches` succeeds directly.
+
+Control files that tests change while a fake is running keep their current names and meaning: `<config>.readiness-gate`, `<config>.readiness-fail`, `fake-admin-control.json` and the marker files. The Gateway personas parse `fake-admin-control.json` into typed settings and answer with a 500 naming the problem when it has an unknown key or is malformed. `pv_fake::write_gateway_control` validates the settings when a test writes them.
 
 ### Binary location
 
@@ -157,18 +159,43 @@ These were recorded with PV's Gateway config shape and a real test CA.
 
 | Interaction | Real Caddy | `caddy` persona |
 |---|---|---|
-| `validate`, valid config | exit 0; JSON logs on stderr | exit 0 if the file exists |
+| `validate`, valid config | exit 0; JSON logs on stderr | exit 0 if the file exists; appends its path to `fake-validator-spawns.log` |
 | `validate`, missing file | exit 1; `Error: reading config from file: open <path>: no such file or directory` | same message and exit code |
 | Root CA lifetime | refuses a root that expires before its 7-day intermediate | n/a |
 | Admin socket | Unix socket, mode `0600` | same |
 | `GET /config/` | `200 application/json`, full config | `200 application/json`, `{}` (PV checks only the status) |
 | `/__pv/health` over HTTP | `200 text/plain` for `Host: pv-gateway.localhost`; `308` to HTTPS for other hosts | `200` for any host, body from the config's `respond` line; `404` without one |
 | HTTPS | leaf per SNI (empty subject, critical SAN) signed by Caddy's own intermediate under PV's root | leaf per SNI signed directly by PV's root |
-| `POST /load`, valid | `200`, JSON warnings array (PV's Caddyfile is not `caddy fmt` formatted) | `200`, empty body; PV accepts both |
-| `POST /load`, invalid | `400 application/json` `{"error":"adapting config using caddyfile adapter: …"}` | not emulated; the stateful persona covers load failures |
+| `POST /load`, valid | `200`, JSON warnings array: PV indents with spaces, so its Caddyfile is never `caddy fmt` formatted | same warnings array |
+| `POST /load`, invalid | `400 application/json` `{"error":"adapting config using caddyfile adapter: …"}` | `400` with the same shape for a config it can't read, e.g. a bad port; it doesn't emulate the Caddyfile grammar |
+| `POST /load` with new HTTP and HTTPS ports | by the time `200` returns, the old ports refuse connections and the new ports serve the new identity; same process | same |
+| `POST /load` onto a busy port | `200` with the warnings array followed by `{"error":"loading config: loading new config: http app module: start: listening on 127.0.0.1:<port>: listen tcp 127.0.0.1:<port>: bind: address already in use"}`; the previous config and ports keep serving | same |
+| Rejected `POST /load` | the previous config keeps serving | same |
+| Worker reload with an unchanged root config | imports are read on every load, so a fragment whose site moved to a new port moves the listener: the old port closes, the new one serves | same |
+| `admin off` | HTTP and HTTPS serve; no admin socket or admin TCP listener | not yet emulated; step 2b-2 |
 | SIGTERM | graceful shutdown in milliseconds, exit 0 | same |
 
+The reload rows were recorded 2026-09-30 by loading PV-shaped configs through the admin socket, and the dual-target contracts check them against real Caddy and FrankenPHP.
+
 The persona issues leaves only when the configured certificate is a CA. For now it serves a non-CA certificate as-is, because daemon tests still seed a self-signed leaf as the "CA" and share it with Python Gateway fakes. Step 2b removes that fallback.
+
+#### Gateway test controls
+
+`fake-admin-control.json`, next to the runtime config, injects the failures tests need. With no controls, the persona behaves as recorded. A list is used up one entry per request, and a single value applies to every request:
+
+- `GET /config/`: `admin_statuses`, and `admin_response_gate`, which holds the response until a path exists.
+- `POST /load`:
+  - `load_statuses`: anything but 2xx rejects without applying.
+  - `apply_load`: `false` accepts without applying.
+  - `retain_previous_listeners`: applies the config but keeps the old ports, so changed ports never open.
+  - `load_response_gate`: holds the load, after recording it, until a path exists.
+  - `load_delay_ms`, plus `late_accept` with `late_apply_delay_ms`, which applies the load that long after it arrived. Loads finish in their own task, so a late accept still applies after PV hangs up.
+  - `load_response_body`, `load_accepted_marker`, and `exit_after_load`.
+- `stop_service`: closes the HTTP listener on its next connection and keeps the process running.
+
+Settings that only matter for an accepted load (`apply_load`, `retain_previous_listeners`, `exit_after_load`) are used up only by accepted loads.
+
+The persona records every request in `fake-admin-requests.jsonl` before holding it, and every load body in `fake-admin-load-NNN.bin`, numbered from 0 in each process. It writes the served config to `fake-admin-current.bin` at startup and after each applied load.
 
 ## Lints And Errors
 
@@ -187,11 +214,10 @@ Each step is one pull request. Each starts by recording the relevant real artifa
      - Record real Caddy (see Recorded Behavior).
      - Add the `caddy` and `frankenphp` personas and the dual-target Gateway and worker contracts.
      - Port the plain install sites in `gateway_reconciliation.rs` and `jobs.rs`, and the inline `FAKE_CADDY_SCRIPT` in `daemon_foundation.rs`.
-   - **2b.**
-     - Port `daemon_foundation.rs`'s barrier helpers, which patch fixture source text today, to scenario settings.
-     - Port the stateful control-file, no-admin, admin-only and legacy variants.
-     - Seed a real CA in every Gateway test and drop the TLS fallback below.
-     - Remove `write_script_fake_frankenphp` in `gateway_reconciliation.rs`. It stays a script only because PV verifies a running script runtime by reading the file at its command path, and that test replaces a running stateful script fixture in place.
+   - **2b**, in three pull requests:
+     - **2b-1** (implemented): record real reloads, make the personas apply loads and switch listeners as Caddy does, add the Gateway test controls, and extend the dual-target contracts to port changes, a busy port, and a worker fragment move.
+     - **2b-2**: port the stateful control-file, no-admin, admin-only and legacy installs in `gateway_reconciliation.rs` and `jobs.rs` and seed a real CA there. The ~6 tests that relied on the old fixture never switching ports set `retain_previous_listeners`. Remove `write_script_fake_frankenphp`; it stays a script only because PV verifies a running script runtime by reading the file at its command path, and that test replaces a running stateful script fixture in place.
+     - **2b-3**: port `daemon_foundation.rs`'s barrier helpers, which patch fixture source text today, to scenario settings and events; seed a real CA in the remaining tests and drop the TLS fallback.
 3. **Simple services.** Add `redis-server`, the three Mailpit variants, and `rustfs`.
 4. **SQL.** Start with the `opensrv-mysql` + `sqlx` compatibility spike, then add `postgres`, `initdb`, the unready Postgres variant, and `mysqld`.
 5. **Cleanup.**
@@ -227,7 +253,7 @@ The lifeline assumes the supervisor's spawn path passes non-close-on-exec descri
 
 ### Symlink rejection
 
-PV's artifact validation rejects symlinked executables. Fakes are hard links, or copies across filesystems, so they're regular files like real artifacts.
+PV's artifact validation rejects symlinked executables. Fakes are copies, so they're regular files like real artifacts.
 
 ### Signaling the wrong process group
 

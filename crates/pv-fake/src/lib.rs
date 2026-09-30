@@ -27,6 +27,8 @@ mod lifeline;
 #[cfg(unix)]
 pub use events::{Event, EventKind};
 #[cfg(unix)]
+pub use gateway::write_gateway_control;
+#[cfg(unix)]
 pub use install::{InstalledFake, binary, install, install_with};
 
 /// Identifies this pv-fake build; see `build.rs`.
