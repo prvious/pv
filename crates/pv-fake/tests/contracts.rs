@@ -20,6 +20,16 @@ use rustix::process::{Pid, Signal, kill_process};
 )]
 type FakeCommand = std::process::Command;
 
+/// Kills and reaps the fake when a test returns before it exits.
+struct FakeProcess(Child);
+
+impl Drop for FakeProcess {
+    fn drop(&mut self) {
+        let _kill_result = self.0.kill();
+        let _wait_result = self.0.wait();
+    }
+}
+
 const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
@@ -54,7 +64,7 @@ fn installed_fake_reports_its_install_path_as_its_process_identity() -> Result<(
     let fake = install_long_running(tempdir.path(), "caddy", None)?;
     let mut child = spawn(&fake, true)?;
     wait_for_start(&fake)?;
-    let identity = platform::inspect_process_identity(child.id())?;
+    let identity = platform::inspect_process_identity(child.0.id())?;
     signal(&child, Signal::TERM)?;
     wait_for_exit(&mut child)?;
 
@@ -153,7 +163,7 @@ fn install_long_running(
     )
 }
 
-fn spawn(fake: &InstalledFake, own_process_group: bool) -> Result<Child> {
+fn spawn(fake: &InstalledFake, own_process_group: bool) -> Result<FakeProcess> {
     let mut command = FakeCommand::new(fake.executable());
     command
         .stdin(Stdio::null())
@@ -163,7 +173,7 @@ fn spawn(fake: &InstalledFake, own_process_group: bool) -> Result<Child> {
         command.process_group(0);
     }
 
-    Ok(command.spawn()?)
+    Ok(FakeProcess(command.spawn()?))
 }
 
 /// A pipe whose read end children inherit and whose write end they never do.
@@ -195,23 +205,21 @@ fn wait_for_start(fake: &InstalledFake) -> Result<bool> {
     }
 }
 
-fn wait_for_exit(child: &mut Child) -> Result<ExitStatus> {
+fn wait_for_exit(child: &mut FakeProcess) -> Result<ExitStatus> {
     let deadline = Instant::now() + WAIT_TIMEOUT;
     loop {
-        if let Some(status) = child.try_wait()? {
+        if let Some(status) = child.0.try_wait()? {
             return Ok(status);
         }
         if Instant::now() >= deadline {
-            let _kill_result = child.kill();
-            let _wait_result = child.wait();
-            bail!("fake process {} did not exit", child.id());
+            bail!("fake process {} did not exit", child.0.id());
         }
         sleep(POLL_INTERVAL);
     }
 }
 
-fn signal(child: &Child, signal: Signal) -> Result<()> {
-    let raw_pid = i32::try_from(child.id())?;
+fn signal(child: &FakeProcess, signal: Signal) -> Result<()> {
+    let raw_pid = i32::try_from(child.0.id())?;
     let pid = Pid::from_raw(raw_pid).ok_or_else(|| anyhow!("invalid process id {raw_pid}"))?;
     kill_process(pid, signal)?;
 

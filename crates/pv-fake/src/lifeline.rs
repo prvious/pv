@@ -32,8 +32,9 @@ pub(crate) fn test_process_read_fd() -> Result<i32> {
     }
 
     let (read, write) = rustix::pipe::pipe()?;
-    // macOS has no pipe2, so mark the write end right away; a process spawned in between would
-    // hold the pipe open and outlive the test.
+    // ponytail: macOS has no pipe2, so close-on-exec lands one syscall late. A process spawned in
+    // that instant would hold the pipe open and keep fakes alive. If a leak is ever traced here,
+    // switch to a per-install named FIFO that the test opens with O_CLOEXEC and fakes open by path.
     fcntl_setfd(&write, FdFlags::CLOEXEC)?;
     let read_fd = read.as_raw_fd();
     *lifeline = Some(Lifeline {
