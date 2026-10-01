@@ -1,6 +1,6 @@
 # pv-fake Test Service Design
 
-Status: approved 2026-09-29. Steps 1, 2a, 2b-1 and 2b-2 are implemented.
+Status: approved 2026-09-29. Steps 1, 2a, 2b-1, 2b-2 and 2b-3a are implemented.
 
 ## Summary
 
@@ -56,7 +56,14 @@ Tests install a fake with `pv_fake::install(executable, persona)`. It:
 - copies the `pv-fake` binary to `executable`, which on APFS is a clone that costs no disk space, and
 - writes the scenario file next to it.
 
-`pv_fake::install_with_settings(executable, persona, settings)` does the same with behavior a test chooses on top of the persona. The default `FakeSettings` is the recorded behavior. Today it holds `gateway_listeners`: `All`, `AdminOnly` (configs apply, but no HTTP or HTTPS port opens), or `Nothing` (alive, serving nothing), for tests of Gateways that never become ready.
+`pv_fake::install_with_settings(executable, persona, settings)` does the same with behavior a test chooses on top of the persona. The default `FakeSettings` is the recorded behavior:
+
+- `gateway_listeners`: `All`, `AdminOnly` (configs apply, but no HTTP or HTTPS port opens), or `Nothing` (alive, serving nothing), for tests of Gateways that never become ready.
+- `validate_pause` holds a Gateway persona's `validate` until a file exists, and `validate_exit_code` makes it exit with that code instead of checking the config.
+- `run_pause` holds a Gateway persona's `run` after its HTTP and HTTPS ports open and before its admin socket does.
+- `descendant` starts one child process in the fake's process group, as runtimes start workers. The fake starts itself again with a descendant flag and the read end of a pipe whose write end only the parent holds. The descendant inherits the lifeline, does nothing else, and exits when its parent does.
+
+A paused fake records `held` and still exits cleanly on SIGTERM or SIGINT: signals are watched through startup, not only once it serves.
 
 The fake is a copy, not a symlink, because PV's artifact validation (`RuntimeArtifactAdapter::validate_installation`, via `symlink_metadata`) rejects symlinked executables. That's a production policy the fakes must not work around.
 
@@ -95,7 +102,7 @@ Settings are added only when a ported test needs them. Step 1 needs none beyond 
 
 ### Event log
 
-Each fake appends JSON lines to `<executable>.pv-fake.events.jsonl`. Events: started (persona, argv, whether the lifeline is armed), signal received, lifeline fired, and exit. Later steps add ready and descendant spawned. Every event carries a timestamp, pid, process group, and parent pid.
+Each fake appends JSON lines to `<executable>.pv-fake.events.jsonl`. Events: started (persona, argv, whether the lifeline is armed), signal received, lifeline fired, held (the file a pause waits for), descendant spawned (its pid), parent exited (recorded by a descendant), and exit. Every event carries a timestamp, pid, process group, and parent pid. Tests wait on these events rather than on marker files: one atomic line replaces several files written one after another.
 
 Tests read the log with `InstalledFake::events()`. Ported tests can add it to their failure context, so a failure shows whether pv or the fake misbehaved.
 
@@ -219,7 +226,8 @@ Each step is one pull request. Each starts by recording the relevant real artifa
    - **2b**, in three pull requests:
      - **2b-1** (implemented): record real reloads, make the personas apply loads and switch listeners as Caddy does, add the Gateway test controls, and extend the dual-target contracts to port changes, a busy port, and a worker fragment move.
      - **2b-2** (implemented): port the stateful control-file, no-admin, admin-only and legacy installs in `gateway_reconciliation.rs` and `jobs.rs`, seed one real CA per test home there, and delete those fixtures and the unreferenced `fake-frankenphp-hangs-on-port`. The six tests that relied on the old fixture never switching ports, and the `exit_after_load` test, set `retain_previous_listeners`. The legacy test runs the fake with `admin off` instead of supervising the Python server directly. `write_script_fake_frankenphp` and the `fake-runtime-reaped-<pid>` marker wait are gone.
-     - **2b-3**: port `daemon_foundation.rs`'s barrier helpers, which patch fixture source text today, to scenario settings and events; seed a real CA in the remaining tests and drop the TLS fallback.
+     - **2b-3a** (implemented): pause settings for `validate` and `run`, a `validate` exit code, a descendant process, the `held`, `descendant_spawned` and `parent_exited` events, and signal handling while paused. A fake-only contract covers a lifeline that closed before the fake started.
+     - **2b-3b**: port `daemon_foundation.rs`'s installs and barrier helpers, which patch fixture source text today, to those settings and events; seed a real CA there and drop the TLS fallback; delete the shell-to-Python parent-loss variant and the last Gateway fixtures.
 3. **Simple services.** Add `redis-server`, the three Mailpit variants, and `rustfs`.
 4. **SQL.** Start with the `opensrv-mysql` + `sqlx` compatibility spike, then add `postgres`, `initdb`, the unready Postgres variant, and `mysqld`.
 5. **Cleanup.**

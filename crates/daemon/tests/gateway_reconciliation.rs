@@ -212,6 +212,7 @@ async fn gateway_reconciliation_rolls_back_after_fresh_admin_startup_failure() -
         Persona::Caddy,
         FakeSettings {
             gateway_listeners: GatewayListeners::Nothing,
+            ..FakeSettings::default()
         },
     )?;
     let mut database = Database::open(&paths)?;
@@ -265,6 +266,7 @@ async fn gateway_reconciliation_rolls_back_after_fresh_service_readiness_failure
         Persona::Caddy,
         FakeSettings {
             gateway_listeners: GatewayListeners::AdminOnly,
+            ..FakeSettings::default()
         },
     )?;
     let mut database = Database::open(&paths)?;

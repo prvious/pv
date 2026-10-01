@@ -45,8 +45,9 @@ pub(crate) fn test_process_read_fd() -> Result<i32> {
     Ok(read_fd)
 }
 
-/// Watches the inherited lifeline `fd` in the background. Returns whether it is armed.
-pub(crate) fn arm(fd: i32, events: EventLog) -> bool {
+/// Watches the inherited pipe `fd` in the background, recording `fired` and terminating once
+/// every write end is closed. Returns whether it is armed.
+pub(crate) fn arm(fd: i32, events: EventLog, fired: EventKind) -> bool {
     // Opening /dev/fd/N duplicates descriptor N, so the watcher never owns a raw descriptor.
     let path = Utf8PathBuf::from(format!("/dev/fd/{fd}"));
     let is_pipe = rustix::fs::stat(path.as_std_path())
@@ -57,9 +58,9 @@ pub(crate) fn arm(fd: i32, events: EventLog) -> bool {
     }
 
     tokio::task::spawn_blocking(move || {
-        // Returns once every write end is closed: the installing test process is gone.
+        // Returns once every write end is closed: the process holding it is gone.
         let _read_result = state::fs::read_to_string(&path);
-        let _record_result = events.record(EventKind::LifelineFired);
+        let _record_result = events.record(fired);
         terminate();
     });
 

@@ -32,6 +32,15 @@ pub enum EventKind {
         signal: String,
     },
     LifelineFired,
+    /// A pause began; the fake continues once `until` exists.
+    Held {
+        until: Utf8PathBuf,
+    },
+    DescendantSpawned {
+        descendant_pid: i32,
+    },
+    /// Recorded by a descendant whose parent fake exited, just before it exits too.
+    ParentExited,
     Exit {
         code: u8,
     },
