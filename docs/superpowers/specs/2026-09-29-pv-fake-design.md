@@ -254,6 +254,7 @@ These were recorded with PV's command line, `--address 127.0.0.1:<port> --consol
 |---|---|---|
 | `GET /health` | `200 application/json`, a readiness report | `200 application/json`, `{"ready":true}` (PV checks only the status) |
 | Unsigned request, API or console port | `403`, S3 `AccessDenied` | same, from `s3s` |
+| Console port | PV never uses it; only the unsigned request above was recorded | knows no keys and has no `/health`, so a runtime started with the two addresses swapped never becomes ready or usable |
 | Create a bucket | `200` | same |
 | Create a bucket that exists | `200`, as S3 in `us-east-1`; PV's "already exists" branch never runs | same |
 | Put an object | `200`, `ETag` is the quoted MD5 of the body | same |
@@ -266,7 +267,7 @@ These were recorded with PV's command line, `--address 127.0.0.1:<port> --consol
 | Data directory | buckets and `.rustfs.sys` | nothing: objects live in memory and are gone after a restart. PV creates and probes every allocation's bucket on each reconcile, so nothing it does depends on that. |
 | SIGTERM, SIGINT | exit 0 in about 0.5 s | exit 0 |
 
-The dual-target contract checks these through PV's own `aws-sdk-s3` client and `object_store` probe, against the fake and real RustFS. The daemon tests check buckets and probes the same way, through S3, instead of reading a data directory layout.
+The dual-target runtime contract checks, against the fake and real RustFS, the rows PV and its tests depend on: `/health` (as the adapter's readiness check), creating a bucket and creating it again, putting and heading the probe through PV's `object_store` code, getting it back, `BucketNotEmpty`, deleting the object and the bucket, a missing bucket's `404`, a wrong secret key, and SIGTERM. It uses PV's own `aws-sdk-s3` client. The `pv-fake` contract checks unsigned requests, the console port and SIGTERM against the fake only. The rest of the table is recorded but not checked. The daemon tests check buckets and probes through S3 too, instead of reading a data directory layout.
 
 ## Lints And Errors
 

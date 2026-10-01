@@ -966,12 +966,20 @@ fn rustfs_fake_answers_health_and_refuses_unsigned_requests() -> Result<()> {
 
     connect_with_retry(api_port)?;
     connect_with_retry(console_port)?;
-    let health = http_get(api_port, "/health")?;
+    let health = [api_port, console_port].map(|port| http_get(port, "/health"));
     let unsigned = [api_port, console_port].map(|port| http_get(port, "/"));
     signal(&process, Signal::TERM)?;
     let status = wait_for_exit(&mut process)?;
 
-    assert_eq!(health.0, 200);
+    // Only the API port reports health, so a runtime started with the addresses swapped never
+    // becomes ready.
+    assert_eq!(
+        health
+            .into_iter()
+            .map(|response| Ok(response?.0))
+            .collect::<Result<Vec<_>>>()?,
+        [200, 403]
+    );
     for response in unsigned {
         let (status, body) = response?;
         assert_eq!(status, 403);

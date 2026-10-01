@@ -28,7 +28,7 @@ use s3s::service::{S3Service, S3ServiceBuilder};
 use s3s::{Body, S3, S3Request, S3Response, S3Result, s3_error};
 use tokio::net::TcpListener;
 
-use crate::FakeSettings;
+use crate::{FakeSettings, accept};
 
 /// The largest object the fake accepts; PV's probe is a few bytes.
 const MAX_OBJECT_SIZE: usize = 1 << 20;
@@ -53,15 +53,21 @@ pub(crate) async fn start(argv: &[String], settings: &FakeSettings) -> Result<Op
     if settings.rustfs_reject_credentials {
         secret_key.push_str("-rejected");
     }
-    let mut builder = S3ServiceBuilder::new(Store::default());
-    builder.set_auth(SimpleAuth::from_single(access_key, secret_key));
-    let service = builder.build();
+    let mut api = S3ServiceBuilder::new(Store::default());
+    api.set_auth(SimpleAuth::from_single(access_key, secret_key));
+    // PV never uses the console. It knows no keys, so every S3 request there fails, and a runtime
+    // started with the two addresses swapped never becomes usable.
+    let mut console = S3ServiceBuilder::new(Store::default());
+    console.set_auth(SimpleAuth::new());
 
-    for address in [address, console_address] {
+    for (address, service, health) in [
+        (address, api.build(), true),
+        (console_address, console.build(), false),
+    ] {
         let listener = TcpListener::bind(address.as_str())
             .await
             .with_context(|| format!("binding {address}"))?;
-        tokio::spawn(serve(listener, service.clone()));
+        tokio::spawn(serve(listener, service, health));
     }
 
     Ok(None)
@@ -78,17 +84,20 @@ fn keys() -> Result<(String, String)> {
     Ok((access_key, secret_key))
 }
 
-/// Serves `GET /health` and hands everything else to `s3s`. The console port gets the same
-/// service: PV never uses it, and real RustFS answers it with S3's `AccessDenied` too.
-async fn serve(listener: TcpListener, service: S3Service) {
-    while let Ok((stream, _address)) = listener.accept().await {
+/// Hands requests to `s3s`, and with `health`, answers `GET /health` as RustFS's API port does.
+async fn serve(listener: TcpListener, service: S3Service, health: bool) {
+    loop {
+        let stream = accept(&listener).await;
         let service = service.clone();
         tokio::spawn(async move {
             let handler = service_fn(move |request: Request<Incoming>| {
                 let service = service.clone();
                 async move {
-                    if request.method() == Method::GET && request.uri().path() == "/health" {
-                        return Ok::<_, Infallible>(health());
+                    if health
+                        && request.method() == Method::GET
+                        && request.uri().path() == "/health"
+                    {
+                        return Ok::<_, Infallible>(health_report());
                     }
                     Ok(service
                         .call(request.map(Body::from))
@@ -109,7 +118,7 @@ async fn serve(listener: TcpListener, service: S3Service) {
 }
 
 /// RustFS answers with a JSON readiness report; PV checks only the status.
-fn health() -> Response<Body> {
+fn health_report() -> Response<Body> {
     let mut response = Response::new(Body::from(r#"{"ready":true}"#.to_owned()));
     response
         .headers_mut()
