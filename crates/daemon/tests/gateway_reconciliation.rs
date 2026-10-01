@@ -212,6 +212,7 @@ async fn gateway_reconciliation_rolls_back_after_fresh_admin_startup_failure() -
         Persona::Caddy,
         FakeSettings {
             gateway_listeners: GatewayListeners::Nothing,
+            ..FakeSettings::default()
         },
     )?;
     let mut database = Database::open(&paths)?;
@@ -265,6 +266,7 @@ async fn gateway_reconciliation_rolls_back_after_fresh_service_readiness_failure
         Persona::Caddy,
         FakeSettings {
             gateway_listeners: GatewayListeners::AdminOnly,
+            ..FakeSettings::default()
         },
     )?;
     let mut database = Database::open(&paths)?;
@@ -582,7 +584,10 @@ async fn gateway_fixture_cleanup_keeps_records_while_group_descendants_remain() 
     let leader_release_path = paths.run().join("leader-exit-caddy.release");
     fs::write_sensitive_file(
         &executable,
-        "#!/bin/sh\nset -eu\nsleep 30 &\nprintf '%s\\n' \"$!\" > \"$PV_TEST_DESCENDANT_PID_PATH\"\nwhile [ ! -e \"$PV_TEST_LEADER_RELEASE_PATH\" ]; do sleep 0.01; done\n",
+        // The leader gives up after 30 s, like its descendant, so a test that dies before
+        // releasing it leaves both running for at most that long.
+        // The pid is written in place by rename, so the test never reads it half written.
+        "#!/bin/sh\nset -eu\nsleep 30 &\nprintf '%s\\n' \"$!\" > \"$PV_TEST_DESCENDANT_PID_PATH.tmp\"\nmv \"$PV_TEST_DESCENDANT_PID_PATH.tmp\" \"$PV_TEST_DESCENDANT_PID_PATH\"\nwaited=0\nwhile [ ! -e \"$PV_TEST_LEADER_RELEASE_PATH\" ] && [ \"$waited\" -lt 3000 ]; do sleep 0.01; waited=$((waited + 1)); done\n",
     )?;
     set_executable(&executable)?;
     fs::write_sensitive_file(&paths.gateway_root_config(), "fixture")?;

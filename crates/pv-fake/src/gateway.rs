@@ -23,8 +23,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use rcgen::{CertificateParams, DistinguishedName, Issuer, KeyPair};
 use rustls::crypto::CryptoProvider;
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use serde_json::json;
@@ -33,8 +32,8 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 
-use crate::GatewayListeners;
 use crate::events::{EventKind, EventLog};
+use crate::{FakeSettings, GatewayListeners, Pause};
 
 mod control;
 
@@ -51,7 +50,7 @@ const UNFORMATTED_WARNING: &str = r#"[{"file":"Caddyfile","line":2,"message":"Ca
 /// caddyfile`. Returns an exit code to exit with now, or `None` once `run` is serving.
 pub(crate) async fn start(
     argv: &[String],
-    listeners: GatewayListeners,
+    settings: &FakeSettings,
     events: &EventLog,
 ) -> Result<Option<u8>> {
     let subcommand = argv.get(1).map(String::as_str);
@@ -64,9 +63,17 @@ pub(crate) async fn start(
     let config_path = Utf8PathBuf::from(config_path);
 
     match subcommand {
-        Some("validate") => Ok(Some(validate(&config_path)?)),
+        Some("validate") => {
+            if let Some(pause) = &settings.validate_pause {
+                hold(pause, events).await?;
+            }
+            match settings.validate_exit_code {
+                Some(code) => Ok(Some(code)),
+                None => Ok(Some(validate(&config_path)?)),
+            }
+        }
         Some("run") => {
-            serve(&config_path, listeners, events).await?;
+            serve(&config_path, settings, events).await?;
             Ok(None)
         }
         _ => {
@@ -100,12 +107,8 @@ fn validate(config_path: &Utf8Path) -> Result<u8> {
     Ok(1)
 }
 
-async fn serve(
-    config_path: &Utf8Path,
-    listeners: GatewayListeners,
-    events: &EventLog,
-) -> Result<()> {
-    if listeners == GatewayListeners::Nothing {
+async fn serve(config_path: &Utf8Path, settings: &FakeSettings, events: &EventLog) -> Result<()> {
+    if settings.gateway_listeners == GatewayListeners::Nothing {
         return Ok(());
     }
     let source = state::fs::read_to_string(config_path)?;
@@ -121,7 +124,7 @@ async fn serve(
         readiness_gate: Utf8PathBuf::from(format!("{config_path}.readiness-gate")),
         readiness_probed: Utf8PathBuf::from(format!("{config_path}.readiness-probed")),
         readiness_failure: Utf8PathBuf::from(format!("{config_path}.readiness-fail")),
-        serves_tcp: listeners == GatewayListeners::All,
+        serves_tcp: settings.gateway_listeners == GatewayListeners::All,
         health_body: Mutex::new(None),
         listeners: tokio::sync::Mutex::new(Listeners::default()),
     });
@@ -130,6 +133,10 @@ async fn serve(
         .apply(config, &plan, &source, false)
         .await
         .map_err(|error| anyhow!("loading initial config: {error}"))?;
+    // HTTP and HTTPS serve while paused; the admin socket isn't open yet.
+    if let Some(pause) = &settings.run_pause {
+        hold(pause, events).await?;
+    }
     // As with Caddy, `admin off` runs without an admin endpoint.
     if let Admin::Socket(admin_socket) = admin {
         let admin = UnixListener::bind(admin_socket.as_std_path())
@@ -487,7 +494,7 @@ impl Runtime {
             .request(&Method::GET, "/config/", control.status, 0)?;
         self.hold_readiness().await;
         if let Some(gate) = &control.gate {
-            wait_for_path(gate).await;
+            wait_for_path(gate).await?;
         }
 
         Ok(response(status, "application/json", "{}\n"))
@@ -539,7 +546,7 @@ impl Runtime {
         source: &str,
     ) -> Result<Response<Full<Bytes>>> {
         if let Some(gate) = &control.gate {
-            wait_for_path(gate).await;
+            wait_for_path(gate).await?;
         }
         let (applied, adapt_error) = match adapted {
             Ok((config, plan)) if control.apply => (
@@ -658,10 +665,21 @@ fn bind(port: u16) -> Result<TcpListener, String> {
     })
 }
 
-async fn wait_for_path(path: &Utf8Path) {
-    while !state::fs::path_entry_exists(path).unwrap_or(false) {
+async fn hold(pause: &Pause, events: &EventLog) -> Result<()> {
+    events.record(EventKind::Held {
+        until: pause.until.clone(),
+    })?;
+    wait_for_path(&pause.until).await?;
+
+    Ok(())
+}
+
+async fn wait_for_path(path: &Utf8Path) -> Result<()> {
+    while !state::fs::path_entry_exists(path)? {
         tokio::time::sleep(GATE_POLL_INTERVAL).await;
     }
+
+    Ok(())
 }
 
 /// Caddy's admin API error body.
@@ -681,7 +699,8 @@ fn tls_acceptor(https: &HttpsPlan) -> Result<TlsAcceptor> {
 
 /// Issues leaf certificates for each requested hostname from the configured CA, as Caddy's
 /// internal issuer does. Caddy signs through its own intermediate; PV only verifies up to the CA,
-/// so signing leaves with the CA directly verifies the same way.
+/// so signing leaves with the CA directly verifies the same way. Tests seed the CA with
+/// `platform::generate_local_ca`, as `pv setup` does.
 fn tls_config(certificate: &Utf8Path, private_key: &Utf8Path) -> Result<rustls::ServerConfig> {
     let certificate_pem = state::fs::read_to_string(certificate)?;
     let private_key_pem = state::fs::read_to_string(private_key)?;
@@ -689,14 +708,6 @@ fn tls_config(certificate: &Utf8Path, private_key: &Utf8Path) -> Result<rustls::
     let config = rustls::ServerConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()?
         .with_no_client_auth();
-    let certificate_der = CertificateDer::from_pem_slice(certificate_pem.as_bytes())?;
-    if !is_certificate_authority(&certificate_der)? {
-        // ponytail: daemon tests still seed a self-signed leaf as the "CA", shared with Python
-        // Gateway fakes that present it as-is. Do the same until those fakes are gone, then seed a
-        // real CA in every test and drop this branch.
-        let private_key_der = PrivateKeyDer::from_pem_slice(private_key_pem.as_bytes())?;
-        return Ok(config.with_single_cert(vec![certificate_der], private_key_der)?);
-    }
     let resolver = LeafIssuer {
         certificate_authority: Issuer::from_ca_cert_pem(
             &certificate_pem,
@@ -707,15 +718,6 @@ fn tls_config(certificate: &Utf8Path, private_key: &Utf8Path) -> Result<rustls::
     };
 
     Ok(config.with_cert_resolver(Arc::new(resolver)))
-}
-
-fn is_certificate_authority(certificate: &CertificateDer<'_>) -> Result<bool> {
-    let (_rest, certificate) = x509_parser::parse_x509_certificate(certificate)
-        .map_err(|error| anyhow!("parsing the configured certificate: {error}"))?;
-
-    Ok(certificate
-        .basic_constraints()?
-        .is_some_and(|constraints| constraints.value.ca))
 }
 
 struct LeafIssuer {

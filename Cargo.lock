@@ -2750,7 +2750,6 @@ dependencies = [
  "time",
  "tokio",
  "tokio-rustls 0.26.4",
- "x509-parser",
 ]
 
 [[package]]

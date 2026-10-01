@@ -10,7 +10,8 @@ use std::io::{self, Write};
 use std::process::ExitCode;
 
 #[cfg(unix)]
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8Path;
+use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 
 #[cfg(unix)]
@@ -30,6 +31,10 @@ pub use events::{Event, EventKind};
 pub use gateway::write_gateway_control;
 #[cfg(unix)]
 pub use install::{InstalledFake, binary, install, install_with, install_with_settings};
+
+/// The argument a fake starts its descendant with, followed by the descendant's parent pipe.
+#[cfg(unix)]
+const DESCENDANT_FLAG: &str = "--pv-fake-descendant";
 
 /// Identifies this pv-fake build; see `build.rs`.
 #[cfg(unix)]
@@ -59,6 +64,22 @@ pub struct Scenario {
 pub struct FakeSettings {
     /// Which listeners a Gateway persona's `run` opens.
     pub gateway_listeners: GatewayListeners,
+    /// Pauses a Gateway persona's `validate` before it checks the config.
+    pub validate_pause: Option<Pause>,
+    /// Makes a Gateway persona's `validate` exit with this code instead of checking the config.
+    pub validate_exit_code: Option<u8>,
+    /// Pauses a Gateway persona's `run` after its HTTP and HTTPS ports open and before its admin
+    /// socket does.
+    pub run_pause: Option<Pause>,
+    /// Starts one child process in the fake's process group, as runtimes start workers. It exits
+    /// when the fake does.
+    pub descendant: bool,
+}
+
+/// Holds a fake at a known point, recording a `held` event, until a test creates `until`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Pause {
+    pub until: Utf8PathBuf,
 }
 
 /// The listeners a Gateway persona opens, for tests of runtimes that never become ready.

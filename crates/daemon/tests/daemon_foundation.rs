@@ -6,8 +6,7 @@ use hickory_proto::rr::rdata::{A, AAAA};
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::serialize::binary::BinEncodable;
 use insta::{Settings, assert_debug_snapshot};
-use pv_fake::Persona;
-use rcgen::generate_simple_self_signed;
+use pv_fake::{EventKind, FakeSettings, InstalledFake, Pause, Persona};
 use rusqlite::{Connection, params};
 #[cfg(unix)]
 use rustix::fs::FlockOperation;
@@ -17,9 +16,9 @@ use rustix::process::getpgid;
 use rustix::process::{Pid, test_kill_process, test_kill_process_group};
 use serde_json::{Value, json};
 use state::{
-    AppReleaseLayout, DNS_PREFERRED_PORT, Database, GatewayPort, JobRecord, JobStatus, JobsLock,
-    LinkProjectInput, PortOwner, PortRequest, PvPaths, RUNTIME_PORT_FALLBACK_END,
-    RUNTIME_PORT_FALLBACK_START, RuntimeObservedStatus, RuntimeSubject, UpdateLock,
+    DNS_PREFERRED_PORT, Database, GatewayPort, JobRecord, JobStatus, JobsLock, LinkProjectInput,
+    PortOwner, PortRequest, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
+    RuntimeObservedStatus, RuntimeSubject, UpdateLock,
 };
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -77,14 +76,6 @@ const CADDY_ARTIFACT_MANIFEST: &str = r#"
   ]
 }
 "#;
-const FOUNDATION_FAKE_CADDY_SCRIPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/gateway/fake-caddy.sh"
-));
-const FOUNDATION_FAKE_CADDY_SERVER_SCRIPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/gateway/fake-caddy-server.py"
-));
 const SEEDED_GATEWAY_CLEANUP_TIMEOUT: Duration = Duration::from_millis(500);
 const SEEDED_GATEWAY_CLEANUP_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const FALLBACK_SUBPROCESS_HOME: &str = "PV_DAEMON_FALLBACK_SUBPROCESS_HOME";
@@ -409,23 +400,14 @@ async fn daemon_shutdown_cancels_startup_reconciliation_waiting_for_jobs_lock() 
 async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let [validation_started, release_validation, runtime_started] =
-        seed_barrier_foundation_caddy(&paths)?;
+    let (caddy, release_validation) = seed_barrier_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
 
     let result = async {
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
         gateway_guard.attach_daemon(daemon);
-        timeout(Duration::from_secs(5), async {
-            loop {
-                if state::fs::path_entry_exists(&validation_started)? {
-                    return Ok::<(), anyhow::Error>(());
-                }
-                sleep(JOB_STATUS_POLL_INTERVAL).await;
-            }
-        })
-        .await??;
+        wait_for_fake_hold(&caddy).await?;
         wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
 
         let shutdown_was_pending = {
@@ -448,7 +430,7 @@ async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
         assert!(shutdown_was_pending);
         assert_eq!(job.status, JobStatus::Succeeded);
         assert_eq!(job.error, None);
-        assert!(runtime_started.exists());
+        assert!(fake_ran_after_hold(&caddy)?);
         assert!(paths.gateway_pid().exists());
         assert!(paths.gateway_runtime_metadata().exists());
 
@@ -625,8 +607,13 @@ async fn seeded_gateway_drop_current_thread_inner() -> Result<()> {
     })?;
     wait_for_path(&release).await?;
     let paths = PvPaths::for_home(home);
-    seed_foundation_caddy(&paths)?;
-    make_gateway_descendant_observable(&paths)?;
+    let caddy = seed_foundation_caddy_with(
+        &paths,
+        FakeSettings {
+            descendant: true,
+            ..FakeSettings::default()
+        },
+    )?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
@@ -636,7 +623,12 @@ async fn seeded_gateway_drop_current_thread_inner() -> Result<()> {
         &paths.run().join("captured-gateway-leader.pid"),
         &state::fs::read_to_string(&paths.gateway_pid())?,
     )?;
-    wait_for_path(&paths.run().join("gateway-descendant.pid")).await?;
+    // The outer test reads these records after this process is gone.
+    let gateway_descendant = wait_for_runtime_descendant(&caddy).await?;
+    state::fs::write_sensitive_file(
+        &paths.run().join("gateway-descendant.pid"),
+        &gateway_descendant.as_raw_pid().to_string(),
+    )?;
 
     let project_path = paths.home().join("validator-project");
     let (project_id, _worker_port_handoff) = FoundationWorkerPortHandoff::new(|| {
@@ -648,8 +640,7 @@ async fn seeded_gateway_drop_current_thread_inner() -> Result<()> {
             49_999,
         )
     })?;
-    let [validation_started, _release_validation, _runtime_started] =
-        install_worker_validation_barrier(&paths, false)?;
+    let (worker, _release_validation) = install_worker_validation_barrier(&paths, false)?;
     gateway_guard.attach_worker("8.4");
     let request_paths = paths.clone();
     let _request_task = tokio::spawn(async move {
@@ -664,22 +655,28 @@ async fn seeded_gateway_drop_current_thread_inner() -> Result<()> {
         )
         .await
     });
-    wait_for_path(&validation_started).await?;
-    wait_for_path(&paths.run().join("worker-validation-leader.pid")).await?;
-    wait_for_path(&paths.run().join("worker-validation-descendant.pid")).await?;
-    let validation_leader = recorded_test_pid(&paths.run().join("worker-validation-leader.pid"))?;
-    let validation_group = captured_validation_process_group(validation_leader)?;
-    state::fs::write_sensitive_file(
-        &paths.run().join("worker-validation-group.pid"),
-        &validation_group.as_raw_pid().to_string(),
-    )?;
-    wait_for_path(&paths.run().join("worker-validation-root-candidate.path")).await?;
-    wait_for_path(
-        &paths
-            .run()
-            .join("worker-validation-fragment-candidate.path"),
-    )
-    .await?;
+    let validation = wait_for_held_validation(&worker).await?;
+    let validation_group = captured_validation_process_group(validation.leader)?;
+    for (record, value) in [
+        (
+            "worker-validation-group.pid",
+            validation_group.as_raw_pid().to_string(),
+        ),
+        (
+            "worker-validation-descendant.pid",
+            validation.descendant.as_raw_pid().to_string(),
+        ),
+        (
+            "worker-validation-root-candidate.path",
+            validation.root_candidate.to_string(),
+        ),
+        (
+            "worker-validation-fragment-candidate.path",
+            validation.fragment_candidate.to_string(),
+        ),
+    ] {
+        state::fs::write_sensitive_file(&paths.run().join(record), &value)?;
+    }
     state::fs::write_sensitive_file(&paths.run().join("nested-fallback-ready"), "ready\n")?;
     wait_for_path(&paths.run().join("nested-fallback-release")).await?;
 
@@ -690,21 +687,12 @@ async fn seeded_gateway_drop_current_thread_inner() -> Result<()> {
 async fn fallback_shutdown_prevents_late_gateway_startup() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let [validation_started, release_validation, runtime_started] =
-        seed_barrier_foundation_caddy(&paths)?;
+    let (caddy, release_validation) = seed_barrier_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
-    timeout(Duration::from_secs(5), async {
-        loop {
-            if validation_started.exists() {
-                return;
-            }
-            sleep(JOB_STATUS_POLL_INTERVAL).await;
-        }
-    })
-    .await?;
+    wait_for_fake_hold(&caddy).await?;
     let job = wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
 
     gateway_guard.shutdown_daemon_without_waiting()?;
@@ -715,7 +703,7 @@ async fn fallback_shutdown_prevents_late_gateway_startup() -> Result<()> {
         Some("reconciliation was abandoned before completion")
     );
     assert_job_has_no_coverage(&paths, &job.id)?;
-    assert!(!runtime_started.exists());
+    assert!(!fake_ran_after_hold(&caddy)?);
     assert!(!paths.gateway_root_config().exists());
     gateway_guard.shutdown_and_cleanup().await?;
 
@@ -731,21 +719,15 @@ async fn fallback_shutdown_prevents_late_worker_startup() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_path = tempdir.path().join("project");
-    let ([validation_started, release_validation, runtime_started], _port_reservation) =
+    let ((worker, release_validation), _port_reservation) =
         seed_barrier_foundation_worker(&paths, &project_path, false)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     gateway_guard.attach_worker("8.4");
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
-    wait_for_path(&validation_started).await?;
-    let validation_leader_path = paths.run().join("worker-validation-leader.pid");
-    let validation_descendant_path = paths.run().join("worker-validation-descendant.pid");
-    wait_for_path(&validation_leader_path).await?;
-    wait_for_path(&validation_descendant_path).await?;
-    let validation_leader = recorded_test_pid(&validation_leader_path)?;
-    let validation_group = captured_validation_process_group(validation_leader)?;
-    let validation_descendant = recorded_test_pid(&validation_descendant_path)?;
+    let validation = wait_for_held_validation(&worker).await?;
+    let validation_group = captured_validation_process_group(validation.leader)?;
     let job = wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
 
     gateway_guard.shutdown_daemon_without_waiting()?;
@@ -756,8 +738,8 @@ async fn fallback_shutdown_prevents_late_worker_startup() -> Result<()> {
     );
     assert_job_has_no_coverage(&paths, &job.id)?;
     wait_for_test_process_group_exit(validation_group).await?;
-    wait_for_test_process_exit(validation_descendant).await?;
-    assert!(!runtime_started.exists());
+    wait_for_test_process_exit(validation.descendant).await?;
+    assert!(!fake_ran_after_hold(&worker)?);
     assert!(!paths.worker_root_config("8.4").exists());
     state::fs::write_sensitive_file(&release_validation, "release\n")?;
     gateway_guard.shutdown_and_cleanup().await?;
@@ -774,14 +756,14 @@ async fn fallback_shutdown_dominates_worker_validation_failure() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_path = tempdir.path().join("project");
-    let ([validation_started, release_validation, runtime_started], _port_reservation) =
+    let ((worker, release_validation), _port_reservation) =
         seed_barrier_foundation_worker(&paths, &project_path, true)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     gateway_guard.attach_worker("8.4");
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
-    wait_for_path(&validation_started).await?;
+    wait_for_fake_hold(&worker).await?;
     let job = wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
 
     gateway_guard.shutdown_daemon_without_waiting()?;
@@ -792,7 +774,7 @@ async fn fallback_shutdown_dominates_worker_validation_failure() -> Result<()> {
         Some("reconciliation was abandoned before completion")
     );
     assert_job_has_no_coverage(&paths, &job.id)?;
-    assert!(!runtime_started.exists());
+    assert!(!fake_ran_after_hold(&worker)?);
     assert!(!paths.worker_root_config("8.4").exists());
     gateway_guard.shutdown_and_cleanup().await?;
 
@@ -812,17 +794,16 @@ async fn fallback_shutdown_cancels_fresh_worker_readiness() -> Result<()> {
         54_999,
     )?;
     let worker_port = port_handoff.port();
-    let [readiness_started, readiness_gate] = install_worker_readiness_barrier(&paths)?;
+    let worker = install_worker_readiness_barrier(&paths)?;
     port_handoff.release_for_runtime_start();
     let worker_root_config = paths.worker_root_config("8.4");
-    state::fs::write_sensitive_file(&readiness_gate, "blocked\n")?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     gateway_guard.attach_worker("8.4");
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
     let job = wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
-    wait_for_path(&readiness_started).await?;
+    wait_for_fake_hold(&worker).await?;
     wait_for_path(&paths.worker_pid("8.4")).await?;
     wait_for_runtime_replacement_required(&paths.worker_runtime_metadata("8.4")).await?;
     port_handoff
@@ -865,7 +846,7 @@ async fn fallback_shutdown_preserves_pending_matching_worker_reload() -> Result<
         55_000,
         59_999,
     )?;
-    let [load_started, release_load, load_requests] = install_worker_load_barrier(&paths)?;
+    let release_load = install_worker_load_barrier(&paths)?;
     port_handoff.release_for_runtime_start();
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     gateway_guard.attach_worker("8.4");
@@ -884,7 +865,7 @@ async fn fallback_shutdown_preserves_pending_matching_worker_reload() -> Result<
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
-    wait_for_path(&load_started).await?;
+    wait_for_worker_load(&paths).await?;
     let job = wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
     gateway_guard.shutdown_daemon_without_waiting()?;
     let job = wait_for_job_id_status(&paths, &job.id, JobStatus::Failed).await?;
@@ -902,7 +883,7 @@ async fn fallback_shutdown_preserves_pending_matching_worker_reload() -> Result<
     assert_ne!(promoted_fragment, previous_fragment);
     assert!(promoted_fragment.contains(project_path.join("web").as_str()));
     assert!(!promoted_fragment.contains(project_path.join("public").as_str()));
-    assert_eq!(state::fs::read_to_string(&load_requests)?, "load\n");
+    assert_eq!(worker_load_requests(&paths)?, 1);
     let metadata: Value = serde_json::from_str(&state::fs::read_to_string(
         &paths.worker_runtime_metadata("8.4"),
     )?)?;
@@ -942,7 +923,7 @@ async fn fallback_shutdown_cancels_watcher_reload_and_preserves_pending_worker()
         55_000,
         59_999,
     )?;
-    let [load_started, release_load, load_requests] = install_worker_load_barrier(&paths)?;
+    let release_load = install_worker_load_barrier(&paths)?;
     port_handoff.release_for_runtime_start();
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     gateway_guard.attach_worker("8.4");
@@ -962,7 +943,7 @@ async fn fallback_shutdown_cancels_watcher_reload_and_preserves_pending_worker()
     wait_for_succeeded_job_scope(&paths, "system").await?;
 
     state::fs::write_sensitive_file(&project_path.join("pv.yml"), "php: \"8.4\"\nroot: web\n")?;
-    wait_for_path(&load_started).await?;
+    wait_for_worker_load(&paths).await?;
     let job =
         wait_for_job_scope_status(&paths, &format!("project:{project_id}"), JobStatus::Running)
             .await?;
@@ -974,7 +955,7 @@ async fn fallback_shutdown_cancels_watcher_reload_and_preserves_pending_worker()
         Some("reconciliation was abandoned before completion")
     );
     assert_job_has_no_coverage(&paths, &job.id)?;
-    assert_eq!(state::fs::read_to_string(&load_requests)?, "load\n");
+    assert_eq!(worker_load_requests(&paths)?, 1);
     assert_eq!(recorded_test_pid(&paths.worker_pid("8.4"))?, worker_pid);
     assert_eq!(
         state::fs::read_to_string(&paths.worker_root_config("8.4"))?,
@@ -1024,7 +1005,7 @@ async fn matching_cancellation_preserves_pending_runtime_without_restore_proof()
         60_000,
         64_999,
     )?;
-    let [load_started, release_load, load_requests] = install_worker_load_barrier(&paths)?;
+    let release_load = install_worker_load_barrier(&paths)?;
     port_handoff.release_for_runtime_start();
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     gateway_guard.attach_worker("8.4");
@@ -1053,7 +1034,7 @@ async fn matching_cancellation_preserves_pending_runtime_without_restore_proof()
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
-    wait_for_path(&load_started).await?;
+    wait_for_worker_load(&paths).await?;
     let job = wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
     gateway_guard.shutdown_daemon_without_waiting()?;
     let job = wait_for_job_id_status(&paths, &job.id, JobStatus::Failed).await?;
@@ -1072,7 +1053,7 @@ async fn matching_cancellation_preserves_pending_runtime_without_restore_proof()
     assert_ne!(promoted_fragment, previous_fragment);
     assert!(promoted_fragment.contains(project_path.join("web").as_str()));
     assert!(!promoted_fragment.contains(project_path.join("public").as_str()));
-    assert_eq!(state::fs::read_to_string(&load_requests)?, "load\n");
+    assert_eq!(worker_load_requests(&paths)?, 1);
     let metadata: Value = serde_json::from_str(&state::fs::read_to_string(&metadata_path)?)?;
     assert_eq!(metadata["replacement_required"], true);
     assert!(metadata["applied_config_fingerprint"].is_null());
@@ -1277,8 +1258,7 @@ async fn fallback_shutdown_cancels_foreground_socket_reconciliation() -> Result<
             44_999,
         )
     })?;
-    let [validation_started, release_validation, runtime_started] =
-        install_worker_validation_barrier(&paths, false)?;
+    let (worker, release_validation) = install_worker_validation_barrier(&paths, false)?;
     gateway_guard.attach_worker("8.4");
     port_handoff = worker_port_handoff;
     port_handoff.release_for_runtime_start();
@@ -1296,7 +1276,7 @@ async fn fallback_shutdown_cancels_foreground_socket_reconciliation() -> Result<
         )
         .await
     });
-    wait_for_path(&validation_started).await?;
+    wait_for_fake_hold(&worker).await?;
     let job =
         wait_for_job_scope_status(&paths, &format!("project:{project_id}"), JobStatus::Running)
             .await?;
@@ -1312,7 +1292,7 @@ async fn fallback_shutdown_cancels_foreground_socket_reconciliation() -> Result<
     let lines = timeout(Duration::from_secs(5), request_task).await???;
     assert_eq!(required_response_job_id(&lines)?, job.id);
     sleep(Duration::from_millis(100)).await;
-    assert!(!runtime_started.exists());
+    assert!(!fake_ran_after_hold(&worker)?);
     assert!(!paths.worker_pid("8.4").exists());
     assert!(!paths.worker_runtime_metadata("8.4").exists());
     assert_eq!(recorded_test_pid(&paths.gateway_pid())?, gateway_pid);
@@ -1343,8 +1323,7 @@ async fn daemon_shutdown_joins_health_triggered_worker_recovery() -> Result<()> 
     port_handoff
         .verify_publication_and_release_lock(&paths, "8.4")
         .await?;
-    let [validation_started, release_validation, runtime_started] =
-        install_worker_validation_barrier(&paths, true)?;
+    let (worker_fake, release_validation) = install_worker_validation_barrier(&paths, true)?;
     let supervisor = daemon::ProcessSupervisor::new(paths.clone());
     let worker = supervisor
         .adopt_recorded(
@@ -1360,7 +1339,7 @@ async fn daemon_shutdown_joins_health_triggered_worker_recovery() -> Result<()> 
     tokio::time::advance(Duration::from_secs(30)).await;
     tokio::task::yield_now().await;
     tokio::time::resume();
-    wait_for_path(&validation_started).await?;
+    wait_for_fake_hold(&worker_fake).await?;
     let job =
         wait_for_job_scope_status(&paths, &format!("project:{project_id}"), JobStatus::Running)
             .await?;
@@ -1385,7 +1364,7 @@ async fn daemon_shutdown_joins_health_triggered_worker_recovery() -> Result<()> 
     );
     assert_job_has_no_coverage(&paths, &job.id)?;
     sleep(Duration::from_millis(100)).await;
-    assert!(!runtime_started.exists());
+    assert!(!fake_ran_after_hold(&worker_fake)?);
     assert!(!paths.worker_pid("8.4").exists());
     assert!(!paths.worker_runtime_metadata("8.4").exists());
     gateway_guard.shutdown_and_cleanup().await?;
@@ -1744,23 +1723,14 @@ async fn startup_reconciliation_starts_then_adopts_gateway_across_daemon_restart
 async fn repeated_system_requests_during_startup_create_one_trailing_job() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let [validation_started, release_validation, _runtime_started] =
-        seed_barrier_foundation_caddy(&paths)?;
+    let (caddy, release_validation) = seed_barrier_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
 
     let result = async {
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
         gateway_guard.attach_daemon(daemon);
-        timeout(Duration::from_secs(5), async {
-            loop {
-                if state::fs::path_entry_exists(&validation_started)? {
-                    return Ok::<(), anyhow::Error>(());
-                }
-                sleep(JOB_STATUS_POLL_INTERVAL).await;
-            }
-        })
-        .await??;
+        wait_for_fake_hold(&caddy).await?;
 
         let request = serde_json::to_string(&json!({
             "protocol_version": daemon::PROTOCOL_VERSION,
@@ -2005,19 +1975,11 @@ async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_suc
     let caddy_path = paths.resources().join("caddy/2/releases/2.11.4-pv1");
     let caddy_executable = caddy_path.join("bin/caddy");
     pv_fake::install(&caddy_executable, Persona::Caddy)?;
-    let executable_install =
-        AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.0", &caddy_executable)?;
-    state::fs::rename(executable_install.binary_path(), &caddy_executable)?;
     state::fs::symlink_file(
         camino::Utf8Path::new("releases/2.11.4-pv1"),
         &paths.resources().join("caddy/2/current"),
     )?;
-    let certified_key = generate_simple_self_signed(vec!["pv-gateway.localhost".to_owned()])?;
-    state::fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;
-    state::fs::write_sensitive_file(
-        &paths.ca_private_key(),
-        &certified_key.signing_key.serialize_pem(),
-    )?;
+    seed_local_ca(&paths)?;
     let mut database = Database::open(&paths)?;
     database.record_managed_resource_track_installed("caddy", "2", "2.11.4-pv1", &caddy_path)?;
     drop(database);
@@ -2134,22 +2096,15 @@ fn normalize_lock_path(mut lines: Vec<Value>, lock_path: &str, placeholder: &str
     lines
 }
 
-fn seed_foundation_caddy(paths: &PvPaths) -> Result<()> {
-    let release_path = paths.home().join("fake-caddy-release");
-    let executable = release_path.join("bin/caddy");
-    let server_script = camino::Utf8PathBuf::from(format!("{executable}.server.py"));
-    state::fs::write_sensitive_file(&executable, FOUNDATION_FAKE_CADDY_SCRIPT)?;
-    state::fs::write_sensitive_file(&server_script, FOUNDATION_FAKE_CADDY_SERVER_SCRIPT)?;
-    let executable_install =
-        AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.0", &executable)?;
-    state::fs::rename(executable_install.binary_path(), &executable)?;
+fn seed_foundation_caddy(paths: &PvPaths) -> Result<InstalledFake> {
+    seed_foundation_caddy_with(paths, FakeSettings::default())
+}
 
-    let certified_key = generate_simple_self_signed(vec!["pv-gateway.localhost".to_owned()])?;
-    state::fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;
-    state::fs::write_sensitive_file(
-        &paths.ca_private_key(),
-        &certified_key.signing_key.serialize_pem(),
-    )?;
+fn seed_foundation_caddy_with(paths: &PvPaths, settings: FakeSettings) -> Result<InstalledFake> {
+    let release_path = paths.home().join("fake-caddy-release");
+    let caddy =
+        pv_fake::install_with_settings(&release_path.join("bin/caddy"), Persona::Caddy, settings)?;
+    seed_local_ca(paths)?;
 
     let mut database = Database::open(paths)?;
     let [http_port, https_port] = available_foundation_gateway_ports()?;
@@ -2167,23 +2122,14 @@ fn seed_foundation_caddy(paths: &PvPaths) -> Result<()> {
         PortRequest::gateway(GatewayPort::Https, https_port, https_port, https_port),
         |_port| true,
     )?;
-    Ok(())
+
+    Ok(caddy)
 }
 
-fn make_gateway_descendant_observable(paths: &PvPaths) -> Result<()> {
-    let executable = paths.home().join("fake-caddy-release/bin/caddy");
-    let descendant_pid_path = paths.run().join("gateway-descendant.pid");
-    let source = paths.home().join("observable-fake-caddy");
-    let script = FOUNDATION_FAKE_CADDY_SCRIPT.replace(
-        "  child=\"$!\"\n",
-        &format!("  child=\"$!\"\n  printf '%s\\n' \"$child\" > \"{descendant_pid_path}\"\n"),
-    );
-    if script == FOUNDATION_FAKE_CADDY_SCRIPT {
-        return Err(anyhow!("fake Caddy child launch was not instrumented"));
-    }
-    state::fs::write_sensitive_file(&source, &script)?;
-    let install = AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.2", &source)?;
-    state::fs::rename(install.binary_path(), &executable)?;
+fn seed_local_ca(paths: &PvPaths) -> Result<()> {
+    let local_ca = platform::generate_local_ca()?;
+    state::fs::write_sensitive_file(&paths.ca_certificate(), &local_ca.certificate_pem)?;
+    state::fs::write_sensitive_file(&paths.ca_private_key(), &local_ca.private_key_pem)?;
 
     Ok(())
 }
@@ -2222,15 +2168,6 @@ fn seed_foundation_php_project_after_caddy(
     port_range_start: u16,
     port_range_end: u16,
 ) -> Result<(String, StdTcpListener)> {
-    let certified_key = generate_simple_self_signed(vec![
-        "project.test".to_owned(),
-        "pv-gateway.localhost".to_owned(),
-    ])?;
-    state::fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;
-    state::fs::write_sensitive_file(
-        &paths.ca_private_key(),
-        &certified_key.signing_key.serialize_pem(),
-    )?;
     let manifest_cache = resources::ArtifactManifestCache::new(paths.downloads());
     let php_track = "8.4";
     let php_release = paths.home().join("8.4-php-release");
@@ -2238,27 +2175,7 @@ fn seed_foundation_php_project_after_caddy(
     state::fs::write_sensitive_file(&php_release.join("share/pv/php-extensions.json"), "[]")?;
 
     let frankenphp_release = paths.home().join("8.4-frankenphp-release");
-    let frankenphp_source = paths.home().join("fake-frankenphp-source");
-    state::fs::write_sensitive_file(
-        &frankenphp_source,
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/test-fixtures/gateway/fake-frankenphp.sh"
-        )),
-    )?;
-    state::fs::write_sensitive_file(
-        &frankenphp_release.join("bin/frankenphp.server.py"),
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/test-fixtures/gateway/fake-frankenphp-server.py"
-        )),
-    )?;
-    let frankenphp_install =
-        AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.0", &frankenphp_source)?;
-    state::fs::rename(
-        frankenphp_install.binary_path(),
-        &frankenphp_release.join("bin/frankenphp"),
-    )?;
+    pv_fake::install(&foundation_worker_executable(paths), Persona::FrankenPhp)?;
     state::fs::write_sensitive_file(
         &frankenphp_release.join("share/pv/php-extensions.json"),
         "[]",
@@ -2308,34 +2225,27 @@ fn seed_foundation_php_project_after_caddy(
     Ok((project.id, worker_port_reservation))
 }
 
-fn seed_barrier_foundation_caddy(paths: &PvPaths) -> Result<[Utf8PathBuf; 3]> {
-    seed_foundation_caddy(paths)?;
-    let executable = paths.home().join("fake-caddy-release/bin/caddy");
-    let validation_started = paths.run().join("startup-validation-started");
+/// Seeds the Gateway with its `validate` paused. Returns the fake and the file that releases it.
+fn seed_barrier_foundation_caddy(paths: &PvPaths) -> Result<(InstalledFake, Utf8PathBuf)> {
     let release_validation = paths.run().join("release-startup-validation");
-    let runtime_started = paths.run().join("gateway-runtime-started");
-    let wrapper_source = paths.home().join("caddy-startup-barrier");
-    let caddy_script = FOUNDATION_FAKE_CADDY_SCRIPT
-        .strip_prefix("#!/bin/sh\n")
-        .ok_or_else(|| anyhow!("fake Caddy script is missing its shebang"))?;
-    state::fs::write_sensitive_file(
-        &wrapper_source,
-        &format!(
-            "#!/bin/sh\nset -eu\nif [ \"${{1:-}}\" = \"validate\" ]; then\n  : > \"{validation_started}\"\n  while [ ! -f \"{release_validation}\" ]; do sleep 0.01; done\nelif [ \"${{1:-}}\" = \"run\" ]; then\n  : > \"{runtime_started}\"\nfi\n{caddy_script}"
-        ),
+    let caddy = seed_foundation_caddy_with(
+        paths,
+        FakeSettings {
+            validate_pause: Some(Pause {
+                until: release_validation.clone(),
+            }),
+            ..FakeSettings::default()
+        },
     )?;
-    let wrapper_install =
-        AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.1", &wrapper_source)?;
-    state::fs::rename(wrapper_install.binary_path(), &executable)?;
 
-    Ok([validation_started, release_validation, runtime_started])
+    Ok((caddy, release_validation))
 }
 
 fn seed_barrier_foundation_worker(
     paths: &PvPaths,
     project_path: &Utf8Path,
     fail_validation: bool,
-) -> Result<([Utf8PathBuf; 3], FoundationWorkerPortHandoff)> {
+) -> Result<((InstalledFake, Utf8PathBuf), FoundationWorkerPortHandoff)> {
     let (_project_id, port_handoff) =
         seed_foundation_php_project(paths, project_path, "php: \"8.4\"\n")?;
     let barrier = install_worker_validation_barrier(paths, fail_validation)?;
@@ -2343,87 +2253,226 @@ fn seed_barrier_foundation_worker(
     Ok((barrier, port_handoff))
 }
 
+fn foundation_worker_executable(paths: &PvPaths) -> Utf8PathBuf {
+    paths.home().join("8.4-frankenphp-release/bin/frankenphp")
+}
+
+/// Pauses the worker's `validate` with a descendant in its process group, then fails it with exit
+/// 7 or lets it pass. Returns the fake and the file that releases it.
 fn install_worker_validation_barrier(
     paths: &PvPaths,
     fail_validation: bool,
-) -> Result<[Utf8PathBuf; 3]> {
-    let executable = paths.home().join("8.4-frankenphp-release/bin/frankenphp");
-    let validation_started = paths.run().join("worker-validation-started");
+) -> Result<(InstalledFake, Utf8PathBuf)> {
     let release_validation = paths.run().join("release-worker-validation");
-    let runtime_started = paths.run().join("worker-runtime-started");
-    let validation_leader = paths.run().join("worker-validation-leader.pid");
-    let validation_descendant = paths.run().join("worker-validation-descendant.pid");
-    let validation_root_candidate = paths.run().join("worker-validation-root-candidate.path");
-    let validation_fragment_candidate = paths
-        .run()
-        .join("worker-validation-fragment-candidate.path");
-    let wrapper_source = paths.home().join("worker-startup-barrier");
-    let worker_script = state::fs::read_to_string(&executable)?;
-    let worker_script = worker_script
-        .strip_prefix("#!/bin/sh\n")
-        .ok_or_else(|| anyhow!("fake FrankenPHP script is missing its shebang"))?;
-    let validation_outcome = if fail_validation { "exit 7" } else { ":" };
-    state::fs::write_sensitive_file(
-        &wrapper_source,
-        &format!(
-            "#!/bin/sh\nset -eu\nif [ \"${{1:-}}\" = \"validate\" ]; then\n  printf '%s\\n' \"$$\" > \"{validation_leader}\"\n  printf '%s\\n' \"$3\" > \"{validation_root_candidate}\"\n  sed -n 's|^import \"\\(.*\\)/\\*\\.Caddyfile\"$|\\1|p' \"$3\" > \"{validation_fragment_candidate}\"\n  (while [ ! -f \"{release_validation}\" ]; do sleep 0.01; done) &\n  validation_child=\"$!\"\n  printf '%s\\n' \"$validation_child\" > \"{validation_descendant}\"\n  : > \"{validation_started}\"\n  wait \"$validation_child\"\n  {validation_outcome}\nelif [ \"${{1:-}}\" = \"run\" ]; then\n  : > \"{runtime_started}\"\nfi\n{worker_script}"
-        ),
+    let worker = pv_fake::install_with_settings(
+        &foundation_worker_executable(paths),
+        Persona::FrankenPhp,
+        FakeSettings {
+            validate_pause: Some(Pause {
+                until: release_validation.clone(),
+            }),
+            validate_exit_code: fail_validation.then_some(7),
+            descendant: true,
+            ..FakeSettings::default()
+        },
     )?;
-    let wrapper_install =
-        AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.3", &wrapper_source)?;
-    state::fs::rename(wrapper_install.binary_path(), &executable)?;
 
-    Ok([validation_started, release_validation, runtime_started])
+    Ok((worker, release_validation))
 }
 
-fn install_worker_load_barrier(paths: &PvPaths) -> Result<[Utf8PathBuf; 3]> {
-    let server_path = paths
-        .home()
-        .join("8.4-frankenphp-release/bin/frankenphp.server.py");
-    let load_started = paths.run().join("worker-load-started");
+/// Holds the worker's first `/load` until the returned file exists.
+fn install_worker_load_barrier(paths: &PvPaths) -> Result<Utf8PathBuf> {
     let release_load = paths.run().join("release-worker-load");
-    let load_consumed = paths.run().join("worker-load-consumed");
-    let load_requests = paths.run().join("worker-load-requests");
-    let server = state::fs::read_to_string(&server_path)?;
-    let insertion = format!(
-        "        with open({load_requests:?}, \"a\", encoding=\"utf-8\") as request_file:\n            request_file.write(\"load\\n\")\n        if not os.path.exists({load_consumed:?}):\n            with open({load_started:?}, \"w\", encoding=\"utf-8\") as marker_file:\n                marker_file.write(\"started\\n\")\n            while not os.path.exists({release_load:?}):\n                time.sleep(0.01)\n            with open({load_consumed:?}, \"w\", encoding=\"utf-8\") as marker_file:\n                marker_file.write(\"consumed\\n\")\n\n        content_length = int(self.headers.get(\"Content-Length\", \"0\"))",
-        load_requests = load_requests.as_str(),
-        load_consumed = load_consumed.as_str(),
-        load_started = load_started.as_str(),
-        release_load = release_load.as_str(),
-    );
-    let instrumented = server.replace(
-        "        content_length = int(self.headers.get(\"Content-Length\", \"0\"))",
-        &insertion,
-    );
-    if instrumented == server {
-        return Err(anyhow!("fake FrankenPHP load handler was not instrumented"));
-    }
-    state::fs::write_sensitive_file(&server_path, &instrumented)?;
+    pv_fake::write_gateway_control(
+        &paths.worker_root_config("8.4"),
+        json!({"load_response_gate": [release_load]}),
+    )?;
 
-    Ok([load_started, release_load, load_requests])
+    Ok(release_load)
 }
 
-fn install_worker_readiness_barrier(paths: &PvPaths) -> Result<[Utf8PathBuf; 2]> {
-    let server_path = paths
-        .home()
-        .join("8.4-frankenphp-release/bin/frankenphp.server.py");
-    let readiness_started = paths.run().join("worker-readiness-started");
-    let readiness_gate = paths.run().join("worker-readiness-gate");
-    let server = state::fs::read_to_string(&server_path)?;
-    let binding = "servers = [Server((\"127.0.0.1\", http_port), Handler)]";
-    let insertion = format!(
-        "{binding}\nwith open({readiness_started:?}, \"w\", encoding=\"utf-8\") as marker_file:\n    marker_file.write(\"started\\n\")\nwhile os.path.exists({readiness_gate:?}):\n    time.sleep(0.01)",
-        readiness_started = readiness_started.as_str(),
-        readiness_gate = readiness_gate.as_str(),
-    );
-    let instrumented = server.replacen(binding, &insertion, 1);
-    if instrumented == server {
-        return Err(anyhow!("fake FrankenPHP readiness was not instrumented"));
-    }
-    state::fs::write_sensitive_file(&server_path, &instrumented)?;
+/// Pauses the worker's `run` after its HTTP port opens and before its admin socket does, for the
+/// rest of the test.
+fn install_worker_readiness_barrier(paths: &PvPaths) -> Result<InstalledFake> {
+    pv_fake::install_with_settings(
+        &foundation_worker_executable(paths),
+        Persona::FrankenPhp,
+        FakeSettings {
+            run_pause: Some(Pause {
+                until: paths.run().join("release-worker-readiness"),
+            }),
+            ..FakeSettings::default()
+        },
+    )
+}
 
-    Ok([readiness_started, readiness_gate])
+/// The worker's `POST /load` requests so far, from the fake's request record.
+fn worker_load_requests(paths: &PvPaths) -> Result<usize> {
+    let requests = paths
+        .worker_root_config("8.4")
+        .with_file_name("fake-admin-requests.jsonl");
+    if !state::fs::path_entry_exists(&requests)? {
+        return Ok(0);
+    }
+
+    Ok(state::fs::read_to_string(&requests)?
+        .lines()
+        .filter(|line| line.contains(r#""method":"POST","path":"/load""#))
+        .count())
+}
+
+async fn wait_for_worker_load(paths: &PvPaths) -> Result<()> {
+    timeout(TARGETED_SCENARIO_TIMEOUT, async {
+        loop {
+            if worker_load_requests(paths)? > 0 {
+                return Ok::<(), anyhow::Error>(());
+            }
+            sleep(JOB_STATUS_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .map_err(|_elapsed| anyhow!("the worker never received a load"))?
+}
+
+/// The `validate` a barrier paused, as its fake recorded it.
+struct HeldValidation {
+    leader: Pid,
+    descendant: Pid,
+    root_candidate: Utf8PathBuf,
+    fragment_candidate: Utf8PathBuf,
+}
+
+async fn wait_for_held_validation(fake: &InstalledFake) -> Result<HeldValidation> {
+    timeout(TARGETED_SCENARIO_TIMEOUT, async {
+        loop {
+            if let Some(validation) = held_validation(fake)? {
+                return Ok::<_, anyhow::Error>(validation);
+            }
+            sleep(JOB_STATUS_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .map_err(|_elapsed| anyhow!("fake {} never paused validate", fake.executable()))?
+}
+
+fn held_validation(fake: &InstalledFake) -> Result<Option<HeldValidation>> {
+    let events = fake.events()?;
+    let Some(leader) = events
+        .iter()
+        .find(|event| matches!(event.kind, EventKind::Held { .. }))
+        .map(|event| event.pid)
+    else {
+        return Ok(None);
+    };
+    let argv = events.iter().find_map(|event| match &event.kind {
+        EventKind::Started { argv, .. } if event.pid == leader => Some(argv),
+        _ => None,
+    });
+    let root_candidate = argv
+        .and_then(|argv| {
+            argv.iter()
+                .position(|argument| argument == "--config")
+                .and_then(|index| argv.get(index + 1))
+        })
+        .map(Utf8PathBuf::from)
+        .ok_or_else(|| anyhow!("held validate {leader} recorded no --config"))?;
+    let descendant = events
+        .iter()
+        .find_map(|event| match event.kind {
+            EventKind::DescendantSpawned { descendant_pid } if event.pid == leader => {
+                Some(descendant_pid)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| anyhow!("held validate {leader} recorded no descendant"))?;
+    let fragment_candidate = state::fs::read_to_string(&root_candidate)?
+        .lines()
+        .find_map(|line| {
+            line.strip_prefix("import \"")?
+                .strip_suffix("/*.Caddyfile\"")
+                .map(Utf8PathBuf::from)
+        })
+        .ok_or_else(|| anyhow!("{root_candidate} imports no project fragments"))?;
+
+    Ok(Some(HeldValidation {
+        leader: event_pid(leader)?,
+        descendant: event_pid(descendant)?,
+        root_candidate,
+        fragment_candidate,
+    }))
+}
+
+fn event_pid(raw_pid: i32) -> Result<Pid> {
+    Pid::from_raw(raw_pid).ok_or_else(|| anyhow!("invalid recorded pid {raw_pid}"))
+}
+
+async fn wait_for_fake_hold(fake: &InstalledFake) -> Result<()> {
+    timeout(TARGETED_SCENARIO_TIMEOUT, async {
+        loop {
+            if fake_held(fake)? {
+                return Ok::<(), anyhow::Error>(());
+            }
+            sleep(JOB_STATUS_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .map_err(|_elapsed| anyhow!("fake {} never paused", fake.executable()))?
+}
+
+fn fake_held(fake: &InstalledFake) -> Result<bool> {
+    Ok(fake
+        .events()?
+        .iter()
+        .any(|event| matches!(event.kind, EventKind::Held { .. })))
+}
+
+/// Whether the fake started `run` after it paused, i.e. PV went on to start the runtime.
+fn fake_ran_after_hold(fake: &InstalledFake) -> Result<bool> {
+    let events = fake.events()?;
+    let after_hold = events
+        .iter()
+        .skip_while(|event| !matches!(event.kind, EventKind::Held { .. }));
+
+    Ok(after_hold.into_iter().any(|event| {
+        matches!(
+            &event.kind,
+            EventKind::Started { argv, .. } if argv.get(1).is_some_and(|command| command == "run")
+        )
+    }))
+}
+
+/// The descendant of the fake's `run`, once it has started one.
+async fn wait_for_runtime_descendant(fake: &InstalledFake) -> Result<Pid> {
+    timeout(TARGETED_SCENARIO_TIMEOUT, async {
+        loop {
+            let events = fake.events()?;
+            let runtime = events.iter().find_map(|event| match &event.kind {
+                EventKind::Started { argv, .. }
+                    if argv.get(1).is_some_and(|command| command == "run") =>
+                {
+                    Some(event.pid)
+                }
+                _ => None,
+            });
+            let descendant = events.iter().find_map(|event| match event.kind {
+                EventKind::DescendantSpawned { descendant_pid } if Some(event.pid) == runtime => {
+                    Some(descendant_pid)
+                }
+                _ => None,
+            });
+            if let Some(descendant) = descendant {
+                return event_pid(descendant);
+            }
+            sleep(JOB_STATUS_POLL_INTERVAL).await;
+        }
+    })
+    .await
+    .map_err(|_elapsed| {
+        anyhow!(
+            "fake {} never started a runtime descendant",
+            fake.executable()
+        )
+    })?
 }
 
 fn available_foundation_gateway_ports() -> Result<[u16; 2]> {
@@ -3171,15 +3220,14 @@ async fn targeted_scenario_timeout_still_cleans_owned_state() -> Result<()> {
         35_000,
         39_999,
     )?;
-    let [readiness_started, readiness_gate] = install_worker_readiness_barrier(&paths)?;
-    state::fs::write_sensitive_file(&readiness_gate, "blocked\n")?;
+    let worker = install_worker_readiness_barrier(&paths)?;
     port_handoff.release_for_runtime_start();
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     gateway_guard.attach_worker("8.4");
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
-    wait_for_path(&readiness_started).await?;
+    wait_for_fake_hold(&worker).await?;
     wait_for_path(&paths.worker_pid("8.4")).await?;
     port_handoff
         .verify_publication_and_release_lock(&paths, "8.4")
@@ -3233,25 +3281,8 @@ async fn run_targeted_gateway_phase_scenario(
     state::fs::write_sensitive_file(&php_release.join("bin/php"), "#!/bin/sh\n")?;
     state::fs::write_sensitive_file(&php_release.join("share/pv/php-extensions.json"), "[]")?;
     let frankenphp_release = paths.home().join("8.4-frankenphp-release");
-    let frankenphp_source = paths.home().join("fake-frankenphp-source");
-    state::fs::write_sensitive_file(
-        &frankenphp_source,
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/test-fixtures/gateway/fake-frankenphp.sh"
-        )),
-    )?;
-    state::fs::write_sensitive_file(
-        &frankenphp_release.join("bin/frankenphp.server.py"),
-        include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/test-fixtures/gateway/fake-frankenphp-server.py"
-        )),
-    )?;
-    let frankenphp_install =
-        AppReleaseLayout::new(paths.clone()).install_release_binary("0.0.0", &frankenphp_source)?;
-    let frankenphp_executable = frankenphp_release.join("bin/frankenphp");
-    state::fs::rename(frankenphp_install.binary_path(), &frankenphp_executable)?;
+    let frankenphp_executable = foundation_worker_executable(&paths);
+    pv_fake::install(&frankenphp_executable, Persona::FrankenPhp)?;
     state::fs::write_sensitive_file(
         &frankenphp_release.join("share/pv/php-extensions.json"),
         "[]",

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use pv_fake::{EventKind, FakeSettings, GatewayListeners, InstalledFake, Persona, Scenario};
+use pv_fake::{EventKind, FakeSettings, GatewayListeners, InstalledFake, Pause, Persona, Scenario};
 use rustix::io::{FdFlags, fcntl_setfd};
 use rustix::process::{Pid, Signal, kill_process};
 use serde_json::json;
@@ -445,6 +445,7 @@ fn admin_only_listeners_accept_loads_without_opening_ports() -> Result<()> {
         port,
         FakeSettings {
             gateway_listeners: GatewayListeners::AdminOnly,
+            ..FakeSettings::default()
         },
     )?;
     let load = gateway.config(moved_port, "moved");
@@ -469,6 +470,7 @@ fn listeners_set_to_nothing_stay_alive_without_serving() -> Result<()> {
         &gateway_config(&admin_socket, port, "unused"),
         FakeSettings {
             gateway_listeners: GatewayListeners::Nothing,
+            ..FakeSettings::default()
         },
     )?;
 
@@ -480,6 +482,157 @@ fn listeners_set_to_nothing_stay_alive_without_serving() -> Result<()> {
     assert_eq!(status.code(), Some(0));
     assert!(!state::fs::path_entry_exists(&admin_socket)?);
     assert_eq!(event_names(&fake)?, ["started", "signal SIGTERM", "exit 0"]);
+
+    Ok(())
+}
+
+#[test]
+fn validate_pause_holds_then_exits_with_the_chosen_code() -> Result<()> {
+    let tempdir = tempdir()?;
+    let release = tempdir.path().join("release-validate");
+    let (fake, mut process) = spawn_gateway_command(
+        tempdir.path(),
+        "validate",
+        "{\n}\n",
+        FakeSettings {
+            validate_pause: Some(Pause {
+                until: release.clone(),
+            }),
+            validate_exit_code: Some(7),
+            ..FakeSettings::default()
+        },
+    )?;
+
+    wait_for_event(&fake, is_held)?;
+    let held_running = process.0.try_wait()?.is_none();
+    state::fs::write_sensitive_file(&release, "release\n")?;
+    let status = wait_for_exit(&mut process)?;
+
+    assert!(held_running);
+    assert_eq!(status.code(), Some(7));
+    assert_eq!(event_names(&fake)?, ["started", "held", "exit 7"]);
+
+    Ok(())
+}
+
+#[test]
+fn run_pause_holds_with_http_open_and_no_admin_socket() -> Result<()> {
+    let tempdir = tempdir()?;
+    let [port] = available_ports()?;
+    let admin_socket = tempdir.path().join("admin.sock");
+    let release = tempdir.path().join("release-run");
+    let (fake, _process) = spawn_gateway(
+        tempdir.path(),
+        &gateway_config(&admin_socket, port, "paused"),
+        FakeSettings {
+            run_pause: Some(Pause {
+                until: release.clone(),
+            }),
+            ..FakeSettings::default()
+        },
+    )?;
+
+    wait_for_event(&fake, is_held)?;
+    let health = http_get(port, "/__pv/health")?;
+    let admin_socket_while_held = state::fs::path_entry_exists(&admin_socket)?;
+    state::fs::write_sensitive_file(&release, "release\n")?;
+    let admin_opened = wait_until(|| Ok(UnixStream::connect(&admin_socket).is_ok()));
+
+    assert_eq!(health, (200, "paused".to_owned()));
+    assert!(!admin_socket_while_held);
+    admin_opened?;
+
+    Ok(())
+}
+
+#[test]
+fn paused_fake_exits_cleanly_on_sigterm() -> Result<()> {
+    let tempdir = tempdir()?;
+    let (fake, mut process) = spawn_gateway_command(
+        tempdir.path(),
+        "validate",
+        "{\n}\n",
+        FakeSettings {
+            validate_pause: Some(Pause {
+                until: tempdir.path().join("never-released"),
+            }),
+            ..FakeSettings::default()
+        },
+    )?;
+
+    wait_for_event(&fake, is_held)?;
+    signal(&process, Signal::TERM)?;
+    let status = wait_for_exit(&mut process)?;
+
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(
+        event_names(&fake)?,
+        ["started", "held", "signal SIGTERM", "exit 0"]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn descendant_joins_the_process_group_and_exits_with_its_parent() -> Result<()> {
+    let tempdir = tempdir()?;
+    let fake = pv_fake::install_with(
+        Utf8Path::new(env!("CARGO_BIN_EXE_pv-fake")),
+        &tempdir.path().join("bin/frankenphp"),
+        &Scenario {
+            persona: Persona::LongRunning,
+            lifeline_fd: None,
+            settings: FakeSettings {
+                descendant: true,
+                ..FakeSettings::default()
+            },
+        },
+    )?;
+    let mut parent = spawn(&fake, true)?;
+
+    let descendant = wait_for_event(&fake, |kind| match kind {
+        EventKind::DescendantSpawned { descendant_pid } => Some(*descendant_pid),
+        _ => None,
+    })?;
+    let descendant_pid =
+        Pid::from_raw(descendant).ok_or_else(|| anyhow!("invalid descendant pid {descendant}"))?;
+    let descendant_group = rustix::process::getpgid(Some(descendant_pid))?;
+    signal(&parent, Signal::TERM)?;
+    wait_for_exit(&mut parent)?;
+    let descendant_exited =
+        wait_until(|| Ok(rustix::process::test_kill_process(descendant_pid).is_err()));
+
+    assert_eq!(
+        u32::try_from(descendant_group.as_raw_nonzero().get())?,
+        parent.0.id()
+    );
+    descendant_exited?;
+    assert!(
+        fake.events()?
+            .iter()
+            .any(|event| { event.pid == descendant && event.kind == EventKind::ParentExited })
+    );
+
+    Ok(())
+}
+
+#[test]
+fn fake_whose_lifeline_closed_before_it_started_exits_at_once() -> Result<()> {
+    let tempdir = tempdir()?;
+    let (read, write) = lifeline_pipe()?;
+    let fake = install_long_running(tempdir.path(), "redis-server", Some(read.as_raw_fd()))?;
+    // The installing test is already gone by the time the fake starts.
+    drop(write);
+    let mut child = spawn(&fake, true)?;
+    let status = wait_for_exit(&mut child)?;
+
+    // The watcher can fire before or after `started` is recorded.
+    assert_eq!(status.signal(), Some(Signal::KILL.as_raw()));
+    assert!(
+        event_names(&fake)?
+            .iter()
+            .any(|name| name == "lifeline_fired")
+    );
 
     Ok(())
 }
@@ -630,13 +783,23 @@ fn spawn_gateway(
     config: &str,
     settings: FakeSettings,
 ) -> Result<(InstalledFake, FakeProcess)> {
+    spawn_gateway_command(root, "run", config, settings)
+}
+
+/// Starts `caddy <subcommand>` with `config` at `<root>/config/Caddyfile`.
+fn spawn_gateway_command(
+    root: &Utf8Path,
+    subcommand: &str,
+    config: &str,
+    settings: FakeSettings,
+) -> Result<(InstalledFake, FakeProcess)> {
     let fake = install_gateway(root, settings)?;
     let config_path = root.join("config/Caddyfile");
     state::fs::write_sensitive_file(&config_path, config)?;
     let process = FakeProcess(
         FakeCommand::new(fake.executable())
             .args([
-                "run",
+                subcommand,
                 "--config",
                 config_path.as_str(),
                 "--adapter",
@@ -833,7 +996,35 @@ fn event_names(fake: &InstalledFake) -> Result<Vec<String>> {
             EventKind::Started { .. } => "started".to_owned(),
             EventKind::Signal { signal } => format!("signal {signal}"),
             EventKind::LifelineFired => "lifeline_fired".to_owned(),
+            EventKind::Held { .. } => "held".to_owned(),
+            EventKind::DescendantSpawned { .. } => "descendant_spawned".to_owned(),
+            EventKind::ParentExited => "parent_exited".to_owned(),
             EventKind::Exit { code } => format!("exit {code}"),
         })
         .collect())
+}
+
+/// Waits until `find` matches one of the fake's events and returns what it found.
+fn wait_for_event<T>(
+    fake: &InstalledFake,
+    mut find: impl FnMut(&EventKind) -> Option<T>,
+) -> Result<T> {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        let events = fake.events()?;
+        if let Some(found) = events.iter().find_map(|event| find(&event.kind)) {
+            return Ok(found);
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "fake {} did not record the expected event; events {events:?}",
+                fake.executable()
+            );
+        }
+        sleep(POLL_INTERVAL);
+    }
+}
+
+fn is_held(kind: &EventKind) -> Option<()> {
+    matches!(kind, EventKind::Held { .. }).then_some(())
 }

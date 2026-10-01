@@ -69,7 +69,10 @@ lifecycle in `<executable>.pv-fake.events.jsonl`. `cargo nextest run` builds it
 as the daemon's `pv-fake` example, but runs narrowed with `--lib` or
 `--test <name>` do not; filter with `-E` instead. A fake from an older build
 refuses to start and says how to rebuild. Guard registration and explicit
-cleanup still apply.
+cleanup still apply. To stop a fake at a known point, pass `FakeSettings` to
+`pv_fake::install_with_settings` and wait on its events, such as `held` and
+`descendant_spawned`, instead of marker files. Steer a running Gateway fake
+with `pv_fake::write_gateway_control`, which rejects unknown keys.
 
 Use the CI nextest profile for CI runs (`cargo nextest run --profile ci`). It
 warns after 60 seconds, terminates a wedged test after 120 seconds, and allows
