@@ -23,8 +23,8 @@ use crate::{DaemonError, ProcessSpec, ReadinessCheck};
 const RESOURCE_NAME: &str = "rustfs";
 const ACCESS_KEY: &str = "pv-rustfs";
 const REGION: &str = "us-east-1";
-const PROBE_OBJECT: &str = "__pv_rustfs_probe";
-const PROBE_CONTENT: &str = "pv rustfs probe";
+pub(super) const PROBE_OBJECT: &str = "__pv_rustfs_probe";
+pub(super) const PROBE_CONTENT: &str = "pv rustfs probe";
 const PORTS: &[ManagedResourcePortSpec] = &[
     ManagedResourcePortSpec {
         name: "api",
@@ -190,7 +190,7 @@ fn process_environment(
     ]))
 }
 
-async fn create_bucket(client: &Client, bucket: &str) -> Result<(), DaemonError> {
+pub(super) async fn create_bucket(client: &Client, bucket: &str) -> Result<(), DaemonError> {
     match client.create_bucket().bucket(bucket).send().await {
         Ok(_output) => Ok(()),
         Err(error) if bucket_already_exists(&error) => Ok(()),
@@ -201,7 +201,7 @@ async fn create_bucket(client: &Client, bucket: &str) -> Result<(), DaemonError>
     }
 }
 
-async fn verify_object_operations(
+pub(super) async fn verify_object_operations(
     resource_env: &EnvContextValues,
     bucket: &str,
 ) -> Result<(), DaemonError> {
@@ -248,7 +248,7 @@ async fn verify_object_operations(
     Ok(())
 }
 
-fn s3_client(resource_env: &EnvContextValues) -> Result<Client, DaemonError> {
+pub(super) fn s3_client(resource_env: &EnvContextValues) -> Result<Client, DaemonError> {
     let config = Config::builder()
         .behavior_version(BehaviorVersion::latest())
         .credentials_provider(Credentials::new(

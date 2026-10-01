@@ -6,6 +6,8 @@ pub(crate) mod mysql;
 mod mysql_tests;
 mod postgres;
 mod redis;
+#[cfg(all(test, target_os = "macos"))]
+mod runtime_contracts;
 mod rustfs;
 pub(crate) mod sql;
 #[cfg(test)]

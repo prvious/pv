@@ -691,6 +691,422 @@ fn validate_records_each_validated_config() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn redis_fake_answers_as_recorded_and_exits_cleanly_on_sigterm() -> Result<()> {
+    let tempdir = tempdir()?;
+    let [port] = available_ports()?;
+    let data_dir = tempdir.path().join("data");
+    state::fs::ensure_user_dir(&data_dir)?;
+    let (fake, mut process) = spawn_redis(tempdir.path(), port, &data_dir)?;
+    let mut stream = connect_with_retry(port)?;
+
+    // The `redis` crate pipelines its connection handshake and waits for both replies; PV's
+    // readiness check sends PING only after that.
+    let handshake = redis_exchange(
+        &mut stream,
+        &[
+            &["CLIENT", "SETINFO", "LIB-NAME", "redis-rs"],
+            &["CLIENT", "SETINFO", "LIB-VER", "1.2.2"],
+        ],
+        "+OK\r\n+OK\r\n",
+    )?;
+    let replies = [
+        redis_exchange(&mut stream, &[&["PING"]], "+PONG\r\n")?,
+        redis_exchange(&mut stream, &[&["PING", "hello"]], "$5\r\nhello\r\n")?,
+        redis_exchange(
+            &mut stream,
+            &[&["FOO", "bar", "baz"]],
+            "-ERR unknown command 'FOO', with args beginning with: 'bar' 'baz' \r\n",
+        )?,
+        redis_exchange(
+            &mut stream,
+            &[&["CLIENT", "BOGUS"]],
+            "-ERR unknown subcommand 'BOGUS'. Try CLIENT HELP.\r\n",
+        )?,
+        redis_exchange(
+            &mut stream,
+            &[&["PING", "a", "b"]],
+            "-ERR wrong number of arguments for 'ping' command\r\n",
+        )?,
+        redis_exchange(&mut stream, &[&["QUIT"]], "+OK\r\n")?,
+    ];
+    let mut after_quit = Vec::new();
+    let closed = stream.read_to_end(&mut after_quit).is_ok() && after_quit.is_empty();
+    signal(&process, Signal::TERM)?;
+    let status = wait_for_exit(&mut process)?;
+
+    assert_eq!(handshake, "+OK\r\n+OK\r\n");
+    assert_eq!(
+        replies,
+        [
+            "+PONG\r\n",
+            "$5\r\nhello\r\n",
+            "-ERR unknown command 'FOO', with args beginning with: 'bar' 'baz' \r\n",
+            "-ERR unknown subcommand 'BOGUS'. Try CLIENT HELP.\r\n",
+            "-ERR wrong number of arguments for 'ping' command\r\n",
+            "+OK\r\n",
+        ]
+    );
+    assert!(closed);
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(event_names(&fake)?, ["started", "signal SIGTERM", "exit 0"]);
+
+    Ok(())
+}
+
+#[test]
+fn redis_fake_rejects_a_missing_data_dir_as_redis_does() -> Result<()> {
+    let tempdir = tempdir()?;
+    let [port] = available_ports()?;
+    let data_dir = tempdir.path().join("missing");
+    let (_fake, mut process) = spawn_redis(tempdir.path(), port, &data_dir)?;
+
+    let status = wait_for_exit(&mut process)?;
+
+    assert_eq!(status.code(), Some(1));
+    assert_eq!(
+        state::fs::read_to_string(&tempdir.path().join("stderr"))?,
+        format!(
+            "\n*** FATAL CONFIG FILE ERROR (Redis 8.8.0) ***\nReading the configuration file, at \
+             line 3\n>>> 'dir \"{data_dir}\"'\nNo such file or directory\n"
+        )
+    );
+
+    Ok(())
+}
+
+#[test]
+fn mailpit_fake_greets_and_serves_the_dashboard_routes_as_recorded() -> Result<()> {
+    let tempdir = tempdir()?;
+    let [smtp_port, dashboard_port] = available_ports()?;
+    state::fs::ensure_user_dir(&tempdir.path().join("data"))?;
+    let (fake, mut process) = spawn_service(
+        tempdir.path(),
+        "mailpit",
+        Persona::Mailpit,
+        FakeSettings::default(),
+        &mailpit_arguments(
+            smtp_port,
+            dashboard_port,
+            &tempdir.path().join("data/mailpit.db"),
+        ),
+        &[],
+    )?;
+
+    let greeting = smtp_greeting(smtp_port)?;
+    connect_with_retry(dashboard_port)?;
+    let statuses = ["/", "/readyz", "/livez", "/ready"]
+        .map(|path| http_get(dashboard_port, path).map(|(status, _body)| status));
+    let not_found = http_get(dashboard_port, "/nope")?;
+    signal(&process, Signal::INT)?;
+    let status = wait_for_exit(&mut process)?;
+
+    assert_eq!(greeting, "220 localhost Mailpit ESMTP Service ready\r\n");
+    assert_eq!(
+        statuses.into_iter().collect::<Result<Vec<_>>>()?,
+        [200, 200, 200, 404]
+    );
+    assert_eq!(not_found, (404, "404 page not found\n".to_owned()));
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(event_names(&fake)?, ["started", "signal SIGINT", "exit 0"]);
+
+    Ok(())
+}
+
+#[test]
+fn mailpit_fake_fails_as_mailpit_does() -> Result<()> {
+    let tempdir = tempdir()?;
+    let busy = TcpListener::bind(("127.0.0.1", 0))?;
+    let busy_port = busy.local_addr()?.port();
+    let [free_port] = available_ports()?;
+    let missing_database = tempdir.path().join("missing/mailpit.db");
+    let database = tempdir.path().join("mailpit.db");
+    let runs = [
+        vec!["--bogus".to_owned()],
+        mailpit_arguments(free_port, free_port, &missing_database),
+        mailpit_arguments(busy_port, free_port, &database),
+    ];
+
+    let mut outcomes = Vec::new();
+    for (index, arguments) in runs.iter().enumerate() {
+        let root = tempdir.path().join(index.to_string());
+        let (_fake, mut process) = spawn_service(
+            &root,
+            "mailpit",
+            Persona::Mailpit,
+            FakeSettings::default(),
+            arguments,
+            &[],
+        )?;
+        let status = wait_for_exit(&mut process)?;
+        outcomes.push((
+            status.code(),
+            state::fs::read_to_string(&root.join("stderr"))?,
+        ));
+    }
+
+    assert_eq!(
+        outcomes,
+        [
+            (Some(1), "Error: unknown flag: --bogus\n".to_owned()),
+            (
+                Some(1),
+                format!(
+                    "level=error msg=\"[db] open {missing_database}: no such file or directory\"\n"
+                )
+            ),
+            (
+                Some(1),
+                format!(
+                    "level=error msg=\"listen tcp 127.0.0.1:{busy_port}: bind: address already in \
+                     use\"\n"
+                )
+            ),
+        ]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn pv_fake_mailpit_waits_for_busy_ports_and_answers_ready() -> Result<()> {
+    let tempdir = tempdir()?;
+    let smtp_reservation = TcpListener::bind(("127.0.0.1", 0))?;
+    let smtp_port = smtp_reservation.local_addr()?.port();
+    let [dashboard_port] = available_ports()?;
+    let (fake, mut process) = spawn_service(
+        tempdir.path(),
+        "pv-fake-mailpit",
+        Persona::PvFakeMailpit,
+        FakeSettings::default(),
+        &[
+            smtp_port.to_string(),
+            dashboard_port.to_string(),
+            "ignored-extra".to_owned(),
+        ],
+        &[],
+    )?;
+
+    sleep(Duration::from_millis(250));
+    let waiting_for_smtp = process.0.try_wait()?.is_none()
+        && TcpStream::connect(("127.0.0.1", dashboard_port)).is_err();
+    drop(smtp_reservation);
+    let greeting = smtp_greeting(smtp_port)?;
+    connect_with_retry(dashboard_port)?;
+    let ready = http_get(dashboard_port, "/ready")?;
+    let other = http_get(dashboard_port, "/")?;
+    signal(&process, Signal::TERM)?;
+    let status = wait_for_exit(&mut process)?;
+
+    assert!(waiting_for_smtp);
+    assert_eq!(greeting, "220 fake mailpit\r\n");
+    assert_eq!((ready.0, other.0), (200, 404));
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(event_names(&fake)?, ["started", "signal SIGTERM", "exit 0"]);
+
+    Ok(())
+}
+
+#[test]
+fn pv_fake_mailpit_can_exit_after_its_first_response() -> Result<()> {
+    let tempdir = tempdir()?;
+    let [smtp_port, dashboard_port] = available_ports()?;
+    let (fake, mut process) = spawn_service(
+        tempdir.path(),
+        "pv-fake-mailpit",
+        Persona::PvFakeMailpit,
+        FakeSettings {
+            exit_after_first_http_response: true,
+            ..FakeSettings::default()
+        },
+        &[smtp_port.to_string(), dashboard_port.to_string()],
+        &[],
+    )?;
+
+    // A connection that sends no request gets no response, so the fake keeps running.
+    connect_with_retry(dashboard_port)?;
+    // PV's readiness check reads the status and hangs up; the fake must not wait for that.
+    let mut stream = TcpStream::connect(("127.0.0.1", dashboard_port))?;
+    write_request(&mut stream, "GET", "/ready", "")?;
+    let mut status_line = [0; 12];
+    stream.read_exact(&mut status_line)?;
+    let status = wait_for_exit(&mut process)?;
+    drop(stream);
+
+    assert_eq!(&status_line, b"HTTP/1.1 200");
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(event_names(&fake)?, ["started", "exit 0"]);
+
+    Ok(())
+}
+
+/// The S3 operations are checked against real RustFS by the daemon's runtime contracts, which sign
+/// requests with PV's own S3 clients.
+#[test]
+fn rustfs_fake_answers_health_and_refuses_unsigned_requests() -> Result<()> {
+    let tempdir = tempdir()?;
+    let [api_port, console_port] = available_ports()?;
+    let (fake, mut process) = spawn_service(
+        tempdir.path(),
+        "rustfs",
+        Persona::Rustfs,
+        FakeSettings::default(),
+        &[
+            "--address".to_owned(),
+            format!("127.0.0.1:{api_port}"),
+            "--console-address".to_owned(),
+            format!("127.0.0.1:{console_port}"),
+            tempdir.path().join("data").to_string(),
+        ],
+        &[
+            ("RUSTFS_ACCESS_KEY", "pv-rustfs"),
+            ("RUSTFS_SECRET_KEY", "test-secret-key"),
+        ],
+    )?;
+
+    connect_with_retry(api_port)?;
+    connect_with_retry(console_port)?;
+    let health = [api_port, console_port].map(|port| http_get(port, "/health"));
+    let unsigned = [api_port, console_port].map(|port| http_get(port, "/"));
+    signal(&process, Signal::TERM)?;
+    let status = wait_for_exit(&mut process)?;
+
+    // Only the API port reports health, so a runtime started with the addresses swapped never
+    // becomes ready.
+    assert_eq!(
+        health
+            .into_iter()
+            .map(|response| Ok(response?.0))
+            .collect::<Result<Vec<_>>>()?,
+        [200, 403]
+    );
+    for response in unsigned {
+        let (status, body) = response?;
+        assert_eq!(status, 403);
+        assert!(body.contains("<Code>AccessDenied</Code>"), "{body}");
+    }
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(event_names(&fake)?, ["started", "signal SIGTERM", "exit 0"]);
+
+    Ok(())
+}
+
+/// Starts `redis-server <config>` with the config PV renders.
+fn spawn_redis(
+    root: &Utf8Path,
+    port: u16,
+    data_dir: &Utf8Path,
+) -> Result<(InstalledFake, FakeProcess)> {
+    let config = root.join("redis.conf");
+    state::fs::write_sensitive_file(
+        &config,
+        &format!(
+            "bind 127.0.0.1\nport {port}\ndir {}\nsave \"\"\nappendonly yes\nappendfsync \
+             everysec\nset-proc-title no\n",
+            serde_json::to_string(data_dir.as_str())?
+        ),
+    )?;
+
+    spawn_service(
+        root,
+        "redis-server",
+        Persona::RedisServer,
+        FakeSettings::default(),
+        &[config.to_string()],
+        &[],
+    )
+}
+
+/// PV's Mailpit command line.
+fn mailpit_arguments(smtp_port: u16, dashboard_port: u16, database: &Utf8Path) -> Vec<String> {
+    [
+        "--smtp",
+        &format!("127.0.0.1:{smtp_port}"),
+        "--listen",
+        &format!("127.0.0.1:{dashboard_port}"),
+        "--database",
+        database.as_str(),
+        "--disable-version-check",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+/// Installs a service persona at `<root>/bin/<executable>` and starts it in its own process
+/// group with `environment` added, and stderr in `<root>/stderr`.
+fn spawn_service(
+    root: &Utf8Path,
+    executable: &str,
+    persona: Persona,
+    settings: FakeSettings,
+    arguments: &[String],
+    environment: &[(&str, &str)],
+) -> Result<(InstalledFake, FakeProcess)> {
+    let fake = pv_fake::install_with(
+        Utf8Path::new(env!("CARGO_BIN_EXE_pv-fake")),
+        &root.join("bin").join(executable),
+        &Scenario {
+            persona,
+            lifeline_fd: None,
+            settings,
+        },
+    )?;
+    let process = FakeProcess(
+        FakeCommand::new(fake.executable())
+            .args(arguments)
+            .envs(environment.iter().copied())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(state::fs::open_append_file(&root.join("stderr"))?)
+            .process_group(0)
+            .spawn()?,
+    );
+
+    Ok((fake, process))
+}
+
+/// Reads the SMTP greeting line.
+fn smtp_greeting(port: u16) -> Result<String> {
+    let mut stream = connect_with_retry(port)?;
+    stream.set_read_timeout(Some(WAIT_TIMEOUT))?;
+    let mut greeting = Vec::new();
+    let mut byte = [0];
+    while !greeting.ends_with(b"\r\n") {
+        stream.read_exact(&mut byte)?;
+        greeting.extend_from_slice(&byte);
+    }
+
+    Ok(String::from_utf8(greeting)?)
+}
+
+fn connect_with_retry(port: u16) -> Result<TcpStream> {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        match TcpStream::connect(("127.0.0.1", port)) {
+            Ok(stream) => return Ok(stream),
+            Err(error) if Instant::now() >= deadline => return Err(error.into()),
+            Err(_error) => sleep(POLL_INTERVAL),
+        }
+    }
+}
+
+/// Sends `commands` as RESP arrays in one write and reads until `expected`'s length arrives.
+fn redis_exchange(stream: &mut TcpStream, commands: &[&[&str]], expected: &str) -> Result<String> {
+    let mut request = String::new();
+    for command in commands {
+        request.push_str(&format!("*{}\r\n", command.len()));
+        for part in *command {
+            request.push_str(&format!("${}\r\n{part}\r\n", part.len()));
+        }
+    }
+    stream.write_all(request.as_bytes())?;
+    stream.set_read_timeout(Some(WAIT_TIMEOUT))?;
+    let mut reply = vec![0; expected.len()];
+    stream.read_exact(&mut reply)?;
+
+    Ok(String::from_utf8(reply)?)
+}
+
 /// Caddy's adapter warning for PV's space-indented configs, which accepted loads return.
 const UNFORMATTED_WARNING: &str = r#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies"}]"#;
 

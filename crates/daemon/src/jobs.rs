@@ -3867,10 +3867,6 @@ mod tests {
     const MAILPIT_TEST_TRACK: &str = "1.0";
     const MAILPIT_TEST_ARTIFACT_VERSION: &str = "1.0.0-pv1";
     const MAILPIT_TEST_ARCHIVE_FILE_NAME: &str = "mailpit-1.0.0-pv1-any.tar.gz";
-    const FAKE_MAILPIT_SCRIPT: &str = include_str!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/test-fixtures/managed-resources/fake-mailpit.py"
-    ));
 
     #[tokio::test]
     async fn invalid_project_config_does_not_block_crashed_worker_recovery() -> anyhow::Result<()> {
@@ -4755,11 +4751,12 @@ mod tests {
                 MAILPIT_TEST_ARTIFACT_VERSION,
                 "bin/pv-fake-mailpit",
             )?;
-            let executable = paths
-                .resources()
-                .join("mailpit/1.0/current/bin/pv-fake-mailpit");
-            state::fs::write_sensitive_file(&executable, FAKE_MAILPIT_SCRIPT)?;
-            set_executable(&executable)?;
+            pv_fake::install(
+                &paths
+                    .resources()
+                    .join("mailpit/1.0/current/bin/pv-fake-mailpit"),
+                Persona::PvFakeMailpit,
+            )?;
             let mut database = Database::open(&paths)?;
             let mut projects = Vec::new();
             let previous_env =
@@ -6511,16 +6508,11 @@ mod tests {
             MAILPIT_TEST_ARTIFACT_VERSION,
             "bin/pv-fake-mailpit",
         )?;
-        state::fs::write_sensitive_file(
+        pv_fake::install(
             &paths
                 .resources()
                 .join("mailpit/1.0/current/bin/pv-fake-mailpit"),
-            FAKE_MAILPIT_SCRIPT,
-        )?;
-        set_executable(
-            &paths
-                .resources()
-                .join("mailpit/1.0/current/bin/pv-fake-mailpit"),
+            Persona::PvFakeMailpit,
         )?;
         let (client, _) = scripted_artifact_client(
             tempdir.path(),

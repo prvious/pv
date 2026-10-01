@@ -8,11 +8,15 @@
 
 use std::io::{self, Write};
 use std::process::ExitCode;
+#[cfg(unix)]
+use std::time::Duration;
 
 #[cfg(unix)]
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use tokio::net::{TcpListener, TcpStream};
 
 #[cfg(unix)]
 mod events;
@@ -24,6 +28,12 @@ mod gateway;
 mod install;
 #[cfg(unix)]
 mod lifeline;
+#[cfg(unix)]
+mod mailpit;
+#[cfg(unix)]
+mod redis;
+#[cfg(unix)]
+mod rustfs;
 
 #[cfg(unix)]
 pub use events::{Event, EventKind};
@@ -39,6 +49,21 @@ const DESCENDANT_FLAG: &str = "--pv-fake-descendant";
 /// Identifies this pv-fake build; see `build.rs`.
 #[cfg(unix)]
 const BUILD_ID: &str = env!("PV_FAKE_BUILD_ID");
+
+#[cfg(unix)]
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(10);
+
+/// Accepts a service listener's next connection. A failed accept, such as `EMFILE` under load, is
+/// retried after a short delay, so the listener keeps serving.
+#[cfg(unix)]
+async fn accept(listener: &TcpListener) -> TcpStream {
+    loop {
+        if let Ok((stream, _address)) = listener.accept().await {
+            return stream;
+        }
+        tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
+    }
+}
 
 /// A scenario file: the scenario plus the pv-fake build that wrote it.
 #[cfg(unix)]
@@ -74,6 +99,12 @@ pub struct FakeSettings {
     /// Starts one child process in the fake's process group, as runtimes start workers. It exits
     /// when the fake does.
     pub descendant: bool,
+    /// Makes a `pv_fake_mailpit` persona exit 0 once it has answered its first HTTP request, for
+    /// tests of runtimes that exit after becoming ready.
+    pub exit_after_first_http_response: bool,
+    /// Makes a `rustfs` persona expect a different secret key than the one it was started with,
+    /// so every signed request fails with `SignatureDoesNotMatch`, as a real key mismatch does.
+    pub rustfs_reject_credentials: bool,
 }
 
 /// Holds a fake at a known point, recording a `held` event, until a test creates `until`.
@@ -106,6 +137,16 @@ pub enum Persona {
     /// FrankenPHP embeds Caddy, so this behaves like [`Persona::Caddy`].
     #[serde(rename = "frankenphp")]
     FrankenPhp,
+    /// `redis-server <config>`: the RESP replies PV's readiness check needs.
+    RedisServer,
+    /// Mailpit's real command line: the SMTP greeting and the dashboard routes.
+    Mailpit,
+    /// `pv-fake-mailpit <smtp port> <dashboard port>`, the program PV's test-only fake Mailpit
+    /// adapter starts: the SMTP greeting and `GET /ready`.
+    PvFakeMailpit,
+    /// `rustfs --address <address> --console-address <address> <data dir>`: `/health` and the S3
+    /// operations PV uses, signed with the keys from the environment.
+    Rustfs,
 }
 
 /// Entry point shared by the `pv-fake` binary and the daemon's `pv-fake` example.
