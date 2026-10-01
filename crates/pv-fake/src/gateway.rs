@@ -23,8 +23,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use rcgen::{CertificateParams, DistinguishedName, Issuer, KeyPair};
 use rustls::crypto::CryptoProvider;
-use rustls::pki_types::pem::PemObject;
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
 use rustls::sign::CertifiedKey;
 use serde_json::json;
@@ -698,7 +697,8 @@ fn tls_acceptor(https: &HttpsPlan) -> Result<TlsAcceptor> {
 
 /// Issues leaf certificates for each requested hostname from the configured CA, as Caddy's
 /// internal issuer does. Caddy signs through its own intermediate; PV only verifies up to the CA,
-/// so signing leaves with the CA directly verifies the same way.
+/// so signing leaves with the CA directly verifies the same way. Tests seed the CA with
+/// `platform::generate_local_ca`, as `pv setup` does.
 fn tls_config(certificate: &Utf8Path, private_key: &Utf8Path) -> Result<rustls::ServerConfig> {
     let certificate_pem = state::fs::read_to_string(certificate)?;
     let private_key_pem = state::fs::read_to_string(private_key)?;
@@ -706,14 +706,6 @@ fn tls_config(certificate: &Utf8Path, private_key: &Utf8Path) -> Result<rustls::
     let config = rustls::ServerConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()?
         .with_no_client_auth();
-    let certificate_der = CertificateDer::from_pem_slice(certificate_pem.as_bytes())?;
-    if !is_certificate_authority(&certificate_der)? {
-        // ponytail: daemon tests still seed a self-signed leaf as the "CA", shared with Python
-        // Gateway fakes that present it as-is. Do the same until those fakes are gone, then seed a
-        // real CA in every test and drop this branch.
-        let private_key_der = PrivateKeyDer::from_pem_slice(private_key_pem.as_bytes())?;
-        return Ok(config.with_single_cert(vec![certificate_der], private_key_der)?);
-    }
     let resolver = LeafIssuer {
         certificate_authority: Issuer::from_ca_cert_pem(
             &certificate_pem,
@@ -724,15 +716,6 @@ fn tls_config(certificate: &Utf8Path, private_key: &Utf8Path) -> Result<rustls::
     };
 
     Ok(config.with_cert_resolver(Arc::new(resolver)))
-}
-
-fn is_certificate_authority(certificate: &CertificateDer<'_>) -> Result<bool> {
-    let (_rest, certificate) = x509_parser::parse_x509_certificate(certificate)
-        .map_err(|error| anyhow!("parsing the configured certificate: {error}"))?;
-
-    Ok(certificate
-        .basic_constraints()?
-        .is_some_and(|constraints| constraints.value.ca))
 }
 
 struct LeafIssuer {

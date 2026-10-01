@@ -22,7 +22,6 @@ state = { path = "../state" }
 time = { workspace = true }
 tokio = { workspace = true }
 tokio-rustls = { workspace = true }
-x509-parser = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, features = ["pipe"] }

@@ -51,14 +51,6 @@ const POSTGRES_UNREADY_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/managed-resources/postgres-unready.sh"
 ));
-const FAKE_CADDY_FIXTURE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/gateway/fake-caddy.sh"
-));
-const FAKE_CADDY_SERVER_FIXTURE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/gateway/fake-caddy-server.py"
-));
 const RUSTFS_FIXTURE_TEMPLATE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/managed-resources/rustfs.py.in"
@@ -235,7 +227,6 @@ impl MultiServerFixture {
 enum ParentLossFixture {
     ShellSql,
     DirectPythonMailpit,
-    ShellToPythonGateway,
 }
 
 impl ParentLossFixture {
@@ -243,12 +234,11 @@ impl ParentLossFixture {
         match self {
             Self::ShellSql => "shell-only SQL",
             Self::DirectPythonMailpit => "direct-Python Mailpit",
-            Self::ShellToPythonGateway => "shell-to-Python gateway",
         }
     }
 
     fn has_python_member(self) -> bool {
-        matches!(self, Self::DirectPythonMailpit | Self::ShellToPythonGateway)
+        matches!(self, Self::DirectPythonMailpit)
     }
 }
 
@@ -565,7 +555,6 @@ fn long_running_fixtures_exit_when_their_test_parent_is_lost() -> Result<()> {
     for fixture in [
         ParentLossFixture::ShellSql,
         ParentLossFixture::DirectPythonMailpit,
-        ParentLossFixture::ShellToPythonGateway,
     ] {
         for timing in [
             ParentLossTiming::AfterReadiness,
@@ -620,30 +609,6 @@ fn long_running_fixtures_exit_when_their_test_parent_is_lost() -> Result<()> {
             process_group_stopped: true,
             ports_rebound: [
                 true,
-                true,
-            ],
-        },
-        ParentLossOutcome {
-            fixture: "shell-to-Python gateway",
-            timing: "after readiness",
-            parent_exit_signal: Some(
-                9,
-            ),
-            leader_stopped: true,
-            process_group_stopped: true,
-            ports_rebound: [
-                true,
-            ],
-        },
-        ParentLossOutcome {
-            fixture: "shell-to-Python gateway",
-            timing: "before watcher initialization",
-            parent_exit_signal: Some(
-                9,
-            ),
-            leader_stopped: true,
-            process_group_stopped: true,
-            ports_rebound: [
                 true,
             ],
         },
@@ -1217,23 +1182,6 @@ fn prepare_parent_loss_fixture(
             format!(
                 "exec ./mailpit --smtp 127.0.0.1:{smtp_port} --listen 127.0.0.1:{dashboard_port} --database ./mailpit-data/mailpit.db --disable-version-check\n"
             )
-        }
-        ParentLossFixture::ShellToPythonGateway => {
-            port_reservations.push(TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?);
-            let http_port = port_reservations[0].local_addr()?.port();
-            let admin_socket = root.join("admin.sock");
-            materialize_fixture(&root.join("fake-caddy"), FAKE_CADDY_FIXTURE)?;
-            state::fs::write_sensitive_file(
-                &root.join("fake-caddy.server.py"),
-                FAKE_CADDY_SERVER_FIXTURE,
-            )?;
-            state::fs::write_sensitive_file(
-                &root.join("Caddyfile"),
-                &format!(
-                    "{{\n    admin \"unix/{admin_socket}|0600\"\n    http_port {http_port}\n}}\n"
-                ),
-            )?;
-            "exec ./fake-caddy run --config ./Caddyfile\n".to_owned()
         }
     };
 

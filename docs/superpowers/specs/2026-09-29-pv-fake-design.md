@@ -1,6 +1,6 @@
 # pv-fake Test Service Design
 
-Status: approved 2026-09-29. Steps 1, 2a, 2b-1, 2b-2 and 2b-3a are implemented.
+Status: approved 2026-09-29. Steps 1 and 2 are implemented.
 
 ## Summary
 
@@ -186,7 +186,7 @@ These were recorded with PV's Gateway config shape and a real test CA.
 
 The reload rows were recorded 2026-09-30 by loading PV-shaped configs through the admin socket, and the dual-target contracts check them against real Caddy and FrankenPHP.
 
-The persona issues leaves only when the configured certificate is a CA. For now it serves a non-CA certificate as-is, because daemon tests still seed a self-signed leaf as the "CA" and share it with Python Gateway fakes. Step 2b removes that fallback.
+The persona issues leaves from the configured certificate, which must be a CA. Every Gateway test seeds one with `platform::generate_local_ca`, once per test home.
 
 #### Gateway test controls
 
@@ -227,7 +227,7 @@ Each step is one pull request. Each starts by recording the relevant real artifa
      - **2b-1** (implemented): record real reloads, make the personas apply loads and switch listeners as Caddy does, add the Gateway test controls, and extend the dual-target contracts to port changes, a busy port, and a worker fragment move.
      - **2b-2** (implemented): port the stateful control-file, no-admin, admin-only and legacy installs in `gateway_reconciliation.rs` and `jobs.rs`, seed one real CA per test home there, and delete those fixtures and the unreferenced `fake-frankenphp-hangs-on-port`. The six tests that relied on the old fixture never switching ports, and the `exit_after_load` test, set `retain_previous_listeners`. The legacy test runs the fake with `admin off` instead of supervising the Python server directly. `write_script_fake_frankenphp` and the `fake-runtime-reaped-<pid>` marker wait are gone.
      - **2b-3a** (implemented): pause settings for `validate` and `run`, a `validate` exit code, a descendant process, the `held`, `descendant_spawned` and `parent_exited` events, and signal handling while paused. A fake-only contract covers a lifeline that closed before the fake started.
-     - **2b-3b**: port `daemon_foundation.rs`'s installs and barrier helpers, which patch fixture source text today, to those settings and events; seed a real CA there and drop the TLS fallback; delete the shell-to-Python parent-loss variant and the last Gateway fixtures.
+     - **2b-3b** (implemented): port `daemon_foundation.rs`'s installs and barrier helpers, which patched fixture source text, to those settings and events; seed a real CA there and drop the TLS fallback and `pv-fake`'s `x509-parser` dependency; delete the shell-to-Python parent-loss variant and the last Gateway fixtures. The inline leader in `gateway_reconciliation.rs` stays a script, because its test needs a descendant that outlives the leader, which a pv-fake descendant never does; its wait is now bounded at 30 s like its descendant.
 3. **Simple services.** Add `redis-server`, the three Mailpit variants, and `rustfs`.
 4. **SQL.** Start with the `opensrv-mysql` + `sqlx` compatibility spike, then add `postgres`, `initdb`, the unready Postgres variant, and `mysqld`.
 5. **Cleanup.**
@@ -260,6 +260,8 @@ A stale binary is caught too. `build.rs` hashes the crate's sources into a build
 ### Descriptor inheritance
 
 The lifeline assumes the supervisor's spawn path passes non-close-on-exec descriptors to children. A daemon test starts a fake through the real supervisor and verifies that the lifeline arrives armed. A targeted chaos run then hard-killed a test mid-start: the fake recorded `started` after its parent was already gone, and its lifeline fired within 63 µs.
+
+The per-runtime monitor planned after this migration must pass the lifeline descriptor through to the runtime. A monitor that closes inherited descriptors or daemonizes would cut it, and fakes would outlive their tests again.
 
 ### Symlink rejection
 
