@@ -11,6 +11,8 @@ use redis_protocol::resp2::types::{OwnedFrame, Resp2Frame};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::accept;
+
 /// Handles `redis-server <config>`. Returns an exit code to exit with now, or `None` once serving.
 pub(crate) async fn start(argv: &[String]) -> Result<Option<u8>> {
     let Some(config_path) = argv.get(1) else {
@@ -49,8 +51,8 @@ pub(crate) async fn start(argv: &[String]) -> Result<Option<u8>> {
         .await
         .with_context(|| format!("binding Redis port {port}"))?;
     tokio::spawn(async move {
-        while let Ok((stream, _address)) = listener.accept().await {
-            tokio::spawn(serve_client(stream));
+        loop {
+            tokio::spawn(serve_client(accept(&listener).await));
         }
     });
 

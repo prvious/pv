@@ -1,23 +1,24 @@
 //! Contracts for the Managed Resource runtimes, driven through each runtime adapter the way
-//! reconciliation does: the adapter's environment, process spec and readiness check, PV's
-//! supervisor, and a stop within the grace period. Each contract runs against a `pv-fake`
-//! persona, and against the real artifact when `PV_E2E_REAL_ARTIFACTS=1`, so the fakes can't drift
-//! from what PV depends on.
+//! reconciliation does: the adapter's environment and process spec, PV's start and readiness wait
+//! (which also rejects a runtime that exits right after its readiness check), and a stop within
+//! the grace period. Each contract runs against a `pv-fake` persona, and against the real artifact
+//! when `PV_E2E_REAL_ARTIFACTS=1`, so the fakes can't drift from what PV depends on.
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, TcpListener};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::{Utf8TempDir, tempdir};
 use pv_fake::Persona;
 use resources::{ManagedResourceCommands, TargetPlatform, TrackSelector, redis_adapter};
 use state::PvPaths;
 
+use super::tests::ManagedResourceFixtureGuard;
 use super::{
     ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext, adapter_readiness_timeout,
-    wait_for_managed_resource_readiness,
+    start_or_adopt_runtime,
 };
 use crate::ProcessSupervisor;
 
@@ -26,9 +27,11 @@ const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 #[tokio::test]
 async fn fake_redis_satisfies_the_runtime_contract() -> Result<()> {
     let (_tempdir, paths) = contract_paths()?;
-    let artifact_path = paths.home().join("redis-release");
-    pv_fake::install(
-        &artifact_path.join("bin/redis-server"),
+    let artifact_path = fake_artifact(
+        &paths,
+        "redis",
+        "8.8",
+        "bin/redis-server",
         Persona::RedisServer,
     )?;
 
@@ -71,8 +74,9 @@ async fn redis_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) 
     .await
 }
 
-/// Starts the runtime the way reconciliation does, waits for the adapter's readiness check, and
-/// stops it within the grace period.
+/// Starts and waits for the runtime the way reconciliation does, then stops it within the grace
+/// period. A fixture guard registered before startup stops it on every other exit path, and a
+/// cleanup failure is reported alongside the contract's own failure.
 async fn run_contract(
     paths: &PvPaths,
     adapter: &dyn ManagedResourceRuntimeAdapter,
@@ -80,18 +84,55 @@ async fn run_contract(
 ) -> Result<()> {
     let env = adapter.resource_env(&context)?;
     let context = ManagedResourceRuntimeContext { env, ..context };
-    let spec = adapter.build_process_spec(paths, &context)?;
-    let log_path = spec.log_path.clone();
-    adapter.prepare_runtime(paths, &context).await?;
-    let readiness = adapter.readiness(&context)?;
-    let process = ProcessSupervisor::new(paths.clone()).start(spec).await?;
-    let ready =
-        wait_for_managed_resource_readiness(&readiness, adapter_readiness_timeout(adapter)).await;
+    let mut runtimes = ManagedResourceFixtureGuard::new(paths);
+    runtimes.register(&context.resource_name, &context.track);
+
+    let outcome = start_wait_and_stop(paths, adapter, &context).await;
+    match (outcome, runtimes.cleanup().await) {
+        (Ok(()), cleanup) => cleanup,
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup_error)) => Err(anyhow!(
+            "{error:#}; fixture cleanup also failed: {cleanup_error:#}"
+        )),
+    }
+}
+
+async fn start_wait_and_stop(
+    paths: &PvPaths,
+    adapter: &dyn ManagedResourceRuntimeAdapter,
+    context: &ManagedResourceRuntimeContext,
+) -> Result<()> {
+    let spec = adapter.build_process_spec(paths, context)?;
+    let (log_path, pid_path, metadata_path) = (
+        spec.log_path.clone(),
+        spec.pid_path.clone(),
+        spec.metadata_path.clone(),
+    );
+    adapter.prepare_runtime(paths, context).await?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let Some(pending) = start_or_adopt_runtime(
+        &supervisor,
+        spec,
+        adapter.readiness(context)?,
+        adapter_readiness_timeout(adapter),
+        None,
+    )
+    .await?
+    else {
+        bail!("{} was not started", context.resource_name);
+    };
+    let ready = pending.wait().await;
+    // A runtime that failed its readiness wait has been stopped and its records removed already.
     let stop_started = Instant::now();
-    process.stop(STOP_GRACE_PERIOD).await?;
+    let stopped = match supervisor.adopt_recorded(&pid_path, &metadata_path) {
+        Ok(Some(process)) => process.stop(STOP_GRACE_PERIOD).await,
+        Ok(None) => Ok(()),
+        Err(error) => Err(error),
+    };
     let stopped_within = stop_started.elapsed();
 
     ready.with_context(|| runtime_log(&log_path))?;
+    stopped?;
     ensure!(
         stopped_within < STOP_GRACE_PERIOD,
         "{} ignored SIGTERM for {stopped_within:?}",
@@ -99,6 +140,25 @@ async fn run_contract(
     );
 
     Ok(())
+}
+
+/// Installs a fake as an artifact in the resource's directory, where the fixture guard expects a
+/// runtime's command.
+fn fake_artifact(
+    paths: &PvPaths,
+    resource_name: &str,
+    track: &str,
+    executable: &str,
+    persona: Persona,
+) -> Result<Utf8PathBuf> {
+    let artifact_path = paths
+        .resources()
+        .join(resource_name)
+        .join(track)
+        .join("releases/fake");
+    pv_fake::install(&artifact_path.join(executable), persona)?;
+
+    Ok(artifact_path)
 }
 
 fn runtime_context<const PORTS: usize>(

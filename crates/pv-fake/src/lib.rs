@@ -8,11 +8,15 @@
 
 use std::io::{self, Write};
 use std::process::ExitCode;
+#[cfg(unix)]
+use std::time::Duration;
 
 #[cfg(unix)]
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use tokio::net::{TcpListener, TcpStream};
 
 #[cfg(unix)]
 mod events;
@@ -41,6 +45,21 @@ const DESCENDANT_FLAG: &str = "--pv-fake-descendant";
 /// Identifies this pv-fake build; see `build.rs`.
 #[cfg(unix)]
 const BUILD_ID: &str = env!("PV_FAKE_BUILD_ID");
+
+#[cfg(unix)]
+const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(10);
+
+/// Accepts a service listener's next connection. A failed accept, such as `EMFILE` under load, is
+/// retried after a short delay, so the listener keeps serving.
+#[cfg(unix)]
+async fn accept(listener: &TcpListener) -> TcpStream {
+    loop {
+        if let Ok((stream, _address)) = listener.accept().await {
+            return stream;
+        }
+        tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
+    }
+}
 
 /// A scenario file: the scenario plus the pv-fake build that wrote it.
 #[cfg(unix)]

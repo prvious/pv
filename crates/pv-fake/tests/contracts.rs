@@ -700,17 +700,18 @@ fn redis_fake_answers_as_recorded_and_exits_cleanly_on_sigterm() -> Result<()> {
     let (fake, mut process) = spawn_redis(tempdir.path(), port, &data_dir)?;
     let mut stream = connect_with_retry(port)?;
 
-    // The `redis` crate's connection handshake, which PV's readiness check pipelines with PING.
+    // The `redis` crate pipelines its connection handshake and waits for both replies; PV's
+    // readiness check sends PING only after that.
     let handshake = redis_exchange(
         &mut stream,
         &[
             &["CLIENT", "SETINFO", "LIB-NAME", "redis-rs"],
             &["CLIENT", "SETINFO", "LIB-VER", "1.2.2"],
-            &["PING"],
         ],
-        "+OK\r\n+OK\r\n+PONG\r\n",
+        "+OK\r\n+OK\r\n",
     )?;
     let replies = [
+        redis_exchange(&mut stream, &[&["PING"]], "+PONG\r\n")?,
         redis_exchange(&mut stream, &[&["PING", "hello"]], "$5\r\nhello\r\n")?,
         redis_exchange(
             &mut stream,
@@ -734,10 +735,11 @@ fn redis_fake_answers_as_recorded_and_exits_cleanly_on_sigterm() -> Result<()> {
     signal(&process, Signal::TERM)?;
     let status = wait_for_exit(&mut process)?;
 
-    assert_eq!(handshake, "+OK\r\n+OK\r\n+PONG\r\n");
+    assert_eq!(handshake, "+OK\r\n+OK\r\n");
     assert_eq!(
         replies,
         [
+            "+PONG\r\n",
             "$5\r\nhello\r\n",
             "-ERR unknown command 'FOO', with args beginning with: 'bar' 'baz' \r\n",
             "-ERR unknown subcommand 'BOGUS'. Try CLIENT HELP.\r\n",
