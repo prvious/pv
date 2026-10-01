@@ -148,7 +148,7 @@ These crates are dependencies of `pv-fake` only. Versions of shared crates come 
 ## Contract Fidelity
 
 1. **Record before implementing.** Before each persona is written, run the real artifact (installed from the artifact manifest, as `real_artifact_resource_matrix.rs` does) through exactly the interactions pv performs. Save what comes back as `insta` snapshots: status codes, relevant headers, body shapes (e.g. Caddy's `/load` error `{"error": …}`), CLI exit codes and stderr, startup parameters and greetings, and exit status after SIGTERM.
-2. **One contract suite, two targets.** Persona contracts live in the daemon crate, e.g. `crates/daemon/tests/gateway_runtime_contracts.rs`. That way they drive each binary with PV's own renderers, `ProcessSupervisor`, admin client, and readiness checks, so the contract is exactly what PV depends on. Each runs against the fake by default. An ignored twin runs it against the real artifact, installed from the manifest, when `PV_E2E_REAL_ARTIFACTS=1` and `PV_E2E_ARTIFACT_MANIFEST_URL` are set. `.github/workflows/real-artifact-e2e.yml` runs the real twins, so an artifact update that changes behavior PV relies on fails there. Test configs for real Caddy add `skip_install_trust` so a fresh test CA never triggers a trust-store prompt.
+2. **One contract suite, two targets.** Persona contracts live in the daemon crate, e.g. `crates/daemon/tests/gateway_runtime_contracts.rs`. Managed Resource contracts live in `crates/daemon/src/managed_resources/runtime_contracts.rs`, because the runtime adapters are private to the crate. That way they drive each binary with PV's own renderers, `ProcessSupervisor`, admin client, and readiness checks, so the contract is exactly what PV depends on. Each runs against the fake by default. An ignored twin runs it against the real artifact, installed from the manifest, when `PV_E2E_REAL_ARTIFACTS=1` and `PV_E2E_ARTIFACT_MANIFEST_URL` are set. `.github/workflows/real-artifact-e2e.yml` runs the real twins, so an artifact update that changes behavior PV relies on fails there. Test configs for real Caddy add `skip_install_trust` so a fresh test CA never triggers a trust-store prompt.
 3. **Failure scenarios are fake-only.** Crash on start, never ready, ignore SIGTERM, slow shutdown, and escaping descendants have no real-binary equivalent. Their contract tests run against the fake alone.
 4. **Plumbing contracts.** Contract tests also cover:
    - process identity at the install path
@@ -206,6 +206,25 @@ Settings that only matter for an accepted load (`apply_load`, `retain_previous_l
 
 The persona records every request in `fake-admin-requests.jsonl` before holding it, and every load body in `fake-admin-load-NNN.bin`, numbered from 0 in each process. It writes the served config to `fake-admin-current.bin` at startup and after each applied load.
 
+### Redis 8.8.0 (2026-10-01)
+
+These were recorded with PV's rendered `redis.conf` and the `redis` crate's handshake.
+
+| Interaction | Real Redis | `redis-server` persona |
+|---|---|---|
+| `redis` 1.2.2 handshake | pipelined `CLIENT SETINFO LIB-NAME` and `LIB-VER` (the client ignores both replies), then `PING`: `+OK`, `+OK`, `+PONG` | same |
+| `PING <message>` | the message as a bulk string | same |
+| `PING` with more arguments, `CLIENT` alone | `-ERR wrong number of arguments for '<command>' command` | same |
+| `CLIENT <unknown>` | `-ERR unknown subcommand '<subcommand>'. Try CLIENT HELP.` | same |
+| Unknown command | `-ERR unknown command '<command>', with args beginning with: ` followed by `'<argument>' ` for each argument | same |
+| Lowercase commands | accepted | same |
+| `QUIT` | `+OK`, then closes the connection | same |
+| `dir` doesn't exist | exit 1; stderr names the config line: `*** FATAL CONFIG FILE ERROR (Redis 8.8.0) ***`, `>>> 'dir "<path>"'`, `No such file or directory` | same message and exit code |
+| Data directory | creates `appendonlydir` | writes nothing |
+| SIGTERM, SIGINT | exit 0 in about 0.1 s | exit 0 |
+
+The persona reads only `port` and `dir` from the config and binds `127.0.0.1`. It answers RESP arrays only; Redis's inline commands, which PV never sends, close the connection.
+
 ## Lints And Errors
 
 `pv-fake` opts into workspace lints. It is an application boundary, so it uses `anyhow`. Raw process, filesystem, and executable-path primitives use narrow `#[expect(..., reason = "...")]` items, as elsewhere in the repository. It uses no `unwrap`, `expect`, or `panic!`.
@@ -228,7 +247,10 @@ Each step is one pull request. Each starts by recording the relevant real artifa
      - **2b-2** (implemented): port the stateful control-file, no-admin, admin-only and legacy installs in `gateway_reconciliation.rs` and `jobs.rs`, seed one real CA per test home there, and delete those fixtures and the unreferenced `fake-frankenphp-hangs-on-port`. The six tests that relied on the old fixture never switching ports, and the `exit_after_load` test, set `retain_previous_listeners`. The legacy test runs the fake with `admin off` instead of supervising the Python server directly. `write_script_fake_frankenphp` and the `fake-runtime-reaped-<pid>` marker wait are gone.
      - **2b-3a** (implemented): pause settings for `validate` and `run`, a `validate` exit code, a descendant process, the `held`, `descendant_spawned` and `parent_exited` events, and signal handling while paused. A fake-only contract covers a lifeline that closed before the fake started.
      - **2b-3b** (implemented): port `daemon_foundation.rs`'s installs and barrier helpers, which patched fixture source text, to those settings and events; seed a real CA there and drop the TLS fallback and `pv-fake`'s `x509-parser` dependency; delete the shell-to-Python parent-loss variant and the last Gateway fixtures. The inline leader in `gateway_reconciliation.rs` stays a script, because its test needs a descendant that outlives the leader, which a pv-fake descendant never does; its wait is now bounded at 30 s like its descendant.
-3. **Simple services.** Add `redis-server`, the three Mailpit variants, and `rustfs`.
+3. **Simple services**, in three pull requests:
+   - **3a** (implemented): record real Redis, add the `redis-server` persona and the dual-target Managed Resource runtime contract, port the Redis installs and archive in `managed_resources/tests.rs`, and delete `redis-server.py` with its fixture contract.
+   - **3b**: the three Mailpit variants.
+   - **3c**: `rustfs`.
 4. **SQL.** Start with the `opensrv-mysql` + `sqlx` compatibility spike, then add `postgres`, `initdb`, the unready Postgres variant, and `mysqld`.
 5. **Cleanup.**
    - Delete the remaining runtime-standing shell and Python fixtures.

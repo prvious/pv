@@ -24,6 +24,8 @@ mod gateway;
 mod install;
 #[cfg(unix)]
 mod lifeline;
+#[cfg(unix)]
+mod redis;
 
 #[cfg(unix)]
 pub use events::{Event, EventKind};
@@ -106,6 +108,8 @@ pub enum Persona {
     /// FrankenPHP embeds Caddy, so this behaves like [`Persona::Caddy`].
     #[serde(rename = "frankenphp")]
     FrankenPhp,
+    /// `redis-server <config>`: the RESP replies PV's readiness check needs.
+    RedisServer,
 }
 
 /// Entry point shared by the `pv-fake` binary and the daemon's `pv-fake` example.

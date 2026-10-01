@@ -691,6 +691,153 @@ fn validate_records_each_validated_config() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn redis_fake_answers_as_recorded_and_exits_cleanly_on_sigterm() -> Result<()> {
+    let tempdir = tempdir()?;
+    let [port] = available_ports()?;
+    let data_dir = tempdir.path().join("data");
+    state::fs::ensure_user_dir(&data_dir)?;
+    let (fake, mut process) = spawn_redis(tempdir.path(), port, &data_dir)?;
+    let mut stream = connect_with_retry(port)?;
+
+    // The `redis` crate's connection handshake, which PV's readiness check pipelines with PING.
+    let handshake = redis_exchange(
+        &mut stream,
+        &[
+            &["CLIENT", "SETINFO", "LIB-NAME", "redis-rs"],
+            &["CLIENT", "SETINFO", "LIB-VER", "1.2.2"],
+            &["PING"],
+        ],
+        "+OK\r\n+OK\r\n+PONG\r\n",
+    )?;
+    let replies = [
+        redis_exchange(&mut stream, &[&["PING", "hello"]], "$5\r\nhello\r\n")?,
+        redis_exchange(
+            &mut stream,
+            &[&["FOO", "bar", "baz"]],
+            "-ERR unknown command 'FOO', with args beginning with: 'bar' 'baz' \r\n",
+        )?,
+        redis_exchange(
+            &mut stream,
+            &[&["CLIENT", "BOGUS"]],
+            "-ERR unknown subcommand 'BOGUS'. Try CLIENT HELP.\r\n",
+        )?,
+        redis_exchange(
+            &mut stream,
+            &[&["PING", "a", "b"]],
+            "-ERR wrong number of arguments for 'ping' command\r\n",
+        )?,
+        redis_exchange(&mut stream, &[&["QUIT"]], "+OK\r\n")?,
+    ];
+    let mut after_quit = Vec::new();
+    let closed = stream.read_to_end(&mut after_quit).is_ok() && after_quit.is_empty();
+    signal(&process, Signal::TERM)?;
+    let status = wait_for_exit(&mut process)?;
+
+    assert_eq!(handshake, "+OK\r\n+OK\r\n+PONG\r\n");
+    assert_eq!(
+        replies,
+        [
+            "$5\r\nhello\r\n",
+            "-ERR unknown command 'FOO', with args beginning with: 'bar' 'baz' \r\n",
+            "-ERR unknown subcommand 'BOGUS'. Try CLIENT HELP.\r\n",
+            "-ERR wrong number of arguments for 'ping' command\r\n",
+            "+OK\r\n",
+        ]
+    );
+    assert!(closed);
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(event_names(&fake)?, ["started", "signal SIGTERM", "exit 0"]);
+
+    Ok(())
+}
+
+#[test]
+fn redis_fake_rejects_a_missing_data_dir_as_redis_does() -> Result<()> {
+    let tempdir = tempdir()?;
+    let [port] = available_ports()?;
+    let data_dir = tempdir.path().join("missing");
+    let (_fake, mut process) = spawn_redis(tempdir.path(), port, &data_dir)?;
+
+    let status = wait_for_exit(&mut process)?;
+
+    assert_eq!(status.code(), Some(1));
+    assert_eq!(
+        state::fs::read_to_string(&tempdir.path().join("redis.stderr"))?,
+        format!(
+            "\n*** FATAL CONFIG FILE ERROR (Redis 8.8.0) ***\nReading the configuration file, at \
+             line 3\n>>> 'dir \"{data_dir}\"'\nNo such file or directory\n"
+        )
+    );
+
+    Ok(())
+}
+
+/// Starts `redis-server <config>` with the config PV renders.
+fn spawn_redis(
+    root: &Utf8Path,
+    port: u16,
+    data_dir: &Utf8Path,
+) -> Result<(InstalledFake, FakeProcess)> {
+    let fake = pv_fake::install_with(
+        Utf8Path::new(env!("CARGO_BIN_EXE_pv-fake")),
+        &root.join("bin/redis-server"),
+        &Scenario {
+            persona: Persona::RedisServer,
+            lifeline_fd: None,
+            settings: FakeSettings::default(),
+        },
+    )?;
+    let config = root.join("redis.conf");
+    state::fs::write_sensitive_file(
+        &config,
+        &format!(
+            "bind 127.0.0.1\nport {port}\ndir {}\nsave \"\"\nappendonly yes\nappendfsync \
+             everysec\nset-proc-title no\n",
+            serde_json::to_string(data_dir.as_str())?
+        ),
+    )?;
+    let process = FakeProcess(
+        FakeCommand::new(fake.executable())
+            .arg(config.as_str())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(state::fs::open_append_file(&root.join("redis.stderr"))?)
+            .process_group(0)
+            .spawn()?,
+    );
+
+    Ok((fake, process))
+}
+
+fn connect_with_retry(port: u16) -> Result<TcpStream> {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    loop {
+        match TcpStream::connect(("127.0.0.1", port)) {
+            Ok(stream) => return Ok(stream),
+            Err(error) if Instant::now() >= deadline => return Err(error.into()),
+            Err(_error) => sleep(POLL_INTERVAL),
+        }
+    }
+}
+
+/// Sends `commands` as RESP arrays in one write and reads until `expected`'s length arrives.
+fn redis_exchange(stream: &mut TcpStream, commands: &[&[&str]], expected: &str) -> Result<String> {
+    let mut request = String::new();
+    for command in commands {
+        request.push_str(&format!("*{}\r\n", command.len()));
+        for part in *command {
+            request.push_str(&format!("${}\r\n{part}\r\n", part.len()));
+        }
+    }
+    stream.write_all(request.as_bytes())?;
+    stream.set_read_timeout(Some(WAIT_TIMEOUT))?;
+    let mut reply = vec![0; expected.len()];
+    stream.read_exact(&mut reply)?;
+
+    Ok(String::from_utf8(reply)?)
+}
+
 /// Caddy's adapter warning for PV's space-indented configs, which accepted loads return.
 const UNFORMATTED_WARNING: &str = r#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies"}]"#;
 

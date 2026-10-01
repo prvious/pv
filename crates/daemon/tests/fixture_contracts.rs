@@ -39,10 +39,6 @@ const POSTGRES_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/managed-resources/postgres.py"
 ));
-const REDIS_FIXTURE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/redis-server.py"
-));
 const MAILPIT_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/managed-resources/mailpit.py"
@@ -169,7 +165,6 @@ struct FixtureOutput {
 enum SingleServerFixture {
     Mysql,
     Postgres,
-    Redis,
 }
 
 impl SingleServerFixture {
@@ -177,7 +172,6 @@ impl SingleServerFixture {
         match self {
             Self::Mysql => "MySQL",
             Self::Postgres => "PostgreSQL",
-            Self::Redis => "Redis",
         }
     }
 
@@ -185,7 +179,6 @@ impl SingleServerFixture {
         match self {
             Self::Mysql => "mysqld",
             Self::Postgres => "postgres",
-            Self::Redis => "redis-server",
         }
     }
 
@@ -193,7 +186,6 @@ impl SingleServerFixture {
         match self {
             Self::Mysql => MYSQL_FIXTURE,
             Self::Postgres => POSTGRES_FIXTURE,
-            Self::Redis => REDIS_FIXTURE,
         }
     }
 }
@@ -516,11 +508,7 @@ fn postgres_fixture_shutdown_is_deterministic_after_sigterm() -> Result<()> {
 
 #[test]
 fn single_server_fixture_exits_after_signal_status() -> Result<()> {
-    for fixture in [
-        SingleServerFixture::Mysql,
-        SingleServerFixture::Postgres,
-        SingleServerFixture::Redis,
-    ] {
+    for fixture in [SingleServerFixture::Mysql, SingleServerFixture::Postgres] {
         for signal in [Signal::TERM, Signal::INT] {
             assert_single_server_fixture_exits_after_signal(fixture, signal)?;
         }
@@ -1534,18 +1522,6 @@ fn assert_single_server_fixture_exits_after_signal(
                 "-p",
                 port_argument.as_str(),
             ]);
-        }
-        SingleServerFixture::Redis => {
-            let data_dir = tempdir.path().join("redis-data");
-            let config_path = tempdir.path().join("redis.conf");
-            state::fs::write_sensitive_file(
-                &config_path,
-                &format!(
-                    "bind 127.0.0.1\nport {port}\ndir {}\nsave \"\"\nappendonly no\n",
-                    data_dir.as_str()
-                ),
-            )?;
-            command.arg(config_path.as_std_path());
         }
     }
     drop(port_reservation);

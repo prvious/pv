@@ -110,10 +110,6 @@ const POSTGRES_UNREADY_SCRIPT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/managed-resources/postgres-unready.sh"
 ));
-const REDIS_SERVER_SCRIPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/redis-server.py"
-));
 const RUSTFS_SCRIPT_TEMPLATE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/managed-resources/rustfs.py.in"
@@ -7512,10 +7508,7 @@ fn seed_redis_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
         .join("redis")
         .join(track)
         .join(format!("releases/{REDIS_ARTIFACT_VERSION}"));
-    let executable = release_path.join("bin/redis-server");
-
-    state::fs::write_sensitive_file(&executable, REDIS_SERVER_SCRIPT)?;
-    set_executable(&executable)?;
+    pv_fake::install(&release_path.join("bin/redis-server"), Persona::RedisServer)?;
     let mut database = Database::open(paths)?;
     database.record_managed_resource_track_installed(
         "redis",
@@ -7746,10 +7739,8 @@ fn create_redis_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<(
     let archive_parent = tempdir.join("redis-archive-root");
     let root_name = format!("redis-{REDIS_ARTIFACT_VERSION}");
     let root = archive_parent.join(&root_name);
-    let executable = root.join("bin/redis-server");
-
-    state::fs::write_sensitive_file(&executable, REDIS_SERVER_SCRIPT)?;
-    set_executable(&executable)?;
+    // The archive carries the fake and its scenario file, which PV extracts next to each other.
+    pv_fake::install(&root.join("bin/redis-server"), Persona::RedisServer)?;
     run_fixture_command(
         "/usr/bin/tar",
         &[

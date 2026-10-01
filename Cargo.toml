@@ -58,6 +58,7 @@ portable-pty = "0.9.0"
 object_store = { version = "0.13.2", default-features = false, features = ["aws"] }
 rcgen = { version = "0.14.8", features = ["x509-parser"] }
 redis = { version = "1.2.2", default-features = false, features = ["tokio-comp"] }
+redis-protocol = "6.0.0"
 rusqlite = { version = "0", features = ["bundled"] }
 rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2.2.0"

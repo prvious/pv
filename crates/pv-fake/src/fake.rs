@@ -9,7 +9,7 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use crate::events::{EventKind, EventLog};
 use crate::{
     BUILD_ID, DESCENDANT_FLAG, Persona, Scenario, ScenarioFile, events_path, gateway, lifeline,
-    scenario_path,
+    redis, scenario_path,
 };
 
 #[expect(
@@ -117,6 +117,7 @@ async fn start_persona(
         Persona::Caddy | Persona::FrankenPhp => {
             gateway::start(argv, &scenario.settings, events).await
         }
+        Persona::RedisServer => redis::start(argv).await,
     }
 }
 
