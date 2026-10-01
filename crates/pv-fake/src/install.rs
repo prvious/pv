@@ -1,5 +1,3 @@
-use std::io;
-
 use anyhow::{Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 
@@ -42,7 +40,13 @@ pub fn install_with(
     if let Some(parent) = executable.parent() {
         state::fs::ensure_user_dir(parent)?;
     }
-    link_or_copy(binary, executable)?;
+    // A copy, replacing any earlier fixture atomically, and on APFS a clone that costs no disk
+    // space. It is a regular file, so PV's artifact validation, which rejects symlinked
+    // executables, accepts it, and the process executable is the path the fake was started from,
+    // so the supervisor's direct identity check applies as it does to real runtime binaries. Not a
+    // hard link: installs sharing one inode died with SIGKILL at launch under parallel load while
+    // Gatekeeper scanned each new path.
+    state::fs::copy_file_atomically(binary, executable)?;
     let scenario_file = ScenarioFile {
         build_id: BUILD_ID.to_owned(),
         scenario,
@@ -77,30 +81,4 @@ pub fn binary() -> Result<Utf8PathBuf> {
     }
 
     Ok(binary)
-}
-
-/// Hard-links the fake into place, replacing any earlier fixture atomically, and copies across
-/// filesystems.
-///
-/// A hard link is a regular file, so PV's artifact validation, which rejects symlinked
-/// executables, accepts it. The process executable is the path the fake was started from, so the
-/// supervisor's direct identity check applies, as it does to real runtime binaries.
-#[expect(
-    clippy::disallowed_methods,
-    reason = "pv-fake links its own binary into fake artifact directories"
-)]
-fn link_or_copy(binary: &Utf8Path, executable: &Utf8Path) -> Result<()> {
-    let staged = Utf8PathBuf::from(format!("{executable}.pv-fake-install"));
-    state::fs::remove_file_if_exists(&staged)?;
-    match std::fs::hard_link(binary, &staged) {
-        Ok(()) => {
-            state::fs::rename(&staged, executable)?;
-            Ok(())
-        }
-        Err(error) if error.kind() == io::ErrorKind::CrossesDevices => {
-            state::fs::copy_file_atomically(binary, executable)?;
-            Ok(())
-        }
-        Err(error) => Err(error.into()),
-    }
 }
