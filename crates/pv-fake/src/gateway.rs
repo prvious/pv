@@ -290,6 +290,14 @@ impl<P> Serving<P> {
     }
 }
 
+/// Which listener a connection arrived on. As with Caddy, the admin API is only on the admin
+/// socket, and sites are only on the HTTP and HTTPS ports.
+#[derive(Clone, Copy, Debug)]
+enum Endpoint {
+    Admin,
+    Service,
+}
+
 /// A listener slot after a reload: unchanged, or replaced by a new listener or by none.
 enum Slot<T> {
     Unchanged,
@@ -391,7 +399,10 @@ impl Runtime {
             {
                 return;
             }
-            tokio::spawn(self.clone().serve_connection(TokioIo::new(stream)));
+            tokio::spawn(
+                self.clone()
+                    .serve_connection(TokioIo::new(stream), Endpoint::Service),
+            );
         }
     }
 
@@ -405,7 +416,9 @@ impl Runtime {
             let runtime = self.clone();
             tokio::spawn(async move {
                 if let Ok(stream) = acceptor.accept(stream).await {
-                    runtime.serve_connection(TokioIo::new(stream)).await;
+                    runtime
+                        .serve_connection(TokioIo::new(stream), Endpoint::Service)
+                        .await;
                 }
             });
         }
@@ -417,16 +430,23 @@ impl Runtime {
                 tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
                 continue;
             };
-            tokio::spawn(self.clone().serve_connection(TokioIo::new(stream)));
+            tokio::spawn(
+                self.clone()
+                    .serve_connection(TokioIo::new(stream), Endpoint::Admin),
+            );
         }
     }
 
     /// Boxed to break the type cycle: a load starts listeners whose connections handle loads.
-    fn serve_connection<I>(self: Arc<Self>, io: I) -> Pin<Box<dyn Future<Output = ()> + Send>>
+    fn serve_connection<I>(
+        self: Arc<Self>,
+        io: I,
+        endpoint: Endpoint,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send>>
     where
         I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
     {
-        let service = service_fn(move |request| self.clone().handle(request));
+        let service = service_fn(move |request| self.clone().handle(request, endpoint));
         Box::pin(async move {
             let _connection_result = http1::Builder::new().serve_connection(io, service).await;
         })
@@ -435,13 +455,14 @@ impl Runtime {
     async fn handle(
         self: Arc<Self>,
         request: Request<Incoming>,
+        endpoint: Endpoint,
     ) -> Result<Response<Full<Bytes>>, Infallible> {
         let method = request.method().clone();
         let path = request.uri().path().to_owned();
-        let result = match (&method, path.as_str()) {
-            (&Method::GET, "/config/") => self.admin_config().await,
-            (&Method::GET, "/__pv/health") => self.health(),
-            (&Method::POST, "/load") => self.load(request).await,
+        let result = match (endpoint, &method, path.as_str()) {
+            (Endpoint::Admin, &Method::GET, "/config/") => self.admin_config().await,
+            (Endpoint::Admin, &Method::POST, "/load") => self.load(request).await,
+            (Endpoint::Service, &Method::GET, "/__pv/health") => self.health(),
             _ => self
                 .records
                 .request(&method, &path, 404, 0)

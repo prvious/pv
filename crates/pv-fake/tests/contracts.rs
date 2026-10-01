@@ -419,10 +419,19 @@ fn admin_off_serves_http_without_an_admin_socket() -> Result<()> {
     let (_fake, _process) = spawn_gateway(tempdir.path(), &config, FakeSettings::default())?;
 
     // The admin socket would be bound before the first HTTP connection is served.
-    let serving = wait_until(|| Ok(http_get(port, "/__pv/health")?.1 == "legacy"));
+    wait_until(|| Ok(http_get(port, "/__pv/health")?.1 == "legacy"))?;
+    let admin_over_http = [
+        http_get(port, "/config/")?,
+        exchange(
+            TcpStream::connect(("127.0.0.1", port))?,
+            "POST",
+            "/load",
+            &config,
+        )?,
+    ];
 
-    serving?;
     assert!(!state::fs::path_entry_exists(&admin_socket)?);
+    assert_eq!(admin_over_http.map(|(status, _body)| status), [404, 404]);
 
     Ok(())
 }
