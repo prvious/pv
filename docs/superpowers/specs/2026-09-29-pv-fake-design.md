@@ -62,6 +62,7 @@ Tests install a fake with `pv_fake::install(executable, persona)`. It:
 - `validate_pause` holds a Gateway persona's `validate` until a file exists, and `validate_exit_code` makes it exit with that code instead of checking the config.
 - `run_pause` holds a Gateway persona's `run` after its HTTP and HTTPS ports open and before its admin socket does.
 - `exit_after_first_http_response` makes a `pv_fake_mailpit` persona exit 0 once it has answered an HTTP request, for tests of runtimes that exit right after becoming ready.
+- `rustfs_reject_credentials` makes a `rustfs` persona expect a different secret key than PV passed, so every signed request fails with `SignatureDoesNotMatch`, as a real key mismatch does.
 - `descendant` starts one child process in the fake's process group, as runtimes start workers. The fake starts itself again with a descendant flag and the read end of a pipe whose write end only the parent holds. The descendant inherits the lifeline, does nothing else, and exits when its parent does. On a clean exit the parent closes the pipe and reaps the descendant first, so no zombie is left behind where nothing reaps orphans, as in some Linux containers.
 
 A paused fake records `held` and still exits cleanly on SIGTERM or SIGINT: signals are watched through startup, not only once it serves.
@@ -141,7 +142,7 @@ Rule: a library owns every protocol and framing layer. Persona code only decides
 | `postgres`, `initdb` | `sqlx` startup with `sslmode=disable`, `SELECT 1`, `SELECT 1 FROM pg_database WHERE datname = $1`, `CREATE DATABASE`, `SET`; `initdb` file layout | `pgwire` with `default-features = false` |
 | `mysqld` | `--initialize-insecure`; TCP; `sqlx` `SELECT 1` and `CREATE DATABASE IF NOT EXISTS` | `opensrv-mysql`, pending the compatibility spike. It lets MySQL tests use the real `sqlx` client instead of `RecordingMysqlAdmin`. If the spike fails, keep `RecordingMysqlAdmin`; never hand-write the MySQL protocol |
 | `redis-server` | `redis` crate multiplexed connection: `CLIENT SETINFO`, `PING` | `redis-protocol` for RESP framing, plus a command table |
-| `rustfs` | `GET /health`; `aws-sdk-s3` `create_bucket` with path-style addressing and SigV4 using the configured credentials; reject mode | `s3s` + `s3s-fs`, the S3 layer the real RustFS is built on (`s3s` 0.17.0), with `hyper` for `/health` |
+| `rustfs` | `GET /health`; `aws-sdk-s3` `create_bucket` with path-style addressing and SigV4 using the configured credentials; `object_store` put and head of a probe; reject mode | `s3s` 0.17.0, the S3 layer the real RustFS is built on, over a small in-memory bucket store; `hyper` for `/health` |
 | `mailpit`, `pv-fake-mailpit` | SMTP greeting; HTTP readiness (`/`, `/ready`) | `tokio`, `hyper` |
 
 These crates are dependencies of `pv-fake` only. Versions of shared crates come from the workspace.
@@ -245,6 +246,28 @@ These were recorded with PV's command line: `--smtp 127.0.0.1:<port> --listen 12
 
 The `pv_fake_mailpit` persona has no real counterpart: it is the program PV's test-only fake Mailpit adapter starts, `pv-fake-mailpit <smtp port> <dashboard port>`. It ignores further arguments, retries a busy port every 50 ms (tests release their port reservations just before PV starts the runtime), greets with `220 fake mailpit`, and answers `GET /ready` with `200` and anything else with `404`. Tests of a runtime that never becomes ready install the `long_running` persona as `bin/pv-fake-mailpit` instead.
 
+### RustFS 1.0.0-beta.7 (2026-10-01)
+
+These were recorded with PV's command line, `--address 127.0.0.1:<port> --console-address 127.0.0.1:<port> <data dir>`, and keys in `RUSTFS_ACCESS_KEY` and `RUSTFS_SECRET_KEY`. S3 requests were signed with SigV4 for `us-east-1`, path-style.
+
+| Interaction | Real RustFS | `rustfs` persona |
+|---|---|---|
+| `GET /health` | `200 application/json`, a readiness report | `200 application/json`, `{"ready":true}` (PV checks only the status) |
+| Unsigned request, API or console port | `403`, S3 `AccessDenied` | same, from `s3s` |
+| Create a bucket | `200` | same |
+| Create a bucket that exists | `200`, as S3 in `us-east-1`; PV's "already exists" branch never runs | same |
+| Put an object | `200`, `ETag` is the quoted MD5 of the body | same |
+| Head or get an object | `Content-Length`, `ETag`, `Last-Modified` | same |
+| Missing object | `404 NoSuchKey` | same |
+| Head a bucket | `200`; `404` when missing | same |
+| Delete a non-empty bucket | `409 BucketNotEmpty` | same |
+| Delete an object or an empty bucket | `204` | same |
+| Wrong secret key | `403 SignatureDoesNotMatch` | same, from `s3s` |
+| Data directory | buckets and `.rustfs.sys` | nothing: objects live in memory and are gone after a restart. PV creates and probes every allocation's bucket on each reconcile, so nothing it does depends on that. |
+| SIGTERM, SIGINT | exit 0 in about 0.5 s | exit 0 |
+
+The dual-target contract checks these through PV's own `aws-sdk-s3` client and `object_store` probe, against the fake and real RustFS. The daemon tests check buckets and probes the same way, through S3, instead of reading a data directory layout.
+
 ## Lints And Errors
 
 `pv-fake` opts into workspace lints. It is an application boundary, so it uses `anyhow`. Raw process, filesystem, and executable-path primitives use narrow `#[expect(..., reason = "...")]` items, as elsewhere in the repository. It uses no `unwrap`, `expect`, or `panic!`.
@@ -270,7 +293,7 @@ Each step is one pull request. Each starts by recording the relevant real artifa
 3. **Simple services**, in three pull requests:
    - **3a** (implemented): record real Redis, add the `redis-server` persona and the dual-target Managed Resource runtime contract, port the Redis installs and archive in `managed_resources/tests.rs`, and delete `redis-server.py` with its fixture contract.
    - **3b** (implemented): record real Mailpit, add the `mailpit` and `pv_fake_mailpit` personas and the `exit_after_first_http_response` setting, add the dual-target Mailpit runtime contract and a fake-only contract for PV's fake Mailpit adapter, port the Mailpit installs and archives in `managed_resources/tests.rs` and `jobs.rs` (the unready variant becomes `long_running`), and delete the four Mailpit fixtures, their fixture contracts, and the Mailpit parent-loss variant.
-   - **3c**: `rustfs`.
+   - **3c** (implemented): record real RustFS, add the `rustfs` persona on `s3s` with an in-memory store and the `rustfs_reject_credentials` setting, add the dual-target RustFS runtime contract, port the RustFS installs and archive and move the tests' bucket and probe checks to S3, and delete `rustfs.py.in`, its fixture contract and the multi-server signal contract.
 4. **SQL.** Start with the `opensrv-mysql` + `sqlx` compatibility spike, then add `postgres`, `initdb`, the unready Postgres variant, and `mysqld`.
 5. **Cleanup.**
    - Delete the remaining runtime-standing shell and Python fixtures.
@@ -292,6 +315,12 @@ For every step:
 ### Library compatibility
 
 `opensrv-mysql` was last released in February 2024 and hasn't been checked against `sqlx` 0.9's connection sequence. Step 4 starts with a spike. The fallback is today's `RecordingMysqlAdmin`, not a hand-written protocol. `pgwire` and `s3s` are actively released. `s3s` is what the real RustFS uses.
+
+`s3s` 0.15 and later require `async-trait` 0.1.92, which depends on `syn` 3, so `syn` 3 is compiled in every build, release builds included, through `object_store`. `s3s` also adds second versions of `nom`, `quick-xml` and `atoi`, and raised the locked versions of about 30 crates. `s3s-fs` was left out: it adds the `s3s-test` suite, `colored` 3 and `tracing-subscriber`, and PV needs only a handful of bucket and object operations.
+
+### First-launch scans
+
+Gatekeeper scans each new executable on its first launch, and every installed fake is a new copy. With `s3s` the debug binary grew from 16 MB to 30 MB, and 16 parallel first launches went from about 2.9 s to 4.1 s. Local runs from an app without the Developer Tools permission time out in `pv-fake`'s own contracts, which start their fakes in one burst. The fix is that permission (System Settings → Privacy & Security → Developer Tools) for the app running the tests; CI runners don't scan. If step 4's SQL crates make this worse, the heavy personas can move to their own binary.
 
 ### Stale or missing fake binary
 

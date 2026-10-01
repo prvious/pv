@@ -32,6 +32,8 @@ mod lifeline;
 mod mailpit;
 #[cfg(unix)]
 mod redis;
+#[cfg(unix)]
+mod rustfs;
 
 #[cfg(unix)]
 pub use events::{Event, EventKind};
@@ -100,6 +102,9 @@ pub struct FakeSettings {
     /// Makes a `pv_fake_mailpit` persona exit 0 once it has answered its first HTTP request, for
     /// tests of runtimes that exit after becoming ready.
     pub exit_after_first_http_response: bool,
+    /// Makes a `rustfs` persona expect a different secret key than the one it was started with,
+    /// so every signed request fails with `SignatureDoesNotMatch`, as a real key mismatch does.
+    pub rustfs_reject_credentials: bool,
 }
 
 /// Holds a fake at a known point, recording a `held` event, until a test creates `until`.
@@ -139,6 +144,9 @@ pub enum Persona {
     /// `pv-fake-mailpit <smtp port> <dashboard port>`, the program PV's test-only fake Mailpit
     /// adapter starts: the SMTP greeting and `GET /ready`.
     PvFakeMailpit,
+    /// `rustfs --address <address> --console-address <address> <data dir>`: `/health` and the S3
+    /// operations PV uses, signed with the keys from the environment.
+    Rustfs,
 }
 
 /// Entry point shared by the `pv-fake` binary and the daemon's `pv-fake` example.

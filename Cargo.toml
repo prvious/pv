@@ -28,6 +28,7 @@ publish = false
 [workspace.dependencies]
 anstyle = "1.0.14"
 anyhow = "1"
+async-trait = "0.1.92"
 aws-sdk-s3 = { version = "1.135.0", default-features = false, features = ["rustls", "rt-tokio", "http-1x"] }
 aws-smithy-http-client = { version = "1.1.13", default-features = false, features = ["default-client"] }
 assert_cmd = "2"
@@ -64,6 +65,7 @@ rustls = { version = "0.23.40", default-features = false, features = ["ring", "s
 rustls-pemfile = "2.2.0"
 rustix = { version = "1", features = ["fs", "process"] }
 raunch = "1.0.1"
+s3s = "0.17.0"
 security-framework = "3.7.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

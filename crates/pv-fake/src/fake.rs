@@ -9,7 +9,7 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use crate::events::{EventKind, EventLog};
 use crate::{
     BUILD_ID, DESCENDANT_FLAG, Persona, Scenario, ScenarioFile, events_path, gateway, lifeline,
-    mailpit, redis, scenario_path,
+    mailpit, redis, rustfs, scenario_path,
 };
 
 #[expect(
@@ -120,6 +120,7 @@ async fn start_persona(
         Persona::RedisServer => redis::start(argv).await,
         Persona::Mailpit => mailpit::start(argv).await,
         Persona::PvFakeMailpit => mailpit::start_pv_fake(argv, &scenario.settings, events).await,
+        Persona::Rustfs => rustfs::start(argv, &scenario.settings).await,
     }
 }
 

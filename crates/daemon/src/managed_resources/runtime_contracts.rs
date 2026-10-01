@@ -10,14 +10,15 @@ use std::net::{Ipv4Addr, TcpListener};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
+use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::{Utf8TempDir, tempdir};
 use pv_fake::Persona;
 use resources::{
     ManagedResourceCommands, ManagedResourceInstall, ResourceAdapter, TargetPlatform,
-    TrackSelector, mailpit_adapter, redis_adapter,
+    TrackSelector, mailpit_adapter, redis_adapter, rustfs_adapter,
 };
-use state::PvPaths;
+use state::{EnvContextValues, PvPaths};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
@@ -116,6 +117,31 @@ async fn pv_fake_mailpit_satisfies_the_fake_adapter_runtime_contract() -> Result
     .await
 }
 
+#[tokio::test]
+async fn fake_rustfs_satisfies_the_runtime_contract() -> Result<()> {
+    let (_tempdir, paths) = contract_paths()?;
+    let artifact_path = fake_artifact(&paths, "rustfs", "1", "bin/rustfs", Persona::Rustfs)?;
+
+    rustfs_contract(&paths, &artifact_path, "1").await
+}
+
+#[tokio::test]
+#[ignore = "requires PV_E2E_REAL_ARTIFACTS=1 and PV_E2E_ARTIFACT_MANIFEST_URL"]
+async fn real_rustfs_satisfies_the_runtime_contract() -> Result<()> {
+    let Some(manifest_url) = real_artifact_manifest_url()? else {
+        return Ok(());
+    };
+    let (_tempdir, paths) = contract_paths()?;
+    let rustfs = install_real_artifact(&paths, manifest_url, &rustfs_adapter()?)?;
+
+    rustfs_contract(
+        &paths,
+        rustfs.current_artifact_path(),
+        rustfs.track().as_str(),
+    )
+    .await
+}
+
 /// PV's Redis runtime: start it from the adapter's rendered config and wait for its readiness
 /// check, which runs the `redis` crate's connection handshake and `PING`, then stop it.
 async fn redis_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) -> Result<()> {
@@ -154,6 +180,97 @@ async fn mailpit_contract(
         smtp_greets(smtp_port),
     )
     .await
+}
+
+/// PV's RustFS runtime, started with the keys PV generates: once `/health` answers, PV's allocation
+/// step works, and the S3 operations the daemon tests use to inspect buckets behave as RustFS's do.
+async fn rustfs_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) -> Result<()> {
+    let [api_port, console_port] = available_ports()?;
+    let adapter = super::rustfs::RustfsRuntimeAdapter;
+    let mut context = runtime_context(
+        paths,
+        "rustfs",
+        track,
+        artifact_path,
+        [("api", api_port), ("console", console_port)],
+    );
+    // Fix the generated keys up front, so the check signs with the keys the runtime gets.
+    context.env = adapter.resource_env(&context)?;
+    let env = context.env.clone();
+
+    run_contract(paths, &adapter, context, rustfs_serves_allocations(env)).await
+}
+
+async fn rustfs_serves_allocations(env: EnvContextValues) -> Result<()> {
+    let bucket = "pv-contract";
+    let client = super::rustfs::s3_client(&env)?;
+    // PV's allocation step, run twice as reconciliation does for a Ready allocation.
+    for _attempt in 0..2 {
+        super::rustfs::create_bucket(&client, bucket).await?;
+        super::rustfs::verify_object_operations(&env, bucket).await?;
+    }
+    let probe = client
+        .get_object()
+        .bucket(bucket)
+        .key(super::rustfs::PROBE_OBJECT)
+        .send()
+        .await?
+        .body
+        .collect()
+        .await?
+        .into_bytes();
+    let outcomes = [
+        s3_error_code(client.delete_bucket().bucket(bucket).send().await),
+        s3_error_code(
+            client
+                .delete_object()
+                .bucket(bucket)
+                .key(super::rustfs::PROBE_OBJECT)
+                .send()
+                .await,
+        ),
+        s3_error_code(client.delete_bucket().bucket(bucket).send().await),
+        s3_error_code(client.head_bucket().bucket(bucket).send().await),
+    ];
+    let mut wrong_keys = env.clone();
+    wrong_keys.insert("secret_key".to_owned(), "not-the-secret-key".to_owned());
+    let rejected = s3_error_code(
+        super::rustfs::s3_client(&wrong_keys)?
+            .create_bucket()
+            .bucket("pv-rejected")
+            .send()
+            .await,
+    );
+
+    ensure!(
+        probe == super::rustfs::PROBE_CONTENT.as_bytes(),
+        "probe read back as {probe:?}"
+    );
+    ensure!(
+        outcomes
+            == [
+                Some("BucketNotEmpty".to_owned()),
+                None,
+                None,
+                Some("NotFound".to_owned())
+            ],
+        "bucket operations failed with {outcomes:?}"
+    );
+    ensure!(
+        rejected.as_deref() == Some("SignatureDoesNotMatch"),
+        "wrong keys failed with {rejected:?}"
+    );
+
+    Ok(())
+}
+
+/// The S3 error code a request failed with, or `None` if it succeeded.
+fn s3_error_code<Output, Error: ProvideErrorMetadata, Response>(
+    result: Result<Output, SdkError<Error, Response>>,
+) -> Option<String> {
+    result
+        .err()
+        .map(|error| error.code().unwrap_or("<no code>").to_owned())
 }
 
 async fn smtp_greets(port: u16) -> Result<()> {

@@ -20,6 +20,8 @@ use crate::{
     reconciliation::{ReconciliationQueue, ReconciliationScope},
 };
 use anyhow::{Context, Result, anyhow, bail};
+use aws_sdk_s3::error::ProvideErrorMetadata;
+use aws_sdk_s3::operation::head_bucket::HeadBucketError;
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
@@ -94,11 +96,6 @@ const POSTGRES_UNREADY_SCRIPT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/managed-resources/postgres-unready.sh"
 ));
-const RUSTFS_SCRIPT_TEMPLATE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/rustfs.py.in"
-));
-const RUSTFS_REJECT_S3_SENTINEL: &str = "__PV_REJECT_S3__";
 const EMPTY_ARTIFACT_MANIFEST: &str = r#"
 {
   "schema_version": 1,
@@ -754,7 +751,6 @@ struct RuntimeFilePresence {
 
 #[derive(Debug, PartialEq)]
 struct RustfsRuntimeCredentialSnapshot {
-    process_env: BTreeMap<String, String>,
     recorded_access_key: String,
     recorded_secret_key: String,
     runtime_metadata: RustfsRuntimeMetadataSnapshot,
@@ -4034,7 +4030,7 @@ async fn rustfs_reconciliation_creates_bucket_and_renders_env() -> Result<()> {
         (
             read_dotenv(&project)?,
             database.managed_resource_track("rustfs", RUSTFS_TRACK)?,
-            read_optional_rustfs_probe(&paths, RUSTFS_TRACK, &allocation.generated_name)?,
+            read_optional_rustfs_probe(&paths, &allocation.generated_name).await?,
             allocations,
             database.assigned_ports()?,
             database.runtime_observed_states()?,
@@ -4124,10 +4120,10 @@ async fn rustfs_ready_allocation_reconciliation_repairs_missing_bucket_and_prese
 
         (allocation.generated_name.clone(), allocation.env.clone())
     };
-    state::fs::delete_dir_all(&rustfs_bucket_path(&paths, RUSTFS_TRACK, &bucket))?;
+    delete_rustfs_bucket(&paths, &bucket).await?;
 
     reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
-    let repaired_probe = read_optional_rustfs_probe(&paths, RUSTFS_TRACK, &bucket)?;
+    let repaired_probe = read_optional_rustfs_probe(&paths, &bucket).await?;
     let snapshot = {
         let database = Database::open(&paths)?;
         let allocations = database.resource_allocations(&project.id, "rustfs")?;
@@ -4148,7 +4144,7 @@ async fn rustfs_ready_allocation_reconciliation_repairs_missing_bucket_and_prese
         (
             read_dotenv(&project)?,
             allocations,
-            rustfs_bucket_exists(&paths, RUSTFS_TRACK, &bucket)?,
+            rustfs_bucket_exists(&paths, &bucket).await?,
             repaired_probe,
         )
     };
@@ -4540,8 +4536,9 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
                 )
             })?;
             stop_recorded_rustfs_runtime(&paths).await?;
+            // The fake keeps buckets in memory, so the restarted runtime has lost the bucket and
+            // this reconciliation must repair it.
             seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
-            state::fs::delete_dir_all(&rustfs_bucket_path(&paths, RUSTFS_TRACK, &bucket))?;
             let before_ids = database.recent_jobs()?.into_iter().map(|job| job.id).collect();
             crate::jobs::run_background_reconciliation_job(paths.clone(), ReconciliationQueue::new(),
                 ReconciliationScope::resource("rustfs", RUSTFS_TRACK)?, Some(&catalog)).await?;
@@ -4552,7 +4549,7 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
                 expected.updated_at.clone_from(&actual.updated_at);
             }
             phase_checks.extend([
-                ("real repair preserves allocation identity and env", repaired.0 == repaired_allocations && read_optional_rustfs_probe(&paths, RUSTFS_TRACK, &bucket)? == Some("pv rustfs probe".to_owned())),
+                ("real repair preserves allocation identity and env", repaired.0 == repaired_allocations && read_optional_rustfs_probe(&paths, &bucket).await? == Some("pv rustfs probe".to_owned())),
                 ("real repair renders pending env change", repaired.1 == initial.1.replace("REVISION=initial", "REVISION=changed") && repaired.2.as_ref().is_some_and(|state| state.status == ProjectEnvObservedStatus::Rendered)),
                 ("real repair covers both verified Projects", repaired_job.0 == JobStatus::Succeeded && repaired_job.2 == BTreeSet::from([
                     ("resource".to_owned(), "rustfs:1.0".to_owned()), ("project".to_owned(), healthy.id.clone()), ("project".to_owned(), broken.id.clone()),
@@ -4592,8 +4589,9 @@ async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -
     reserve_available_rustfs_ports(&paths)?;
 
     reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
+    // The fake checks every request's signature against the keys it was started with, so the
+    // allocation succeeding proves PV passed the runtime its recorded keys.
     let first_snapshot = rustfs_runtime_credential_snapshot(&paths, &project.id)?;
-    assert_process_credentials_match_recorded_env(&first_snapshot)?;
     assert_runtime_metadata_omits_credentials(&first_snapshot)?;
     assert_rustfs_runtime_uses_supported_arguments(&first_snapshot);
 
@@ -4604,7 +4602,6 @@ async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -
 "#,
     )?;
     reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
-    delete_optional_file(&rustfs_process_env_path(&paths, RUSTFS_TRACK))?;
     reserve_available_rustfs_ports(&paths)?;
 
     write_project_config(
@@ -4627,7 +4624,6 @@ async fn rustfs_runtime_receives_private_credentials_without_persisting_them() -
     )?;
     reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
     let restarted_snapshot = rustfs_runtime_credential_snapshot(&paths, &project.id)?;
-    assert_process_credentials_match_recorded_env(&restarted_snapshot)?;
     assert_runtime_metadata_omits_credentials(&restarted_snapshot)?;
     assert_rustfs_runtime_uses_supported_arguments(&restarted_snapshot);
     assert_eq!(
@@ -6909,19 +6905,25 @@ fn bind_loopback_ports(ports: [u16; 2]) -> std::io::Result<[TcpListener; 2]> {
     Ok([api_listener, console_listener])
 }
 
-fn rustfs_bucket_path(paths: &PvPaths, track: &str, bucket: &str) -> camino::Utf8PathBuf {
-    paths
-        .resource_data_dir("rustfs", track)
-        .join("buckets")
-        .join(bucket)
+/// An S3 client signed with the keys PV recorded for the RustFS track.
+fn rustfs_client(paths: &PvPaths) -> Result<aws_sdk_s3::Client> {
+    let track = Database::open(paths)?.managed_resource_track("rustfs", RUSTFS_TRACK)?;
+
+    Ok(super::rustfs::s3_client(&track.env)?)
 }
 
-fn rustfs_probe_path(paths: &PvPaths, track: &str, bucket: &str) -> camino::Utf8PathBuf {
-    rustfs_bucket_path(paths, track, bucket).join("__pv_rustfs_probe")
-}
+/// Removes a bucket and its probe behind PV's back.
+async fn delete_rustfs_bucket(paths: &PvPaths, bucket: &str) -> Result<()> {
+    let client = rustfs_client(paths)?;
+    client
+        .delete_object()
+        .bucket(bucket)
+        .key(super::rustfs::PROBE_OBJECT)
+        .send()
+        .await?;
+    client.delete_bucket().bucket(bucket).send().await?;
 
-fn rustfs_process_env_path(paths: &PvPaths, track: &str) -> camino::Utf8PathBuf {
-    paths.resource_data_dir("rustfs", track).join("process-env")
+    Ok(())
 }
 
 async fn stop_recorded_rustfs_runtime(paths: &PvPaths) -> Result<()> {
@@ -6946,22 +6948,37 @@ async fn stop_recorded_redis_runtime(paths: &PvPaths) -> Result<()> {
     Ok(())
 }
 
-fn rustfs_bucket_exists(paths: &PvPaths, track: &str, bucket: &str) -> Result<bool> {
-    path_exists(&rustfs_bucket_path(paths, track, bucket))
+async fn rustfs_bucket_exists(paths: &PvPaths, bucket: &str) -> Result<bool> {
+    match rustfs_client(paths)?
+        .head_bucket()
+        .bucket(bucket)
+        .send()
+        .await
+    {
+        Ok(_output) => Ok(true),
+        Err(error)
+            if error
+                .as_service_error()
+                .is_some_and(HeadBucketError::is_not_found) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
-fn read_optional_rustfs_probe(
-    paths: &PvPaths,
-    track: &str,
-    bucket: &str,
-) -> Result<Option<String>> {
-    match state::fs::read_to_string(&rustfs_probe_path(paths, track, bucket)) {
-        Ok(content) => Ok(Some(content)),
-        Err(StateError::Filesystem { source, .. })
-            if source.kind() == std::io::ErrorKind::NotFound =>
-        {
-            Ok(None)
-        }
+async fn read_optional_rustfs_probe(paths: &PvPaths, bucket: &str) -> Result<Option<String>> {
+    let probe = rustfs_client(paths)?
+        .get_object()
+        .bucket(bucket)
+        .key(super::rustfs::PROBE_OBJECT)
+        .send()
+        .await;
+    match probe {
+        Ok(output) => Ok(Some(String::from_utf8(
+            output.body.collect().await?.to_vec(),
+        )?)),
+        Err(error) if matches!(error.code(), Some("NoSuchKey" | "NoSuchBucket")) => Ok(None),
         Err(error) => Err(error.into()),
     }
 }
@@ -6989,7 +7006,6 @@ fn rustfs_runtime_credential_snapshot(
 ) -> Result<RustfsRuntimeCredentialSnapshot> {
     let database = Database::open(paths)?;
     let track = database.managed_resource_track("rustfs", RUSTFS_TRACK)?;
-    let process_env = read_rustfs_process_env(paths, RUSTFS_TRACK)?;
     let runtime_metadata_source =
         state::fs::read_to_string(&paths.resource_runtime_metadata("rustfs", RUSTFS_TRACK))?;
     let recorded_access_key = required_env_value(&track.env, "access_key")?;
@@ -7005,25 +7021,10 @@ fn rustfs_runtime_credential_snapshot(
     let runtime_metadata = serde_json::from_str(&runtime_metadata_source)?;
 
     Ok(RustfsRuntimeCredentialSnapshot {
-        process_env,
         recorded_access_key,
         recorded_secret_key,
         runtime_metadata,
     })
-}
-
-fn read_rustfs_process_env(paths: &PvPaths, track: &str) -> Result<BTreeMap<String, String>> {
-    let content = state::fs::read_to_string(&rustfs_process_env_path(paths, track))?;
-    let mut env = BTreeMap::new();
-
-    for line in content.lines().filter(|line| !line.is_empty()) {
-        let Some((key, value)) = line.split_once('=') else {
-            bail!("invalid RustFS process env probe line `{line}`");
-        };
-        env.insert(key.to_string(), value.to_string());
-    }
-
-    Ok(env)
 }
 
 fn required_env_value(env: &BTreeMap<String, String>, key: &str) -> Result<String> {
@@ -7032,22 +7033,6 @@ fn required_env_value(env: &BTreeMap<String, String>, key: &str) -> Result<Strin
     };
 
     Ok(value.clone())
-}
-
-fn assert_process_credentials_match_recorded_env(
-    snapshot: &RustfsRuntimeCredentialSnapshot,
-) -> Result<()> {
-    assert_eq!(
-        required_env_value(&snapshot.process_env, "RUSTFS_ACCESS_KEY")?,
-        snapshot.recorded_access_key,
-        "RustFS child process access key should match recorded resource env"
-    );
-    assert_eq!(
-        required_env_value(&snapshot.process_env, "RUSTFS_SECRET_KEY")?,
-        snapshot.recorded_secret_key,
-        "RustFS child process secret key should match recorded resource env"
-    );
-    Ok(())
 }
 
 fn assert_runtime_metadata_omits_credentials(
@@ -7085,18 +7070,6 @@ fn assert_rustfs_runtime_uses_supported_arguments(snapshot: &RustfsRuntimeCreden
             .any(|argument| argument == "server"),
         "RustFS should not receive the unsupported `server` subcommand"
     );
-}
-
-fn delete_optional_file(path: &Utf8Path) -> Result<()> {
-    match state::fs::delete_file(path) {
-        Ok(()) => Ok(()),
-        Err(StateError::Filesystem { source, .. })
-            if source.kind() == std::io::ErrorKind::NotFound =>
-        {
-            Ok(())
-        }
-        Err(error) => Err(error.into()),
-    }
 }
 
 fn seed_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<()> {
@@ -7518,29 +7491,33 @@ fn seed_redis_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
 }
 
 fn seed_rustfs_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
-    let script = rustfs_script()?;
-    seed_rustfs_fixture_artifact_with_script(paths, track, &script)
+    seed_rustfs_fixture_artifact_with(paths, track, FakeSettings::default())
 }
 
+/// A RustFS that refuses PV's keys, as a real one started with other keys does.
 fn seed_auth_rejecting_rustfs_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
-    let script = auth_rejecting_rustfs_script()?;
-    seed_rustfs_fixture_artifact_with_script(paths, track, &script)
+    seed_rustfs_fixture_artifact_with(
+        paths,
+        track,
+        FakeSettings {
+            rustfs_reject_credentials: true,
+            ..FakeSettings::default()
+        },
+    )
 }
 
-fn seed_rustfs_fixture_artifact_with_script(
+fn seed_rustfs_fixture_artifact_with(
     paths: &PvPaths,
     track: &str,
-    script: &str,
+    settings: FakeSettings,
 ) -> Result<()> {
     let release_path = paths
         .resources()
         .join("rustfs")
         .join(track)
         .join(format!("releases/{RUSTFS_ARTIFACT_VERSION}"));
-    let executable = release_path.join("bin/rustfs");
 
-    state::fs::write_sensitive_file(&executable, script)?;
-    set_executable(&executable)?;
+    pv_fake::install_with_settings(&release_path.join("bin/rustfs"), Persona::Rustfs, settings)?;
     let mut database = Database::open(paths)?;
     database.record_managed_resource_track_installed(
         "rustfs",
@@ -7752,11 +7729,8 @@ fn create_rustfs_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<
     let archive_parent = tempdir.join("rustfs-archive-root");
     let root_name = format!("rustfs-{RUSTFS_ARTIFACT_VERSION}");
     let root = archive_parent.join(&root_name);
-    let executable = root.join("bin/rustfs");
-
-    let script = rustfs_script()?;
-    state::fs::write_sensitive_file(&executable, &script)?;
-    set_executable(&executable)?;
+    // The archive carries the fake and its scenario file, which PV extracts next to each other.
+    pv_fake::install(&root.join("bin/rustfs"), Persona::Rustfs)?;
     run_fixture_command(
         "/usr/bin/tar",
         &[
@@ -8574,33 +8548,6 @@ async fn acquire_test_gate(gate: Arc<Semaphore>) -> Result<(), crate::DaemonErro
     permit.forget();
 
     Ok(())
-}
-
-fn rustfs_script() -> Result<String> {
-    rustfs_script_source(false)
-}
-
-fn auth_rejecting_rustfs_script() -> Result<String> {
-    rustfs_script_source(true)
-}
-
-fn rustfs_script_source(reject_s3: bool) -> Result<String> {
-    let occurrence_count = RUSTFS_SCRIPT_TEMPLATE
-        .matches(RUSTFS_REJECT_S3_SENTINEL)
-        .count();
-    if occurrence_count != 1 {
-        bail!(
-            "RustFS fixture must contain exactly one {RUSTFS_REJECT_S3_SENTINEL} sentinel; found {occurrence_count}"
-        );
-    }
-
-    let replacement = if reject_s3 { "True" } else { "False" };
-    let script = RUSTFS_SCRIPT_TEMPLATE.replacen(RUSTFS_REJECT_S3_SENTINEL, replacement, 1);
-    if script.contains(RUSTFS_REJECT_S3_SENTINEL) {
-        bail!("RustFS fixture still contains {RUSTFS_REJECT_S3_SENTINEL} after rendering");
-    }
-
-    Ok(script)
 }
 
 fn assert_with_normalized_postgres_runtime(

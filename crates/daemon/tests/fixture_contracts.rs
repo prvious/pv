@@ -18,7 +18,6 @@ use rustix::process::{
     test_kill_process_group,
 };
 use state::StateError;
-use state::fs::ensure_user_dir;
 
 const FIXTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const FIXTURE_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -39,11 +38,6 @@ const POSTGRES_UNREADY_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/managed-resources/postgres-unready.sh"
 ));
-const RUSTFS_FIXTURE_TEMPLATE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/rustfs.py.in"
-));
-const RUSTFS_REJECT_S3_SENTINEL: &str = "__PV_REJECT_S3__";
 const HANGING_FIXTURE: &str = r#"#!/usr/bin/env python3
 import signal
 
@@ -115,15 +109,6 @@ def serve_forever(self, *args, **kwargs):
 
 socketserver.BaseServer.serve_forever = serve_forever
 "#;
-const FAILING_FQDN_SITECUSTOMIZE: &str = r#"import socket
-
-
-def getfqdn(_name=""):
-    raise RuntimeError("fixture attempted an FQDN lookup")
-
-
-socket.getfqdn = getfqdn
-"#;
 const PARENT_LOSS_PS_PROBE: &str = r#"#!/bin/sh
 /bin/ps "$@"
 status=$?
@@ -169,25 +154,6 @@ impl SingleServerFixture {
         match self {
             Self::Mysql => MYSQL_FIXTURE,
             Self::Postgres => POSTGRES_FIXTURE,
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum MultiServerFixture {
-    Rustfs,
-}
-
-impl MultiServerFixture {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Rustfs => "RustFS",
-        }
-    }
-
-    fn executable_name(self) -> &'static str {
-        match self {
-            Self::Rustfs => "rustfs",
         }
     }
 }
@@ -487,15 +453,6 @@ fn single_server_fixture_exits_after_signal_status() -> Result<()> {
 }
 
 #[test]
-fn multi_server_fixture_avoids_fqdn_lookup_and_exits_after_signal_status() -> Result<()> {
-    for signal in [Signal::TERM, Signal::INT] {
-        assert_multi_server_fixture_exits_after_signal(MultiServerFixture::Rustfs, signal)?;
-    }
-
-    Ok(())
-}
-
-#[test]
 fn long_running_fixtures_exit_when_their_test_parent_is_lost() -> Result<()> {
     if !cfg!(target_os = "macos") {
         return Ok(());
@@ -743,46 +700,6 @@ fn postgres_fixture_cli_preserves_shell_contract() -> Result<()> {
         tempdir.path(),
         "postgres_fixture_cli_preserves_shell_contract",
         (unknown_argument, last_data_dir_wins),
-    )
-}
-
-#[test]
-fn rustfs_fixture_cli_preserves_shell_contract() -> Result<()> {
-    let tempdir = tempdir()?;
-    let fixture = tempdir.path().join("rustfs");
-    let first_data_dir = tempdir.path().join("first-rustfs-data");
-    let selected_data_dir = tempdir.path().join("selected-rustfs-data");
-    let rendered = render_rustfs_fixture(false)?;
-
-    materialize_fixture(&fixture, &rendered)?;
-    let output = run_fixture(
-        &fixture,
-        &[
-            first_data_dir.as_str(),
-            "--future-option",
-            selected_data_dir.as_str(),
-            "--address",
-            "invalid-api-address",
-            "--console-address",
-            "invalid-console-address",
-        ],
-        tempdir.path(),
-    )?;
-
-    assert_fixture_snapshot(
-        tempdir.path(),
-        "rustfs_fixture_cli_preserves_shell_contract",
-        (
-            output.code,
-            output.stdout,
-            output.stderr.contains("ValueError"),
-            path_exists(&first_data_dir)?,
-            path_exists(&selected_data_dir.join("buckets"))?,
-            path_exists(&selected_data_dir.join("process-env"))?,
-            path_exists(&tempdir.path().join("invalid-api-address"))?,
-            path_exists(&tempdir.path().join("invalid-console-address"))?,
-            rendered.contains(RUSTFS_REJECT_S3_SENTINEL),
-        ),
     )
 }
 
@@ -1110,25 +1027,6 @@ fn current_test_binary() -> Result<OsString> {
         .into_os_string())
 }
 
-fn render_rustfs_fixture(reject_s3: bool) -> Result<String> {
-    let occurrence_count = RUSTFS_FIXTURE_TEMPLATE
-        .matches(RUSTFS_REJECT_S3_SENTINEL)
-        .count();
-    if occurrence_count != 1 {
-        bail!(
-            "RustFS fixture must contain exactly one {RUSTFS_REJECT_S3_SENTINEL} sentinel; found {occurrence_count}"
-        );
-    }
-
-    let replacement = if reject_s3 { "True" } else { "False" };
-    let rendered = RUSTFS_FIXTURE_TEMPLATE.replacen(RUSTFS_REJECT_S3_SENTINEL, replacement, 1);
-    if rendered.contains(RUSTFS_REJECT_S3_SENTINEL) {
-        bail!("RustFS fixture still contains {RUSTFS_REJECT_S3_SENTINEL} after rendering");
-    }
-
-    Ok(rendered)
-}
-
 fn assert_single_server_fixture_exits_after_signal(
     fixture: SingleServerFixture,
     signal: Signal,
@@ -1189,87 +1087,6 @@ fn assert_single_server_fixture_exits_after_signal(
         if readiness != [true] {
             bail!(
                 "{} fixture did not become ready on port {port}",
-                fixture.name()
-            );
-        }
-
-        kill_process_group(process_group, signal)?;
-        let status =
-            wait_for_child_status(&mut child, FIXTURE_SHUTDOWN_TIMEOUT)?.ok_or_else(|| {
-                anyhow!(
-                    "{} fixture did not exit after signal {}",
-                    fixture.name(),
-                    signal.as_raw()
-                )
-            })?;
-        if status.signal() != Some(signal.as_raw()) {
-            bail!(
-                "{} fixture exited with {status} after signal {}; expected signal status {}",
-                fixture.name(),
-                signal.as_raw(),
-                signal.as_raw()
-            );
-        }
-
-        Ok::<(), anyhow::Error>(())
-    })();
-    let cleanup = kill_process_group_and_reap_child(&mut child, process_group);
-
-    if let Err(error) = lifecycle {
-        cleanup?;
-        return Err(error);
-    }
-    cleanup
-}
-
-fn assert_multi_server_fixture_exits_after_signal(
-    fixture: MultiServerFixture,
-    signal: Signal,
-) -> Result<()> {
-    let tempdir = tempdir()?;
-    let executable = tempdir.path().join(fixture.executable_name());
-    let first_port_reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-    let first_port = first_port_reservation.local_addr()?.port();
-    let second_port_reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-    let second_port = second_port_reservation.local_addr()?.port();
-    let first_address = format!("127.0.0.1:{first_port}");
-    let second_address = format!("127.0.0.1:{second_port}");
-    let sitecustomize = tempdir.path().join("sitecustomize.py");
-    let source = match fixture {
-        MultiServerFixture::Rustfs => render_rustfs_fixture(false)?,
-    };
-
-    state::fs::write_sensitive_file(&sitecustomize, FAILING_FQDN_SITECUSTOMIZE)?;
-    materialize_fixture(&executable, &source)?;
-    let mut command = FixtureCommand::new(executable.as_std_path());
-    command
-        .current_dir(tempdir.path())
-        .env("PYTHONPATH", tempdir.path());
-    match fixture {
-        MultiServerFixture::Rustfs => {
-            let data_dir = tempdir.path().join("rustfs-data");
-            ensure_user_dir(&data_dir)?;
-            command.args([
-                "--address",
-                first_address.as_str(),
-                "--console-address",
-                second_address.as_str(),
-                data_dir.as_str(),
-            ]);
-        }
-    }
-    drop(first_port_reservation);
-    drop(second_port_reservation);
-
-    command.process_group(0);
-    let mut child = command.spawn()?;
-    let process_group = process_pid(child.id())?;
-    let lifecycle = (|| {
-        let readiness =
-            wait_for_loopback_ports([first_port, second_port], FIXTURE_COMMAND_TIMEOUT)?;
-        if readiness != [true, true] {
-            bail!(
-                "{} fixture did not become ready on ports {first_port} and {second_port}",
                 fixture.name()
             );
         }

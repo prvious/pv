@@ -790,6 +790,7 @@ fn mailpit_fake_greets_and_serves_the_dashboard_routes_as_recorded() -> Result<(
             dashboard_port,
             &tempdir.path().join("data/mailpit.db"),
         ),
+        &[],
     )?;
 
     let greeting = smtp_greeting(smtp_port)?;
@@ -835,6 +836,7 @@ fn mailpit_fake_fails_as_mailpit_does() -> Result<()> {
             Persona::Mailpit,
             FakeSettings::default(),
             arguments,
+            &[],
         )?;
         let status = wait_for_exit(&mut process)?;
         outcomes.push((
@@ -882,6 +884,7 @@ fn pv_fake_mailpit_waits_for_busy_ports_and_answers_ready() -> Result<()> {
             dashboard_port.to_string(),
             "ignored-extra".to_owned(),
         ],
+        &[],
     )?;
 
     sleep(Duration::from_millis(250));
@@ -917,6 +920,7 @@ fn pv_fake_mailpit_can_exit_after_its_first_response() -> Result<()> {
             ..FakeSettings::default()
         },
         &[smtp_port.to_string(), dashboard_port.to_string()],
+        &[],
     )?;
 
     // A connection that sends no request gets no response, so the fake keeps running.
@@ -932,6 +936,49 @@ fn pv_fake_mailpit_can_exit_after_its_first_response() -> Result<()> {
     assert_eq!(&status_line, b"HTTP/1.1 200");
     assert_eq!(status.code(), Some(0));
     assert_eq!(event_names(&fake)?, ["started", "exit 0"]);
+
+    Ok(())
+}
+
+/// The S3 operations are checked against real RustFS by the daemon's runtime contracts, which sign
+/// requests with PV's own S3 clients.
+#[test]
+fn rustfs_fake_answers_health_and_refuses_unsigned_requests() -> Result<()> {
+    let tempdir = tempdir()?;
+    let [api_port, console_port] = available_ports()?;
+    let (fake, mut process) = spawn_service(
+        tempdir.path(),
+        "rustfs",
+        Persona::Rustfs,
+        FakeSettings::default(),
+        &[
+            "--address".to_owned(),
+            format!("127.0.0.1:{api_port}"),
+            "--console-address".to_owned(),
+            format!("127.0.0.1:{console_port}"),
+            tempdir.path().join("data").to_string(),
+        ],
+        &[
+            ("RUSTFS_ACCESS_KEY", "pv-rustfs"),
+            ("RUSTFS_SECRET_KEY", "test-secret-key"),
+        ],
+    )?;
+
+    connect_with_retry(api_port)?;
+    connect_with_retry(console_port)?;
+    let health = http_get(api_port, "/health")?;
+    let unsigned = [api_port, console_port].map(|port| http_get(port, "/"));
+    signal(&process, Signal::TERM)?;
+    let status = wait_for_exit(&mut process)?;
+
+    assert_eq!(health.0, 200);
+    for response in unsigned {
+        let (status, body) = response?;
+        assert_eq!(status, 403);
+        assert!(body.contains("<Code>AccessDenied</Code>"), "{body}");
+    }
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(event_names(&fake)?, ["started", "signal SIGTERM", "exit 0"]);
 
     Ok(())
 }
@@ -958,6 +1005,7 @@ fn spawn_redis(
         Persona::RedisServer,
         FakeSettings::default(),
         &[config.to_string()],
+        &[],
     )
 }
 
@@ -977,13 +1025,14 @@ fn mailpit_arguments(smtp_port: u16, dashboard_port: u16, database: &Utf8Path) -
 }
 
 /// Installs a service persona at `<root>/bin/<executable>` and starts it in its own process
-/// group, with stderr in `<root>/stderr`.
+/// group with `environment` added, and stderr in `<root>/stderr`.
 fn spawn_service(
     root: &Utf8Path,
     executable: &str,
     persona: Persona,
     settings: FakeSettings,
     arguments: &[String],
+    environment: &[(&str, &str)],
 ) -> Result<(InstalledFake, FakeProcess)> {
     let fake = pv_fake::install_with(
         Utf8Path::new(env!("CARGO_BIN_EXE_pv-fake")),
@@ -997,6 +1046,7 @@ fn spawn_service(
     let process = FakeProcess(
         FakeCommand::new(fake.executable())
             .args(arguments)
+            .envs(environment.iter().copied())
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(state::fs::open_append_file(&root.join("stderr"))?)
