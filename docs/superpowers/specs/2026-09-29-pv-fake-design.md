@@ -61,7 +61,7 @@ Tests install a fake with `pv_fake::install(executable, persona)`. It:
 - `gateway_listeners`: `All`, `AdminOnly` (configs apply, but no HTTP or HTTPS port opens), or `Nothing` (alive, serving nothing), for tests of Gateways that never become ready.
 - `validate_pause` holds a Gateway persona's `validate` until a file exists, and `validate_exit_code` makes it exit with that code instead of checking the config.
 - `run_pause` holds a Gateway persona's `run` after its HTTP and HTTPS ports open and before its admin socket does.
-- `descendant` starts one child process in the fake's process group, as runtimes start workers. The fake starts itself again with a descendant flag and the read end of a pipe whose write end only the parent holds. The descendant inherits the lifeline, does nothing else, and exits when its parent does.
+- `descendant` starts one child process in the fake's process group, as runtimes start workers. The fake starts itself again with a descendant flag and the read end of a pipe whose write end only the parent holds. The descendant inherits the lifeline, does nothing else, and exits when its parent does. On a clean exit the parent closes the pipe and reaps the descendant first, so no zombie is left behind where nothing reaps orphans, as in some Linux containers.
 
 A paused fake records `held` and still exits cleanly on SIGTERM or SIGINT: signals are watched through startup, not only once it serves.
 

@@ -1,5 +1,5 @@
 use std::os::fd::{AsRawFd, OwnedFd};
-use std::process::{ExitCode, Stdio};
+use std::process::{Child, ExitCode, Stdio};
 
 use anyhow::{Context, Result, anyhow, bail};
 use camino::Utf8PathBuf;
@@ -82,8 +82,7 @@ async fn run_persona(scenario: Scenario, argv: Vec<String>, events: EventLog) ->
         argv: argv.clone(),
         lifeline_armed,
     })?;
-    // Held for this process's lifetime: the descendant exits once it closes.
-    let _descendant_pipe = if scenario.settings.descendant {
+    let descendant = if scenario.settings.descendant {
         Some(spawn_descendant(&argv, &events)?)
     } else {
         None
@@ -99,6 +98,9 @@ async fn run_persona(scenario: Scenario, argv: Vec<String>, events: EventLog) ->
         Ok(None) => record_signal(signals.next().await, &events)?,
         Err(received) => record_signal(received, &events)?,
     };
+    if let Some(descendant) = descendant {
+        descendant.stop()?;
+    }
     events.record(EventKind::Exit { code })?;
 
     Ok(ExitCode::from(code))
@@ -126,9 +128,26 @@ fn record_signal(received: &str, events: &EventLog) -> Result<u8> {
     Ok(0)
 }
 
+/// A descendant this fake started, with the write end of the pipe it watches.
+struct Descendant {
+    process: Child,
+    pipe: OwnedFd,
+}
+
+impl Descendant {
+    /// Closes the pipe, which makes the descendant exit, and reaps it, so it doesn't linger as a
+    /// zombie where nothing reaps orphans.
+    fn stop(mut self) -> Result<()> {
+        drop(self.pipe);
+        self.process.wait()?;
+
+        Ok(())
+    }
+}
+
 /// Starts this fake again as a descendant in its process group. The descendant watches the read
 /// end of a pipe whose write end only this process holds, so it exits when this process does.
-fn spawn_descendant(argv: &[String], events: &EventLog) -> Result<OwnedFd> {
+fn spawn_descendant(argv: &[String], events: &EventLog) -> Result<Descendant> {
     let Some(executable) = argv.first() else {
         bail!("started without an argv[0]");
     };
@@ -136,16 +155,19 @@ fn spawn_descendant(argv: &[String], events: &EventLog) -> Result<OwnedFd> {
     // ponytail: close-on-exec lands one syscall late, as for the lifeline; nothing else in this
     // process spawns, so no other child can inherit the write end in between.
     fcntl_setfd(&write, FdFlags::CLOEXEC)?;
-    let descendant = DescendantCommand::new(executable)
+    let process = DescendantCommand::new(executable)
         .args([DESCENDANT_FLAG, &read.as_raw_fd().to_string()])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .spawn()?;
     events.record(EventKind::DescendantSpawned {
-        descendant_pid: i32::try_from(descendant.id())?,
+        descendant_pid: i32::try_from(process.id())?,
     })?;
 
-    Ok(write)
+    Ok(Descendant {
+        process,
+        pipe: write,
+    })
 }
 
 /// A descendant stays alive, doing nothing, until its parent fake or the installing test process

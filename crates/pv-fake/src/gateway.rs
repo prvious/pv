@@ -495,7 +495,7 @@ impl Runtime {
             .request(&Method::GET, "/config/", control.status, 0)?;
         self.hold_readiness().await;
         if let Some(gate) = &control.gate {
-            wait_for_path(gate).await;
+            wait_for_path(gate).await?;
         }
 
         Ok(response(status, "application/json", "{}\n"))
@@ -547,7 +547,7 @@ impl Runtime {
         source: &str,
     ) -> Result<Response<Full<Bytes>>> {
         if let Some(gate) = &control.gate {
-            wait_for_path(gate).await;
+            wait_for_path(gate).await?;
         }
         let (applied, adapt_error) = match adapted {
             Ok((config, plan)) if control.apply => (
@@ -670,15 +670,17 @@ async fn hold(pause: &Pause, events: &EventLog) -> Result<()> {
     events.record(EventKind::Held {
         until: pause.until.clone(),
     })?;
-    wait_for_path(&pause.until).await;
+    wait_for_path(&pause.until).await?;
 
     Ok(())
 }
 
-async fn wait_for_path(path: &Utf8Path) {
-    while !state::fs::path_entry_exists(path).unwrap_or(false) {
+async fn wait_for_path(path: &Utf8Path) -> Result<()> {
+    while !state::fs::path_entry_exists(path)? {
         tokio::time::sleep(GATE_POLL_INTERVAL).await;
     }
+
+    Ok(())
 }
 
 /// Caddy's admin API error body.
