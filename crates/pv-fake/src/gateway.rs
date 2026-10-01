@@ -33,6 +33,7 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 use tokio_rustls::TlsAcceptor;
 
+use crate::GatewayListeners;
 use crate::events::{EventKind, EventLog};
 
 mod control;
@@ -48,7 +49,11 @@ const UNFORMATTED_WARNING: &str = r#"[{"file":"Caddyfile","line":2,"message":"Ca
 
 /// Handles PV's `caddy`/`frankenphp` command lines: `<subcommand> --config <path> --adapter
 /// caddyfile`. Returns an exit code to exit with now, or `None` once `run` is serving.
-pub(crate) async fn start(argv: &[String], events: &EventLog) -> Result<Option<u8>> {
+pub(crate) async fn start(
+    argv: &[String],
+    listeners: GatewayListeners,
+    events: &EventLog,
+) -> Result<Option<u8>> {
     let subcommand = argv.get(1).map(String::as_str);
     let Some(config_path) = option_value(argv, "--config") else {
         bail!(
@@ -61,7 +66,7 @@ pub(crate) async fn start(argv: &[String], events: &EventLog) -> Result<Option<u
     match subcommand {
         Some("validate") => Ok(Some(validate(&config_path)?)),
         Some("run") => {
-            serve(&config_path, events).await?;
+            serve(&config_path, listeners, events).await?;
             Ok(None)
         }
         _ => {
@@ -95,12 +100,19 @@ fn validate(config_path: &Utf8Path) -> Result<u8> {
     Ok(1)
 }
 
-async fn serve(config_path: &Utf8Path, events: &EventLog) -> Result<()> {
+async fn serve(
+    config_path: &Utf8Path,
+    listeners: GatewayListeners,
+    events: &EventLog,
+) -> Result<()> {
+    if listeners == GatewayListeners::Nothing {
+        return Ok(());
+    }
     let source = state::fs::read_to_string(config_path)?;
     let config = GatewayConfig::parse(&source)?;
     let plan = config.listener_plan()?;
-    let admin_socket = config
-        .admin_socket
+    let admin = config
+        .admin
         .clone()
         .ok_or_else(|| anyhow!("{config_path} has no `admin \"unix/<path>|0600\"` setting"))?;
     let runtime = Arc::new(Runtime {
@@ -109,6 +121,7 @@ async fn serve(config_path: &Utf8Path, events: &EventLog) -> Result<()> {
         readiness_gate: Utf8PathBuf::from(format!("{config_path}.readiness-gate")),
         readiness_probed: Utf8PathBuf::from(format!("{config_path}.readiness-probed")),
         readiness_failure: Utf8PathBuf::from(format!("{config_path}.readiness-fail")),
+        serves_tcp: listeners == GatewayListeners::All,
         health_body: Mutex::new(None),
         listeners: tokio::sync::Mutex::new(Listeners::default()),
     });
@@ -117,18 +130,27 @@ async fn serve(config_path: &Utf8Path, events: &EventLog) -> Result<()> {
         .apply(config, &plan, &source, false)
         .await
         .map_err(|error| anyhow!("loading initial config: {error}"))?;
-    let admin = UnixListener::bind(admin_socket.as_std_path())
-        .with_context(|| format!("binding admin socket {admin_socket}"))?;
-    state::fs::secure_sensitive_file(&admin_socket)?;
-    tokio::spawn(runtime.accept_admin(admin));
+    // As with Caddy, `admin off` runs without an admin endpoint.
+    if let Admin::Socket(admin_socket) = admin {
+        let admin = UnixListener::bind(admin_socket.as_std_path())
+            .with_context(|| format!("binding admin socket {admin_socket}"))?;
+        state::fs::secure_sensitive_file(&admin_socket)?;
+        tokio::spawn(runtime.accept_admin(admin));
+    }
 
     Ok(())
+}
+
+#[derive(Clone, Debug)]
+enum Admin {
+    Socket(Utf8PathBuf),
+    Off,
 }
 
 /// The Caddyfile settings PV renders, read line by line.
 #[derive(Debug, Default)]
 struct GatewayConfig {
-    admin_socket: Option<Utf8PathBuf>,
+    admin: Option<Admin>,
     http_port: Option<u16>,
     https_port: Option<u16>,
     ca_certificate: Option<Utf8PathBuf>,
@@ -144,7 +166,9 @@ impl GatewayConfig {
             if let Some(path) =
                 quoted_after(line, "admin \"unix/").and_then(|value| value.strip_suffix("|0600"))
             {
-                config.admin_socket = Some(Utf8PathBuf::from(path));
+                config.admin = Some(Admin::Socket(Utf8PathBuf::from(path)));
+            } else if line == "admin off" {
+                config.admin = Some(Admin::Off);
             } else if let Some(port) = line.strip_prefix("http_port ") {
                 config.http_port = Some(port.parse().with_context(|| format!("http_port {port}"))?);
             } else if let Some(port) = line.strip_prefix("https_port ") {
@@ -278,6 +302,8 @@ struct Runtime {
     readiness_gate: Utf8PathBuf,
     readiness_probed: Utf8PathBuf,
     readiness_failure: Utf8PathBuf,
+    /// `false` for [`GatewayListeners::AdminOnly`]: configs apply, but no TCP port opens.
+    serves_tcp: bool,
     /// Served only when the config has a `respond /__pv/health` line, as with real Caddy.
     health_body: Mutex<Option<String>>,
     /// Held while switching listeners, so loads apply one at a time.
@@ -296,7 +322,7 @@ impl Runtime {
         retain_listeners: bool,
     ) -> Result<(), String> {
         let mut listeners = self.listeners.lock().await;
-        let (http, https) = if retain_listeners {
+        let (http, https) = if retain_listeners || !self.serves_tcp {
             (Slot::Unchanged, Slot::Unchanged)
         } else {
             let http = match (plan.http, &listeners.http) {

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use pv_fake::{EventKind, InstalledFake, Persona, Scenario};
+use pv_fake::{EventKind, FakeSettings, GatewayListeners, InstalledFake, Persona, Scenario};
 use rustix::io::{FdFlags, fcntl_setfd};
 use rustix::process::{Pid, Signal, kill_process};
 use serde_json::json;
@@ -410,6 +410,72 @@ fn stopped_service_closes_the_http_port_and_keeps_the_admin_api() -> Result<()> 
 }
 
 #[test]
+fn admin_off_serves_http_without_an_admin_socket() -> Result<()> {
+    let tempdir = tempdir()?;
+    let [port] = available_ports()?;
+    let admin_socket = tempdir.path().join("admin.sock");
+    let config = gateway_config(&admin_socket, port, "legacy")
+        .replace(&format!("admin \"unix/{admin_socket}|0600\""), "admin off");
+    let (_fake, _process) = spawn_gateway(tempdir.path(), &config, FakeSettings::default())?;
+
+    // The admin socket would be bound before the first HTTP connection is served.
+    let serving = wait_until(|| Ok(http_get(port, "/__pv/health")?.1 == "legacy"));
+
+    serving?;
+    assert!(!state::fs::path_entry_exists(&admin_socket)?);
+
+    Ok(())
+}
+
+#[test]
+fn admin_only_listeners_accept_loads_without_opening_ports() -> Result<()> {
+    let tempdir = tempdir()?;
+    let [port, moved_port] = available_ports()?;
+    let gateway = GatewayFake::start_with(
+        tempdir.path(),
+        port,
+        FakeSettings {
+            gateway_listeners: GatewayListeners::AdminOnly,
+        },
+    )?;
+    let load = gateway.config(moved_port, "moved");
+
+    let response = gateway.admin("POST", "/load", &load)?;
+
+    assert_eq!(response, (200, UNFORMATTED_WARNING.to_owned()));
+    assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
+    assert!(TcpStream::connect(("127.0.0.1", moved_port)).is_err());
+    assert_eq!(gateway.record("fake-admin-current.bin")?, load);
+
+    Ok(())
+}
+
+#[test]
+fn listeners_set_to_nothing_stay_alive_without_serving() -> Result<()> {
+    let tempdir = tempdir()?;
+    let [port] = available_ports()?;
+    let admin_socket = tempdir.path().join("admin.sock");
+    let (fake, mut process) = spawn_gateway(
+        tempdir.path(),
+        &gateway_config(&admin_socket, port, "unused"),
+        FakeSettings {
+            gateway_listeners: GatewayListeners::Nothing,
+        },
+    )?;
+
+    wait_for_start(&fake, &mut process)?;
+    signal(&process, Signal::TERM)?;
+    let status = wait_for_exit(&mut process)?;
+
+    // The socket file outlives the fake, so its absence after exit shows it was never bound.
+    assert_eq!(status.code(), Some(0));
+    assert!(!state::fs::path_entry_exists(&admin_socket)?);
+    assert_eq!(event_names(&fake)?, ["started", "signal SIGTERM", "exit 0"]);
+
+    Ok(())
+}
+
+#[test]
 fn gateway_records_restart_with_each_process() -> Result<()> {
     let tempdir = tempdir()?;
     let [port] = available_ports()?;
@@ -434,7 +500,7 @@ fn gateway_records_restart_with_each_process() -> Result<()> {
 #[test]
 fn validate_records_each_validated_config() -> Result<()> {
     let tempdir = tempdir()?;
-    let fake = install_gateway(tempdir.path())?;
+    let fake = install_gateway(tempdir.path(), FakeSettings::default())?;
     let config_path = tempdir.path().join("config/Caddyfile");
     state::fs::write_sensitive_file(&config_path, "{\n}\n")?;
     let validate = |config_path: &Utf8Path| {
@@ -475,29 +541,18 @@ struct GatewayFake {
 
 impl GatewayFake {
     fn start(root: &Utf8Path, http_port: u16) -> Result<Self> {
-        let fake = install_gateway(root)?;
-        let config_path = root.join("config/Caddyfile");
+        Self::start_with(root, http_port, FakeSettings::default())
+    }
+
+    fn start_with(root: &Utf8Path, http_port: u16, settings: FakeSettings) -> Result<Self> {
         let admin_socket = root.join("admin.sock");
         state::fs::remove_file_if_exists(&admin_socket)?;
-        state::fs::write_sensitive_file(
-            &config_path,
+        let config_path = root.join("config/Caddyfile");
+        let (fake, mut process) = spawn_gateway(
+            root,
             &gateway_config(&admin_socket, http_port, "started"),
+            settings,
         )?;
-        let mut process = FakeProcess(
-            FakeCommand::new(fake.executable())
-                .args([
-                    "run",
-                    "--config",
-                    config_path.as_str(),
-                    "--adapter",
-                    "caddyfile",
-                ])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(state::fs::open_append_file(&root.join("caddy.stderr"))?)
-                .process_group(0)
-                .spawn()?,
-        );
         // Connecting without a request leaves no record.
         if let Err(error) = wait_until(|| Ok(UnixStream::connect(&admin_socket).is_ok())) {
             let stderr = state::fs::read_to_string(&root.join("caddy.stderr")).unwrap_or_default();
@@ -560,13 +615,42 @@ fn gateway_config(admin_socket: &Utf8Path, http_port: u16, health: &str) -> Stri
     )
 }
 
-fn install_gateway(root: &Utf8Path) -> Result<InstalledFake> {
+/// Starts `caddy run` with `config` at `<root>/config/Caddyfile`.
+fn spawn_gateway(
+    root: &Utf8Path,
+    config: &str,
+    settings: FakeSettings,
+) -> Result<(InstalledFake, FakeProcess)> {
+    let fake = install_gateway(root, settings)?;
+    let config_path = root.join("config/Caddyfile");
+    state::fs::write_sensitive_file(&config_path, config)?;
+    let process = FakeProcess(
+        FakeCommand::new(fake.executable())
+            .args([
+                "run",
+                "--config",
+                config_path.as_str(),
+                "--adapter",
+                "caddyfile",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(state::fs::open_append_file(&root.join("caddy.stderr"))?)
+            .process_group(0)
+            .spawn()?,
+    );
+
+    Ok((fake, process))
+}
+
+fn install_gateway(root: &Utf8Path, settings: FakeSettings) -> Result<InstalledFake> {
     pv_fake::install_with(
         Utf8Path::new(env!("CARGO_BIN_EXE_pv-fake")),
         &root.join("bin/caddy"),
         &Scenario {
             persona: Persona::Caddy,
             lifeline_fd: None,
+            settings,
         },
     )
 }
@@ -650,6 +734,7 @@ fn install_long_running(
         &Scenario {
             persona: Persona::LongRunning,
             lifeline_fd,
+            settings: FakeSettings::default(),
         },
     )
 }
