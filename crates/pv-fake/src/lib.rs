@@ -29,6 +29,8 @@ mod install;
 #[cfg(unix)]
 mod lifeline;
 #[cfg(unix)]
+mod mailpit;
+#[cfg(unix)]
 mod redis;
 
 #[cfg(unix)]
@@ -95,6 +97,9 @@ pub struct FakeSettings {
     /// Starts one child process in the fake's process group, as runtimes start workers. It exits
     /// when the fake does.
     pub descendant: bool,
+    /// Makes a `pv_fake_mailpit` persona exit 0 once it has answered its first HTTP request, for
+    /// tests of runtimes that exit after becoming ready.
+    pub exit_after_first_http_response: bool,
 }
 
 /// Holds a fake at a known point, recording a `held` event, until a test creates `until`.
@@ -129,6 +134,11 @@ pub enum Persona {
     FrankenPhp,
     /// `redis-server <config>`: the RESP replies PV's readiness check needs.
     RedisServer,
+    /// Mailpit's real command line: the SMTP greeting and the dashboard routes.
+    Mailpit,
+    /// `pv-fake-mailpit <smtp port> <dashboard port>`, the program PV's test-only fake Mailpit
+    /// adapter starts: the SMTP greeting and `GET /ready`.
+    PvFakeMailpit,
 }
 
 /// Entry point shared by the `pv-fake` binary and the daemon's `pv-fake` example.

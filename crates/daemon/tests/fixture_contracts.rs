@@ -31,17 +31,9 @@ const MYSQL_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/managed-resources/mysql.py"
 ));
-const FAKE_MAILPIT_FIXTURE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/fake-mailpit.py"
-));
 const POSTGRES_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/managed-resources/postgres.py"
-));
-const MAILPIT_FIXTURE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/mailpit.py"
 ));
 const POSTGRES_UNREADY_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -132,15 +124,6 @@ def getfqdn(_name=""):
 
 socket.getfqdn = getfqdn
 "#;
-const PARENT_LOSS_PYTHON_PROBE: &str = r#"import os
-
-
-marker_path = os.environ["PV_PARENT_LOSS_MEMBER_PID"]
-staging_path = f"{marker_path}.{os.getpid()}.tmp"
-with open(staging_path, "w", encoding="utf-8") as marker:
-    marker.write(str(os.getpid()))
-os.replace(staging_path, marker_path)
-"#;
 const PARENT_LOSS_PS_PROBE: &str = r#"#!/bin/sh
 /bin/ps "$@"
 status=$?
@@ -192,24 +175,18 @@ impl SingleServerFixture {
 
 #[derive(Clone, Copy)]
 enum MultiServerFixture {
-    FakeMailpit,
-    Mailpit,
     Rustfs,
 }
 
 impl MultiServerFixture {
     fn name(self) -> &'static str {
         match self {
-            Self::FakeMailpit => "fake Mailpit",
-            Self::Mailpit => "Mailpit",
             Self::Rustfs => "RustFS",
         }
     }
 
     fn executable_name(self) -> &'static str {
         match self {
-            Self::FakeMailpit => "fake-mailpit",
-            Self::Mailpit => "mailpit",
             Self::Rustfs => "rustfs",
         }
     }
@@ -218,19 +195,13 @@ impl MultiServerFixture {
 #[derive(Clone, Copy, Debug)]
 enum ParentLossFixture {
     ShellSql,
-    DirectPythonMailpit,
 }
 
 impl ParentLossFixture {
     fn name(self) -> &'static str {
         match self {
             Self::ShellSql => "shell-only SQL",
-            Self::DirectPythonMailpit => "direct-Python Mailpit",
         }
-    }
-
-    fn has_python_member(self) -> bool {
-        matches!(self, Self::DirectPythonMailpit)
     }
 }
 
@@ -256,7 +227,6 @@ struct ParentLossOutcome {
     parent_exit_signal: Option<i32>,
     leader_stopped: bool,
     process_group_stopped: bool,
-    ports_rebound: Vec<bool>,
 }
 
 #[derive(Clone)]
@@ -276,7 +246,6 @@ impl ParentLossOutcome {
         self.parent_exit_signal == Some(Signal::KILL.as_raw())
             && self.leader_stopped
             && self.process_group_stopped
-            && self.ports_rebound.iter().all(|rebound| *rebound)
     }
 }
 
@@ -519,14 +488,8 @@ fn single_server_fixture_exits_after_signal_status() -> Result<()> {
 
 #[test]
 fn multi_server_fixture_avoids_fqdn_lookup_and_exits_after_signal_status() -> Result<()> {
-    for fixture in [
-        MultiServerFixture::FakeMailpit,
-        MultiServerFixture::Mailpit,
-        MultiServerFixture::Rustfs,
-    ] {
-        for signal in [Signal::TERM, Signal::INT] {
-            assert_multi_server_fixture_exits_after_signal(fixture, signal)?;
-        }
+    for signal in [Signal::TERM, Signal::INT] {
+        assert_multi_server_fixture_exits_after_signal(MultiServerFixture::Rustfs, signal)?;
     }
 
     Ok(())
@@ -540,16 +503,14 @@ fn long_running_fixtures_exit_when_their_test_parent_is_lost() -> Result<()> {
 
     let mut outcomes = Vec::new();
 
-    for fixture in [
-        ParentLossFixture::ShellSql,
-        ParentLossFixture::DirectPythonMailpit,
+    for timing in [
+        ParentLossTiming::AfterReadiness,
+        ParentLossTiming::BeforeWatcherInitialization,
     ] {
-        for timing in [
-            ParentLossTiming::AfterReadiness,
-            ParentLossTiming::BeforeWatcherInitialization,
-        ] {
-            outcomes.push(assert_fixture_exits_after_parent_loss(fixture, timing)?);
-        }
+        outcomes.push(assert_fixture_exits_after_parent_loss(
+            ParentLossFixture::ShellSql,
+            timing,
+        )?);
     }
 
     assert_debug_snapshot!(outcomes, @r#"
@@ -562,7 +523,6 @@ fn long_running_fixtures_exit_when_their_test_parent_is_lost() -> Result<()> {
             ),
             leader_stopped: true,
             process_group_stopped: true,
-            ports_rebound: [],
         },
         ParentLossOutcome {
             fixture: "shell-only SQL",
@@ -572,33 +532,6 @@ fn long_running_fixtures_exit_when_their_test_parent_is_lost() -> Result<()> {
             ),
             leader_stopped: true,
             process_group_stopped: true,
-            ports_rebound: [],
-        },
-        ParentLossOutcome {
-            fixture: "direct-Python Mailpit",
-            timing: "after readiness",
-            parent_exit_signal: Some(
-                9,
-            ),
-            leader_stopped: true,
-            process_group_stopped: true,
-            ports_rebound: [
-                true,
-                true,
-            ],
-        },
-        ParentLossOutcome {
-            fixture: "direct-Python Mailpit",
-            timing: "before watcher initialization",
-            parent_exit_signal: Some(
-                9,
-            ),
-            leader_stopped: true,
-            process_group_stopped: true,
-            ports_rebound: [
-                true,
-                true,
-            ],
         },
     ]
     "#);
@@ -781,58 +714,6 @@ os.makedirs = record_makedirs
 }
 
 #[test]
-fn fake_mailpit_fixture_cli_ignores_extra_arguments() -> Result<()> {
-    let tempdir = tempdir()?;
-    let fixture = tempdir.path().join("fake-mailpit");
-    let smtp_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-    let smtp_port = smtp_listener.local_addr()?.port();
-    let dashboard_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-    let dashboard_port = dashboard_listener.local_addr()?.port();
-
-    materialize_fixture(&fixture, FAKE_MAILPIT_FIXTURE)?;
-    drop(dashboard_listener);
-
-    let mut child = FixtureCommand::new(fixture.as_std_path())
-        .args([
-            smtp_port.to_string(),
-            dashboard_port.to_string(),
-            "ignored-extra".to_owned(),
-        ])
-        .current_dir(tempdir.path())
-        .spawn()?;
-    let lifecycle = (|| {
-        thread::sleep(Duration::from_millis(250));
-        let running_while_smtp_is_reserved = child.try_wait()?.is_none();
-        drop(smtp_listener);
-        let readiness =
-            wait_for_loopback_ports([smtp_port, dashboard_port], Duration::from_secs(3))?;
-        let running_after_readiness = child.try_wait()?.is_none();
-
-        Ok::<_, anyhow::Error>((
-            running_while_smtp_is_reserved,
-            readiness,
-            running_after_readiness,
-        ))
-    })();
-    let cleanup = kill_and_reap_child(&mut child);
-
-    let lifecycle = match lifecycle {
-        Ok(lifecycle) => lifecycle,
-        Err(error) => {
-            cleanup?;
-            return Err(error);
-        }
-    };
-    cleanup?;
-
-    assert_fixture_snapshot(
-        tempdir.path(),
-        "fake_mailpit_fixture_cli_ignores_extra_arguments",
-        lifecycle,
-    )
-}
-
-#[test]
 fn postgres_fixture_cli_preserves_shell_contract() -> Result<()> {
     let tempdir = tempdir()?;
     let fixture = tempdir.path().join("postgres");
@@ -862,85 +743,6 @@ fn postgres_fixture_cli_preserves_shell_contract() -> Result<()> {
         tempdir.path(),
         "postgres_fixture_cli_preserves_shell_contract",
         (unknown_argument, last_data_dir_wins),
-    )
-}
-
-#[test]
-fn mailpit_fixture_cli_preserves_shell_contract() -> Result<()> {
-    let tempdir = tempdir()?;
-    let fixture = tempdir.path().join("mailpit");
-    let missing_database = tempdir.path().join("missing/mailpit.db");
-
-    materialize_fixture(&fixture, MAILPIT_FIXTURE)?;
-
-    let unknown_argument = run_fixture(&fixture, &["--unexpected"], tempdir.path())?;
-    let missing_required_arguments =
-        run_fixture(&fixture, &["--disable-version-check"], tempdir.path())?;
-    let missing_version_check = run_fixture(
-        &fixture,
-        &[
-            "--smtp",
-            "127.0.0.1:1025",
-            "--listen",
-            "127.0.0.1:8025",
-            "--database",
-            missing_database.as_str(),
-        ],
-        tempdir.path(),
-    )?;
-    let invalid_database_path = run_fixture(
-        &fixture,
-        &[
-            "--smtp",
-            "127.0.0.1:1025",
-            "--listen",
-            "127.0.0.1:8025",
-            "--database",
-            "mailpit.db",
-            "--disable-version-check",
-        ],
-        tempdir.path(),
-    )?;
-    let missing_database_directory = run_fixture(
-        &fixture,
-        &[
-            "--smtp",
-            "127.0.0.1:1025",
-            "--listen",
-            "127.0.0.1:8025",
-            "--database",
-            missing_database.as_str(),
-            "--disable-version-check",
-        ],
-        tempdir.path(),
-    )?;
-    let duplicate_database_last_wins = run_fixture(
-        &fixture,
-        &[
-            "--smtp",
-            "127.0.0.1:1025",
-            "--listen",
-            "127.0.0.1:8025",
-            "--database",
-            "mailpit.db",
-            "--database",
-            missing_database.as_str(),
-            "--disable-version-check",
-        ],
-        tempdir.path(),
-    )?;
-
-    assert_fixture_snapshot(
-        tempdir.path(),
-        "mailpit_fixture_cli_preserves_shell_contract",
-        (
-            unknown_argument,
-            missing_required_arguments,
-            missing_version_check,
-            invalid_database_path,
-            missing_database_directory,
-            duplicate_database_last_wins,
-        ),
     )
 }
 
@@ -989,15 +791,7 @@ fn assert_fixture_exits_after_parent_loss(
     timing: ParentLossTiming,
 ) -> Result<ParentLossOutcome> {
     let tempdir = tempdir()?;
-    let port_reservations = prepare_parent_loss_fixture(tempdir.path(), fixture, timing)?;
-    let ports = port_reservations
-        .iter()
-        .map(TcpListener::local_addr)
-        .collect::<std::io::Result<Vec<_>>>()?
-        .into_iter()
-        .map(|address| address.port())
-        .collect::<Vec<_>>();
-    drop(port_reservations);
+    prepare_parent_loss_fixture(tempdir.path(), fixture, timing)?;
 
     let mut parent_stdout = tempfile()?;
     let mut parent_stderr = tempfile()?;
@@ -1041,33 +835,11 @@ fn assert_fixture_exits_after_parent_loss(
             )?;
         }
 
-        match timing {
-            ParentLossTiming::AfterReadiness if ports.is_empty() => {
-                wait_for_handler_marker(
-                    &tempdir.path().join("watcher-ready"),
-                    FIXTURE_COMMAND_TIMEOUT,
-                )?;
-            }
-            ParentLossTiming::AfterReadiness => {
-                let readiness = wait_for_loopback_ports_slice(&ports, FIXTURE_COMMAND_TIMEOUT)?;
-                if !readiness.iter().all(|ready| *ready) {
-                    bail!("{} did not become ready on ports {ports:?}", fixture.name());
-                }
-            }
-            ParentLossTiming::BeforeWatcherInitialization => {}
-        }
-        if fixture.has_python_member() && matches!(timing, ParentLossTiming::AfterReadiness) {
-            capture_fixture_member(
-                captured_identity.as_mut(),
-                &tempdir.path().join("member.pid"),
+        if matches!(timing, ParentLossTiming::AfterReadiness) {
+            wait_for_handler_marker(
+                &tempdir.path().join("watcher-ready"),
                 FIXTURE_COMMAND_TIMEOUT,
-            )
-            .with_context(|| {
-                format!(
-                    "failed to capture {} member after readiness",
-                    fixture.name()
-                )
-            })?;
+            )?;
         }
 
         parent
@@ -1081,7 +853,6 @@ fn assert_fixture_exits_after_parent_loss(
             .ok_or_else(|| anyhow!("fixture process identity was not captured"))?;
         let (members_stopped, process_group_stopped) =
             wait_for_process_identity_exit(identity, FIXTURE_COMMAND_TIMEOUT)?;
-        let ports_rebound = wait_for_loopback_ports_to_rebind(&ports, FIXTURE_COMMAND_TIMEOUT);
 
         Ok::<_, anyhow::Error>(ParentLossOutcome {
             fixture: fixture.name(),
@@ -1089,7 +860,6 @@ fn assert_fixture_exits_after_parent_loss(
             parent_exit_signal: parent_status.signal(),
             leader_stopped: members_stopped.first().copied().unwrap_or(false),
             process_group_stopped,
-            ports_rebound,
         })
     })();
 
@@ -1108,7 +878,7 @@ fn assert_fixture_exits_after_parent_loss(
         Ok(outcome) if outcome.succeeded() => None,
         Ok(_) | Err(_) => captured_identity.clone(),
     };
-    let cleanup = cleanup_parent_loss_fixture(&mut parent, emergency_identity, &ports);
+    let cleanup = cleanup_parent_loss_fixture(&mut parent, emergency_identity);
 
     match (lifecycle, cleanup) {
         (Ok(outcome), Ok(())) => Ok(outcome),
@@ -1149,8 +919,7 @@ fn prepare_parent_loss_fixture(
     root: &Utf8Path,
     fixture: ParentLossFixture,
     timing: ParentLossTiming,
-) -> Result<Vec<TcpListener>> {
-    let mut port_reservations = Vec::new();
+) -> Result<()> {
     let fixture_command = match fixture {
         ParentLossFixture::ShellSql => {
             let executable = root.join("postgres-unready");
@@ -1158,18 +927,7 @@ fn prepare_parent_loss_fixture(
             materialize_fixture(&executable, POSTGRES_UNREADY_FIXTURE)?;
             materialize_fixture(&root.join("probe-bin/ps"), PARENT_LOSS_PS_PROBE)?;
             state::fs::write_sensitive_file(&data_dir.join("PG_VERSION"), "16\n")?;
-            "PATH=./probe-bin:$PATH\nexport PATH\nexec ./postgres-unready -D ./postgres-data -h 127.0.0.1 -p 5432\n".to_owned()
-        }
-        ParentLossFixture::DirectPythonMailpit => {
-            port_reservations.push(TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?);
-            port_reservations.push(TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?);
-            let smtp_port = port_reservations[0].local_addr()?.port();
-            let dashboard_port = port_reservations[1].local_addr()?.port();
-            materialize_fixture(&root.join("mailpit"), MAILPIT_FIXTURE)?;
-            ensure_user_dir(&root.join("mailpit-data"))?;
-            format!(
-                "exec ./mailpit --smtp 127.0.0.1:{smtp_port} --listen 127.0.0.1:{dashboard_port} --database ./mailpit-data/mailpit.db --disable-version-check\n"
-            )
+            "PATH=./probe-bin:$PATH\nexport PATH\nexec ./postgres-unready -D ./postgres-data -h 127.0.0.1 -p 5432\n"
         }
     };
 
@@ -1180,18 +938,10 @@ export PV_TEST_PARENT_CAPTURE_MARKER PV_TEST_PARENT_CAPTURE_RELEASE\n"
     } else {
         ""
     };
-    state::fs::write_sensitive_file(
-        &root.join("parent-loss-probe/sitecustomize.py"),
-        PARENT_LOSS_PYTHON_PROBE,
-    )?;
     materialize_fixture(
         &root.join("fixture-entrypoint"),
-        &format!(
-            "#!/bin/sh\nset -eu\n\n{parent_capture_gate}PYTHONPATH=./parent-loss-probe\nPV_PARENT_LOSS_MEMBER_PID=./member.pid\nexport PYTHONPATH PV_PARENT_LOSS_MEMBER_PID\n{fixture_command}"
-        ),
-    )?;
-
-    Ok(port_reservations)
+        &format!("#!/bin/sh\nset -eu\n\n{parent_capture_gate}{fixture_command}"),
+    )
 }
 
 fn wait_for_recorded_pid(path: &Utf8Path, parent: &mut Child, timeout: Duration) -> Result<Pid> {
@@ -1218,44 +968,6 @@ fn wait_for_recorded_pid(path: &Utf8Path, parent: &mut Child, timeout: Duration)
     }
 }
 
-fn capture_fixture_member(
-    identity: Option<&mut CapturedFixtureIdentity>,
-    path: &Utf8Path,
-    timeout: Duration,
-) -> Result<()> {
-    let identity = identity.ok_or_else(|| anyhow!("fixture process identity was not captured"))?;
-    let member = wait_for_fixture_member_pid(path, timeout)?;
-    record_captured_member(identity, member)
-}
-
-fn record_captured_member(identity: &mut CapturedFixtureIdentity, member: Pid) -> Result<()> {
-    if identity
-        .members
-        .iter()
-        .any(|captured| captured.pid == member)
-    {
-        return Ok(());
-    }
-
-    match getpgid(Some(member)) {
-        Ok(process_group) if process_group == identity.process_group => {}
-        Ok(process_group) => bail!(
-            "fixture member {member} joined process group {process_group}; expected {}",
-            identity.process_group
-        ),
-        Err(Errno::SRCH | Errno::PERM) => return Ok(()),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("failed to inspect fixture member {member}"));
-        }
-    }
-    identity
-        .members
-        .push(capture_fixture_member_identity(member)?);
-
-    Ok(())
-}
-
 fn capture_fixture_member_identity(pid: Pid) -> Result<CapturedFixtureMember> {
     let raw_pid = u32::try_from(pid.as_raw_pid())?;
     let identity = platform::inspect_process_identity(raw_pid)?
@@ -1265,26 +977,6 @@ fn capture_fixture_member_identity(pid: Pid) -> Result<CapturedFixtureMember> {
         pid,
         start_identity: identity.start_identity,
     })
-}
-
-fn wait_for_fixture_member_pid(path: &Utf8Path, timeout: Duration) -> Result<Pid> {
-    let deadline = Instant::now() + timeout;
-
-    loop {
-        match state::fs::read_to_string(path) {
-            Ok(contents) => {
-                let raw_pid = contents.trim().parse::<i32>()?;
-                return Pid::from_raw(raw_pid)
-                    .ok_or_else(|| anyhow!("fixture recorded invalid member PID {raw_pid}"));
-            }
-            Err(StateError::Filesystem { source, .. }) if source.kind() == ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        if Instant::now() >= deadline {
-            bail!("timed out waiting for fixture member PID at {path}");
-        }
-        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
-    }
 }
 
 fn wait_for_process_identity_exit(
@@ -1344,25 +1036,9 @@ fn member_identity_is_stopped(
     )
 }
 
-fn wait_for_loopback_ports_to_rebind(ports: &[u16], timeout: Duration) -> Vec<bool> {
-    let deadline = Instant::now() + timeout;
-
-    loop {
-        let rebound = ports
-            .iter()
-            .map(|port| TcpListener::bind((Ipv4Addr::LOCALHOST, *port)).is_ok())
-            .collect::<Vec<_>>();
-        if rebound.iter().all(|rebound| *rebound) || Instant::now() >= deadline {
-            return rebound;
-        }
-        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
-    }
-}
-
 fn cleanup_parent_loss_fixture(
     parent: &mut Child,
     identity: Option<CapturedFixtureIdentity>,
-    ports: &[u16],
 ) -> Result<()> {
     let parent_cleanup = match parent.try_wait() {
         Ok(Some(_status)) => Ok(()),
@@ -1370,7 +1046,7 @@ fn cleanup_parent_loss_fixture(
         Err(error) => Err(error).context("failed to inspect fixture test parent"),
     };
     let group_cleanup = if let Some(identity) = identity {
-        cleanup_captured_process_group(&identity, ports)
+        cleanup_captured_process_group(&identity)
     } else {
         Ok(())
     };
@@ -1384,7 +1060,7 @@ fn cleanup_parent_loss_fixture(
     }
 }
 
-fn cleanup_captured_process_group(identity: &CapturedFixtureIdentity, ports: &[u16]) -> Result<()> {
+fn cleanup_captured_process_group(identity: &CapturedFixtureIdentity) -> Result<()> {
     let mut verified_member = None;
     for member in &identity.members {
         if !member_identity_is_stopped(member, identity.process_group)? {
@@ -1409,35 +1085,14 @@ fn cleanup_captured_process_group(identity: &CapturedFixtureIdentity, ports: &[u
 
     let (stopped, process_group_stopped) =
         wait_for_process_identity_exit(identity, FIXTURE_SHUTDOWN_TIMEOUT)?;
-    let ports_rebound = wait_for_loopback_ports_to_rebind(ports, FIXTURE_SHUTDOWN_TIMEOUT);
-    if !process_group_stopped || !ports_rebound.iter().all(|rebound| *rebound) {
+    if !process_group_stopped {
         bail!(
-            "fixture cleanup could not verify process group {} stopped; members={stopped:?}; ports={ports_rebound:?}",
+            "fixture cleanup could not verify process group {} stopped; members={stopped:?}",
             identity.process_group
         );
     }
 
     Ok(())
-}
-
-fn wait_for_loopback_ports_slice(ports: &[u16], timeout: Duration) -> Result<Vec<bool>> {
-    let deadline = Instant::now() + timeout;
-    let mut readiness = vec![false; ports.len()];
-
-    loop {
-        for (index, port) in ports.iter().enumerate() {
-            if !readiness[index] && TcpStream::connect((Ipv4Addr::LOCALHOST, *port)).is_ok() {
-                readiness[index] = true;
-            }
-        }
-        if readiness.iter().all(|ready| *ready) {
-            return Ok(readiness);
-        }
-        if Instant::now() >= deadline {
-            return Ok(readiness);
-        }
-        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
-    }
 }
 
 fn current_test_binary() -> Result<OsString> {
@@ -1581,8 +1236,6 @@ fn assert_multi_server_fixture_exits_after_signal(
     let second_address = format!("127.0.0.1:{second_port}");
     let sitecustomize = tempdir.path().join("sitecustomize.py");
     let source = match fixture {
-        MultiServerFixture::FakeMailpit => FAKE_MAILPIT_FIXTURE.to_owned(),
-        MultiServerFixture::Mailpit => MAILPIT_FIXTURE.to_owned(),
         MultiServerFixture::Rustfs => render_rustfs_fixture(false)?,
     };
 
@@ -1593,23 +1246,6 @@ fn assert_multi_server_fixture_exits_after_signal(
         .current_dir(tempdir.path())
         .env("PYTHONPATH", tempdir.path());
     match fixture {
-        MultiServerFixture::FakeMailpit => {
-            command.args([first_port.to_string(), second_port.to_string()]);
-        }
-        MultiServerFixture::Mailpit => {
-            let data_dir = tempdir.path().join("mailpit-data");
-            ensure_user_dir(&data_dir)?;
-            let database = data_dir.join("mailpit.db");
-            command.args([
-                "--smtp",
-                first_address.as_str(),
-                "--listen",
-                second_address.as_str(),
-                "--database",
-                database.as_str(),
-                "--disable-version-check",
-            ]);
-        }
         MultiServerFixture::Rustfs => {
             let data_dir = tempdir.path().join("rustfs-data");
             ensure_user_dir(&data_dir)?;

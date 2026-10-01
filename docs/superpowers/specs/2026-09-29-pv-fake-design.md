@@ -61,6 +61,7 @@ Tests install a fake with `pv_fake::install(executable, persona)`. It:
 - `gateway_listeners`: `All`, `AdminOnly` (configs apply, but no HTTP or HTTPS port opens), or `Nothing` (alive, serving nothing), for tests of Gateways that never become ready.
 - `validate_pause` holds a Gateway persona's `validate` until a file exists, and `validate_exit_code` makes it exit with that code instead of checking the config.
 - `run_pause` holds a Gateway persona's `run` after its HTTP and HTTPS ports open and before its admin socket does.
+- `exit_after_first_http_response` makes a `pv_fake_mailpit` persona exit 0 once it has answered an HTTP request, for tests of runtimes that exit right after becoming ready.
 - `descendant` starts one child process in the fake's process group, as runtimes start workers. The fake starts itself again with a descendant flag and the read end of a pipe whose write end only the parent holds. The descendant inherits the lifeline, does nothing else, and exits when its parent does. On a clean exit the parent closes the pipe and reaps the descendant first, so no zombie is left behind where nothing reaps orphans, as in some Linux containers.
 
 A paused fake records `held` and still exits cleanly on SIGTERM or SIGINT: signals are watched through startup, not only once it serves.
@@ -225,6 +226,25 @@ These were recorded with PV's rendered `redis.conf` and the `redis` crate's hand
 
 The persona reads only `port` and `dir` from the config and binds `127.0.0.1`. It answers RESP arrays only; Redis's inline commands, which PV never sends, close the connection.
 
+### Mailpit 1.30.1 (2026-10-01)
+
+These were recorded with PV's command line: `--smtp 127.0.0.1:<port> --listen 127.0.0.1:<port> --database <data dir>/mailpit.db --disable-version-check`.
+
+| Interaction | Real Mailpit | `mailpit` persona |
+|---|---|---|
+| SMTP connect | `220 <hostname> Mailpit ESMTP Service ready`, then waits for commands | same, with `localhost` as the hostname |
+| `GET /` | `200 text/html; charset=utf-8`, the dashboard page | `200 text/html; charset=utf-8`, a stub page (PV checks only the status) |
+| `GET /readyz`, `GET /livez` | `200`, empty | same |
+| Any other path, including `/ready` | `404 text/plain; charset=utf-8`, `404 page not found` | same |
+| Without `--disable-version-check` | starts and serves the same; only `/api/v1/info` differs | accepted and ignored |
+| Unknown flag | exit 1; `Error: unknown flag: --<flag>` and the usage text | exit 1; the `Error:` line |
+| Database folder missing | exit 1; `level=error msg="[db] open <path>: no such file or directory"` | same message without the timestamp |
+| SMTP or dashboard port busy | exit 1; `level=error msg="listen tcp <address>: bind: address already in use"` | same message without the timestamp |
+| Data directory | creates `mailpit.db`, `mailpit.db-shm` and `mailpit.db-wal` | writes nothing |
+| SIGTERM, SIGINT | exit 0 in about 0.35 s | exit 0 |
+
+The `pv_fake_mailpit` persona has no real counterpart: it is the program PV's test-only fake Mailpit adapter starts, `pv-fake-mailpit <smtp port> <dashboard port>`. It ignores further arguments, retries a busy port every 50 ms (tests release their port reservations just before PV starts the runtime), greets with `220 fake mailpit`, and answers `GET /ready` with `200` and anything else with `404`. Tests of a runtime that never becomes ready install the `long_running` persona as `bin/pv-fake-mailpit` instead.
+
 ## Lints And Errors
 
 `pv-fake` opts into workspace lints. It is an application boundary, so it uses `anyhow`. Raw process, filesystem, and executable-path primitives use narrow `#[expect(..., reason = "...")]` items, as elsewhere in the repository. It uses no `unwrap`, `expect`, or `panic!`.
@@ -249,7 +269,7 @@ Each step is one pull request. Each starts by recording the relevant real artifa
      - **2b-3b** (implemented): port `daemon_foundation.rs`'s installs and barrier helpers, which patched fixture source text, to those settings and events; seed a real CA there and drop the TLS fallback and `pv-fake`'s `x509-parser` dependency; delete the shell-to-Python parent-loss variant and the last Gateway fixtures. The inline leader in `gateway_reconciliation.rs` stays a script, because its test needs a descendant that outlives the leader, which a pv-fake descendant never does; its wait is now bounded at 30 s like its descendant.
 3. **Simple services**, in three pull requests:
    - **3a** (implemented): record real Redis, add the `redis-server` persona and the dual-target Managed Resource runtime contract, port the Redis installs and archive in `managed_resources/tests.rs`, and delete `redis-server.py` with its fixture contract.
-   - **3b**: the three Mailpit variants.
+   - **3b** (implemented): record real Mailpit, add the `mailpit` and `pv_fake_mailpit` personas and the `exit_after_first_http_response` setting, add the dual-target Mailpit runtime contract and a fake-only contract for PV's fake Mailpit adapter, port the Mailpit installs and archives in `managed_resources/tests.rs` and `jobs.rs` (the unready variant becomes `long_running`), and delete the four Mailpit fixtures, their fixture contracts, and the Mailpit parent-loss variant.
    - **3c**: `rustfs`.
 4. **SQL.** Start with the `opensrv-mysql` + `sqlx` compatibility spike, then add `postgres`, `initdb`, the unready Postgres variant, and `mysqld`.
 5. **Cleanup.**

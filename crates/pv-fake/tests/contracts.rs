@@ -765,12 +765,173 @@ fn redis_fake_rejects_a_missing_data_dir_as_redis_does() -> Result<()> {
 
     assert_eq!(status.code(), Some(1));
     assert_eq!(
-        state::fs::read_to_string(&tempdir.path().join("redis.stderr"))?,
+        state::fs::read_to_string(&tempdir.path().join("stderr"))?,
         format!(
             "\n*** FATAL CONFIG FILE ERROR (Redis 8.8.0) ***\nReading the configuration file, at \
              line 3\n>>> 'dir \"{data_dir}\"'\nNo such file or directory\n"
         )
     );
+
+    Ok(())
+}
+
+#[test]
+fn mailpit_fake_greets_and_serves_the_dashboard_routes_as_recorded() -> Result<()> {
+    let tempdir = tempdir()?;
+    let [smtp_port, dashboard_port] = available_ports()?;
+    state::fs::ensure_user_dir(&tempdir.path().join("data"))?;
+    let (fake, mut process) = spawn_service(
+        tempdir.path(),
+        "mailpit",
+        Persona::Mailpit,
+        FakeSettings::default(),
+        &mailpit_arguments(
+            smtp_port,
+            dashboard_port,
+            &tempdir.path().join("data/mailpit.db"),
+        ),
+    )?;
+
+    let greeting = smtp_greeting(smtp_port)?;
+    connect_with_retry(dashboard_port)?;
+    let statuses = ["/", "/readyz", "/livez", "/ready"]
+        .map(|path| http_get(dashboard_port, path).map(|(status, _body)| status));
+    let not_found = http_get(dashboard_port, "/nope")?;
+    signal(&process, Signal::INT)?;
+    let status = wait_for_exit(&mut process)?;
+
+    assert_eq!(greeting, "220 localhost Mailpit ESMTP Service ready\r\n");
+    assert_eq!(
+        statuses.into_iter().collect::<Result<Vec<_>>>()?,
+        [200, 200, 200, 404]
+    );
+    assert_eq!(not_found, (404, "404 page not found\n".to_owned()));
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(event_names(&fake)?, ["started", "signal SIGINT", "exit 0"]);
+
+    Ok(())
+}
+
+#[test]
+fn mailpit_fake_fails_as_mailpit_does() -> Result<()> {
+    let tempdir = tempdir()?;
+    let busy = TcpListener::bind(("127.0.0.1", 0))?;
+    let busy_port = busy.local_addr()?.port();
+    let [free_port] = available_ports()?;
+    let missing_database = tempdir.path().join("missing/mailpit.db");
+    let database = tempdir.path().join("mailpit.db");
+    let runs = [
+        vec!["--bogus".to_owned()],
+        mailpit_arguments(free_port, free_port, &missing_database),
+        mailpit_arguments(busy_port, free_port, &database),
+    ];
+
+    let mut outcomes = Vec::new();
+    for (index, arguments) in runs.iter().enumerate() {
+        let root = tempdir.path().join(index.to_string());
+        let (_fake, mut process) = spawn_service(
+            &root,
+            "mailpit",
+            Persona::Mailpit,
+            FakeSettings::default(),
+            arguments,
+        )?;
+        let status = wait_for_exit(&mut process)?;
+        outcomes.push((
+            status.code(),
+            state::fs::read_to_string(&root.join("stderr"))?,
+        ));
+    }
+
+    assert_eq!(
+        outcomes,
+        [
+            (Some(1), "Error: unknown flag: --bogus\n".to_owned()),
+            (
+                Some(1),
+                format!(
+                    "level=error msg=\"[db] open {missing_database}: no such file or directory\"\n"
+                )
+            ),
+            (
+                Some(1),
+                format!(
+                    "level=error msg=\"listen tcp 127.0.0.1:{busy_port}: bind: address already in \
+                     use\"\n"
+                )
+            ),
+        ]
+    );
+
+    Ok(())
+}
+
+#[test]
+fn pv_fake_mailpit_waits_for_busy_ports_and_answers_ready() -> Result<()> {
+    let tempdir = tempdir()?;
+    let smtp_reservation = TcpListener::bind(("127.0.0.1", 0))?;
+    let smtp_port = smtp_reservation.local_addr()?.port();
+    let [dashboard_port] = available_ports()?;
+    let (fake, mut process) = spawn_service(
+        tempdir.path(),
+        "pv-fake-mailpit",
+        Persona::PvFakeMailpit,
+        FakeSettings::default(),
+        &[
+            smtp_port.to_string(),
+            dashboard_port.to_string(),
+            "ignored-extra".to_owned(),
+        ],
+    )?;
+
+    sleep(Duration::from_millis(250));
+    let waiting_for_smtp = process.0.try_wait()?.is_none()
+        && TcpStream::connect(("127.0.0.1", dashboard_port)).is_err();
+    drop(smtp_reservation);
+    let greeting = smtp_greeting(smtp_port)?;
+    connect_with_retry(dashboard_port)?;
+    let ready = http_get(dashboard_port, "/ready")?;
+    let other = http_get(dashboard_port, "/")?;
+    signal(&process, Signal::TERM)?;
+    let status = wait_for_exit(&mut process)?;
+
+    assert!(waiting_for_smtp);
+    assert_eq!(greeting, "220 fake mailpit\r\n");
+    assert_eq!((ready.0, other.0), (200, 404));
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(event_names(&fake)?, ["started", "signal SIGTERM", "exit 0"]);
+
+    Ok(())
+}
+
+#[test]
+fn pv_fake_mailpit_can_exit_after_its_first_response() -> Result<()> {
+    let tempdir = tempdir()?;
+    let [smtp_port, dashboard_port] = available_ports()?;
+    let (fake, mut process) = spawn_service(
+        tempdir.path(),
+        "pv-fake-mailpit",
+        Persona::PvFakeMailpit,
+        FakeSettings {
+            exit_after_first_http_response: true,
+            ..FakeSettings::default()
+        },
+        &[smtp_port.to_string(), dashboard_port.to_string()],
+    )?;
+
+    // A connection that sends no request gets no response, so the fake keeps running.
+    connect_with_retry(dashboard_port)?;
+    // PV's readiness check reads the status and hangs up; the fake must not wait for that.
+    let mut stream = TcpStream::connect(("127.0.0.1", dashboard_port))?;
+    write_request(&mut stream, "GET", "/ready", "")?;
+    let mut status_line = [0; 12];
+    stream.read_exact(&mut status_line)?;
+    let status = wait_for_exit(&mut process)?;
+    drop(stream);
+
+    assert_eq!(&status_line, b"HTTP/1.1 200");
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(event_names(&fake)?, ["started", "exit 0"]);
 
     Ok(())
 }
@@ -781,15 +942,6 @@ fn spawn_redis(
     port: u16,
     data_dir: &Utf8Path,
 ) -> Result<(InstalledFake, FakeProcess)> {
-    let fake = pv_fake::install_with(
-        Utf8Path::new(env!("CARGO_BIN_EXE_pv-fake")),
-        &root.join("bin/redis-server"),
-        &Scenario {
-            persona: Persona::RedisServer,
-            lifeline_fd: None,
-            settings: FakeSettings::default(),
-        },
-    )?;
     let config = root.join("redis.conf");
     state::fs::write_sensitive_file(
         &config,
@@ -799,17 +951,74 @@ fn spawn_redis(
             serde_json::to_string(data_dir.as_str())?
         ),
     )?;
+
+    spawn_service(
+        root,
+        "redis-server",
+        Persona::RedisServer,
+        FakeSettings::default(),
+        &[config.to_string()],
+    )
+}
+
+/// PV's Mailpit command line.
+fn mailpit_arguments(smtp_port: u16, dashboard_port: u16, database: &Utf8Path) -> Vec<String> {
+    [
+        "--smtp",
+        &format!("127.0.0.1:{smtp_port}"),
+        "--listen",
+        &format!("127.0.0.1:{dashboard_port}"),
+        "--database",
+        database.as_str(),
+        "--disable-version-check",
+    ]
+    .map(str::to_owned)
+    .to_vec()
+}
+
+/// Installs a service persona at `<root>/bin/<executable>` and starts it in its own process
+/// group, with stderr in `<root>/stderr`.
+fn spawn_service(
+    root: &Utf8Path,
+    executable: &str,
+    persona: Persona,
+    settings: FakeSettings,
+    arguments: &[String],
+) -> Result<(InstalledFake, FakeProcess)> {
+    let fake = pv_fake::install_with(
+        Utf8Path::new(env!("CARGO_BIN_EXE_pv-fake")),
+        &root.join("bin").join(executable),
+        &Scenario {
+            persona,
+            lifeline_fd: None,
+            settings,
+        },
+    )?;
     let process = FakeProcess(
         FakeCommand::new(fake.executable())
-            .arg(config.as_str())
+            .args(arguments)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(state::fs::open_append_file(&root.join("redis.stderr"))?)
+            .stderr(state::fs::open_append_file(&root.join("stderr"))?)
             .process_group(0)
             .spawn()?,
     );
 
     Ok((fake, process))
+}
+
+/// Reads the SMTP greeting line.
+fn smtp_greeting(port: u16) -> Result<String> {
+    let mut stream = connect_with_retry(port)?;
+    stream.set_read_timeout(Some(WAIT_TIMEOUT))?;
+    let mut greeting = Vec::new();
+    let mut byte = [0];
+    while !greeting.ends_with(b"\r\n") {
+        stream.read_exact(&mut byte)?;
+        greeting.extend_from_slice(&byte);
+    }
+
+    Ok(String::from_utf8(greeting)?)
 }
 
 fn connect_with_retry(port: u16) -> Result<TcpStream> {

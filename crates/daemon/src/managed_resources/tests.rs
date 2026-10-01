@@ -23,7 +23,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
-use pv_fake::Persona;
+use pv_fake::{FakeSettings, Persona};
 use rcgen::{
     CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose,
     PKCS_ECDSA_P256_SHA256,
@@ -82,22 +82,6 @@ const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
 const FIXTURE_RUNTIME_PUBLICATION_TIMEOUT: Duration = Duration::from_millis(500);
 const FIXTURE_RUNTIME_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const TEST_ARTIFACT_MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
-const FAKE_MAILPIT_SCRIPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/fake-mailpit.py"
-));
-const MAILPIT_SCRIPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/mailpit.py"
-));
-const MAILPIT_FAST_EXIT_SCRIPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/mailpit-fast-exit.py"
-));
-const MAILPIT_UNREADY_SCRIPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/mailpit-unready.sh"
-));
 const POSTGRES_SCRIPT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/managed-resources/postgres.py"
@@ -7116,7 +7100,12 @@ fn delete_optional_file(path: &Utf8Path) -> Result<()> {
 }
 
 fn seed_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<()> {
-    seed_fake_mailpit_artifact_with_script(paths, track, FAKE_MAILPIT_SCRIPT)
+    seed_fake_mailpit_artifact_with(
+        paths,
+        track,
+        Persona::PvFakeMailpit,
+        FakeSettings::default(),
+    )
 }
 
 fn seed_mailpit_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
@@ -7125,10 +7114,8 @@ fn seed_mailpit_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
         .join("mailpit")
         .join(track)
         .join(format!("releases/{FAKE_MAILPIT_ARTIFACT_VERSION}"));
-    let executable = release_path.join("bin/mailpit");
 
-    state::fs::write_sensitive_file(&executable, MAILPIT_SCRIPT)?;
-    set_executable(&executable)?;
+    pv_fake::install(&release_path.join("bin/mailpit"), Persona::Mailpit)?;
     let mut database = Database::open(paths)?;
     database.record_managed_resource_track_installed(
         "mailpit",
@@ -7321,20 +7308,20 @@ fn setup_default_executable() -> &'static str {
     "#!/bin/sh\nexit 0\n"
 }
 
-fn seed_fake_mailpit_artifact_with_script(
+/// Installs a fake as the `bin/pv-fake-mailpit` that PV's fake Mailpit adapter starts.
+fn seed_fake_mailpit_artifact_with(
     paths: &PvPaths,
     track: &str,
-    script: &str,
+    persona: Persona,
+    settings: FakeSettings,
 ) -> Result<()> {
     let release_path = paths
         .resources()
         .join("mailpit")
         .join(track)
         .join(format!("releases/{FAKE_MAILPIT_ARTIFACT_VERSION}"));
-    let executable = release_path.join("bin/pv-fake-mailpit");
 
-    state::fs::write_sensitive_file(&executable, script)?;
-    set_executable(&executable)?;
+    pv_fake::install_with_settings(&release_path.join("bin/pv-fake-mailpit"), persona, settings)?;
     let mut database = Database::open(paths)?;
     database.record_managed_resource_track_installed(
         "mailpit",
@@ -7346,12 +7333,22 @@ fn seed_fake_mailpit_artifact_with_script(
     Ok(())
 }
 
+/// A runtime that stays alive and never serves its dashboard.
 fn seed_unready_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<()> {
-    seed_fake_mailpit_artifact_with_script(paths, track, MAILPIT_UNREADY_SCRIPT)
+    seed_fake_mailpit_artifact_with(paths, track, Persona::LongRunning, FakeSettings::default())
 }
 
+/// A runtime that exits right after answering its readiness check.
 fn seed_fast_exit_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<()> {
-    seed_fake_mailpit_artifact_with_script(paths, track, MAILPIT_FAST_EXIT_SCRIPT)
+    seed_fake_mailpit_artifact_with(
+        paths,
+        track,
+        Persona::PvFakeMailpit,
+        FakeSettings {
+            exit_after_first_http_response: true,
+            ..FakeSettings::default()
+        },
+    )
 }
 
 fn seed_mailpit_runtime_ports(paths: &PvPaths, track: &str) -> Result<[TcpListener; 2]> {
@@ -7695,10 +7692,8 @@ fn create_fake_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> R
     let archive_parent = tempdir.join("archive-root");
     let root_name = format!("mailpit-{FAKE_MAILPIT_ARTIFACT_VERSION}");
     let root = archive_parent.join(&root_name);
-    let executable = root.join("bin/pv-fake-mailpit");
-
-    state::fs::write_sensitive_file(&executable, FAKE_MAILPIT_SCRIPT)?;
-    set_executable(&executable)?;
+    // The archive carries the fake and its scenario file, which PV extracts next to each other.
+    pv_fake::install(&root.join("bin/pv-fake-mailpit"), Persona::PvFakeMailpit)?;
     run_fixture_command(
         "/usr/bin/tar",
         &[
@@ -7717,10 +7712,8 @@ fn create_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result
     let archive_parent = tempdir.join("archive-root");
     let root_name = format!("mailpit-{FAKE_MAILPIT_ARTIFACT_VERSION}");
     let root = archive_parent.join(&root_name);
-    let executable = root.join("bin/mailpit");
-
-    state::fs::write_sensitive_file(&executable, MAILPIT_SCRIPT)?;
-    set_executable(&executable)?;
+    // The archive carries the fake and its scenario file, which PV extracts next to each other.
+    pv_fake::install(&root.join("bin/mailpit"), Persona::Mailpit)?;
     run_fixture_command(
         "/usr/bin/tar",
         &[
