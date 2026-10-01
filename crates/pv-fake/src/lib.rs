@@ -29,7 +29,7 @@ pub use events::{Event, EventKind};
 #[cfg(unix)]
 pub use gateway::write_gateway_control;
 #[cfg(unix)]
-pub use install::{InstalledFake, binary, install, install_with};
+pub use install::{InstalledFake, binary, install, install_with, install_with_settings};
 
 /// Identifies this pv-fake build; see `build.rs`.
 #[cfg(unix)]
@@ -50,6 +50,28 @@ pub struct Scenario {
     pub persona: Persona,
     /// Descriptor number of the inherited lifeline pipe read end, if the installer has one.
     pub lifeline_fd: Option<i32>,
+    #[serde(default)]
+    pub settings: FakeSettings,
+}
+
+/// Behavior a test chooses on top of its persona. The default is the recorded behavior.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FakeSettings {
+    /// Which listeners a Gateway persona's `run` opens.
+    pub gateway_listeners: GatewayListeners,
+}
+
+/// The listeners a Gateway persona opens, for tests of runtimes that never become ready.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GatewayListeners {
+    /// HTTP, HTTPS and the admin socket, as configured.
+    #[default]
+    All,
+    /// Only the admin socket; loads are accepted, but no HTTP or HTTPS port ever opens.
+    AdminOnly,
+    /// Nothing: the process stays alive without serving.
+    Nothing,
 }
 
 /// The runtime a fake emulates.

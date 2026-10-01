@@ -2,7 +2,9 @@ use anyhow::{Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::events::{Event, read_events};
-use crate::{BUILD_ID, Persona, Scenario, ScenarioFile, events_path, lifeline, scenario_path};
+use crate::{
+    BUILD_ID, FakeSettings, Persona, Scenario, ScenarioFile, events_path, lifeline, scenario_path,
+};
 
 /// A fake installed at a runtime's executable path.
 #[derive(Clone, Debug)]
@@ -23,9 +25,19 @@ impl InstalledFake {
 
 /// Installs the daemon's `pv-fake` example at `executable`, tied to this test process's lifeline.
 pub fn install(executable: &Utf8Path, persona: Persona) -> Result<InstalledFake> {
+    install_with_settings(executable, persona, FakeSettings::default())
+}
+
+/// Installs like [`install`], with behavior chosen by `settings`.
+pub fn install_with_settings(
+    executable: &Utf8Path,
+    persona: Persona,
+    settings: FakeSettings,
+) -> Result<InstalledFake> {
     let scenario = Scenario {
         persona,
         lifeline_fd: Some(lifeline::test_process_read_fd()?),
+        settings,
     };
 
     install_with(&binary()?, executable, &scenario)

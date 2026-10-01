@@ -1,6 +1,6 @@
 # pv-fake Test Service Design
 
-Status: approved 2026-09-29. Steps 1, 2a and 2b-1 are implemented.
+Status: approved 2026-09-29. Steps 1, 2a, 2b-1 and 2b-2 are implemented.
 
 ## Summary
 
@@ -55,6 +55,8 @@ Tests install a fake with `pv_fake::install(executable, persona)`. It:
 - sets up this test process's lifeline pipe (below) on first use,
 - copies the `pv-fake` binary to `executable`, which on APFS is a clone that costs no disk space, and
 - writes the scenario file next to it.
+
+`pv_fake::install_with_settings(executable, persona, settings)` does the same with behavior a test chooses on top of the persona. The default `FakeSettings` is the recorded behavior. Today it holds `gateway_listeners`: `All`, `AdminOnly` (configs apply, but no HTTP or HTTPS port opens), or `Nothing` (alive, serving nothing), for tests of Gateways that never become ready.
 
 The fake is a copy, not a symlink, because PV's artifact validation (`RuntimeArtifactAdapter::validate_installation`, via `symlink_metadata`) rejects symlinked executables. That's a production policy the fakes must not work around.
 
@@ -172,7 +174,7 @@ These were recorded with PV's Gateway config shape and a real test CA.
 | `POST /load` onto a busy port | `200` with the warnings array followed by `{"error":"loading config: loading new config: http app module: start: listening on 127.0.0.1:<port>: listen tcp 127.0.0.1:<port>: bind: address already in use"}`; the previous config and ports keep serving | same |
 | Rejected `POST /load` | the previous config keeps serving | same |
 | Worker reload with an unchanged root config | imports are read on every load, so a fragment whose site moved to a new port moves the listener: the old port closes, the new one serves | same |
-| `admin off` | HTTP and HTTPS serve; no admin socket or admin TCP listener | not yet emulated; step 2b-2 |
+| `admin off` | HTTP and HTTPS serve; no admin socket or admin TCP listener | same |
 | SIGTERM | graceful shutdown in milliseconds, exit 0 | same |
 
 The reload rows were recorded 2026-09-30 by loading PV-shaped configs through the admin socket, and the dual-target contracts check them against real Caddy and FrankenPHP.
@@ -216,12 +218,12 @@ Each step is one pull request. Each starts by recording the relevant real artifa
      - Port the plain install sites in `gateway_reconciliation.rs` and `jobs.rs`, and the inline `FAKE_CADDY_SCRIPT` in `daemon_foundation.rs`.
    - **2b**, in three pull requests:
      - **2b-1** (implemented): record real reloads, make the personas apply loads and switch listeners as Caddy does, add the Gateway test controls, and extend the dual-target contracts to port changes, a busy port, and a worker fragment move.
-     - **2b-2**: port the stateful control-file, no-admin, admin-only and legacy installs in `gateway_reconciliation.rs` and `jobs.rs` and seed a real CA there. The ~6 tests that relied on the old fixture never switching ports set `retain_previous_listeners`. Remove `write_script_fake_frankenphp`; it stays a script only because PV verifies a running script runtime by reading the file at its command path, and that test replaces a running stateful script fixture in place.
+     - **2b-2** (implemented): port the stateful control-file, no-admin, admin-only and legacy installs in `gateway_reconciliation.rs` and `jobs.rs`, seed one real CA per test home there, and delete those fixtures and the unreferenced `fake-frankenphp-hangs-on-port`. The six tests that relied on the old fixture never switching ports, and the `exit_after_load` test, set `retain_previous_listeners`. The legacy test runs the fake with `admin off` instead of supervising the Python server directly. `write_script_fake_frankenphp` and the `fake-runtime-reaped-<pid>` marker wait are gone.
      - **2b-3**: port `daemon_foundation.rs`'s barrier helpers, which patch fixture source text today, to scenario settings and events; seed a real CA in the remaining tests and drop the TLS fallback.
 3. **Simple services.** Add `redis-server`, the three Mailpit variants, and `rustfs`.
 4. **SQL.** Start with the `opensrv-mysql` + `sqlx` compatibility spike, then add `postgres`, `initdb`, the unready Postgres variant, and `mysqld`.
 5. **Cleanup.**
-   - Delete the remaining runtime-standing shell and Python fixtures, including the unreferenced `fake-frankenphp-hangs-on-port`.
+   - Delete the remaining runtime-standing shell and Python fixtures.
    - Rewrite `CONTRIBUTING.md`'s Fixture Lifecycle section around `pv_fake::install` and the lifeline.
    - Remove its `python3` prerequisite once the script-identity tests are gone with their fallback.
 

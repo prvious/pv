@@ -69,7 +69,9 @@ async fn run_persona(scenario: Scenario, argv: Vec<String>, events: EventLog) ->
 
     let exit_now = match scenario.persona {
         Persona::LongRunning => None,
-        Persona::Caddy | Persona::FrankenPhp => gateway::start(&argv, &events).await?,
+        Persona::Caddy | Persona::FrankenPhp => {
+            gateway::start(&argv, scenario.settings.gateway_listeners, &events).await?
+        }
     };
     let code = match exit_now {
         Some(code) => code,

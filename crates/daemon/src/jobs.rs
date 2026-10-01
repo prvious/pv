@@ -3794,7 +3794,6 @@ mod tests {
     use futures_util::StreamExt;
     use insta::{Settings, allow_duplicates, assert_debug_snapshot, assert_snapshot};
     use pv_fake::Persona;
-    use rcgen::generate_simple_self_signed;
     use resources::{ManagedResourceCommandError, ResourceHttpClient, ResourcesError};
     use rusqlite::{Connection, Error as SqliteError};
     #[cfg(target_os = "macos")]
@@ -3878,28 +3877,11 @@ mod tests {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_installed_caddy(&paths)?;
-        let certified_key = generate_simple_self_signed(vec![
-            "project.test".to_owned(),
-            "pv-gateway.localhost".to_owned(),
-        ])?;
-        state::fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;
-        state::fs::write_sensitive_file(
-            &paths.ca_private_key(),
-            &certified_key.signing_key.serialize_pem(),
-        )?;
         let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
         let release = tempdir.path().join("frankenphp-release");
         caddy_guard.register_worker("8.4", &release);
         let executable = release.join("bin/frankenphp");
-        state::fs::write_sensitive_file(
-            &executable,
-            include_str!("../test-fixtures/gateway/fake-stateful-frankenphp.sh"),
-        )?;
-        state::fs::write_sensitive_file(
-            &Utf8PathBuf::from(format!("{executable}.server.py")),
-            include_str!("../test-fixtures/gateway/fake-stateful-runtime-server.py"),
-        )?;
-        set_executable(&executable)?;
+        pv_fake::install(&executable, Persona::FrankenPhp)?;
         let project_path = tempdir.path().join("project");
         let config_path = project_path.join("pv.yml");
         state::fs::write_sensitive_file(&config_path, "php: \"8.4\"\n")?;
@@ -5851,16 +5833,7 @@ mod tests {
             let mut caddy_guard = SeededRuntimeGuard::with_gateway(paths.clone());
             if !update_path {
                 seed_gateway_ports(&mut Database::open(&paths)?)?;
-                let certified_key =
-                    generate_simple_self_signed(vec!["pv-gateway.localhost".to_owned()])?;
-                state::fs::write_sensitive_file(
-                    &paths.ca_certificate(),
-                    &certified_key.cert.pem(),
-                )?;
-                state::fs::write_sensitive_file(
-                    &paths.ca_private_key(),
-                    &certified_key.signing_key.serialize_pem(),
-                )?;
+                seed_local_ca(&paths)?;
             }
             if fail_install {
                 let sha256 = sha256_file(&tempdir.path().join(PHP_TEST_ARCHIVE_FILE_NAME))?;
@@ -11558,12 +11531,7 @@ mod tests {
             &current_path,
         )?;
 
-        let certified_key = generate_simple_self_signed(vec!["pv-gateway.localhost".to_owned()])?;
-        state::fs::write_sensitive_file(&paths.ca_certificate(), &certified_key.cert.pem())?;
-        state::fs::write_sensitive_file(
-            &paths.ca_private_key(),
-            &certified_key.signing_key.serialize_pem(),
-        )?;
+        seed_local_ca(paths)?;
 
         let mut database = Database::open(paths)?;
         seed_gateway_ports(&mut database)?;
@@ -11573,6 +11541,14 @@ mod tests {
             CADDY_TEST_ARTIFACT_VERSION,
             &release_path,
         )?;
+
+        Ok(())
+    }
+
+    fn seed_local_ca(paths: &PvPaths) -> anyhow::Result<()> {
+        let local_ca = platform::generate_local_ca()?;
+        state::fs::write_sensitive_file(&paths.ca_certificate(), &local_ca.certificate_pem)?;
+        state::fs::write_sensitive_file(&paths.ca_private_key(), &local_ca.private_key_pem)?;
 
         Ok(())
     }
