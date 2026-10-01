@@ -21,8 +21,8 @@ use hyper_util::rt::TokioIo;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
-use crate::FakeSettings;
 use crate::events::{EventKind, EventLog};
+use crate::{FakeSettings, accept};
 
 const BIND_RETRY_DELAY: Duration = Duration::from_millis(50);
 /// Mailpit greets with the machine's hostname; PV never reads it.
@@ -155,7 +155,8 @@ async fn bind_retrying(port: &str) -> Result<TcpListener> {
 /// Sends the SMTP greeting, then holds each connection until the client closes it, as Mailpit
 /// waits for commands.
 async fn greet(listener: TcpListener, greeting: &'static str) {
-    while let Ok((mut stream, _address)) = listener.accept().await {
+    loop {
+        let mut stream = accept(&listener).await;
         tokio::spawn(async move {
             if stream.write_all(greeting.as_bytes()).await.is_ok() {
                 let _copy_result = tokio::io::copy(&mut stream, &mut tokio::io::sink()).await;
@@ -164,20 +165,26 @@ async fn greet(listener: TcpListener, greeting: &'static str) {
     }
 }
 
-/// Serves `route`. With `exit_after_response`, the fake exits once a connection that got a
-/// response closes.
+/// Serves `route`. With `exit_after_response`, the fake exits as soon as hyper has written a
+/// response and finished the connection, which it does without waiting for the client to hang up.
 async fn serve_http(
     listener: TcpListener,
     route: fn(&str) -> Response<Full<Bytes>>,
     exit_after_response: Option<EventLog>,
 ) {
-    while let Ok((stream, _address)) = listener.accept().await {
+    loop {
+        let stream = accept(&listener).await;
         let exit_after_response = exit_after_response.clone();
         tokio::spawn(async move {
             let answered = Arc::new(AtomicBool::new(false));
             let service = {
-                let answered = answered.clone();
+                let (answered, exit_after_response) =
+                    (answered.clone(), exit_after_response.clone());
                 service_fn(move |request: Request<Incoming>| {
+                    // Record the exit before answering, so nothing but `exit` follows the response.
+                    if let Some(events) = &exit_after_response {
+                        let _record_result = events.record(EventKind::Exit { code: 0 });
+                    }
                     answered.store(true, Ordering::Relaxed);
                     let response = route(request.uri().path());
                     async move { Ok::<_, Infallible>(response) }
@@ -186,10 +193,7 @@ async fn serve_http(
             let _connection_result = http1::Builder::new()
                 .serve_connection(TokioIo::new(stream), service)
                 .await;
-            if let Some(events) = exit_after_response
-                && answered.load(Ordering::Relaxed)
-            {
-                let _record_result = events.record(EventKind::Exit { code: 0 });
+            if exit_after_response.is_some() && answered.load(Ordering::Relaxed) {
                 std::process::exit(0);
             }
         });
