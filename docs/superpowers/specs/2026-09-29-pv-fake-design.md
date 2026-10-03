@@ -1,6 +1,6 @@
 # pv-fake Test Service Design
 
-Status: approved 2026-09-29. Steps 1 and 2 are implemented.
+Status: approved 2026-09-29. Steps 1 to 3 and step 4a are implemented.
 
 ## Summary
 
@@ -139,8 +139,8 @@ Rule: a library owns every protocol and framing layer. Persona code only decides
 | Persona | pv's interactions | Implementation |
 |---|---|---|
 | `caddy`, `frankenphp` | `validate`; `run --config … --adapter caddyfile`; HTTP and HTTPS using the configured PKI root certificate; admin Unix socket `GET /config/` and `POST /load` (`text/caddyfile`); `GET /__pv/health` over HTTP and TLS; the admin peer must be in the managed process group | `hyper`, `tokio-rustls` (workspace) |
-| `postgres`, `initdb` | `sqlx` startup with `sslmode=disable`, `SELECT 1`, `SELECT 1 FROM pg_database WHERE datname = $1`, `CREATE DATABASE`, `SET`; `initdb` file layout | `pgwire` with `default-features = false` |
-| `mysqld` | `--initialize-insecure`; TCP; `sqlx` `SELECT 1` and `CREATE DATABASE IF NOT EXISTS` | `opensrv-mysql`, pending the compatibility spike. It lets MySQL tests use the real `sqlx` client instead of `RecordingMysqlAdmin`. If the spike fails, keep `RecordingMysqlAdmin`; never hand-write the MySQL protocol |
+| `postgres`, `initdb` | `initdb` with PV's arguments; `sqlx` startup with `sslmode=disable` and SCRAM-SHA-256 sign-in; `SELECT 1`, `SELECT 1 FROM pg_database WHERE datname = $1` and `CREATE DATABASE` as extended-protocol statements | `pgwire` 0.41 with only `server-api-ring` |
+| `mysqld` | `--initialize-insecure`; TCP; `sqlx` `SELECT 1` and `CREATE DATABASE IF NOT EXISTS` | `opensrv-mysql`, which passed the compatibility check. It lets MySQL tests use the real `sqlx` client instead of `RecordingMysqlAdmin`; never hand-write the MySQL protocol |
 | `redis-server` | `redis` crate multiplexed connection: `CLIENT SETINFO`, `PING` | `redis-protocol` for RESP framing, plus a command table |
 | `rustfs` | `GET /health`; `aws-sdk-s3` `create_bucket` with path-style addressing and SigV4 using the configured credentials; `object_store` put and head of a probe; reject mode | `s3s` 0.17.0, the S3 layer the real RustFS is built on, over a small in-memory bucket store; `hyper` for `/health` |
 | `mailpit`, `pv-fake-mailpit` | SMTP greeting; HTTP readiness (`/`, `/ready`) | `tokio`, `hyper` |
@@ -269,6 +269,28 @@ These were recorded with PV's command line, `--address 127.0.0.1:<port> --consol
 
 The dual-target runtime contract checks, against the fake and real RustFS, the rows PV and its tests depend on: `/health` (as the adapter's readiness check), creating a bucket and creating it again, putting and heading the probe through PV's `object_store` code, getting it back, `BucketNotEmpty`, deleting the object and the bucket, a missing bucket's `404`, a wrong secret key, and SIGTERM. It uses PV's own `aws-sdk-s3` client. The `pv-fake` contract checks unsigned requests, the console port and SIGTERM against the fake only. The rest of the table is recorded but not checked. The daemon tests check buckets and probes through S3 too, instead of reading a data directory layout.
 
+### PostgreSQL 18.4 (2026-10-02)
+
+These were recorded from the manifest's `18.4-pv2` artifact, driven through PV's adapter: `initdb -D <dir> --username pv_root --pwfile <file> --auth-host scram-sha-256 --auth-local trust`, PV's `postgresql.conf`, then `postgres -D <dir> -h 127.0.0.1 -p <port>` and PV's `sqlx` calls.
+
+| Interaction | Real PostgreSQL | `initdb` and `postgres` personas |
+|---|---|---|
+| `initdb` with PV's arguments | exit 0 in about 1 s; the full cluster layout, `PG_VERSION` is `18`, and TCP lines in `pg_hba.conf` use `scram-sha-256` | exit 0; writes `PG_VERSION`, the role in `initdb.username` and `initdb.password`, and a file per database under `databases/` |
+| `initdb` into an existing empty directory | exit 0 | same |
+| `initdb` into a directory that isn't empty | exit 1; `initdb: error: directory "<dir>" exists but is not empty` and a hint naming the directory | same message and exit code |
+| Startup | `AuthenticationSASL` offering only `SCRAM-SHA-256` | same, from `pgwire` |
+| Wrong password or unknown role | `FATAL 28P01 password authentication failed for user "<user>"` | same |
+| `SELECT 1` | one `int4` row | same |
+| `SELECT 1 FROM pg_database WHERE datname = $1` | a row once the database exists | same; `postgres`, `template0` and `template1` exist from the start |
+| `CREATE DATABASE "<name>"` | `CREATE DATABASE`, then `42P04 database "<name>" already exists` | same |
+| Restart | databases are still there | same |
+| SIGTERM, no client | exit 0 in about 80 ms | exit 0 |
+| SIGTERM, idle client | smart shutdown: keeps serving the client, and exits 0 about 10 ms after it disconnects. PV's stop waits out its 10 s grace and SIGKILLs (#391) | serves open clients until they disconnect, then exits 0. It closes its port at once, where PostgreSQL refuses new clients with `57P03` |
+| SIGINT | fast shutdown: exit 0 in under 10 ms; idle clients get `FATAL 57P01` | exit 0; closes the connections without `57P01` |
+| Processes | the postmaster plus workers, each in its own process group | one process |
+
+The dual-target runtime contract checks, against the fake and real PostgreSQL: `initdb` through PV's adapter, the adapter's readiness check (a SCRAM sign-in and `SELECT 1`), PV's allocation step creating a database and then finding it, `42P04`, a wrong password's `28P01`, and SIGTERM with no client. The `pv-fake` contracts check `initdb`'s messages, the startup reply and both shutdowns against the fake only. Tests of a Postgres that never becomes ready install the `long_running` persona as `bin/postgres` next to the `initdb` persona. The two tests that check PV persisted the password it gave `initdb` read the persona's `initdb.password`.
+
 ## Lints And Errors
 
 `pv-fake` opts into workspace lints. It is an application boundary, so it uses `anyhow`. Raw process, filesystem, and executable-path primitives use narrow `#[expect(..., reason = "...")]` items, as elsewhere in the repository. It uses no `unwrap`, `expect`, or `panic!`.
@@ -295,7 +317,9 @@ Each step is one pull request. Each starts by recording the relevant real artifa
    - **3a** (implemented): record real Redis, add the `redis-server` persona and the dual-target Managed Resource runtime contract, port the Redis installs and archive in `managed_resources/tests.rs`, and delete `redis-server.py` with its fixture contract.
    - **3b** (implemented): record real Mailpit, add the `mailpit` and `pv_fake_mailpit` personas and the `exit_after_first_http_response` setting, add the dual-target Mailpit runtime contract and a fake-only contract for PV's fake Mailpit adapter, port the Mailpit installs and archives in `managed_resources/tests.rs` and `jobs.rs` (the unready variant becomes `long_running`), and delete the four Mailpit fixtures, their fixture contracts, and the Mailpit parent-loss variant.
    - **3c** (implemented): record real RustFS, add the `rustfs` persona on `s3s` with an in-memory store and the `rustfs_reject_credentials` setting, add the dual-target RustFS runtime contract, port the RustFS installs and archive and move the tests' bucket and probe checks to S3, and delete `rustfs.py.in`, its fixture contract and the multi-server signal contract.
-4. **SQL.** Start with the `opensrv-mysql` + `sqlx` compatibility spike, then add `postgres`, `initdb`, the unready Postgres variant, and `mysqld`.
+4. **SQL**, after a compatibility check (2026-10-01): `pgwire` and `opensrv-mysql` each answered PV's `sqlx` 0.9 calls in a scratch server.
+   - **4a** (implemented): record real PostgreSQL, add the `initdb` and `postgres` personas on `pgwire` and the dual-target Postgres runtime contract, port the Postgres installs and archives in `managed_resources/tests.rs` (the unready variant becomes `long_running`), and delete `postgres.py`, `postgres-initdb.sh` and `postgres-unready.sh` with their fixture contracts, the Postgres half of the single-server signal contract, and the parent-loss contract.
+   - **4b**: record real MySQL, add the `mysqld` persona on `opensrv-mysql`, retire `RecordingMysqlAdmin` so the MySQL tests run PV's `sqlx` client, and delete `mysql.py` with its fixture contracts.
 5. **Cleanup.**
    - Delete the remaining runtime-standing shell and Python fixtures.
    - Rewrite `CONTRIBUTING.md`'s Fixture Lifecycle section around `pv_fake::install` and the lifeline.
@@ -315,13 +339,15 @@ For every step:
 
 ### Library compatibility
 
-`opensrv-mysql` was last released in February 2024 and hasn't been checked against `sqlx` 0.9's connection sequence. Step 4 starts with a spike. The fallback is today's `RecordingMysqlAdmin`, not a hand-written protocol. `pgwire` and `s3s` are actively released. `s3s` is what the real RustFS uses.
+`opensrv-mysql` was last released in February 2024. Step 4's compatibility check ran PV's `sqlx` 0.9 calls against it, and they passed: it advertises no TLS, so `sqlx` falls back to plaintext, and the persona checks the `caching_sha2_password` scramble itself. It answers a wrong password with its own `1698`, where MySQL sends `1045`. `pgwire` and `s3s` are actively released. `s3s` is what the real RustFS uses.
+
+`pgwire` adds 22 locked packages, including second versions of `base64`, `const-oid`, `fallible-iterator` and `rand_core`, and bumps no locked crate. `opensrv-mysql` depends on `mysql_common` 0.32 with default features it can't turn off: C builds of zstd and zlib, and `bindgen` and `cmake` as build dependencies, compiled on every CI platform that builds the daemon's tests.
 
 `s3s` 0.15 and later require `async-trait` 0.1.92, which depends on `syn` 3, so `syn` 3 is compiled in every build, release builds included, through `object_store`. `s3s` also adds second versions of `nom`, `quick-xml` and `atoi`, and raised the locked versions of about 30 crates. `s3s-fs` was left out: it adds the `s3s-test` suite, `colored` 3 and `tracing-subscriber`, and PV needs only a handful of bucket and object operations.
 
 ### First-launch scans
 
-Gatekeeper scans each new executable on its first launch, and every installed fake is a new copy. With `s3s` the debug binary grew from 16 MB to 30 MB, and 16 parallel first launches went from about 2.9 s to 4.1 s. Local runs from an app without the Developer Tools permission time out in `pv-fake`'s own contracts, which start their fakes in one burst. The fix is that permission (System Settings → Privacy & Security → Developer Tools) for the app running the tests; CI runners don't scan. If step 4's SQL crates make this worse, the heavy personas can move to their own binary.
+Gatekeeper scans each new executable on its first launch, and every installed fake is a new copy. With `s3s` the debug binary grew from 16 MB to 30 MB, and 16 parallel first launches went from about 2.9 s to 4.1 s. Local runs from an app without the Developer Tools permission time out in `pv-fake`'s own contracts, which start their fakes in one burst. The fix is that permission (System Settings → Privacy & Security → Developer Tools) for the app running the tests; CI runners don't scan. `pgwire` grew the binary from 30.5 MB to 33.7 MB. If the SQL crates make first launches slower, the heavy personas can move to their own binary.
 
 ### Stale or missing fake binary
 
@@ -363,4 +389,4 @@ The migration is complete when:
 
 ## Open Decisions
 
-- MySQL: `opensrv-mysql`, if the step 4 spike succeeds.
+None. MySQL uses `opensrv-mysql` (decided 2026-10-02, after the compatibility check passed).

@@ -1,7 +1,7 @@
 //! Contract tests that run the `pv-fake` binary directly, without the daemon supervisor.
 #![cfg(unix)]
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
@@ -989,6 +989,156 @@ fn rustfs_fake_answers_health_and_refuses_unsigned_requests() -> Result<()> {
     assert_eq!(event_names(&fake)?, ["started", "signal SIGTERM", "exit 0"]);
 
     Ok(())
+}
+
+/// The files PV relies on are checked against real PostgreSQL by the daemon's runtime contracts,
+/// which run `initdb` through PV's adapter.
+#[test]
+fn initdb_fake_initializes_a_data_directory_once_as_initdb_does() -> Result<()> {
+    let tempdir = tempdir()?;
+    let data_dir = tempdir.path().join("data");
+    let empty_dir = tempdir.path().join("empty");
+    state::fs::ensure_user_dir(&empty_dir)?;
+
+    let codes = [&data_dir, &empty_dir, &data_dir]
+        .into_iter()
+        .map(|data_dir| run_initdb(tempdir.path(), data_dir))
+        .collect::<Result<Vec<_>>>()?;
+
+    assert_eq!(codes, [Some(0), Some(0), Some(1)]);
+    assert_eq!(
+        state::fs::read_to_string(&data_dir.join("PG_VERSION"))?,
+        "18\n"
+    );
+    assert_eq!(
+        state::fs::read_to_string(&data_dir.join("initdb.password"))?,
+        "test-password"
+    );
+    assert_eq!(
+        state::fs::read_to_string(&tempdir.path().join("stderr"))?,
+        format!(
+            "initdb: error: directory \"{data_dir}\" exists but is not empty\ninitdb: hint: If \
+             you want to create a new database system, either remove or empty the directory \
+             \"{data_dir}\" or run initdb with an argument other than \"{data_dir}\".\n"
+        )
+    );
+
+    Ok(())
+}
+
+/// PostgreSQL's shutdowns, recorded from 18.4: after SIGTERM it keeps serving its open clients
+/// until they disconnect, and SIGINT ends them. Sign-in and queries are checked against real
+/// PostgreSQL by the daemon's runtime contracts.
+#[test]
+fn postgres_fake_serves_open_clients_through_sigterm_and_ends_them_on_sigint() -> Result<()> {
+    let tempdir = tempdir()?;
+    let data_dir = tempdir.path().join("data");
+    run_initdb(tempdir.path(), &data_dir)?;
+
+    let (terminated_fake, mut terminated, mut client, terminated_greeting) =
+        start_postgres_with_client(&tempdir.path().join("sigterm"), &data_dir)?;
+    signal(&terminated, Signal::TERM)?;
+    client.set_read_timeout(Some(Duration::from_millis(300)))?;
+    let still_served = client
+        .read(&mut [0])
+        .is_err_and(|error| matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut));
+    let waited_for_client = terminated.0.try_wait()?.is_none();
+    drop(client);
+    let terminated_status = wait_for_exit(&mut terminated)?;
+
+    let (interrupted_fake, mut interrupted, mut client, interrupted_greeting) =
+        start_postgres_with_client(&tempdir.path().join("sigint"), &data_dir)?;
+    signal(&interrupted, Signal::INT)?;
+    client.set_read_timeout(Some(WAIT_TIMEOUT))?;
+    let ended = client.read_to_end(&mut Vec::new()).is_ok();
+    let interrupted_status = wait_for_exit(&mut interrupted)?;
+
+    // PostgreSQL asks every client for SCRAM-SHA-256.
+    let sasl = b"R\0\0\0\x17\0\0\0\x0aSCRAM-SHA-256\0\0".to_vec();
+    assert_eq!(
+        [terminated_greeting, interrupted_greeting],
+        [sasl.clone(), sasl]
+    );
+    assert!(still_served && waited_for_client);
+    assert_eq!(terminated_status.code(), Some(0));
+    assert_eq!(
+        event_names(&terminated_fake)?,
+        ["started", "signal SIGTERM", "exit 0"]
+    );
+    assert!(ended);
+    assert_eq!(interrupted_status.code(), Some(0));
+    assert_eq!(
+        event_names(&interrupted_fake)?,
+        ["started", "signal SIGINT", "exit 0"]
+    );
+
+    Ok(())
+}
+
+/// Runs `initdb` with PV's arguments and the password `test-password`, and returns its exit code.
+fn run_initdb(root: &Utf8Path, data_dir: &Utf8Path) -> Result<Option<i32>> {
+    let password_file = root.join("password");
+    state::fs::write_sensitive_file(&password_file, "test-password")?;
+    let (_fake, mut process) = spawn_service(
+        root,
+        "initdb",
+        Persona::Initdb,
+        FakeSettings::default(),
+        &[
+            "-D",
+            data_dir.as_str(),
+            "--username",
+            "pv_root",
+            "--pwfile",
+            password_file.as_str(),
+            "--auth-host",
+            "scram-sha-256",
+            "--auth-local",
+            "trust",
+        ]
+        .map(str::to_owned),
+        &[],
+    )?;
+
+    Ok(wait_for_exit(&mut process)?.code())
+}
+
+/// Starts `postgres` with PV's arguments and connects a client that sends PostgreSQL's startup
+/// message. Returns the server's first reply.
+fn start_postgres_with_client(
+    root: &Utf8Path,
+    data_dir: &Utf8Path,
+) -> Result<(InstalledFake, FakeProcess, TcpStream, Vec<u8>)> {
+    let [port] = available_ports()?;
+    let port_argument = port.to_string();
+    let (fake, process) = spawn_service(
+        root,
+        "postgres",
+        Persona::Postgres,
+        FakeSettings::default(),
+        &[
+            "-D",
+            data_dir.as_str(),
+            "-h",
+            "127.0.0.1",
+            "-p",
+            port_argument.as_str(),
+        ]
+        .map(str::to_owned),
+        &[],
+    )?;
+    let mut client = connect_with_retry(port)?;
+    let parameters = b"user\0pv_root\0database\0postgres\0\0";
+    let mut startup = u32::try_from(8 + parameters.len())?.to_be_bytes().to_vec();
+    // Protocol version 3.0.
+    startup.extend_from_slice(&196_608_u32.to_be_bytes());
+    startup.extend_from_slice(parameters);
+    client.write_all(&startup)?;
+    client.set_read_timeout(Some(WAIT_TIMEOUT))?;
+    let mut greeting = vec![0; 24];
+    client.read_exact(&mut greeting)?;
+
+    Ok((fake, process, client, greeting))
 }
 
 /// Starts `redis-server <config>` with the config PV renders.
