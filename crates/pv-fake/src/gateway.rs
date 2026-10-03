@@ -466,15 +466,9 @@ impl Runtime {
     ) -> Result<Response<Full<Bytes>>, Infallible> {
         let method = request.method().clone();
         let path = request.uri().path().to_owned();
-        let result = match (endpoint, &method, path.as_str()) {
-            (Endpoint::Admin, &Method::GET, "/config/") => self.admin_config().await,
-            (Endpoint::Admin, &Method::POST, "/load") => self.load(request).await,
-            (Endpoint::Service, &Method::GET, "/__pv/health") => self.health(),
-            _ => self
-                .records
-                .request(&method, &path, 404, 0)
-                .map(|()| response(StatusCode::NOT_FOUND, "text/plain; charset=utf-8", "")),
-        };
+        let result = self
+            .route(endpoint, &method, &path, request.into_body())
+            .await;
 
         Ok(result.unwrap_or_else(|error| {
             let message = format!("pv-fake: {method} {path}: {error:#}\n");
@@ -485,6 +479,28 @@ impl Runtime {
                 message,
             )
         }))
+    }
+
+    /// Reads the whole body before answering, even on routes that ignore it: closing a connection
+    /// with unread request bytes resets it, and the client can lose the response, which Caddy's Go
+    /// server takes care to avoid.
+    async fn route(
+        self: Arc<Self>,
+        endpoint: Endpoint,
+        method: &Method,
+        path: &str,
+        body: Incoming,
+    ) -> Result<Response<Full<Bytes>>> {
+        let body = body.collect().await?.to_bytes();
+        match (endpoint, method, path) {
+            (Endpoint::Admin, &Method::GET, "/config/") => self.admin_config().await,
+            (Endpoint::Admin, &Method::POST, "/load") => self.load(body).await,
+            (Endpoint::Service, &Method::GET, "/__pv/health") => self.health(),
+            _ => self
+                .records
+                .request(method, path, 404, 0)
+                .map(|()| response(StatusCode::NOT_FOUND, "text/plain; charset=utf-8", "")),
+        }
     }
 
     async fn admin_config(&self) -> Result<Response<Full<Bytes>>> {
@@ -518,8 +534,7 @@ impl Runtime {
 
     /// Records the load, then finishes it in its own task: hyper drops a request's handler when
     /// the client disconnects, and a late accept must still apply after PV has stopped waiting.
-    async fn load(self: Arc<Self>, request: Request<Incoming>) -> Result<Response<Full<Bytes>>> {
-        let body = request.into_body().collect().await?.to_bytes();
+    async fn load(self: Arc<Self>, body: Bytes) -> Result<Response<Full<Bytes>>> {
         let source = String::from_utf8_lossy(&body).into_owned();
         // Caddy adapts the config, reading its imports, as soon as it arrives.
         let adapted = adapt(&source);
