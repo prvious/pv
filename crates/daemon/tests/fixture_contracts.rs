@@ -1,22 +1,17 @@
-use std::ffi::OsString;
 use std::io::{Error, ErrorKind, Read, Seek};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
-use std::path::PathBuf;
 use std::process::{Child, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use camino::Utf8Path;
 use camino_tempfile::{tempdir, tempfile};
 use insta::{Settings, assert_debug_snapshot};
 use rustix::io::Errno;
-use rustix::process::{
-    Pid, Signal, getpgid, kill_process, kill_process_group, test_kill_process,
-    test_kill_process_group,
-};
+use rustix::process::{Pid, Signal, kill_process, kill_process_group, test_kill_process};
 use state::StateError;
 
 const FIXTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
@@ -24,19 +19,10 @@ const FIXTURE_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const FIXTURE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 const FIXTURE_COMMAND_TIMEOUT_SCHEDULING_MARGIN: Duration = Duration::from_millis(100);
 const FIXTURE_HANDLER_MARKER_CONTENTS: &str = "started\n";
-const POSTGRES_SHUTDOWN_INJECTION_MARKER_CONTENTS: &str = "injected\n";
 
 const MYSQL_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/managed-resources/mysql.py"
-));
-const POSTGRES_FIXTURE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/postgres.py"
-));
-const POSTGRES_UNREADY_FIXTURE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/postgres-unready.sh"
 ));
 const HANGING_FIXTURE: &str = r#"#!/usr/bin/env python3
 import signal
@@ -69,53 +55,6 @@ with open(sys.argv[1], "w", encoding="utf-8") as marker:
 
 signal.pause()
 "#;
-const POSTGRES_SHUTDOWN_SITECUSTOMIZE: &str = r#"import os
-import signal
-import socketserver
-import threading
-
-
-injected = False
-
-
-def inject():
-    global injected
-    if injected:
-        return
-    injected = True
-    with open(os.environ["PV_POSTGRES_SHUTDOWN_MARKER"], "w", encoding="utf-8") as marker:
-        marker.write("injected\n")
-    os.kill(os.getpid(), signal.SIGTERM)
-
-
-original_pause = signal.pause
-
-
-def pause():
-    inject()
-    return original_pause()
-
-
-signal.pause = pause
-
-original_serve_forever = socketserver.BaseServer.serve_forever
-
-
-def serve_forever(self, *args, **kwargs):
-    if threading.current_thread() is threading.main_thread():
-        inject()
-    return original_serve_forever(self, *args, **kwargs)
-
-
-socketserver.BaseServer.serve_forever = serve_forever
-"#;
-const PARENT_LOSS_PS_PROBE: &str = r#"#!/bin/sh
-/bin/ps "$@"
-status=$?
-printf 'started\n' > ./watcher-ready
-exit "$status"
-"#;
-
 #[expect(
     clippy::disallowed_types,
     reason = "daemon fixture contract tests execute materialized test programs"
@@ -132,86 +71,25 @@ struct FixtureOutput {
 #[derive(Clone, Copy)]
 enum SingleServerFixture {
     Mysql,
-    Postgres,
 }
 
 impl SingleServerFixture {
     fn name(self) -> &'static str {
         match self {
             Self::Mysql => "MySQL",
-            Self::Postgres => "PostgreSQL",
         }
     }
 
     fn executable_name(self) -> &'static str {
         match self {
             Self::Mysql => "mysqld",
-            Self::Postgres => "postgres",
         }
     }
 
     fn source(self) -> &'static str {
         match self {
             Self::Mysql => MYSQL_FIXTURE,
-            Self::Postgres => POSTGRES_FIXTURE,
         }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-enum ParentLossFixture {
-    ShellSql,
-}
-
-impl ParentLossFixture {
-    fn name(self) -> &'static str {
-        match self {
-            Self::ShellSql => "shell-only SQL",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-enum ParentLossTiming {
-    AfterReadiness,
-    BeforeWatcherInitialization,
-}
-
-impl ParentLossTiming {
-    fn name(self) -> &'static str {
-        match self {
-            Self::AfterReadiness => "after readiness",
-            Self::BeforeWatcherInitialization => "before watcher initialization",
-        }
-    }
-}
-
-#[derive(Debug)]
-struct ParentLossOutcome {
-    fixture: &'static str,
-    timing: &'static str,
-    parent_exit_signal: Option<i32>,
-    leader_stopped: bool,
-    process_group_stopped: bool,
-}
-
-#[derive(Clone)]
-struct CapturedFixtureIdentity {
-    process_group: Pid,
-    members: Vec<CapturedFixtureMember>,
-}
-
-#[derive(Clone)]
-struct CapturedFixtureMember {
-    pid: Pid,
-    start_identity: platform::ProcessStartIdentity,
-}
-
-impl ParentLossOutcome {
-    fn succeeded(&self) -> bool {
-        self.parent_exit_signal == Some(Signal::KILL.as_raw())
-            && self.leader_stopped
-            && self.process_group_stopped
     }
 }
 
@@ -313,213 +191,14 @@ fn mysql_fixture_exits_after_sigterm_with_idle_client() -> Result<()> {
 }
 
 #[test]
-fn postgres_fixture_exits_after_sigterm_with_idle_client() -> Result<()> {
-    let tempdir = tempdir()?;
-    let fixture = tempdir.path().join("postgres");
-    let data_dir = tempdir.path().join("postgres-data");
-    let handler_marker = tempdir.path().join("postgres-handler-started");
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-    let port = listener.local_addr()?.port();
-    let port_argument = port.to_string();
-
-    materialize_fixture(&fixture, POSTGRES_FIXTURE)?;
-    state::fs::write_sensitive_file(&data_dir.join("PG_VERSION"), "16\n")?;
-    state::fs::write_sensitive_file(
-        &data_dir.join("postgresql.conf"),
-        &format!("listen_addresses = '127.0.0.1'\nport = {port}\n"),
-    )?;
-    drop(listener);
-
-    let mut child = FixtureCommand::new(fixture.as_std_path())
-        .args([
-            "-D",
-            data_dir.as_str(),
-            "-h",
-            "127.0.0.1",
-            "-p",
-            port_argument.as_str(),
-        ])
-        .current_dir(tempdir.path())
-        .env("PV_FIXTURE_HANDLER_STARTED", handler_marker.as_std_path())
-        .spawn()?;
-    let lifecycle = (|| {
-        let _idle_client = connect_to_loopback(port, FIXTURE_COMMAND_TIMEOUT)?;
-        wait_for_handler_marker(&handler_marker, FIXTURE_COMMAND_TIMEOUT)?;
-        kill_process(process_pid(child.id())?, Signal::TERM)?;
-        if !wait_for_child_exit(&mut child, FIXTURE_SHUTDOWN_TIMEOUT)? {
-            bail!("PostgreSQL fixture did not exit after SIGTERM with an idle client");
-        }
-
-        Ok::<(), anyhow::Error>(())
-    })();
-    let cleanup = kill_and_reap_child(&mut child);
-
-    if let Err(error) = lifecycle {
-        cleanup?;
-        return Err(error);
-    }
-    cleanup
-}
-
-#[test]
-fn postgres_fixture_shutdown_is_deterministic_after_sigterm() -> Result<()> {
-    let tempdir = tempdir()?;
-    let fixture = tempdir.path().join("postgres");
-    let data_dir = tempdir.path().join("postgres-data");
-    let probe_dir = tempdir.path().join("probe");
-    let shutdown_marker = tempdir.path().join("postgres-shutdown-injected");
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-    let port = listener.local_addr()?.port();
-    let port_argument = port.to_string();
-
-    materialize_fixture(&fixture, POSTGRES_FIXTURE)?;
-    state::fs::write_sensitive_file(
-        &probe_dir.join("sitecustomize.py"),
-        POSTGRES_SHUTDOWN_SITECUSTOMIZE,
-    )?;
-    state::fs::write_sensitive_file(&data_dir.join("PG_VERSION"), "16\n")?;
-    state::fs::write_sensitive_file(
-        &data_dir.join("postgresql.conf"),
-        &format!("listen_addresses = '127.0.0.1'\nport = {port}\n"),
-    )?;
-    drop(listener);
-
-    let mut child = FixtureCommand::new(fixture.as_std_path())
-        .args([
-            "-D",
-            data_dir.as_str(),
-            "-h",
-            "127.0.0.1",
-            "-p",
-            port_argument.as_str(),
-        ])
-        .current_dir(tempdir.path())
-        .env("PYTHONPATH", probe_dir.as_std_path())
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .env("PV_POSTGRES_SHUTDOWN_MARKER", shutdown_marker.as_std_path())
-        .spawn()?;
-    let lifecycle = (|| {
-        let deadline = Instant::now() + FIXTURE_COMMAND_TIMEOUT;
-        loop {
-            match state::fs::read_to_string(&shutdown_marker) {
-                Ok(contents) if contents == POSTGRES_SHUTDOWN_INJECTION_MARKER_CONTENTS => break,
-                Ok(_) => {}
-                Err(StateError::Filesystem { source, .. })
-                    if source.kind() == ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
-            if Instant::now() >= deadline {
-                bail!("timed out waiting for PostgreSQL shutdown injection marker");
-            }
-
-            thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
-        }
-
-        let deadline = Instant::now() + FIXTURE_SHUTDOWN_TIMEOUT;
-        let status = loop {
-            if let Some(status) = child.try_wait()? {
-                break status;
-            }
-            if Instant::now() >= deadline {
-                bail!("PostgreSQL fixture did not exit after injected SIGTERM");
-            }
-
-            thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
-        };
-        if status.signal() != Some(Signal::TERM.as_raw()) {
-            bail!("PostgreSQL fixture exited unexpectedly after injected SIGTERM: {status}");
-        }
-
-        Ok::<(), anyhow::Error>(())
-    })();
-    let cleanup = kill_and_reap_child(&mut child);
-
-    if let Err(error) = lifecycle {
-        cleanup?;
-        return Err(error);
-    }
-    cleanup
-}
-
-#[test]
 fn single_server_fixture_exits_after_signal_status() -> Result<()> {
-    for fixture in [SingleServerFixture::Mysql, SingleServerFixture::Postgres] {
+    for fixture in [SingleServerFixture::Mysql] {
         for signal in [Signal::TERM, Signal::INT] {
             assert_single_server_fixture_exits_after_signal(fixture, signal)?;
         }
     }
 
     Ok(())
-}
-
-#[test]
-fn long_running_fixtures_exit_when_their_test_parent_is_lost() -> Result<()> {
-    if !cfg!(target_os = "macos") {
-        return Ok(());
-    }
-
-    let mut outcomes = Vec::new();
-
-    for timing in [
-        ParentLossTiming::AfterReadiness,
-        ParentLossTiming::BeforeWatcherInitialization,
-    ] {
-        outcomes.push(assert_fixture_exits_after_parent_loss(
-            ParentLossFixture::ShellSql,
-            timing,
-        )?);
-    }
-
-    assert_debug_snapshot!(outcomes, @r#"
-    [
-        ParentLossOutcome {
-            fixture: "shell-only SQL",
-            timing: "after readiness",
-            parent_exit_signal: Some(
-                9,
-            ),
-            leader_stopped: true,
-            process_group_stopped: true,
-        },
-        ParentLossOutcome {
-            fixture: "shell-only SQL",
-            timing: "before watcher initialization",
-            parent_exit_signal: Some(
-                9,
-            ),
-            leader_stopped: true,
-            process_group_stopped: true,
-        },
-    ]
-    "#);
-
-    Ok(())
-}
-
-#[test]
-#[ignore = "nested parent process used by long_running_fixtures_exit_when_their_test_parent_is_lost"]
-fn parent_loss_fixture_test_parent_inner() -> Result<()> {
-    let mut command = FixtureCommand::new("./fixture-entrypoint");
-    command.process_group(0);
-    let mut fixture = command.spawn()?;
-    let process_group = process_pid(fixture.id())?;
-    if let Err(error) =
-        state::fs::write_sensitive_file(Utf8Path::new("./fixture.pid"), &fixture.id().to_string())
-    {
-        return match kill_process_group_and_reap_child(&mut fixture, process_group) {
-            Ok(()) => Err(error.into()),
-            Err(cleanup_error) => Err(anyhow!(
-                "{error}; fixture startup cleanup also failed: {cleanup_error}"
-            )),
-        };
-    }
-
-    loop {
-        if let Some(status) = fixture.try_wait()? {
-            bail!("parent-loss fixture exited before its test parent: {status}");
-        }
-        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
-    }
 }
 
 #[test]
@@ -670,363 +349,6 @@ os.makedirs = record_makedirs
     )
 }
 
-#[test]
-fn postgres_fixture_cli_preserves_shell_contract() -> Result<()> {
-    let tempdir = tempdir()?;
-    let fixture = tempdir.path().join("postgres");
-    let initialized_data_dir = tempdir.path().join("initialized-postgres");
-    let selected_missing_data_dir = tempdir.path().join("selected-missing-postgres");
-
-    materialize_fixture(&fixture, POSTGRES_FIXTURE)?;
-    state::fs::write_sensitive_file(&initialized_data_dir.join("PG_VERSION"), "16\n")?;
-
-    let unknown_argument = run_fixture(&fixture, &["--unexpected"], tempdir.path())?;
-    let last_data_dir_wins = run_fixture(
-        &fixture,
-        &[
-            "-D",
-            initialized_data_dir.as_str(),
-            "-D",
-            selected_missing_data_dir.as_str(),
-            "-h",
-            "127.0.0.1",
-            "-p",
-            "5432",
-        ],
-        tempdir.path(),
-    )?;
-
-    assert_fixture_snapshot(
-        tempdir.path(),
-        "postgres_fixture_cli_preserves_shell_contract",
-        (unknown_argument, last_data_dir_wins),
-    )
-}
-
-fn assert_fixture_exits_after_parent_loss(
-    fixture: ParentLossFixture,
-    timing: ParentLossTiming,
-) -> Result<ParentLossOutcome> {
-    let tempdir = tempdir()?;
-    prepare_parent_loss_fixture(tempdir.path(), fixture, timing)?;
-
-    let mut parent_stdout = tempfile()?;
-    let mut parent_stderr = tempfile()?;
-    let mut parent = FixtureCommand::new(current_test_binary()?);
-    parent
-        .args([
-            "--exact",
-            "parent_loss_fixture_test_parent_inner",
-            "--ignored",
-            "--nocapture",
-        ])
-        .current_dir(tempdir.path())
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(parent_stdout.try_clone()?))
-        .stderr(Stdio::from(parent_stderr.try_clone()?));
-    let mut parent = parent.spawn()?;
-    let mut captured_identity = None;
-
-    let lifecycle = (|| {
-        let leader = wait_for_recorded_pid(
-            &tempdir.path().join("fixture.pid"),
-            &mut parent,
-            FIXTURE_COMMAND_TIMEOUT,
-        )?;
-        let process_group = getpgid(Some(leader))
-            .with_context(|| format!("failed to inspect fixture leader {leader}"))?;
-        if process_group != leader {
-            bail!(
-                "parent-loss fixture leader {leader} did not own its process group {process_group}"
-            );
-        }
-        captured_identity = Some(CapturedFixtureIdentity {
-            process_group,
-            members: vec![capture_fixture_member_identity(leader)?],
-        });
-
-        if matches!(timing, ParentLossTiming::BeforeWatcherInitialization) {
-            wait_for_handler_marker(
-                &tempdir.path().join("parent-captured"),
-                FIXTURE_COMMAND_TIMEOUT,
-            )?;
-        }
-
-        if matches!(timing, ParentLossTiming::AfterReadiness) {
-            wait_for_handler_marker(
-                &tempdir.path().join("watcher-ready"),
-                FIXTURE_COMMAND_TIMEOUT,
-            )?;
-        }
-
-        parent
-            .kill()
-            .context("failed to kill fixture test parent")?;
-        let parent_status = wait_for_child_status(&mut parent, FIXTURE_SHUTDOWN_TIMEOUT)?
-            .ok_or_else(|| anyhow!("timed out reaping the fixture test parent"))?;
-
-        let identity = captured_identity
-            .as_ref()
-            .ok_or_else(|| anyhow!("fixture process identity was not captured"))?;
-        let (members_stopped, process_group_stopped) =
-            wait_for_process_identity_exit(identity, FIXTURE_COMMAND_TIMEOUT)?;
-
-        Ok::<_, anyhow::Error>(ParentLossOutcome {
-            fixture: fixture.name(),
-            timing: timing.name(),
-            parent_exit_signal: parent_status.signal(),
-            leader_stopped: members_stopped.first().copied().unwrap_or(false),
-            process_group_stopped,
-        })
-    })();
-
-    let lifecycle = lifecycle.and_then(|outcome| {
-        if outcome.succeeded() {
-            Ok(outcome)
-        } else {
-            bail!(
-                "{} fixture failed parent-loss contract {}: {outcome:?}",
-                outcome.fixture,
-                outcome.timing
-            )
-        }
-    });
-    let emergency_identity = match &lifecycle {
-        Ok(outcome) if outcome.succeeded() => None,
-        Ok(_) | Err(_) => captured_identity.clone(),
-    };
-    let cleanup = cleanup_parent_loss_fixture(&mut parent, emergency_identity);
-
-    match (lifecycle, cleanup) {
-        (Ok(outcome), Ok(())) => Ok(outcome),
-        (Err(error), Ok(())) => Err(parent_loss_error_with_output(
-            error,
-            &mut parent_stdout,
-            &mut parent_stderr,
-        )),
-        (Ok(_outcome), Err(cleanup_error)) => Err(cleanup_error),
-        (Err(error), Err(cleanup_error)) => {
-            let error =
-                parent_loss_error_with_output(error, &mut parent_stdout, &mut parent_stderr);
-            Err(anyhow!(
-                "{error}; emergency fixture cleanup also failed: {cleanup_error}"
-            ))
-        }
-    }
-}
-
-fn parent_loss_error_with_output(
-    error: anyhow::Error,
-    stdout: &mut (impl Read + Seek),
-    stderr: &mut (impl Read + Seek),
-) -> anyhow::Error {
-    let stdout = captured_fixture_output(stdout);
-    let stderr = captured_fixture_output(stderr);
-    anyhow!("{error}; nested stdout={stdout:?}; nested stderr={stderr:?}")
-}
-
-fn captured_fixture_output(file: &mut (impl Read + Seek)) -> String {
-    match read_fixture_output(file) {
-        Ok(contents) => String::from_utf8_lossy(&contents).into_owned(),
-        Err(error) => format!("<failed to capture output: {error}>"),
-    }
-}
-
-fn prepare_parent_loss_fixture(
-    root: &Utf8Path,
-    fixture: ParentLossFixture,
-    timing: ParentLossTiming,
-) -> Result<()> {
-    let fixture_command = match fixture {
-        ParentLossFixture::ShellSql => {
-            let executable = root.join("postgres-unready");
-            let data_dir = root.join("postgres-data");
-            materialize_fixture(&executable, POSTGRES_UNREADY_FIXTURE)?;
-            materialize_fixture(&root.join("probe-bin/ps"), PARENT_LOSS_PS_PROBE)?;
-            state::fs::write_sensitive_file(&data_dir.join("PG_VERSION"), "16\n")?;
-            "PATH=./probe-bin:$PATH\nexport PATH\nexec ./postgres-unready -D ./postgres-data -h 127.0.0.1 -p 5432\n"
-        }
-    };
-
-    let parent_capture_gate = if matches!(timing, ParentLossTiming::BeforeWatcherInitialization) {
-        "PV_TEST_PARENT_CAPTURE_MARKER=./parent-captured\n\
-PV_TEST_PARENT_CAPTURE_RELEASE=./parent-capture-release\n\
-export PV_TEST_PARENT_CAPTURE_MARKER PV_TEST_PARENT_CAPTURE_RELEASE\n"
-    } else {
-        ""
-    };
-    materialize_fixture(
-        &root.join("fixture-entrypoint"),
-        &format!("#!/bin/sh\nset -eu\n\n{parent_capture_gate}{fixture_command}"),
-    )
-}
-
-fn wait_for_recorded_pid(path: &Utf8Path, parent: &mut Child, timeout: Duration) -> Result<Pid> {
-    let deadline = Instant::now() + timeout;
-
-    loop {
-        match state::fs::read_to_string(path) {
-            Ok(contents) => {
-                let raw_pid = contents.trim().parse::<i32>()?;
-                return Pid::from_raw(raw_pid)
-                    .ok_or_else(|| anyhow!("fixture recorded invalid process id {raw_pid}"));
-            }
-            Err(StateError::Filesystem { source, .. }) if source.kind() == ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        if let Some(status) = parent.try_wait()? {
-            bail!("fixture test parent exited before recording its child PID: {status}");
-        }
-        if Instant::now() >= deadline {
-            bail!("timed out waiting for fixture PID at {path}");
-        }
-
-        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
-    }
-}
-
-fn capture_fixture_member_identity(pid: Pid) -> Result<CapturedFixtureMember> {
-    let raw_pid = u32::try_from(pid.as_raw_pid())?;
-    let identity = platform::inspect_process_identity(raw_pid)?
-        .ok_or_else(|| anyhow!("fixture member {pid} exited before identity capture"))?;
-
-    Ok(CapturedFixtureMember {
-        pid,
-        start_identity: identity.start_identity,
-    })
-}
-
-fn wait_for_process_identity_exit(
-    identity: &CapturedFixtureIdentity,
-    timeout: Duration,
-) -> Result<(Vec<bool>, bool)> {
-    let deadline = Instant::now() + timeout;
-
-    loop {
-        let stopped = identity
-            .members
-            .iter()
-            .map(|member| member_identity_is_stopped(member, identity.process_group))
-            .collect::<Result<Vec<_>>>()?;
-        let process_group_stopped = stopped.iter().all(|stopped| *stopped)
-            && captured_process_group_is_stopped(identity.process_group)?;
-        if process_group_stopped || Instant::now() >= deadline {
-            return Ok((stopped, process_group_stopped));
-        }
-        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
-    }
-}
-
-fn captured_process_group_is_stopped(process_group: Pid) -> Result<bool> {
-    match test_kill_process_group(process_group) {
-        Ok(()) => Ok(false),
-        Err(Errno::SRCH) => Ok(true),
-        // An inaccessible group cannot be verified as stopped. Cleanup will
-        // fail without signaling it unless a captured member still matches.
-        Err(Errno::PERM) => Ok(false),
-        Err(error) => Err(error)
-            .with_context(|| format!("failed to inspect fixture process group {process_group}")),
-    }
-}
-
-fn member_identity_is_stopped(
-    member: &CapturedFixtureMember,
-    expected_process_group: Pid,
-) -> Result<bool> {
-    let process_group_changed = match getpgid(Some(member.pid)) {
-        Ok(process_group) => process_group != expected_process_group,
-        // An inaccessible PID cannot be proven to still be the captured fixture
-        // member, so it must not authorize process-group cleanup.
-        Err(Errno::SRCH | Errno::PERM) => return Ok(true),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("failed to inspect fixture member {}", member.pid));
-        }
-    };
-    if process_group_changed {
-        return Ok(true);
-    }
-
-    Ok(
-        platform::inspect_process_identity(u32::try_from(member.pid.as_raw_pid())?)?
-            .is_none_or(|identity| identity.start_identity != member.start_identity),
-    )
-}
-
-fn cleanup_parent_loss_fixture(
-    parent: &mut Child,
-    identity: Option<CapturedFixtureIdentity>,
-) -> Result<()> {
-    let parent_cleanup = match parent.try_wait() {
-        Ok(Some(_status)) => Ok(()),
-        Ok(None) => kill_and_reap_child(parent).context("failed to stop fixture test parent"),
-        Err(error) => Err(error).context("failed to inspect fixture test parent"),
-    };
-    let group_cleanup = if let Some(identity) = identity {
-        cleanup_captured_process_group(&identity)
-    } else {
-        Ok(())
-    };
-
-    match (parent_cleanup, group_cleanup) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-        (Err(parent_error), Err(group_error)) => Err(anyhow!(
-            "fixture parent cleanup failed: {parent_error}; fixture group cleanup failed: {group_error}"
-        )),
-    }
-}
-
-fn cleanup_captured_process_group(identity: &CapturedFixtureIdentity) -> Result<()> {
-    let mut verified_member = None;
-    for member in &identity.members {
-        if !member_identity_is_stopped(member, identity.process_group)? {
-            verified_member = Some(member.pid);
-            break;
-        }
-    }
-
-    if verified_member.is_some() {
-        match kill_process_group(identity.process_group, Signal::KILL) {
-            Ok(()) | Err(Errno::SRCH) => {}
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "failed to kill verified fixture process group {}",
-                        identity.process_group
-                    )
-                });
-            }
-        }
-    }
-
-    let (stopped, process_group_stopped) =
-        wait_for_process_identity_exit(identity, FIXTURE_SHUTDOWN_TIMEOUT)?;
-    if !process_group_stopped {
-        bail!(
-            "fixture cleanup could not verify process group {} stopped; members={stopped:?}",
-            identity.process_group
-        );
-    }
-
-    Ok(())
-}
-
-fn current_test_binary() -> Result<OsString> {
-    let binary = std::env::args_os()
-        .next()
-        .ok_or_else(|| anyhow!("test binary path was missing"))?;
-    let binary = PathBuf::from(binary);
-    if binary.is_absolute() {
-        return Ok(binary.into_os_string());
-    }
-
-    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .join(binary)
-        .into_os_string())
-}
-
 fn assert_single_server_fixture_exits_after_signal(
     fixture: SingleServerFixture,
     signal: Signal,
@@ -1058,22 +380,6 @@ fn assert_single_server_fixture_exits_after_signal(
                 socket_path.as_str(),
                 "--init-file",
                 init_file.as_str(),
-            ]);
-        }
-        SingleServerFixture::Postgres => {
-            let data_dir = tempdir.path().join("postgres-data");
-            state::fs::write_sensitive_file(&data_dir.join("PG_VERSION"), "16\n")?;
-            state::fs::write_sensitive_file(
-                &data_dir.join("postgresql.conf"),
-                &format!("listen_addresses = '127.0.0.1'\nport = {port}\n"),
-            )?;
-            command.args([
-                "-D",
-                data_dir.as_str(),
-                "-h",
-                "127.0.0.1",
-                "-p",
-                port_argument.as_str(),
             ]);
         }
     }

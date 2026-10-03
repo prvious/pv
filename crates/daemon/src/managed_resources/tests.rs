@@ -84,18 +84,6 @@ const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
 const FIXTURE_RUNTIME_PUBLICATION_TIMEOUT: Duration = Duration::from_millis(500);
 const FIXTURE_RUNTIME_STOP_TIMEOUT: Duration = Duration::from_secs(1);
 const TEST_ARTIFACT_MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
-const POSTGRES_SCRIPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/postgres.py"
-));
-const POSTGRES_INITDB_SCRIPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/postgres-initdb.sh"
-));
-const POSTGRES_UNREADY_SCRIPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/postgres-unready.sh"
-));
 const EMPTY_ARTIFACT_MANIFEST: &str = r#"
 {
   "schema_version": 1,
@@ -7454,17 +7442,18 @@ fn seed_fake_sql_artifact(paths: &PvPaths, resource: &str, track: &str) -> Resul
 }
 
 fn seed_postgres_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
-    seed_postgres_fixture_artifact_with_script(paths, track, POSTGRES_SCRIPT)
+    seed_postgres_fixture_artifact_with(paths, track, Persona::Postgres)
 }
 
+/// A Postgres that stays alive without ever listening.
 fn seed_unready_postgres_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
-    seed_postgres_fixture_artifact_with_script(paths, track, POSTGRES_UNREADY_SCRIPT)
+    seed_postgres_fixture_artifact_with(paths, track, Persona::LongRunning)
 }
 
-fn seed_postgres_fixture_artifact_with_script(
+fn seed_postgres_fixture_artifact_with(
     paths: &PvPaths,
     track: &str,
-    postgres_script: &str,
+    postgres: Persona,
 ) -> Result<()> {
     let artifact_version = format!("{track}.0-pv1");
     let release_path = paths
@@ -7473,7 +7462,7 @@ fn seed_postgres_fixture_artifact_with_script(
         .join(track)
         .join(format!("releases/{artifact_version}"));
 
-    write_postgres_fixture_binaries_with_script(&release_path, postgres_script)?;
+    write_postgres_fixture_binaries_with(&release_path, postgres)?;
     let mut database = Database::open(paths)?;
     database.record_managed_resource_track_installed(
         "postgres",
@@ -7486,7 +7475,7 @@ fn seed_postgres_fixture_artifact_with_script(
 }
 
 fn seed_postgres_fixture_artifact_for_track(paths: &PvPaths, track: &str) -> Result<()> {
-    seed_postgres_fixture_artifact_with_script(paths, track, POSTGRES_SCRIPT)
+    seed_postgres_fixture_artifact_with(paths, track, Persona::Postgres)
 }
 
 fn seed_postgres_preload_modules(
@@ -7835,29 +7824,22 @@ fn create_rustfs_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<
 }
 
 fn write_postgres_fixture_binaries(release_path: &Utf8Path) -> Result<()> {
-    write_postgres_fixture_binaries_with_script(release_path, POSTGRES_SCRIPT)
+    write_postgres_fixture_binaries_with(release_path, Persona::Postgres)
 }
 
-fn write_postgres_fixture_binaries_with_script(
-    release_path: &Utf8Path,
-    postgres_script: &str,
-) -> Result<()> {
-    write_postgres_fixture_binaries_without_support_files(release_path)?;
-    write_postgres_support_files(release_path)?;
-    state::fs::write_sensitive_file(&release_path.join("bin/postgres"), postgres_script)?;
-    set_executable(&release_path.join("bin/postgres"))?;
-
-    Ok(())
+fn write_postgres_fixture_binaries_with(release_path: &Utf8Path, postgres: Persona) -> Result<()> {
+    install_postgres_fakes(release_path, postgres)?;
+    write_postgres_support_files(release_path)
 }
 
 fn write_postgres_fixture_binaries_without_support_files(release_path: &Utf8Path) -> Result<()> {
-    let initdb = release_path.join("bin/initdb");
-    let postgres = release_path.join("bin/postgres");
+    install_postgres_fakes(release_path, Persona::Postgres)
+}
 
-    state::fs::write_sensitive_file(&initdb, POSTGRES_INITDB_SCRIPT)?;
-    state::fs::write_sensitive_file(&postgres, POSTGRES_SCRIPT)?;
-    set_executable(&initdb)?;
-    set_executable(&postgres)?;
+/// The fakes and their scenario files, which an archive carries and PV extracts together.
+fn install_postgres_fakes(release_path: &Utf8Path, postgres: Persona) -> Result<()> {
+    pv_fake::install(&release_path.join("bin/initdb"), Persona::Initdb)?;
+    pv_fake::install(&release_path.join("bin/postgres"), postgres)?;
 
     Ok(())
 }
