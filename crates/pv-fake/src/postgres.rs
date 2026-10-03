@@ -66,8 +66,7 @@ pub(crate) fn initdb(argv: &[String]) -> Result<u8> {
     else {
         bail!("expected `initdb -D <dir> --username <name> --pwfile <file>`");
     };
-    if state::fs::path_is_directory(&data_dir)?
-        && !state::fs::read_dir_paths(&data_dir)?.is_empty()
+    if state::fs::path_is_directory(&data_dir)? && !state::fs::read_dir_paths(&data_dir)?.is_empty()
     {
         // initdb's message for a data directory that isn't empty.
         let _write_result = write!(
@@ -106,7 +105,13 @@ pub(crate) async fn start(argv: &[String]) -> Result<Clients> {
         match flag.as_str() {
             "-D" => data_dir = Some(Utf8PathBuf::from(value)),
             "-h" => host = Some(value.as_str()),
-            "-p" => port = Some(value.parse::<u16>().with_context(|| format!("port {value}"))?),
+            "-p" => {
+                port = Some(
+                    value
+                        .parse::<u16>()
+                        .with_context(|| format!("port {value}"))?,
+                )
+            }
             _ => bail!("unexpected postgres argument {flag}"),
         }
     }
@@ -162,6 +167,7 @@ impl Clients {
 }
 
 /// A data directory and the role `initdb` created in it.
+#[derive(Debug)]
 struct Cluster {
     data_dir: Utf8PathBuf,
     username: String,
@@ -250,7 +256,7 @@ impl Statement {
     fn parameter_types(&self) -> Vec<Type> {
         match self {
             Self::DatabaseExists => vec![Type::TEXT],
-            Self::SelectOne | Self::CreateDatabase(_name) => Vec::new(),
+            Self::SelectOne | Self::CreateDatabase(_) => Vec::new(),
         }
     }
 
@@ -264,7 +270,7 @@ impl Statement {
                 Type::INT4,
                 format.format_for(0),
             )],
-            Self::CreateDatabase(_name) => Vec::new(),
+            Self::CreateDatabase(_) => Vec::new(),
         }
     }
 }
@@ -361,10 +367,8 @@ impl PgWireServerHandlers for Handlers {
     fn startup_handler(&self) -> Arc<impl StartupHandler> {
         let mut scram = ScramAuth::new(self.cluster.clone());
         scram.set_iterations(SCRAM_ITERATIONS);
-        let parameters = DefaultServerParameterProvider {
-            server_version: SERVER_VERSION.to_owned(),
-            ..DefaultServerParameterProvider::default()
-        };
+        let mut parameters = DefaultServerParameterProvider::default();
+        parameters.server_version = SERVER_VERSION.to_owned();
 
         Arc::new(SASLAuthStartupHandler::new(Arc::new(parameters)).with_scram(scram))
     }
