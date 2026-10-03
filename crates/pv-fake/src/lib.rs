@@ -31,6 +31,8 @@ mod lifeline;
 #[cfg(unix)]
 mod mailpit;
 #[cfg(unix)]
+mod postgres;
+#[cfg(unix)]
 mod redis;
 #[cfg(unix)]
 mod rustfs;
@@ -147,6 +149,12 @@ pub enum Persona {
     /// `rustfs --address <address> --console-address <address> <data dir>`: `/health` and the S3
     /// operations PV uses, signed with the keys from the environment.
     Rustfs,
+    /// `initdb -D <dir> --username <name> --pwfile <file> ...`: the data directory files PV and
+    /// the `postgres` persona read.
+    Initdb,
+    /// `postgres -D <dir> -h <host> -p <port>`: SCRAM-SHA-256 sign-in as the role `initdb`
+    /// created, the queries PV's SQL client sends, and PostgreSQL's smart and fast shutdowns.
+    Postgres,
 }
 
 /// Entry point shared by the `pv-fake` binary and the daemon's `pv-fake` example.

@@ -57,6 +57,7 @@ linemux = "0.3.0"
 nix = { version = "0.31.3", features = ["socket", "user"] }
 portable-pty = "0.9.0"
 object_store = { version = "0.13.2", default-features = false, features = ["aws"] }
+pgwire = { version = "0.41.1", default-features = false, features = ["server-api-ring"] }
 rcgen = { version = "0.14.8", features = ["x509-parser"] }
 redis = { version = "1.2.2", default-features = false, features = ["tokio-comp"] }
 redis-protocol = "6.0.0"
