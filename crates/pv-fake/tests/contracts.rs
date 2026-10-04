@@ -1078,6 +1078,105 @@ fn postgres_fake_keeps_open_clients_connected_through_sigterm_and_closes_them_on
     Ok(())
 }
 
+/// The system databases PV relies on are checked against real MySQL by the daemon's runtime
+/// contracts, which initialize through PV's adapter.
+#[test]
+fn mysqld_fake_initializes_a_data_directory_once_as_mysqld_does() -> Result<()> {
+    let tempdir = tempdir()?;
+    let data_dir = tempdir.path().join("data");
+    let empty_dir = tempdir.path().join("empty");
+    state::fs::ensure_user_dir(&empty_dir)?;
+
+    let codes = [&data_dir, &empty_dir, &data_dir]
+        .into_iter()
+        .map(|data_dir| run_mysqld_initialize(tempdir.path(), data_dir))
+        .collect::<Result<Vec<_>>>()?;
+
+    assert_eq!(codes, [Some(0), Some(0), Some(1)]);
+    assert!(state::fs::path_is_directory(&data_dir.join("mysql"))?);
+    assert_eq!(
+        state::fs::read_to_string(&tempdir.path().join("stderr"))?,
+        format!(
+            "[ERROR] [MY-010457] [Server] --initialize specified but the data directory has files \
+             in it. Aborting.\n[ERROR] [MY-013236] [Server] The designated data directory \
+             {data_dir}/ is unusable. You can remove all files that the server added to \
+             it.\n[ERROR] [MY-010119] [Server] Aborting\n"
+        )
+    );
+
+    Ok(())
+}
+
+/// MySQL 8.4's signals: SIGTERM shuts it down and SIGINT is ignored. The persona speaks no MySQL
+/// protocol; its port only accepts connections.
+#[test]
+fn mysqld_fake_accepts_connections_and_exits_on_sigterm_but_not_sigint() -> Result<()> {
+    let tempdir = tempdir()?;
+    let data_dir = tempdir.path().join("data");
+    run_mysqld_initialize(tempdir.path(), &data_dir)?;
+    let [port] = available_ports()?;
+    let port_argument = port.to_string();
+    let (fake, mut process) = spawn_service(
+        &tempdir.path().join("server"),
+        "mysqld",
+        Persona::Mysqld,
+        FakeSettings::default(),
+        &[
+            "--no-defaults",
+            "--datadir",
+            data_dir.as_str(),
+            "--bind-address=127.0.0.1",
+            "--port",
+            port_argument.as_str(),
+            "--mysqlx=0",
+            "--socket",
+            tempdir.path().join("mysql.sock").as_str(),
+            "--init-file",
+            tempdir.path().join("init.sql").as_str(),
+        ]
+        .map(str::to_owned),
+        &[],
+    )?;
+
+    connect_with_retry(port)?;
+    signal(&process, Signal::INT)?;
+    sleep(Duration::from_millis(300));
+    let ignored_sigint = process.0.try_wait()?.is_none();
+    signal(&process, Signal::TERM)?;
+    let status = wait_for_exit(&mut process)?;
+
+    assert!(ignored_sigint);
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(
+        event_names(&fake)?,
+        ["started", "signal SIGINT", "signal SIGTERM", "exit 0"]
+    );
+
+    Ok(())
+}
+
+/// Runs `mysqld --initialize-insecure` with PV's arguments and returns its exit code.
+fn run_mysqld_initialize(root: &Utf8Path, data_dir: &Utf8Path) -> Result<Option<i32>> {
+    let (_fake, mut process) = spawn_service(
+        root,
+        "mysqld",
+        Persona::Mysqld,
+        FakeSettings::default(),
+        &[
+            "--no-defaults",
+            "--initialize-insecure",
+            "--datadir",
+            data_dir.as_str(),
+            "--basedir",
+            root.as_str(),
+        ]
+        .map(str::to_owned),
+        &[],
+    )?;
+
+    Ok(wait_for_exit(&mut process)?.code())
+}
+
 /// Runs `initdb` with PV's arguments and the password `test-password`, and returns its exit code.
 fn run_initdb(root: &Utf8Path, data_dir: &Utf8Path) -> Result<Option<i32>> {
     let password_file = root.join("password");

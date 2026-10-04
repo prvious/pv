@@ -9,7 +9,7 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use crate::events::{EventKind, EventLog};
 use crate::{
     BUILD_ID, DESCENDANT_FLAG, Persona, Scenario, ScenarioFile, events_path, gateway, lifeline,
-    mailpit, postgres, redis, rustfs, scenario_path,
+    mailpit, mysql, postgres, redis, rustfs, scenario_path,
 };
 
 #[expect(
@@ -112,6 +112,13 @@ async fn run_persona(scenario: Scenario, argv: Vec<String>, events: EventLog) ->
             }
             code
         }
+        Ok(Started::ServingUntilSigterm) => loop {
+            let received = signals.next().await;
+            let code = record_signal(received, &events)?;
+            if received == "SIGTERM" {
+                break code;
+            }
+        },
         Err(received) => record_signal(received, &events)?,
     };
     if let Some(descendant) = descendant {
@@ -130,6 +137,8 @@ enum Started {
     Serving,
     /// Serve until SIGINT, or after SIGTERM until its clients have disconnected.
     ServingPostgres(postgres::Clients),
+    /// Serve until SIGTERM, ignoring SIGINT as MySQL does.
+    ServingUntilSigterm,
 }
 
 async fn start_persona(scenario: &Scenario, argv: &[String], events: &EventLog) -> Result<Started> {
@@ -144,6 +153,12 @@ async fn start_persona(scenario: &Scenario, argv: &[String], events: &EventLog) 
         Persona::Rustfs => rustfs::start(argv, &scenario.settings).await?,
         Persona::Initdb => Some(postgres::initdb(argv)?),
         Persona::Postgres => return Ok(Started::ServingPostgres(postgres::start(argv).await?)),
+        Persona::Mysqld => {
+            return Ok(match mysql::start(argv).await? {
+                mysql::Mysqld::Initialized(code) => Started::Exited(code),
+                mysql::Mysqld::Serving => Started::ServingUntilSigterm,
+            });
+        }
     };
 
     Ok(exit_code.map_or(Started::Serving, Started::Exited))

@@ -16,7 +16,7 @@ use camino_tempfile::{Utf8TempDir, tempdir};
 use pv_fake::Persona;
 use resources::{
     ManagedResourceCommands, ManagedResourceInstall, ResourceAdapter, TargetPlatform,
-    TrackSelector, mailpit_adapter, postgres_adapter, redis_adapter, rustfs_adapter,
+    TrackSelector, mailpit_adapter, mysql_adapter, postgres_adapter, redis_adapter, rustfs_adapter,
 };
 use sqlx::postgres::PgPool;
 use state::{EnvContextValues, PvPaths};
@@ -166,6 +166,31 @@ async fn real_postgres_satisfies_the_runtime_contract() -> Result<()> {
         &paths,
         postgres.current_artifact_path(),
         postgres.track().as_str(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn fake_mysql_satisfies_the_runtime_contract() -> Result<()> {
+    let (_tempdir, paths) = contract_paths()?;
+    let artifact_path = fake_artifact(&paths, "mysql", "8.4", "bin/mysqld", Persona::Mysqld)?;
+
+    mysql_contract(&paths, &artifact_path, "8.4").await
+}
+
+#[tokio::test]
+#[ignore = "requires PV_E2E_REAL_ARTIFACTS=1 and PV_E2E_ARTIFACT_MANIFEST_URL"]
+async fn real_mysql_satisfies_the_runtime_contract() -> Result<()> {
+    let Some(manifest_url) = real_artifact_manifest_url()? else {
+        return Ok(());
+    };
+    let (_tempdir, paths) = contract_paths()?;
+    let mysql = install_real_artifact(&paths, manifest_url, &mysql_adapter()?)?;
+
+    mysql_contract(
+        &paths,
+        mysql.current_artifact_path(),
+        mysql.track().as_str(),
     )
     .await
 }
@@ -347,6 +372,25 @@ async fn postgres_serves_allocations(admin: SqlAdminContext) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// PV's MySQL runtime: preparation initializes the data directory, and the runtime starts with
+/// PV's arguments and init file, accepts connections on its port, and stops on SIGTERM. The fake
+/// speaks no MySQL protocol, so the readiness check is the daemon tests' TCP connect; PV's SQL
+/// client meets real MySQL in `tests/real_artifact_resource_matrix.rs`.
+async fn mysql_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) -> Result<()> {
+    let [port] = available_ports()?;
+    let adapter = super::mysql::MysqlRuntimeAdapter::with_recording_admin(
+        super::mysql::RecordingMysqlAdmin::default(),
+    )?;
+
+    run_contract(
+        paths,
+        &adapter,
+        runtime_context(paths, "mysql", track, artifact_path, [("mysql", port)]),
+        future::ready(Ok(())),
+    )
+    .await
 }
 
 /// The SQLSTATE a statement failed with, or `None` if it succeeded.

@@ -61,7 +61,7 @@ impl MysqlRuntimeAdapter {
     }
 
     #[cfg(test)]
-    fn with_recording_admin(admin: RecordingMysqlAdmin) -> Result<Self, DaemonError> {
+    pub(crate) fn with_recording_admin(admin: RecordingMysqlAdmin) -> Result<Self, DaemonError> {
         let preferred_port = available_test_port()?;
         let ports = Box::leak(Box::new([ManagedResourcePortSpec {
             name: MYSQL_PORT_NAME,
