@@ -18,6 +18,7 @@ use resources::{
     ManagedResourceCommands, ManagedResourceInstall, ResourceAdapter, TargetPlatform,
     TrackSelector, mailpit_adapter, mysql_adapter, postgres_adapter, redis_adapter, rustfs_adapter,
 };
+use rustix::process::{Pid, test_kill_process};
 use sqlx::postgres::PgPool;
 use state::{EnvContextValues, PvPaths};
 use tokio::io::AsyncReadExt;
@@ -481,7 +482,15 @@ async fn start_wait_and_stop(
     // A runtime that failed its readiness wait has been stopped and its records removed already.
     let stop_started = Instant::now();
     let stopped = match supervisor.adopt_recorded(&pid_path, &metadata_path) {
-        Ok(Some(process)) => process.stop(STOP_GRACE_PERIOD).await,
+        Ok(Some(process)) => {
+            let pid = process.pid();
+            let stopped = process.stop(STOP_GRACE_PERIOD).await;
+            // PV's stop returns once signaling the process group fails, and macOS fails it with
+            // EPERM while the runtime is still exiting, which real MySQL does for a few hundred
+            // milliseconds (#394). Wait for the process itself, so the cleanup sees it stopped.
+            wait_until_exited(pid, STOP_GRACE_PERIOD).await;
+            stopped
+        }
         Ok(None) => Ok(()),
         Err(error) => Err(error),
     };
@@ -497,6 +506,18 @@ async fn start_wait_and_stop(
     );
 
     Ok(())
+}
+
+/// Polls until `pid` no longer exists, for at most `limit`. A process still there afterwards is
+/// left for the fixture cleanup to report.
+async fn wait_until_exited(pid: u32, limit: Duration) {
+    let Some(pid) = i32::try_from(pid).ok().and_then(Pid::from_raw) else {
+        return;
+    };
+    let deadline = Instant::now() + limit;
+    while test_kill_process(pid).is_ok() && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 }
 
 /// Installs a fake as an artifact in the resource's directory, where the fixture guard expects a
