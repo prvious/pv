@@ -1,6 +1,6 @@
 # pv-fake Test Service Design
 
-Status: approved 2026-09-29. Steps 1 to 3 and step 4a are implemented.
+Status: approved 2026-09-29. Steps 1 to 4 are implemented.
 
 ## Summary
 
@@ -140,7 +140,7 @@ Rule: a library owns every protocol and framing layer. Persona code only decides
 |---|---|---|
 | `caddy`, `frankenphp` | `validate`; `run --config … --adapter caddyfile`; HTTP and HTTPS using the configured PKI root certificate; admin Unix socket `GET /config/` and `POST /load` (`text/caddyfile`); `GET /__pv/health` over HTTP and TLS; the admin peer must be in the managed process group | `hyper`, `tokio-rustls` (workspace) |
 | `postgres`, `initdb` | `initdb` with PV's arguments; `sqlx` startup with `sslmode=disable` and SCRAM-SHA-256 sign-in; `SELECT 1`, `SELECT 1 FROM pg_database WHERE datname = $1` and `CREATE DATABASE` as extended-protocol statements | `pgwire` 0.41 with only `server-api-ring` |
-| `mysqld` | `--initialize-insecure`; TCP; `sqlx` `SELECT 1` and `CREATE DATABASE IF NOT EXISTS` | `opensrv-mysql`, which passed the compatibility check. It lets MySQL tests use the real `sqlx` client instead of `RecordingMysqlAdmin`; never hand-write the MySQL protocol |
+| `mysqld` | `--initialize-insecure`; a TCP port; signals | `tokio` only: no MySQL protocol. The daemon tests keep `RecordingMysqlAdmin`; PV's `sqlx` client meets real MySQL in the real-artifact matrix. `opensrv-mysql` was dropped (see Library compatibility); never hand-write the MySQL protocol |
 | `redis-server` | `redis` crate multiplexed connection: `CLIENT SETINFO`, `PING` | `redis-protocol` for RESP framing, plus a command table |
 | `rustfs` | `GET /health`; `aws-sdk-s3` `create_bucket` with path-style addressing and SigV4 using the configured credentials; `object_store` put and head of a probe; reject mode | `s3s` 0.17.0, the S3 layer the real RustFS is built on, over a small in-memory bucket store; `hyper` for `/health` |
 | `mailpit`, `pv-fake-mailpit` | SMTP greeting; HTTP readiness (`/`, `/ready`) | `tokio`, `hyper` |
@@ -291,6 +291,28 @@ These were recorded from the manifest's `18.4-pv2` artifact, driven through PV's
 
 The dual-target runtime contract checks, against the fake and real PostgreSQL: `initdb` through PV's adapter, the adapter's readiness check (a SCRAM sign-in and `SELECT 1`), PV's allocation step creating a database and then finding it, `42P04`, a wrong password's `28P01`, and SIGTERM with no client. The `pv-fake` contracts check `initdb`'s messages, the startup reply and both shutdowns against the fake only. Tests of a Postgres that never becomes ready install the `long_running` persona as `bin/postgres` next to the `initdb` persona. The two tests that check PV persisted the password it gave `initdb` read the persona's `initdb.password`.
 
+### MySQL 8.4.9 (2026-10-03)
+
+These were recorded from the manifest's `8.4.9-pv1` artifact, driven through PV's adapter: `mysqld --no-defaults --initialize-insecure --datadir <dir> --basedir <artifact>`, then `mysqld --no-defaults --datadir <dir> --bind-address=127.0.0.1 --port <port> --mysqlx=0 --socket <path> --init-file <path>` with PV's init file, and PV's `sqlx` calls.
+
+| Interaction | Real MySQL | `mysqld` persona |
+|---|---|---|
+| `--initialize-insecure` | exit 0 in about 2.6 s; InnoDB files, TLS keys and certificates, and the `mysql/`, `performance_schema/` and `sys/` directories | exit 0; the three directories |
+| `--initialize-insecure`, directory exists and is empty | exit 0 | same |
+| `--initialize-insecure`, directory isn't empty | exit 1; `[ERROR] [MY-010457] … --initialize specified but the data directory has files in it. Aborting.`, then `MY-013236` naming `<dir>/` and `MY-010119 Aborting` | same lines, without the timestamp and thread |
+| Start with PV's init file | ready in about 0.7 s; the init file creates `pv_root@127.0.0.1` with `caching_sha2_password`; creates the Unix socket and its `.lock` | listens at once; ignores the init file; no Unix socket |
+| Greeting | protocol 10, version `8.4.9`, TLS offered, `caching_sha2_password` | none: accepts the connection and closes it |
+| `sqlx` sign-in | over TLS (`TLS_AES_256_GCM_SHA384`), then `SET sql_mode=…,time_zone='+00:00',NAMES utf8mb4;` as text | not emulated |
+| Wrong password or unknown user | `1045 (28000) Access denied for user '<user>'@'localhost' (using password: YES)` | not emulated |
+| Prepared `SELECT 1` and `CREATE DATABASE IF NOT EXISTS` | accepted; one row affected, with note `1007` when the database exists | not emulated |
+| Databases | one directory each in the data directory; still there after a restart | not emulated |
+| Connecting to a missing database | `1049 (42000) Unknown database '<name>'` | not emulated |
+| SIGTERM | exit 0 in about 0.6 s, or 2.7 s with an idle client, whose connection is closed. PV's stop works within its grace | exit 0 |
+| SIGINT | ignored: still running after 12 s, and clients stay usable | ignored; recorded as an event |
+| Processes | one process | same |
+
+The dual-target runtime contract checks, against the fake and real MySQL, what both can do: initialization through PV's adapter, a start with PV's arguments and init file, the port accepting connections (the readiness check of `RecordingMysqlAdmin`, which the daemon tests keep), and SIGTERM. The `pv-fake` contracts check the initialization messages and both signals against the fake only. The protocol rows above are recorded for reference: PV's `sqlx` client meets real MySQL in `tests/real_artifact_resource_matrix.rs`.
+
 ## Lints And Errors
 
 `pv-fake` opts into workspace lints. It is an application boundary, so it uses `anyhow`. Raw process, filesystem, and executable-path primitives use narrow `#[expect(..., reason = "...")]` items, as elsewhere in the repository. It uses no `unwrap`, `expect`, or `panic!`.
@@ -319,7 +341,7 @@ Each step is one pull request. Each starts by recording the relevant real artifa
    - **3c** (implemented): record real RustFS, add the `rustfs` persona on `s3s` with an in-memory store and the `rustfs_reject_credentials` setting, add the dual-target RustFS runtime contract, port the RustFS installs and archive and move the tests' bucket and probe checks to S3, and delete `rustfs.py.in`, its fixture contract and the multi-server signal contract.
 4. **SQL**, after a compatibility check (2026-10-01): `pgwire` and `opensrv-mysql` each answered PV's `sqlx` 0.9 calls in a scratch server.
    - **4a** (implemented): record real PostgreSQL, add the `initdb` and `postgres` personas on `pgwire` and the dual-target Postgres runtime contract, port the Postgres installs and archives in `managed_resources/tests.rs` (the unready variant becomes `long_running`), and delete `postgres.py`, `postgres-initdb.sh` and `postgres-unready.sh` with their fixture contracts, the Postgres half of the single-server signal contract, and the parent-loss contract.
-   - **4b**: record real MySQL, add the `mysqld` persona on `opensrv-mysql`, retire `RecordingMysqlAdmin` so the MySQL tests run PV's `sqlx` client, and delete `mysql.py` with its fixture contracts.
+   - **4b** (implemented): record real MySQL, add the `mysqld` persona (initialization, a TCP port, and MySQL's signals) and the dual-target MySQL runtime contract, port the MySQL installs and archive in `mysql_tests.rs`, and delete `mysql.py` with its fixture contracts and the single-server signal contract. `RecordingMysqlAdmin` stays: see Library compatibility.
 5. **Cleanup.**
    - Delete the remaining runtime-standing shell and Python fixtures.
    - Rewrite `CONTRIBUTING.md`'s Fixture Lifecycle section around `pv_fake::install` and the lifeline.
@@ -339,9 +361,9 @@ For every step:
 
 ### Library compatibility
 
-`opensrv-mysql` was last released in February 2024. Step 4's compatibility check ran PV's `sqlx` 0.9 calls against it, and they passed: it advertises no TLS, so `sqlx` falls back to plaintext, and the persona checks the `caching_sha2_password` scramble itself. It answers a wrong password with its own `1698`, where MySQL sends `1045`. `pgwire` and `s3s` are actively released. `s3s` is what the real RustFS uses.
+`pgwire` and `s3s` are actively released. `s3s` is what the real RustFS uses. `pgwire` adds 22 locked packages, including second versions of `base64`, `const-oid`, `fallible-iterator` and `rand_core`, and bumps no locked crate.
 
-`pgwire` adds 22 locked packages, including second versions of `base64`, `const-oid`, `fallible-iterator` and `rand_core`, and bumps no locked crate. `opensrv-mysql` depends on `mysql_common` 0.32 with default features it can't turn off: C builds of zstd and zlib, and `bindgen` and `cmake` as build dependencies, compiled on every CI platform that builds the daemon's tests.
+`opensrv-mysql` (last released February 2024) passed step 4's compatibility check: PV's `sqlx` 0.9 calls worked against it, with no TLS and the `caching_sha2_password` scramble checked by the persona. It was dropped anyway (decided 2026-10-04). It depends on `mysql_common` 0.32 with default features it can't turn off, and one of them is `flate2/zlib`. Cargo unifies features across a build, so every workspace test build, CI's included, switched every crate's `flate2` to the C zlib backend. That changed the archive bytes, digests and sizes in 10 `pv-release` and `resources` snapshot tests, which pass when those crates build alone. Turning the feature off needs a patched copy of `opensrv-mysql` plus a direct `flate2` dependency just to pick a backend. Switching the workspace to zlib would change production compression. `mysql_common` also added 43 locked packages, C builds of zstd and zlib, and `bindgen` and `cmake` as build dependencies. So the `mysqld` persona speaks no protocol and the daemon tests keep `RecordingMysqlAdmin`, as planned for a failed check.
 
 `s3s` 0.15 and later require `async-trait` 0.1.92, which depends on `syn` 3, so `syn` 3 is compiled in every build, release builds included, through `object_store`. `s3s` also adds second versions of `nom`, `quick-xml` and `atoi`, and raised the locked versions of about 30 crates. `s3s-fs` was left out: it adds the `s3s-test` suite, `colored` 3 and `tracing-subscriber`, and PV needs only a handful of bucket and object operations.
 
@@ -389,4 +411,4 @@ The migration is complete when:
 
 ## Open Decisions
 
-None. MySQL uses `opensrv-mysql` (decided 2026-10-02, after the compatibility check passed).
+None. MySQL keeps `RecordingMysqlAdmin` (decided 2026-10-04; see Library compatibility).

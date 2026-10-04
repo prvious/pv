@@ -1,7 +1,6 @@
 use std::io::{Error, ErrorKind, Read, Seek};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::os::unix::fs::PermissionsExt;
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::process::CommandExt;
 use std::process::{Child, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -11,7 +10,7 @@ use camino::Utf8Path;
 use camino_tempfile::{tempdir, tempfile};
 use insta::{Settings, assert_debug_snapshot};
 use rustix::io::Errno;
-use rustix::process::{Pid, Signal, kill_process, kill_process_group, test_kill_process};
+use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
 use state::StateError;
 
 const FIXTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
@@ -20,10 +19,6 @@ const FIXTURE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(1);
 const FIXTURE_COMMAND_TIMEOUT_SCHEDULING_MARGIN: Duration = Duration::from_millis(100);
 const FIXTURE_HANDLER_MARKER_CONTENTS: &str = "started\n";
 
-const MYSQL_FIXTURE: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/mysql.py"
-));
 const HANGING_FIXTURE: &str = r#"#!/usr/bin/env python3
 import signal
 
@@ -66,31 +61,6 @@ struct FixtureOutput {
     code: Option<i32>,
     stdout: String,
     stderr: String,
-}
-
-#[derive(Clone, Copy)]
-enum SingleServerFixture {
-    Mysql,
-}
-
-impl SingleServerFixture {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Mysql => "MySQL",
-        }
-    }
-
-    fn executable_name(self) -> &'static str {
-        match self {
-            Self::Mysql => "mysqld",
-        }
-    }
-
-    fn source(self) -> &'static str {
-        match self {
-            Self::Mysql => MYSQL_FIXTURE,
-        }
-    }
 }
 
 #[test]
@@ -152,53 +122,6 @@ fn fixture_command_captures_verbose_output_without_pipe_backpressure() -> Result
         "fixture_command_captures_verbose_output_without_pipe_backpressure",
         (output.code, output.stdout.len(), output.stderr.len()),
     )
-}
-
-#[test]
-fn mysql_fixture_exits_after_sigterm_with_idle_client() -> Result<()> {
-    let tempdir = tempdir()?;
-    let fixture = tempdir.path().join("mysqld");
-    let handler_marker = tempdir.path().join("mysql-handler-started");
-    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-    let port = listener.local_addr()?.port();
-    let port_argument = port.to_string();
-
-    materialize_fixture(&fixture, MYSQL_FIXTURE)?;
-    drop(listener);
-
-    let mut child = FixtureCommand::new(fixture.as_std_path())
-        .args(["--port", port_argument.as_str()])
-        .current_dir(tempdir.path())
-        .env("PV_FIXTURE_HANDLER_STARTED", handler_marker.as_std_path())
-        .spawn()?;
-    let lifecycle = (|| {
-        let _idle_client = connect_to_loopback(port, FIXTURE_COMMAND_TIMEOUT)?;
-        wait_for_handler_marker(&handler_marker, FIXTURE_COMMAND_TIMEOUT)?;
-        kill_process(process_pid(child.id())?, Signal::TERM)?;
-        if !wait_for_child_exit(&mut child, FIXTURE_SHUTDOWN_TIMEOUT)? {
-            bail!("MySQL fixture did not exit after SIGTERM with an idle client");
-        }
-
-        Ok::<(), anyhow::Error>(())
-    })();
-    let cleanup = kill_and_reap_child(&mut child);
-
-    if let Err(error) = lifecycle {
-        cleanup?;
-        return Err(error);
-    }
-    cleanup
-}
-
-#[test]
-fn single_server_fixture_exits_after_signal_status() -> Result<()> {
-    for fixture in [SingleServerFixture::Mysql] {
-        for signal in [Signal::TERM, Signal::INT] {
-            assert_single_server_fixture_exits_after_signal(fixture, signal)?;
-        }
-    }
-
-    Ok(())
 }
 
 #[test]
@@ -273,173 +196,9 @@ fn fixture_handler_marker_requires_complete_contents() -> Result<()> {
     )
 }
 
-#[test]
-fn mysql_fixture_cli_preserves_shell_contract() -> Result<()> {
-    let tempdir = tempdir()?;
-    let fixture = tempdir.path().join("mysqld");
-    let probe_dir = tempdir.path().join("probe");
-    let probe_path = tempdir.path().join("mkdir-target");
-    let rejected_data_dir = tempdir.path().join("rejected-data");
-    let first_data_dir = tempdir.path().join("first-data");
-    let selected_data_dir = tempdir.path().join("selected-data");
-
-    materialize_fixture(&fixture, MYSQL_FIXTURE)?;
-    state::fs::write_sensitive_file(
-        &probe_dir.join("sitecustomize.py"),
-        r#"import os
-
-
-def record_makedirs(path, mode=0o777, exist_ok=False):
-    with open(os.environ["PV_MYSQL_MKDIR_PROBE"], "w", encoding="utf-8") as probe:
-        probe.write(os.fspath(path))
-
-
-os.makedirs = record_makedirs
-"#,
-    )?;
-
-    let first_argument_failure = run_fixture(
-        &fixture,
-        &[
-            "--initialize-insecure",
-            "--no-defaults",
-            "--datadir",
-            rejected_data_dir.as_str(),
-        ],
-        tempdir.path(),
-    )?;
-    let successful_initialization = run_fixture(
-        &fixture,
-        &[
-            "--no-defaults",
-            "--bind-address=127.0.0.1",
-            "--future-option",
-            "--initialize-insecure",
-            "--datadir",
-            first_data_dir.as_str(),
-            "--datadir",
-            selected_data_dir.as_str(),
-            "--basedir",
-            tempdir.path().as_str(),
-        ],
-        tempdir.path(),
-    )?;
-    let mut empty_data_dir_command = FixtureCommand::new(fixture.as_std_path());
-    empty_data_dir_command
-        .args(["--no-defaults", "--initialize-insecure"])
-        .current_dir(tempdir.path())
-        .env("PYTHONPATH", &probe_dir)
-        .env("PYTHONDONTWRITEBYTECODE", "1")
-        .env("PV_MYSQL_MKDIR_PROBE", &probe_path);
-    let empty_data_dir_initialization =
-        run_fixture_command(&mut empty_data_dir_command, FIXTURE_COMMAND_TIMEOUT, None)?;
-
-    assert_fixture_snapshot(
-        tempdir.path(),
-        "mysql_fixture_cli_preserves_shell_contract",
-        (
-            first_argument_failure,
-            successful_initialization,
-            path_exists(&rejected_data_dir.join("mysql"))?,
-            path_exists(&first_data_dir.join("mysql"))?,
-            path_exists(&selected_data_dir.join("mysql"))?,
-            empty_data_dir_initialization,
-            state::fs::read_to_string(&probe_path)?,
-        ),
-    )
-}
-
-fn assert_single_server_fixture_exits_after_signal(
-    fixture: SingleServerFixture,
-    signal: Signal,
-) -> Result<()> {
-    let tempdir = tempdir()?;
-    let executable = tempdir.path().join(fixture.executable_name());
-    let port_reservation = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-    let port = port_reservation.local_addr()?.port();
-    let port_argument = port.to_string();
-
-    materialize_fixture(&executable, fixture.source())?;
-    let mut command = FixtureCommand::new(executable.as_std_path());
-    command.current_dir(tempdir.path());
-    match fixture {
-        SingleServerFixture::Mysql => {
-            let data_dir = tempdir.path().join("mysql-data");
-            let socket_path = tempdir.path().join("mysql.sock");
-            let init_file = tempdir.path().join("mysql-init.sql");
-            state::fs::write_sensitive_file(&init_file, "")?;
-            command.args([
-                "--no-defaults",
-                "--datadir",
-                data_dir.as_str(),
-                "--bind-address=127.0.0.1",
-                "--port",
-                port_argument.as_str(),
-                "--mysqlx=0",
-                "--socket",
-                socket_path.as_str(),
-                "--init-file",
-                init_file.as_str(),
-            ]);
-        }
-    }
-    drop(port_reservation);
-
-    command.process_group(0);
-    let mut child = command.spawn()?;
-    let process_group = process_pid(child.id())?;
-    let lifecycle = (|| {
-        let readiness = wait_for_loopback_ports([port], FIXTURE_COMMAND_TIMEOUT)?;
-        if readiness != [true] {
-            bail!(
-                "{} fixture did not become ready on port {port}",
-                fixture.name()
-            );
-        }
-
-        kill_process_group(process_group, signal)?;
-        let status =
-            wait_for_child_status(&mut child, FIXTURE_SHUTDOWN_TIMEOUT)?.ok_or_else(|| {
-                anyhow!(
-                    "{} fixture did not exit after signal {}",
-                    fixture.name(),
-                    signal.as_raw()
-                )
-            })?;
-        if status.signal() != Some(signal.as_raw()) {
-            bail!(
-                "{} fixture exited with {status} after signal {}; expected signal status {}",
-                fixture.name(),
-                signal.as_raw(),
-                signal.as_raw()
-            );
-        }
-
-        Ok::<(), anyhow::Error>(())
-    })();
-    let cleanup = kill_process_group_and_reap_child(&mut child, process_group);
-
-    if let Err(error) = lifecycle {
-        cleanup?;
-        return Err(error);
-    }
-    cleanup
-}
-
 fn materialize_fixture(path: &Utf8Path, source: &str) -> Result<()> {
     state::fs::write_sensitive_file(path, source)?;
     set_executable(path)
-}
-
-fn run_fixture(
-    path: &Utf8Path,
-    arguments: &[&str],
-    current_dir: &Utf8Path,
-) -> Result<FixtureOutput> {
-    let mut command = FixtureCommand::new(path.as_std_path());
-    command.args(arguments).current_dir(current_dir);
-
-    run_fixture_command(&mut command, FIXTURE_COMMAND_TIMEOUT, None)
 }
 
 fn run_fixture_command(
@@ -503,46 +262,6 @@ fn read_fixture_output(file: &mut (impl Read + Seek)) -> Result<Vec<u8>> {
 fn process_pid(pid: u32) -> Result<Pid> {
     let raw_pid = i32::try_from(pid)?;
     Pid::from_raw(raw_pid).ok_or_else(|| anyhow!("invalid process id {raw_pid}"))
-}
-
-fn wait_for_loopback_ports<const PORT_COUNT: usize>(
-    ports: [u16; PORT_COUNT],
-    timeout: Duration,
-) -> Result<[bool; PORT_COUNT]> {
-    let deadline = Instant::now() + timeout;
-    let mut readiness = [false; PORT_COUNT];
-
-    loop {
-        for (index, port) in ports.into_iter().enumerate() {
-            if !readiness[index] && TcpStream::connect((Ipv4Addr::LOCALHOST, port)).is_ok() {
-                readiness[index] = true;
-            }
-        }
-
-        if readiness.iter().all(|ready| *ready) {
-            return Ok(readiness);
-        }
-        if Instant::now() >= deadline {
-            bail!("timed out waiting for fixture ports {ports:?}; readiness: {readiness:?}");
-        }
-
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn connect_to_loopback(port: u16, timeout: Duration) -> Result<TcpStream> {
-    let deadline = Instant::now() + timeout;
-
-    loop {
-        if let Ok(stream) = TcpStream::connect((Ipv4Addr::LOCALHOST, port)) {
-            return Ok(stream);
-        }
-        if Instant::now() >= deadline {
-            bail!("timed out connecting to fixture port {port}");
-        }
-
-        thread::sleep(FIXTURE_COMMAND_POLL_INTERVAL);
-    }
 }
 
 fn wait_for_handler_marker(path: &Utf8Path, timeout: Duration) -> Result<()> {
@@ -647,18 +366,6 @@ fn assert_fixture_snapshot(
         assert_debug_snapshot!(name, snapshot);
         Ok::<(), anyhow::Error>(())
     })
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "daemon fixture contract tests inspect fixture filesystem effects directly"
-)]
-fn path_exists(path: &Utf8Path) -> Result<bool> {
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => Ok(true),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.into()),
-    }
 }
 
 #[expect(
