@@ -7146,9 +7146,11 @@ fn fake_admin_load_bodies(config_path: &Utf8Path) -> Result<Vec<Vec<u8>>> {
     let directory = config_path.parent().unwrap_or_else(|| Utf8Path::new("."));
     let mut paths = fs::read_dir_paths(directory)?
         .into_iter()
+        // Skip the fake's in-flight atomic-write temp files, which vanish once renamed.
         .filter(|path| {
-            path.file_name()
-                .is_some_and(|file_name| file_name.starts_with("fake-admin-load-"))
+            path.file_name().is_some_and(|file_name| {
+                file_name.starts_with("fake-admin-load-") && file_name.ends_with(".bin")
+            })
         })
         .collect::<Vec<_>>();
     paths.sort_unstable();
