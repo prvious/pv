@@ -1091,8 +1091,27 @@ fn mysqld_fake_initializes_a_data_directory_once_as_mysqld_does() -> Result<()> 
         .into_iter()
         .map(|data_dir| run_mysqld_initialize(tempdir.path(), data_dir))
         .collect::<Result<Vec<_>>>()?;
+    // mysqld refuses --no-defaults anywhere but first.
+    let misordered = tempdir.path().join("misordered");
+    let (_fake, mut process) = spawn_service(
+        &misordered,
+        "mysqld",
+        Persona::Mysqld,
+        FakeSettings::default(),
+        &[
+            "--initialize-insecure",
+            "--no-defaults",
+            "--datadir",
+            misordered.join("data").as_str(),
+        ]
+        .map(str::to_owned),
+        &[],
+    )?;
+    let misordered_code = wait_for_exit(&mut process)?.code();
 
     assert_eq!(codes, [Some(0), Some(0), Some(1)]);
+    assert_eq!(misordered_code, Some(1));
+    assert!(!state::fs::path_exists(&misordered.join("data")));
     assert!(state::fs::path_is_directory(&data_dir.join("mysql"))?);
     assert_eq!(
         state::fs::read_to_string(&tempdir.path().join("stderr"))?,
@@ -1140,7 +1159,10 @@ fn mysqld_fake_accepts_connections_and_exits_on_sigterm_but_not_sigint() -> Resu
 
     connect_with_retry(port)?;
     signal(&process, Signal::INT)?;
-    sleep(Duration::from_millis(300));
+    // Wait for the fake to handle SIGINT, so the two signals never arrive together.
+    wait_for_event(&fake, |kind| {
+        matches!(kind, EventKind::Signal { signal: received } if received == "SIGINT").then_some(())
+    })?;
     let ignored_sigint = process.0.try_wait()?.is_none();
     signal(&process, Signal::TERM)?;
     let status = wait_for_exit(&mut process)?;

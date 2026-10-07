@@ -64,6 +64,14 @@ struct Options {
 
 impl Options {
     fn parse(argv: &[String]) -> Result<Self> {
+        // mysqld only reads --no-defaults as its first argument and refuses it anywhere else.
+        if argv
+            .iter()
+            .skip(2)
+            .any(|argument| argument == "--no-defaults")
+        {
+            bail!("--no-defaults must be mysqld's first argument");
+        }
         let mut options = Self::default();
         let mut arguments = argv.iter().skip(1);
         while let Some(argument) = arguments.next() {
