@@ -5757,12 +5757,11 @@ fn managed_resource_fixture_guard_cleans_every_exit_path() -> Result<()> {
             },
             "fixture guard left runtime files after {exit:?}"
         );
-        let raw_pid = i32::try_from(pid)?;
-        let process_pid = Pid::from_raw(raw_pid)
-            .ok_or_else(|| anyhow!("fixture returned invalid pid {raw_pid}"))?;
+        // Absent as the guard judges it: a zombie may still await its reaping by this process.
         assert!(
-            matches!(test_kill_process(process_pid), Err(rustix::io::Errno::SRCH)),
-            "fixture guard left pid {pid} alive after {exit:?}"
+            fixture_identity_is_absent(pid)?,
+            "fixture guard left pid {pid} alive after {exit:?} ({})",
+            fixture_process_state(pid)
         );
     }
 
