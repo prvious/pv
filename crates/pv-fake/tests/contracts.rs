@@ -1026,11 +1026,14 @@ fn initdb_fake_initializes_a_data_directory_once_as_initdb_does() -> Result<()> 
     Ok(())
 }
 
-/// PostgreSQL's shutdowns, recorded from 18.4: after SIGTERM it keeps serving its open clients
-/// until they disconnect, and SIGINT ends them. Sign-in and queries are checked against real
-/// PostgreSQL by the daemon's runtime contracts.
+/// PostgreSQL's shutdowns, recorded from 18.4: after SIGTERM it keeps its open clients connected
+/// and exits once they disconnect, and SIGINT closes them. The clients stop at the SCRAM
+/// challenge, so this doesn't check that one can still query during the wait; PV never relies on
+/// that. Sign-in and queries are checked against real PostgreSQL by the daemon's runtime
+/// contracts.
 #[test]
-fn postgres_fake_serves_open_clients_through_sigterm_and_ends_them_on_sigint() -> Result<()> {
+fn postgres_fake_keeps_open_clients_connected_through_sigterm_and_closes_them_on_sigint()
+-> Result<()> {
     let tempdir = tempdir()?;
     let data_dir = tempdir.path().join("data");
     run_initdb(tempdir.path(), &data_dir)?;
@@ -1039,7 +1042,7 @@ fn postgres_fake_serves_open_clients_through_sigterm_and_ends_them_on_sigint() -
         start_postgres_with_client(&tempdir.path().join("sigterm"), &data_dir)?;
     signal(&terminated, Signal::TERM)?;
     client.set_read_timeout(Some(Duration::from_millis(300)))?;
-    let still_served = client
+    let still_connected = client
         .read(&mut [0])
         .is_err_and(|error| matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut));
     let waited_for_client = terminated.0.try_wait()?.is_none();
@@ -1059,7 +1062,7 @@ fn postgres_fake_serves_open_clients_through_sigterm_and_ends_them_on_sigint() -
         [terminated_greeting, interrupted_greeting],
         [sasl.clone(), sasl]
     );
-    assert!(still_served && waited_for_client);
+    assert!(still_connected && waited_for_client);
     assert_eq!(terminated_status.code(), Some(0));
     assert_eq!(
         event_names(&terminated_fake)?,
