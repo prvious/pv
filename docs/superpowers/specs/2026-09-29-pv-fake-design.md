@@ -307,7 +307,7 @@ These were recorded from the manifest's `8.4.9-pv1` artifact, driven through PV'
 | Prepared `SELECT 1` and `CREATE DATABASE IF NOT EXISTS` | accepted; one row affected, with note `1007` when the database exists | not emulated |
 | Databases | one directory each in the data directory; still there after a restart | not emulated |
 | Connecting to a missing database | `1049 (42000) Unknown database '<name>'` | not emulated |
-| SIGTERM | exit 0 in about 0.6 s, or 2.7 s with an idle client, whose connection is closed. It then spends a few hundred milliseconds exiting, while macOS answers its process group with `EPERM`, so PV's stop returns before the process is gone (#394) | exit 0 at once |
+| SIGTERM | exit 0 in about 0.6 s, or 2.7 s with an idle client, whose connection is closed. It then spends a few hundred milliseconds exiting, while macOS answers its process group with `EPERM`. PV's stop waits until the process is gone or a zombie (#394) | exit 0 at once |
 | SIGINT | ignored: still running after 12 s, and clients stay usable | ignored; recorded as an event |
 | Processes | one process | same |
 
