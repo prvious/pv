@@ -46,6 +46,12 @@ pub fn inspect_process_start_identity(
     implementation::inspect_process_start_identity(pid)
 }
 
+/// Whether `pid` has exited and is waiting for its parent to reap it. `false` for a running
+/// process, one still exiting, or none at all.
+pub fn process_is_zombie(pid: u32) -> Result<bool, crate::PlatformError> {
+    implementation::process_is_zombie(pid)
+}
+
 #[cfg(unix)]
 pub fn exec_replace(program: &Path, args: &[String]) -> io::Result<ExitCode> {
     exec_replace_with_env(program, args, &[])

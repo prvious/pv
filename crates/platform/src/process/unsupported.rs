@@ -12,3 +12,7 @@ pub(super) fn inspect_process_start_identity(
 ) -> Result<Option<ProcessStartIdentity>, PlatformError> {
     Err(unsupported(PlatformCapability::ProcessInspection)?)
 }
+
+pub(super) fn process_is_zombie(_pid: u32) -> Result<bool, PlatformError> {
+    Err(unsupported(PlatformCapability::ProcessInspection)?)
+}

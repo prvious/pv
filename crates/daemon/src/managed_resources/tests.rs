@@ -356,8 +356,9 @@ async fn cleanup_registered_fixture_runtime(
                     recorded_fixture_metadata_pid_is_absent(&runtime.metadata_path)?;
                 if !pid_absent || !metadata_pid_absent {
                     bail!(
-                        "refused to stop `{}` because its recorded ownership did not match and at least one recorded process is still alive",
-                        runtime.name
+                        "refused to stop `{}` because its recorded ownership did not match and at least one recorded process is still alive ({})",
+                        runtime.name,
+                        fixture_process_state(recorded_fixture_pid(&runtime.pid_path)?)
                     );
                 }
             }
@@ -394,13 +395,16 @@ fn validate_registered_fixture_metadata(runtime: &RegisteredFixtureRuntime) -> R
 }
 
 fn recorded_fixture_pid_is_absent(pid_path: &Utf8Path) -> Result<bool> {
+    fixture_identity_is_absent(recorded_fixture_pid(pid_path)?)
+}
+
+fn recorded_fixture_pid(pid_path: &Utf8Path) -> Result<u64> {
     let contents = state::fs::read_to_string(pid_path)?;
-    let pid = contents
+
+    contents
         .trim()
         .parse::<u64>()
-        .with_context(|| format!("invalid fixture pid in `{pid_path}`"))?;
-
-    fixture_identity_is_absent(pid)
+        .with_context(|| format!("invalid fixture pid in `{pid_path}`"))
 }
 
 fn recorded_fixture_metadata_pid_is_absent(metadata_path: &Utf8Path) -> Result<bool> {
@@ -421,7 +425,8 @@ fn fixture_identity_is_absent(pid: u64) -> Result<bool> {
         Pid::from_raw(raw_pid).ok_or_else(|| anyhow!("invalid fixture pid `{pid}`"))?;
 
     let leader_absent = match test_kill_process(process_pid) {
-        Ok(()) => false,
+        // A zombie has exited; its parent, the test process, reaps it.
+        Ok(()) => platform::process_is_zombie(u32::try_from(pid)?)?,
         Err(rustix::io::Errno::SRCH) => true,
         Err(rustix::io::Errno::PERM) => false,
         Err(error) => bail!("failed to inspect fixture pid {pid}: {error}"),
@@ -435,6 +440,24 @@ fn fixture_identity_is_absent(pid: u64) -> Result<bool> {
     };
 
     Ok(leader_absent && group_absent)
+}
+
+/// How macOS answers for a fixture process, for failure messages.
+fn fixture_process_state(pid: u64) -> String {
+    let (Ok(raw_pid), Ok(native_pid)) = (u32::try_from(pid), i32::try_from(pid)) else {
+        return format!("pid {pid} is out of range");
+    };
+    let Some(process_pid) = Pid::from_raw(native_pid) else {
+        return format!("pid {pid} is invalid");
+    };
+
+    format!(
+        "pid {pid}: kill(pid, 0) = {:?}, kill(-pgid, 0) = {:?}, zombie = {:?}, inspectable = {:?}",
+        test_kill_process(process_pid),
+        test_kill_process_group(process_pid),
+        platform::process_is_zombie(raw_pid),
+        platform::inspect_process_identity(raw_pid).map(|identity| identity.is_some()),
+    )
 }
 
 const SETUP_DEFAULT_POSTGRES_SUPPORT_FILES: &[(&str, &str)] = &[
@@ -6010,12 +6033,78 @@ async fn managed_resource_fixture_guard_continues_after_cleanup_failure() -> Res
     );
     assert!(
         fixture_identity_is_absent(live_pid)?,
-        "cleanup left the later registered runtime alive"
+        "cleanup left the later registered runtime alive: {}",
+        fixture_process_state(live_pid)
     );
 
     state::fs::remove_file_if_exists(&broken_pid_path)?;
     state::fs::remove_file_if_exists(&broken_metadata_path)?;
     runtimes.cleanup().await?;
+
+    Ok(())
+}
+
+/// An adopted stop returns once the runtime has exited, even before its parent reaps it, and the
+/// fixture guard counts the leftover zombie as stopped. macOS answers that zombie's process group
+/// with EPERM while the PID still answers (#394).
+#[tokio::test]
+async fn adopted_stop_counts_an_unreaped_zombie_as_stopped() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let fake = pv_fake::install(
+        &paths.root().join("release/bin/runtime"),
+        Persona::LongRunning,
+    )?;
+    let spec = ProcessSpec {
+        name: "zombie".to_owned(),
+        command: fake.executable().to_owned(),
+        arguments: Vec::new(),
+        private_environment: BTreeMap::new(),
+        config_path: paths.config().join("zombie.json"),
+        config_fingerprint: None,
+        log_path: paths.logs().join("zombie.log"),
+        pid_path: paths.run().join("zombie.pid"),
+        metadata_path: paths.run().join("zombie.json"),
+        resource_name: "zombie".to_owned(),
+        track: "test".to_owned(),
+    };
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    // Hold the child without polling it, so nothing reaps the fake once it exits.
+    let mut process = supervisor.start(spec.clone()).await?;
+    let pid = process.pid();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !fake
+        .events()?
+        .iter()
+        .any(|event| matches!(event.kind, pv_fake::EventKind::Started { .. }))
+    {
+        if Instant::now() >= deadline {
+            bail!("the fake never started");
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let running_was_zombie = platform::process_is_zombie(pid)?;
+    let adopted = supervisor
+        .adopt_recorded(&spec.pid_path, &spec.metadata_path)?
+        .context("the started runtime wasn't adoptable")?;
+    let stop_started = Instant::now();
+    adopted.stop(Duration::from_secs(10)).await?;
+    let stopped_within = stop_started.elapsed();
+    let zombie = platform::process_is_zombie(pid)?;
+    let counted_as_stopped = fixture_identity_is_absent(u64::from(pid))?;
+    let reaped_by_owner = process.has_exited()?;
+
+    assert!(!running_was_zombie);
+    assert!(
+        stopped_within < Duration::from_secs(5),
+        "stopping took {stopped_within:?}"
+    );
+    assert!(zombie, "{}", fixture_process_state(u64::from(pid)));
+    assert!(counted_as_stopped);
+    assert!(reaped_by_owner);
+    assert!(fixture_identity_is_absent(u64::from(pid))?);
 
     Ok(())
 }

@@ -1111,14 +1111,14 @@ async fn wait_for_process_group_exit(
     let started_at = Instant::now();
 
     while let Some(remaining) = remaining_timeout(started_at, readiness_timeout) {
-        if !process_group_exists(pid)? {
+        if process_group_has_exited(pid)? {
             return Ok(true);
         }
 
         sleep(remaining.min(READINESS_POLL_INTERVAL)).await;
     }
 
-    Ok(!process_group_exists(pid)?)
+    process_group_has_exited(pid)
 }
 
 #[expect(
@@ -1316,6 +1316,28 @@ fn process_group_exists(pid: u32) -> Result<bool, DaemonError> {
     }
 }
 
+/// Whether a stopped runtime has exited. macOS also answers a group signal with EPERM while the
+/// group's leader is still exiting, so a group that no longer answers has exited only once its
+/// leader is gone or a zombie (#394). This only observes: reaping stays with the child's owner,
+/// and EPERM still never authorizes a signal.
+#[cfg(target_os = "macos")]
+fn process_group_has_exited(pid: u32) -> Result<bool, DaemonError> {
+    if process_group_exists(pid)? {
+        return Ok(false);
+    }
+
+    // ponytail: only the leader is checked, so another group member still exiting after the
+    // leader became a zombie goes unseen. List the group's members (`proc_listpgrppids`) once a
+    // runtime keeps children in its group.
+    match test_kill_process(process_group_pid(pid)?) {
+        Err(rustix::io::Errno::SRCH) => Ok(true),
+        // EPERM: a process we can't signal holds the PID, which doesn't prove the leader exited.
+        Err(rustix::io::Errno::PERM) => Ok(false),
+        Ok(()) => Ok(platform::process_is_zombie(pid)?),
+        Err(source) => Err(io::Error::from(source).into()),
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn process_and_group_are_absent(pid: u32) -> Result<bool, DaemonError> {
     let process = process_group_pid(pid)?;
@@ -1347,6 +1369,13 @@ fn process_group_exists(_pid: u32) -> Result<bool, DaemonError> {
     require_process_containment()?;
 
     Ok(false)
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+fn process_group_has_exited(_pid: u32) -> Result<bool, DaemonError> {
+    require_process_containment()?;
+
+    Ok(true)
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]

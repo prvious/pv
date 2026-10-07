@@ -63,9 +63,47 @@ fn inspect_process_identity_inner(pid: u32) -> Result<Option<ProcessIdentity>, I
     })
 }
 
+pub(super) fn process_is_zombie(pid: u32) -> Result<bool, PlatformError> {
+    let native_pid =
+        i32::try_from(pid).map_err(|_source| PlatformError::ProcessIdentityInspection {
+            source: Box::new(InspectionError::InvalidPid { pid }),
+        })?;
+    // Argument 1 asks macOS to look among processes that have exited but not been reaped too.
+    let process_info = process_bsdinfo(native_pid, 1).map_err(|source| {
+        PlatformError::ProcessIdentityInspection {
+            source: Box::new(source),
+        }
+    })?;
+
+    Ok(process_info.is_some_and(|process_info| process_info.pbi_status == libc::SZOMB))
+}
+
 fn process_start_identity(
     pid: libc::pid_t,
 ) -> Result<Option<ProcessStartIdentity>, InspectionError> {
+    let Some(process_info) = process_bsdinfo(pid, 0)? else {
+        return Ok(None);
+    };
+    if process_info.pbi_start_tvsec == 0 || process_info.pbi_start_tvusec >= MICROSECONDS_PER_SECOND
+    {
+        return Err(InspectionError::InvalidStartIdentity {
+            seconds: process_info.pbi_start_tvsec,
+            microseconds: process_info.pbi_start_tvusec,
+        });
+    }
+
+    Ok(Some(ProcessStartIdentity {
+        seconds: process_info.pbi_start_tvsec,
+        microseconds: process_info.pbi_start_tvusec,
+    }))
+}
+
+/// The process's BSD info, or `None` when macOS finds no such process. `argument` is
+/// `PROC_PIDTBSDINFO`'s lookup argument.
+fn process_bsdinfo(
+    pid: libc::pid_t,
+    argument: u64,
+) -> Result<Option<libc::proc_bsdinfo>, InspectionError> {
     let expected = mem::size_of::<libc::proc_bsdinfo>();
     let buffer_size = i32::try_from(expected)
         .map_err(|_source| InspectionError::ProcessInfoTooLarge { size: expected })?;
@@ -78,7 +116,7 @@ fn process_start_identity(
         libc::proc_pidinfo(
             pid,
             libc::PROC_PIDTBSDINFO,
-            0,
+            argument,
             process_info.as_mut_ptr().cast(),
             buffer_size,
         )
@@ -109,18 +147,8 @@ fn process_start_identity(
             actual: process_info.pbi_pid,
         });
     }
-    if process_info.pbi_start_tvsec == 0 || process_info.pbi_start_tvusec >= MICROSECONDS_PER_SECOND
-    {
-        return Err(InspectionError::InvalidStartIdentity {
-            seconds: process_info.pbi_start_tvsec,
-            microseconds: process_info.pbi_start_tvusec,
-        });
-    }
 
-    Ok(Some(ProcessStartIdentity {
-        seconds: process_info.pbi_start_tvsec,
-        microseconds: process_info.pbi_start_tvusec,
-    }))
+    Ok(Some(process_info))
 }
 
 fn process_arguments(
