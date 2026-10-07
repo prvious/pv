@@ -9,7 +9,7 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use crate::events::{EventKind, EventLog};
 use crate::{
     BUILD_ID, DESCENDANT_FLAG, Persona, Scenario, ScenarioFile, events_path, gateway, lifeline,
-    mailpit, redis, rustfs, scenario_path,
+    mailpit, mysql, postgres, redis, rustfs, scenario_path,
 };
 
 #[expect(
@@ -94,8 +94,31 @@ async fn run_persona(scenario: Scenario, argv: Vec<String>, events: EventLog) ->
         received = signals.next() => Err(received),
     };
     let code = match started {
-        Ok(Some(code)) => code,
-        Ok(None) => record_signal(signals.next().await, &events)?,
+        Ok(Started::Exited(code)) => code,
+        Ok(Started::Serving) => record_signal(signals.next().await, &events)?,
+        Ok(Started::ServingPostgres(clients)) => {
+            let received = signals.next().await;
+            let code = record_signal(received, &events)?;
+            // PostgreSQL's smart shutdown: after SIGTERM it keeps serving its open clients until
+            // they disconnect. ponytail: any second signal ends the wait; PostgreSQL ends it on
+            // SIGINT and waits on through another SIGTERM, which PV never sends.
+            if received == "SIGTERM" {
+                tokio::select! {
+                    () = clients.closed() => {}
+                    received = signals.next() => {
+                        record_signal(received, &events)?;
+                    }
+                }
+            }
+            code
+        }
+        Ok(Started::ServingUntilSigterm) => loop {
+            let received = signals.next().await;
+            let code = record_signal(received, &events)?;
+            if received == "SIGTERM" {
+                break code;
+            }
+        },
         Err(received) => record_signal(received, &events)?,
     };
     if let Some(descendant) = descendant {
@@ -106,22 +129,39 @@ async fn run_persona(scenario: Scenario, argv: Vec<String>, events: EventLog) ->
     Ok(ExitCode::from(code))
 }
 
-/// Returns an exit code to exit with now, or `None` once the persona is serving.
-async fn start_persona(
-    scenario: &Scenario,
-    argv: &[String],
-    events: &EventLog,
-) -> Result<Option<u8>> {
-    match scenario.persona {
-        Persona::LongRunning => Ok(None),
+/// What a persona does once it has started.
+enum Started {
+    /// Exit now with this code.
+    Exited(u8),
+    /// Serve until SIGTERM or SIGINT.
+    Serving,
+    /// Serve until SIGINT, or after SIGTERM until its clients have disconnected.
+    ServingPostgres(postgres::Clients),
+    /// Serve until SIGTERM, ignoring SIGINT as MySQL does.
+    ServingUntilSigterm,
+}
+
+async fn start_persona(scenario: &Scenario, argv: &[String], events: &EventLog) -> Result<Started> {
+    let exit_code = match scenario.persona {
+        Persona::LongRunning => None,
         Persona::Caddy | Persona::FrankenPhp => {
-            gateway::start(argv, &scenario.settings, events).await
+            gateway::start(argv, &scenario.settings, events).await?
         }
-        Persona::RedisServer => redis::start(argv).await,
-        Persona::Mailpit => mailpit::start(argv).await,
-        Persona::PvFakeMailpit => mailpit::start_pv_fake(argv, &scenario.settings, events).await,
-        Persona::Rustfs => rustfs::start(argv, &scenario.settings).await,
-    }
+        Persona::RedisServer => redis::start(argv).await?,
+        Persona::Mailpit => mailpit::start(argv).await?,
+        Persona::PvFakeMailpit => mailpit::start_pv_fake(argv, &scenario.settings, events).await?,
+        Persona::Rustfs => rustfs::start(argv, &scenario.settings).await?,
+        Persona::Initdb => Some(postgres::initdb(argv)?),
+        Persona::Postgres => return Ok(Started::ServingPostgres(postgres::start(argv).await?)),
+        Persona::Mysqld => {
+            return Ok(match mysql::start(argv).await? {
+                mysql::Mysqld::Initialized(code) => Started::Exited(code),
+                mysql::Mysqld::Serving => Started::ServingUntilSigterm,
+            });
+        }
+    };
+
+    Ok(exit_code.map_or(Started::Serving, Started::Exited))
 }
 
 fn record_signal(received: &str, events: &EventLog) -> Result<u8> {

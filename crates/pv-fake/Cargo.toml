@@ -12,9 +12,11 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 camino = { workspace = true }
+futures-util = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true, features = ["server"] }
 hyper-util = { workspace = true }
+pgwire = { workspace = true }
 rcgen = { workspace = true }
 redis-protocol = { workspace = true }
 rustls = { workspace = true }

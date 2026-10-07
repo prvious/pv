@@ -16,12 +16,14 @@ use camino_tempfile::{Utf8TempDir, tempdir};
 use pv_fake::Persona;
 use resources::{
     ManagedResourceCommands, ManagedResourceInstall, ResourceAdapter, TargetPlatform,
-    TrackSelector, mailpit_adapter, redis_adapter, rustfs_adapter,
+    TrackSelector, mailpit_adapter, mysql_adapter, postgres_adapter, redis_adapter, rustfs_adapter,
 };
+use sqlx::postgres::PgPool;
 use state::{EnvContextValues, PvPaths};
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
+use super::sql::{self, SqlAdminContext, SqlEngine};
 use super::tests::ManagedResourceFixtureGuard;
 use super::{
     ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext, adapter_readiness_timeout,
@@ -138,6 +140,57 @@ async fn real_rustfs_satisfies_the_runtime_contract() -> Result<()> {
         &paths,
         rustfs.current_artifact_path(),
         rustfs.track().as_str(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn fake_postgres_satisfies_the_runtime_contract() -> Result<()> {
+    let (_tempdir, paths) = contract_paths()?;
+    let artifact_path = fake_artifact(&paths, "postgres", "18", "bin/postgres", Persona::Postgres)?;
+    pv_fake::install(&artifact_path.join("bin/initdb"), Persona::Initdb)?;
+
+    postgres_contract(&paths, &artifact_path, "18").await
+}
+
+#[tokio::test]
+#[ignore = "requires PV_E2E_REAL_ARTIFACTS=1 and PV_E2E_ARTIFACT_MANIFEST_URL"]
+async fn real_postgres_satisfies_the_runtime_contract() -> Result<()> {
+    let Some(manifest_url) = real_artifact_manifest_url()? else {
+        return Ok(());
+    };
+    let (_tempdir, paths) = contract_paths()?;
+    let postgres = install_real_artifact(&paths, manifest_url, &postgres_adapter()?)?;
+
+    postgres_contract(
+        &paths,
+        postgres.current_artifact_path(),
+        postgres.track().as_str(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn fake_mysql_satisfies_the_runtime_contract() -> Result<()> {
+    let (_tempdir, paths) = contract_paths()?;
+    let artifact_path = fake_artifact(&paths, "mysql", "8.4", "bin/mysqld", Persona::Mysqld)?;
+
+    mysql_contract(&paths, &artifact_path, "8.4").await
+}
+
+#[tokio::test]
+#[ignore = "requires PV_E2E_REAL_ARTIFACTS=1 and PV_E2E_ARTIFACT_MANIFEST_URL"]
+async fn real_mysql_satisfies_the_runtime_contract() -> Result<()> {
+    let Some(manifest_url) = real_artifact_manifest_url()? else {
+        return Ok(());
+    };
+    let (_tempdir, paths) = contract_paths()?;
+    let mysql = install_real_artifact(&paths, manifest_url, &mysql_adapter()?)?;
+
+    mysql_contract(
+        &paths,
+        mysql.current_artifact_path(),
+        mysql.track().as_str(),
     )
     .await
 }
@@ -262,6 +315,92 @@ async fn rustfs_serves_allocations(env: EnvContextValues) -> Result<()> {
     );
 
     Ok(())
+}
+
+/// PV's Postgres runtime: preparation runs `initdb` with PV's arguments, the readiness check signs
+/// in with SCRAM, and PV's allocation step creates a database and then finds it.
+async fn postgres_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) -> Result<()> {
+    let [port] = available_ports()?;
+    let adapter = super::postgres::PostgresRuntimeAdapter::new();
+    let mut context = runtime_context(
+        paths,
+        "postgres",
+        track,
+        artifact_path,
+        [("postgres", port)],
+    );
+    // Fix the generated password up front, so the check signs in with the one `initdb` gets.
+    context.env = adapter.resource_env(&context)?;
+    let admin = SqlAdminContext {
+        host: Ipv4Addr::LOCALHOST.to_string(),
+        port,
+        username: context.env.get("username").cloned().unwrap_or_default(),
+        password: context.env.get("password").cloned().unwrap_or_default(),
+    };
+
+    run_contract(paths, &adapter, context, postgres_serves_allocations(admin)).await
+}
+
+async fn postgres_serves_allocations(admin: SqlAdminContext) -> Result<()> {
+    let database = "pv_contract";
+    // PV's allocation step, run twice as reconciliation does for a Ready allocation. The second
+    // run creates nothing only if the first database is found.
+    for _attempt in 0..2 {
+        sql::create_database_if_missing(&admin, SqlEngine::Postgres, database).await?;
+    }
+    let pool = PgPool::connect_with(sql::postgres_options(&admin)).await?;
+    let duplicate = sql_state(
+        sqlx::query("CREATE DATABASE \"pv_contract\"")
+            .execute(&pool)
+            .await,
+    );
+    // Close it, so stopping the runtime doesn't wait for this client to leave.
+    pool.close().await;
+    let wrong_password = SqlAdminContext {
+        password: "not-the-password".to_owned(),
+        ..admin
+    };
+    let refused = sql_state(PgPool::connect_with(sql::postgres_options(&wrong_password)).await);
+
+    ensure!(
+        duplicate.as_deref() == Some("42P04"),
+        "creating {database} again failed with {duplicate:?}"
+    );
+    ensure!(
+        refused.as_deref() == Some("28P01"),
+        "a wrong password failed with {refused:?}"
+    );
+
+    Ok(())
+}
+
+/// PV's MySQL runtime: preparation initializes the data directory, and the runtime starts with
+/// PV's arguments and init file, accepts connections on its port, and stops on SIGTERM. The fake
+/// speaks no MySQL protocol, so the readiness check is the daemon tests' TCP connect; PV's SQL
+/// client meets real MySQL in `tests/real_artifact_resource_matrix.rs`.
+async fn mysql_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) -> Result<()> {
+    let [port] = available_ports()?;
+    let adapter = super::mysql::MysqlRuntimeAdapter::with_recording_admin(
+        super::mysql::RecordingMysqlAdmin::default(),
+    )?;
+
+    run_contract(
+        paths,
+        &adapter,
+        runtime_context(paths, "mysql", track, artifact_path, [("mysql", port)]),
+        future::ready(Ok(())),
+    )
+    .await
+}
+
+/// The SQLSTATE a statement failed with, or `None` if it succeeded.
+fn sql_state<Output>(result: Result<Output, sqlx::Error>) -> Option<String> {
+    result.err().map(|error| match error.as_database_error() {
+        Some(database_error) => database_error
+            .code()
+            .map_or_else(|| "<no code>".to_owned(), |code| code.into_owned()),
+        None => format!("<{error}>"),
+    })
 }
 
 /// The S3 error code a request failed with, or `None` if it succeeded.

@@ -1,7 +1,7 @@
 //! Contract tests that run the `pv-fake` binary directly, without the daemon supervisor.
 #![cfg(unix)]
 
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
@@ -989,6 +989,280 @@ fn rustfs_fake_answers_health_and_refuses_unsigned_requests() -> Result<()> {
     assert_eq!(event_names(&fake)?, ["started", "signal SIGTERM", "exit 0"]);
 
     Ok(())
+}
+
+/// The files PV relies on are checked against real PostgreSQL by the daemon's runtime contracts,
+/// which run `initdb` through PV's adapter.
+#[test]
+fn initdb_fake_initializes_a_data_directory_once_as_initdb_does() -> Result<()> {
+    let tempdir = tempdir()?;
+    let data_dir = tempdir.path().join("data");
+    let empty_dir = tempdir.path().join("empty");
+    state::fs::ensure_user_dir(&empty_dir)?;
+
+    let codes = [&data_dir, &empty_dir, &data_dir]
+        .into_iter()
+        .map(|data_dir| run_initdb(tempdir.path(), data_dir))
+        .collect::<Result<Vec<_>>>()?;
+
+    assert_eq!(codes, [Some(0), Some(0), Some(1)]);
+    assert_eq!(
+        state::fs::read_to_string(&data_dir.join("PG_VERSION"))?,
+        "18\n"
+    );
+    assert_eq!(
+        state::fs::read_to_string(&data_dir.join("initdb.password"))?,
+        "test-password"
+    );
+    assert_eq!(
+        state::fs::read_to_string(&tempdir.path().join("stderr"))?,
+        format!(
+            "initdb: error: directory \"{data_dir}\" exists but is not empty\ninitdb: hint: If \
+             you want to create a new database system, either remove or empty the directory \
+             \"{data_dir}\" or run initdb with an argument other than \"{data_dir}\".\n"
+        )
+    );
+
+    Ok(())
+}
+
+/// PostgreSQL's shutdowns, recorded from 18.4: after SIGTERM it keeps its open clients connected
+/// and exits once they disconnect, and SIGINT closes them. The clients stop at the SCRAM
+/// challenge, so this doesn't check that one can still query during the wait; PV never relies on
+/// that. Sign-in and queries are checked against real PostgreSQL by the daemon's runtime
+/// contracts.
+#[test]
+fn postgres_fake_keeps_open_clients_connected_through_sigterm_and_closes_them_on_sigint()
+-> Result<()> {
+    let tempdir = tempdir()?;
+    let data_dir = tempdir.path().join("data");
+    run_initdb(tempdir.path(), &data_dir)?;
+
+    let (terminated_fake, mut terminated, mut client, terminated_greeting) =
+        start_postgres_with_client(&tempdir.path().join("sigterm"), &data_dir)?;
+    signal(&terminated, Signal::TERM)?;
+    client.set_read_timeout(Some(Duration::from_millis(300)))?;
+    let still_connected = client
+        .read(&mut [0])
+        .is_err_and(|error| matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut));
+    let waited_for_client = terminated.0.try_wait()?.is_none();
+    drop(client);
+    let terminated_status = wait_for_exit(&mut terminated)?;
+
+    let (interrupted_fake, mut interrupted, mut client, interrupted_greeting) =
+        start_postgres_with_client(&tempdir.path().join("sigint"), &data_dir)?;
+    signal(&interrupted, Signal::INT)?;
+    client.set_read_timeout(Some(WAIT_TIMEOUT))?;
+    let ended = client.read_to_end(&mut Vec::new()).is_ok();
+    let interrupted_status = wait_for_exit(&mut interrupted)?;
+
+    // PostgreSQL asks every client for SCRAM-SHA-256.
+    let sasl = b"R\0\0\0\x17\0\0\0\x0aSCRAM-SHA-256\0\0".to_vec();
+    assert_eq!(
+        [terminated_greeting, interrupted_greeting],
+        [sasl.clone(), sasl]
+    );
+    assert!(still_connected && waited_for_client);
+    assert_eq!(terminated_status.code(), Some(0));
+    assert_eq!(
+        event_names(&terminated_fake)?,
+        ["started", "signal SIGTERM", "exit 0"]
+    );
+    assert!(ended);
+    assert_eq!(interrupted_status.code(), Some(0));
+    assert_eq!(
+        event_names(&interrupted_fake)?,
+        ["started", "signal SIGINT", "exit 0"]
+    );
+
+    Ok(())
+}
+
+/// The system databases PV relies on are checked against real MySQL by the daemon's runtime
+/// contracts, which initialize through PV's adapter.
+#[test]
+fn mysqld_fake_initializes_a_data_directory_once_as_mysqld_does() -> Result<()> {
+    let tempdir = tempdir()?;
+    let data_dir = tempdir.path().join("data");
+    let empty_dir = tempdir.path().join("empty");
+    state::fs::ensure_user_dir(&empty_dir)?;
+
+    let codes = [&data_dir, &empty_dir, &data_dir]
+        .into_iter()
+        .map(|data_dir| run_mysqld_initialize(tempdir.path(), data_dir))
+        .collect::<Result<Vec<_>>>()?;
+    // mysqld refuses --no-defaults anywhere but first.
+    let misordered = tempdir.path().join("misordered");
+    let (_fake, mut process) = spawn_service(
+        &misordered,
+        "mysqld",
+        Persona::Mysqld,
+        FakeSettings::default(),
+        &[
+            "--initialize-insecure",
+            "--no-defaults",
+            "--datadir",
+            misordered.join("data").as_str(),
+        ]
+        .map(str::to_owned),
+        &[],
+    )?;
+    let misordered_code = wait_for_exit(&mut process)?.code();
+
+    assert_eq!(codes, [Some(0), Some(0), Some(1)]);
+    assert_eq!(misordered_code, Some(1));
+    assert!(!state::fs::path_exists(&misordered.join("data")));
+    assert!(state::fs::path_is_directory(&data_dir.join("mysql"))?);
+    assert_eq!(
+        state::fs::read_to_string(&tempdir.path().join("stderr"))?,
+        format!(
+            "[ERROR] [MY-010457] [Server] --initialize specified but the data directory has files \
+             in it. Aborting.\n[ERROR] [MY-013236] [Server] The designated data directory \
+             {data_dir}/ is unusable. You can remove all files that the server added to \
+             it.\n[ERROR] [MY-010119] [Server] Aborting\n"
+        )
+    );
+
+    Ok(())
+}
+
+/// MySQL 8.4's signals: SIGTERM shuts it down and SIGINT is ignored. The persona speaks no MySQL
+/// protocol; its port only accepts connections.
+#[test]
+fn mysqld_fake_accepts_connections_and_exits_on_sigterm_but_not_sigint() -> Result<()> {
+    let tempdir = tempdir()?;
+    let data_dir = tempdir.path().join("data");
+    run_mysqld_initialize(tempdir.path(), &data_dir)?;
+    let [port] = available_ports()?;
+    let port_argument = port.to_string();
+    let (fake, mut process) = spawn_service(
+        &tempdir.path().join("server"),
+        "mysqld",
+        Persona::Mysqld,
+        FakeSettings::default(),
+        &[
+            "--no-defaults",
+            "--datadir",
+            data_dir.as_str(),
+            "--bind-address=127.0.0.1",
+            "--port",
+            port_argument.as_str(),
+            "--mysqlx=0",
+            "--socket",
+            tempdir.path().join("mysql.sock").as_str(),
+            "--init-file",
+            tempdir.path().join("init.sql").as_str(),
+        ]
+        .map(str::to_owned),
+        &[],
+    )?;
+
+    connect_with_retry(port)?;
+    signal(&process, Signal::INT)?;
+    // Wait for the fake to handle SIGINT, so the two signals never arrive together.
+    wait_for_event(&fake, |kind| {
+        matches!(kind, EventKind::Signal { signal: received } if received == "SIGINT").then_some(())
+    })?;
+    let ignored_sigint = process.0.try_wait()?.is_none();
+    signal(&process, Signal::TERM)?;
+    let status = wait_for_exit(&mut process)?;
+
+    assert!(ignored_sigint);
+    assert_eq!(status.code(), Some(0));
+    assert_eq!(
+        event_names(&fake)?,
+        ["started", "signal SIGINT", "signal SIGTERM", "exit 0"]
+    );
+
+    Ok(())
+}
+
+/// Runs `mysqld --initialize-insecure` with PV's arguments and returns its exit code.
+fn run_mysqld_initialize(root: &Utf8Path, data_dir: &Utf8Path) -> Result<Option<i32>> {
+    let (_fake, mut process) = spawn_service(
+        root,
+        "mysqld",
+        Persona::Mysqld,
+        FakeSettings::default(),
+        &[
+            "--no-defaults",
+            "--initialize-insecure",
+            "--datadir",
+            data_dir.as_str(),
+            "--basedir",
+            root.as_str(),
+        ]
+        .map(str::to_owned),
+        &[],
+    )?;
+
+    Ok(wait_for_exit(&mut process)?.code())
+}
+
+/// Runs `initdb` with PV's arguments and the password `test-password`, and returns its exit code.
+fn run_initdb(root: &Utf8Path, data_dir: &Utf8Path) -> Result<Option<i32>> {
+    let password_file = root.join("password");
+    state::fs::write_sensitive_file(&password_file, "test-password")?;
+    let (_fake, mut process) = spawn_service(
+        root,
+        "initdb",
+        Persona::Initdb,
+        FakeSettings::default(),
+        &[
+            "-D",
+            data_dir.as_str(),
+            "--username",
+            "pv_root",
+            "--pwfile",
+            password_file.as_str(),
+            "--auth-host",
+            "scram-sha-256",
+            "--auth-local",
+            "trust",
+        ]
+        .map(str::to_owned),
+        &[],
+    )?;
+
+    Ok(wait_for_exit(&mut process)?.code())
+}
+
+/// Starts `postgres` with PV's arguments and connects a client that sends PostgreSQL's startup
+/// message. Returns the server's first reply.
+fn start_postgres_with_client(
+    root: &Utf8Path,
+    data_dir: &Utf8Path,
+) -> Result<(InstalledFake, FakeProcess, TcpStream, Vec<u8>)> {
+    let [port] = available_ports()?;
+    let port_argument = port.to_string();
+    let (fake, process) = spawn_service(
+        root,
+        "postgres",
+        Persona::Postgres,
+        FakeSettings::default(),
+        &[
+            "-D",
+            data_dir.as_str(),
+            "-h",
+            "127.0.0.1",
+            "-p",
+            port_argument.as_str(),
+        ]
+        .map(str::to_owned),
+        &[],
+    )?;
+    let mut client = connect_with_retry(port)?;
+    let parameters = b"user\0pv_root\0database\0postgres\0\0";
+    let mut startup = u32::try_from(8 + parameters.len())?.to_be_bytes().to_vec();
+    // Protocol version 3.0.
+    startup.extend_from_slice(&196_608_u32.to_be_bytes());
+    startup.extend_from_slice(parameters);
+    client.write_all(&startup)?;
+    client.set_read_timeout(Some(WAIT_TIMEOUT))?;
+    let mut greeting = vec![0; 24];
+    client.read_exact(&mut greeting)?;
+
+    Ok((fake, process, client, greeting))
 }
 
 /// Starts `redis-server <config>` with the config PV renders.

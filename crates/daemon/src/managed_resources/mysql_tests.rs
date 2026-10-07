@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
-use std::os::unix::fs::PermissionsExt;
 
 use anyhow::{Result, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
+use pv_fake::Persona;
 use resources::RuntimeArtifactAdapter;
 use serde_json::{Value, json};
 use state::{Database, LinkProjectInput, ProjectRecord, PvPaths};
@@ -15,10 +15,6 @@ const MYSQL_TRACK: &str = "8.0";
 const MYSQL_ARTIFACT_VERSION: &str = "8.0.35-pv1";
 const MYSQL_ARCHIVE_FILE_NAME: &str = "mysql-8.0.35-pv1-any.tar.gz";
 const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
-const MYSQL_FIXTURE_SCRIPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/managed-resources/mysql.py"
-));
 
 #[test]
 fn mysql_runtime_port_prefers_3306() -> Result<()> {
@@ -300,10 +296,7 @@ fn seed_mysql_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
         .join("mysql")
         .join(track)
         .join(format!("releases/{MYSQL_ARTIFACT_VERSION}"));
-    let executable = release_path.join("bin/mysqld");
-
-    state::fs::write_sensitive_file(&executable, MYSQL_FIXTURE_SCRIPT)?;
-    set_executable(&executable)?;
+    pv_fake::install(&release_path.join("bin/mysqld"), Persona::Mysqld)?;
     let mut database = Database::open(paths)?;
     database.record_managed_resource_track_installed(
         "mysql",
@@ -337,10 +330,8 @@ fn create_mysql_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<(
     let archive_parent = tempdir.join("archive-root");
     let root_name = format!("mysql-{MYSQL_ARTIFACT_VERSION}");
     let root = archive_parent.join(&root_name);
-    let executable = root.join("bin/mysqld");
-
-    state::fs::write_sensitive_file(&executable, MYSQL_FIXTURE_SCRIPT)?;
-    set_executable(&executable)?;
+    // The archive carries the fake and its scenario file, which PV extracts next to each other.
+    pv_fake::install(&root.join("bin/mysqld"), Persona::Mysqld)?;
     run_fixture_command(
         "/usr/bin/tar",
         &[
@@ -523,18 +514,6 @@ fn path_exists(path: &Utf8Path) -> Result<bool> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
     }
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "daemon MySQL tests set fixture executable bits directly"
-)]
-fn set_executable(path: &Utf8Path) -> Result<()> {
-    let mut permissions = std::fs::metadata(path)?.permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(path, permissions)?;
-
-    Ok(())
 }
 
 fn regex_literal(value: &str) -> String {
