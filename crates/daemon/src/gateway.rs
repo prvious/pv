@@ -3539,7 +3539,8 @@ fn desired_gateway_config(
     let routes = gateway_project_routes(paths, plan);
     let active_dir = paths.gateway_projects_config_dir();
     let candidate_dir = candidate_config_dir_for(&active_dir);
-    let fragments = gateway_project_config_fragments(paths, &routes, preserved_fragments)?;
+    let mut fragments = gateway_project_config_fragments(paths, &routes, preserved_fragments)?;
+    enforce_project_bind_policy(&mut fragments);
     let readiness_hostname = gateway_readiness_hostname(&fragments);
     let import_project_configs = !fragments.is_empty();
     let mut config_input = GatewayConfigInput {
@@ -3593,6 +3594,7 @@ fn desired_worker_config(
             }
         }
     }
+    enforce_project_bind_policy(&mut fragments);
     let fragment_project_ids = fragments
         .iter()
         .map(|fragment| fragment.project_id.as_str())
@@ -3662,6 +3664,27 @@ fn merge_worker_fragment_sites(desired: &str, previous: &str) -> Result<String, 
     Ok(format!(
         "{desired_sites} {{\n{desired_body}{previous_only} {{\n{previous_body}"
     ))
+}
+
+fn enforce_project_bind_policy(fragments: &mut [ProjectConfigFragment]) {
+    // Preserved routes keep their last valid roots, but use PV's current bind policy.
+    // Change desired bytes before fingerprinting; rollback still uses the exact backup.
+    for fragment in fragments {
+        fragment.content = fragment
+            .content
+            .split_inclusive('\n')
+            .map(|line| {
+                let directive = line.trim_start();
+                if directive.split_whitespace().next() == Some("bind") {
+                    let indent = &line[..line.len() - directive.len()];
+                    let newline = if line.ends_with('\n') { "\n" } else { "" };
+                    format!("{indent}bind 127.0.0.1{newline}")
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect();
+    }
 }
 
 async fn promote_runtime_config_tree(
@@ -5697,7 +5720,7 @@ fn worker_config_private_environment(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
     #[cfg(target_os = "macos")]
     use std::process::Stdio;
     use std::sync::mpsc;
@@ -5706,6 +5729,7 @@ mod tests {
     use anyhow::Result;
     use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
+    use insta::assert_debug_snapshot;
     use platform::{ActivePfRedirectInspection, PfRedirectConfig};
     use state::{Database, LinkProjectInput, PvPaths};
     use tokio::sync::watch;
@@ -5717,19 +5741,22 @@ mod tests {
 
     use super::{
         CaddyCliCommand, GatewayPfRoutingState, GatewayReadinessPorts, GatewayRuntimePlan,
-        ReadinessFailurePolicy, ReconciliationOutcome, RuntimePlan, build_target_runtime_plan,
+        PhpWorkerRuntimePlan, ReadinessFailurePolicy, ReconciliationOutcome, RuntimePlan,
+        RuntimeProject, build_target_runtime_plan,
         cancel_or_preserve_runtime_reconciliation_errors, classify_gateway_pf_routing_state,
-        combined_runtime_reconciliation_error, gateway_project_config_fragments,
-        gateway_public_readiness_check, gateway_readiness_check_for_ports,
-        gateway_readiness_hostname, gateway_readiness_plan, gateway_readiness_ports,
-        previous_runtime_readiness_from_parts, project_config_file_name, run_validation_command,
-        spawn_gateway_pf_inspection, wait_for_transaction_step,
+        combined_runtime_reconciliation_error, desired_worker_config, enforce_project_bind_policy,
+        gateway_project_config_fragments, gateway_public_readiness_check,
+        gateway_readiness_check_for_ports, gateway_readiness_hostname, gateway_readiness_plan,
+        gateway_readiness_ports, previous_runtime_readiness_from_parts, project_config_file_name,
+        run_validation_command, runtime_config_fingerprint, spawn_gateway_pf_inspection,
+        verified_previous_config_fingerprint, wait_for_transaction_step,
     };
     #[cfg(target_os = "macos")]
     use super::{
         RuntimeProcessCommand, spawn_validation_process_group_anchor,
         start_validation_process_reaper, wait_for_validation_process_group_exit,
     };
+    use crate::gateway_config::{promote_config_dir, promote_validated_config_tree_async};
 
     #[test]
     fn runtime_reconciliation_failures_are_sorted_by_runtime_key() -> Result<()> {
@@ -6180,6 +6207,78 @@ mod tests {
             Some("preserved.test")
         );
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn preserved_worker_sites_use_current_binds_and_rollback_exact_bytes() -> Result<()> {
+        let previous =
+            "http://old.test:8000 {\n    bind 127.0.0.1 ::1\n    root * /project/old-public\n}\n";
+        let desired =
+            "http://new.test:8000 {\n    bind 127.0.0.1\n    root * /project/new-public\n}\n";
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let worker = PhpWorkerRuntimePlan {
+            php_track: "8.4".to_owned(),
+            runtime_key: "8.4".to_owned(),
+            loaded_modules: Vec::new(),
+            port: 8000,
+            admin_socket_path: paths.worker_admin_socket("8.4"),
+            projects: vec![RuntimeProject {
+                id: "project".to_owned(),
+                render_config: false,
+                primary_hostname: "new.test".to_owned(),
+                project_root: Utf8PathBuf::from("/project"),
+                root: Utf8PathBuf::from("/project/new-public"),
+            }],
+        };
+        let mut fragments = desired_worker_config(
+            &paths,
+            &worker,
+            Some(&BTreeMap::from([(
+                "project.Caddyfile".to_owned(),
+                desired.to_owned(),
+            )])),
+            Some(&BTreeMap::from([(
+                "project.Caddyfile".to_owned(),
+                previous.to_owned(),
+            )])),
+        )?
+        .fragments;
+        assert_debug_snapshot!(fragments[0].content);
+        let normalized = fragments.clone();
+        enforce_project_bind_policy(&mut fragments);
+        assert_eq!(fragments, normalized);
+
+        let root = tempdir.path().join("root.Caddyfile");
+        let active_dir = tempdir.path().join("active");
+        let candidate_dir = tempdir.path().join("candidate");
+        state::fs::write_sensitive_file(&root, "previous root\n")?;
+        state::fs::write_sensitive_file(&active_dir.join("project.Caddyfile"), previous)?;
+        state::fs::write_sensitive_file(
+            &candidate_dir.join("project.Caddyfile"),
+            &fragments[0].content,
+        )?;
+        let previous_fingerprint =
+            runtime_config_fingerprint("previous root\n", [("project.Caddyfile", previous)]);
+        let promoted = promote_validated_config_tree_async(
+            &root,
+            "candidate root\n",
+            "desired root\n",
+            |_path| async { Ok(()) },
+            || promote_config_dir(&active_dir, &candidate_dir),
+        )
+        .await?;
+        assert_eq!(
+            verified_previous_config_fingerprint(&promoted, Some(&previous_fingerprint))?,
+            previous_fingerprint,
+        );
+        promoted.rollback()?;
+        assert_eq!(state::fs::read_to_string(&root)?, "previous root\n");
+        assert_eq!(
+            state::fs::read_to_string(&active_dir.join("project.Caddyfile"))?,
+            previous
+        );
         Ok(())
     }
 

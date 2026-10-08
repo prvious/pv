@@ -4319,16 +4319,45 @@ root: public
     assert!(gateway_root_config.contains("import "));
     assert!(!gateway_root_config.contains("PV Gateway is running"));
 
+    // A previous PV version used both loopback families. Keep the saved routes
+    // and custom document root while applying the current bind policy.
     let edited_gateway_fragment =
         format!("# edited preserved Gateway fragment\n{gateway_fragment}");
     let edited_worker_fragment = format!("# edited preserved worker fragment\n{worker_fragment}");
-    fs::write_sensitive_file(&gateway_fragment_path, &edited_gateway_fragment)?;
-    fs::write_sensitive_file(&worker_fragment_path, &edited_worker_fragment)?;
+    fs::write_sensitive_file(
+        &gateway_fragment_path,
+        &edited_gateway_fragment.replace("bind 127.0.0.1", "bind 127.0.0.1 ::1"),
+    )?;
+    fs::write_sensitive_file(
+        &worker_fragment_path,
+        &edited_worker_fragment.replace("bind 127.0.0.1", "bind 127.0.0.1 ::1"),
+    )?;
     let gateway_load_count = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
     let worker_load_count = fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len();
 
     reconcile_gateway_runtimes(&paths).await?;
 
+    assert_eq!(
+        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
+        gateway_load_count + 1
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
+        worker_load_count + 1
+    );
+    assert_eq!(
+        fs::read_to_string(&gateway_fragment_path)?,
+        edited_gateway_fragment
+    );
+    assert_eq!(
+        fs::read_to_string(&worker_fragment_path)?,
+        edited_worker_fragment
+    );
+
+    // An unreadable config uses the same last-valid route and is a no-op after repair.
+    fs::remove_file_if_exists(&project_root.join("pv.yml"))?;
+    fs::ensure_user_dir(&project_root.join("pv.yml"))?;
+    reconcile_gateway_runtimes(&paths).await?;
     assert_eq!(
         fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
         gateway_load_count + 1

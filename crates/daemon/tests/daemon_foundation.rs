@@ -3984,7 +3984,7 @@ async fn dns_resolver_answers_udp_a_and_nodata_for_aaaa() -> Result<()> {
 
     let aaaa_response = udp_dns_query(port, &dns_query("acme.test.", RecordType::AAAA)?).await?;
     assert_common_dns_response(&aaaa_response, "acme.test.", RecordType::AAAA)?;
-    assert!(aaaa_response.answers.is_empty());
+    assert_nodata_soa(&aaaa_response)?;
 
     daemon.shutdown().await?;
 
@@ -4004,11 +4004,12 @@ async fn dns_resolver_returns_nodata_and_survives_malformed_udp() -> Result<()> 
 
     let mx_response = udp_dns_query(port, &dns_query("acme.test.", RecordType::MX)?).await?;
     assert_common_dns_response(&mx_response, "acme.test.", RecordType::MX)?;
-    assert!(mx_response.answers.is_empty());
+    assert_nodata_soa(&mx_response)?;
 
     let external_response = udp_dns_query(port, &dns_query("example.com.", RecordType::A)?).await?;
     assert_common_dns_response(&external_response, "example.com.", RecordType::A)?;
     assert!(external_response.answers.is_empty());
+    assert!(external_response.authorities.is_empty());
 
     daemon.shutdown().await?;
 
@@ -4030,6 +4031,14 @@ async fn dns_resolver_answers_tcp_queries() -> Result<()> {
         RecordType::A,
         RData::A(A::new(127, 0, 0, 1)),
     )?;
+
+    let aaaa_response = tcp_dns_query(port, &dns_query("acme.test.", RecordType::AAAA)?).await?;
+    assert_common_dns_response(&aaaa_response, "acme.test.", RecordType::AAAA)?;
+    assert_nodata_soa(&aaaa_response)?;
+    let soa_response = tcp_dns_query(port, &dns_query("test.", RecordType::SOA)?).await?;
+    assert_common_dns_response(&soa_response, "test.", RecordType::SOA)?;
+    assert_eq!(soa_response.answers, aaaa_response.authorities);
+    assert!(soa_response.authorities.is_empty());
 
     daemon.shutdown().await?;
 
@@ -4544,6 +4553,20 @@ fn assert_common_dns_response(
     assert_eq!(query.query_type(), record_type);
     assert_eq!(query.query_class(), DNSClass::IN);
 
+    Ok(())
+}
+
+fn assert_nodata_soa(response: &Message) -> Result<()> {
+    assert!(response.answers.is_empty());
+    assert_eq!(response.authorities.len(), 1);
+    let authority = &response.authorities[0];
+    assert_eq!(authority.name, Name::from_str("test.")?);
+    assert_eq!(authority.dns_class, DNSClass::IN);
+    assert_eq!(authority.ttl, EXPECTED_DNS_TTL_SECONDS);
+    let RData::SOA(soa) = &authority.data else {
+        bail!("NODATA response did not contain a zone SOA");
+    };
+    assert_eq!(soa.minimum, EXPECTED_DNS_TTL_SECONDS);
     Ok(())
 }
 

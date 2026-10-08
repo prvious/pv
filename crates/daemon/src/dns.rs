@@ -3,7 +3,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, UdpSocket};
 use std::time::Duration;
 
 use hickory_proto::op::{Message, ResponseCode};
-use hickory_proto::rr::rdata::A;
+use hickory_proto::rr::rdata::{A, SOA};
 use hickory_proto::rr::{Name, RData, Record, RecordType};
 use hickory_proto::serialize::binary::BinEncodable;
 use state::{Database, PortOwner, PortRequest, PvPaths};
@@ -176,13 +176,35 @@ pub fn response_bytes(request: &[u8]) -> Result<Vec<u8>, DaemonError> {
     response.metadata.response_code = ResponseCode::NoError;
     response.add_queries(request.queries.iter().cloned());
 
+    let zone = Name::from_ascii("test.")?;
+    let soa = Record::from_rdata(
+        zone.clone(),
+        DNS_TTL_SECONDS,
+        RData::SOA(SOA::new(
+            zone.clone(),
+            Name::from_ascii("hostmaster.test.")?,
+            1,
+            5,
+            5,
+            5,
+            DNS_TTL_SECONDS,
+        )),
+    );
     for query in &request.queries {
-        if is_test_name(query.name()) && query.query_type() == RecordType::A {
+        if !is_test_name(query.name()) {
+            continue;
+        }
+        if query.query_type() == RecordType::A {
             response.add_answer(Record::from_rdata(
                 query.name().clone(),
                 DNS_TTL_SECONDS,
                 RData::A(A::new(127, 0, 0, 1)),
             ));
+        } else if query.query_type() == RecordType::SOA && query.name() == &zone {
+            response.add_answer(soa.clone());
+        } else if response.authorities.is_empty() {
+            // RFC 2308: authoritative NODATA needs the zone SOA for negative caching.
+            response.add_authority(soa.clone());
         }
     }
 
@@ -285,6 +307,7 @@ mod tests {
     use hickory_proto::rr::rdata::A;
     use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
     use hickory_proto::serialize::binary::BinEncodable;
+    use insta::assert_debug_snapshot;
 
     const REQUEST_ID: u16 = 42;
     const EXPECTED_DNS_TTL_SECONDS: u32 = 5;
@@ -300,6 +323,7 @@ mod tests {
         assert_eq!(a_answer.dns_class, DNSClass::IN);
         assert_eq!(a_answer.ttl, EXPECTED_DNS_TTL_SECONDS);
         assert_eq!(&a_answer.data, &RData::A(A::new(127, 0, 0, 1)));
+        assert!(a_response.authorities.is_empty());
 
         let aaaa_response = response_for("acme.test.", RecordType::AAAA)?;
         assert_common_response_fields(&aaaa_response, "acme.test.", RecordType::AAAA)?;
@@ -317,7 +341,34 @@ mod tests {
         let non_test_response = response_for("example.com.", RecordType::A)?;
         assert_common_response_fields(&non_test_response, "example.com.", RecordType::A)?;
         assert!(non_test_response.answers.is_empty());
+        assert!(non_test_response.authorities.is_empty());
 
+        Ok(())
+    }
+
+    #[test]
+    fn authoritative_nodata_includes_the_zone_soa() -> Result<()> {
+        for record_type in [
+            RecordType::AAAA,
+            RecordType::MX,
+            RecordType::TXT,
+            RecordType::SOA,
+        ] {
+            let response = response_for("acme.test.", record_type)?;
+            assert_common_response_fields(&response, "acme.test.", record_type)?;
+            assert!(response.answers.is_empty());
+            assert_debug_snapshot!(record_type.to_string(), response.authorities);
+        }
+        let apex = response_for("TEST.", RecordType::SOA)?;
+        assert_eq!(apex.answers.len(), 1);
+        assert!(apex.authorities.is_empty());
+        assert_debug_snapshot!("apex_soa", apex.answers);
+
+        let empty_request = Message::new(REQUEST_ID, MessageType::Query, OpCode::Query);
+        let empty_response =
+            Message::from_vec(&super::response_bytes(&empty_request.to_bytes()?)?)?;
+        assert!(empty_response.answers.is_empty());
+        assert!(empty_response.authorities.is_empty());
         Ok(())
     }
 

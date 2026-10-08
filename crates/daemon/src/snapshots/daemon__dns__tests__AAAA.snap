@@ -1,0 +1,22 @@
+---
+source: crates/daemon/src/dns.rs
+expression: response.authorities
+---
+[
+    Record {
+        name: Name("test."),
+        dns_class: IN,
+        ttl: 5,
+        data: SOA(
+            SOA {
+                mname: Name("test."),
+                rname: Name("hostmaster.test."),
+                serial: 1,
+                refresh: 5,
+                retry: 5,
+                expire: 5,
+                minimum: 5,
+            },
+        ),
+    },
+]
