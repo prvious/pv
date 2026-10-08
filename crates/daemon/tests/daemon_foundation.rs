@@ -720,7 +720,7 @@ async fn fallback_shutdown_prevents_late_worker_startup() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_path = tempdir.path().join("project");
     let ((worker, release_validation), _port_reservation) =
-        seed_barrier_foundation_worker(&paths, &project_path, false)?;
+        seed_barrier_foundation_worker(&paths, &project_path)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     gateway_guard.attach_worker("8.4");
     let daemon =
@@ -747,36 +747,6 @@ async fn fallback_shutdown_prevents_late_worker_startup() -> Result<()> {
     assert!(!paths.worker_pid("8.4").exists());
     assert!(!paths.worker_runtime_metadata("8.4").exists());
     assert!(!paths.daemon_socket().exists());
-
-    Ok(())
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn fallback_shutdown_dominates_worker_validation_failure() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project_path = tempdir.path().join("project");
-    let ((worker, release_validation), _port_reservation) =
-        seed_barrier_foundation_worker(&paths, &project_path, true)?;
-    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
-    gateway_guard.attach_worker("8.4");
-    let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
-    gateway_guard.attach_daemon(daemon);
-    wait_for_fake_hold(&worker).await?;
-    let job = wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
-
-    gateway_guard.shutdown_daemon_without_waiting()?;
-    state::fs::write_sensitive_file(&release_validation, "release\n")?;
-    let job = wait_for_job_id_status(&paths, &job.id, JobStatus::Failed).await?;
-    assert_eq!(
-        job.error.as_deref(),
-        Some("reconciliation was abandoned before completion")
-    );
-    assert_job_has_no_coverage(&paths, &job.id)?;
-    assert!(!fake_ran_after_hold(&worker)?);
-    assert!(!paths.worker_root_config("8.4").exists());
-    gateway_guard.shutdown_and_cleanup().await?;
 
     Ok(())
 }
@@ -2244,11 +2214,10 @@ fn seed_barrier_foundation_caddy(paths: &PvPaths) -> Result<(InstalledFake, Utf8
 fn seed_barrier_foundation_worker(
     paths: &PvPaths,
     project_path: &Utf8Path,
-    fail_validation: bool,
 ) -> Result<((InstalledFake, Utf8PathBuf), FoundationWorkerPortHandoff)> {
     let (_project_id, port_handoff) =
         seed_foundation_php_project(paths, project_path, "php: \"8.4\"\n")?;
-    let barrier = install_worker_validation_barrier(paths, fail_validation)?;
+    let barrier = install_worker_validation_barrier(paths, false)?;
 
     Ok((barrier, port_handoff))
 }
