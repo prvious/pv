@@ -1241,6 +1241,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "socket2 0.6.3",
  "sqlx",
  "state",
  "thiserror 2.0.18",
@@ -2896,6 +2897,7 @@ dependencies = [
  "libc",
  "nix 0.31.3",
  "plist",
+ "pv-fake",
  "raunch",
  "rcgen",
  "rustix",
@@ -2905,6 +2907,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.10.9",
+ "socket2 0.6.3",
  "state",
  "thiserror 2.0.18",
  "time",
@@ -3122,6 +3125,7 @@ dependencies = [
  "s3s",
  "serde",
  "serde_json",
+ "socket2 0.6.3",
  "state",
  "time",
  "tokio",
@@ -3130,7 +3134,7 @@ dependencies = [
 
 [[package]]
 name = "pv-privileged-helper"
-version = "1.0.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "platform",

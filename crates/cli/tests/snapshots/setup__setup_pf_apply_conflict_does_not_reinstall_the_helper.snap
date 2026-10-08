@@ -1,0 +1,18 @@
+---
+source: crates/cli/tests/setup.rs
+expression: "(output, operations)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "PV setup\nEnsured PV state layout: <tempdir>/home/.pv\nPrivileged helper: current 2.0.0 (protocol 2)\nShell profile integration skipped by --no-path.\nRun `pv env --shell zsh`, `pv env --shell bash`, or `pv env --shell fish` for manual shell integration.\nPrepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nInstalled system resolver config: <tempdir>/etc/resolver/test\nPrepared PV port redirect config\n  anchor path: <tempdir>/home/.pv/config/pf/com.prvious.pv\n  pf.conf reference path: <tempdir>/home/.pv/config/pf/pf.conf\n  HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:48080\n  HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:48443\nPV stopped during port redirect setup.\n",
+        stderr: "error: system integration operation failed: Loopback TCP port 80 is in use by nginx (pid 412).\n",
+    },
+    [
+        "install resolver <tempdir>/home/.pv/config/resolver/test -> <tempdir>/etc/resolver/test",
+    ],
+)

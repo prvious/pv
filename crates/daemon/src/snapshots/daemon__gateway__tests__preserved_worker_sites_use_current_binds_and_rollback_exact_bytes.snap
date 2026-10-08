@@ -1,0 +1,5 @@
+---
+source: crates/daemon/src/gateway.rs
+expression: "fragments[0].content"
+---
+"http://new.test:8000 {\n    bind 127.0.0.1\n    root * /project/new-public\n}\nhttp://old.test:8000 {\n    bind 127.0.0.1\n    root * /project/old-public\n}\n"

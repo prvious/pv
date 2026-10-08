@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/ports.rs
+expression: output
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "Port redirect preparation failed\n  Loopback TCP port 80 is unavailable. TCP listeners reported on this port: nginx (pid 412).\n  Stop the conflicting service, then run `pv ports:install` again.\n",
+    stderr: "",
+}

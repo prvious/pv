@@ -31,7 +31,7 @@ expression: rendered
 }
 
 http://pv-gateway.localhost {
-    bind 127.0.0.1 ::1
+    bind 127.0.0.1
     log {
         output file "/Users/alice/.pv/logs/gateway/access.log" {
             roll_size 10MiB
@@ -45,7 +45,7 @@ http://pv-gateway.localhost {
 }
 
 https://pv-gateway.localhost {
-    bind 127.0.0.1 ::1
+    bind 127.0.0.1
     log {
         output file "/Users/alice/.pv/logs/gateway/access.log" {
             roll_size 10MiB
@@ -64,7 +64,7 @@ https://pv-gateway.localhost {
 }
 
 http://127.0.0.1:48080 {
-    bind 127.0.0.1 ::1
+    bind 127.0.0.1
     log {
         output file "/Users/alice/.pv/logs/gateway/access.log" {
             roll_size 10MiB

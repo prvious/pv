@@ -2433,13 +2433,13 @@ async fn targeted_project_reconciliation_touches_only_old_and_new_workers() -> R
             release,
         )?;
     }
-    let ports = available_loopback_ports(5)?;
+    let ports = available_loopback_ports(4)?;
     seed_runtime_ports(
         &paths,
         &mut database,
         ports[0],
         ports[1],
-        &[("8.3", ports[2]), ("8.4", ports[3]), ("8.5", ports[4])],
+        &[("8.3", ports[2]), ("8.4", ports[3])],
     )?;
     drop(database);
 
@@ -2598,7 +2598,15 @@ env:
     );
 
     fs::write_sensitive_file(&acme.config_path, "php: \"8.5\"\nroot: web\n")?;
+    // System reconciliation releases undesired workers' assignments. Reserve the new
+    // worker's test port at the transition, rather than racing other tests for 45000.
+    let worker_85_reservation = TcpListener::bind("127.0.0.1:0")?;
+    let worker_85_port = worker_85_reservation.local_addr()?.port();
     let mut database = Database::open(&paths)?;
+    database.assign_port(
+        PortRequest::php_worker("8.5", worker_85_port, worker_85_port, worker_85_port),
+        |_port| true,
+    )?;
     database.replace_project_php_runtime(
         &acme.id,
         Some(&ProjectPhpRuntimeInput {
@@ -2609,6 +2617,7 @@ env:
         }),
     )?;
     drop(database);
+    drop(worker_85_reservation);
     reconcile_project_gateway_runtimes_for_test(
         &paths,
         &acme.id,
@@ -4319,16 +4328,45 @@ root: public
     assert!(gateway_root_config.contains("import "));
     assert!(!gateway_root_config.contains("PV Gateway is running"));
 
+    // A previous PV version used both loopback families. Keep the saved routes
+    // and custom document root while applying the current bind policy.
     let edited_gateway_fragment =
         format!("# edited preserved Gateway fragment\n{gateway_fragment}");
     let edited_worker_fragment = format!("# edited preserved worker fragment\n{worker_fragment}");
-    fs::write_sensitive_file(&gateway_fragment_path, &edited_gateway_fragment)?;
-    fs::write_sensitive_file(&worker_fragment_path, &edited_worker_fragment)?;
+    fs::write_sensitive_file(
+        &gateway_fragment_path,
+        &edited_gateway_fragment.replace("bind 127.0.0.1", "bind 127.0.0.1 ::1"),
+    )?;
+    fs::write_sensitive_file(
+        &worker_fragment_path,
+        &edited_worker_fragment.replace("bind 127.0.0.1", "bind 127.0.0.1 ::1"),
+    )?;
     let gateway_load_count = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
     let worker_load_count = fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len();
 
     reconcile_gateway_runtimes(&paths).await?;
 
+    assert_eq!(
+        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
+        gateway_load_count + 1
+    );
+    assert_eq!(
+        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
+        worker_load_count + 1
+    );
+    assert_eq!(
+        fs::read_to_string(&gateway_fragment_path)?,
+        edited_gateway_fragment
+    );
+    assert_eq!(
+        fs::read_to_string(&worker_fragment_path)?,
+        edited_worker_fragment
+    );
+
+    // An unreadable config uses the same last-valid route and is a no-op after repair.
+    fs::remove_file_if_exists(&project_root.join("pv.yml"))?;
+    fs::ensure_user_dir(&project_root.join("pv.yml"))?;
+    reconcile_gateway_runtimes(&paths).await?;
     assert_eq!(
         fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
         gateway_load_count + 1

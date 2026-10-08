@@ -1,0 +1,26 @@
+---
+source: crates/platform/src/helper.rs
+expression: "(inspection, message)"
+---
+(
+    LowPortInspection {
+        ports: [
+            LowPortState {
+                port: 80,
+                available: false,
+                owners: [
+                    PortOwner {
+                        pid: <holder-pid>,
+                        command: "tcp-holder",
+                    },
+                ],
+            },
+            LowPortState {
+                port: 443,
+                available: true,
+                owners: [],
+            },
+        ],
+    },
+    "Loopback TCP port 80 is unavailable. TCP listeners reported on this port: tcp-holder (pid <holder-pid>).",
+)

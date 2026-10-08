@@ -1684,6 +1684,8 @@ fn event_names(fake: &InstalledFake) -> Result<Vec<String>> {
         .into_iter()
         .map(|event| match event.kind {
             EventKind::Started { .. } => "started".to_owned(),
+            EventKind::TcpAccepted => "tcp_accepted".to_owned(),
+            EventKind::TcpReady { .. } => "tcp_ready".to_owned(),
             EventKind::Signal { signal } => format!("signal {signal}"),
             EventKind::LifelineFired => "lifeline_fired".to_owned(),
             EventKind::Held { .. } => "held".to_owned(),

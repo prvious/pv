@@ -65,6 +65,10 @@ enum BootoutError {
 }
 
 impl Environment for TestEnvironment {
+    fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError> {
+        Err(platform::PlatformError::PrivilegedHelperUnavailable)
+    }
+
     fn var_os(&self, _key: &str) -> Option<OsString> {
         None
     }

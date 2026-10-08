@@ -9,7 +9,7 @@ expression: output.stdout
 ◇  Ensured PV state layout: <tempdir>/home/.pv
 │
 ✓  Administrator helper installed
-│  1.0.0 (protocol 1)
+│  2.0.0 (protocol 2)
 │
 ○  Shell profile integration skipped by --no-path.
 │  ↳ Activate PV manually in this terminal:
