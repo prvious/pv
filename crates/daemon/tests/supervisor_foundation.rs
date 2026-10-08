@@ -35,6 +35,10 @@ const OWNED_PYTHON_RUNTIME_SCRIPT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/supervisor/owned-python-runtime.py"
 ));
+/// Keeps a shell alive until it is stopped, but for 150 s at most, so a test that dies before
+/// stopping it leaves nothing running for long. That outlasts the CI profile's 120 s limit on a
+/// test, so a stalled test can't pass because its fixture exited on its own.
+const IDLE_SHELL_LOOP: &str = "i=0; while [ $i -lt 150 ]; do sleep 1; i=$((i + 1)); done";
 
 #[tokio::test]
 async fn tcp_readiness_succeeds_for_listening_ports_and_times_out() -> Result<()> {
@@ -823,7 +827,7 @@ set -eu
 printf '%s' "${{PHPRC-}}" > {}
 printf '%s' "${{PHP_INI_SCAN_DIR-}}" > {}
 touch {}
-while true; do sleep 1; done
+{IDLE_SHELL_LOOP}
 "#,
             shell_single_quoted(observed_phprc.as_str()),
             shell_single_quoted(observed_scan_dir.as_str()),
@@ -859,7 +863,7 @@ async fn supervisor_stop_waits_for_process_group_descendants() -> Result<()> {
             vec![
                 "-c".to_string(),
                 format!(
-                    "trap 'exit 0' TERM; sh -c 'trap \"\" TERM; while true; do sleep 1; done' & echo $! > \"{child_pid_path}\"; while true; do sleep 1; done"
+                    "trap 'exit 0' TERM; sh -c 'trap \"\" TERM; {IDLE_SHELL_LOOP}' & echo $! > \"{child_pid_path}\"; {IDLE_SHELL_LOOP}"
                 ),
             ],
         ))
@@ -1006,9 +1010,7 @@ async fn supervisor_rejects_shebang_identity_with_wrong_interpreter() -> Result<
     let ready = paths.run().join("wrong-interpreter-ready");
     state::fs::write_sensitive_file(
         &runtime,
-        &format!(
-            "#!/usr/bin/false\ntrap 'exit 0' TERM; touch \"{ready}\"; while true; do sleep 1; done\n"
-        ),
+        &format!("#!/usr/bin/false\ntrap 'exit 0' TERM; touch \"{ready}\"; {IDLE_SHELL_LOOP}\n"),
     )?;
     set_executable(&runtime)?;
     let actual = supervisor
@@ -1095,7 +1097,7 @@ async fn supervisor_rejects_reused_pid_with_same_binary_but_different_arguments(
             &paths,
             "actual-argument-runtime",
             "/bin/sh",
-            vec!["-c".to_string(), "while true; do sleep 1; done".to_string()],
+            vec!["-c".to_string(), IDLE_SHELL_LOOP.to_string()],
         ))
         .await?;
     let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
@@ -1144,7 +1146,7 @@ async fn supervisor_rejects_reused_pid_with_same_binary_and_argument_prefix() ->
             "/bin/sh",
             vec![
                 "-c".to_string(),
-                format!("while true; do sleep 1; done # {actual_config}"),
+                format!("{IDLE_SHELL_LOOP} # {actual_config}"),
             ],
         ))
         .await?;
@@ -1188,7 +1190,7 @@ async fn supervisor_rejects_reused_pid_with_spaced_argument_prefix() -> Result<(
     let runtime = paths.root().join("fake-runtime");
     let expected_config = paths.config().join("Alice Smith/Caddyfile");
     let actual_config = paths.config().join("Alice Smith/Caddyfile.backup");
-    state::fs::write_sensitive_file(&runtime, "#!/bin/sh\nwhile true; do sleep 1; done\n")?;
+    state::fs::write_sensitive_file(&runtime, &format!("#!/bin/sh\n{IDLE_SHELL_LOOP}\n"))?;
     set_executable(&runtime)?;
     let actual = supervisor
         .start(process_spec(

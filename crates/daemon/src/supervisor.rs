@@ -1671,6 +1671,10 @@ mod tests {
     /// Shorter than the script identity stabilization window, so cancellation lands while
     /// the runtime files are still uncommitted.
     const IDENTITY_CANCEL_DELAY: Duration = Duration::from_millis(150);
+    /// Keeps a shell alive until it is stopped, but for 150 s at most, so a test that dies before
+    /// stopping it leaves nothing running for long. That outlasts the CI profile's 120 s limit on
+    /// a test, so a stalled test can't pass because its fixture exited on its own.
+    const IDLE_SHELL_LOOP: &str = "i=0; while [ $i -lt 150 ]; do sleep 1; i=$((i + 1)); done";
 
     #[tokio::test]
     async fn startup_persistence_failure_terminates_process_group_descendants() -> Result<()> {
@@ -1690,9 +1694,7 @@ mod tests {
                     command: "/bin/sh".into(),
                     arguments: vec![
                         "-c".to_string(),
-                        format!(
-                            "sh -c 'while true; do sleep 1; done' & echo $! > \"{descendant_pid_path_for_command}\"; while true; do sleep 1; done"
-                        ),
+                        descendant_shell_body(&descendant_pid_path_for_command),
                     ],
                     private_environment: Default::default(),
                     config_path: paths.config().join("startup-descendant.json"),
@@ -2051,9 +2053,11 @@ mod tests {
         vec!["-c".to_string(), descendant_shell_body(descendant_pid_path)]
     }
 
+    /// A shell that starts a descendant and records its PID. The PID file appears by rename, so a
+    /// test that finds it never reads it half written.
     fn descendant_shell_body(descendant_pid_path: &Utf8Path) -> String {
         format!(
-            "sh -c 'while true; do sleep 1; done' & echo $! > \"{descendant_pid_path}\"; while true; do sleep 1; done"
+            "sh -c '{IDLE_SHELL_LOOP}' & echo $! > \"{descendant_pid_path}.tmp\"; mv \"{descendant_pid_path}.tmp\" \"{descendant_pid_path}\"; {IDLE_SHELL_LOOP}"
         )
     }
 
@@ -2064,7 +2068,9 @@ mod tests {
     ) -> Vec<String> {
         vec![
             "-c".to_string(),
-            "python3 -c 'import os, pathlib, socket, sys, time; pathlib.Path(sys.argv[3]).write_text(str(os.getpid()) + \"\\n\"); listener = socket.socket(); listener.bind((\"127.0.0.1\", int(sys.argv[1]))); listener.listen(); open(sys.argv[2], \"w\").close(); time.sleep(60)' \"$1\" \"$2\" \"$3\" & while true; do sleep 1; done".to_string(),
+            format!(
+                "python3 -c 'import os, pathlib, socket, sys, time; pathlib.Path(sys.argv[3]).write_text(str(os.getpid()) + \"\\n\"); listener = socket.socket(); listener.bind((\"127.0.0.1\", int(sys.argv[1]))); listener.listen(); open(sys.argv[2], \"w\").close(); time.sleep(60)' \"$1\" \"$2\" \"$3\" & {IDLE_SHELL_LOOP}"
+            ),
             "runtime-teardown".to_string(),
             port.to_string(),
             listener_ready_path.to_string(),
