@@ -31,6 +31,10 @@ jobs:
             runner: macos-26
             macos_major: "26"
             architecture: arm64
+          - name: macOS 27 arm64
+            runner: xcode-27
+            macos_major: "27"
+            architecture: arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
 
