@@ -60,13 +60,16 @@ pub(crate) fn inspect_loopback_ports(ports: &[u16]) -> Result<LowPortInspection,
     if inspection.ports.iter().all(|port| port.available) {
         return Ok(inspection);
     }
-    let mut arguments = vec!["-nP".to_owned()];
-    arguments.extend(ports.iter().map(|port| format!("-iTCP:{port}")));
-    arguments.extend(["-sTCP:LISTEN".to_owned(), "-F".to_owned(), "pcn".to_owned()]);
-    let arguments = arguments.iter().map(String::as_str).collect::<Vec<_>>();
+    let port_list = ports
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    // One selector avoids failure when only some requested ports have listeners.
+    let selector = format!("-iTCP:{port_list}");
     let output = run_system_command_output_with_timeout(
         "/usr/sbin/lsof",
-        &arguments,
+        &["-nP", &selector, "-sTCP:LISTEN", "-F", "pcn"],
         Duration::from_secs(2),
         Some(1),
     )?;
@@ -175,11 +178,14 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn inspection_finds_the_process_holding_a_high_port() -> anyhow::Result<()> {
+    fn inspection_finds_one_held_port_when_the_other_is_free() -> anyhow::Result<()> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
-        let inspection = inspect_loopback_ports(&[port])?;
-        assert_eq!(inspection.ports.len(), 1);
+        let unused_listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let unused_port = unused_listener.local_addr()?.port();
+        drop(unused_listener);
+        let inspection = inspect_loopback_ports(&[port, unused_port])?;
+        assert_eq!(inspection.ports.len(), 2);
         assert!(!inspection.ports[0].available);
         assert!(
             inspection.ports[0]
@@ -187,6 +193,8 @@ mod tests {
                 .iter()
                 .any(|owner| owner.pid == std::process::id())
         );
+        assert!(inspection.ports[1].available);
+        assert!(inspection.ports[1].owners.is_empty());
         Ok(())
     }
 }
