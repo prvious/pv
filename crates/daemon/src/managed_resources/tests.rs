@@ -38,6 +38,7 @@ use rusqlite::{TransactionBehavior, params};
 use rustix::process::{Pid, test_kill_process, test_kill_process_group};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sqlx::postgres::PgPool;
 use state::{
     Database, EnvContextValues, JobDiagnosticSubject, JobStatus, LinkProjectInput, PortOwner,
     PortRequest, PostgresPreloadLibrary, ProjectEnvObservedStatus, ProjectManagedResourceInput,
@@ -934,6 +935,77 @@ async fn postgres_reconciliation_writes_tcp_only_runtime_config() -> Result<()> 
     assert!(
         runtime_config.contains("unix_socket_directories = ''"),
         "expected recorded Postgres runtime config to disable Unix socket listeners"
+    );
+
+    Ok(())
+}
+
+/// PostgreSQL's SIGTERM is its smart shutdown, which waits until every client disconnects, so PV
+/// stops it with SIGINT. Replacing it after a config change and stopping it once no Project needs
+/// it both finish without waiting out the grace period for an open client (#391).
+#[tokio::test]
+async fn postgres_replacement_and_stop_do_not_wait_for_an_open_client() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
+    runtimes.register("postgres", POSTGRES_TRACK);
+    seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
+    seed_postgres_preload_modules(
+        &paths,
+        POSTGRES_TRACK,
+        &[PostgresPreloadLibrary::PgStatStatements],
+    )?;
+    reserve_postgres_port(&paths, 19_071)?;
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    let original_pid = resource_runtime_metadata_pid(&paths, "postgres", POSTGRES_TRACK)?;
+
+    let first_client = connect_postgres_admin(&paths, 19_071).await?;
+    Database::open(&paths)?.replace_postgres_track_preload_libraries(
+        POSTGRES_TRACK,
+        &["pg_stat_statements".to_owned()],
+    )?;
+    let replacement_started = Instant::now();
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    let replaced_within = replacement_started.elapsed();
+    let replacement_pid = resource_runtime_metadata_pid(&paths, "postgres", POSTGRES_TRACK)?;
+
+    let second_client = connect_postgres_admin(&paths, 19_071).await?;
+    Database::open(&paths)?.replace_project_managed_resources(&project.id, &[])?;
+    let stop_started = Instant::now();
+    super::reconcile_persisted_resource_track_with_progress(
+        &paths,
+        "postgres",
+        POSTGRES_TRACK,
+        Some(&super::postgres_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?),
+        DaemonDownloadProgress::disabled(),
+    )
+    .await?;
+    let stopped_within = stop_started.elapsed();
+    drop((first_client, second_client));
+    let runtime_files = runtime_files_exist_for_resource(&paths, "postgres", POSTGRES_TRACK)?;
+    runtimes.cleanup().await?;
+
+    assert_ne!(
+        replacement_pid, original_pid,
+        "expected the config change to replace Postgres"
+    );
+    assert!(
+        replaced_within < super::RESOURCE_STOP_GRACE_PERIOD,
+        "replacing Postgres waited {replaced_within:?} for an open client"
+    );
+    assert_eq!(
+        runtime_files,
+        RuntimeFilePresence {
+            pid: false,
+            metadata: false,
+            config: false,
+        },
+        "expected the final stop to remove the Postgres runtime records"
+    );
+    assert!(
+        stopped_within < super::RESOURCE_STOP_GRACE_PERIOD,
+        "stopping Postgres waited {stopped_within:?} for an open client"
     );
 
     Ok(())
@@ -6936,6 +7008,21 @@ fn reserve_postgres_track_port(paths: &PvPaths, track: &str, port: u16) -> Resul
     )?;
 
     Ok(())
+}
+
+/// A client signed in as the admin PV generated for the Postgres track.
+async fn connect_postgres_admin(paths: &PvPaths, port: u16) -> Result<PgPool> {
+    let env = Database::open(paths)?
+        .managed_resource_track("postgres", POSTGRES_TRACK)?
+        .env;
+    let admin = super::sql::SqlAdminContext {
+        host: "127.0.0.1".to_owned(),
+        port,
+        username: env.get("username").cloned().unwrap_or_default(),
+        password: env.get("password").cloned().unwrap_or_default(),
+    };
+
+    Ok(PgPool::connect_with(super::sql::postgres_options(&admin)).await?)
 }
 
 fn local_loopback_port_available(port: u16) -> bool {

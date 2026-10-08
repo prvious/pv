@@ -45,7 +45,7 @@ pub use reconciliation::{
     ReconciliationQueue, ReconciliationScope, ReconciliationScopeParseError, RunningReconciliation,
 };
 pub use supervisor::{
-    AdoptedProcess, OwnedRuntime, ProcessSpec, ProcessSupervisor, ReadinessCheck,
+    AdoptedProcess, OwnedRuntime, ProcessSpec, ProcessSupervisor, ReadinessCheck, StopSignal,
     wait_for_custom_readiness, wait_for_readiness,
 };
 

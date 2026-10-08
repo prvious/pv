@@ -268,7 +268,7 @@ After daemon restart, PV adopts already-running PV-owned child processes when ow
 
 PV starts each supervised runtime in its own process group so it can stop the entire PV-owned process tree safely. PV only signals a process group after ownership verification.
 
-PV stops child process groups with graceful termination first, waits up to 10 seconds, then force-kills only PV-owned process groups that do not exit within that timeout.
+PV stops child process groups with graceful termination first, waits up to 10 seconds, then force-kills only PV-owned process groups that do not exit within that timeout. Graceful termination is SIGTERM, except for Postgres, which gets SIGINT: SIGTERM is Postgres's smart shutdown, which waits until every client disconnects, so an app holding a connection would turn every stop into a force-kill and the next start into crash recovery. SIGINT is Postgres's fast shutdown, which disconnects clients and still shuts down cleanly.
 
 The health tick may check privileged integrations such as `/etc/resolver/test` and `pf` rules read-only. It records repair-required status but does not prompt or mutate privileged system config. The health tick does not refresh the remote artifact manifest or make routine background network calls.
 

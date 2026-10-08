@@ -34,9 +34,20 @@ const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 pub(crate) const RUNTIME_READINESS_CONCURRENCY_LIMIT: usize = 4;
 
+/// The signal that asks a runtime to shut down gracefully, before the grace period ends in SIGKILL.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StopSignal {
+    /// SIGTERM.
+    Terminate,
+    /// SIGINT, for runtimes whose SIGTERM shutdown waits on clients, such as PostgreSQL's smart
+    /// shutdown. PostgreSQL's SIGINT is its fast shutdown: it disconnects clients and still writes
+    /// a shutdown checkpoint.
+    Interrupt,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProcessSignal {
-    Terminate,
+    Stop(StopSignal),
     Kill,
 }
 
@@ -494,13 +505,21 @@ impl ManagedProcess {
         Ok(self.child.try_wait()?.is_some())
     }
 
-    pub async fn stop(mut self, grace_period: Duration) -> Result<(), DaemonError> {
+    pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
+        self.stop_with(StopSignal::Terminate, grace_period).await
+    }
+
+    pub async fn stop_with(
+        mut self,
+        signal: StopSignal,
+        grace_period: Duration,
+    ) -> Result<(), DaemonError> {
         require_process_containment()?;
         if self.child.try_wait()?.is_some() && !process_group_exists(self.pid)? {
             return Ok(());
         }
 
-        signal_process_group(self.pid, ProcessSignal::Terminate)?;
+        signal_process_group(self.pid, ProcessSignal::Stop(signal))?;
 
         match timeout(
             grace_period,
@@ -663,6 +682,14 @@ impl AdoptedProcess {
     }
 
     pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
+        self.stop_with(StopSignal::Terminate, grace_period).await
+    }
+
+    pub async fn stop_with(
+        self,
+        signal: StopSignal,
+        grace_period: Duration,
+    ) -> Result<(), DaemonError> {
         require_process_containment()?;
         if !self.owned.matches_live()? {
             if process_and_group_are_absent(self.owned.pid)? {
@@ -673,7 +700,7 @@ impl AdoptedProcess {
             });
         }
 
-        stop_process_group_by_pid(self.owned.pid, grace_period).await
+        stop_process_group_by_pid(self.owned.pid, signal, grace_period).await
     }
 }
 
@@ -963,7 +990,8 @@ fn process_group_pid(pid: u32) -> Result<Pid, DaemonError> {
 fn signal_process_group(pid: u32, signal: ProcessSignal) -> Result<(), DaemonError> {
     let process_group = process_group_pid(pid)?;
     let signal = match signal {
-        ProcessSignal::Terminate => Signal::TERM,
+        ProcessSignal::Stop(StopSignal::Terminate) => Signal::TERM,
+        ProcessSignal::Stop(StopSignal::Interrupt) => Signal::INT,
         ProcessSignal::Kill => Signal::KILL,
     };
 
@@ -1071,8 +1099,12 @@ async fn terminate_spawned_child(pid: u32, child: &mut Child) {
     let _result = child.wait().await;
 }
 
-async fn stop_process_group_by_pid(pid: u32, grace_period: Duration) -> Result<(), DaemonError> {
-    signal_process_group(pid, ProcessSignal::Terminate)?;
+async fn stop_process_group_by_pid(
+    pid: u32,
+    signal: StopSignal,
+    grace_period: Duration,
+) -> Result<(), DaemonError> {
+    signal_process_group(pid, ProcessSignal::Stop(signal))?;
 
     if wait_for_process_group_exit(pid, grace_period).await? {
         return Ok(());
