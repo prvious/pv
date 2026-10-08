@@ -41,8 +41,8 @@ use crate::gateway::ReconciliationOutcome;
 use crate::jobs::DaemonDownloadProgress;
 use crate::project_env::DemandedResourceTrack;
 use crate::supervisor::{
-    ManagedProcess, RUNTIME_READINESS_CONCURRENCY_LIMIT, runtime_exited_before_readiness_error,
-    wait_for_started_runtime_readiness,
+    ManagedProcess, RUNTIME_READINESS_CONCURRENCY_LIMIT, StopSignal,
+    runtime_exited_before_readiness_error, wait_for_started_runtime_readiness,
 };
 use crate::{
     DaemonError, ManagedResourceProjectFailure, ProcessSpec, ProcessSupervisor, ReadinessCheck,
@@ -145,6 +145,11 @@ pub(crate) trait ManagedResourceRuntimeAdapter: Send + Sync {
     #[cfg(test)]
     fn readiness_timeout(&self) -> Duration {
         RESOURCE_READINESS_TIMEOUT
+    }
+
+    /// The signal that starts this runtime's graceful shutdown whenever PV stops it.
+    fn stop_signal(&self) -> StopSignal {
+        StopSignal::Terminate
     }
 
     fn resource_env(
@@ -511,8 +516,15 @@ pub(crate) async fn reconcile_persisted_resource_track_for_projects_with_progres
                     ),
                 });
             }
-            if catalog.adapter(resource_name).is_some() {
-                stop_resource_runtime(paths, &mut database, &supervisor, &track_record).await?;
+            if let Some(adapter) = catalog.adapter(resource_name) {
+                stop_resource_runtime(
+                    paths,
+                    &mut database,
+                    &supervisor,
+                    &track_record,
+                    adapter.stop_signal(),
+                )
+                .await?;
             }
         }
 
@@ -1917,6 +1929,7 @@ async fn prepare_resource_track(
         match start_or_adopt_runtime(
             reconciliation.supervisor,
             spec,
+            adapter.stop_signal(),
             readiness,
             readiness_timeout,
             reconciliation.fallback_shutdown,
@@ -2427,6 +2440,7 @@ fn ports_occupied_without_recorded_runtime(
 async fn start_or_adopt_runtime(
     supervisor: &ProcessSupervisor,
     spec: ProcessSpec,
+    stop_signal: StopSignal,
     readiness: ManagedResourceReadiness,
     readiness_timeout: Duration,
     fallback_shutdown: Option<&watch::Receiver<bool>>,
@@ -2434,13 +2448,16 @@ async fn start_or_adopt_runtime(
     if supervisor.adopt(&spec)?.is_some() {
         return Ok(Some(PendingManagedResourceReadiness {
             spec,
+            stop_signal,
             readiness,
             readiness_timeout,
             process: None,
         }));
     }
     if let Some(adopted) = supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)? {
-        adopted.stop(RESOURCE_STOP_GRACE_PERIOD).await?;
+        adopted
+            .stop_with(stop_signal, RESOURCE_STOP_GRACE_PERIOD)
+            .await?;
         delete_optional_file(&spec.pid_path)?;
         delete_optional_file(&spec.metadata_path)?;
     } else if let ManagedResourceReadiness::TcpHttp(check) = &readiness
@@ -2457,6 +2474,7 @@ async fn start_or_adopt_runtime(
 
     Ok(Some(PendingManagedResourceReadiness {
         spec,
+        stop_signal,
         readiness,
         readiness_timeout,
         process: Some(process),
@@ -2469,6 +2487,7 @@ fn fallback_shutdown_requested(shutdown: Option<&watch::Receiver<bool>>) -> bool
 
 struct PendingManagedResourceReadiness {
     spec: ProcessSpec,
+    stop_signal: StopSignal,
     readiness: ManagedResourceReadiness,
     readiness_timeout: Duration,
     process: Option<ManagedProcess>,
@@ -2489,7 +2508,9 @@ impl PendingManagedResourceReadiness {
         )
         .await
         {
-            process.stop(RESOURCE_STOP_GRACE_PERIOD).await?;
+            process
+                .stop_with(self.stop_signal, RESOURCE_STOP_GRACE_PERIOD)
+                .await?;
             cleanup_started_runtime_files(&self.spec)?;
 
             return Err(error);
@@ -2611,7 +2632,7 @@ async fn stop_undemanded_catalog_runtimes(
     let tracks = database.managed_resource_tracks()?;
 
     for track in tracks {
-        let Some(_adapter) = catalog.adapter(&track.resource_name) else {
+        let Some(adapter) = catalog.adapter(&track.resource_name) else {
             continue;
         };
         if track.usage_count > 0
@@ -2623,7 +2644,7 @@ async fn stop_undemanded_catalog_runtimes(
             continue;
         }
 
-        stop_resource_runtime(paths, database, supervisor, &track).await?;
+        stop_resource_runtime(paths, database, supervisor, &track, adapter.stop_signal()).await?;
     }
 
     Ok(())
@@ -2634,12 +2655,15 @@ async fn stop_resource_runtime(
     database: &mut Database,
     supervisor: &ProcessSupervisor,
     track: &ManagedResourceTrackRecord,
+    stop_signal: StopSignal,
 ) -> Result<(), DaemonError> {
     if let Some(adopted) = supervisor.adopt_recorded(
         &paths.resource_pid(&track.resource_name, &track.track),
         &paths.resource_runtime_metadata(&track.resource_name, &track.track),
     )? {
-        adopted.stop(RESOURCE_STOP_GRACE_PERIOD).await?;
+        adopted
+            .stop_with(stop_signal, RESOURCE_STOP_GRACE_PERIOD)
+            .await?;
     }
     database.record_runtime_observed_snapshot(
         RuntimeSubject::Resource {

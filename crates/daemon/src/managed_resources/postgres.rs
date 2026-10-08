@@ -13,7 +13,7 @@ use crate::managed_resources::{
     ManagedResourcePortSpec, ManagedResourcePreparationFuture, ManagedResourceReadiness,
     ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext, RESOURCE_HOST,
 };
-use crate::{DaemonError, ProcessSpec};
+use crate::{DaemonError, ProcessSpec, StopSignal};
 
 const POSTGRES_ADMIN_USERNAME: &str = "pv_root";
 const POSTGRES_PORTS: &[ManagedResourcePortSpec] = &[ManagedResourcePortSpec {
@@ -125,6 +125,12 @@ impl ManagedResourceRuntimeAdapter for PostgresRuntimeAdapter {
     #[cfg(test)]
     fn readiness_timeout(&self) -> Duration {
         self.readiness_timeout
+    }
+
+    /// SIGTERM is PostgreSQL's smart shutdown, which waits until every client disconnects, so an
+    /// app holding a connection would make the stop end in SIGKILL and crash recovery (#391).
+    fn stop_signal(&self) -> StopSignal {
+        StopSignal::Interrupt
     }
 
     fn resource_env(

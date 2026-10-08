@@ -285,11 +285,11 @@ These were recorded from the manifest's `18.4-pv2` artifact, driven through PV's
 | `CREATE DATABASE "<name>"` | `CREATE DATABASE`, then `42P04 database "<name>" already exists` | same |
 | Restart | databases are still there | same |
 | SIGTERM, no client | exit 0 in about 80 ms | exit 0 |
-| SIGTERM, idle client | smart shutdown: keeps serving the client, and exits 0 about 10 ms after it disconnects. PV's stop waits out its 10 s grace and SIGKILLs (#391) | serves open clients until they disconnect, then exits 0. It closes its port at once, where PostgreSQL refuses new clients with `57P03` |
+| SIGTERM, idle client | smart shutdown: keeps serving the client, and exits 0 about 10 ms after it disconnects. So PV stops Postgres with SIGINT instead (#391) | serves open clients until they disconnect, then exits 0. It closes its port at once, where PostgreSQL refuses new clients with `57P03` |
 | SIGINT | fast shutdown: exit 0 in under 10 ms; idle clients get `FATAL 57P01` | exit 0; closes the connections without `57P01` |
 | Processes | the postmaster plus workers, each in its own process group | one process |
 
-The dual-target runtime contract checks, against the fake and real PostgreSQL: `initdb` through PV's adapter, the adapter's readiness check (a SCRAM sign-in and `SELECT 1`), PV's allocation step creating a database and then finding it, `42P04`, a wrong password's `28P01`, and SIGTERM with no client. The `pv-fake` contracts check `initdb`'s messages, the startup reply and both shutdowns against the fake only. Tests of a Postgres that never becomes ready install the `long_running` persona as `bin/postgres` next to the `initdb` persona. The two tests that check PV persisted the password it gave `initdb` read the persona's `initdb.password`.
+The dual-target runtime contract checks, against the fake and real PostgreSQL: `initdb` through PV's adapter, the adapter's readiness check (a SCRAM sign-in and `SELECT 1`), PV's allocation step creating a database and then finding it, `42P04`, a wrong password's `28P01`, and PV's SIGINT stop finishing within the grace period while a client is still connected. The `pv-fake` contracts check `initdb`'s messages, the startup reply and both shutdowns against the fake only. Tests of a Postgres that never becomes ready install the `long_running` persona as `bin/postgres` next to the `initdb` persona. The two tests that check PV persisted the password it gave `initdb` read the persona's `initdb.password`.
 
 ### MySQL 8.4.9 (2026-10-03)
 

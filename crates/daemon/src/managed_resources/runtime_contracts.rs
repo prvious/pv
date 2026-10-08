@@ -318,7 +318,8 @@ async fn rustfs_serves_allocations(env: EnvContextValues) -> Result<()> {
 }
 
 /// PV's Postgres runtime: preparation runs `initdb` with PV's arguments, the readiness check signs
-/// in with SCRAM, and PV's allocation step creates a database and then finds it.
+/// in with SCRAM, PV's allocation step creates a database and then finds it, and PV's stop
+/// finishes within the grace period while a client is still connected (#391).
 async fn postgres_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) -> Result<()> {
     let [port] = available_ports()?;
     let adapter = super::postgres::PostgresRuntimeAdapter::new();
@@ -341,7 +342,8 @@ async fn postgres_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &st
     run_contract(paths, &adapter, context, postgres_serves_allocations(admin)).await
 }
 
-async fn postgres_serves_allocations(admin: SqlAdminContext) -> Result<()> {
+/// Returns a connected client for the contract to hold through the stop.
+async fn postgres_serves_allocations(admin: SqlAdminContext) -> Result<PgPool> {
     let database = "pv_contract";
     // PV's allocation step, run twice as reconciliation does for a Ready allocation. The second
     // run creates nothing only if the first database is found.
@@ -354,8 +356,6 @@ async fn postgres_serves_allocations(admin: SqlAdminContext) -> Result<()> {
             .execute(&pool)
             .await,
     );
-    // Close it, so stopping the runtime doesn't wait for this client to leave.
-    pool.close().await;
     let wrong_password = SqlAdminContext {
         password: "not-the-password".to_owned(),
         ..admin
@@ -371,7 +371,7 @@ async fn postgres_serves_allocations(admin: SqlAdminContext) -> Result<()> {
         "a wrong password failed with {refused:?}"
     );
 
-    Ok(())
+    Ok(pool)
 }
 
 /// PV's MySQL runtime: preparation initializes the data directory, and the runtime starts with
@@ -425,13 +425,15 @@ async fn smtp_greets(port: u16) -> Result<()> {
 }
 
 /// Starts and waits for the runtime the way reconciliation does, awaits `check` once it's ready,
-/// then stops it within the grace period. A fixture guard registered before startup stops it on
-/// every other exit path, and a cleanup failure is reported alongside the contract's own failure.
-async fn run_contract(
+/// then stops it within the grace period with the adapter's stop signal. Whatever `check` returns,
+/// such as an open client, stays alive through the stop. A fixture guard registered before startup
+/// stops the runtime on every other exit path, and a cleanup failure is reported alongside the
+/// contract's own failure.
+async fn run_contract<Held>(
     paths: &PvPaths,
     adapter: &dyn ManagedResourceRuntimeAdapter,
     context: ManagedResourceRuntimeContext,
-    check: impl Future<Output = Result<()>>,
+    check: impl Future<Output = Result<Held>>,
 ) -> Result<()> {
     let env = adapter.resource_env(&context)?;
     let context = ManagedResourceRuntimeContext { env, ..context };
@@ -448,11 +450,11 @@ async fn run_contract(
     }
 }
 
-async fn start_wait_and_stop(
+async fn start_wait_and_stop<Held>(
     paths: &PvPaths,
     adapter: &dyn ManagedResourceRuntimeAdapter,
     context: &ManagedResourceRuntimeContext,
-    check: impl Future<Output = Result<()>>,
+    check: impl Future<Output = Result<Held>>,
 ) -> Result<()> {
     let spec = adapter.build_process_spec(paths, context)?;
     let (log_path, pid_path, metadata_path) = (
@@ -465,6 +467,7 @@ async fn start_wait_and_stop(
     let Some(pending) = start_or_adopt_runtime(
         &supervisor,
         spec,
+        adapter.stop_signal(),
         adapter.readiness(context)?,
         adapter_readiness_timeout(adapter),
         None,
@@ -473,27 +476,31 @@ async fn start_wait_and_stop(
     else {
         bail!("{} was not started", context.resource_name);
     };
-    let ready = pending.wait().await;
-    let checked = match &ready {
+    let checked = match pending.wait().await {
         Ok(()) => check.await,
-        Err(_error) => Ok(()),
+        Err(error) => Err(error.into()),
     };
     // A runtime that failed its readiness wait has been stopped and its records removed already.
     let stop_started = Instant::now();
     let stopped = match supervisor.adopt_recorded(&pid_path, &metadata_path) {
-        Ok(Some(process)) => process.stop(STOP_GRACE_PERIOD).await,
+        Ok(Some(process)) => {
+            process
+                .stop_with(adapter.stop_signal(), STOP_GRACE_PERIOD)
+                .await
+        }
         Ok(None) => Ok(()),
         Err(error) => Err(error),
     };
     let stopped_within = stop_started.elapsed();
 
-    ready.with_context(|| runtime_log(&log_path))?;
+    // Released only now, so whatever the check held stayed open through the stop.
     checked.with_context(|| runtime_log(&log_path))?;
     stopped?;
     ensure!(
         stopped_within < STOP_GRACE_PERIOD,
-        "{} ignored SIGTERM for {stopped_within:?}",
-        context.resource_name
+        "{} ignored its stop signal ({:?}) for {stopped_within:?}",
+        context.resource_name,
+        adapter.stop_signal()
     );
 
     Ok(())
