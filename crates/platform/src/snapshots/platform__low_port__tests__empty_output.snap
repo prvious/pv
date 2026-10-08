@@ -1,18 +1,24 @@
 ---
 source: crates/platform/src/low_port.rs
-expression: inspection
+expression: "(inspection, messages)"
 ---
-LowPortInspection {
-    ports: [
-        LowPortState {
-            port: 80,
-            available: false,
-            owners: [],
-        },
-        LowPortState {
-            port: 443,
-            available: false,
-            owners: [],
-        },
+(
+    LowPortInspection {
+        ports: [
+            LowPortState {
+                port: 80,
+                available: false,
+                owners: [],
+            },
+            LowPortState {
+                port: 443,
+                available: false,
+                owners: [],
+            },
+        ],
+    },
+    [
+        "Loopback TCP port 80 is unavailable; PV could not identify a listening process.",
+        "Loopback TCP port 443 is unavailable; PV could not identify a listening process.",
     ],
-}
+)

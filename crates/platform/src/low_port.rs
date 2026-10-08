@@ -30,7 +30,7 @@ impl LowPortState {
     pub fn conflict_message(&self) -> String {
         if self.owners.is_empty() {
             return format!(
-                "Loopback TCP port {} is in use; PV could not identify the process.",
+                "Loopback TCP port {} is unavailable; PV could not identify a listening process.",
                 self.port
             );
         }
@@ -40,7 +40,10 @@ impl LowPortState {
             .map(|owner| format!("{} (pid {})", owner.command, owner.pid))
             .collect::<Vec<_>>()
             .join(", ");
-        format!("Loopback TCP port {} is in use by {owners}.", self.port)
+        format!(
+            "Loopback TCP port {} is unavailable. TCP listeners reported on this port: {owners}.",
+            self.port
+        )
     }
 }
 
@@ -133,6 +136,10 @@ mod tests {
             ),
             ("empty_output", ""),
             (
+                "mixed_ipv4_and_ipv6_wildcard",
+                "p412\ncnginx\nn127.0.0.1:80\np501\ncPython\nn*:80\n",
+            ),
+            (
                 "unrelated_or_incomplete_fields",
                 "p412\ncnginx\nn192.168.1.10:80\nn[::1]:443\nn*:48080\npinvalid\ncPython\nn*:80\np501\nn*:443\n",
             ),
@@ -149,7 +156,12 @@ mod tests {
             };
             parse_lsof_owners(fields, &mut inspection.ports);
             assert!(inspection.ports.iter().all(|port| !port.available));
-            assert_debug_snapshot!(name, inspection);
+            let messages = inspection
+                .ports
+                .iter()
+                .map(LowPortState::conflict_message)
+                .collect::<Vec<_>>();
+            assert_debug_snapshot!(name, (inspection, messages));
         }
     }
 

@@ -36,3 +36,6 @@ security-framework = { workspace = true }
 anyhow = { workspace = true }
 camino-tempfile = { workspace = true }
 insta = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+pv-fake = { path = "../pv-fake" }

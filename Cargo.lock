@@ -2897,6 +2897,7 @@ dependencies = [
  "libc",
  "nix 0.31.3",
  "plist",
+ "pv-fake",
  "raunch",
  "rcgen",
  "rustix",

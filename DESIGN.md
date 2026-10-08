@@ -162,7 +162,7 @@ The Gateway listens as the user on high loopback ports only. PV prefers uncommon
 
 PV v1 does not expose Projects on the LAN or through tunnels. LAN access or tunnel integrations such as Cloudflare Tunnels may be considered later.
 
-Before installing redirects, `pv setup` and `pv ports:install` ask the privileged helper whether loopback ports `80` and `443` are free, and the helper checks again before applying pf rules. The helper decides with a root bind probe on `127.0.0.1` and `0.0.0.0` that ignores closing connections. If either port is in use, PV fails with a clear conflict instead of silently taking over traffic, and names the owning process and pid when `lsof` can identify it.
+Before installing redirects, `pv setup` and `pv ports:install` ask the privileged helper whether loopback ports `80` and `443` are free, and the helper checks again before applying pf rules. The helper decides with a root bind probe on `127.0.0.1` and `0.0.0.0` that ignores closing connections. If either port is unavailable, PV fails with a clear conflict instead of silently taking over traffic. `lsof` supplies listener names and pids as diagnostic information only: its wildcard address does not distinguish an IPv6-only listener from a dual-stack listener, so it cannot prove which process caused an IPv4 bind failure.
 
 ### PF Health and Recovery
 

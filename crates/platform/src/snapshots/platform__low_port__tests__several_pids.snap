@@ -1,28 +1,34 @@
 ---
 source: crates/platform/src/low_port.rs
-expression: inspection
+expression: "(inspection, messages)"
 ---
-LowPortInspection {
-    ports: [
-        LowPortState {
-            port: 80,
-            available: false,
-            owners: [
-                PortOwner {
-                    pid: 412,
-                    command: "nginx",
-                },
-            ],
-        },
-        LowPortState {
-            port: 443,
-            available: false,
-            owners: [
-                PortOwner {
-                    pid: 501,
-                    command: "Python",
-                },
-            ],
-        },
+(
+    LowPortInspection {
+        ports: [
+            LowPortState {
+                port: 80,
+                available: false,
+                owners: [
+                    PortOwner {
+                        pid: 412,
+                        command: "nginx",
+                    },
+                ],
+            },
+            LowPortState {
+                port: 443,
+                available: false,
+                owners: [
+                    PortOwner {
+                        pid: 501,
+                        command: "Python",
+                    },
+                ],
+            },
+        ],
+    },
+    [
+        "Loopback TCP port 80 is unavailable. TCP listeners reported on this port: nginx (pid 412).",
+        "Loopback TCP port 443 is unavailable. TCP listeners reported on this port: Python (pid 501).",
     ],
-}
+)

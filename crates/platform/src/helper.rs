@@ -1872,17 +1872,23 @@ mod tests {
     use std::io::Write as _;
     use std::io::{Cursor, ErrorKind};
     #[cfg(target_os = "macos")]
-    use std::net::TcpListener;
-    #[cfg(target_os = "macos")]
     use std::os::unix::fs::symlink;
+    #[cfg(target_os = "macos")]
+    use std::process::{Child, Stdio};
     #[cfg(target_os = "macos")]
     use std::thread;
     #[cfg(unix)]
     use std::time::Duration;
+    #[cfg(target_os = "macos")]
+    use std::time::Instant;
 
     #[cfg(target_os = "macos")]
     use anyhow::anyhow;
     use camino_tempfile::tempdir;
+    #[cfg(target_os = "macos")]
+    use insta::{Settings, assert_debug_snapshot};
+    #[cfg(target_os = "macos")]
+    use pv_fake::{EventKind, FakeSettings, InstalledFake, Persona, TcpHolderConfig};
 
     #[cfg(unix)]
     use super::{HELPER_PROTOCOL_VERSION, HelperOperation, write_message};
@@ -2197,33 +2203,163 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    #[ignore = "requires root and a free loopback port 80"]
+    #[ignore = "requires root and free loopback ports 80 and 443; run in every macOS CI lane"]
     fn pf_apply_rejects_a_low_port_conflict_as_root() -> anyhow::Result<()> {
         if !rustix::process::geteuid().is_root() {
             return Err(anyhow!("run this test as root"));
         }
-        let listener = TcpListener::bind(("127.0.0.1", 80))?;
         let metadata = PrivilegedHelperMetadata {
             owner_uid: rustix::process::getuid().as_raw(),
             helper_version: PRIVILEGED_HELPER_VERSION.to_owned(),
             protocol_version: HELPER_PROTOCOL_VERSION,
         };
-        let result = dispatch_request(
-            HelperRequest {
-                protocol_version: HELPER_PROTOCOL_VERSION,
-                operation: HelperOperation::PfApply {
-                    http_port: 48080,
-                    https_port: 48443,
+        for port in [80, 443] {
+            let free = crate::low_port::inspect_loopback_ports(&[80, 443])?;
+            assert!(free.ports.iter().all(|state| state.available));
+            let before = crate::pf::inspect_active_pf_redirects_unprivileged()?;
+            let tempdir = tempdir()?;
+            let fake = pv_fake::install_with_settings(
+                &tempdir.path().join("tcp-holder"),
+                Persona::TcpHolder,
+                FakeSettings {
+                    tcp_holder: Some(TcpHolderConfig {
+                        address: format!("127.0.0.1:{port}").parse()?,
+                        reuse_address: true,
+                        reuse_port: false,
+                        ipv6_only: false,
+                        listen: true,
+                    }),
+                    ..FakeSettings::default()
                 },
-            },
-            &metadata,
-        );
-        drop(listener);
-        let Err(PlatformError::SystemIntegration(message)) = result else {
-            return Err(anyhow!("PfApply did not reject the held low port"));
-        };
-        assert!(message.contains(&format!("(pid {})", std::process::id())));
+            )?;
+            let mut holder = LowPortHolder(
+                HolderCommand::new(fake.executable())
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .spawn()?,
+            );
+            holder.wait_ready(&fake)?;
+            let pid = holder.0.id();
+            assert_ne!(pid, std::process::id());
+            let result = (|| -> anyhow::Result<()> {
+                let inspection = dispatch_request(
+                    HelperRequest {
+                        protocol_version: HELPER_PROTOCOL_VERSION,
+                        operation: HelperOperation::LowPortInspect,
+                    },
+                    &metadata,
+                )?;
+                let HelperPayload::LowPorts(inspection) = inspection else {
+                    return Err(anyhow!("unexpected LowPortInspect response"));
+                };
+                let held = inspection
+                    .ports
+                    .iter()
+                    .find(|state| state.port == port)
+                    .ok_or_else(|| anyhow!("inspection omitted port {port}"))?;
+                assert!(!held.available);
+                assert_eq!(held.owners.len(), 1);
+                assert_eq!(held.owners[0].pid, pid);
+                assert!(
+                    inspection
+                        .ports
+                        .iter()
+                        .filter(|state| state.port != port)
+                        .all(|state| state.available && state.owners.is_empty())
+                );
+                let result = dispatch_request(
+                    HelperRequest {
+                        protocol_version: HELPER_PROTOCOL_VERSION,
+                        operation: HelperOperation::PfApply {
+                            http_port: 48080,
+                            https_port: 48443,
+                        },
+                    },
+                    &metadata,
+                );
+                let Err(PlatformError::SystemIntegration(message)) = result else {
+                    return Err(anyhow!(
+                        "PfApply did not reject the held low port: {result:?}"
+                    ));
+                };
+                assert_eq!(message, held.conflict_message());
+                let mut settings = Settings::clone_current();
+                settings.add_filter(&format!(r"\b{pid}\b"), "<holder-pid>");
+                settings.bind(|| {
+                    assert_debug_snapshot!(format!("root_port_{port}"), (inspection, message))
+                });
+                assert_eq!(
+                    crate::pf::inspect_active_pf_redirects_unprivileged()?,
+                    before
+                );
+                Ok(())
+            })();
+            let cleanup = holder.stop();
+            if let Err(error) = cleanup {
+                return Err(anyhow!(
+                    "root low-port check: {result:?}; holder cleanup failed: {error:#}"
+                ));
+            }
+            result?;
+            let free = crate::low_port::inspect_loopback_ports(&[80, 443])?;
+            assert!(
+                free.ports
+                    .iter()
+                    .all(|state| state.available && state.owners.is_empty())
+            );
+        }
         Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[expect(
+        clippy::disallowed_types,
+        reason = "root acceptance test owns and reaps its separate TCP holder"
+    )]
+    type HolderCommand = std::process::Command;
+
+    #[cfg(target_os = "macos")]
+    struct LowPortHolder(Child);
+
+    #[cfg(target_os = "macos")]
+    impl LowPortHolder {
+        fn wait_ready(&mut self, fake: &InstalledFake) -> anyhow::Result<()> {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                if fake
+                    .events()?
+                    .iter()
+                    .any(|event| matches!(event.kind, EventKind::TcpReady { .. }))
+                {
+                    return Ok(());
+                }
+                if let Some(status) = self.0.try_wait()? {
+                    return Err(anyhow!("TCP holder exited before readiness: {status}"));
+                }
+                if Instant::now() >= deadline {
+                    return Err(anyhow!("TCP holder did not report readiness"));
+                }
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        fn stop(&mut self) -> anyhow::Result<()> {
+            if self.0.try_wait()?.is_none() {
+                self.0.kill()?;
+            }
+            self.0.wait()?;
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    impl Drop for LowPortHolder {
+        fn drop(&mut self) {
+            if let Err(error) = self.stop() {
+                let _write_result =
+                    writeln!(std::io::stderr(), "TCP holder cleanup failed: {error:#}");
+            }
+        }
     }
 
     #[test]
