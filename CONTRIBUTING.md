@@ -79,6 +79,20 @@ warns after 60 seconds, terminates a wedged test after 120 seconds, and allows
 10 seconds for graceful exit. The default profile remains available for tests
 with intentionally longer limits.
 
+CI records each test run and uploads it as a `nextest-run-<runner>` artifact
+holding every test's duration and output. CI pins nextest 0.9.146 because the
+recording format is experimental, so use the same version locally. To see where
+time goes, download a recording and open its trace in
+[Perfetto](https://ui.perfetto.dev):
+
+```shell
+gh run download <run-id> -n nextest-run-macos-15-intel
+cargo nextest store export-chrome-trace nextest-run.zip -o trace.json
+```
+
+`NEXTEST_EXPERIMENTAL_RECORD=1 cargo nextest replay -R nextest-run.zip` replays
+the run in the terminal.
+
 Persisted-runtime cleanup must never discover ownership through process-name
 scans or signal a PID found only in a record. A persisted PID is actionable
 only together with matching recorded metadata and a verified process identity.

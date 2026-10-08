@@ -57,7 +57,7 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest@0.9.146
 
       - name: Install cargo-shear
         uses: taiki-e/install-action@v2
@@ -92,8 +92,30 @@ jobs:
       - name: Check artifact recipe scripts
         run: shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh release/artifacts/recipes/redis/*.sh release/artifacts/recipes/mysql/*.sh release/artifacts/recipes/postgres/*.sh release/artifacts/recipes/mailpit/*.sh release/artifacts/recipes/rustfs/*.sh
 
+      - name: Enable nextest run recording
+        run: |
+          cat > "$RUNNER_TEMP/nextest-user.toml" <<'EOF'
+          [experimental]
+          record = true
+
+          [record]
+          enabled = true
+          EOF
+
       - name: Run tests
-        run: cargo nextest run --profile ci --workspace --all-features --locked
+        id: tests
+        run: cargo nextest run --profile ci --user-config-file "$RUNNER_TEMP/nextest-user.toml" --workspace --all-features --locked
+
+      - name: Export test recording
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        run: cargo nextest store export latest --archive-file "$RUNNER_TEMP/nextest-run.zip"
+
+      - name: Upload test recording
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nextest-run-${{ matrix.runner }}
+          path: ${{ runner.temp }}/nextest-run.zip
 
   runtime-portability:
     name: Runtime (${{ matrix.target }})
