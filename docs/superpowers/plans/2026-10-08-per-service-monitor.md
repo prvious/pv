@@ -2,9 +2,18 @@
 
 Date: 2026-10-08.
 
-Status: approved for implementation on 2026-10-08. The owner accepted the revised plan and its three refinements, then requested implementation. Three independent design reviews completed. Opus timed out; its retry still awaits explicit source-sharing approval. The standalone shutdown fix is in progress.
+Status: approved for implementation on 2026-10-08. The owner accepted the revised plan and its three refinements, then requested implementation. Three independent design reviews completed. Opus timed out; its retry still awaits explicit source-sharing approval. The standalone shutdown fix is implemented in [PR #411](https://github.com/prvious/pv/pull/411); CI and merge review are pending. Monitor implementation has not yet started.
 
 This plan records the owner's choices from the current discussion. It replaces older recommendations where they conflict. The monitor spec on PR #406 now reflects these choices. Source evidence and tests can still justify improvements.
+
+Implementation record, 2026-10-08:
+
+- PR 1, #406: the approved spec and plan are published.
+- PR 2, #411: disable and uninstall now wait for daemon process exit and stop verified recorded runtimes before deletion. Uncertain cleanup preserves recovery files. The separate external admission lock closes state-recreation races.
+- Local validation: 1066 selected affected-crate tests passed, plus both real Postgres checks. Formatting, workspace Clippy, and the dependency audit passed. One native listener test also fails on unchanged main on this Mac and remains excluded; its snapshot is unchanged.
+- The wider run exposed a fixture port race after a worker stop releases its allocation. The fixture now seeds a fresh reserved port before each restore. Code and test reviewers passed that fix.
+- Linux cross-compilation needs the CI host: the local Mac lacks `x86_64-linux-gnu-gcc`. CI covers Linux, Windows, and the supported macOS hosts.
+- PRs 3–5 remain to be implemented and linked with `gh stack`. PR 2 must land before the core PR targets main.
 
 ## 1. Purpose and terms
 
