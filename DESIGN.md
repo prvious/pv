@@ -140,11 +140,11 @@ PV marks `/etc/resolver/test` with a clear ownership comment such as `# Managed 
 
 The internal DNS resolver supports both UDP and TCP DNS on the chosen DNS port.
 
-The resolver answers all `.test` hostnames with IPv4 and IPv6 loopback records: `127.0.0.1` and `::1`. The Gateway decides whether a hostname maps to a linked Project.
+The resolver answers all `.test` hostnames with the IPv4 loopback record `127.0.0.1`. AAAA queries return NODATA. The Gateway decides whether a hostname maps to a linked Project.
 
-Gateway/DNS dual-loopback support is the design intent. IPv4 loopback is the hard v1 requirement; if macOS `pf` IPv6 redirect handling is problematic, PV may degrade to IPv4-only with a clear status warning.
+PV v1 serves `.test` over IPv4 loopback only. The Gateway, Project-serving workers and pf redirects use `127.0.0.1`. Dual-loopback support needs an `inet6` pf redirect and is a separate future feature.
 
-For `.test` queries, the resolver answers A and AAAA records only. Other record types return NODATA/NOERROR. The resolver does not proxy DNS queries upstream.
+For `.test` queries, the resolver answers A records only. Other record types return NODATA/NOERROR. The resolver does not proxy DNS queries upstream.
 
 DNS responses use a low TTL of 5 seconds.
 

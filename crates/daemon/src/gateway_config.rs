@@ -90,14 +90,14 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     output.push_str("    }\n");
     output.push_str("}\n");
     output.push_str(&format!(
-        "\nhttp://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n"
+        "\nhttp://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1\n"
     ));
     append_file_log(&mut output, "    ", input.access_log_path.as_str())?;
     output.push_str(&format!(
         "    respond {GATEWAY_HEALTH_PATH} \"{health_response}\" 200\n}}\n"
     ));
     output.push_str(&format!(
-        "\nhttps://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1 ::1\n"
+        "\nhttps://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1\n"
     ));
     append_file_log(&mut output, "    ", input.access_log_path.as_str())?;
     output.push_str("    tls {\n");
@@ -118,7 +118,7 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     } else {
         output.push('\n');
         output.push_str(&format!("http://127.0.0.1:{} {{\n", input.http_port));
-        output.push_str("    bind 127.0.0.1 ::1\n");
+        output.push_str("    bind 127.0.0.1\n");
         append_file_log(&mut output, "    ", input.access_log_path.as_str())?;
         output.push_str("    respond \"PV Gateway is running\" 404\n");
         output.push_str("}\n");
@@ -151,7 +151,7 @@ pub fn render_gateway_project_config(route: &GatewayProjectRoute) -> Result<Stri
         "{} {{\n",
         comma_separated_hostnames(&route.primary_hostname)?
     ));
-    output.push_str("    bind 127.0.0.1 ::1\n");
+    output.push_str("    bind 127.0.0.1\n");
     append_file_log(&mut output, "    ", route.access_log_path.as_str())?;
     output.push_str("    tls {\n");
     output.push_str("        issuer internal {\n");
@@ -182,7 +182,7 @@ pub fn render_php_worker_project_config(
         "{} {{\n",
         comma_separated_worker_sites(&project.primary_hostname, port)?
     ));
-    output.push_str("    bind 127.0.0.1 ::1\n");
+    output.push_str("    bind 127.0.0.1\n");
     output.push_str(&format!(
         "    root * {}\n",
         quoted_caddyfile_token(project.root.as_str())?

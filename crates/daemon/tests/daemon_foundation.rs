@@ -2,7 +2,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
-use hickory_proto::rr::rdata::{A, AAAA};
+use hickory_proto::rr::rdata::A;
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::serialize::binary::BinEncodable;
 use insta::{Settings, assert_debug_snapshot};
@@ -1648,6 +1648,57 @@ async fn startup_reconciliation_records_non_contention_enqueue_failure() -> Resu
             .is_some_and(|error| error.contains(paths.jobs_lock().as_str()))
     );
 
+    Ok(())
+}
+
+#[tokio::test]
+async fn startup_reconciliation_replaces_dual_loopback_project_fragments() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    let (project_id, mut port_handoff) =
+        seed_foundation_php_project(&paths, &project_path, "php: \"8.4\"\n")?;
+    let gateway_fragment = paths
+        .gateway_projects_config_dir()
+        .join(format!("{project_id}.Caddyfile"));
+    let worker_fragment = paths
+        .worker_projects_config_dir("8.4")
+        .join(format!("{project_id}.Caddyfile"));
+    state::fs::write_sensitive_file(
+        &gateway_fragment,
+        "project.test {\n    bind 127.0.0.1 ::1\n    respond \"old gateway\"\n}\n",
+    )?;
+    state::fs::write_sensitive_file(
+        &worker_fragment,
+        &format!(
+            "http://project.test:{} {{\n    bind 127.0.0.1 ::1\n    respond \"old worker\"\n}}\n",
+            port_handoff.port()
+        ),
+    )?;
+    port_handoff.release_for_runtime_start();
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
+    gateway_guard.attach_worker("8.4");
+
+    let result = async {
+        let daemon =
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        gateway_guard.attach_daemon(daemon);
+        wait_for_succeeded_job_id(&paths, "job_000001").await?;
+        port_handoff
+            .verify_publication_and_release_lock(&paths, "8.4")
+            .await?;
+        Ok::<_, anyhow::Error>((
+            state::fs::read_to_string(&gateway_fragment)?,
+            state::fs::read_to_string(&worker_fragment)?,
+        ))
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    let fragments = propagate_after_cleanup(result, cleanup_result)?;
+    let mut settings = Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter(r":\d+", ":<port>");
+    settings.bind(|| assert_debug_snapshot!(fragments));
     Ok(())
 }
 
@@ -3916,7 +3967,7 @@ async fn daemon_shutdown_cancels_watcher_retry_waiting_for_jobs_lock() -> Result
 }
 
 #[tokio::test]
-async fn dns_resolver_answers_udp_a_and_aaaa_for_test_hostnames() -> Result<()> {
+async fn dns_resolver_answers_udp_a_and_nodata_for_aaaa() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
@@ -3933,12 +3984,7 @@ async fn dns_resolver_answers_udp_a_and_aaaa_for_test_hostnames() -> Result<()> 
 
     let aaaa_response = udp_dns_query(port, &dns_query("acme.test.", RecordType::AAAA)?).await?;
     assert_common_dns_response(&aaaa_response, "acme.test.", RecordType::AAAA)?;
-    assert_loopback_answer(
-        &aaaa_response,
-        "acme.test.",
-        RecordType::AAAA,
-        RData::AAAA(AAAA::new(0, 0, 0, 0, 0, 0, 0, 1)),
-    )?;
+    assert!(aaaa_response.answers.is_empty());
 
     daemon.shutdown().await?;
 

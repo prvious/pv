@@ -3,7 +3,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, UdpSocket};
 use std::time::Duration;
 
 use hickory_proto::op::{Message, ResponseCode};
-use hickory_proto::rr::rdata::{A, AAAA};
+use hickory_proto::rr::rdata::A;
 use hickory_proto::rr::{Name, RData, Record, RecordType};
 use hickory_proto::serialize::binary::BinEncodable;
 use state::{Database, PortOwner, PortRequest, PvPaths};
@@ -177,26 +177,12 @@ pub fn response_bytes(request: &[u8]) -> Result<Vec<u8>, DaemonError> {
     response.add_queries(request.queries.iter().cloned());
 
     for query in &request.queries {
-        if !is_test_name(query.name()) {
-            continue;
-        }
-
-        match query.query_type() {
-            RecordType::A => {
-                response.add_answer(Record::from_rdata(
-                    query.name().clone(),
-                    DNS_TTL_SECONDS,
-                    RData::A(A::new(127, 0, 0, 1)),
-                ));
-            }
-            RecordType::AAAA => {
-                response.add_answer(Record::from_rdata(
-                    query.name().clone(),
-                    DNS_TTL_SECONDS,
-                    RData::AAAA(AAAA::new(0, 0, 0, 0, 0, 0, 0, 1)),
-                ));
-            }
-            _ => {}
+        if is_test_name(query.name()) && query.query_type() == RecordType::A {
+            response.add_answer(Record::from_rdata(
+                query.name().clone(),
+                DNS_TTL_SECONDS,
+                RData::A(A::new(127, 0, 0, 1)),
+            ));
         }
     }
 
@@ -296,7 +282,7 @@ mod tests {
 
     use anyhow::{Result, anyhow};
     use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
-    use hickory_proto::rr::rdata::{A, AAAA};
+    use hickory_proto::rr::rdata::A;
     use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
     use hickory_proto::serialize::binary::BinEncodable;
 
@@ -304,7 +290,7 @@ mod tests {
     const EXPECTED_DNS_TTL_SECONDS: u32 = 5;
 
     #[test]
-    fn builds_a_and_aaaa_loopback_answers_for_test_names() -> Result<()> {
+    fn builds_a_loopback_answer_and_nodata_for_aaaa() -> Result<()> {
         let a_response = response_for("acme.test.", RecordType::A)?;
         assert_common_response_fields(&a_response, "acme.test.", RecordType::A)?;
         assert_eq!(a_response.answers.len(), 1);
@@ -317,16 +303,7 @@ mod tests {
 
         let aaaa_response = response_for("acme.test.", RecordType::AAAA)?;
         assert_common_response_fields(&aaaa_response, "acme.test.", RecordType::AAAA)?;
-        assert_eq!(aaaa_response.answers.len(), 1);
-        let aaaa_answer = &aaaa_response.answers[0];
-        assert_eq!(&aaaa_answer.name, &Name::from_str("acme.test.")?);
-        assert_eq!(aaaa_answer.record_type(), RecordType::AAAA);
-        assert_eq!(aaaa_answer.dns_class, DNSClass::IN);
-        assert_eq!(aaaa_answer.ttl, EXPECTED_DNS_TTL_SECONDS);
-        assert_eq!(
-            &aaaa_answer.data,
-            &RData::AAAA(AAAA::new(0, 0, 0, 0, 0, 0, 0, 1))
-        );
+        assert!(aaaa_response.answers.is_empty());
 
         Ok(())
     }

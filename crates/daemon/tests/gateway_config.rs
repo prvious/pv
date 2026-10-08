@@ -142,9 +142,7 @@ fn gateway_config_renderer_outputs_empty_gateway_listener() -> Result<()> {
 
     assert_admin_directives(&rendered, "/Users/alice/.pv/run/gateway-admin.sock");
     assert!(
-        rendered
-            .lines()
-            .any(|line| line == "    bind 127.0.0.1 ::1"),
+        rendered.lines().any(|line| line == "    bind 127.0.0.1"),
         "empty Gateway fallback must bind only loopback interfaces"
     );
     assert_snapshot!(rendered);

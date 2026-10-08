@@ -1,0 +1,8 @@
+---
+source: crates/daemon/tests/daemon_foundation.rs
+expression: fragments
+---
+(
+    "project.test, *.project.test {\n    bind 127.0.0.1\n    log {\n        output file \"<tempdir>/home/.pv/logs/gateway/access.log\" {\n            roll_size 10MiB\n            roll_uncompressed\n            roll_keep 5\n            roll_keep_for 720h\n        }\n        format json\n    }\n    tls {\n        issuer internal {\n            ca local\n        }\n    }\n    reverse_proxy 127.0.0.1:<port> {\n        header_up Host {host}\n        header_up X-Forwarded-Host {host}\n        header_up X-Forwarded-Proto {scheme}\n        header_up X-Forwarded-For {remote_host}\n    }\n}\n",
+    "http://project.test:<port>, http://*.project.test:<port> {\n    bind 127.0.0.1\n    root * \"<tempdir>/project\"\n    php_server\n    file_server\n}\n",
+)
