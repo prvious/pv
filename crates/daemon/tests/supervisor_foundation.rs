@@ -624,8 +624,8 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
     let spec = process_spec(
         &paths,
         "adoptable-runtime",
-        "/bin/sh",
-        vec!["-c".to_string(), "while true; do sleep 1; done".to_string()],
+        "/bin/sleep",
+        vec!["30".to_string()],
     );
     let process = supervisor.start(spec.clone()).await?;
 
