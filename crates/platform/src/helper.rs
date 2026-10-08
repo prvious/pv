@@ -7,7 +7,7 @@ use std::io::Write;
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 #[cfg(target_os = "macos")]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
 #[cfg(target_os = "macos")]
@@ -469,7 +469,7 @@ fn install_privileged_helper_macos(
             "system",
             HELPER_LAUNCH_DAEMON_PATH,
         ])?;
-        let status = probe_helper_lifecycle(Utf8Path::new(HELPER_SOCKET_PATH))?;
+        let status = wait_for_helper_lifecycle(Utf8Path::new(HELPER_SOCKET_PATH))?;
         if status.version != helper_version
             || status.protocol_version != protocol_version
             || status.owner_uid != owner_uid
@@ -633,7 +633,7 @@ fn rollback_helper_installation(
         ]) {
             rollback_errors.push(error.to_string());
         } else if let Some(expected_status) = &installed_state.previous_status {
-            match probe_helper_lifecycle(Utf8Path::new(HELPER_SOCKET_PATH)) {
+            match wait_for_helper_lifecycle(Utf8Path::new(HELPER_SOCKET_PATH)) {
                 Ok(status) if status == *expected_status => {}
                 Ok(status) => rollback_errors.push(format!(
                     "restored helper identity {status:?} did not match previous identity {expected_status:?}"
@@ -1249,6 +1249,24 @@ fn probe_helper_lifecycle(socket_path: &Utf8Path) -> Result<PrivilegedHelperStat
     parse_helper_lifecycle_response(&response)
 }
 
+/// Bootstrap can return before launchd has created the control socket.
+#[cfg(target_os = "macos")]
+fn wait_for_helper_lifecycle(
+    socket_path: &Utf8Path,
+) -> Result<PrivilegedHelperStatus, PlatformError> {
+    let started_at = Instant::now();
+    loop {
+        match probe_helper_lifecycle(socket_path) {
+            Err(PlatformError::PrivilegedHelperUnavailable)
+                if started_at.elapsed() < HELPER_IO_TIMEOUT =>
+            {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            result => return result,
+        }
+    }
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn parse_helper_lifecycle_response(
     response: &[u8],
@@ -1850,6 +1868,8 @@ fn helper_error_code(error: &PlatformError) -> HelperErrorCode {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "macos")]
+    use std::io::Write as _;
     use std::io::{Cursor, ErrorKind};
     #[cfg(target_os = "macos")]
     use std::net::TcpListener;
@@ -1872,6 +1892,7 @@ mod tests {
         PRIVILEGED_HELPER_VERSION, call_helper, dispatch_request,
         lock_machine_helper_lifecycle_file, probe_helper_lifecycle, render_launch_daemon_plist,
         restore_helper_file, serve_next_helper_connection, validate_root_owned_regular_file,
+        wait_for_helper_lifecycle,
     };
     use super::{
         HelperRequest, MAX_MESSAGE_BYTES, PrivilegedHelperMetadata, helper_artifacts_present,
@@ -2083,6 +2104,81 @@ mod tests {
             HelperPayload::Status(status) if status.owner_uid == owner_uid
         ));
 
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "helper test fixture needs a blocking Unix socket server"
+    )]
+    fn helper_bootstrap_waits_for_delayed_socket_creation() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let socket_path = tempdir.path().join("helper.sock");
+        let server_path = socket_path.clone();
+        let owner_uid = rustix::process::getuid().as_raw();
+        let server = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(75));
+            let listener = std::os::unix::net::UnixListener::bind(server_path)?;
+            serve_next_helper_connection(
+                &listener,
+                &PrivilegedHelperMetadata {
+                    owner_uid,
+                    helper_version: PRIVILEGED_HELPER_VERSION.to_owned(),
+                    protocol_version: HELPER_PROTOCOL_VERSION,
+                },
+            )
+        });
+        let status = wait_for_helper_lifecycle(&socket_path)?;
+        server
+            .join()
+            .map_err(|_error| anyhow!("helper fixture thread panicked"))??;
+        assert_eq!(status.version, PRIVILEGED_HELPER_VERSION);
+        assert_eq!(status.protocol_version, HELPER_PROTOCOL_VERSION);
+        assert_eq!(status.owner_uid, owner_uid);
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn helper_bootstrap_wait_stops_when_the_socket_never_appears() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let result = wait_for_helper_lifecycle(&tempdir.path().join("missing.sock"));
+        assert!(matches!(
+            result,
+            Err(PlatformError::PrivilegedHelperUnavailable)
+        ));
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "helper test fixture needs a blocking Unix socket server"
+    )]
+    fn helper_bootstrap_wait_rejects_an_invalid_response() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let socket_path = tempdir.path().join("helper.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+        let server = thread::spawn(move || -> Result<(), PlatformError> {
+            let (mut stream, _address) = listener
+                .accept()
+                .map_err(PlatformError::PrivilegedHelperIo)?;
+            read_frame(&mut stream)?;
+            stream
+                .write_all(b"invalid\n")
+                .map_err(PlatformError::PrivilegedHelperIo)
+        });
+        let result = wait_for_helper_lifecycle(&socket_path);
+        server
+            .join()
+            .map_err(|_error| anyhow!("helper fixture thread panicked"))??;
+        assert!(matches!(
+            result,
+            Err(PlatformError::PrivilegedHelperInstallation(_))
+        ));
         Ok(())
     }
 
