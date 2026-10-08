@@ -1068,7 +1068,7 @@ A port is available when a bind with the runtimes' own socket options (`SO_REUSE
 
 Assigned backing Managed Resource ports are persisted in `pv.db` per resource track. PV reuses the same port across restarts when available. If the stored port is occupied by a non-PV process, PV chooses a new free port, updates `pv.db`, restarts or reconfigures dependent runtime state, and updates PV-managed `.env` blocks during reconciliation.
 
-PV does not need a separate port reservation system in v1. Reconciliation picks a port that passes the availability probe and starts the runtime. If another process takes the port before the runtime binds it, the runtime fails readiness with an error identifying the runtime. The next reconciliation finds the foreign listener and picks another port for Managed Resources. Persisted Gateway ports remain unchanged; the foreground `pv ports:install` command repairs their pf redirects.
+PV does not need a separate port reservation system in v1. Reconciliation picks a port that passes the availability probe and starts the runtime. If another process takes the port before the runtime binds it, the runtime fails readiness with an error identifying the runtime. The next reconciliation finds the foreign listener and picks another port for Managed Resources. Persisted Gateway ports remain unchanged. If another process occupies one, stop or reconfigure that process and retry reconciliation. `pv ports:install` repairs pf redirects to the stored Gateway ports; it does not select replacement backend ports.
 
 When PV needs fallback high ports, it uses the `45000-48999` range. Backing Managed Resources still try conventional default ports first, then fall back into the PV high-port range.
 
