@@ -133,6 +133,10 @@ pub trait Environment {
         PathBuf::from(platform::SYSTEM_PF_CONF_PATH)
     }
 
+    fn loopback_tcp_port_available(&self, port: u16) -> bool {
+        platform::loopback_tcp_port_available(port)
+    }
+
     fn loopback_tcp_listener_ports(
         &self,
     ) -> Result<std::collections::BTreeSet<u16>, platform::PlatformError> {

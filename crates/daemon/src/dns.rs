@@ -1,11 +1,12 @@
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpListener, UdpSocket};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
 use std::time::Duration;
 
 use hickory_proto::op::{Message, ResponseCode};
 use hickory_proto::rr::rdata::{A, SOA};
 use hickory_proto::rr::{Name, RData, Record, RecordType};
 use hickory_proto::serialize::binary::BinEncodable;
+use platform::loopback_tcp_port_available;
 use state::{Database, PortOwner, PortRequest, PvPaths};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream, UdpSocket as TokioUdpSocket};
@@ -288,7 +289,7 @@ pub fn dns_port_available(port: u16) -> bool {
         return false;
     };
 
-    TcpListener::bind(address).is_ok()
+    loopback_tcp_port_available(port)
 }
 
 fn is_test_name(name: &Name) -> bool {

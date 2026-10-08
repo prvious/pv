@@ -7,6 +7,7 @@ mod helper;
 mod launch_agent;
 mod listener;
 mod pf;
+mod port;
 mod process;
 mod resolver;
 mod target;
@@ -38,6 +39,7 @@ pub use pf::{
     inspect_active_pf_redirects_unprivileged, inspect_pf_anchor_file, inspect_pf_conf_reference,
     install_pf_redirects, remove_pf_redirects,
 };
+pub use port::loopback_tcp_port_available;
 pub use process::{
     ProcessIdentity, ProcessStartIdentity, exec_replace, exec_replace_with_env,
     inspect_process_identity, inspect_process_start_identity, process_is_zombie,

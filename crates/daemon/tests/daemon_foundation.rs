@@ -6,6 +6,7 @@ use hickory_proto::rr::rdata::A;
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::serialize::binary::BinEncodable;
 use insta::{Settings, assert_debug_snapshot};
+use platform::loopback_tcp_port_available;
 use pv_fake::{EventKind, FakeSettings, InstalledFake, Pause, Persona};
 use rusqlite::{Connection, params};
 #[cfg(unix)]
@@ -792,11 +793,7 @@ async fn fallback_shutdown_cancels_fresh_worker_readiness() -> Result<()> {
     assert!(!paths.worker_pid("8.4").exists());
     assert!(!paths.worker_runtime_metadata("8.4").exists());
     assert!(!worker_root_config.exists());
-    if platform::loopback_tcp_port_has_listener(worker_port)? {
-        return Err(anyhow!(
-            "worker port {worker_port} still has a TCP listener"
-        ));
-    }
+    assert!(loopback_tcp_port_available(worker_port));
     gateway_guard.shutdown_and_cleanup().await?;
 
     Ok(())

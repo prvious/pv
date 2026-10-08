@@ -1,7 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet, btree_map};
 use std::future::Future;
 use std::io;
-use std::net::TcpListener;
 use std::pin::Pin;
 use std::process::{ExitStatus, Stdio};
 use std::sync::{
@@ -14,6 +13,7 @@ use std::time::{Duration, Instant};
 use camino::{Utf8Path, Utf8PathBuf};
 use config::{ProjectConfig, ProjectConfigFile};
 use futures_util::StreamExt;
+use platform::loopback_tcp_port_available;
 use resources::{ResourceAdapter, caddy_adapter, frankenphp_adapter};
 #[cfg(target_os = "macos")]
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
@@ -2645,7 +2645,7 @@ pub fn worker_process_spec(
 
 pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
     let mut database = Database::open(paths)?;
-    let gateway_ports = database.assign_gateway_ports(local_loopback_port_available)?;
+    let gateway_ports = database.assign_gateway_ports(loopback_tcp_port_available)?;
     let mut projects_by_runtime_key: BTreeMap<String, PhpWorkerRuntimePlan> = BTreeMap::new();
 
     for project in database.projects()? {
@@ -2755,7 +2755,7 @@ fn build_target_runtime_plan(
     project_id: &str,
 ) -> Result<Option<TargetedRuntimePlan>, DaemonError> {
     let mut database = Database::open(paths)?;
-    let gateway_ports = database.assign_gateway_ports(local_loopback_port_available)?;
+    let gateway_ports = database.assign_gateway_ports(loopback_tcp_port_available)?;
     let mut projects_by_runtime_key: BTreeMap<String, PhpWorkerRuntimePlan> = BTreeMap::new();
     let mut current_runtime_key = None;
     let project =
@@ -3429,7 +3429,7 @@ fn append_runtime_project(
         }
         btree_map::Entry::Vacant(entry) => {
             let port_assignment = database
-                .assign_php_worker_port(&runtime.runtime_key, local_loopback_port_available)?;
+                .assign_php_worker_port(&runtime.runtime_key, loopback_tcp_port_available)?;
             let admin_socket_path = paths.worker_admin_socket(&runtime.runtime_key);
 
             entry.insert(PhpWorkerRuntimePlan {
@@ -5001,14 +5001,12 @@ fn record_runtime_readiness_diagnostics(
     error: &DaemonError,
 ) {
     let process_exited = runtime_process_exit_state(process);
-    let loopback_listener_ports = loopback_listener_port_snapshot();
 
     structured_log::runtime_readiness_diagnostics(
         paths,
         &spec.name,
         &error.to_string(),
         &process_exited,
-        &loopback_listener_ports,
     );
 }
 
@@ -5016,13 +5014,6 @@ fn runtime_process_exit_state(process: &mut ManagedProcess) -> String {
     match process.has_exited() {
         Ok(exited) => exited.to_string(),
         Err(error) => format!("unknown: {error}"),
-    }
-}
-
-fn loopback_listener_port_snapshot() -> String {
-    match platform::loopback_tcp_listener_ports() {
-        Ok(ports) => format!("{ports:?}"),
-        Err(error) => format!("unavailable: {error}"),
     }
 }
 
@@ -5662,10 +5653,6 @@ fn record_runtime_observed(
     database.record_runtime_observed_snapshot(subject, status, message)?;
 
     Ok(())
-}
-
-fn local_loopback_port_available(port: u16) -> bool {
-    TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
 fn caddyfile_arguments(action: &str, config_path: &Utf8Path) -> Vec<String> {

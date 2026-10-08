@@ -1064,9 +1064,11 @@ Managed Resource runtime data is version-scoped. For example, MySQL 8.4 data liv
 
 For Managed Resources other than the Gateway, the daemon assigns runtime ports by first trying the resource's conventional default port, then incrementing until it finds an available port. For example, MySQL may run on `3307` if `3306` is already used by a process PV does not manage.
 
+A port is available when a bind with the runtimes' own socket options (`SO_REUSEADDR`) succeeds on both `127.0.0.1` and `0.0.0.0`. The second bind catches wildcard listeners that a loopback runtime would otherwise shadow. Ports held only by closing connections count as available.
+
 Assigned backing Managed Resource ports are persisted in `pv.db` per resource track. PV reuses the same port across restarts when available. If the stored port is occupied by a non-PV process, PV chooses a new free port, updates `pv.db`, restarts or reconfigures dependent runtime state, and updates PV-managed `.env` blocks during reconciliation.
 
-PV does not need a separate port reservation system in v1. Reconciliation chooses a candidate free port, attempts to start the process, and if startup fails because the port was taken, chooses another free port, persists it, and retries within the same reconciliation.
+PV does not need a separate port reservation system in v1. Reconciliation picks a port that passes the availability probe and starts the runtime. If another process takes the port before the runtime binds it, the runtime fails readiness with an error identifying the runtime. The next reconciliation finds the foreign listener and picks another port for Managed Resources. Persisted Gateway ports remain unchanged; the foreground `pv ports:install` command repairs their pf redirects.
 
 When PV needs fallback high ports, it uses the `45000-48999` range. Backing Managed Resources still try conventional default ports first, then fall back into the PV high-port range.
 

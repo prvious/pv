@@ -105,7 +105,8 @@ pub(crate) fn install(
     let had_https_assignment = existing_assignments
         .iter()
         .any(|assignment| assignment.owner == PortOwner::Gateway(GatewayPort::Https));
-    let assignments = database.assign_gateway_ports(|port| !listening_ports.contains(&port))?;
+    let assignments =
+        database.assign_gateway_ports(|port| environment.loopback_tcp_port_available(port))?;
     let config = pf_config_from_assignments(&assignments);
     let reference = PfConfReference;
     let prepared_anchor_path = paths.pf_anchor_config();

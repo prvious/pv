@@ -2433,13 +2433,13 @@ async fn targeted_project_reconciliation_touches_only_old_and_new_workers() -> R
             release,
         )?;
     }
-    let ports = available_loopback_ports(5)?;
+    let ports = available_loopback_ports(4)?;
     seed_runtime_ports(
         &paths,
         &mut database,
         ports[0],
         ports[1],
-        &[("8.3", ports[2]), ("8.4", ports[3]), ("8.5", ports[4])],
+        &[("8.3", ports[2]), ("8.4", ports[3])],
     )?;
     drop(database);
 
@@ -2598,7 +2598,15 @@ env:
     );
 
     fs::write_sensitive_file(&acme.config_path, "php: \"8.5\"\nroot: web\n")?;
+    // System reconciliation releases undesired workers' assignments. Reserve the new
+    // worker's test port at the transition, rather than racing other tests for 45000.
+    let worker_85_reservation = TcpListener::bind("127.0.0.1:0")?;
+    let worker_85_port = worker_85_reservation.local_addr()?.port();
     let mut database = Database::open(&paths)?;
+    database.assign_port(
+        PortRequest::php_worker("8.5", worker_85_port, worker_85_port, worker_85_port),
+        |_port| true,
+    )?;
     database.replace_project_php_runtime(
         &acme.id,
         Some(&ProjectPhpRuntimeInput {
@@ -2609,6 +2617,7 @@ env:
         }),
     )?;
     drop(database);
+    drop(worker_85_reservation);
     reconcile_project_gateway_runtimes_for_test(
         &paths,
         &acme.id,

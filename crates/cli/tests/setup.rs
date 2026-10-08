@@ -353,6 +353,10 @@ impl Environment for TestEnvironment {
         self.pf_conf_path.clone()
     }
 
+    fn loopback_tcp_port_available(&self, _port: u16) -> bool {
+        true
+    }
+
     fn loopback_tcp_listener_ports(&self) -> Result<BTreeSet<u16>, platform::PlatformError> {
         Ok(BTreeSet::new())
     }
