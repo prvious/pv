@@ -1,0 +1,18 @@
+---
+source: crates/platform/src/low_port.rs
+expression: inspection
+---
+LowPortInspection {
+    ports: [
+        LowPortState {
+            port: 80,
+            available: false,
+            owners: [],
+        },
+        LowPortState {
+            port: 443,
+            available: false,
+            owners: [],
+        },
+    ],
+}

@@ -744,6 +744,12 @@ mod tests {
     }
 
     impl Environment for AccessTrackingEnvironment {
+        fn inspect_low_ports(
+            &self,
+        ) -> Result<platform::LowPortInspection, platform::PlatformError> {
+            Err(platform::PlatformError::PrivilegedHelperUnavailable)
+        }
+
         fn var_os(&self, _key: &str) -> Option<OsString> {
             self.record_access();
             None

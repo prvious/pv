@@ -125,6 +125,10 @@ fn composer_exec_env(home: &Utf8Path, php_track: &str) -> anyhow::Result<Vec<(St
 }
 
 impl Environment for TestEnvironment {
+    fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError> {
+        Err(platform::PlatformError::PrivilegedHelperUnavailable)
+    }
+
     fn var_os(&self, key: &str) -> Option<OsString> {
         self.vars.borrow().get(key).cloned()
     }

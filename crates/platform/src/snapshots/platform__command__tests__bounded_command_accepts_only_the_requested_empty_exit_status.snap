@@ -1,0 +1,30 @@
+---
+source: crates/platform/src/command.rs
+expression: verdicts
+---
+[
+    (
+        "empty exit 1",
+        Ok(
+            "",
+        ),
+    ),
+    (
+        "nonempty stdout",
+        Err(
+            "system integration command `/bin/sh -c printf owner; exit 1` exited with exit status: 1",
+        ),
+    ),
+    (
+        "nonempty stderr",
+        Err(
+            "system integration command `/bin/sh -c printf failure >&2; exit 1` exited with exit status: 1: failure",
+        ),
+    ),
+    (
+        "different exit status",
+        Err(
+            "system integration command `/bin/sh -c exit 2` exited with exit status: 2",
+        ),
+    ),
+]

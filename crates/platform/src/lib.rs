@@ -5,7 +5,7 @@ mod command;
 mod error;
 mod helper;
 mod launch_agent;
-mod listener;
+mod low_port;
 mod pf;
 mod port;
 mod process;
@@ -32,7 +32,7 @@ pub use launch_agent::{
     bootout_launch_agent, bootstrap_launch_agent, inspect_launch_agent_file,
     kickstart_launch_agent, launch_agent_path, remove_launch_agent_file, write_launch_agent_file,
 };
-pub use listener::{loopback_tcp_listener_ports, loopback_tcp_port_has_listener};
+pub use low_port::{LowPortInspection, LowPortState, PortOwner};
 pub use pf::{
     ActivePfRedirectInspection, PfConfReference, PfFileState, PfRedirectConfig,
     SYSTEM_PF_ANCHOR_PATH, SYSTEM_PF_CONF_PATH, active_pf_redirect_config,

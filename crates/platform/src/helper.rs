@@ -17,12 +17,12 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ActivePfRedirectInspection, KeychainCertificate, PfRedirectConfig, PlatformError,
-    ResolverConfig, ResolverFileState,
+    ActivePfRedirectInspection, KeychainCertificate, LowPortInspection, PfRedirectConfig,
+    PlatformError, ResolverConfig, ResolverFileState,
 };
 
-pub const HELPER_PROTOCOL_VERSION: u32 = 1;
-pub const PRIVILEGED_HELPER_VERSION: &str = "1.0.0";
+pub const HELPER_PROTOCOL_VERSION: u32 = 2;
+pub const PRIVILEGED_HELPER_VERSION: &str = "2.0.0";
 pub const HELPER_EXECUTABLE_PATH: &str = "/Library/PrivilegedHelperTools/com.prvious.pv.helper";
 pub const HELPER_LAUNCH_DAEMON_PATH: &str = "/Library/LaunchDaemons/com.prvious.pv.helper.plist";
 pub const HELPER_METADATA_PATH: &str = "/Library/Application Support/PV/helper.json";
@@ -152,9 +152,9 @@ enum HelperOperation {
     DnsInspect { expected_port: Option<u16> },
     DnsApply { port: u16 },
     DnsRemove,
+    LowPortInspect,
     PfInspect,
     PfApply { http_port: u16, https_port: u16 },
-    PfReload,
     PfRemove,
     CaInspect,
     CaApply { fingerprint: String },
@@ -199,6 +199,7 @@ enum HelperPayload {
     Empty,
     Status(PrivilegedHelperStatus),
     ResolverState(ResolverFileState),
+    LowPorts(LowPortInspection),
     PfInspection(ActivePfRedirectInspection),
     CaCertificates(Vec<KeychainCertificate>),
 }
@@ -239,6 +240,13 @@ impl PrivilegedHelperClient {
         expect_empty(self.call(HelperOperation::DnsRemove)?)
     }
 
+    pub fn inspect_low_ports(&self) -> Result<LowPortInspection, PlatformError> {
+        match self.call(HelperOperation::LowPortInspect)? {
+            HelperPayload::LowPorts(inspection) => Ok(inspection),
+            payload => Err(unexpected_payload("low-port inspection", &payload)),
+        }
+    }
+
     pub fn inspect_pf(&self) -> Result<ActivePfRedirectInspection, PlatformError> {
         match self.call(HelperOperation::PfInspect)? {
             HelperPayload::PfInspection(inspection) => Ok(inspection),
@@ -251,10 +259,6 @@ impl PrivilegedHelperClient {
             http_port: config.http_port,
             https_port: config.https_port,
         })?)
-    }
-
-    pub fn reload_pf(&self) -> Result<(), PlatformError> {
-        expect_empty(self.call(HelperOperation::PfReload)?)
     }
 
     pub fn remove_pf(&self) -> Result<(), PlatformError> {
@@ -1539,6 +1543,9 @@ fn dispatch_request(
             crate::resolver::remove_resolver_config_privileged()?;
             Ok(HelperPayload::Empty)
         }
+        HelperOperation::LowPortInspect => Ok(HelperPayload::LowPorts(
+            crate::low_port::inspect_loopback_ports(&[80, 443])?,
+        )),
         HelperOperation::PfInspect => Ok(HelperPayload::PfInspection(
             crate::pf::inspect_active_pf_redirects_privileged()?,
         )),
@@ -1553,13 +1560,19 @@ fn dispatch_request(
                     message: "Gateway HTTP and HTTPS ports must be different".to_string(),
                 });
             }
+            let inspection = crate::low_port::inspect_loopback_ports(&[80, 443])?;
+            let conflicts = inspection
+                .ports
+                .iter()
+                .filter(|port| !port.available)
+                .map(crate::LowPortState::conflict_message)
+                .collect::<Vec<_>>();
+            if !conflicts.is_empty() {
+                return Err(PlatformError::SystemIntegration(conflicts.join(" ")));
+            }
             crate::pf::apply_pf_redirects_privileged(&PfRedirectConfig::new(
                 http_port, https_port,
             ))?;
-            Ok(HelperPayload::Empty)
-        }
-        HelperOperation::PfReload => {
-            crate::pf::reload_pf_redirects_privileged()?;
             Ok(HelperPayload::Empty)
         }
         HelperOperation::PfRemove => {
@@ -1839,6 +1852,8 @@ fn helper_error_code(error: &PlatformError) -> HelperErrorCode {
 mod tests {
     use std::io::{Cursor, ErrorKind};
     #[cfg(target_os = "macos")]
+    use std::net::TcpListener;
+    #[cfg(target_os = "macos")]
     use std::os::unix::fs::symlink;
     #[cfg(target_os = "macos")]
     use std::thread;
@@ -1854,9 +1869,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::{
         HELPER_SOCKET_NAME, HELPER_STANDARD_ERROR_PATH, HelperLaunchDaemonPlist, HelperPayload,
-        PRIVILEGED_HELPER_VERSION, call_helper, lock_machine_helper_lifecycle_file,
-        probe_helper_lifecycle, render_launch_daemon_plist, restore_helper_file,
-        serve_next_helper_connection, validate_root_owned_regular_file,
+        PRIVILEGED_HELPER_VERSION, call_helper, dispatch_request,
+        lock_machine_helper_lifecycle_file, probe_helper_lifecycle, render_launch_daemon_plist,
+        restore_helper_file, serve_next_helper_connection, validate_root_owned_regular_file,
     };
     use super::{
         HelperRequest, MAX_MESSAGE_BYTES, PrivilegedHelperMetadata, helper_artifacts_present,
@@ -2074,7 +2089,7 @@ mod tests {
     #[test]
     fn protocol_rejects_unknown_fields() {
         let mut message = Cursor::new(
-            br#"{"protocol_version":1,"operation":{"name":"status"},"command":"/bin/sh"}
+            br#"{"protocol_version":2,"operation":{"name":"status"},"command":"/bin/sh"}
 "#,
         );
 
@@ -2082,6 +2097,92 @@ mod tests {
             read_message::<HelperRequest>(&mut message),
             Err(crate::PlatformError::PrivilegedHelperProtocol(_))
         ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires root and a free loopback port 80"]
+    fn pf_apply_rejects_a_low_port_conflict_as_root() -> anyhow::Result<()> {
+        if !rustix::process::geteuid().is_root() {
+            return Err(anyhow!("run this test as root"));
+        }
+        let listener = TcpListener::bind(("127.0.0.1", 80))?;
+        let metadata = PrivilegedHelperMetadata {
+            owner_uid: rustix::process::getuid().as_raw(),
+            helper_version: PRIVILEGED_HELPER_VERSION.to_owned(),
+            protocol_version: HELPER_PROTOCOL_VERSION,
+        };
+        let result = dispatch_request(
+            HelperRequest {
+                protocol_version: HELPER_PROTOCOL_VERSION,
+                operation: HelperOperation::PfApply {
+                    http_port: 48080,
+                    https_port: 48443,
+                },
+            },
+            &metadata,
+        );
+        drop(listener);
+        let Err(PlatformError::SystemIntegration(message)) = result else {
+            return Err(anyhow!("PfApply did not reject the held low port"));
+        };
+        assert!(message.contains(&format!("(pid {})", std::process::id())));
+        Ok(())
+    }
+
+    #[test]
+    fn protocol_rejects_the_removed_pf_reload_operation() {
+        let mut message = Cursor::new(
+            br#"{"protocol_version":2,"operation":{"name":"pf_reload"}}
+"#,
+        );
+        assert!(matches!(
+            read_message::<HelperRequest>(&mut message),
+            Err(PlatformError::PrivilegedHelperProtocol(_))
+        ));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "helper test fixture needs a blocking Unix socket server"
+    )]
+    fn low_port_inspection_round_trips_through_the_helper_socket() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let socket_path = tempdir.path().join("helper.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket_path)?;
+        let metadata = PrivilegedHelperMetadata {
+            owner_uid: rustix::process::getuid().as_raw(),
+            helper_version: PRIVILEGED_HELPER_VERSION.to_owned(),
+            protocol_version: HELPER_PROTOCOL_VERSION,
+        };
+        let server = thread::spawn(move || serve_next_helper_connection(&listener, &metadata));
+        let payload = call_helper(&socket_path, HelperOperation::LowPortInspect)?;
+        server
+            .join()
+            .map_err(|_error| anyhow!("helper fixture thread panicked"))??;
+        let HelperPayload::LowPorts(inspection) = payload else {
+            return Err(anyhow!(
+                "helper returned an unexpected low-port inspection payload"
+            ));
+        };
+        assert_eq!(
+            inspection
+                .ports
+                .iter()
+                .map(|state| state.port)
+                .collect::<Vec<_>>(),
+            [80, 443]
+        );
+        assert!(
+            inspection
+                .ports
+                .iter()
+                .filter(|state| state.available)
+                .all(|state| state.owners.is_empty())
+        );
+        Ok(())
     }
 
     #[cfg(target_os = "macos")]

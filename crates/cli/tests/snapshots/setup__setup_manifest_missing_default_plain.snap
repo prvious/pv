@@ -4,7 +4,7 @@ expression: output.stdout
 ---
 PV setup
 Ensured PV state layout: <tempdir>/home/.pv
-Privileged helper: current 1.0.0 (protocol 1)
+Privileged helper: current 2.0.0 (protocol 2)
 Shell profile integration skipped by --no-path.
 Run `pv env --shell zsh`, `pv env --shell bash`, or `pv env --shell fish` for manual shell integration.
 Prepared PV DNS resolver config

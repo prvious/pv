@@ -433,7 +433,6 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::PrivilegedHelperInstallation(_)
         | PlatformError::PrivilegedHelperAuthentication(_) => CaRepairReason::InvalidCaShape,
         #[cfg(target_os = "macos")]
-        PlatformError::ListenerInspection { .. }
-        | PlatformError::ProcessIdentityInspection { .. } => CaRepairReason::InvalidCaShape,
+        PlatformError::ProcessIdentityInspection { .. } => CaRepairReason::InvalidCaShape,
     }
 }

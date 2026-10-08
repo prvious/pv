@@ -108,13 +108,6 @@ pub enum PlatformError {
     PrivilegedHelperAuthentication(String),
 
     #[cfg(target_os = "macos")]
-    #[error("could not inspect TCP listeners: {source}")]
-    ListenerInspection {
-        #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
-
-    #[cfg(target_os = "macos")]
     #[error("could not inspect process identity: {source}")]
     ProcessIdentityInspection {
         #[source]

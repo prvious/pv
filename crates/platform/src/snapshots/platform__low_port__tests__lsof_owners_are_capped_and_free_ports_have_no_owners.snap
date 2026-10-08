@@ -1,0 +1,49 @@
+---
+source: crates/platform/src/low_port.rs
+expression: states
+---
+[
+    LowPortState {
+        port: 80,
+        available: false,
+        owners: [
+            PortOwner {
+                pid: 1,
+                command: "nginx",
+            },
+            PortOwner {
+                pid: 2,
+                command: "nginx",
+            },
+            PortOwner {
+                pid: 3,
+                command: "nginx",
+            },
+            PortOwner {
+                pid: 4,
+                command: "nginx",
+            },
+            PortOwner {
+                pid: 5,
+                command: "nginx",
+            },
+            PortOwner {
+                pid: 6,
+                command: "nginx",
+            },
+            PortOwner {
+                pid: 7,
+                command: "nginx",
+            },
+            PortOwner {
+                pid: 8,
+                command: "nginx",
+            },
+        ],
+    },
+    LowPortState {
+        port: 443,
+        available: true,
+        owners: [],
+    },
+]

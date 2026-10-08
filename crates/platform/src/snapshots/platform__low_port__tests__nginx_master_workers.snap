@@ -1,0 +1,40 @@
+---
+source: crates/platform/src/low_port.rs
+expression: inspection
+---
+LowPortInspection {
+    ports: [
+        LowPortState {
+            port: 80,
+            available: false,
+            owners: [
+                PortOwner {
+                    pid: 412,
+                    command: "nginx",
+                },
+                PortOwner {
+                    pid: 413,
+                    command: "nginx",
+                },
+                PortOwner {
+                    pid: 414,
+                    command: "nginx",
+                },
+            ],
+        },
+        LowPortState {
+            port: 443,
+            available: false,
+            owners: [
+                PortOwner {
+                    pid: 412,
+                    command: "nginx",
+                },
+                PortOwner {
+                    pid: 413,
+                    command: "nginx",
+                },
+            ],
+        },
+    ],
+}

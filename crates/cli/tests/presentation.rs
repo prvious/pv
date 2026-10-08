@@ -59,6 +59,10 @@ impl TestEnvironment {
 }
 
 impl Environment for TestEnvironment {
+    fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError> {
+        Err(platform::PlatformError::PrivilegedHelperUnavailable)
+    }
+
     fn var_os(&self, key: &str) -> Option<OsString> {
         (key == "NO_COLOR" && self.terminals.no_color_env).then(|| OsString::from("1"))
     }

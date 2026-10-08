@@ -8,6 +8,6 @@ RunOutput {
             1,
         ),
     ),
-    stdout: "Port redirect preparation failed\n  Loopback TCP port 80 already has a listener.\n  Stop the conflicting service, then run `pv ports:install` again.\n",
+    stdout: "Port redirect preparation failed\n  Loopback TCP port 80 is in use; PV could not identify the process.\n  find it: sudo lsof -nP -iTCP:80 -sTCP:LISTEN\n  Stop the conflicting service, then run `pv ports:install` again.\n",
     stderr: "",
 }
