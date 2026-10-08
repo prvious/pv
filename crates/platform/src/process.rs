@@ -38,6 +38,44 @@ pub struct ProcessStartIdentity {
     pub microseconds: u64,
 }
 
+/// Identifies one kernel boot, independently of wall-clock changes.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct BootSessionId(String);
+
+impl TryFrom<String> for BootSessionId {
+    type Error = io::Error;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.len() != 36
+            || !value.bytes().enumerate().all(|(index, byte)| {
+                if matches!(index, 8 | 13 | 18 | 23) {
+                    byte == b'-'
+                } else {
+                    byte.is_ascii_hexdigit()
+                }
+            })
+            || value.bytes().all(|byte| matches!(byte, b'0' | b'-'))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid boot session UUID",
+            ));
+        }
+        Ok(Self(value.to_ascii_uppercase()))
+    }
+}
+
+impl From<BootSessionId> for String {
+    fn from(value: BootSessionId) -> Self {
+        value.0
+    }
+}
+
+pub fn current_boot_session_id() -> Result<BootSessionId, crate::PlatformError> {
+    implementation::current_boot_session_id()
+}
+
 pub fn inspect_process_identity(pid: u32) -> Result<Option<ProcessIdentity>, crate::PlatformError> {
     implementation::inspect_process_identity(pid)
 }

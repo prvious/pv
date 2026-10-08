@@ -267,3 +267,5 @@ pv uninstall --prune --force
 ```
 
 `--prune` requires confirmation unless `--force` is provided.
+
+PV stops managed runtimes before removing their files. If it cannot prove that a Postgres runtime has stopped completely, uninstall fails and preserves its records and binaries. `--force` skips confirmation but does not bypass this check. A reboot permits stale-record cleanup only when a valid recorded boot identity proves that the runtime belongs to an earlier boot; missing boot evidence remains insufficient.

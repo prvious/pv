@@ -12,12 +12,46 @@ use nix::errno::Errno;
 use nix::sys::event::{EvFlags, EventFilter, FilterFlag, KEvent, Kqueue};
 use thiserror::Error;
 
-use super::{ProcessIdentity, ProcessStartIdentity};
+use super::{BootSessionId, ProcessIdentity, ProcessStartIdentity};
 use crate::PlatformError;
 
 const MAX_SNAPSHOT_ATTEMPTS: usize = 5;
 const MICROSECONDS_PER_SECOND: u64 = 1_000_000;
 const SNAPSHOT_RETRY_DELAY: Duration = Duration::from_millis(1);
+
+pub(super) fn current_boot_session_id() -> Result<BootSessionId, PlatformError> {
+    read_boot_session_id().map_err(PlatformError::BootSessionInspection)
+}
+
+fn read_boot_session_id() -> io::Result<BootSessionId> {
+    let mut buffer = [0_u8; 37];
+    let mut length = buffer.len();
+    // SAFETY: The name is a NUL-terminated read-only sysctl key. The buffer and
+    // length point to valid writable storage. Null/zero new-value arguments
+    // ensure that this query cannot change kernel state.
+    let status = unsafe {
+        libc::sysctlbyname(
+            c"kern.bootsessionuuid".as_ptr(),
+            buffer.as_mut_ptr().cast(),
+            &mut length,
+            ptr::null_mut(),
+            0,
+        )
+    };
+    if status != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    if length != buffer.len() || buffer[36] != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid boot session UUID length",
+        ));
+    }
+    str::from_utf8(&buffer[..36])
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
+        .to_owned()
+        .try_into()
+}
 
 /// Observes a future exit without reaping the process. Register before signalling,
 /// then recheck the process birth identity: registration alone does not prove ownership.

@@ -86,6 +86,13 @@ pub trait Environment {
         platform::bootout_launch_agent()
     }
 
+    fn daemon_process_for_stop(
+        &self,
+        paths: &state::PvPaths,
+    ) -> Result<Option<daemon::DaemonProcess>, daemon::DaemonError> {
+        daemon::daemon_process_for_stop(paths)
+    }
+
     fn kickstart_launch_agent(&self) -> Result<(), platform::PlatformError> {
         platform::kickstart_launch_agent()
     }

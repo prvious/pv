@@ -1344,6 +1344,67 @@ fn uninstall_removes_stale_ca_trust_when_local_ca_files_are_missing() -> anyhow:
 }
 
 #[test]
+fn uninstall_holds_exclusive_admission_through_prune_and_releases_on_return() -> anyhow::Result<()>
+{
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_uninstall_files(&fixture.paths)?;
+    let shared = state::RuntimeLifecycleLock::acquire_shared(&fixture.paths)?;
+    let helper = state::HelperLifecycleLock::acquire(&fixture.paths)?;
+    let refused = run_pv(
+        &["uninstall", "--prune", "--force"],
+        fixture.environment.as_ref(),
+    )?;
+    assert_eq!(refused.exit_code, ExitCode::FAILURE);
+    assert!(fixture.environment.operations().is_empty());
+    assert!(state::fs::path_entry_exists(fixture.paths.root())?);
+    with_normalized_tempdir(tempdir.path(), || assert_debug_snapshot!(refused));
+    drop(helper);
+    drop(shared);
+
+    let mut stdout = UninstallAdmissionProbe {
+        paths: fixture.paths.clone(),
+        saw_deleted_root: false,
+        held_after_delete: true,
+    };
+    let mut stderr = Vec::new();
+    let exit_code = run_with_environment(
+        ["pv", "uninstall", "--prune", "--force"],
+        fixture.environment.as_ref(),
+        &mut stdout,
+        &mut stderr,
+    )?;
+    assert_eq!(exit_code, ExitCode::SUCCESS);
+    assert!(stdout.saw_deleted_root && stdout.held_after_delete);
+    assert!(!state::fs::path_entry_exists(fixture.paths.root())?);
+    let _released = state::RuntimeLifecycleLock::acquire_exclusive(&fixture.paths)?;
+    Ok(())
+}
+
+struct UninstallAdmissionProbe {
+    paths: PvPaths,
+    saw_deleted_root: bool,
+    held_after_delete: bool,
+}
+
+impl Write for UninstallAdmissionProbe {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        if !state::fs::path_entry_exists(self.paths.root()).map_err(io::Error::other)? {
+            self.saw_deleted_root = true;
+            self.held_after_delete &= matches!(
+                state::RuntimeLifecycleLock::acquire_shared(&self.paths),
+                Err(StateError::CoordinationLockHeld { .. }),
+            );
+        }
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
 fn uninstall_prune_requires_confirmation_without_force() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
@@ -1357,6 +1418,9 @@ fn uninstall_prune_requires_confirmation_without_force() -> anyhow::Result<()> {
     assert!(path_exists(fixture.paths.root()));
     assert!(read_optional_file(&fixture.paths.logs().join("daemon.log"))?.is_some());
     assert!(fixture.environment.operations().is_empty());
+    assert!(!state::fs::path_entry_exists(
+        &fixture.paths.runtime_lifecycle_lock()
+    )?);
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!(output);

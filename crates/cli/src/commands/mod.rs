@@ -149,6 +149,7 @@ fn acquire_runtime_lifecycle(
         || matches!(
             command,
             Command::DaemonRun
+                | Command::Uninstall(_)
                 | Command::Env(_)
                 | Command::Completions(_)
                 | Command::Init(_)
@@ -166,7 +167,7 @@ fn acquire_runtime_lifecycle(
         return Ok(None);
     }
     let paths = pv_paths(environment)?;
-    let guard = if matches!(command, Command::DaemonDisable | Command::Uninstall(_)) {
+    let guard = if matches!(command, Command::DaemonDisable) {
         state::RuntimeLifecycleLock::acquire_exclusive(&paths)
     } else {
         state::RuntimeLifecycleLock::acquire_shared(&paths)

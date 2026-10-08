@@ -65,7 +65,7 @@ fn enable_inner(
             request_reconciliation,
         ),
         LaunchAgentFileState::Stale { .. } => {
-            bootout_launch_agent_if_loaded(environment)?;
+            unload_and_wait_for_daemon(environment, &paths)?;
             install_and_start_launch_agent(
                 environment,
                 &path,
@@ -121,12 +121,20 @@ pub(crate) fn disable(
 
 fn stop_daemon_and_runtimes(environment: &impl Environment) -> Result<(), ExecuteError> {
     let paths = pv_paths(environment)?;
-    let daemon = ::daemon::daemon_process_for_stop(&paths)?;
+    unload_and_wait_for_daemon(environment, &paths)?;
+    ::daemon::stop_recorded_runtimes_blocking(paths)?;
+    Ok(())
+}
+
+pub(crate) fn unload_and_wait_for_daemon(
+    environment: &impl Environment,
+    paths: &PvPaths,
+) -> Result<(), ExecuteError> {
+    let daemon = environment.daemon_process_for_stop(paths)?;
     bootout_launch_agent_if_loaded(environment)?;
     if let Some(daemon) = daemon {
         daemon.wait_for_exit(Duration::from_secs(10))?;
     }
-    ::daemon::stop_recorded_runtimes_blocking(paths)?;
     Ok(())
 }
 
@@ -165,7 +173,7 @@ pub(crate) fn restart(
             true,
         ),
         LaunchAgentFileState::Stale { .. } => {
-            bootout_launch_agent_if_loaded(environment)?;
+            unload_and_wait_for_daemon(environment, &paths)?;
             install_and_start_launch_agent(
                 environment,
                 &path,
@@ -283,6 +291,7 @@ fn launch_agent_is_already_unloaded(error: &platform::PlatformError) -> bool {
             message.contains("already unloaded")
                 || message.contains("not loaded")
                 || message.contains("not running")
+                || message.contains("no such process")
         }
         platform::PlatformError::LaunchAgentCommandStatus { .. } => false,
         _ => false,

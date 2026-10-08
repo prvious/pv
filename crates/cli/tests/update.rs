@@ -215,6 +215,14 @@ mod update_tests {
     }
 
     impl Environment for TestEnvironment {
+        fn daemon_process_for_stop(
+            &self,
+            _paths: &PvPaths,
+        ) -> Result<Option<daemon::DaemonProcess>, daemon::DaemonError> {
+            // The protocol fixture has no separate daemon process to unload.
+            Ok(None)
+        }
+
         fn var_os(&self, _key: &str) -> Option<OsString> {
             None
         }

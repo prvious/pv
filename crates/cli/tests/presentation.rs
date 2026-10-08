@@ -354,6 +354,9 @@ fn enter_on_a_destructive_confirmation_deletes_nothing() -> anyhow::Result<()> {
         )]
     );
     assert!(marker.as_std_path().exists());
+    assert!(!state::fs::path_entry_exists(
+        &state::PvPaths::for_home(&home).runtime_lifecycle_lock(),
+    )?);
     assert_debug_snapshot!(output.stdout);
 
     Ok(())

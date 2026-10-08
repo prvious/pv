@@ -537,6 +537,11 @@ async fn supervisor_captures_logs_and_runtime_metadata_then_stops_child() -> Res
     metadata["log_path"] = json!("<home>/.pv/logs/test-runtime.log");
     metadata["started_at"] = json!("<timestamp>");
     metadata["process_start_identity"] = json!("<native-start-identity>");
+    assert_eq!(
+        metadata["boot_session_id"],
+        serde_json::to_value(platform::current_boot_session_id()?)?,
+    );
+    metadata["boot_session_id"] = json!("<boot-session-id>");
 
     process.stop(Duration::from_secs(1)).await?;
 

@@ -342,7 +342,7 @@ fn restart_daemon_without_reconciliation(
     launch_agent_path: &Utf8Path,
     health_check: DaemonHealthCheck,
 ) -> Result<(), ExecuteError> {
-    bootout_launch_agent_if_loaded(environment)?;
+    super::daemon::unload_and_wait_for_daemon(environment, paths)?;
     environment.bootstrap_launch_agent(launch_agent_path)?;
     clear_daemon_startup_failure_marker(paths)?;
     environment.kickstart_launch_agent()?;
@@ -379,28 +379,6 @@ fn clear_daemon_startup_failure_marker(paths: &PvPaths) -> Result<(), ExecuteErr
     state::fs::remove_file_if_exists(&paths.daemon_startup_error())?;
 
     Ok(())
-}
-
-fn bootout_launch_agent_if_loaded(environment: &impl Environment) -> Result<(), ExecuteError> {
-    match environment.bootout_launch_agent() {
-        Ok(()) => Ok(()),
-        Err(error) if launch_agent_is_already_unloaded(&error) => Ok(()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn launch_agent_is_already_unloaded(error: &platform::PlatformError) -> bool {
-    match error {
-        platform::PlatformError::LaunchAgent(message) => {
-            let message = message.to_ascii_lowercase();
-            message.contains("already unloaded")
-                || message.contains("not loaded")
-                || message.contains("not running")
-                || message.contains("no such process")
-        }
-        platform::PlatformError::LaunchAgentCommandStatus { .. } => false,
-        _ => false,
-    }
 }
 
 fn update_state_error(error: StateError) -> ExecuteError {

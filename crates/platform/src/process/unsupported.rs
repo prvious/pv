@@ -1,5 +1,11 @@
 use crate::capability::unsupported;
-use crate::{PlatformCapability, PlatformError, ProcessIdentity, ProcessStartIdentity};
+use crate::{
+    BootSessionId, PlatformCapability, PlatformError, ProcessIdentity, ProcessStartIdentity,
+};
+
+pub(super) fn current_boot_session_id() -> Result<BootSessionId, PlatformError> {
+    Err(unsupported(PlatformCapability::ProcessInspection)?)
+}
 
 #[derive(Debug)]
 pub struct ProcessExitWatch;

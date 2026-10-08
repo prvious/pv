@@ -4,7 +4,7 @@ use std::io::{self, BufRead, BufReader, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -28,6 +28,8 @@ struct TestEnvironment {
     launch_agent_path: PathBuf,
     operations: RefCell<Vec<String>>,
     bootout_error: Option<BootoutError>,
+    bootout_signal: Option<mpsc::Sender<()>>,
+    bootstrap_requires_daemon_exit: Option<u32>,
 }
 
 impl TestEnvironment {
@@ -44,6 +46,8 @@ impl TestEnvironment {
             launch_agent_path: launch_agent_path.as_std_path().to_path_buf(),
             operations: RefCell::new(Vec::new()),
             bootout_error: None,
+            bootout_signal: None,
+            bootstrap_requires_daemon_exit: None,
         }
     }
 
@@ -69,6 +73,19 @@ enum BootoutError {
 }
 
 impl Environment for TestEnvironment {
+    fn daemon_process_for_stop(
+        &self,
+        paths: &PvPaths,
+    ) -> Result<Option<daemon::DaemonProcess>, daemon::DaemonError> {
+        // Protocol fixtures serve replies in this test process. Native process
+        // fixtures publish a record and exercise the real ownership checks.
+        if state::fs::path_entry_exists(&paths.daemon_process_record())? {
+            daemon::daemon_process_for_stop(paths)
+        } else {
+            Ok(None)
+        }
+    }
+
     fn var_os(&self, _key: &str) -> Option<OsString> {
         None
     }
@@ -98,6 +115,14 @@ impl Environment for TestEnvironment {
     }
 
     fn bootstrap_launch_agent(&self, plist_path: &Utf8Path) -> Result<(), platform::PlatformError> {
+        if let Some(pid) = self.bootstrap_requires_daemon_exit
+            && platform::inspect_process_start_identity(pid)?.is_some()
+            && !platform::process_is_zombie(pid)?
+        {
+            return Err(platform::PlatformError::LaunchAgent(
+                "bootstrap attempted before the captured daemon exited".to_owned(),
+            ));
+        }
         self.operations
             .borrow_mut()
             .push(format!("bootstrap {plist_path}"));
@@ -106,6 +131,11 @@ impl Environment for TestEnvironment {
     }
 
     fn bootout_launch_agent(&self) -> Result<(), platform::PlatformError> {
+        if let Some(signal) = &self.bootout_signal {
+            signal
+                .send(())
+                .map_err(|error| platform::PlatformError::LaunchAgent(error.to_string()))?;
+        }
         self.operations
             .borrow_mut()
             .push(format!("bootout {LAUNCH_AGENT_LABEL}"));
@@ -422,9 +452,169 @@ fn daemon_disable_keeps_dead_postgres_records_when_cleanup_is_unproven() -> anyh
     spec.metadata_path = paths.resource_runtime_metadata("postgres", "18");
     let mut runtime = RuntimeFixture::start(&paths, spec)?;
     runtime.cleanup()?;
+    let metadata_path = paths.resource_runtime_metadata("postgres", "18");
+    let original: serde_json::Value =
+        serde_json::from_str(&state::fs::read_to_string(&metadata_path)?)?;
+    for boot in [
+        original["boot_session_id"].clone(),
+        json!(null),
+        json!("invalid"),
+    ] {
+        let mut metadata = original.clone();
+        metadata["boot_session_id"] = boot;
+        let encoded = serde_json::to_string(&metadata)?;
+        state::fs::write_sensitive_file(&metadata_path, &encoded)?;
+        let output = run_pv(&["daemon:disable"], &environment)?;
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert!(runtime.records_exist()?);
+        assert_eq!(state::fs::read_to_string(&metadata_path)?, encoded);
+    }
+    Ok(())
+}
+
+#[test]
+fn daemon_disable_removes_previous_boot_postgres_records_without_signalling_reused_pid()
+-> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(&home);
+    let environment = TestEnvironment::new(
+        &home,
+        tempdir.path(),
+        &paths.active_pv_binary(),
+        &tempdir.path().join("absent.plist"),
+    );
+    let mut foreign_spec = gateway_spec(&paths);
+    foreign_spec.pid_path = paths.run().join("foreign.pid");
+    foreign_spec.metadata_path = paths.run().join("foreign.json");
+    let mut foreign = RuntimeFixture::start(&paths, foreign_spec.clone())?;
+    let foreign_pid = foreign.pid()?;
+    let mut metadata: serde_json::Value =
+        serde_json::from_str(&state::fs::read_to_string(&foreign_spec.metadata_path)?)?;
+    let previous_boot =
+        platform::BootSessionId::try_from("00000000-0000-0000-0000-000000000001".to_owned())?;
+    assert_ne!(previous_boot, platform::current_boot_session_id()?);
+    metadata["boot_session_id"] = serde_json::to_value(previous_boot)?;
+    metadata["resource_name"] = json!("postgres");
+    metadata["track"] = json!("18");
+    let pid_path = paths.resource_pid("postgres", "18");
+    let metadata_path = paths.resource_runtime_metadata("postgres", "18");
+    state::fs::write_sensitive_file(&pid_path, &format!("{foreign_pid}\n"))?;
+    state::fs::write_sensitive_file(&metadata_path, &serde_json::to_string(&metadata)?)?;
+
     let output = run_pv(&["daemon:disable"], &environment)?;
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(runtime.records_exist()?);
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(!state::fs::path_entry_exists(&pid_path)?);
+    assert!(!state::fs::path_entry_exists(&metadata_path)?);
+    assert!(platform::inspect_process_identity(foreign_pid)?.is_some());
+    assert!(platform::process_group_has_live_members(foreign_pid)?);
+    assert!(foreign.records_exist()?);
+    foreign.cleanup()?;
+    Ok(())
+}
+
+#[test]
+fn daemon_replacement_waits_for_delayed_exit_before_bootstrap() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(&home);
+    let launch_agent_path = tempdir.path().join("owned.plist");
+    let stale = LaunchAgentConfig::new(
+        tempdir.path().join("old-pv"),
+        paths.logs().join("out"),
+        paths.logs().join("err"),
+    );
+    write_file(&launch_agent_path, &stale.render()?)?;
+    let mut spec = gateway_spec(&paths);
+    spec.command = paths.bin().join("releases/fixture/pv");
+    spec.arguments = vec!["daemon:run".to_owned()];
+    spec.pid_path = paths.run().join("fixture-daemon.pid");
+    spec.metadata_path = paths.run().join("fixture-daemon.json");
+    let mut previous = RuntimeFixture::start(&paths, spec)?;
+    let pid = previous.pid()?;
+    state::fs::write_sensitive_file(
+        &paths.daemon_process_record(),
+        &serde_json::to_string(&json!({
+            "pid": pid, "start_identity": platform::inspect_process_start_identity(pid)?,
+        }))?,
+    )?;
+    let (signal, receiver) = mpsc::channel();
+    let cleanup = thread::Builder::new()
+        .name("daemon-fixture-cleanup".to_owned())
+        .spawn(move || -> anyhow::Result<()> {
+            receiver.recv_timeout(Duration::from_secs(5))?;
+            thread::sleep(Duration::from_millis(100));
+            previous.cleanup()
+        })?;
+    let mut environment = TestEnvironment::new(
+        &home,
+        tempdir.path(),
+        &paths.active_pv_binary(),
+        &launch_agent_path,
+    );
+    environment.bootout_signal = Some(signal);
+    environment.bootstrap_requires_daemon_exit = Some(pid);
+    let healthy = DaemonFixture::start(&paths, 2)?;
+
+    let output = run_pv(&["daemon:restart"], &environment)?;
+    cleanup
+        .join()
+        .map_err(|_panic| anyhow::anyhow!("daemon fixture cleanup thread failed"))??;
+    let _requests = healthy.finish()?;
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(
+        environment.operations(),
+        [
+            format!("bootout {LAUNCH_AGENT_LABEL}"),
+            format!("bootstrap {launch_agent_path}"),
+            format!("kickstart {LAUNCH_AGENT_LABEL}"),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn daemon_replacement_refuses_to_bootstrap_while_previous_daemon_is_alive() -> anyhow::Result<()> {
+    for command in ["daemon:enable", "daemon:restart"] {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(&home);
+        let launch_agent_path = tempdir.path().join("owned.plist");
+        let environment = TestEnvironment::new(
+            &home,
+            tempdir.path(),
+            &paths.active_pv_binary(),
+            &launch_agent_path,
+        );
+        let stale = LaunchAgentConfig::new(
+            tempdir.path().join("old-pv"),
+            paths.logs().join("out"),
+            paths.logs().join("err"),
+        );
+        let original_plist = stale.render()?;
+        write_file(&launch_agent_path, &original_plist)?;
+        let mut spec = gateway_spec(&paths);
+        spec.command = paths.bin().join("releases/fixture/pv");
+        spec.arguments = vec!["daemon:run".to_owned()];
+        spec.pid_path = paths.run().join("fixture-daemon.pid");
+        spec.metadata_path = paths.run().join("fixture-daemon.json");
+        let mut daemon = RuntimeFixture::start(&paths, spec)?;
+        let pid = daemon.pid()?;
+        let record = serde_json::to_string(&json!({
+            "pid": pid, "start_identity": platform::inspect_process_start_identity(pid)?,
+        }))?;
+        state::fs::write_sensitive_file(&paths.daemon_process_record(), &record)?;
+
+        let output = run_pv(&[command], &environment)?;
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert_eq!(
+            environment.operations(),
+            [format!("bootout {LAUNCH_AGENT_LABEL}")]
+        );
+        assert_eq!(read_required_file(&launch_agent_path)?, original_plist);
+        assert_eq!(read_required_file(&paths.daemon_process_record())?, record);
+        daemon.cleanup()?;
+    }
     Ok(())
 }
 

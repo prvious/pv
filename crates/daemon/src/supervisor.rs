@@ -206,6 +206,8 @@ struct RuntimeMetadata {
     staged_config_fingerprint: Option<String>,
     log_path: String,
     started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    boot_session_id: Option<platform::BootSessionId>,
     #[serde(default)]
     process_start_identity: Option<platform::ProcessStartIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -261,6 +263,13 @@ impl ProcessSupervisor {
                 path: metadata_path,
             });
         }
+        if let Some(recorded_boot) = &metadata.boot_session_id
+            && recorded_boot != &platform::current_boot_session_id()?
+        {
+            // A previous kernel's processes cannot survive this boot. Do not inspect
+            // or signal the recorded PID: it may now belong to an unrelated process.
+            return remove_unchanged_runtime_records(pid_path, &metadata_path, &metadata);
+        }
         if let Some(adopted) = self.adopt_recorded(pid_path, &metadata_path)? {
             let exit_watch = if metadata.resource_name == "postgres" {
                 let watch = platform::ProcessExitWatch::new(pid)?;
@@ -315,19 +324,10 @@ impl ProcessSupervisor {
         } else if metadata.resource_name == "postgres" {
             return Err(DaemonError::RuntimeCleanupUnproven {
                 pid,
-                reason: "Postgres exited before this stop; backend cleanup is unproven".to_owned(),
+                reason: "Postgres exited before this stop; backend cleanup is unproven. Recovery requires a recorded boot identity from a previous kernel boot".to_owned(),
             });
         }
-        // Admission is closed and the daemon has stopped. Still compare both records
-        // before removal so another instance's evidence cannot be removed by this stop.
-        if read_pid_file(pid_path)? != Some(pid)
-            || read_runtime_metadata(&metadata_path)?.is_none_or(|current| current != metadata)
-        {
-            return Err(DaemonError::RuntimeProcessIdentityChanged { pid });
-        }
-        fs::remove_file_if_exists(pid_path)?;
-        fs::remove_file_if_exists(&metadata_path)?;
-        Ok(())
+        remove_unchanged_runtime_records(pid_path, &metadata_path, &metadata)
     }
 
     pub async fn start(&self, spec: ProcessSpec) -> Result<ManagedProcess, DaemonError> {
@@ -1406,6 +1406,7 @@ fn write_runtime_metadata(
         staged_config_fingerprint: None,
         log_path: spec.log_path.to_string(),
         started_at,
+        boot_session_id: Some(platform::current_boot_session_id()?),
         process_start_identity: Some(process_start_identity),
         process_executable_identity,
     };
@@ -1413,6 +1414,23 @@ fn write_runtime_metadata(
 
     fs::write_sensitive_file(&spec.metadata_path, &encoded)?;
 
+    Ok(())
+}
+
+fn remove_unchanged_runtime_records(
+    pid_path: &Utf8Path,
+    metadata_path: &Utf8Path,
+    metadata: &RuntimeMetadata,
+) -> Result<(), DaemonError> {
+    // Admission is closed and the daemon has stopped. Still compare both records
+    // before removal so another instance's evidence cannot be removed by this stop.
+    if read_pid_file(pid_path)? != Some(metadata.pid)
+        || read_runtime_metadata(metadata_path)?.is_none_or(|current| current != *metadata)
+    {
+        return Err(DaemonError::RuntimeProcessIdentityChanged { pid: metadata.pid });
+    }
+    fs::remove_file_if_exists(pid_path)?;
+    fs::remove_file_if_exists(metadata_path)?;
     Ok(())
 }
 
@@ -1750,7 +1768,7 @@ mod tests {
 
     use super::{
         ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint, process_and_group_are_absent,
-        process_group_exists,
+        process_group_exists, read_runtime_metadata, remove_unchanged_runtime_records,
     };
     use state::PvPaths;
 
@@ -1761,6 +1779,40 @@ mod tests {
     /// stopping it leaves nothing running for long. That outlasts the CI profile's 120 s limit on
     /// a test, so a stalled test can't pass because its fixture exited on its own.
     const IDLE_SHELL_LOOP: &str = "i=0; while [ $i -lt 150 ]; do sleep 1; i=$((i + 1)); done";
+
+    #[test]
+    fn shutdown_cleanup_preserves_runtime_records_changed_after_inspection() -> Result<()> {
+        for change_pid in [false, true] {
+            let tempdir = tempdir()?;
+            let pid_path = tempdir.path().join("runtime.pid");
+            let metadata_path = tempdir.path().join("runtime.json");
+            let mut metadata = serde_json::json!({
+                "name": "postgres", "pid": 42, "command": "/owned/postgres",
+                "arguments": [], "log_path": "/owned/postgres.log", "started_at": "unused",
+            });
+            state::fs::write_sensitive_file(&pid_path, "42\n")?;
+            state::fs::write_sensitive_file(&metadata_path, &serde_json::to_string(&metadata)?)?;
+            let inspected = read_runtime_metadata(&metadata_path)?
+                .ok_or_else(|| anyhow!("runtime metadata was missing"))?;
+            let current_pid = if change_pid { "43\n" } else { "42\n" };
+            metadata["name"] = serde_json::json!("replacement");
+            state::fs::write_sensitive_file(&pid_path, current_pid)?;
+            if !change_pid {
+                state::fs::write_sensitive_file(
+                    &metadata_path,
+                    &serde_json::to_string(&metadata)?,
+                )?;
+            }
+            let before = state::fs::read_to_string(&metadata_path)?;
+            assert!(matches!(
+                remove_unchanged_runtime_records(&pid_path, &metadata_path, &inspected),
+                Err(crate::DaemonError::RuntimeProcessIdentityChanged { pid: 42 }),
+            ));
+            assert_eq!(state::fs::read_to_string(&pid_path)?, current_pid);
+            assert_eq!(state::fs::read_to_string(&metadata_path)?, before);
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn startup_persistence_failure_terminates_process_group_descendants() -> Result<()> {

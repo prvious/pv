@@ -10,6 +10,7 @@ expression: "(\"<pid>\", log, metadata)"
             String("-c"),
             String("printf 'runtime ready\\n'; sleep 30"),
         ],
+        "boot_session_id": String("<boot-session-id>"),
         "command": String("/bin/sh"),
         "config_path": String("<home>/.pv/config/test-runtime.json"),
         "log_path": String("<home>/.pv/logs/test-runtime.log"),

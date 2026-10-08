@@ -118,6 +118,34 @@ fn open_primary_hostname_argument_normalizes_and_opens_project() -> anyhow::Resu
 }
 
 #[test]
+fn project_intent_is_recorded_while_reconciliation_holds_jobs_lock() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    let paths = PvPaths::for_home(&home);
+    let _jobs_lock = state::JobsLock::acquire(&paths)?;
+    let environment = TestEnvironment::new(&home, &project);
+
+    let link = run_pv(&["link"], &environment)?;
+    assert_eq!(link.exit_code, ExitCode::SUCCESS);
+    assert!(
+        Database::open(&paths)?
+            .project_by_path(&canonical_path(&project)?)?
+            .is_some()
+    );
+    let unlink = run_pv(&["unlink", "acme.test"], &environment)?;
+    assert_eq!(unlink.exit_code, ExitCode::SUCCESS);
+    assert!(Database::open(&paths)?.projects()?.is_empty());
+
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| assert_debug_snapshot!((link, unlink)));
+    Ok(())
+}
+
+#[test]
 fn link_rejects_update_lock_without_recording_project() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
