@@ -20,7 +20,7 @@ Avoid `panic!`, `unreachable!`, `.unwrap()`, and `.expect()` in production code.
 
 For running tests, we recommend [nextest](https://nexte.st/).
 
-Daemon tests that exercise Managed Resource, gateway, and supervisor fixtures require `python3` on `PATH`. These fixtures use only Python's standard library; no Python packages or virtual environment is required.
+Some tests require `python3` on `PATH`: the supervisor's script-identity tests, two supervisor process-group tests, and `pv-release`'s installer and smoke tests. They use only Python's standard library; no Python packages or virtual environment is required.
 
 To run a specific test by name:
 
@@ -55,14 +55,11 @@ verified stop.
 Fixture guards must also clean up from `Drop` so normal return, early return,
 panic unwind, and cancellation cannot bypass teardown. The fallback uses an
 independent cleanup runtime and reports failures because `Drop` cannot return
-them to the test. Long-running fixture entrypoints also monitor their actual
-test parent. When that parent disappears, Python fixtures exit themselves and
-shell wrappers stop and reap only the child they directly spawned, including
-parent-loss races before readiness. The Rust guard or supervisor owns
-whole-process-group cleanup.
+them to the test. The Rust guard or supervisor owns whole-process-group
+cleanup.
 
-New long-running fixtures that stand in for a runtime use `pv-fake` instead of
-a script. `pv_fake::install(executable, persona)` places a native fake at the
+Long-running fixtures that stand in for a runtime use `pv-fake`, not a script.
+`pv_fake::install(executable, persona)` places a native fake at the
 runtime's executable path. The fake exits when the test process that installed
 it dies, SIGKILL included, so it needs no parent watcher. It records its
 lifecycle in `<executable>.pv-fake.events.jsonl`. `cargo nextest run` builds it
@@ -74,6 +71,14 @@ cleanup still apply. To stop a fake at a known point, pass `FakeSettings` to
 `descendant_spawned`, instead of marker files. Steer a running Gateway fake
 with `pv_fake::write_gateway_control`, which rejects unknown keys.
 
+Shell scripts remain only where a test needs what the fake doesn't do: the
+supervisor's script-identity tests, which need a script as the runtime, and
+the process-group tests, which need a child that outlives its parent or ignores
+SIGTERM. A script that stays alive gives up after at most 30 seconds, so a
+test that dies before stopping it leaves nothing running for long. A script
+that reports a PID writes it to a temporary file and renames it into place, so
+the test never reads it half written.
+
 Use the CI nextest profile for CI runs (`cargo nextest run --profile ci`). It
 warns after 60 seconds, terminates a wedged test after 120 seconds, and allows
 10 seconds for graceful exit. The default profile remains available for tests
@@ -82,10 +87,10 @@ with intentionally longer limits.
 Persisted-runtime cleanup must never discover ownership through process-name
 scans or signal a PID found only in a record. A persisted PID is actionable
 only together with matching recorded metadata and a verified process identity.
-A fixture wrapper may signal and reap a child it directly spawned and still
-owns. These guarantees do not cover machine or kernel failure, a killed or
-stopped parent watcher, or descendants that deliberately escape their owned
-process group.
+A test may signal and reap a child it directly spawned and still owns. These
+guarantees do not cover machine or kernel failure, a test process that is
+stopped rather than killed (its fakes keep running), or descendants that
+deliberately escape their owned process group.
 
 ## Formatting
 

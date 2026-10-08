@@ -342,10 +342,12 @@ Each step is one pull request. Each starts by recording the relevant real artifa
 4. **SQL**, after a compatibility check (2026-10-01): `pgwire` and `opensrv-mysql` each answered PV's `sqlx` 0.9 calls in a scratch server.
    - **4a** (implemented): record real PostgreSQL, add the `initdb` and `postgres` personas on `pgwire` and the dual-target Postgres runtime contract, port the Postgres installs and archives in `managed_resources/tests.rs` (the unready variant becomes `long_running`), and delete `postgres.py`, `postgres-initdb.sh` and `postgres-unready.sh` with their fixture contracts, the Postgres half of the single-server signal contract, and the parent-loss contract.
    - **4b** (implemented): record real MySQL, add the `mysqld` persona (initialization, a TCP port, and MySQL's signals) and the dual-target MySQL runtime contract, port the MySQL installs and archive in `mysql_tests.rs`, and delete `mysql.py` with its fixture contracts and the single-server signal contract. `RecordingMysqlAdmin` stays: see Library compatibility.
-5. **Cleanup.**
-   - Delete the remaining runtime-standing shell and Python fixtures.
+5. **Cleanup** (implemented):
+   - Delete `fixture_contracts.rs`. Its four Python scripts only tested the file's own helpers, which nothing else used once the Python runtime fixtures were gone.
+   - Give every remaining shell script that stays alive a 30 s limit, and have the supervisor's descendant scripts write their PID files by rename.
    - Rewrite `CONTRIBUTING.md`'s Fixture Lifecycle section around `pv_fake::install` and the lifeline.
-   - Remove its `python3` prerequisite once the script-identity tests are gone with their fallback.
+   - Keep the script-identity and process-group scripts (see step 1). The process-group tests need a child that outlives its parent or ignores SIGTERM, which a `pv-fake` descendant never does, and the planned per-service monitor will replace the supervisor code they test.
+   - Keep `python3` as a prerequisite: the script-identity tests and `pv-release`'s installer and smoke tests use it.
 
 ## Verification
 
