@@ -1,11 +1,15 @@
 use std::io;
 use std::mem::{self, MaybeUninit};
+use std::os::unix::process::ExitStatusExt;
+use std::process::ExitStatus;
 use std::ptr;
 use std::str;
 use std::thread;
 use std::time::Duration;
 
 use camino::Utf8PathBuf;
+use nix::errno::Errno;
+use nix::sys::event::{EvFlags, EventFilter, FilterFlag, KEvent, Kqueue};
 use thiserror::Error;
 
 use super::{ProcessIdentity, ProcessStartIdentity};
@@ -14,6 +18,159 @@ use crate::PlatformError;
 const MAX_SNAPSHOT_ATTEMPTS: usize = 5;
 const MICROSECONDS_PER_SECOND: u64 = 1_000_000;
 const SNAPSHOT_RETRY_DELAY: Duration = Duration::from_millis(1);
+
+/// Observes a future exit without reaping the process. Register before signalling,
+/// then recheck the process birth identity: registration alone does not prove ownership.
+#[derive(Debug)]
+pub struct ProcessExitWatch {
+    queue: Kqueue,
+    pid: u32,
+}
+
+impl ProcessExitWatch {
+    pub fn new(pid: u32) -> Result<Self, PlatformError> {
+        if pid == 0 || i32::try_from(pid).is_err() {
+            return Err(exit_watch_error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid process id",
+            )));
+        }
+        let queue = Kqueue::new().map_err(exit_watch_error)?;
+        let change = exit_event(pid, EvFlags::EV_ADD | EvFlags::EV_ONESHOT);
+        queue
+            .kevent(
+                &[change],
+                &mut [],
+                Some(libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                }),
+            )
+            .map_err(exit_watch_error)?;
+        Ok(Self { queue, pid })
+    }
+
+    /// Consumes the one exit event. Stop polling after this returns a status.
+    pub fn try_exit_status(&mut self) -> Result<Option<ExitStatus>, PlatformError> {
+        let mut events = [exit_event(self.pid, EvFlags::empty())];
+        let count = self
+            .queue
+            .kevent(
+                &[],
+                &mut events,
+                Some(libc::timespec {
+                    tv_sec: 0,
+                    tv_nsec: 0,
+                }),
+            )
+            .map_err(exit_watch_error)?;
+        if count == 0 {
+            return Ok(None);
+        }
+        let event = events[0];
+        let data = i32::try_from(event.data()).map_err(exit_watch_error)?;
+        if event.flags().contains(EvFlags::EV_ERROR) {
+            return Err(exit_watch_error(io::Error::from_raw_os_error(data)));
+        }
+        if !event
+            .fflags()
+            .contains(FilterFlag::NOTE_EXIT | FilterFlag::NOTE_EXITSTATUS)
+        {
+            return Err(exit_watch_error(io::Error::other(
+                "exit event omitted process status",
+            )));
+        }
+        Ok(Some(ExitStatus::from_raw(data)))
+    }
+}
+
+fn exit_event(pid: u32, flags: EvFlags) -> KEvent {
+    KEvent::new(
+        pid as usize,
+        EventFilter::EVFILT_PROC,
+        flags,
+        FilterFlag::NOTE_EXIT | FilterFlag::NOTE_EXITSTATUS,
+        0,
+        0,
+    )
+}
+
+fn exit_watch_error(source: impl std::error::Error + Send + Sync + 'static) -> PlatformError {
+    PlatformError::ProcessIdentityInspection {
+        source: Box::new(source),
+    }
+}
+
+pub(super) fn process_group_has_live_members(process_group: u32) -> Result<bool, PlatformError> {
+    inspect_group_members(process_group).map_err(|source| {
+        PlatformError::ProcessIdentityInspection {
+            source: Box::new(source),
+        }
+    })
+}
+
+fn inspect_group_members(process_group: u32) -> Result<bool, InspectionError> {
+    let native_group = i32::try_from(process_group)
+        .ok()
+        .filter(|process_group| *process_group > 0)
+        .ok_or(InspectionError::InvalidPid { pid: process_group })?;
+    let mut members = vec![0_i32; 64];
+    let mut previous_zombies = None;
+    for _attempt in 0..MAX_SNAPSHOT_ATTEMPTS {
+        let buffer_size =
+            i32::try_from(members.len() * mem::size_of::<libc::pid_t>()).map_err(|_source| {
+                InspectionError::ProcessInfoTooLarge {
+                    size: members.len(),
+                }
+            })?;
+        // libproc maps errors to zero as well as using zero for an empty group.
+        // Clear errno so an empty successful snapshot does not reuse an earlier error.
+        Errno::clear();
+        // SAFETY: `members` is initialized writable storage for `buffer_size` bytes.
+        // The positive group id selects only that process group. The count is checked
+        // against the buffer capacity before any returned elements are inspected.
+        let count = unsafe {
+            libc::proc_listpgrppids(native_group, members.as_mut_ptr().cast(), buffer_size)
+        };
+        let source = io::Error::last_os_error();
+        if count < 0 || (count == 0 && source.raw_os_error() != Some(0)) {
+            return Err(InspectionError::GroupEnumeration {
+                process_group,
+                source,
+            });
+        }
+        let count = usize::try_from(count)
+            .map_err(|_source| InspectionError::GroupSnapshotIncomplete { process_group })?;
+        if count >= members.len() {
+            members.resize(members.len() * 2, 0);
+            continue;
+        }
+        if count == 0 {
+            return Ok(false);
+        }
+        let mut zombies = Vec::new();
+        let mut stable = true;
+        for member in &members[..count] {
+            match process_bsdinfo(*member, 1)? {
+                Some(info) if info.pbi_pgid == process_group => {
+                    if info.pbi_status != libc::SZOMB {
+                        return Ok(true);
+                    }
+                    zombies.push((*member, info.pbi_start_tvsec, info.pbi_start_tvusec));
+                }
+                _ => stable = false,
+            }
+        }
+        zombies.sort_unstable();
+        if stable && previous_zombies.as_ref() == Some(&zombies) {
+            return Ok(false);
+        }
+        // A member can fork then exit between enumeration and inspection. A fresh
+        // snapshot must be empty or contain the same already-dead identities.
+        previous_zombies = stable.then_some(zombies);
+    }
+    Err(InspectionError::GroupSnapshotIncomplete { process_group })
+}
 
 pub(super) fn inspect_process_identity(pid: u32) -> Result<Option<ProcessIdentity>, PlatformError> {
     inspect_process_identity_inner(pid).map_err(|source| PlatformError::ProcessIdentityInspection {
@@ -318,6 +475,16 @@ mod tests {
 
 #[derive(Debug, Error)]
 enum InspectionError {
+    #[error("could not inspect process group {process_group}: {source}")]
+    GroupEnumeration {
+        process_group: u32,
+        #[source]
+        source: io::Error,
+    },
+
+    #[error("process group {process_group} did not fit a complete bounded snapshot")]
+    GroupSnapshotIncomplete { process_group: u32 },
+
     #[error("process id {pid} exceeds the macOS process id range")]
     InvalidPid { pid: u32 },
 

@@ -16,6 +16,10 @@ use platform::{LAUNCH_AGENT_LABEL, LaunchAgentConfig};
 use serde_json::json;
 use state::{PvPaths, StateError};
 
+#[path = "support/runtime.rs"]
+mod runtime;
+use runtime::{RuntimeFixture, gateway_spec};
+
 #[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
@@ -284,6 +288,215 @@ fn daemon_disable_removes_only_pv_owned_launch_agent() -> anyhow::Result<()> {
         assert_debug_snapshot!((output, environment.operations(), plist_after_disable));
     });
 
+    Ok(())
+}
+
+#[test]
+fn daemon_disable_stops_live_runtimes_without_a_plist_or_database() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(&home);
+    let environment = TestEnvironment::new(
+        &home,
+        tempdir.path(),
+        &paths.active_pv_binary(),
+        &tempdir.path().join("absent.plist"),
+    )
+    .with_unloaded_launch_agent();
+    let gateway = gateway_spec(&paths);
+    let mut worker = gateway.clone();
+    worker.name = "worker".to_owned();
+    worker.resource_name = "frankenphp".to_owned();
+    worker.track = "8.5-test".to_owned();
+    worker.command = paths
+        .resources()
+        .join("frankenphp/8.5/fixture/bin/frankenphp");
+    worker.pid_path = paths.worker_pid("8.5-test");
+    worker.metadata_path = paths.worker_runtime_metadata("8.5-test");
+    let mut resource = gateway.clone();
+    resource.name = "mailpit".to_owned();
+    resource.resource_name = "mailpit".to_owned();
+    resource.track = "1".to_owned();
+    resource.command = paths.resources().join("mailpit/1/fixture/bin/mailpit");
+    resource.pid_path = paths.resource_pid("mailpit", "1");
+    resource.metadata_path = paths.resource_runtime_metadata("mailpit", "1");
+    let mut fixtures = Vec::new();
+    for spec in [gateway, worker, resource] {
+        fixtures.push(RuntimeFixture::start(&paths, spec)?);
+    }
+    let mut watch = platform::ProcessExitWatch::new(fixtures[0].descendant_pid()?)?;
+    // Maintenance stop must work even when the database cannot be opened.
+    state::fs::write_sensitive_file(paths.db(), "invalid database")?;
+    let output = run_pv(&["daemon:disable"], &environment)?;
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    // The descendant belongs to the fake, not to this test process. Native
+    // observation must still report its exact successful status after it exits.
+    assert!(
+        watch
+            .try_exit_status()?
+            .is_some_and(|status| status.success())
+    );
+    for fixture in &mut fixtures {
+        assert!(!platform::process_group_has_live_members(fixture.pid()?)?);
+        assert!(fixture.records_absent()?);
+        fixture.cleanup()?;
+    }
+    assert_eq!(state::fs::read_to_string(paths.db())?, "invalid database");
+    Ok(())
+}
+
+#[test]
+fn daemon_disable_waits_for_process_death_after_its_socket_is_gone() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(&home);
+    let launch_agent_path = tempdir.path().join("owned.plist");
+    let environment = TestEnvironment::new(
+        &home,
+        tempdir.path(),
+        &paths.active_pv_binary(),
+        &launch_agent_path,
+    );
+    let config = LaunchAgentConfig::new(
+        paths.active_pv_binary(),
+        paths.logs().join("out"),
+        paths.logs().join("err"),
+    );
+    write_file(&launch_agent_path, &config.render()?)?;
+    let mut daemon_spec = gateway_spec(&paths);
+    daemon_spec.command = paths.bin().join("releases/fixture/pv");
+    daemon_spec.arguments = vec!["daemon:run".to_owned()];
+    daemon_spec.pid_path = paths.run().join("fixture-daemon.pid");
+    daemon_spec.metadata_path = paths.run().join("fixture-daemon.json");
+    let mut daemon = RuntimeFixture::start(&paths, daemon_spec)?;
+    let pid = daemon.pid()?;
+    state::fs::write_sensitive_file(
+        &paths.daemon_process_record(),
+        &serde_json::to_string(&json!({
+            "pid": pid,
+            "start_identity": platform::inspect_process_start_identity(pid)?,
+        }))?,
+    )?;
+    let mut runtime = RuntimeFixture::start(&paths, gateway_spec(&paths))?;
+    let daemon_record = state::fs::read_to_string(&paths.daemon_process_record())?;
+    let bootstrap_runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    assert!(
+        matches!(bootstrap_runtime.block_on(daemon::RunningDaemon::start(paths.clone())),
+        Err(daemon::DaemonError::RuntimeCleanupUnproven { pid: recorded_pid, .. }) if recorded_pid == pid)
+    );
+    assert_eq!(
+        state::fs::read_to_string(&paths.daemon_process_record())?,
+        daemon_record
+    );
+    let output = run_pv(&["daemon:disable"], &environment)?;
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(runtime.records_exist()?);
+    assert!(platform::process_group_has_live_members(runtime.pid()?)?);
+    assert!(state::fs::path_entry_exists(&launch_agent_path)?);
+    daemon.cleanup()?;
+    // Once the captured daemon actually exits, its stale record must not block stop.
+    let stopped = run_pv(&["daemon:disable"], &environment)?;
+    assert_eq!(stopped.exit_code, ExitCode::SUCCESS);
+    assert!(runtime.records_absent()?);
+    runtime.cleanup()?;
+    Ok(())
+}
+
+#[test]
+fn daemon_disable_keeps_dead_postgres_records_when_cleanup_is_unproven() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(&home);
+    let environment = TestEnvironment::new(
+        &home,
+        tempdir.path(),
+        &paths.active_pv_binary(),
+        &tempdir.path().join("absent.plist"),
+    );
+    let mut spec = gateway_spec(&paths);
+    spec.resource_name = "postgres".to_owned();
+    spec.track = "18".to_owned();
+    spec.pid_path = paths.resource_pid("postgres", "18");
+    spec.metadata_path = paths.resource_runtime_metadata("postgres", "18");
+    let mut runtime = RuntimeFixture::start(&paths, spec)?;
+    runtime.cleanup()?;
+    let output = run_pv(&["daemon:disable"], &environment)?;
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(runtime.records_exist()?);
+    Ok(())
+}
+
+#[test]
+fn daemon_disable_keeps_foreign_runtime_records_and_owned_plist() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(&home);
+    let launch_agent_path = tempdir.path().join("owned.plist");
+    let environment = TestEnvironment::new(
+        &home,
+        tempdir.path(),
+        &paths.active_pv_binary(),
+        &launch_agent_path,
+    );
+    let config = LaunchAgentConfig::new(
+        paths.active_pv_binary(),
+        paths.logs().join("out"),
+        paths.logs().join("err"),
+    );
+    write_file(&launch_agent_path, &config.render()?)?;
+    let mut fixture = RuntimeFixture::start(&paths, gateway_spec(&paths))?;
+    let mut metadata: serde_json::Value = serde_json::from_str(&state::fs::read_to_string(
+        &paths.gateway_runtime_metadata(),
+    )?)?;
+    metadata["process_start_identity"]["seconds"] = json!(1);
+    state::fs::write_sensitive_file(
+        &paths.gateway_runtime_metadata(),
+        &serde_json::to_string(&metadata)?,
+    )?;
+    let output = run_pv(&["daemon:disable"], &environment)?;
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(fixture.records_exist()?);
+    assert!(platform::process_group_has_live_members(fixture.pid()?)?);
+    assert!(state::fs::path_entry_exists(&launch_agent_path)?);
+    fixture.cleanup()?;
+    Ok(())
+}
+
+#[test]
+fn lifecycle_admission_blocks_start_and_disable_before_mutation() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(&home);
+    let environment = TestEnvironment::new(
+        &home,
+        tempdir.path(),
+        &paths.active_pv_binary(),
+        &tempdir.path().join("absent.plist"),
+    );
+    let admission = state::RuntimeLifecycleLock::acquire_exclusive(&paths)?;
+    for arguments in [
+        &["setup", "--no-path"][..],
+        &["daemon:enable"][..],
+        &["daemon:restart"][..],
+        &["update"][..],
+        &["daemon:disable"][..],
+    ] {
+        assert_eq!(
+            run_pv(arguments, &environment)?.exit_code,
+            ExitCode::FAILURE
+        );
+        assert!(!state::fs::path_entry_exists(paths.root())?);
+        assert!(environment.operations().is_empty());
+    }
+    drop(admission);
+    let _mutation = state::RuntimeLifecycleLock::acquire_shared(&paths)?;
+    assert_eq!(
+        run_pv(&["daemon:disable"], &environment)?.exit_code,
+        ExitCode::FAILURE
+    );
+    assert!(environment.operations().is_empty());
     Ok(())
 }
 

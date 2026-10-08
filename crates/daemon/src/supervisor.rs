@@ -180,7 +180,7 @@ pub enum ReadinessCheck {
     },
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Eq, PartialEq, Serialize)]
 struct RuntimeMetadata {
     name: String,
     pid: u32,
@@ -221,6 +221,113 @@ struct ProcessExecutableIdentity {
 impl ProcessSupervisor {
     pub fn new(paths: PvPaths) -> Self {
         Self { paths }
+    }
+
+    pub(crate) async fn stop_recorded_for_shutdown(
+        &self,
+        pid_path: &Utf8Path,
+    ) -> Result<(), DaemonError> {
+        let metadata_path = pid_path.with_extension("json");
+        for path in [pid_path, metadata_path.as_path()] {
+            if !fs::path_is_file(path)? {
+                return Err(DaemonError::InvalidRuntimeRecord {
+                    path: path.to_owned(),
+                });
+            }
+        }
+        let metadata = read_runtime_metadata(&metadata_path)?.ok_or_else(|| {
+            DaemonError::InvalidRuntimeRecord {
+                path: metadata_path.clone(),
+            }
+        })?;
+        let pid = read_pid_file(pid_path)?.ok_or_else(|| DaemonError::InvalidRuntimeRecord {
+            path: pid_path.to_owned(),
+        })?;
+        let subject_matches = if pid_path == self.paths.gateway_pid() {
+            metadata.resource_name == "caddy"
+        } else if pid_path.parent() == Some(self.paths.run().join("workers").as_path()) {
+            metadata.resource_name == "frankenphp"
+                && pid_path == self.paths.worker_pid(&metadata.track)
+        } else {
+            !metadata.resource_name.is_empty()
+                && !metadata.track.is_empty()
+                && pid_path
+                    == self
+                        .paths
+                        .resource_pid(&metadata.resource_name, &metadata.track)
+        };
+        if metadata.pid != pid || metadata.process_start_identity.is_none() || !subject_matches {
+            return Err(DaemonError::InvalidRuntimeRecord {
+                path: metadata_path,
+            });
+        }
+        if let Some(adopted) = self.adopt_recorded(pid_path, &metadata_path)? {
+            let exit_watch = if metadata.resource_name == "postgres" {
+                let watch = platform::ProcessExitWatch::new(pid)?;
+                if !adopted.owned.matches_live()? {
+                    return Err(DaemonError::RuntimeProcessIdentityChanged { pid });
+                }
+                Some(watch)
+            } else {
+                None
+            };
+            let signal = if metadata.resource_name == "postgres" {
+                StopSignal::Interrupt
+            } else {
+                StopSignal::Terminate
+            };
+            let grace = if matches!(metadata.resource_name.as_str(), "caddy" | "frankenphp") {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_secs(10)
+            };
+            adopted.stop_with(signal, grace).await?;
+            if let Some(mut watch) = exit_watch {
+                let status = timeout(Duration::from_secs(1), async {
+                    loop {
+                        if let Some(status) = watch.try_exit_status()? {
+                            return Ok::<_, DaemonError>(status);
+                        }
+                        sleep(READINESS_POLL_INTERVAL).await;
+                    }
+                })
+                .await;
+                let status = match status {
+                    Ok(status) => status?,
+                    Err(_elapsed) => return Err(DaemonError::RuntimeCleanupUnproven {
+                        pid,
+                        reason:
+                            "Postgres exit status was not delivered; backend cleanup is unproven"
+                                .to_owned(),
+                    }),
+                };
+                if !status.success() {
+                    return Err(DaemonError::RuntimeCleanupUnproven {
+                        pid,
+                        reason: format!(
+                            "Postgres ended with {status}; backend cleanup is unproven"
+                        ),
+                    });
+                }
+            }
+        } else if !process_and_group_are_absent(pid)? {
+            return Err(DaemonError::RuntimeProcessIdentityChanged { pid });
+        } else if metadata.resource_name == "postgres" {
+            return Err(DaemonError::RuntimeCleanupUnproven {
+                pid,
+                reason: "Postgres exited before this stop; backend cleanup is unproven".to_owned(),
+            });
+        }
+        // Admission is closed and the daemon has stopped. Still compare both records
+        // before removal so another instance's evidence cannot be removed by this stop.
+        if read_pid_file(pid_path)? != Some(pid)
+            || read_runtime_metadata(&metadata_path)?.is_none_or(|current| current != metadata)
+        {
+            return Err(DaemonError::RuntimeProcessIdentityChanged { pid });
+        }
+        fs::remove_file_if_exists(pid_path)?;
+        fs::remove_file_if_exists(&metadata_path)?;
+        Ok(())
     }
 
     pub async fn start(&self, spec: ProcessSpec) -> Result<ManagedProcess, DaemonError> {
@@ -700,7 +807,7 @@ impl AdoptedProcess {
             });
         }
 
-        stop_process_group_by_pid(self.owned.pid, signal, grace_period).await
+        stop_process_group_by_pid(&self.owned, signal, grace_period).await
     }
 }
 
@@ -1100,16 +1207,26 @@ async fn terminate_spawned_child(pid: u32, child: &mut Child) {
 }
 
 async fn stop_process_group_by_pid(
-    pid: u32,
+    owned: &OwnedRuntime,
     signal: StopSignal,
     grace_period: Duration,
 ) -> Result<(), DaemonError> {
+    let pid = owned.pid;
     signal_process_group(pid, ProcessSignal::Stop(signal))?;
 
     if wait_for_process_group_exit(pid, grace_period).await? {
         return Ok(());
     }
 
+    // An adopted leader can be reaped by its original parent during the grace
+    // period. Do not signal a group whose recorded leader no longer matches.
+    if !owned.matches_live()? {
+        return Err(DaemonError::RuntimeCleanupUnproven {
+            pid,
+            reason: "runtime leader changed before escalation; group ownership is unproven"
+                .to_owned(),
+        });
+    }
     signal_process_group(pid, ProcessSignal::Kill)?;
 
     if wait_for_process_group_exit(pid, Duration::from_secs(1)).await? {
@@ -1331,43 +1448,12 @@ fn read_optional_file(path: &Utf8Path) -> Result<Option<String>, DaemonError> {
 
 #[cfg(target_os = "macos")]
 fn process_group_exists(pid: u32) -> Result<bool, DaemonError> {
-    let process_group = process_group_pid(pid)?;
-
-    match test_kill_process_group(process_group) {
-        Ok(()) => Ok(true),
-        Err(source) => {
-            let error = io::Error::from(source);
-            // PV runtimes run as the current user. EPERM therefore cannot identify the
-            // still-owned group and must not authorize another signal to this numeric PGID.
-            if process_not_found(&error) || error.kind() == io::ErrorKind::PermissionDenied {
-                return Ok(false);
-            }
-
-            Err(error.into())
-        }
-    }
+    Ok(platform::process_group_has_live_members(pid)?)
 }
 
-/// Whether a stopped runtime has exited. macOS also answers a group signal with EPERM while the
-/// group's leader is still exiting, so a group that no longer answers has exited only once its
-/// leader is gone or a zombie (#394). This only observes: reaping stays with the child's owner,
-/// and EPERM still never authorizes a signal.
 #[cfg(target_os = "macos")]
 fn process_group_has_exited(pid: u32) -> Result<bool, DaemonError> {
-    if process_group_exists(pid)? {
-        return Ok(false);
-    }
-
-    // ponytail: only the leader is checked, so another group member still exiting after the
-    // leader became a zombie goes unseen. List the group's members (`proc_listpgrppids`) once a
-    // runtime keeps children in its group.
-    match test_kill_process(process_group_pid(pid)?) {
-        Err(rustix::io::Errno::SRCH) => Ok(true),
-        // EPERM: a process we can't signal holds the PID, which doesn't prove the leader exited.
-        Err(rustix::io::Errno::PERM) => Ok(false),
-        Ok(()) => Ok(platform::process_is_zombie(pid)?),
-        Err(source) => Err(io::Error::from(source).into()),
-    }
+    Ok(!platform::process_group_has_live_members(pid)?)
 }
 
 #[cfg(target_os = "macos")]

@@ -25,6 +25,60 @@ use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
 
+#[path = "support/runtime.rs"]
+mod runtime;
+use runtime::{RuntimeFixture, gateway_spec};
+
+#[test]
+fn uninstall_stops_live_runtime_before_removing_files() -> anyhow::Result<()> {
+    for arguments in [&["uninstall"][..], &["uninstall", "--prune", "--force"][..]] {
+        let tempdir = tempdir()?;
+        let fixture = Fixture::new(tempdir.path());
+        seed_uninstall_files(&fixture.paths)?;
+        let mut runtime = RuntimeFixture::start(&fixture.paths, gateway_spec(&fixture.paths))?;
+        let pid = runtime.pid()?;
+        let descendant_pid = runtime.descendant_pid()?;
+        let output = run_pv(arguments, fixture.environment.as_ref())?;
+        assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert!(!platform::process_group_has_live_members(pid)?);
+        assert!(platform::inspect_process_start_identity(descendant_pid)?.is_none());
+        assert!(runtime.records_absent()?);
+        assert!(!state::fs::path_entry_exists(fixture.paths.run())?);
+        runtime.cleanup()?;
+    }
+    Ok(())
+}
+
+#[test]
+fn uninstall_keeps_recovery_files_when_runtime_identity_is_unproven() -> anyhow::Result<()> {
+    for arguments in [&["uninstall"][..], &["uninstall", "--prune", "--force"][..]] {
+        let tempdir = tempdir()?;
+        let fixture = Fixture::new(tempdir.path());
+        seed_uninstall_files(&fixture.paths)?;
+        let mut runtime = RuntimeFixture::start(&fixture.paths, gateway_spec(&fixture.paths))?;
+        let mut metadata: serde_json::Value = serde_json::from_str(&state::fs::read_to_string(
+            &fixture.paths.gateway_runtime_metadata(),
+        )?)?;
+        metadata["process_start_identity"]["seconds"] = json!(1);
+        state::fs::write_sensitive_file(
+            &fixture.paths.gateway_runtime_metadata(),
+            &serde_json::to_string(&metadata)?,
+        )?;
+        let output = run_pv(arguments, fixture.environment.as_ref())?;
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert!(runtime.records_exist()?);
+        assert!(platform::process_group_has_live_members(runtime.pid()?)?);
+        assert!(state::fs::path_entry_exists(
+            &fixture.paths.bin().join("pv")
+        )?);
+        assert!(state::fs::path_entry_exists(
+            &gateway_spec(&fixture.paths).command
+        )?);
+        runtime.cleanup()?;
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct RejectWarnings {
     rejected: usize,

@@ -37,6 +37,70 @@ pub struct HelperLifecycleLock {
     _file: std::fs::File,
 }
 
+/// Excludes state deletion from foreground mutations and daemon bootstrap.
+#[derive(Debug)]
+#[must_use = "dropping the guard releases lifecycle admission"]
+#[expect(
+    clippy::disallowed_types,
+    reason = "coordination lock guard owns the OS-locked file handle"
+)]
+pub struct RuntimeLifecycleLock {
+    _file: std::fs::File,
+}
+
+impl RuntimeLifecycleLock {
+    pub fn acquire_shared(paths: &PvPaths) -> Result<Self, StateError> {
+        Self::acquire(paths, false)
+    }
+
+    pub fn acquire_exclusive(paths: &PvPaths) -> Result<Self, StateError> {
+        Self::acquire(paths, true)
+    }
+
+    fn acquire(paths: &PvPaths, exclusive: bool) -> Result<Self, StateError> {
+        require_file_locking()?;
+        let path = paths.runtime_lifecycle_lock();
+        let file = open_lock_file(&path)?;
+        fs::secure_sensitive_file(&path)?;
+        lock_lifecycle_admission(&file, &path, exclusive)?;
+        Ok(Self { _file: file })
+    }
+}
+
+#[cfg(unix)]
+fn lock_lifecycle_admission<FileHandle: AsFd>(
+    file: &FileHandle,
+    path: &Utf8Path,
+    exclusive: bool,
+) -> Result<(), StateError> {
+    let operation = if exclusive {
+        FlockOperation::NonBlockingLockExclusive
+    } else {
+        FlockOperation::NonBlockingLockShared
+    };
+    match rustix::fs::flock(file, operation) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+            Err(StateError::CoordinationLockHeld {
+                path: path.to_path_buf(),
+            })
+        }
+        Err(error) => Err(StateError::filesystem(
+            path.to_path_buf(),
+            io::Error::from(error),
+        )),
+    }
+}
+
+#[cfg(not(unix))]
+fn lock_lifecycle_admission<FileHandle>(
+    _file: &FileHandle,
+    _path: &Utf8Path,
+    _exclusive: bool,
+) -> Result<(), StateError> {
+    require_file_locking()
+}
+
 impl UpdateLock {
     pub fn acquire(paths: &PvPaths) -> Result<Self, StateError> {
         require_file_locking()?;
@@ -198,6 +262,9 @@ fn require_file_locking() -> Result<(), StateError> {
     reason = "coordination lock helper owns direct file handles for OS locking"
 )]
 fn open_lock_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
     std::fs::OpenOptions::new()
         .read(true)
         .write(true)

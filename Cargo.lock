@@ -857,6 +857,7 @@ dependencies = [
  "linemux",
  "platform",
  "protocol",
+ "pv-fake",
  "resources",
  "self-update",
  "serde",

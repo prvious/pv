@@ -23,6 +23,7 @@ pub(crate) fn link(
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
+    let jobs_lock = state::JobsLock::acquire(&paths).map_err(super::coordination_lock_error)?;
     let original_project_path = resolve_project_path(args.path.as_deref(), environment)?;
     let config_file = ProjectConfigFile::read_from_root(&original_project_path)?;
     config::validate_project_env_shape(&config_file.config)?;
@@ -101,6 +102,7 @@ pub(crate) fn link(
             Line::field(&format!("{verb} {project_name} -> "), &result.project.path),
         )?;
     }
+    drop(jobs_lock);
     super::request_project_reconciliation(&paths, &result.project, streams)?;
 
     Ok(ExitCode::SUCCESS)
@@ -137,6 +139,7 @@ pub(crate) fn unlink(
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
+    let jobs_lock = state::JobsLock::acquire(&paths).map_err(super::coordination_lock_error)?;
     let mut database = Database::open(&paths)?;
     let project = resolve_project(&database, args.hostname.as_deref(), environment)?;
     delete_optional_project_tls_dir(&paths, &project)?;
@@ -155,6 +158,7 @@ pub(crate) fn unlink(
             &project.path,
         ))?;
     }
+    drop(jobs_lock);
     super::request_system_reconciliation(&paths, streams)?;
 
     Ok(ExitCode::SUCCESS)

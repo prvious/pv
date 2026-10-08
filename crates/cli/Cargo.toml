@@ -38,3 +38,4 @@ yaml_serde = { workspace = true }
 [dev-dependencies]
 camino-tempfile = { workspace = true }
 insta = { workspace = true }
+pv-fake = { path = "../pv-fake" }

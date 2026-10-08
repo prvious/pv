@@ -12,6 +12,8 @@ use std::os::unix::process::CommandExt;
 #[cfg(target_os = "macos")]
 #[path = "process/macos.rs"]
 mod implementation;
+
+pub use implementation::ProcessExitWatch;
 #[cfg(not(target_os = "macos"))]
 #[path = "process/unsupported.rs"]
 mod implementation;
@@ -50,6 +52,12 @@ pub fn inspect_process_start_identity(
 /// process, one still exiting, or none at all.
 pub fn process_is_zombie(pid: u32) -> Result<bool, crate::PlatformError> {
     implementation::process_is_zombie(pid)
+}
+
+/// Whether a process group contains a member that can still run. Inspection failures are
+/// errors, not evidence that the group has stopped. Zombies cannot run or retain listeners.
+pub fn process_group_has_live_members(process_group: u32) -> Result<bool, crate::PlatformError> {
+    implementation::process_group_has_live_members(process_group)
 }
 
 #[cfg(unix)]

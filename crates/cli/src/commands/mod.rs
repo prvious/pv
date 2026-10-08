@@ -53,6 +53,7 @@ where
     CapabilityCheck: FnOnce(&Command) -> Result<(), ExecuteError>,
 {
     capability_check(&cli.command)?;
+    let _runtime_lifecycle_lock = acquire_runtime_lifecycle(&cli.command, environment)?;
     require_no_update_in_progress(&cli.command, environment)?;
 
     match cli.command {
@@ -138,6 +139,39 @@ where
             postgres::list(args, environment, streams)
         }
     }
+}
+
+fn acquire_runtime_lifecycle(
+    command: &Command,
+    environment: &impl Environment,
+) -> Result<Option<state::RuntimeLifecycleLock>, ExecuteError> {
+    if !cfg!(target_os = "macos")
+        || matches!(
+            command,
+            Command::DaemonRun
+                | Command::Env(_)
+                | Command::Completions(_)
+                | Command::Init(_)
+                | Command::ShimPhp(_)
+                | Command::ShimComposer(_)
+                | Command::Logs(_)
+                | Command::Status(_)
+                | Command::Doctor(_)
+                | Command::Jobs(_)
+                | Command::DnsStatus
+                | Command::PortsStatus(_)
+                | Command::CaStatus
+        )
+    {
+        return Ok(None);
+    }
+    let paths = pv_paths(environment)?;
+    let guard = if matches!(command, Command::DaemonDisable | Command::Uninstall(_)) {
+        state::RuntimeLifecycleLock::acquire_exclusive(&paths)
+    } else {
+        state::RuntimeLifecycleLock::acquire_shared(&paths)
+    };
+    guard.map(Some).map_err(coordination_lock_error)
 }
 
 fn require_command_capability(command: &Command) -> Result<(), ExecuteError> {

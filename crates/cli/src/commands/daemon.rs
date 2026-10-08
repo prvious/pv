@@ -1,4 +1,5 @@
 use std::process::ExitCode;
+use std::time::Duration;
 
 use camino::Utf8PathBuf;
 use platform::{LaunchAgentConfig, LaunchAgentFileState};
@@ -91,7 +92,7 @@ pub(crate) fn disable(
 
     match state {
         LaunchAgentFileState::Missing { .. } => {
-            bootout_launch_agent_if_loaded(environment)?;
+            stop_daemon_and_runtimes(environment)?;
             output.note(if output.surface().decorated() {
                 "PV is already disabled"
             } else {
@@ -101,7 +102,7 @@ pub(crate) fn disable(
             Ok(ExitCode::SUCCESS)
         }
         LaunchAgentFileState::Current { .. } | LaunchAgentFileState::Stale { .. } => {
-            bootout_launch_agent_if_loaded(environment)?;
+            stop_daemon_and_runtimes(environment)?;
             platform::remove_launch_agent_file(&path)?;
             output.success(if output.surface().decorated() {
                 "PV stopped · automatic startup disabled"
@@ -116,6 +117,17 @@ pub(crate) fn disable(
             refuse_launch_agent(&mut streams.err, &state)
         }
     }
+}
+
+fn stop_daemon_and_runtimes(environment: &impl Environment) -> Result<(), ExecuteError> {
+    let paths = pv_paths(environment)?;
+    let daemon = ::daemon::daemon_process_for_stop(&paths)?;
+    bootout_launch_agent_if_loaded(environment)?;
+    if let Some(daemon) = daemon {
+        daemon.wait_for_exit(Duration::from_secs(10))?;
+    }
+    ::daemon::stop_recorded_runtimes_blocking(paths)?;
+    Ok(())
 }
 
 pub(crate) fn restart(

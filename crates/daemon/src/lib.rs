@@ -10,6 +10,7 @@ mod jobs;
 mod managed_resources;
 mod project_env;
 mod reconciliation;
+mod runtime_stop;
 mod server;
 mod structured_log;
 mod supervisor;
@@ -44,9 +45,12 @@ pub use reconciliation::{
     EnqueueResult, QueuedReconciliation, ReconciliationDebouncer, ReconciliationJob,
     ReconciliationQueue, ReconciliationScope, ReconciliationScopeParseError, RunningReconciliation,
 };
+pub use runtime_stop::{
+    DaemonProcess, daemon_process_for_stop, stop_recorded_runtimes, stop_recorded_runtimes_blocking,
+};
 pub use supervisor::{
-    AdoptedProcess, OwnedRuntime, ProcessSpec, ProcessSupervisor, ReadinessCheck, StopSignal,
-    wait_for_custom_readiness, wait_for_readiness,
+    AdoptedProcess, ManagedProcess, OwnedRuntime, ProcessSpec, ProcessSupervisor, ReadinessCheck,
+    StopSignal, wait_for_custom_readiness, wait_for_readiness,
 };
 
 #[derive(Debug)]
@@ -134,6 +138,8 @@ impl RunningDaemon {
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
         blocked_request_release_signal: Option<mpsc::Sender<()>>,
     ) -> Result<Self, DaemonError> {
+        let _runtime_lifecycle_lock = state::RuntimeLifecycleLock::acquire_shared(&paths)?;
+        runtime_stop::require_previous_daemon_exited(&paths)?;
         match Self::start_with_runtime_catalog_inner(
             paths.clone(),
             runtime_catalog,
@@ -297,10 +303,26 @@ pub fn run_blocking(paths: PvPaths) -> Result<(), DaemonError> {
 
 fn run_blocking_for_target(paths: PvPaths, target: PlatformTarget) -> Result<(), DaemonError> {
     ipc::require_ipc_for(target)?;
+    // If bootstrap fails before identity publication, admission must outlive
+    // runtime destruction too: canceled blocking work can still be running.
+    let mut admission = Some(state::RuntimeLifecycleLock::acquire_shared(&paths)?);
     let runtime = build_runtime()?;
 
     runtime.block_on(async {
-        let daemon = RunningDaemon::start_with_runtime_catalog(paths, None).await?;
+        let daemon = RunningDaemon::start_with_runtime_catalog(paths.clone(), None).await?;
+        if let Err(source) = runtime_stop::record_daemon_process(&paths) {
+            return match daemon.shutdown().await {
+                Ok(()) => Err(source),
+                Err(cleanup) => Err(DaemonError::RuntimeCleanupFailed {
+                    runtime: "daemon startup".to_owned(),
+                    source: Box::new(source),
+                    cleanup: Box::new(cleanup),
+                }),
+            };
+        }
+        drop(admission.take());
+        // Keep the identity record through runtime teardown and OS process exit.
+        // The next startup replaces it after acquiring lifecycle admission.
         wait_for_shutdown(daemon, termination_signal()).await
     })
 }
