@@ -1671,9 +1671,10 @@ mod tests {
     /// Shorter than the script identity stabilization window, so cancellation lands while
     /// the runtime files are still uncommitted.
     const IDENTITY_CANCEL_DELAY: Duration = Duration::from_millis(150);
-    /// Keeps a shell alive until it is stopped, but for 30 s at most, so a test that dies before
-    /// stopping it leaves nothing running for long.
-    const IDLE_SHELL_LOOP: &str = "i=0; while [ $i -lt 30 ]; do sleep 1; i=$((i + 1)); done";
+    /// Keeps a shell alive until it is stopped, but for 150 s at most, so a test that dies before
+    /// stopping it leaves nothing running for long. That outlasts the CI profile's 120 s limit on
+    /// a test, so a stalled test can't pass because its fixture exited on its own.
+    const IDLE_SHELL_LOOP: &str = "i=0; while [ $i -lt 150 ]; do sleep 1; i=$((i + 1)); done";
 
     #[tokio::test]
     async fn startup_persistence_failure_terminates_process_group_descendants() -> Result<()> {

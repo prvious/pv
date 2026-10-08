@@ -74,10 +74,14 @@ with `pv_fake::write_gateway_control`, which rejects unknown keys.
 Shell scripts remain only where a test needs what the fake doesn't do: the
 supervisor's script-identity tests, which need a script as the runtime, and
 the process-group tests, which need a child that outlives its parent or ignores
-SIGTERM. A script that stays alive gives up after at most 30 seconds, so a
-test that dies before stopping it leaves nothing running for long. A script
-that reports a PID writes it to a temporary file and renames it into place, so
-the test never reads it half written.
+SIGTERM. A script that stays alive must give up on its own, so a test that dies
+before stopping it leaves nothing running for long, but not before the CI
+profile's 120-second test limit, so a stalled test can't pass because its
+fixture already exited; the supervisor tests' `IDLE_SHELL_LOOP` gives up after
+150 seconds. When a test reads a PID a script reports, make sure it can't read
+it half written: have the script write it to a temporary file and rename it
+into place, or wait for a later signal, such as the complete line or a ready
+file written afterwards.
 
 Use the CI nextest profile for CI runs (`cargo nextest run --profile ci`). It
 warns after 60 seconds, terminates a wedged test after 120 seconds, and allows

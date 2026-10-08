@@ -344,7 +344,7 @@ Each step is one pull request. Each starts by recording the relevant real artifa
    - **4b** (implemented): record real MySQL, add the `mysqld` persona (initialization, a TCP port, and MySQL's signals) and the dual-target MySQL runtime contract, port the MySQL installs and archive in `mysql_tests.rs`, and delete `mysql.py` with its fixture contracts and the single-server signal contract. `RecordingMysqlAdmin` stays: see Library compatibility.
 5. **Cleanup** (implemented):
    - Delete `fixture_contracts.rs`. Its four Python scripts only tested the file's own helpers, which nothing else used once the Python runtime fixtures were gone.
-   - Give every remaining shell script that stays alive a 30 s limit, and have the supervisor's descendant scripts write their PID files by rename.
+   - Give every supervisor test script that used to loop forever a 150 s limit, longer than CI's 120 s limit on a test so a stalled test can't pass on an exited fixture. Have the two descendant scripts whose PID files the tests read as soon as they exist write them by rename.
    - Rewrite `CONTRIBUTING.md`'s Fixture Lifecycle section around `pv_fake::install` and the lifeline.
    - Keep the script-identity and process-group scripts (see step 1). The process-group tests need a child that outlives its parent or ignores SIGTERM, which a `pv-fake` descendant never does, and the planned per-service monitor will replace the supervisor code they test.
    - Keep `python3` as a prerequisite: the script-identity tests and `pv-release`'s installer and smoke tests use it.

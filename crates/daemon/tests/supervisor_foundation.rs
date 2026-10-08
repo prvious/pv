@@ -35,9 +35,10 @@ const OWNED_PYTHON_RUNTIME_SCRIPT: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/test-fixtures/supervisor/owned-python-runtime.py"
 ));
-/// Keeps a shell alive until it is stopped, but for 30 s at most, so a test that dies before
-/// stopping it leaves nothing running for long.
-const IDLE_SHELL_LOOP: &str = "i=0; while [ $i -lt 30 ]; do sleep 1; i=$((i + 1)); done";
+/// Keeps a shell alive until it is stopped, but for 150 s at most, so a test that dies before
+/// stopping it leaves nothing running for long. That outlasts the CI profile's 120 s limit on a
+/// test, so a stalled test can't pass because its fixture exited on its own.
+const IDLE_SHELL_LOOP: &str = "i=0; while [ $i -lt 150 ]; do sleep 1; i=$((i + 1)); done";
 
 #[tokio::test]
 async fn tcp_readiness_succeeds_for_listening_ports_and_times_out() -> Result<()> {
