@@ -571,7 +571,7 @@ fn daemon_replacement_waits_for_delayed_exit_before_bootstrap() -> anyhow::Resul
             .name("daemon-fixture-cleanup".to_owned())
             .spawn(move || -> anyhow::Result<()> {
                 receiver.recv_timeout(Duration::from_secs(5))?;
-                thread::sleep(Duration::from_millis(100));
+                thread::sleep(Duration::from_millis(500));
                 previous.cleanup()
             })?;
         environment.bootout_signal = Some(signal);

@@ -170,24 +170,24 @@ async fn real_postgres_satisfies_the_runtime_contract() -> Result<()> {
     .await
 }
 
-#[cfg(target_os = "macos")]
 #[tokio::test]
-#[ignore = "requires PV_E2E_POSTGRES_ARTIFACT pointing to a local artifact directory"]
-async fn local_real_postgres_satisfies_maintenance_shutdown_contract() -> Result<()> {
+#[ignore = "requires PV_E2E_REAL_ARTIFACTS=1 and PV_E2E_ARTIFACT_MANIFEST_URL"]
+async fn real_postgres_forced_exit_keeps_recovery_records() -> Result<()> {
+    let Some(manifest_url) = real_artifact_manifest_url()? else {
+        return Ok(());
+    };
     let (_tempdir, paths) = contract_paths()?;
-    let artifact = copy_local_postgres(&paths)?;
-    postgres_contract(&paths, &artifact, "18").await
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-#[ignore = "requires PV_E2E_POSTGRES_ARTIFACT pointing to a local artifact directory"]
-async fn local_real_postgres_forced_exit_keeps_recovery_records() -> Result<()> {
-    let (_tempdir, paths) = contract_paths()?;
-    let artifact = copy_local_postgres(&paths)?;
+    let postgres = install_real_artifact(&paths, manifest_url, &postgres_adapter()?)?;
+    let track = postgres.track().as_str();
     let [port] = available_ports()?;
     let adapter = super::postgres::PostgresRuntimeAdapter::new();
-    let mut context = runtime_context(&paths, "postgres", "18", &artifact, [("postgres", port)]);
+    let mut context = runtime_context(
+        &paths,
+        "postgres",
+        track,
+        postgres.current_artifact_path(),
+        [("postgres", port)],
+    );
     context.env = adapter.resource_env(&context)?;
     let admin = SqlAdminContext {
         host: Ipv4Addr::LOCALHOST.to_string(),
@@ -196,7 +196,7 @@ async fn local_real_postgres_forced_exit_keeps_recovery_records() -> Result<()> 
         password: context.env.get("password").cloned().unwrap_or_default(),
     };
     let mut guard = ManagedResourceFixtureGuard::new(&paths);
-    guard.register("postgres", "18");
+    guard.register("postgres", track);
     let outcome = async {
         adapter.prepare_runtime(&paths, &context).await?;
         let supervisor = ProcessSupervisor::new(paths.clone());
@@ -242,28 +242,6 @@ async fn local_real_postgres_forced_exit_keeps_recovery_records() -> Result<()> 
             "{error:#}; fixture cleanup also failed: {cleanup:#}"
         )),
     }
-}
-
-#[cfg(target_os = "macos")]
-#[expect(
-    clippy::disallowed_methods,
-    clippy::disallowed_types,
-    reason = "opt-in local artifact test copies a release into its temporary home without network access"
-)]
-fn copy_local_postgres(paths: &PvPaths) -> Result<Utf8PathBuf> {
-    let source = std::env::var("PV_E2E_POSTGRES_ARTIFACT")
-        .context("PV_E2E_POSTGRES_ARTIFACT is required")?;
-    let destination = paths.resources().join("postgres/18/releases/local-test");
-    state::fs::ensure_user_dir(paths.resources().join("postgres/18/releases").as_path())?;
-    let output = std::process::Command::new("/bin/cp")
-        .args(["-cR", &source, destination.as_str()])
-        .output()?;
-    ensure!(
-        output.status.success(),
-        "local artifact copy failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    Ok(destination)
 }
 
 #[tokio::test]

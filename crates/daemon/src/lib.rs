@@ -139,7 +139,6 @@ impl RunningDaemon {
         blocked_request_release_signal: Option<mpsc::Sender<()>>,
     ) -> Result<Self, DaemonError> {
         let _runtime_lifecycle_lock = state::RuntimeLifecycleLock::acquire_shared(&paths)?;
-        runtime_stop::require_previous_daemon_exited(&paths)?;
         match Self::start_with_runtime_catalog_inner(
             paths.clone(),
             runtime_catalog,
@@ -161,6 +160,7 @@ impl RunningDaemon {
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
         blocked_request_release_signal: Option<mpsc::Sender<()>>,
     ) -> Result<Self, DaemonError> {
+        runtime_stop::require_previous_daemon_exited(&paths)?;
         let mut database = Database::open(&paths)?;
         ipc::prepare_endpoint(&paths).await?;
         let listener = ipc::bind(&paths)?;
@@ -577,6 +577,30 @@ mod tests {
                 )
             });
         }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn startup_records_invalid_previous_daemon_record() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::ensure_layout(&paths)?;
+        state::fs::ensure_user_dir(&paths.daemon_process_record())?;
+        let error = match RunningDaemon::start_with_runtime_catalog(paths.clone(), None).await {
+            Ok(daemon) => {
+                daemon.shutdown().await?;
+                return Err(anyhow::anyhow!("startup unexpectedly succeeded"));
+            }
+            Err(error) => error,
+        };
+        assert!(matches!(&error, DaemonError::InvalidRuntimeRecord { .. }));
+        let marker: serde_json::Value =
+            serde_json::from_str(&state::fs::read_to_string(&paths.daemon_startup_error())?)?;
+        assert_eq!(
+            marker,
+            serde_json::json!({ "kind": "startup_failed", "message": error.to_string() })
+        );
         Ok(())
     }
 

@@ -32,6 +32,7 @@ const SCRIPT_IDENTITY_STABILIZATION: Duration = Duration::from_millis(250);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
+const POSTGRES_RECOVERY: &str = "Restart your Mac, then run this command again.";
 pub(crate) const RUNTIME_READINESS_CONCURRENCY_LIMIT: usize = 4;
 
 /// The signal that asks a runtime to shut down gracefully, before the grace period ends in SIGKILL.
@@ -271,6 +272,9 @@ impl ProcessSupervisor {
             return remove_unchanged_runtime_records(pid_path, &metadata_path, &metadata);
         }
         if let Some(adopted) = self.adopt_recorded(pid_path, &metadata_path)? {
+            // Postgres backends can leave the postmaster's process group, so an empty
+            // group proves nothing about them. The postmaster exits successfully only
+            // after its backends exit. Watch before signalling, then recheck ownership.
             let exit_watch = if metadata.resource_name == "postgres" {
                 let watch = platform::ProcessExitWatch::new(pid)?;
                 if !adopted.owned.matches_live()? {
@@ -303,18 +307,20 @@ impl ProcessSupervisor {
                 .await;
                 let status = match status {
                     Ok(status) => status?,
-                    Err(_elapsed) => return Err(DaemonError::RuntimeCleanupUnproven {
-                        pid,
-                        reason:
-                            "Postgres exit status was not delivered; backend cleanup is unproven"
-                                .to_owned(),
-                    }),
+                    Err(_elapsed) => {
+                        return Err(DaemonError::RuntimeCleanupUnproven {
+                            pid,
+                            reason: format!(
+                                "PV could not confirm that Postgres shut down cleanly, so it kept its records. {POSTGRES_RECOVERY}"
+                            ),
+                        });
+                    }
                 };
                 if !status.success() {
                     return Err(DaemonError::RuntimeCleanupUnproven {
                         pid,
                         reason: format!(
-                            "Postgres ended with {status}; backend cleanup is unproven"
+                            "Postgres ended with {status}, so PV kept its records. {POSTGRES_RECOVERY}"
                         ),
                     });
                 }
@@ -324,7 +330,9 @@ impl ProcessSupervisor {
         } else if metadata.resource_name == "postgres" {
             return Err(DaemonError::RuntimeCleanupUnproven {
                 pid,
-                reason: "Postgres exited before this stop; backend cleanup is unproven. Recovery requires a recorded boot identity from a previous kernel boot".to_owned(),
+                reason: format!(
+                    "Postgres exited before PV could stop it, so PV kept its records. {POSTGRES_RECOVERY}"
+                ),
             });
         }
         remove_unchanged_runtime_records(pid_path, &metadata_path, &metadata)
@@ -1218,8 +1226,9 @@ async fn stop_process_group_by_pid(
         return Ok(());
     }
 
-    // An adopted leader can be reaped by its original parent during the grace
-    // period. Do not signal a group whose recorded leader no longer matches.
+    // An adopted leader can be reaped during the grace period, by launchd once the
+    // daemon that started it has exited. Do not signal a group whose recorded
+    // leader no longer matches.
     if !owned.matches_live()? {
         return Err(DaemonError::RuntimeCleanupUnproven {
             pid,
