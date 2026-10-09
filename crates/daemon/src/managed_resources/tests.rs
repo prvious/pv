@@ -25,6 +25,7 @@ use aws_sdk_s3::operation::head_bucket::HeadBucketError;
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
+use platform::loopback_tcp_port_available;
 use pv_fake::{FakeSettings, Persona};
 use rcgen::{
     CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose,
@@ -6990,7 +6991,7 @@ fn reserve_available_rustfs_ports(paths: &PvPaths) -> Result<()> {
 fn reserve_rustfs_port(database: &mut Database, port_name: &str, port: u16) -> Result<()> {
     database.assign_port(
         PortRequest::resource_port("rustfs", RUSTFS_TRACK, port_name, port, port, port),
-        local_loopback_port_available,
+        loopback_tcp_port_available,
     )?;
 
     Ok(())
@@ -7004,7 +7005,7 @@ fn reserve_postgres_track_port(paths: &PvPaths, track: &str, port: u16) -> Resul
     let mut database = Database::open(paths)?;
     database.assign_port(
         PortRequest::resource_port("postgres", track, "postgres", port, port, port),
-        local_loopback_port_available,
+        loopback_tcp_port_available,
     )?;
 
     Ok(())
@@ -7023,10 +7024,6 @@ async fn connect_postgres_admin(paths: &PvPaths, port: u16) -> Result<PgPool> {
     };
 
     Ok(PgPool::connect_with(super::sql::postgres_options(&admin)).await?)
-}
-
-fn local_loopback_port_available(port: u16) -> bool {
-    TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
 async fn bind_loopback_ports_when_available(ports: [u16; 2]) -> Result<[TcpListener; 2]> {

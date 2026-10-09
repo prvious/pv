@@ -9,7 +9,7 @@ use tokio::signal::unix::{Signal, SignalKind, signal};
 use crate::events::{EventKind, EventLog};
 use crate::{
     BUILD_ID, DESCENDANT_FLAG, Persona, Scenario, ScenarioFile, events_path, gateway, lifeline,
-    mailpit, mysql, postgres, redis, rustfs, scenario_path,
+    mailpit, mysql, postgres, redis, rustfs, scenario_path, tcp_holder,
 };
 
 #[expect(
@@ -144,6 +144,10 @@ enum Started {
 async fn start_persona(scenario: &Scenario, argv: &[String], events: &EventLog) -> Result<Started> {
     let exit_code = match scenario.persona {
         Persona::LongRunning => None,
+        Persona::TcpHolder => {
+            tcp_holder::start(&scenario.settings, events).await?;
+            None
+        }
         Persona::Caddy | Persona::FrankenPhp => {
             gateway::start(argv, &scenario.settings, events).await?
         }

@@ -172,6 +172,10 @@ pub async fn stop_recorded_runtimes(paths: PvPaths) -> Result<(), DaemonError> {
         require_directory(&resources)?;
     }
     for resource in fs::read_dir_paths(&resources)? {
+        // MySQL sockets are ancillary entries, not runtime record directories.
+        if resource.extension() == Some("sock") {
+            continue;
+        }
         // MySQL keeps its initialization SQL beside the per-resource directories.
         if fs::path_is_file(&resource)? && !matches!(resource.extension(), Some("pid" | "json")) {
             continue;

@@ -1,0 +1,33 @@
+---
+source: crates/platform/src/low_port.rs
+expression: "(inspection, messages)"
+---
+(
+    LowPortInspection {
+        ports: [
+            LowPortState {
+                port: 80,
+                available: false,
+                owners: [
+                    PortOwner {
+                        pid: 412,
+                        command: "nginx",
+                    },
+                    PortOwner {
+                        pid: 501,
+                        command: "Python",
+                    },
+                ],
+            },
+            LowPortState {
+                port: 443,
+                available: false,
+                owners: [],
+            },
+        ],
+    },
+    [
+        "Loopback TCP port 80 is unavailable. TCP listeners reported on this port: nginx (pid 412), Python (pid 501).",
+        "Loopback TCP port 443 is unavailable; PV could not identify a listening process.",
+    ],
+)

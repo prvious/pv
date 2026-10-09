@@ -53,7 +53,7 @@ where
     CapabilityCheck: FnOnce(&Command) -> Result<(), ExecuteError>,
 {
     capability_check(&cli.command)?;
-    let _runtime_lifecycle_lock = acquire_runtime_lifecycle(&cli.command, environment)?;
+    let runtime_lifecycle_lock = acquire_runtime_lifecycle(&cli.command, environment)?;
     require_no_update_in_progress(&cli.command, environment)?;
 
     match cli.command {
@@ -65,8 +65,8 @@ where
         Command::DaemonDisable => daemon::disable(environment, streams),
         Command::DaemonRestart => daemon::restart(environment, streams),
         Command::DaemonRun => daemon::run(),
-        Command::ShimPhp(args) => php::shim(args, environment),
-        Command::ShimComposer(args) => composer::shim(args, environment),
+        Command::ShimPhp(args) => php::shim(args, environment, runtime_lifecycle_lock),
+        Command::ShimComposer(args) => composer::shim(args, environment, runtime_lifecycle_lock),
         Command::DnsStatus => dns::status(environment, streams),
         Command::DnsInstall => dns::install(environment, streams),
         Command::DnsUninstall => dns::uninstall(environment, streams),
@@ -153,8 +153,6 @@ fn acquire_runtime_lifecycle(
                 | Command::Env(_)
                 | Command::Completions(_)
                 | Command::Init(_)
-                | Command::ShimPhp(_)
-                | Command::ShimComposer(_)
                 | Command::Logs(_)
                 | Command::Status(_)
                 | Command::Doctor(_)
@@ -779,6 +777,12 @@ mod tests {
     }
 
     impl Environment for AccessTrackingEnvironment {
+        fn inspect_low_ports(
+            &self,
+        ) -> Result<platform::LowPortInspection, platform::PlatformError> {
+            Err(platform::PlatformError::PrivilegedHelperUnavailable)
+        }
+
         fn var_os(&self, _key: &str) -> Option<OsString> {
             self.record_access();
             None

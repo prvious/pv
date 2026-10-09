@@ -15,8 +15,6 @@ use crate::output::{Line, Mark, Output, Streams};
 
 use super::pf_diagnostics::PfRoutingDiagnostic;
 
-const LOW_PORTS: [u16; 2] = [80, 443];
-
 pub(crate) fn status(
     args: PortsStatusArgs,
     environment: &impl Environment,
@@ -78,22 +76,21 @@ pub(crate) fn install(
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let listening_ports = environment.loopback_tcp_listener_ports()?;
-    let low_port_conflicts = low_port_conflicts(&listening_ports);
+    let inspection = environment.inspect_low_ports()?;
     let output = &mut streams.out;
 
-    if !low_port_conflicts.is_empty() {
+    if inspection.ports.iter().any(|port| !port.available) {
         output.failure("Port redirect preparation failed")?;
-        for port in &low_port_conflicts {
-            output.detail(format!("Loopback TCP port {port} already has a listener."))?;
+        for port in inspection.ports.iter().filter(|port| !port.available) {
+            output.detail(port.conflict_message())?;
+            if port.owners.is_empty() {
+                output.hint(
+                    "find it",
+                    &format!("sudo lsof -nP -iTCP:{} -sTCP:LISTEN", port.port),
+                )?;
+            }
         }
         output.detail("Stop the conflicting service, then run `pv ports:install` again.")?;
-        if output.surface().decorated()
-            && let Some(port) = low_port_conflicts.first()
-        {
-            output.hint("find it", &format!("lsof -nP -iTCP:{port} -sTCP:LISTEN"))?;
-        }
-
         return Ok(ExitCode::FAILURE);
     }
 
@@ -105,7 +102,8 @@ pub(crate) fn install(
     let had_https_assignment = existing_assignments
         .iter()
         .any(|assignment| assignment.owner == PortOwner::Gateway(GatewayPort::Https));
-    let assignments = database.assign_gateway_ports(|port| !listening_ports.contains(&port))?;
+    let assignments =
+        database.assign_gateway_ports(|port| environment.loopback_tcp_port_available(port))?;
     let config = pf_config_from_assignments(&assignments);
     let reference = PfConfReference;
     let prepared_anchor_path = paths.pf_anchor_config();
@@ -347,18 +345,6 @@ pub(crate) fn uninstall(
     })?;
 
     Ok(ExitCode::SUCCESS)
-}
-
-fn low_port_conflicts(listening_ports: &std::collections::BTreeSet<u16>) -> Vec<u16> {
-    let mut conflicts = Vec::new();
-
-    for port in LOW_PORTS {
-        if listening_ports.contains(&port) {
-            conflicts.push(port);
-        }
-    }
-
-    conflicts
 }
 
 fn pf_config_from_assignments(assignments: &GatewayPortAssignments) -> PfRedirectConfig {

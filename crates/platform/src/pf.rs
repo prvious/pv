@@ -282,7 +282,7 @@ fn pfctl_permission_denied(error: &PlatformError) -> bool {
 pub fn inspect_active_pf_redirects_unprivileged()
 -> Result<ActivePfRedirectInspection, PlatformError> {
     inspect_active_pf_redirects_unprivileged_with_runner(&mut |program, args| {
-        run_system_command_output_with_timeout(program, args, PFCTL_INSPECTION_TIMEOUT)
+        run_system_command_output_with_timeout(program, args, PFCTL_INSPECTION_TIMEOUT, None)
     })
 }
 
@@ -715,31 +715,6 @@ pub(crate) fn apply_pf_redirects_privileged(
             }
         },
     )
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn reload_pf_redirects_privileged() -> Result<(), PlatformError> {
-    let system_anchor_path = Utf8Path::new(SYSTEM_PF_ANCHOR_PATH);
-    let system_pf_conf_path = Utf8Path::new(SYSTEM_PF_CONF_PATH);
-    match inspect_pf_anchor_file(system_anchor_path, None) {
-        PfFileState::Current { .. } => {}
-        state => {
-            return Err(PlatformError::SystemIntegration(format!(
-                "PV PF anchor is not reloadable: {state:?}"
-            )));
-        }
-    }
-    match inspect_pf_conf_reference(system_pf_conf_path, None) {
-        PfFileState::Current { .. } => {}
-        state => {
-            return Err(PlatformError::SystemIntegration(format!(
-                "PV pf.conf reference is not reloadable: {state:?}"
-            )));
-        }
-    }
-    crate::helper::validate_root_owned_file_if_present(system_anchor_path)?;
-    crate::helper::validate_root_owned_file_if_present(system_pf_conf_path)?;
-    reload_pf_with_runner(system_pf_conf_path, &mut run_system_command)
 }
 
 #[cfg(target_os = "macos")]

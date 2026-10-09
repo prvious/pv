@@ -7,6 +7,7 @@
 //! Design: `docs/superpowers/specs/2026-09-29-pv-fake-design.md`.
 
 use std::io::{self, Write};
+use std::net::SocketAddr;
 use std::process::ExitCode;
 #[cfg(unix)]
 use std::time::Duration;
@@ -38,6 +39,8 @@ mod postgres;
 mod redis;
 #[cfg(unix)]
 mod rustfs;
+#[cfg(unix)]
+mod tcp_holder;
 
 #[cfg(unix)]
 pub use events::{Event, EventKind};
@@ -109,6 +112,18 @@ pub struct FakeSettings {
     /// Makes a `rustfs` persona expect a different secret key than the one it was started with,
     /// so every signed request fails with `SignatureDoesNotMatch`, as a real key mismatch does.
     pub rustfs_reject_credentials: bool,
+    /// Socket options and address for the TCP holder persona.
+    pub tcp_holder: Option<TcpHolderConfig>,
+}
+
+/// A TCP socket held by a separate process for port-availability acceptance tests.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TcpHolderConfig {
+    pub address: SocketAddr,
+    pub reuse_address: bool,
+    pub reuse_port: bool,
+    pub ipv6_only: bool,
+    pub listen: bool,
 }
 
 /// Holds a fake at a known point, recording a `held` event, until a test creates `until`.
@@ -136,6 +151,8 @@ pub enum GatewayListeners {
 pub enum Persona {
     /// Stays alive until SIGTERM or SIGINT, then exits 0.
     LongRunning,
+    /// Binds a socket with [`TcpHolderConfig`] and records readiness after binding.
+    TcpHolder,
     /// Caddy's `validate` and `run`: HTTP, HTTPS, the admin socket, and PV's health route.
     Caddy,
     /// FrankenPHP embeds Caddy, so this behaves like [`Persona::Caddy`].

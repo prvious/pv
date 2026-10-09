@@ -1,5 +1,5 @@
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
@@ -9,7 +9,10 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
-use platform::{ActivePfRedirectInspection, PfConfReference, PfRedirectConfig};
+use platform::{
+    ActivePfRedirectInspection, LowPortInspection, LowPortState, PfConfReference, PfRedirectConfig,
+    PortOwner as LowPortOwner,
+};
 use serde_json::Value;
 use state::{
     Database, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, PortOwner, PvPaths,
@@ -23,6 +26,7 @@ struct TestEnvironment {
     pf_anchor_path: PathBuf,
     pf_conf_path: PathBuf,
     listening_ports: BTreeSet<u16>,
+    low_port_owners: BTreeMap<u16, Vec<LowPortOwner>>,
     active_pf_config: RefCell<Option<PfRedirectConfig>>,
     active_pf_inspections: RefCell<u32>,
     active_pf_read_fails_when_unloaded: bool,
@@ -47,6 +51,7 @@ impl TestEnvironment {
             pf_anchor_path: pf_anchor_path.as_std_path().to_path_buf(),
             pf_conf_path: pf_conf_path.as_std_path().to_path_buf(),
             listening_ports: BTreeSet::new(),
+            low_port_owners: BTreeMap::new(),
             active_pf_config: RefCell::new(None),
             active_pf_inspections: RefCell::new(0),
             active_pf_read_fails_when_unloaded: false,
@@ -61,6 +66,18 @@ impl TestEnvironment {
 
     fn with_listener(mut self, port: u16) -> Self {
         self.listening_ports.insert(port);
+        self
+    }
+
+    fn with_port_owner(mut self, port: u16, pid: u32, command: &str) -> Self {
+        self.listening_ports.insert(port);
+        self.low_port_owners
+            .entry(port)
+            .or_default()
+            .push(LowPortOwner {
+                pid,
+                command: command.to_owned(),
+            });
         self
     }
 
@@ -126,8 +143,21 @@ impl Environment for TestEnvironment {
         self.pf_conf_path.clone()
     }
 
-    fn loopback_tcp_listener_ports(&self) -> Result<BTreeSet<u16>, platform::PlatformError> {
-        Ok(self.listening_ports.clone())
+    fn loopback_tcp_port_available(&self, port: u16) -> bool {
+        !self.listening_ports.contains(&port)
+    }
+
+    fn inspect_low_ports(&self) -> Result<LowPortInspection, platform::PlatformError> {
+        Ok(LowPortInspection {
+            ports: [80, 443]
+                .into_iter()
+                .map(|port| LowPortState {
+                    port,
+                    available: !self.listening_ports.contains(&port),
+                    owners: self.low_port_owners.get(&port).cloned().unwrap_or_default(),
+                })
+                .collect(),
+        })
     }
 
     fn install_pf_redirects(
@@ -544,7 +574,6 @@ fn ports_install_fails_on_low_port_conflict_before_writing_prepared_artifacts() 
 
     assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert!(output.stderr.is_empty());
-    assert_no_privileged_guidance(&output.stdout);
     assert!(read_optional_file(&paths.pf_anchor_config())?.is_none());
     assert!(read_optional_file(&paths.pf_conf_reference_config())?.is_none());
 
@@ -552,6 +581,70 @@ fn ports_install_fails_on_low_port_conflict_before_writing_prepared_artifacts() 
         assert_debug_snapshot!(output);
     });
 
+    Ok(())
+}
+
+#[test]
+fn ports_install_names_low_port_owners() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let environment = TestEnvironment::new(
+        &tempdir.path().join("home"),
+        &tempdir.path().join("work"),
+        &tempdir.path().join("pf.anchor"),
+        &tempdir.path().join("pf.conf"),
+    )
+    .with_port_owner(80, 412, "nginx")
+    .with_port_owner(443, 501, "Python");
+    let output = run_pv(&["ports:install"], &environment)?;
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(environment.operations.borrow().is_empty());
+    assert_debug_snapshot!(output);
+    Ok(())
+}
+
+#[test]
+fn ports_install_refuses_a_new_low_port_conflict_when_redirects_already_match() -> anyhow::Result<()>
+{
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let system_anchor_path = tempdir.path().join("pf.anchor");
+    let system_pf_conf_path = tempdir.path().join("pf.conf");
+    let mut environment = TestEnvironment::new(
+        &home,
+        &tempdir.path().join("work"),
+        &system_anchor_path,
+        &system_pf_conf_path,
+    );
+    assert_eq!(
+        run_pv(&["ports:install"], &environment)?.exit_code,
+        ExitCode::SUCCESS
+    );
+    environment.operations.borrow_mut().clear();
+    let paths = pv_paths(&home);
+    let assignments_before = Database::open(&paths)?.assigned_ports()?;
+    let prepared_before = read_required_file(&paths.pf_anchor_config())?;
+    let system_before = read_required_file(&system_anchor_path)?;
+    let inspections_before = *environment.active_pf_inspections.borrow();
+    environment = environment.with_port_owner(80, 412, "nginx");
+
+    let output = run_pv(&["ports:install"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(environment.operations.borrow().is_empty());
+    assert_eq!(
+        *environment.active_pf_inspections.borrow(),
+        inspections_before
+    );
+    assert_eq!(
+        Database::open(&paths)?.assigned_ports()?,
+        assignments_before
+    );
+    assert_eq!(
+        read_required_file(&paths.pf_anchor_config())?,
+        prepared_before
+    );
+    assert_eq!(read_required_file(&system_anchor_path)?, system_before);
+    assert_debug_snapshot!(output);
     Ok(())
 }
 

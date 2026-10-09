@@ -86,6 +86,10 @@ impl Environment for TestEnvironment {
         }
     }
 
+    fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError> {
+        Err(platform::PlatformError::PrivilegedHelperUnavailable)
+    }
+
     fn var_os(&self, _key: &str) -> Option<OsString> {
         None
     }
@@ -350,10 +354,19 @@ fn daemon_disable_stops_live_runtimes_without_a_plist_or_database() -> anyhow::R
     resource.command = paths.resources().join("mailpit/1/fixture/bin/mailpit");
     resource.pid_path = paths.resource_pid("mailpit", "1");
     resource.metadata_path = paths.resource_runtime_metadata("mailpit", "1");
+    let mut mysql = resource.clone();
+    mysql.name = "mysql".to_owned();
+    mysql.resource_name = "mysql".to_owned();
+    mysql.track = "8.4".to_owned();
+    mysql.command = paths.resources().join("mysql/8.4/fixture/bin/mysqld");
+    mysql.pid_path = paths.resource_pid("mysql", "8.4");
+    mysql.metadata_path = paths.resource_runtime_metadata("mysql", "8.4");
     let mut fixtures = Vec::new();
-    for spec in [gateway, worker, resource] {
+    for spec in [gateway, worker, resource, mysql] {
         fixtures.push(RuntimeFixture::start(&paths, spec)?);
     }
+    // Real MySQL creates this ancillary socket beside its runtime directory.
+    let _mysql_socket = UnixListener::bind(paths.run().join("resources/mysql-8.4.sock"))?;
     let mut watch = platform::ProcessExitWatch::new(fixtures[0].descendant_pid()?)?;
     // Maintenance stop must work even when the database cannot be opened.
     state::fs::write_sensitive_file(paths.db(), "invalid database")?;

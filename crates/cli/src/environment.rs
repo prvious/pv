@@ -140,11 +140,11 @@ pub trait Environment {
         PathBuf::from(platform::SYSTEM_PF_CONF_PATH)
     }
 
-    fn loopback_tcp_listener_ports(
-        &self,
-    ) -> Result<std::collections::BTreeSet<u16>, platform::PlatformError> {
-        platform::loopback_tcp_listener_ports()
+    fn loopback_tcp_port_available(&self, port: u16) -> bool {
+        platform::loopback_tcp_port_available(port)
     }
+
+    fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError>;
 
     fn install_pf_redirects(
         &self,
@@ -279,6 +279,10 @@ pub(crate) fn app_update_manifest_url(environment: &impl Environment) -> String 
 pub struct ProcessEnvironment;
 
 impl Environment for ProcessEnvironment {
+    fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError> {
+        platform::PrivilegedHelperClient.inspect_low_ports()
+    }
+
     fn var_os(&self, key: &str) -> Option<OsString> {
         process_var_os(key)
     }
@@ -405,6 +409,12 @@ mod tests {
     }
 
     impl Environment for TestEnvironment {
+        fn inspect_low_ports(
+            &self,
+        ) -> Result<platform::LowPortInspection, platform::PlatformError> {
+            Err(platform::PlatformError::PrivilegedHelperUnavailable)
+        }
+
         fn var_os(&self, key: &str) -> Option<OsString> {
             self.vars.get(key).cloned()
         }

@@ -48,6 +48,7 @@ pub(crate) fn run_system_command_output_with_timeout(
     program: &str,
     args: &[&str],
     wait: Duration,
+    empty_exit_code: Option<i32>,
 ) -> Result<String, PlatformError> {
     let command = format!("{program} {}", args.join(" "));
     let output = command_output_with_timeout(program, args, wait).map_err(|source| {
@@ -57,6 +58,13 @@ pub(crate) fn run_system_command_output_with_timeout(
         }
     })?;
 
+    if empty_exit_code.is_some()
+        && output.status.code() == empty_exit_code
+        && output.stdout.is_empty()
+        && output.stderr.is_empty()
+    {
+        return Ok(String::new());
+    }
     system_command_output(command, output)
 }
 
@@ -235,6 +243,7 @@ mod tests {
             "/bin/sh",
             &["-c", "printf bounded"],
             Duration::from_secs(1),
+            None,
         )?;
 
         assert_eq!(output, "bounded");
@@ -243,11 +252,35 @@ mod tests {
     }
 
     #[test]
+    fn bounded_command_accepts_only_the_requested_empty_exit_status() {
+        let verdicts = [
+            ("empty exit 1", "exit 1"),
+            ("nonempty stdout", "printf owner; exit 1"),
+            ("nonempty stderr", "printf failure >&2; exit 1"),
+            ("different exit status", "exit 2"),
+        ]
+        .into_iter()
+        .map(|(name, script)| {
+            let result = run_system_command_output_with_timeout(
+                "/bin/sh",
+                &["-c", script],
+                Duration::from_secs(1),
+                Some(1),
+            )
+            .map_err(|error| error.to_string());
+            (name, result)
+        })
+        .collect::<Vec<_>>();
+        insta::assert_debug_snapshot!(verdicts);
+    }
+
+    #[test]
     fn bounded_command_drains_large_output() -> anyhow::Result<()> {
         let output = run_system_command_output_with_timeout(
             "/bin/sh",
             &["-c", "yes e | head -c 262144 >&2; yes o | head -c 262144"],
             Duration::from_secs(5),
+            None,
         )?;
 
         assert_eq!(output.len(), 262_144);
@@ -268,6 +301,7 @@ mod tests {
                 pid_path.as_str(),
             ],
             Duration::from_millis(100),
+            None,
         );
 
         let Err(PlatformError::SystemIntegrationCommand { source, .. }) = result else {

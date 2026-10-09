@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::PermissionsExt as _;
@@ -15,13 +15,13 @@ use cli::{Environment, run_with_environment};
 use insta::{assert_debug_snapshot, assert_snapshot};
 use platform::{
     HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult, LAUNCH_AGENT_LABEL,
-    LaunchAgentConfig, LocalCaMetadata, PRIVILEGED_HELPER_VERSION, PfConfReference,
-    PfRedirectConfig, PrivilegedHelperStatus, ResolverConfig, generate_local_ca,
+    LaunchAgentConfig, LocalCaMetadata, LowPortInspection, LowPortState, PRIVILEGED_HELPER_VERSION,
+    PfConfReference, PfRedirectConfig, PrivilegedHelperStatus, ResolverConfig, generate_local_ca,
 };
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
+use state::{Database, ManagedResourceDesiredState, PortOwner, PvPaths, StateError};
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
 
@@ -169,6 +169,7 @@ struct TestEnvironment {
     helper_cleanup_warning: Mutex<Option<String>>,
     terminal_width: Mutex<Option<usize>>,
     terminal_surfaces: Mutex<Option<(bool, bool)>>,
+    pf_apply_conflict: bool,
 }
 
 impl TestEnvironment {
@@ -178,6 +179,7 @@ impl TestEnvironment {
         target_platform: TargetPlatform,
     ) -> Self {
         Self {
+            pf_apply_conflict: false,
             home: paths.home.as_std_path().to_path_buf(),
             current_dir: paths.current_dir.as_std_path().to_path_buf(),
             current_exe: paths.current_exe.as_std_path().to_path_buf(),
@@ -407,8 +409,21 @@ impl Environment for TestEnvironment {
         self.pf_conf_path.clone()
     }
 
-    fn loopback_tcp_listener_ports(&self) -> Result<BTreeSet<u16>, platform::PlatformError> {
-        Ok(BTreeSet::new())
+    fn loopback_tcp_port_available(&self, _port: u16) -> bool {
+        true
+    }
+
+    fn inspect_low_ports(&self) -> Result<LowPortInspection, platform::PlatformError> {
+        Ok(LowPortInspection {
+            ports: [80, 443]
+                .into_iter()
+                .map(|port| LowPortState {
+                    port,
+                    available: true,
+                    owners: Vec::new(),
+                })
+                .collect(),
+        })
     }
 
     fn install_pf_redirects(
@@ -418,6 +433,11 @@ impl Environment for TestEnvironment {
         system_anchor_path: &Utf8Path,
         system_pf_conf_path: &Utf8Path,
     ) -> Result<(), platform::PlatformError> {
+        if self.pf_apply_conflict {
+            return Err(platform::PlatformError::SystemIntegration(
+                "Loopback TCP port 80 is in use by nginx (pid 412).".to_owned(),
+            ));
+        }
         let anchor = state::fs::read_to_string(prepared_anchor_path)
             .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
         let reference = state::fs::read_to_string(prepared_reference_path)
@@ -581,6 +601,34 @@ fn setup_no_path_configures_system_integrations_and_waits_for_reconciliation() -
         ));
     });
 
+    Ok(())
+}
+
+#[test]
+fn setup_pf_apply_conflict_does_not_reinstall_the_helper() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let mut fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    let environment = Arc::get_mut(&mut fixture.environment)
+        .ok_or_else(|| anyhow::anyhow!("setup fixture environment is shared"))?;
+    environment.pf_apply_conflict = true;
+    let output = run_pv(&["setup", "--no-path"], environment)?;
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    let operations = environment.operations();
+    assert!(
+        !operations
+            .iter()
+            .any(|operation| operation.starts_with("install helper "))
+    );
+    assert!(
+        !Database::open(&fixture.paths)?
+            .assigned_ports()?
+            .iter()
+            .any(|assignment| matches!(assignment.owner, PortOwner::Gateway(_)))
+    );
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, operations))
+    });
     Ok(())
 }
 
@@ -1025,10 +1073,10 @@ fn setup_installs_missing_helper_before_system_integrations() -> anyhow::Result<
     let operations = fixture.environment.operations();
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stdout.contains("Installed privileged helper 1.0.0"));
+    assert!(output.stdout.contains("Installed privileged helper 2.0.0"));
     assert!(operations.first().is_some_and(|operation| {
         operation == &format!(
-            "install helper {}/bin/pv-helper prepared {}/home/.pv/config/helper version 1.0.0 protocol 1 sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "install helper {}/bin/pv-helper prepared {}/home/.pv/config/helper version 2.0.0 protocol 2 sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             tempdir.path(),
             tempdir.path()
         )
@@ -1068,7 +1116,7 @@ fn setup_repairs_from_active_release_helper_metadata() -> anyhow::Result<()> {
     let fixture = Fixture::new(tempdir.path());
     seed_online_setup_manifest(&fixture)?;
     fixture.environment.set_helper_missing();
-    let helper_bytes = b"pv helper 1.1.0\n";
+    let helper_bytes = b"pv helper 2.1.0\n";
     let helper_sha256 = format!("{:x}", Sha256::digest(helper_bytes));
     let release_version = env!("CARGO_PKG_VERSION");
     let app_source = tempdir.path().join("release-pv");
@@ -1080,7 +1128,7 @@ fn setup_repairs_from_active_release_helper_metadata() -> anyhow::Result<()> {
     state::fs::write_sensitive_file(
         &release_helper.with_file_name("pv-helper.json"),
         &format!(
-            "{{\n  \"version\": \"1.1.0\",\n  \"protocol_version\": 1,\n  \"sha256\": \"{helper_sha256}\"\n}}\n"
+            "{{\n  \"version\": \"2.1.0\",\n  \"protocol_version\": 2,\n  \"sha256\": \"{helper_sha256}\"\n}}\n"
         ),
     )?;
     layout.activate_release(release_version)?;
@@ -1097,7 +1145,7 @@ fn setup_repairs_from_active_release_helper_metadata() -> anyhow::Result<()> {
     assert_eq!(
         operations.first(),
         Some(&format!(
-            "install helper {release_helper} prepared {}/config/helper version 1.1.0 protocol 1 sha256 {helper_sha256}",
+            "install helper {release_helper} prepared {}/config/helper version 2.1.0 protocol 2 sha256 {helper_sha256}",
             fixture.paths.root()
         ))
     );
@@ -1924,7 +1972,7 @@ fn seed_bundled_helper_metadata(fixture: &Fixture) -> anyhow::Result<()> {
         .with_file_name("pv-helper.json");
     write_file(
         &path,
-        "{\n  \"version\": \"1.0.0\",\n  \"protocol_version\": 1,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
+        "{\n  \"version\": \"2.0.0\",\n  \"protocol_version\": 2,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
     )
 }
 

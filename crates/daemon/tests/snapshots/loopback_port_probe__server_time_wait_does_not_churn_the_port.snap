@@ -1,0 +1,5 @@
+---
+source: crates/daemon/tests/loopback_port_probe.rs
+expression: available
+---
+true

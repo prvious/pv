@@ -8,7 +8,7 @@ use resources::{
     ManagedResourceCommands, ManagedResourceUninstallOptions, ResourceAdapter, ResourceHttpClient,
     TargetPlatform, TrackName, TrackSelector, UreqResourceHttpClient,
 };
-use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
+use state::{Database, ManagedResourceDesiredState, PvPaths, RuntimeLifecycleLock, StateError};
 
 use crate::args::{ComposerUninstallArgs, ShimArgs};
 use crate::environment::{Environment, artifact_manifest_url};
@@ -154,6 +154,7 @@ pub(crate) fn uninstall(
 pub(crate) fn shim(
     args: ShimArgs,
     environment: &impl Environment,
+    runtime_lifecycle_lock: Option<RuntimeLifecycleLock>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
@@ -163,7 +164,7 @@ pub(crate) fn shim(
     shim_args.extend(args.args);
     let env = composer_env_overlay(&paths, environment)?;
 
-    super::php::shim_with_args_and_env(shim_args, env, environment)
+    super::php::shim_with_args_and_env(shim_args, env, environment, runtime_lifecycle_lock)
 }
 
 fn php_selector(database: &Database) -> Result<TrackSelector, ExecuteError> {

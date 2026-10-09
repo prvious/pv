@@ -16,13 +16,13 @@ mod tests;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::io;
-use std::net::TcpListener;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
 use futures_util::{StreamExt, stream::FuturesUnordered};
+use platform::loopback_tcp_port_available;
 use protocol::{
     ManagedResourceUpdateCheck as ProtocolUpdateCheck,
     ManagedResourceUpdateCheckTrack as ProtocolUpdateCheckTrack,
@@ -2408,7 +2408,7 @@ fn assign_named_ports_inner(
                 RUNTIME_PORT_FALLBACK_START,
                 RUNTIME_PORT_FALLBACK_END,
             ),
-            local_loopback_port_available,
+            loopback_tcp_port_available,
         )?;
 
         assignments.insert(port_spec.name.to_string(), assignment.port);
@@ -2425,7 +2425,7 @@ fn ports_occupied_without_recorded_runtime(
 ) -> Result<bool, DaemonError> {
     if ports
         .values()
-        .all(|port| local_loopback_port_available(*port))
+        .all(|port| loopback_tcp_port_available(*port))
     {
         return Ok(false);
     }
@@ -2745,10 +2745,6 @@ fn delete_optional_file(path: &Utf8Path) -> Result<(), DaemonError> {
         }
         Err(error) => Err(error.into()),
     }
-}
-
-fn local_loopback_port_available(port: u16) -> bool {
-    TcpListener::bind((RESOURCE_HOST, port)).is_ok()
 }
 
 #[cfg(test)]

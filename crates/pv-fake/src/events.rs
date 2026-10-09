@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::net::SocketAddr;
 
 use anyhow::Result;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -27,6 +28,10 @@ pub enum EventKind {
         persona: Persona,
         argv: Vec<String>,
         lifeline_armed: bool,
+    },
+    TcpAccepted,
+    TcpReady {
+        address: SocketAddr,
     },
     Signal {
         signal: String,

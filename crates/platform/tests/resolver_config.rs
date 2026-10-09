@@ -1,13 +1,9 @@
 use std::fmt::Debug;
 use std::io::Cursor;
-#[cfg(target_os = "macos")]
-use std::net::{Ipv4Addr, Ipv6Addr, TcpListener};
 
 use anyhow::Result;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
-#[cfg(target_os = "macos")]
-use platform::loopback_tcp_listener_ports;
 use platform::{
     CaFileState, CaRepairReason, GeneratedLocalCa, KeychainCertificate, KeychainTrustResult,
     LocalCaMetadata, PfConfReference, PfRedirectConfig, ResolverConfig, SystemTrustInspector,
@@ -256,43 +252,6 @@ fn pf_conf_reference_inspection_reports_missing_current_stale_conflict_and_unrea
         .collect::<Vec<_>>();
 
     assert_debug_snapshot!(normalized_states);
-
-    Ok(())
-}
-
-#[test]
-#[cfg(target_os = "macos")]
-fn pf_loopback_tcp_listener_ports_include_ipv4_wildcard_listener() -> Result<()> {
-    let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, 0))?;
-    let port = listener.local_addr()?.port();
-    let ports = loopback_tcp_listener_ports()?;
-    let detection = vec![("ipv4 wildcard listener detected", ports.contains(&port))];
-
-    assert_debug_snapshot!(detection);
-
-    Ok(())
-}
-
-#[test]
-#[cfg(target_os = "macos")]
-fn pf_loopback_tcp_listener_ports_include_ipv6_loopback_and_wildcard_listeners() -> Result<()> {
-    let loopback_listener = TcpListener::bind((Ipv6Addr::LOCALHOST, 0))?;
-    let wildcard_listener = TcpListener::bind((Ipv6Addr::UNSPECIFIED, 0))?;
-    let loopback_port = loopback_listener.local_addr()?.port();
-    let wildcard_port = wildcard_listener.local_addr()?.port();
-    let ports = loopback_tcp_listener_ports()?;
-    let detections = vec![
-        (
-            "ipv6 loopback listener detected",
-            ports.contains(&loopback_port),
-        ),
-        (
-            "ipv6 wildcard listener detected",
-            ports.contains(&wildcard_port),
-        ),
-    ];
-
-    assert_debug_snapshot!(detections);
 
     Ok(())
 }

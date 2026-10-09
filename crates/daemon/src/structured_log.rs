@@ -364,7 +364,6 @@ pub(crate) fn runtime_readiness_diagnostics(
     runtime: &str,
     readiness: &str,
     process_exited: &str,
-    loopback_listener_ports: &str,
 ) {
     append_best_effort(
         paths,
@@ -376,7 +375,6 @@ pub(crate) fn runtime_readiness_diagnostics(
             ("runtime", runtime),
             ("readiness", readiness),
             ("process_exited", process_exited),
-            ("loopback_listener_ports", loopback_listener_ports),
         ],
     );
 }
