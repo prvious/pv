@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
@@ -28,6 +28,7 @@ struct TestEnvironment {
     launch_agent_path: PathBuf,
     operations: RefCell<Vec<String>>,
     bootout_error: Option<BootoutError>,
+    bootout_daemon_record: Option<(Utf8PathBuf, String)>,
     bootout_signal: Option<mpsc::Sender<()>>,
     bootstrap_requires_daemon_exit: Option<u32>,
 }
@@ -46,6 +47,7 @@ impl TestEnvironment {
             launch_agent_path: launch_agent_path.as_std_path().to_path_buf(),
             operations: RefCell::new(Vec::new()),
             bootout_error: None,
+            bootout_daemon_record: None,
             bootout_signal: None,
             bootstrap_requires_daemon_exit: None,
         }
@@ -135,6 +137,10 @@ impl Environment for TestEnvironment {
     }
 
     fn bootout_launch_agent(&self) -> Result<(), platform::PlatformError> {
+        if let Some((path, record)) = &self.bootout_daemon_record {
+            state::fs::write_sensitive_file(path, record)
+                .map_err(|error| platform::PlatformError::LaunchAgent(error.to_string()))?;
+        }
         if let Some(signal) = &self.bootout_signal {
             signal
                 .send(())
@@ -528,61 +534,69 @@ fn daemon_disable_removes_previous_boot_postgres_records_without_signalling_reus
 
 #[test]
 fn daemon_replacement_waits_for_delayed_exit_before_bootstrap() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(&home);
-    let launch_agent_path = tempdir.path().join("owned.plist");
-    let stale = LaunchAgentConfig::new(
-        tempdir.path().join("old-pv"),
-        paths.logs().join("out"),
-        paths.logs().join("err"),
-    );
-    write_file(&launch_agent_path, &stale.render()?)?;
-    let mut spec = gateway_spec(&paths);
-    spec.command = paths.bin().join("releases/fixture/pv");
-    spec.arguments = vec!["daemon:run".to_owned()];
-    spec.pid_path = paths.run().join("fixture-daemon.pid");
-    spec.metadata_path = paths.run().join("fixture-daemon.json");
-    let mut previous = RuntimeFixture::start(&paths, spec)?;
-    let pid = previous.pid()?;
-    state::fs::write_sensitive_file(
-        &paths.daemon_process_record(),
-        &serde_json::to_string(&json!({
+    for publish_during_bootout in [false, true] {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(&home);
+        let launch_agent_path = tempdir.path().join("owned.plist");
+        let stale = LaunchAgentConfig::new(
+            tempdir.path().join("old-pv"),
+            paths.logs().join("out"),
+            paths.logs().join("err"),
+        );
+        write_file(&launch_agent_path, &stale.render()?)?;
+        let mut spec = gateway_spec(&paths);
+        spec.command = paths.bin().join("releases/fixture/pv");
+        spec.arguments = vec!["daemon:run".to_owned()];
+        spec.pid_path = paths.run().join("fixture-daemon.pid");
+        spec.metadata_path = paths.run().join("fixture-daemon.json");
+        let mut previous = RuntimeFixture::start(&paths, spec)?;
+        let pid = previous.pid()?;
+        let record = serde_json::to_string(&json!({
             "pid": pid, "start_identity": platform::inspect_process_start_identity(pid)?,
-        }))?,
-    )?;
-    let (signal, receiver) = mpsc::channel();
-    let cleanup = thread::Builder::new()
-        .name("daemon-fixture-cleanup".to_owned())
-        .spawn(move || -> anyhow::Result<()> {
-            receiver.recv_timeout(Duration::from_secs(5))?;
-            thread::sleep(Duration::from_millis(100));
-            previous.cleanup()
-        })?;
-    let mut environment = TestEnvironment::new(
-        &home,
-        tempdir.path(),
-        &paths.active_pv_binary(),
-        &launch_agent_path,
-    );
-    environment.bootout_signal = Some(signal);
-    environment.bootstrap_requires_daemon_exit = Some(pid);
-    let healthy = DaemonFixture::start(&paths, 2)?;
+        }))?;
+        let mut environment = TestEnvironment::new(
+            &home,
+            tempdir.path(),
+            &paths.active_pv_binary(),
+            &launch_agent_path,
+        );
+        if publish_during_bootout {
+            environment.bootout_daemon_record = Some((paths.daemon_process_record(), record));
+        } else {
+            state::fs::write_sensitive_file(&paths.daemon_process_record(), &record)?;
+        }
+        let (signal, receiver) = mpsc::channel();
+        let cleanup = thread::Builder::new()
+            .name("daemon-fixture-cleanup".to_owned())
+            .spawn(move || -> anyhow::Result<()> {
+                receiver.recv_timeout(Duration::from_secs(5))?;
+                thread::sleep(Duration::from_millis(100));
+                previous.cleanup()
+            })?;
+        environment.bootout_signal = Some(signal);
+        environment.bootstrap_requires_daemon_exit = Some(pid);
+        let healthy = DaemonFixture::start(&paths, 2)?;
 
-    let output = run_pv(&["daemon:restart"], &environment)?;
-    cleanup
-        .join()
-        .map_err(|_panic| anyhow::anyhow!("daemon fixture cleanup thread failed"))??;
-    let _requests = healthy.finish()?;
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(
-        environment.operations(),
-        [
-            format!("bootout {LAUNCH_AGENT_LABEL}"),
-            format!("bootstrap {launch_agent_path}"),
-            format!("kickstart {LAUNCH_AGENT_LABEL}"),
-        ]
-    );
+        let output = run_pv(&["daemon:restart"], &environment)?;
+        cleanup
+            .join()
+            .map_err(|_panic| anyhow::anyhow!("daemon fixture cleanup thread failed"))??;
+        assert_eq!(
+            output.exit_code,
+            ExitCode::SUCCESS,
+            "publish during bootout: {publish_during_bootout}"
+        );
+        let _requests = healthy.finish()?;
+        assert_eq!(
+            environment.operations(),
+            [
+                format!("bootout {LAUNCH_AGENT_LABEL}"),
+                format!("bootstrap {launch_agent_path}"),
+                format!("kickstart {LAUNCH_AGENT_LABEL}"),
+            ]
+        );
+    }
     Ok(())
 }
 

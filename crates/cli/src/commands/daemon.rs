@@ -132,6 +132,11 @@ pub(crate) fn unload_and_wait_for_daemon(
 ) -> Result<(), ExecuteError> {
     let daemon = environment.daemon_process_for_stop(paths)?;
     bootout_launch_agent_if_loaded(environment)?;
+    // Startup can publish the daemon identity while bootout is in progress.
+    let daemon = match daemon {
+        Some(daemon) => Some(daemon),
+        None => environment.daemon_process_for_stop(paths)?,
+    };
     if let Some(daemon) = daemon {
         daemon.wait_for_exit(Duration::from_secs(10))?;
     }

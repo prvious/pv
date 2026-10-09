@@ -268,7 +268,7 @@ After daemon restart, PV adopts already-running PV-owned child processes when ow
 
 PV starts each supervised runtime in its own process group so it can stop the entire PV-owned process tree safely. PV only signals a process group after ownership verification.
 
-PV stops child process groups with graceful termination first, waits up to 10 seconds, then force-kills only PV-owned process groups that do not exit within that timeout. Graceful termination is SIGTERM, except for Postgres, which gets SIGINT: SIGTERM is Postgres's smart shutdown, which waits until every client disconnects, so an app holding a connection would turn every stop into a force-kill and the next start into crash recovery. SIGINT is Postgres's fast shutdown, which disconnects clients and still shuts down cleanly.
+PV stops child process groups with graceful termination first, then force-kills only PV-owned process groups that do not exit within the applicable timeout. During disable or uninstall, the Gateway and PHP workers have up to 1 second to exit. PV is a local development tool: an explicit stop can interrupt active web requests. Other Managed Resources have up to 10 seconds to exit so they can complete shutdown work, including database writes. Graceful termination is SIGTERM, except for Postgres, which gets SIGINT: SIGTERM is Postgres's smart shutdown, which waits until every client disconnects, so an app holding a connection would turn every stop into a force-kill and the next start into crash recovery. SIGINT is Postgres's fast shutdown, which disconnects clients and still shuts down cleanly.
 
 The health tick may check privileged integrations such as `/etc/resolver/test` and `pf` rules read-only. It records repair-required status but does not prompt or mutate privileged system config. The health tick does not refresh the remote artifact manifest or make routine background network calls.
 
@@ -286,7 +286,7 @@ When a Project's PHP track or optional extension set changes, PV reconfigures on
 
 `pv daemon:enable` registers the LaunchAgent, starts the daemon immediately, waits up to 15 seconds for the Unix socket and daemon health, enqueues reconciliation, and exits non-zero if the daemon does not become healthy. It does not wait for the triggered reconciliation to finish.
 
-`pv daemon:disable` gracefully stops PV-managed child processes, waits up to 10 seconds, force-kills remaining PV-owned child processes when needed, reports what happened, stops the running daemon, and disables/unregisters the LaunchAgent so it does not start on next login.
+`pv daemon:disable` unloads the LaunchAgent and waits up to 10 seconds for the verified daemon process to exit before stopping recorded PV-managed child processes. Each Gateway or PHP worker gets up to 1 second for graceful termination; each other Managed Resource gets up to 10 seconds. PV then force-kills remaining verified PV-owned process groups when needed, reports what happened, and removes the LaunchAgent file after successful cleanup so it does not start on next login. Uninstall uses the same stop policy before removing installed state.
 
 `pv daemon:disable` does not remove DNS resolver config, `pf` rules, or CA trust. Those integrations are managed by `pv dns:*`, `pv ports:*`, `pv ca:*`, `pv setup`, and `pv uninstall`.
 
@@ -694,7 +694,7 @@ The PV application update phase runs in this order:
 6. Compare the app version plus installed helper version/protocol with the selected platform asset. If both are current, report current, release both locks, and continue to the Managed Resource phase in the same process.
 7. Download and verify only the changed components. For a combined app/helper update, store the checksummed helper and its user-owned version, protocol, and checksum metadata beside the target app release, then install or replace the root helper before app activation. For a helper-only update, install and lifecycle-probe the root helper from the command-scoped download first, then promote the helper plus metadata into the current release; promotion failure restores both the previous registered helper and release files. `pv setup` uses the active release metadata for later helper repair. A helper lifecycle failure stops before app activation.
 8. Install and activate the newer app release when its version changed.
-9. Capture the verified daemon identity, tolerantly boot out the validated PV-owned LaunchAgent, and wait up to 10 seconds for that exact daemon to exit before bootstrap and kickstart, without submitting `reconcile system`. Stale LaunchAgent replacement during enable or restart uses the same wait. A timeout prevents replacement startup. These transitions preserve managed runtimes.
+9. Capture the verified daemon identity, tolerantly boot out the validated PV-owned LaunchAgent, and wait up to 10 seconds for that exact daemon to exit before bootstrap and kickstart, without submitting `reconcile system`. If the initial capture found no daemon, repeat the capture after bootout to find a daemon that published its identity during unload. Stale LaunchAgent replacement during enable or restart uses the same wait. A timeout prevents replacement startup. These transitions preserve managed runtimes.
 10. Wait for daemon health.
 11. Release both locks and re-exec the active `~/.pv/bin/pv` into the internal Managed Resource continuation.
 
