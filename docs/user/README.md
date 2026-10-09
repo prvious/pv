@@ -268,4 +268,4 @@ pv uninstall --prune --force
 
 `--prune` requires confirmation unless `--force` is provided.
 
-Before removing anything, PV stops the Gateway, PHP workers, and databases and other services. If PV cannot confirm that one of them stopped, for example because Postgres was killed outside PV, uninstall stops and leaves everything in place. `--force` only skips the confirmation prompt; it does not skip this check. Restart your Mac, then run `pv uninstall` again.
+Before removing anything, PV stops the Gateway, PHP workers, and databases and other services. If PV cannot confirm that one of them stopped, for example because Postgres was killed outside PV, uninstall stops before removing anything. Services it already stopped stay stopped, and PV starts again at your next login. `--force` only skips the confirmation prompt; it does not skip this check. Restart your Mac, then run `pv uninstall` again.
