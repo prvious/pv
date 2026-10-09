@@ -372,6 +372,8 @@ pub(crate) fn uninstall(
         return Ok(ExitCode::SUCCESS);
     }
 
+    let _runtime_lifecycle_lock = state::RuntimeLifecycleLock::acquire_exclusive(&paths)
+        .map_err(super::coordination_lock_error)?;
     let subtitle = if args.prune {
         "--prune"
     } else {

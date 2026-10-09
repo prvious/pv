@@ -1,0 +1,8 @@
+---
+source: crates/daemon/src/lib.rs
+expression: marker
+---
+Object {
+    "kind": String("startup_failed"),
+    "message": String("runtime record is incomplete or invalid: <tempdir>/home/.pv/run/daemon-process.json"),
+}

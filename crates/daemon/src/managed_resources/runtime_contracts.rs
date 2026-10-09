@@ -171,6 +171,80 @@ async fn real_postgres_satisfies_the_runtime_contract() -> Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "requires PV_E2E_REAL_ARTIFACTS=1 and PV_E2E_ARTIFACT_MANIFEST_URL"]
+async fn real_postgres_forced_exit_keeps_recovery_records() -> Result<()> {
+    let Some(manifest_url) = real_artifact_manifest_url()? else {
+        return Ok(());
+    };
+    let (_tempdir, paths) = contract_paths()?;
+    let postgres = install_real_artifact(&paths, manifest_url, &postgres_adapter()?)?;
+    let track = postgres.track().as_str();
+    let [port] = available_ports()?;
+    let adapter = super::postgres::PostgresRuntimeAdapter::new();
+    let mut context = runtime_context(
+        &paths,
+        "postgres",
+        track,
+        postgres.current_artifact_path(),
+        [("postgres", port)],
+    );
+    context.env = adapter.resource_env(&context)?;
+    let admin = SqlAdminContext {
+        host: Ipv4Addr::LOCALHOST.to_string(),
+        port,
+        username: context.env.get("username").cloned().unwrap_or_default(),
+        password: context.env.get("password").cloned().unwrap_or_default(),
+    };
+    let mut guard = ManagedResourceFixtureGuard::new(&paths);
+    guard.register("postgres", track);
+    let outcome = async {
+        adapter.prepare_runtime(&paths, &context).await?;
+        let supervisor = ProcessSupervisor::new(paths.clone());
+        let spec = adapter.build_process_spec(&paths, &context)?;
+        let pending = start_or_adopt_runtime(&supervisor, spec.clone(), adapter.stop_signal(),
+            adapter.readiness(&context)?, adapter_readiness_timeout(&adapter), None).await?
+            .ok_or_else(|| anyhow!("Postgres was not started"))?;
+        pending.wait().await?;
+        let pool = PgPool::connect_with(sql::postgres_options(&admin)).await?;
+        let mut connection = pool.acquire().await?;
+        let backend_pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+            .fetch_one(&mut *connection).await?;
+        let backend_pid = u32::try_from(backend_pid)?;
+        let backend_identity = platform::inspect_process_start_identity(backend_pid)?
+            .ok_or_else(|| anyhow!("connected backend had no process identity"))?;
+        let postmaster = supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)?
+            .ok_or_else(|| anyhow!("Postgres ownership was not verified"))?;
+        postmaster.kill_and_wait_for_test(Duration::from_secs(2))?;
+        let stopped = crate::stop_recorded_runtimes(paths.clone()).await;
+        ensure!(matches!(stopped, Err(crate::DaemonError::RuntimeStopFailures { ref failures })
+            if failures.iter().any(|failure| matches!(failure.error(), crate::DaemonError::RuntimeCleanupUnproven { .. }))),
+            "forced Postgres exit did not block cleanup: {stopped:?}");
+        ensure!(state::fs::path_entry_exists(&spec.pid_path)?);
+        ensure!(state::fs::path_entry_exists(&spec.metadata_path)?);
+        ensure!(state::fs::path_entry_exists(&spec.command)?);
+        let query = tokio::time::timeout(Duration::from_secs(3),
+            sqlx::query("SELECT 1").execute(&mut *connection)).await?;
+        ensure!(query.is_err(), "backend connection survived postmaster death");
+        // PostgreSQL's own parent-death handling must finish this connected
+        // backend. Root-group disappearance alone is not our oracle.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while platform::inspect_process_start_identity(backend_pid)? == Some(backend_identity) {
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Ok::<_, platform::PlatformError>(())
+        }).await??;
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    match (outcome, guard.cleanup().await) {
+        (Ok(()), cleanup) => cleanup,
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup)) => Err(anyhow!(
+            "{error:#}; fixture cleanup also failed: {cleanup:#}"
+        )),
+    }
+}
+
+#[tokio::test]
 async fn fake_mysql_satisfies_the_runtime_contract() -> Result<()> {
     let (_tempdir, paths) = contract_paths()?;
     let artifact_path = fake_artifact(&paths, "mysql", "8.4", "bin/mysqld", Persona::Mysqld)?;
@@ -482,20 +556,20 @@ async fn start_wait_and_stop<Held>(
     };
     // A runtime that failed its readiness wait has been stopped and its records removed already.
     let stop_started = Instant::now();
-    let stopped = match supervisor.adopt_recorded(&pid_path, &metadata_path) {
-        Ok(Some(process)) => {
-            process
-                .stop_with(adapter.stop_signal(), STOP_GRACE_PERIOD)
-                .await
-        }
-        Ok(None) => Ok(()),
-        Err(error) => Err(error),
-    };
+    let stopped = crate::stop_recorded_runtimes(paths.clone()).await;
     let stopped_within = stop_started.elapsed();
 
     // Released only now, so whatever the check held stayed open through the stop.
     checked.with_context(|| runtime_log(&log_path))?;
     stopped?;
+    ensure!(
+        !state::fs::path_entry_exists(&pid_path)?,
+        "runtime PID record remains after stop"
+    );
+    ensure!(
+        !state::fs::path_entry_exists(&metadata_path)?,
+        "runtime metadata remains after stop"
+    );
     ensure!(
         stopped_within < STOP_GRACE_PERIOD,
         "{} ignored its stop signal ({:?}) for {stopped_within:?}",

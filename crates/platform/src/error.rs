@@ -7,6 +7,9 @@ use crate::{CaRepairReason, PlatformCapability, PlatformTarget};
 
 #[derive(Debug, Error)]
 pub enum PlatformError {
+    #[error("could not inspect kernel boot identity: {0}")]
+    BootSessionInspection(#[source] io::Error),
+
     #[error("could not generate PV local CA: {0}")]
     CaGeneration(#[from] rcgen::Error),
 

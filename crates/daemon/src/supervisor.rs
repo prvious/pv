@@ -32,6 +32,7 @@ const SCRIPT_IDENTITY_STABILIZATION: Duration = Duration::from_millis(250);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
+const POSTGRES_RECOVERY: &str = "Restart your Mac, then run this command again.";
 pub(crate) const RUNTIME_READINESS_CONCURRENCY_LIMIT: usize = 4;
 
 /// The signal that asks a runtime to shut down gracefully, before the grace period ends in SIGKILL.
@@ -180,7 +181,7 @@ pub enum ReadinessCheck {
     },
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Eq, PartialEq, Serialize)]
 struct RuntimeMetadata {
     name: String,
     pid: u32,
@@ -206,6 +207,8 @@ struct RuntimeMetadata {
     staged_config_fingerprint: Option<String>,
     log_path: String,
     started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    boot_session_id: Option<platform::BootSessionId>,
     #[serde(default)]
     process_start_identity: Option<platform::ProcessStartIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -221,6 +224,118 @@ struct ProcessExecutableIdentity {
 impl ProcessSupervisor {
     pub fn new(paths: PvPaths) -> Self {
         Self { paths }
+    }
+
+    pub(crate) async fn stop_recorded_for_shutdown(
+        &self,
+        pid_path: &Utf8Path,
+    ) -> Result<(), DaemonError> {
+        let metadata_path = pid_path.with_extension("json");
+        for path in [pid_path, metadata_path.as_path()] {
+            if !fs::path_is_file(path)? {
+                return Err(DaemonError::InvalidRuntimeRecord {
+                    path: path.to_owned(),
+                });
+            }
+        }
+        let metadata = read_runtime_metadata(&metadata_path)?.ok_or_else(|| {
+            DaemonError::InvalidRuntimeRecord {
+                path: metadata_path.clone(),
+            }
+        })?;
+        let pid = read_pid_file(pid_path)?.ok_or_else(|| DaemonError::InvalidRuntimeRecord {
+            path: pid_path.to_owned(),
+        })?;
+        let subject_matches = if pid_path == self.paths.gateway_pid() {
+            metadata.resource_name == "caddy"
+        } else if pid_path.parent() == Some(self.paths.run().join("workers").as_path()) {
+            metadata.resource_name == "frankenphp"
+                && pid_path == self.paths.worker_pid(&metadata.track)
+        } else {
+            !metadata.resource_name.is_empty()
+                && !metadata.track.is_empty()
+                && pid_path
+                    == self
+                        .paths
+                        .resource_pid(&metadata.resource_name, &metadata.track)
+        };
+        if metadata.pid != pid || metadata.process_start_identity.is_none() || !subject_matches {
+            return Err(DaemonError::InvalidRuntimeRecord {
+                path: metadata_path,
+            });
+        }
+        if let Some(recorded_boot) = &metadata.boot_session_id
+            && recorded_boot != &platform::current_boot_session_id()?
+        {
+            // A previous kernel's processes cannot survive this boot. Do not inspect
+            // or signal the recorded PID: it may now belong to an unrelated process.
+            return remove_unchanged_runtime_records(pid_path, &metadata_path, &metadata);
+        }
+        if let Some(adopted) = self.adopt_recorded(pid_path, &metadata_path)? {
+            // Postgres backends can leave the postmaster's process group, so an empty
+            // group proves nothing about them. The postmaster exits successfully only
+            // after its backends exit. Watch before signalling, then recheck ownership.
+            let exit_watch = if metadata.resource_name == "postgres" {
+                let watch = platform::ProcessExitWatch::new(pid)?;
+                if !adopted.owned.matches_live()? {
+                    return Err(DaemonError::RuntimeProcessIdentityChanged { pid });
+                }
+                Some(watch)
+            } else {
+                None
+            };
+            let signal = if metadata.resource_name == "postgres" {
+                StopSignal::Interrupt
+            } else {
+                StopSignal::Terminate
+            };
+            let grace = if matches!(metadata.resource_name.as_str(), "caddy" | "frankenphp") {
+                Duration::from_secs(1)
+            } else {
+                Duration::from_secs(10)
+            };
+            adopted.stop_with(signal, grace).await?;
+            if let Some(mut watch) = exit_watch {
+                let status = timeout(Duration::from_secs(1), async {
+                    loop {
+                        if let Some(status) = watch.try_exit_status()? {
+                            return Ok::<_, DaemonError>(status);
+                        }
+                        sleep(READINESS_POLL_INTERVAL).await;
+                    }
+                })
+                .await;
+                let status = match status {
+                    Ok(status) => status?,
+                    Err(_elapsed) => {
+                        return Err(DaemonError::RuntimeCleanupUnproven {
+                            pid,
+                            reason: format!(
+                                "PV could not confirm that Postgres shut down cleanly, so it kept its records. {POSTGRES_RECOVERY}"
+                            ),
+                        });
+                    }
+                };
+                if !status.success() {
+                    return Err(DaemonError::RuntimeCleanupUnproven {
+                        pid,
+                        reason: format!(
+                            "Postgres ended with {status}, so PV kept its records. {POSTGRES_RECOVERY}"
+                        ),
+                    });
+                }
+            }
+        } else if !process_and_group_are_absent(pid)? {
+            return Err(DaemonError::RuntimeProcessIdentityChanged { pid });
+        } else if metadata.resource_name == "postgres" {
+            return Err(DaemonError::RuntimeCleanupUnproven {
+                pid,
+                reason: format!(
+                    "Postgres exited before PV could stop it, so PV kept its records. {POSTGRES_RECOVERY}"
+                ),
+            });
+        }
+        remove_unchanged_runtime_records(pid_path, &metadata_path, &metadata)
     }
 
     pub async fn start(&self, spec: ProcessSpec) -> Result<ManagedProcess, DaemonError> {
@@ -700,7 +815,7 @@ impl AdoptedProcess {
             });
         }
 
-        stop_process_group_by_pid(self.owned.pid, signal, grace_period).await
+        stop_process_group_by_pid(&self.owned, signal, grace_period).await
     }
 }
 
@@ -1100,16 +1215,27 @@ async fn terminate_spawned_child(pid: u32, child: &mut Child) {
 }
 
 async fn stop_process_group_by_pid(
-    pid: u32,
+    owned: &OwnedRuntime,
     signal: StopSignal,
     grace_period: Duration,
 ) -> Result<(), DaemonError> {
+    let pid = owned.pid;
     signal_process_group(pid, ProcessSignal::Stop(signal))?;
 
     if wait_for_process_group_exit(pid, grace_period).await? {
         return Ok(());
     }
 
+    // An adopted leader can be reaped during the grace period, by launchd once the
+    // daemon that started it has exited. Do not signal a group whose recorded
+    // leader no longer matches.
+    if !owned.matches_live()? {
+        return Err(DaemonError::RuntimeCleanupUnproven {
+            pid,
+            reason: "runtime leader changed before escalation; group ownership is unproven"
+                .to_owned(),
+        });
+    }
     signal_process_group(pid, ProcessSignal::Kill)?;
 
     if wait_for_process_group_exit(pid, Duration::from_secs(1)).await? {
@@ -1289,6 +1415,7 @@ fn write_runtime_metadata(
         staged_config_fingerprint: None,
         log_path: spec.log_path.to_string(),
         started_at,
+        boot_session_id: Some(platform::current_boot_session_id()?),
         process_start_identity: Some(process_start_identity),
         process_executable_identity,
     };
@@ -1296,6 +1423,23 @@ fn write_runtime_metadata(
 
     fs::write_sensitive_file(&spec.metadata_path, &encoded)?;
 
+    Ok(())
+}
+
+fn remove_unchanged_runtime_records(
+    pid_path: &Utf8Path,
+    metadata_path: &Utf8Path,
+    metadata: &RuntimeMetadata,
+) -> Result<(), DaemonError> {
+    // Admission is closed and the daemon has stopped. Still compare both records
+    // before removal so another instance's evidence cannot be removed by this stop.
+    if read_pid_file(pid_path)? != Some(metadata.pid)
+        || read_runtime_metadata(metadata_path)?.is_none_or(|current| current != *metadata)
+    {
+        return Err(DaemonError::RuntimeProcessIdentityChanged { pid: metadata.pid });
+    }
+    fs::remove_file_if_exists(pid_path)?;
+    fs::remove_file_if_exists(metadata_path)?;
     Ok(())
 }
 
@@ -1331,43 +1475,12 @@ fn read_optional_file(path: &Utf8Path) -> Result<Option<String>, DaemonError> {
 
 #[cfg(target_os = "macos")]
 fn process_group_exists(pid: u32) -> Result<bool, DaemonError> {
-    let process_group = process_group_pid(pid)?;
-
-    match test_kill_process_group(process_group) {
-        Ok(()) => Ok(true),
-        Err(source) => {
-            let error = io::Error::from(source);
-            // PV runtimes run as the current user. EPERM therefore cannot identify the
-            // still-owned group and must not authorize another signal to this numeric PGID.
-            if process_not_found(&error) || error.kind() == io::ErrorKind::PermissionDenied {
-                return Ok(false);
-            }
-
-            Err(error.into())
-        }
-    }
+    Ok(platform::process_group_has_live_members(pid)?)
 }
 
-/// Whether a stopped runtime has exited. macOS also answers a group signal with EPERM while the
-/// group's leader is still exiting, so a group that no longer answers has exited only once its
-/// leader is gone or a zombie (#394). This only observes: reaping stays with the child's owner,
-/// and EPERM still never authorizes a signal.
 #[cfg(target_os = "macos")]
 fn process_group_has_exited(pid: u32) -> Result<bool, DaemonError> {
-    if process_group_exists(pid)? {
-        return Ok(false);
-    }
-
-    // ponytail: only the leader is checked, so another group member still exiting after the
-    // leader became a zombie goes unseen. List the group's members (`proc_listpgrppids`) once a
-    // runtime keeps children in its group.
-    match test_kill_process(process_group_pid(pid)?) {
-        Err(rustix::io::Errno::SRCH) => Ok(true),
-        // EPERM: a process we can't signal holds the PID, which doesn't prove the leader exited.
-        Err(rustix::io::Errno::PERM) => Ok(false),
-        Ok(()) => Ok(platform::process_is_zombie(pid)?),
-        Err(source) => Err(io::Error::from(source).into()),
-    }
+    Ok(!platform::process_group_has_live_members(pid)?)
 }
 
 #[cfg(target_os = "macos")]
@@ -1664,7 +1777,7 @@ mod tests {
 
     use super::{
         ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint, process_and_group_are_absent,
-        process_group_exists,
+        process_group_exists, read_runtime_metadata, remove_unchanged_runtime_records,
     };
     use state::PvPaths;
 
@@ -1675,6 +1788,40 @@ mod tests {
     /// stopping it leaves nothing running for long. That outlasts the CI profile's 120 s limit on
     /// a test, so a stalled test can't pass because its fixture exited on its own.
     const IDLE_SHELL_LOOP: &str = "i=0; while [ $i -lt 150 ]; do sleep 1; i=$((i + 1)); done";
+
+    #[test]
+    fn shutdown_cleanup_preserves_runtime_records_changed_after_inspection() -> Result<()> {
+        for change_pid in [false, true] {
+            let tempdir = tempdir()?;
+            let pid_path = tempdir.path().join("runtime.pid");
+            let metadata_path = tempdir.path().join("runtime.json");
+            let mut metadata = serde_json::json!({
+                "name": "postgres", "pid": 42, "command": "/owned/postgres",
+                "arguments": [], "log_path": "/owned/postgres.log", "started_at": "unused",
+            });
+            state::fs::write_sensitive_file(&pid_path, "42\n")?;
+            state::fs::write_sensitive_file(&metadata_path, &serde_json::to_string(&metadata)?)?;
+            let inspected = read_runtime_metadata(&metadata_path)?
+                .ok_or_else(|| anyhow!("runtime metadata was missing"))?;
+            let current_pid = if change_pid { "43\n" } else { "42\n" };
+            metadata["name"] = serde_json::json!("replacement");
+            state::fs::write_sensitive_file(&pid_path, current_pid)?;
+            if !change_pid {
+                state::fs::write_sensitive_file(
+                    &metadata_path,
+                    &serde_json::to_string(&metadata)?,
+                )?;
+            }
+            let before = state::fs::read_to_string(&metadata_path)?;
+            assert!(matches!(
+                remove_unchanged_runtime_records(&pid_path, &metadata_path, &inspected),
+                Err(crate::DaemonError::RuntimeProcessIdentityChanged { pid: 42 }),
+            ));
+            assert_eq!(state::fs::read_to_string(&pid_path)?, current_pid);
+            assert_eq!(state::fs::read_to_string(&metadata_path)?, before);
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn startup_persistence_failure_terminates_process_group_descendants() -> Result<()> {

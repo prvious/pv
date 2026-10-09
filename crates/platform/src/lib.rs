@@ -41,8 +41,9 @@ pub use pf::{
 };
 pub use port::loopback_tcp_port_available;
 pub use process::{
-    ProcessIdentity, ProcessStartIdentity, exec_replace, exec_replace_with_env,
-    inspect_process_identity, inspect_process_start_identity, process_is_zombie,
+    BootSessionId, ProcessExitWatch, ProcessIdentity, ProcessStartIdentity,
+    current_boot_session_id, exec_replace, exec_replace_with_env, inspect_process_identity,
+    inspect_process_start_identity, process_group_has_live_members, process_is_zombie,
 };
 pub use resolver::{
     ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH, inspect_resolver_file,

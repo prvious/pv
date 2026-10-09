@@ -311,6 +311,8 @@ async fn valid_reconciliation_scopes_stream_stub_completion() -> Result<()> {
 async fn update_locks_delay_startup_reconciliation_but_keep_health_available() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let _admission = state::RuntimeLifecycleLock::acquire_shared(&paths)?;
+    let _helper = state::HelperLifecycleLock::acquire(&paths)?;
     seed_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone());
     let update_lock = UpdateLock::acquire(&paths)?;
@@ -377,6 +379,18 @@ async fn update_locks_delay_startup_reconciliation_but_keep_health_available() -
         "update_locks_delay_startup_reconciliation_but_keep_health_available",
         snapshot,
     )
+}
+
+#[tokio::test]
+async fn exclusive_lifecycle_admission_blocks_daemon_before_layout_creation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let _admission = state::RuntimeLifecycleLock::acquire_exclusive(&paths)?;
+    assert!(matches!(daemon::RunningDaemon::start(paths.clone()).await,
+        Err(daemon::DaemonError::State(state::StateError::CoordinationLockHeld { path }))
+            if path == paths.runtime_lifecycle_lock()));
+    assert!(!state::fs::path_entry_exists(paths.root())?);
+    Ok(())
 }
 
 #[tokio::test]

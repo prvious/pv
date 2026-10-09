@@ -107,8 +107,16 @@ impl PvPaths {
         self.root.with_file_name(".pv-helper-lifecycle.lock")
     }
 
+    pub fn runtime_lifecycle_lock(&self) -> Utf8PathBuf {
+        self.root.with_file_name(".pv-runtime-lifecycle.lock")
+    }
+
     pub fn daemon_socket(&self) -> Utf8PathBuf {
         self.run().join("pv.sock")
+    }
+
+    pub fn daemon_process_record(&self) -> Utf8PathBuf {
+        self.run().join("daemon-process.json")
     }
 
     pub fn gateway_admin_socket(&self) -> Utf8PathBuf {

@@ -9,7 +9,9 @@ use resources::{
     TargetPlatform, TrackName, TrackSelector, UreqResourceHttpClient,
 };
 use serde::Serialize;
-use state::{Database, ManagedResourceDesiredState, ProjectRecord, PvPaths, StateError};
+use state::{
+    Database, ManagedResourceDesiredState, ProjectRecord, PvPaths, RuntimeLifecycleLock, StateError,
+};
 
 use crate::args::{ListArgs, PhpInstallArgs, PhpUninstallArgs, PhpUseArgs, ShimArgs};
 use crate::environment::{Environment, artifact_manifest_url};
@@ -300,21 +302,16 @@ struct PhpListTrack {
 pub(crate) fn shim(
     args: ShimArgs,
     environment: &impl Environment,
+    runtime_lifecycle_lock: Option<RuntimeLifecycleLock>,
 ) -> Result<ExitCode, ExecuteError> {
-    shim_with_args(args.args, environment)
-}
-
-pub(crate) fn shim_with_args(
-    args: Vec<String>,
-    environment: &impl Environment,
-) -> Result<ExitCode, ExecuteError> {
-    shim_with_args_and_env(args, Vec::new(), environment)
+    shim_with_args_and_env(args.args, Vec::new(), environment, runtime_lifecycle_lock)
 }
 
 pub(crate) fn shim_with_args_and_env(
     args: Vec<String>,
     mut env: Vec<(OsString, OsString)>,
     environment: &impl Environment,
+    runtime_lifecycle_lock: Option<RuntimeLifecycleLock>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let database = Database::open(&paths)?;
@@ -334,6 +331,8 @@ pub(crate) fn shim_with_args_and_env(
     )?);
     let executable = installed.executable()?;
 
+    // Admission covers initialization, not the lifetime of the PHP command.
+    drop(runtime_lifecycle_lock);
     environment
         .exec_with_env(executable.as_std_path(), &args, &env)
         .map_err(ExecuteError::from)

@@ -27,7 +27,7 @@ x509-parser = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { workspace = true }
-nix = { workspace = true }
+nix = { workspace = true, features = ["event"] }
 raunch = { workspace = true }
 rustix = { workspace = true }
 security-framework = { workspace = true }

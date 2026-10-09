@@ -1,4 +1,5 @@
 use std::process::ExitCode;
+use std::time::Duration;
 
 use camino::Utf8PathBuf;
 use platform::{LaunchAgentConfig, LaunchAgentFileState};
@@ -64,7 +65,7 @@ fn enable_inner(
             request_reconciliation,
         ),
         LaunchAgentFileState::Stale { .. } => {
-            bootout_launch_agent_if_loaded(environment)?;
+            unload_and_wait_for_daemon(environment, &paths)?;
             install_and_start_launch_agent(
                 environment,
                 &path,
@@ -91,7 +92,7 @@ pub(crate) fn disable(
 
     match state {
         LaunchAgentFileState::Missing { .. } => {
-            bootout_launch_agent_if_loaded(environment)?;
+            stop_daemon_and_runtimes(environment)?;
             output.note(if output.surface().decorated() {
                 "PV is already disabled"
             } else {
@@ -101,7 +102,7 @@ pub(crate) fn disable(
             Ok(ExitCode::SUCCESS)
         }
         LaunchAgentFileState::Current { .. } | LaunchAgentFileState::Stale { .. } => {
-            bootout_launch_agent_if_loaded(environment)?;
+            stop_daemon_and_runtimes(environment)?;
             platform::remove_launch_agent_file(&path)?;
             output.success(if output.surface().decorated() {
                 "PV stopped · automatic startup disabled"
@@ -116,6 +117,30 @@ pub(crate) fn disable(
             refuse_launch_agent(&mut streams.err, &state)
         }
     }
+}
+
+fn stop_daemon_and_runtimes(environment: &impl Environment) -> Result<(), ExecuteError> {
+    let paths = pv_paths(environment)?;
+    unload_and_wait_for_daemon(environment, &paths)?;
+    ::daemon::stop_recorded_runtimes_blocking(paths)?;
+    Ok(())
+}
+
+pub(crate) fn unload_and_wait_for_daemon(
+    environment: &impl Environment,
+    paths: &PvPaths,
+) -> Result<(), ExecuteError> {
+    let daemon = environment.daemon_process_for_stop(paths)?;
+    bootout_launch_agent_if_loaded(environment)?;
+    // Startup can publish the daemon identity while bootout is in progress.
+    let daemon = match daemon {
+        Some(daemon) => Some(daemon),
+        None => environment.daemon_process_for_stop(paths)?,
+    };
+    if let Some(daemon) = daemon {
+        daemon.wait_for_exit(Duration::from_secs(10))?;
+    }
+    Ok(())
 }
 
 pub(crate) fn restart(
@@ -153,7 +178,7 @@ pub(crate) fn restart(
             true,
         ),
         LaunchAgentFileState::Stale { .. } => {
-            bootout_launch_agent_if_loaded(environment)?;
+            unload_and_wait_for_daemon(environment, &paths)?;
             install_and_start_launch_agent(
                 environment,
                 &path,
@@ -271,6 +296,7 @@ fn launch_agent_is_already_unloaded(error: &platform::PlatformError) -> bool {
             message.contains("already unloaded")
                 || message.contains("not loaded")
                 || message.contains("not running")
+                || message.contains("no such process")
         }
         platform::PlatformError::LaunchAgentCommandStatus { .. } => false,
         _ => false,

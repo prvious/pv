@@ -410,6 +410,7 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         PlatformError::CaGeneration(_)
         | PlatformError::ProjectCertificateGeneration(_)
         | PlatformError::Pem(_)
+        | PlatformError::BootSessionInspection(_)
         | PlatformError::LocalCaPostWriteMissing
         | PlatformError::LocalCaPostWriteRepairRequired { .. }
         | PlatformError::LocalCaPostWriteUnreadable { .. }

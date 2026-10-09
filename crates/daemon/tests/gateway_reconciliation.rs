@@ -2443,7 +2443,9 @@ async fn targeted_project_reconciliation_touches_only_old_and_new_workers() -> R
     )?;
     drop(database);
 
-    reconcile_gateway_runtimes(&paths).await?;
+    reconcile_gateway_runtimes(&paths)
+        .await
+        .context("start initial targeted-reconciliation runtimes")?;
     let gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
     let worker_83_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.3"))?;
     let worker_84_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?;
@@ -2624,7 +2626,8 @@ env:
         Duration::from_secs(5),
         GatewayPfRoutingState::Inactive,
     )
-    .await?;
+    .await
+    .context("switch the target Project to PHP 8.5")?;
 
     assert_eq!(
         required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?,
@@ -2742,7 +2745,15 @@ env:
         assert!(!gateway_fragment.exists());
         assert!(!worker_fragment.exists());
         fs::write_sensitive_file(&acme.config_path, "php: \"8.5\"\n")?;
+        // Stopping the undemanded worker releases its seeded port. Reserve a
+        // fresh one for each restart instead of racing parallel tests on defaults.
+        let port_reservation = reserve_loopback_ports(1)?;
+        let worker_port = loopback_ports(&port_reservation)?[0];
         let mut database = Database::open(&paths)?;
+        database.assign_port(
+            PortRequest::php_worker("8.5", worker_port, worker_port, worker_port),
+            |_port| true,
+        )?;
         database.link_project_with_mode(
             LinkProjectInput {
                 path: acme.path.clone(),
@@ -2754,7 +2765,10 @@ env:
             ProjectMode::Served,
         )?;
         drop(database);
-        reconcile_gateway_runtimes(&paths).await?;
+        drop(port_reservation);
+        reconcile_gateway_runtimes(&paths)
+            .await
+            .context("restore the served Project after stopping its PHP 8.5 worker")?;
         assert!(gateway_fragment.exists());
         assert!(worker_fragment.exists());
     }

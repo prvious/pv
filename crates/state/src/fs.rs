@@ -393,7 +393,7 @@ fn file_modified_at(path: &Utf8Path) -> Result<SystemTime, StateError> {
     clippy::disallowed_methods,
     reason = "PV filesystem helper owns direct filesystem access"
 )]
-fn create_dir_all(path: &Utf8Path) -> Result<(), StateError> {
+pub(crate) fn create_dir_all(path: &Utf8Path) -> Result<(), StateError> {
     std::fs::create_dir_all(path)
         .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
 }

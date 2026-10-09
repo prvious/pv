@@ -246,6 +246,24 @@ pub enum DaemonError {
         failures: Vec<RuntimeReconciliationFailure>,
     },
 
+    #[error("runtime shutdown failed; recovery records were kept: {}", runtime_reconciliation_failures(.failures))]
+    RuntimeStopFailures {
+        failures: Vec<RuntimeReconciliationFailure>,
+    },
+
+    #[error("cleanup of process {pid} is unproven: {reason}")]
+    RuntimeCleanupUnproven { pid: u32, reason: String },
+
+    #[error("runtime record is incomplete or invalid: {path}")]
+    InvalidRuntimeRecord { path: camino::Utf8PathBuf },
+
+    #[error("cannot read daemon identity record {path}: {source}")]
+    InvalidDaemonProcessRecord {
+        path: camino::Utf8PathBuf,
+        #[source]
+        source: JsonError,
+    },
+
     #[error("Redis readiness failed: {0}")]
     Redis(#[from] redis::RedisError),
 

@@ -15,7 +15,7 @@ use state::{
     ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
     ProjectMode, ProjectPhpRuntimeInput, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END,
     RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput, ResourceAllocationStatus,
-    RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
+    RuntimeLifecycleLock, RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
 };
 
 #[test]
@@ -304,6 +304,29 @@ fn update_lock_rejects_concurrent_holder_and_ignores_stale_file() -> Result<()> 
     let reacquired = UpdateLock::acquire(&paths)?;
     drop(reacquired);
 
+    Ok(())
+}
+
+#[test]
+fn lifecycle_admission_allows_bootstrap_during_update_but_excludes_state_removal() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path());
+    let mutation = RuntimeLifecycleLock::acquire_shared(&paths)?;
+    let bootstrap = RuntimeLifecycleLock::acquire_shared(&paths)?;
+    assert!(matches!(
+        RuntimeLifecycleLock::acquire_exclusive(&paths),
+        Err(StateError::CoordinationLockHeld { path }) if path == paths.runtime_lifecycle_lock()
+    ));
+    drop(bootstrap);
+    drop(mutation);
+    let removal = RuntimeLifecycleLock::acquire_exclusive(&paths)?;
+    assert!(matches!(
+        RuntimeLifecycleLock::acquire_shared(&paths),
+        Err(StateError::CoordinationLockHeld { path }) if path == paths.runtime_lifecycle_lock()
+    ));
+    assert!(!paths.root().exists());
+    drop(removal);
+    let _admitted = RuntimeLifecycleLock::acquire_shared(&paths)?;
     Ok(())
 }
 

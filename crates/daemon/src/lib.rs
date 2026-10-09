@@ -10,6 +10,7 @@ mod jobs;
 mod managed_resources;
 mod project_env;
 mod reconciliation;
+mod runtime_stop;
 mod server;
 mod structured_log;
 mod supervisor;
@@ -44,9 +45,12 @@ pub use reconciliation::{
     EnqueueResult, QueuedReconciliation, ReconciliationDebouncer, ReconciliationJob,
     ReconciliationQueue, ReconciliationScope, ReconciliationScopeParseError, RunningReconciliation,
 };
+pub use runtime_stop::{
+    DaemonProcess, daemon_process_for_stop, stop_recorded_runtimes, stop_recorded_runtimes_blocking,
+};
 pub use supervisor::{
-    AdoptedProcess, OwnedRuntime, ProcessSpec, ProcessSupervisor, ReadinessCheck, StopSignal,
-    wait_for_custom_readiness, wait_for_readiness,
+    AdoptedProcess, ManagedProcess, OwnedRuntime, ProcessSpec, ProcessSupervisor, ReadinessCheck,
+    StopSignal, wait_for_custom_readiness, wait_for_readiness,
 };
 
 #[derive(Debug)]
@@ -134,6 +138,7 @@ impl RunningDaemon {
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
         blocked_request_release_signal: Option<mpsc::Sender<()>>,
     ) -> Result<Self, DaemonError> {
+        let _runtime_lifecycle_lock = state::RuntimeLifecycleLock::acquire_shared(&paths)?;
         match Self::start_with_runtime_catalog_inner(
             paths.clone(),
             runtime_catalog,
@@ -155,6 +160,7 @@ impl RunningDaemon {
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
         blocked_request_release_signal: Option<mpsc::Sender<()>>,
     ) -> Result<Self, DaemonError> {
+        runtime_stop::require_previous_daemon_exited(&paths)?;
         let mut database = Database::open(&paths)?;
         ipc::prepare_endpoint(&paths).await?;
         let listener = ipc::bind(&paths)?;
@@ -297,12 +303,38 @@ pub fn run_blocking(paths: PvPaths) -> Result<(), DaemonError> {
 
 fn run_blocking_for_target(paths: PvPaths, target: PlatformTarget) -> Result<(), DaemonError> {
     ipc::require_ipc_for(target)?;
+    // If bootstrap fails before identity publication, admission must outlive
+    // runtime destruction too: canceled blocking work can still be running.
+    let mut admission = Some(state::RuntimeLifecycleLock::acquire_shared(&paths)?);
     let runtime = build_runtime()?;
 
     runtime.block_on(async {
-        let daemon = RunningDaemon::start_with_runtime_catalog(paths, None).await?;
+        let daemon = RunningDaemon::start_with_runtime_catalog(paths.clone(), None).await?;
+        let daemon = publish_started_daemon(&paths, daemon).await?;
+        drop(admission.take());
+        // Keep the identity record through runtime teardown and OS process exit.
+        // The next startup replaces it after acquiring lifecycle admission.
         wait_for_shutdown(daemon, termination_signal()).await
     })
+}
+
+async fn publish_started_daemon(
+    paths: &PvPaths,
+    daemon: RunningDaemon,
+) -> Result<RunningDaemon, DaemonError> {
+    if let Err(source) = runtime_stop::record_daemon_process(paths) {
+        let error = match daemon.shutdown().await {
+            Ok(()) => source,
+            Err(cleanup) => DaemonError::RuntimeCleanupFailed {
+                runtime: "daemon startup".to_owned(),
+                source: Box::new(source),
+                cleanup: Box::new(cleanup),
+            },
+        };
+        write_startup_failure_marker(paths, &error);
+        return Err(error);
+    }
+    Ok(daemon)
 }
 
 fn build_runtime() -> io::Result<Runtime> {
@@ -400,6 +432,9 @@ mod tests {
     use tokio::sync::{oneshot, watch};
     use tokio::time::timeout;
 
+    #[cfg(target_os = "macos")]
+    use super::publish_started_daemon;
+
     use super::{
         DaemonError, RunningDaemon, build_runtime, run_blocking_for_target,
         startup_error_after_endpoint_cleanup, wait_for_shutdown,
@@ -484,6 +519,89 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("socket cleanup failed"), "{message}");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn daemon_publication_failure_records_startup_and_cleanup_errors() -> anyhow::Result<()> {
+        for cleanup_fails in [false, true] {
+            let tempdir = tempdir()?;
+            let paths = PvPaths::for_home(tempdir.path().join("home"));
+            state::fs::ensure_layout(&paths)?;
+            state::fs::ensure_user_dir(&paths.daemon_process_record())?;
+            let (shutdown, shutdown_receiver) = oneshot::channel();
+            let (fallback_shutdown, _fallback_receiver) = watch::channel(false);
+            let task = tokio::spawn(async move {
+                let _requested = shutdown_receiver.await;
+                if cleanup_fails {
+                    Err(DaemonError::Io(io::Error::other("server cleanup failed")))
+                } else {
+                    Ok(())
+                }
+            });
+            let daemon = RunningDaemon {
+                paths: paths.clone(),
+                shutdown,
+                fallback_shutdown,
+                task,
+                dns: super::dns::RunningDnsResolver::pending_for_test(),
+                blocked_request_release_signal: None,
+            };
+            let error = match publish_started_daemon(&paths, daemon).await {
+                Ok(daemon) => {
+                    daemon.shutdown().await?;
+                    return Err(anyhow::anyhow!("publication unexpectedly succeeded"));
+                }
+                Err(error) => error,
+            };
+            if cleanup_fails {
+                assert!(
+                    matches!(&error, DaemonError::RuntimeCleanupFailed { source, .. }
+                    if matches!(**source, DaemonError::InvalidRuntimeRecord { .. }))
+                );
+            } else {
+                assert!(matches!(&error, DaemonError::InvalidRuntimeRecord { .. }));
+            }
+            let marker: serde_json::Value =
+                serde_json::from_str(&state::fs::read_to_string(&paths.daemon_startup_error())?)?;
+            let mut settings = insta::Settings::clone_current();
+            settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+            settings.bind(|| {
+                assert_debug_snapshot!(
+                    if cleanup_fails {
+                        "daemon_publication_and_cleanup_failure"
+                    } else {
+                        "daemon_publication_failure"
+                    },
+                    marker,
+                )
+            });
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn startup_records_invalid_previous_daemon_record() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        state::fs::ensure_layout(&paths)?;
+        state::fs::ensure_user_dir(&paths.daemon_process_record())?;
+        let error = match RunningDaemon::start_with_runtime_catalog(paths.clone(), None).await {
+            Ok(daemon) => {
+                daemon.shutdown().await?;
+                return Err(anyhow::anyhow!("startup unexpectedly succeeded"));
+            }
+            Err(error) => error,
+        };
+        assert!(matches!(&error, DaemonError::InvalidRuntimeRecord { .. }));
+        let marker: serde_json::Value =
+            serde_json::from_str(&state::fs::read_to_string(&paths.daemon_startup_error())?)?;
+        assert_eq!(
+            marker,
+            serde_json::json!({ "kind": "startup_failed", "message": error.to_string() })
+        );
+        Ok(())
     }
 
     #[tokio::test]

@@ -14,7 +14,8 @@ use insta::{assert_debug_snapshot, assert_snapshot};
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use state::{
     Database, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackRecord,
-    ProjectMode, ProjectPhpRuntimeInput, ProjectRecord, PvPaths, fs,
+    ProjectMode, ProjectPhpRuntimeInput, ProjectRecord, PvPaths, RuntimeLifecycleLock, StateError,
+    fs,
 };
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
@@ -122,6 +123,20 @@ impl Environment for TestEnvironment {
     }
 
     fn current_dir(&self) -> io::Result<PathBuf> {
+        if cfg!(target_os = "macos") {
+            let paths = PvPaths::for_home(
+                Utf8Path::from_path(&self.home)
+                    .ok_or_else(|| io::Error::other("fixture home is not UTF-8"))?,
+            );
+            if !matches!(
+                RuntimeLifecycleLock::acquire_exclusive(&paths),
+                Err(StateError::CoordinationLockHeld { .. })
+            ) {
+                return Err(io::Error::other(
+                    "initialization must hold lifecycle admission",
+                ));
+            }
+        }
         Ok(self.current_dir.borrow().clone())
     }
 
@@ -167,6 +182,15 @@ impl Environment for TestEnvironment {
         args: &[String],
         env: &[(OsString, OsString)],
     ) -> io::Result<ExitCode> {
+        if cfg!(target_os = "macos") {
+            // PHP must not inherit the initialization lock for its lifetime.
+            let paths = PvPaths::for_home(
+                Utf8Path::from_path(&self.home)
+                    .ok_or_else(|| io::Error::other("fixture home is not UTF-8"))?,
+            );
+            let _exclusive =
+                RuntimeLifecycleLock::acquire_exclusive(&paths).map_err(io::Error::other)?;
+        }
         self.exec_calls.borrow_mut().push(ExecCall {
             program: program.to_path_buf(),
             args: args.to_vec(),
@@ -198,6 +222,28 @@ impl Environment for TestEnvironment {
         self.target_platform
             .map_or_else(TargetPlatform::current, Ok)
     }
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn php_shim_does_not_create_state_during_exclusive_shutdown() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    create_dir(&home)?;
+    let paths = pv_paths(&home);
+    let _exclusive = RuntimeLifecycleLock::acquire_exclusive(&paths)?;
+    let environment = TestEnvironment::new(&home, &home, ScriptedClient::new());
+
+    let output = run_pv(&["shim:php", "-v"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(!fs::path_entry_exists(paths.root())?);
+    assert!(environment.exec_calls().is_empty());
+    with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!(output);
+        Ok(())
+    })?;
+    Ok(())
 }
 
 #[test]
