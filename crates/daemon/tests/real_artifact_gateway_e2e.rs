@@ -86,7 +86,7 @@ async fn verify_wildcard_routing(
         }
         daemon::gateway::reconcile_gateway_runtimes(paths).await?;
         ensure!(
-            paths.worker_pid(admin_runtime_key).exists(),
+            paths.worker_runtime_metadata(admin_runtime_key).exists(),
             "admin.laravel.test is not on its own `{admin_runtime_key}` worker"
         );
 

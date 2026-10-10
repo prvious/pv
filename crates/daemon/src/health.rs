@@ -1273,6 +1273,7 @@ mod tests {
         let _killed_listener = assign_php_worker_listener(&mut database, "8.3")?;
         let _healthy_listener = assign_php_worker_listener(&mut database, "8.4")?;
         drop(database);
+        pv_fake::install_monitor(&paths)?;
         let supervisor = ProcessSupervisor::new(paths.clone());
         let killed_spec = worker_process_spec(&paths, &killed_runtime, "8.3");
         let healthy_spec = worker_process_spec(&paths, &healthy_runtime, "8.4");
@@ -1324,6 +1325,7 @@ mod tests {
         let runtime = prepare_worker_artifact(&mut database, tempdir.path(), "8.4")?;
         let _listener = assign_php_worker_listener(&mut database, "8.4")?;
         drop(database);
+        pv_fake::install_monitor(&paths)?;
         let supervisor = ProcessSupervisor::new(paths.clone());
         let spec = worker_process_spec(&paths, &runtime, "8.4");
         let process = supervisor.start(spec.clone()).await?;
@@ -1412,6 +1414,7 @@ mod tests {
         let _broken_listener = assign_php_worker_listener(&mut database, "8.3")?;
         let _healthy_listener = assign_php_worker_listener(&mut database, "8.4")?;
         drop(database);
+        pv_fake::install_monitor(&paths)?;
         let supervisor = ProcessSupervisor::new(paths.clone());
         let broken_spec = worker_process_spec(&paths, &broken_runtime, "8.3");
         let healthy_spec = worker_process_spec(&paths, &healthy_runtime, "8.4");

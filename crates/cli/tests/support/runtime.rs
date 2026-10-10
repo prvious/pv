@@ -2,6 +2,7 @@ use std::io::Write;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use camino::Utf8PathBuf;
 use daemon::{AdoptedProcess, ManagedProcess, ProcessSpec, ProcessSupervisor};
 use pv_fake::{EventKind, FakeSettings, Persona};
 use state::{PvPaths, fs};
@@ -89,13 +90,33 @@ impl RuntimeFixture {
     }
 
     pub fn records_exist(&self) -> Result<bool> {
-        Ok(fs::path_entry_exists(&self.spec.pid_path)?
-            && fs::path_entry_exists(&self.spec.metadata_path)?)
+        Ok(fs::path_entry_exists(&self.spec.metadata_path)?)
     }
 
     pub fn records_absent(&self) -> Result<bool> {
-        Ok(!fs::path_entry_exists(&self.spec.pid_path)?
-            && !fs::path_entry_exists(&self.spec.metadata_path)?)
+        Ok(!fs::path_entry_exists(&self.spec.metadata_path)?)
+    }
+}
+
+/// A monitor record rewritten as another protocol version would write it, which PV refuses to
+/// act on. Restore it before fixture cleanup, which finds the runtime through the record.
+pub struct ForeignMonitorRecord {
+    path: Utf8PathBuf,
+    original: String,
+}
+
+impl ForeignMonitorRecord {
+    pub fn write(paths: &PvPaths, subject: &str) -> Result<Self> {
+        let path = paths.monitor_dir(subject).join("monitor.json");
+        let original = fs::read_to_string(&path)?;
+        let mut record: serde_json::Value = serde_json::from_str(&original)?;
+        record["version"] = serde_json::json!(2);
+        fs::write_sensitive_file(&path, &serde_json::to_string(&record)?)?;
+        Ok(Self { path, original })
+    }
+
+    pub fn restore(self) -> Result<()> {
+        Ok(fs::write_sensitive_file(&self.path, &self.original)?)
     }
 }
 

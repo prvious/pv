@@ -21,8 +21,8 @@ use tokio::task::JoinHandle;
 use tokio::time::{Instant, MissedTickBehavior, interval_at, sleep, timeout};
 
 use super::{
-    MONITOR_GATE_COMMAND, MONITOR_RUN_COMMAND, MonitorCleanup, MonitorErrorKind, MonitorExit,
-    MonitorHooks, MonitorPause, MonitorStart, MonitorState, MonitorStop, rotation,
+    LiveRuntime, MONITOR_GATE_COMMAND, MONITOR_RUN_COMMAND, MonitorCleanup, MonitorErrorKind,
+    MonitorExit, MonitorHooks, MonitorPause, MonitorStart, MonitorState, MonitorStop, rotation,
 };
 use crate::DaemonError;
 use crate::supervisor::{
@@ -131,13 +131,6 @@ struct MonitorRecord {
 struct RecordedProcess {
     pid: u32,
     start_identity: ProcessStartIdentity,
-}
-
-/// A monitor's runtime that is still running; see [`live_runtime`].
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LiveRuntime {
-    pub instance: String,
-    pub runtime_pid: u32,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -298,6 +291,14 @@ pub fn live_runtime(paths: &PvPaths, subject: &str) -> Result<Option<LiveRuntime
         instance: record.instance,
         runtime_pid: record.runtime.pid,
     }))
+}
+
+/// The instance that `subject`'s published monitor record names, whether or not it still runs.
+pub fn recorded_monitor_instance(
+    paths: &PvPaths,
+    subject: &str,
+) -> Result<Option<String>, DaemonError> {
+    Ok(read_record(paths, subject)?.map(|record| record.instance))
 }
 
 /// The subjects of every monitor that has published its record.

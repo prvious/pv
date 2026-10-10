@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::CommandExt as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
@@ -18,7 +19,22 @@ use state::{PvPaths, StateError};
 
 #[path = "support/runtime.rs"]
 mod runtime;
-use runtime::{RuntimeFixture, gateway_spec};
+use runtime::{ForeignMonitorRecord, RuntimeFixture, gateway_spec};
+
+#[expect(
+    clippy::disallowed_types,
+    reason = "disable tests spawn unrelated processes to prove what disable never signals"
+)]
+type TestCommand = std::process::Command;
+
+struct ChildGuard(std::process::Child);
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _kill_result = self.0.kill();
+        let _wait_result = self.0.wait();
+    }
+}
 
 #[derive(Debug)]
 struct TestEnvironment {
@@ -373,11 +389,21 @@ fn daemon_disable_stops_live_runtimes_without_a_plist_or_database() -> anyhow::R
     }
     // Real MySQL creates this ancillary socket beside its runtime directory.
     let _mysql_socket = UnixListener::bind(paths.run().join("resources/mysql-8.4.sock"))?;
+    // A runtime that stopped earlier leaves only its config proofs.
+    let retained_proof = paths.resource_runtime_metadata("redis", "7");
+    state::fs::write_sensitive_file(&retained_proof, r#"{"staged_config_fingerprint":"a"}"#)?;
     let mut watch = platform::ProcessExitWatch::new(fixtures[0].descendant_pid()?)?;
     // Maintenance stop must work even when the database cannot be opened.
     state::fs::write_sensitive_file(paths.db(), "invalid database")?;
     let output = run_pv(&["daemon:disable"], &environment)?;
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(!state::fs::path_entry_exists(&retained_proof)?);
+    for monitor in state::fs::read_dir_paths(&paths.monitors())? {
+        assert!(
+            !state::fs::path_is_directory(&monitor)?,
+            "monitor {monitor} was not released"
+        );
+    }
     // The descendant belongs to the fake, not to this test process. Native
     // observation must still report its exact successful status after it exits.
     assert!(
@@ -447,7 +473,7 @@ fn daemon_disable_waits_for_process_death_after_its_socket_is_gone() -> anyhow::
     daemon.cleanup()?;
     // Once the captured daemon actually exits, its stale record must not block stop.
     let stopped = run_pv(&["daemon:disable"], &environment)?;
-    assert_eq!(stopped.exit_code, ExitCode::SUCCESS);
+    assert_eq!(stopped.exit_code, ExitCode::SUCCESS, "{stopped:?}");
     assert!(runtime.records_absent()?);
     runtime.cleanup()?;
     Ok(())
@@ -470,24 +496,18 @@ fn daemon_disable_keeps_dead_postgres_records_when_cleanup_is_unproven() -> anyh
     spec.pid_path = paths.resource_pid("postgres", "18");
     spec.metadata_path = paths.resource_runtime_metadata("postgres", "18");
     let mut runtime = RuntimeFixture::start(&paths, spec)?;
+    // Killed, Postgres exits by signal, which proves nothing about its backends.
     runtime.cleanup()?;
     let metadata_path = paths.resource_runtime_metadata("postgres", "18");
-    let original: serde_json::Value =
-        serde_json::from_str(&state::fs::read_to_string(&metadata_path)?)?;
-    for boot in [
-        original["boot_session_id"].clone(),
-        json!(null),
-        json!("invalid"),
-    ] {
-        let mut metadata = original.clone();
-        metadata["boot_session_id"] = boot;
-        let encoded = serde_json::to_string(&metadata)?;
-        state::fs::write_sensitive_file(&metadata_path, &encoded)?;
-        let output = run_pv(&["daemon:disable"], &environment)?;
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert!(runtime.records_exist()?);
-        assert_eq!(state::fs::read_to_string(&metadata_path)?, encoded);
-    }
+    let metadata = state::fs::read_to_string(&metadata_path)?;
+    let output = run_pv(&["daemon:disable"], &environment)?;
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert_eq!(state::fs::read_to_string(&metadata_path)?, metadata);
+    assert!(state::fs::path_entry_exists(
+        &paths
+            .monitor_dir("resources/postgres/18")
+            .join("monitor.json")
+    )?);
     Ok(())
 }
 
@@ -503,32 +523,40 @@ fn daemon_disable_removes_previous_boot_postgres_records_without_signalling_reus
         &paths.active_pv_binary(),
         &tempdir.path().join("absent.plist"),
     );
-    let mut foreign_spec = gateway_spec(&paths);
-    foreign_spec.pid_path = paths.run().join("foreign.pid");
-    foreign_spec.metadata_path = paths.run().join("foreign.json");
-    let mut foreign = RuntimeFixture::start(&paths, foreign_spec.clone())?;
-    let foreign_pid = foreign.pid()?;
-    let mut metadata: serde_json::Value =
-        serde_json::from_str(&state::fs::read_to_string(&foreign_spec.metadata_path)?)?;
+    // A process outside PV now holds the pid that a previous boot's Postgres recorded.
+    let foreign = ChildGuard(
+        TestCommand::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()?,
+    );
+    let foreign_pid = foreign.0.id();
     let previous_boot =
         platform::BootSessionId::try_from("00000000-0000-0000-0000-000000000001".to_owned())?;
     assert_ne!(previous_boot, platform::current_boot_session_id()?);
-    metadata["boot_session_id"] = serde_json::to_value(previous_boot)?;
-    metadata["resource_name"] = json!("postgres");
-    metadata["track"] = json!("18");
     let pid_path = paths.resource_pid("postgres", "18");
     let metadata_path = paths.resource_runtime_metadata("postgres", "18");
     state::fs::write_sensitive_file(&pid_path, &format!("{foreign_pid}\n"))?;
+    let metadata = json!({
+        "name": "postgres",
+        "pid": foreign_pid,
+        "command": "/bin/sleep",
+        "arguments": ["30"],
+        "resource_name": "postgres",
+        "track": "18",
+        "log_path": paths.logs().join("postgres.log"),
+        "started_at": "2026-10-09T00:00:00Z",
+        "boot_session_id": previous_boot,
+        "process_start_identity": platform::inspect_process_start_identity(foreign_pid)?,
+    });
     state::fs::write_sensitive_file(&metadata_path, &serde_json::to_string(&metadata)?)?;
 
     let output = run_pv(&["daemon:disable"], &environment)?;
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(!state::fs::path_entry_exists(&pid_path)?);
     assert!(!state::fs::path_entry_exists(&metadata_path)?);
-    assert!(platform::inspect_process_identity(foreign_pid)?.is_some());
     assert!(platform::process_group_has_live_members(foreign_pid)?);
-    assert!(foreign.records_exist()?);
-    foreign.cleanup()?;
+    drop(foreign);
     Ok(())
 }
 
@@ -664,19 +692,13 @@ fn daemon_disable_keeps_foreign_runtime_records_and_owned_plist() -> anyhow::Res
     );
     write_file(&launch_agent_path, &config.render()?)?;
     let mut fixture = RuntimeFixture::start(&paths, gateway_spec(&paths))?;
-    let mut metadata: serde_json::Value = serde_json::from_str(&state::fs::read_to_string(
-        &paths.gateway_runtime_metadata(),
-    )?)?;
-    metadata["process_start_identity"]["seconds"] = json!(1);
-    state::fs::write_sensitive_file(
-        &paths.gateway_runtime_metadata(),
-        &serde_json::to_string(&metadata)?,
-    )?;
+    let monitor_record = ForeignMonitorRecord::write(&paths, "gateway")?;
     let output = run_pv(&["daemon:disable"], &environment)?;
     assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert!(fixture.records_exist()?);
     assert!(platform::process_group_has_live_members(fixture.pid()?)?);
     assert!(state::fs::path_entry_exists(&launch_agent_path)?);
+    monitor_record.restore()?;
     fixture.cleanup()?;
     Ok(())
 }
