@@ -20,7 +20,7 @@ use daemon::{
 use insta::{Settings, assert_snapshot};
 use pv_fake::{EventKind, FakeSettings, InstalledFake, Persona, Scenario};
 use rustix::io::{FdFlags, fcntl_setfd};
-use rustix::process::{Pid, Signal, kill_process, test_kill_process};
+use rustix::process::{Pid, Signal, kill_process, kill_process_group, test_kill_process};
 use state::{MonitorReservation, PvPaths, StateError};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::UnixStream;
@@ -235,6 +235,44 @@ async fn monitor_reports_a_leader_exit_while_its_group_lives_on() -> Result<()> 
         Err(DaemonError::MonitorUnavailable { .. })
     ));
     assert_eq!(cleaned.cleanup, MonitorCleanup::Complete);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn monitor_cleans_up_a_killed_group_whose_member_is_still_exiting() -> Result<()> {
+    let harness = Harness::new()?;
+    // Tearing down the descendant's resident memory outlasts the small leader's exit, so the
+    // fallback stop starts while a member can no longer take a signal yet is no zombie.
+    let fake = pv_fake::install_with_settings(
+        &harness.paths.root().join("runtime/bin/runtime"),
+        Persona::LongRunning,
+        FakeSettings {
+            descendant: true,
+            descendant_resident_mib: 256,
+            ..FakeSettings::default()
+        },
+    )?;
+    let started = harness
+        .start(harness.start_for(fake.executable(), &[])?)
+        .await?;
+    wait_until(|| {
+        Ok(fake
+            .events()?
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::DescendantResident)))
+    })
+    .await?;
+
+    kill_process_group(pid_of(started.runtime_pid)?, Signal::KILL)?;
+    let cleaned = harness
+        .wait_for_state(|state| state.cleanup != MonitorCleanup::Pending)
+        .await?;
+    let release = daemon::release_monitor(&harness.paths, SUBJECT).await;
+
+    assert_eq!(cleaned.exit, Some(MonitorExit::Signal(9)));
+    assert_eq!(cleaned.cleanup, MonitorCleanup::Complete);
+    release?;
 
     Ok(())
 }

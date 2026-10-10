@@ -1115,11 +1115,10 @@ fn signal_process_group(pid: u32, signal: ProcessSignal) -> Result<(), DaemonErr
         Ok(()) => Ok(()),
         Err(source) => {
             let error = io::Error::from(source);
-            // macOS answers EPERM, not ESRCH, for a group whose only members are unreaped zombies.
-            if process_not_found(&error)
-                || (error.kind() == io::ErrorKind::PermissionDenied
-                    && process_group_has_exited(pid)?)
-            {
+            // macOS answers EPERM, not ESRCH, when no member can take a signal: each is an
+            // unreaped zombie or already exiting, as a killed runtime's children briefly are.
+            // Every caller then waits for the group to end, which decides the stop.
+            if process_not_found(&error) || error.kind() == io::ErrorKind::PermissionDenied {
                 return Ok(());
             }
 
