@@ -30,8 +30,8 @@ use crate::supervisor::PrivateEnvironmentDebug;
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    monitor_state, recover_monitor, release_monitor, run_monitor_blocking, run_monitor_gate,
-    start_monitor, stop_monitor,
+    LiveRuntime, live_runtime, monitor_state, recorded_monitor_subjects, recover_monitor,
+    release_monitor, run_monitor_blocking, run_monitor_gate, start_monitor, stop_monitor,
 };
 
 /// The hidden command that runs a monitor.
@@ -161,6 +161,9 @@ pub struct MonitorHooks {
     pub unknown_group_check: bool,
     pub rotation_bytes: Option<u64>,
     pub rotation_interval_ms: Option<u64>,
+    /// The test process's lifeline, for monitors whose controller passes none, such as those a
+    /// daemon running inside a test starts.
+    pub lifeline_fd: Option<i32>,
 }
 
 /// A point where the monitor or its gate can be held for a test.
