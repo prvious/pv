@@ -348,7 +348,7 @@ async fn recovery_refuses_a_live_monitor_and_stops_a_killed_monitors_runtime() -
 }
 
 #[tokio::test]
-async fn recovery_never_signals_a_changed_or_previous_boot_runtime() -> Result<()> {
+async fn recovery_never_signals_a_changed_foreign_or_previous_boot_runtime() -> Result<()> {
     let harness = Harness::new()?;
     let mut bystander = ChildGuard(
         TestCommand::new("/bin/sleep")
@@ -367,17 +367,27 @@ async fn recovery_never_signals_a_changed_or_previous_boot_runtime() -> Result<(
 
     // The exact runtime identity, but recorded during another boot.
     harness.write_record(
+        1,
         pid,
         &serde_json::json!(birth),
         "00000000-0000-0000-0000-000000000001",
     )?;
     let previous_boot_recovery = daemon::recover_monitor(&harness.paths, SUBJECT).await;
     let previous_boot_records = state::fs::path_exists(&harness.monitor_dir());
-    harness.write_record(pid, &changed_birth, &current_boot)?;
+    // The exact runtime identity from this boot, but written by another protocol version.
+    harness.write_record(2, pid, &serde_json::json!(birth), &current_boot)?;
+    let foreign_recovery = daemon::recover_monitor(&harness.paths, SUBJECT).await;
+    let foreign_records = state::fs::path_exists(&harness.monitor_dir().join("monitor.json"));
+    harness.write_record(1, pid, &changed_birth, &current_boot)?;
     let changed_recovery = daemon::recover_monitor(&harness.paths, SUBJECT).await;
 
     assert!(previous_boot_recovery.is_ok());
     assert!(!previous_boot_records);
+    assert!(matches!(
+        foreign_recovery,
+        Err(DaemonError::InvalidRuntimeRecord { .. })
+    ));
+    assert!(foreign_records);
     assert!(matches!(
         changed_recovery,
         Err(DaemonError::RuntimeProcessIdentityChanged { pid: refused }) if refused == pid
@@ -608,15 +618,17 @@ impl Harness {
             .ok_or_else(|| anyhow!("record has no instance"))
     }
 
-    /// Writes a record as a dead monitor would have left it, naming `pid` as its runtime.
+    /// Writes a record as a dead monitor of protocol `version` would have left it, naming `pid`
+    /// as its runtime.
     fn write_record(
         &self,
+        version: u32,
         pid: u32,
         start_identity: &serde_json::Value,
         boot_session_id: &str,
     ) -> Result<()> {
         let record = serde_json::json!({
-            "version": 1,
+            "version": version,
             "subject": SUBJECT,
             "instance": "0123456789abcdef0123456789abcdef",
             "boot_session_id": boot_session_id,

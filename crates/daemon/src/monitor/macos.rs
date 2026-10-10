@@ -1145,9 +1145,19 @@ fn record_path(paths: &PvPaths, subject: &str) -> Utf8PathBuf {
     paths.monitor_dir(subject).join(RECORD_FILE)
 }
 
+/// The monitor record of `subject`, refusing one written under another protocol version: its
+/// identities and stop policy may not mean what this version reads them as.
 fn read_record(paths: &PvPaths, subject: &str) -> Result<Option<MonitorRecord>, DaemonError> {
-    match fs::read_to_string(&record_path(paths, subject)) {
-        Ok(content) => Ok(Some(serde_json::from_str(&content)?)),
+    let path = record_path(paths, subject);
+    match fs::read_to_string(&path) {
+        Ok(content) => {
+            let record: MonitorRecord = serde_json::from_str(&content)?;
+            if record.version != PROTOCOL_VERSION {
+                return Err(DaemonError::InvalidRuntimeRecord { path });
+            }
+
+            Ok(Some(record))
+        }
         Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
             Ok(None)
         }
