@@ -30,7 +30,6 @@ const READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const MONITOR_STOP_MARGIN: Duration = Duration::from_secs(5);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
-pub(crate) const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 const POSTGRES_RECOVERY: &str = "Restart your Mac, then run this command again.";
 pub(crate) const RUNTIME_READINESS_CONCURRENCY_LIMIT: usize = 4;
 
@@ -1504,11 +1503,6 @@ fn process_and_group_are_absent(_pid: u32) -> Result<bool, DaemonError> {
     require_process_containment()?;
 
     Ok(false)
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-pub(crate) fn reap_process_if_child(_pid: u32) -> Result<(), DaemonError> {
-    require_process_containment()
 }
 
 fn live_process_matches(

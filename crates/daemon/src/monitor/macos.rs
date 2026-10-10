@@ -25,13 +25,11 @@ use super::{
     MonitorExit, MonitorHooks, MonitorPause, MonitorStart, MonitorState, MonitorStop, rotation,
 };
 use crate::DaemonError;
-use crate::supervisor::{
-    PHP_INI_ENVIRONMENT_KEYS, reap_process_if_child, stop_process_group,
-    wait_for_process_group_exit,
-};
+use crate::supervisor::{reap_process_if_child, stop_process_group, wait_for_process_group_exit};
 use crate::{StopSignal, build_runtime};
 
 const PROTOCOL_VERSION: u32 = 1;
+const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 /// macOS keeps a Unix socket path in 104 bytes, including its terminating NUL.
 const SOCKET_PATH_LIMIT: usize = 103;
 const RECORD_FILE: &str = "monitor.json";
