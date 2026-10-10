@@ -125,6 +125,7 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
 
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    pv_fake::install_monitor(&paths)?;
     let client = resources::UreqResourceHttpClient::new();
     let commands = ManagedResourceCommands::new(paths.clone(), manifest_url, target_platform());
 
