@@ -3097,10 +3097,13 @@ dependencies = [
  "camino",
  "camino-tempfile",
  "cli",
+ "daemon",
  "insta",
  "portable-pty",
+ "pv-fake",
  "serde_json",
  "state",
+ "tokio",
  "vt100",
 ]
 

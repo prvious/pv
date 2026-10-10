@@ -114,10 +114,13 @@ anyhow = { workspace = true }
 assert_cmd = { workspace = true }
 camino = { workspace = true }
 camino-tempfile = { workspace = true }
+daemon = { path = "crates/daemon" }
 insta = { workspace = true }
 portable-pty = { workspace = true }
+pv-fake = { path = "crates/pv-fake" }
 serde_json = { workspace = true }
 state = { path = "crates/state" }
+tokio = { workspace = true }
 vt100 = { workspace = true }
 
 [[test]]
