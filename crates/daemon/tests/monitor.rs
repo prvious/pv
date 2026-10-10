@@ -140,12 +140,20 @@ async fn monitor_retains_an_exit_nobody_was_connected_for() -> Result<()> {
     let exited = harness
         .wait_for_state(|state| state.cleanup != MonitorCleanup::Pending)
         .await?;
-    daemon::release_monitor(&harness.paths, SUBJECT).await?;
+    // A bare release, as from a controller that disconnects right after: the monitor removes
+    // its own records.
+    let instance = harness.instance()?;
+    harness
+        .raw_request(&format!(
+            r#"{{"version":1,"instance":"{instance}","op":"release"}}"#
+        ))
+        .await?;
+    wait_until(|| harness.reservation_is_free()).await?;
 
     assert_eq!(exited.exit, Some(MonitorExit::Code(7)));
     assert_eq!(exited.stop, None);
     assert_eq!(exited.cleanup, MonitorCleanup::Complete);
-    assert!(harness.reservation_is_free()?);
+    assert!(!state::fs::path_exists(&harness.monitor_dir()));
 
     Ok(())
 }
@@ -166,20 +174,22 @@ async fn monitor_stop_outlives_its_client_and_keeps_its_first_deadline() -> Resu
     harness.wait_for_log("ready").await?;
     let instance = harness.instance()?;
 
-    // Each raw request disconnects as soon as it is accepted.
+    // The raw request disconnects as soon as it is accepted.
     harness
         .raw_request(&format!(
             r#"{{"version":1,"instance":"{instance}","op":"stop","signal":"terminate","grace_ms":200}}"#
         ))
         .await?;
-    harness
-        .raw_request(&format!(
-            r#"{{"version":1,"instance":"{instance}","op":"stop","signal":"interrupt","grace_ms":60000}}"#
-        ))
-        .await?;
-    let stopped = harness
-        .wait_for_state(|state| state.cleanup != MonitorCleanup::Pending)
-        .await?;
+    // A repeated stop waits for the stop the monitor runs, under the first request's deadline.
+    let stopped = daemon::stop_monitor(
+        &harness.paths,
+        SUBJECT,
+        MonitorStop {
+            signal: StopSignal::Interrupt,
+            grace_ms: 60_000,
+        },
+    )
+    .await?;
     daemon::release_monitor(&harness.paths, SUBJECT).await?;
 
     assert_eq!(

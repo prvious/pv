@@ -41,10 +41,12 @@ const STARTUP_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 const EXEC_TIMEOUT: Duration = Duration::from_secs(10);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
-const STOP_MARGIN: Duration = Duration::from_secs(5);
+const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 const GATE_FAILURE_TIMEOUT: Duration = Duration::from_millis(100);
 const EXITING_LEADER_TIMEOUT: Duration = Duration::from_secs(1);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// 150 s of [`POLL_INTERVAL`]s.
+const PAUSE_POLLS: u32 = 15_000;
 const ROTATION_INTERVAL: Duration = Duration::from_secs(60);
 const ROTATION_BYTES: u64 = 10 * 1024 * 1024;
 
@@ -200,36 +202,30 @@ pub async fn monitor_state(paths: &PvPaths, subject: &str) -> Result<MonitorStat
 }
 
 /// Asks the monitor of `subject` to stop its runtime, then waits until cleanup is decided.
+///
+/// The monitor bounds the wait: its stop, whichever request started it, ends within that stop's
+/// grace period plus the SIGKILL wait, and each state request times out on its own.
 pub async fn stop_monitor(
     paths: &PvPaths,
     subject: &str,
     stop: MonitorStop,
 ) -> Result<MonitorState, DaemonError> {
     request(paths, subject, Operation::Stop(stop)).await?;
-    let deadline = Instant::now().checked_add(stop.grace().saturating_add(STOP_MARGIN));
 
     loop {
         let state = monitor_state(paths, subject).await?;
         if state.cleanup != MonitorCleanup::Pending {
             return Ok(state);
         }
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            return Err(unavailable(subject, "the runtime's cleanup did not finish"));
-        }
         sleep(POLL_INTERVAL).await;
     }
 }
 
-/// Releases the monitor of `subject` once its runtime has exited and its cleanup is complete,
-/// then removes the monitor's records once its reservation proves it has exited.
+/// Releases the monitor of `subject` once its runtime has exited and its cleanup is complete.
+/// The monitor removes its own records before it exits; its reservation proves it has exited.
 pub async fn release_monitor(paths: &PvPaths, subject: &str) -> Result<(), DaemonError> {
-    let (record, _accepted) = request(paths, subject, Operation::Release).await?;
-    let reservation = wait_for_reservation(paths, subject).await?;
-    // Only this instance's records: a replacement that failed may have left its own.
-    if read_record(paths, subject)?.is_some_and(|current| current.instance == record.instance) {
-        remove_monitor_dir(paths, subject)?;
-    }
-    drop(reservation);
+    request(paths, subject, Operation::Release).await?;
+    drop(wait_for_reservation(paths, subject).await?);
 
     Ok(())
 }
@@ -365,8 +361,11 @@ async fn request(
         .await
         .map_err(|_elapsed| unavailable(subject, "the monitor did not reply"))??
         .ok_or_else(|| unavailable(subject, "the monitor closed the connection"))?;
-    if reply.instance != record.instance {
-        return Err(unavailable(subject, "the reply came from another instance"));
+    if reply.version != PROTOCOL_VERSION || reply.instance != record.instance {
+        return Err(unavailable(
+            subject,
+            "the reply came from another protocol version or instance",
+        ));
     }
     if let ReplyResult::Error { kind, message } = reply.result {
         return Err(DaemonError::MonitorRejected {
@@ -790,12 +789,14 @@ impl Monitor {
 
             tokio::select! {
                 events = next_optional_events(&mut self.watch) => self.observe(events?, hooks),
-                accepted = self.listener.accept() => {
-                    if let Ok((stream, _address)) = accepted {
+                accepted = self.listener.accept() => match accepted {
+                    Ok((stream, _address)) => {
                         let instance = self.record.instance.clone();
                         tokio::spawn(serve_connection(stream, instance, commands.clone()));
                     }
-                }
+                    // A persistent failure such as EMFILE stays ready; don't spin on it.
+                    Err(_error) => sleep(ACCEPT_ERROR_BACKOFF).await,
+                },
                 Some(command) = requests.recv() => match command {
                     Command::State(reply) => {
                         let _send_result = reply.send(self.state());
@@ -807,7 +808,10 @@ impl Monitor {
                     Command::Release(reply) => {
                         let _send_result = reply.send(self.releasable());
                     }
-                    Command::Exit => return Ok(()),
+                    // The reservation is still held, so no replacement can own these records.
+                    Command::Exit => {
+                        return remove_monitor_dir(&self.paths, &self.record.subject);
+                    }
                 },
                 stopped = join_optional(&mut self.executor) => {
                     self.executor = None;
@@ -1057,19 +1061,29 @@ fn watch_lifeline(path: Utf8PathBuf) -> Result<oneshot::Receiver<()>, DaemonErro
     Ok(receiver)
 }
 
+/// Holds at `point` until the test continues it, but for 150 s at most, so a test that dies while
+/// it holds leaves nothing paused: the monitor then carries on and sees the closed lifeline. That
+/// outlasts the CI profile's 120 s limit on a test, so a stalled test can't pass because of it.
 async fn pause(hooks: &MonitorHooks, point: MonitorPause) {
     if let Some((reached, resume)) = pause_files(hooks, point) {
         announce(&reached);
-        while !fs::path_exists(&resume) {
+        for _poll in 0..PAUSE_POLLS {
+            if fs::path_exists(&resume) {
+                return;
+            }
             sleep(POLL_INTERVAL).await;
         }
     }
 }
 
+/// Holds like [`pause`], blocking the thread.
 fn pause_blocking(hooks: &MonitorHooks, point: MonitorPause) {
     if let Some((reached, resume)) = pause_files(hooks, point) {
         announce(&reached);
-        while !fs::path_exists(&resume) {
+        for _poll in 0..PAUSE_POLLS {
+            if fs::path_exists(&resume) {
+                return;
+            }
             std::thread::sleep(POLL_INTERVAL);
         }
     }
