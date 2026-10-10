@@ -195,8 +195,7 @@ async fn real_postgres_forced_exit_keeps_recovery_records() -> Result<()> {
         username: context.env.get("username").cloned().unwrap_or_default(),
         password: context.env.get("password").cloned().unwrap_or_default(),
     };
-    let mut guard = ManagedResourceFixtureGuard::new(&paths);
-    guard.register("postgres", track);
+    let mut guard = ManagedResourceFixtureGuard::new(&paths)?;
     let outcome = async {
         adapter.prepare_runtime(&paths, &context).await?;
         let supervisor = ProcessSupervisor::new(paths.clone());
@@ -219,7 +218,7 @@ async fn real_postgres_forced_exit_keeps_recovery_records() -> Result<()> {
         ensure!(matches!(stopped, Err(crate::DaemonError::RuntimeStopFailures { ref failures })
             if failures.iter().any(|failure| matches!(failure.error(), crate::DaemonError::RuntimeCleanupUnproven { .. }))),
             "forced Postgres exit did not block cleanup: {stopped:?}");
-        ensure!(state::fs::path_entry_exists(&spec.pid_path)?);
+        ensure!(!crate::recorded_monitor_subjects(&paths)?.is_empty());
         ensure!(state::fs::path_entry_exists(&spec.metadata_path)?);
         ensure!(state::fs::path_entry_exists(&spec.command)?);
         let query = tokio::time::timeout(Duration::from_secs(3),
@@ -233,6 +232,8 @@ async fn real_postgres_forced_exit_keeps_recovery_records() -> Result<()> {
             }
             Ok::<_, platform::PlatformError>(())
         }).await??;
+        // The backend is gone too, so the monitor's held exit can be released by hand.
+        crate::release_monitor(&paths, &format!("resources/postgres/{track}")).await?;
         Ok::<_, anyhow::Error>(())
     }.await;
     match (outcome, guard.cleanup().await) {
@@ -511,8 +512,7 @@ async fn run_contract<Held>(
 ) -> Result<()> {
     let env = adapter.resource_env(&context)?;
     let context = ManagedResourceRuntimeContext { env, ..context };
-    let mut runtimes = ManagedResourceFixtureGuard::new(paths);
-    runtimes.register(&context.resource_name, &context.track);
+    let mut runtimes = ManagedResourceFixtureGuard::new(paths)?;
 
     let outcome = start_wait_and_stop(paths, adapter, &context, check).await;
     match (outcome, runtimes.cleanup().await) {
@@ -638,6 +638,7 @@ fn contract_paths() -> Result<(Utf8TempDir, PvPaths)> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
+    pv_fake::install_monitor(&paths)?;
 
     Ok((tempdir, paths))
 }

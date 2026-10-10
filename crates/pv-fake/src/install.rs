@@ -1,5 +1,6 @@
 use anyhow::{Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
+use state::PvPaths;
 
 use crate::events::{Event, read_events};
 use crate::{
@@ -43,7 +44,9 @@ pub fn install_with_settings(
     install_with(&binary()?, executable, &scenario)
 }
 
-/// Installs `binary` at `executable` and writes `scenario` next to it.
+/// Installs `binary` at `executable` and writes `scenario` next to it. An `executable` inside a PV
+/// home gets that home's test monitor too (see [`install_monitor`]): PV starts every runtime
+/// through one.
 pub fn install_with(
     binary: &Utf8Path,
     executable: &Utf8Path,
@@ -51,6 +54,13 @@ pub fn install_with(
 ) -> Result<InstalledFake> {
     if let Some(parent) = executable.parent() {
         state::fs::ensure_user_dir(parent)?;
+    }
+    if let Some(home) = executable
+        .ancestors()
+        .find(|ancestor| ancestor.file_name() == Some(".pv"))
+        .and_then(Utf8Path::parent)
+    {
+        install_monitor(&PvPaths::for_home(home))?;
     }
     // A copy, replacing any earlier fixture atomically, and on APFS a clone that costs no disk
     // space. It is a regular file, so PV's artifact validation, which rejects symlinked
@@ -104,4 +114,38 @@ pub fn example_binary(name: &str) -> Result<Utf8PathBuf> {
 /// outside a fake, such as a runtime monitor.
 pub fn lifeline_fd() -> Result<i32> {
     lifeline::test_process_read_fd()
+}
+
+/// Puts the daemon's `pv-monitor` example where PV starts runtime monitors from,
+/// `paths.active_pv_binary()`, and gives every monitor this test process's lifeline, so a test
+/// that dies leaves no runtime running. Calling it again changes nothing.
+pub fn install_monitor(paths: &PvPaths) -> Result<()> {
+    let binary = example_binary("pv-monitor")?;
+    let active = paths.active_pv_binary();
+    if let Some(parent) = active.parent() {
+        state::fs::ensure_user_dir(parent)?;
+    }
+    // A symlink, so the example's first exec is the only one Gatekeeper scans.
+    let temporary = active.with_file_name(format!(".pv-monitor-{}.tmp", std::process::id()));
+    state::fs::remove_file_if_exists(&temporary)?;
+    symlink(&binary, &temporary)?;
+    state::fs::rename(&temporary, &active)?;
+    // A test that set its own hooks keeps them.
+    let hooks_path = paths.home().join("pv-monitor-hooks.json");
+    if !state::fs::path_exists(&hooks_path) {
+        let hooks = serde_json::json!({ "lifeline_fd": lifeline::test_process_read_fd()? });
+        state::fs::write_sensitive_file(&hooks_path, &hooks.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "test monitors run the pv-monitor example through PV's active binary path"
+)]
+fn symlink(target: &Utf8Path, link: &Utf8Path) -> Result<()> {
+    std::os::unix::fs::symlink(target, link)?;
+
+    Ok(())
 }

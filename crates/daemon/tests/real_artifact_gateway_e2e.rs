@@ -1,9 +1,6 @@
-use std::time::Duration;
-
 use anyhow::{Result, anyhow, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use daemon::ProcessSupervisor;
 use resources::{
     ManagedResourceCommands, TargetPlatform, TrackSelector, caddy_adapter, frankenphp_adapter,
     php_adapter,
@@ -27,6 +24,7 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
 
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    pv_fake::install_monitor(&paths)?;
     let commands = ManagedResourceCommands::new(paths.clone(), manifest_url, target_platform());
     let client = resources::UreqResourceHttpClient::new();
 
@@ -60,7 +58,9 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
     ];
     preserve_gateway_request_result(
         verify_wildcard_routing(&paths, &parent, &child, &worker_runtime_keys[1]).await,
-        stop_gateway_runtimes(&paths, &worker_runtime_keys).await,
+        daemon::stop_recorded_runtimes(paths.clone())
+            .await
+            .map_err(Into::into),
         || real_artifact_diagnostics(&paths, &worker_runtime_keys),
     )?;
 
@@ -86,7 +86,7 @@ async fn verify_wildcard_routing(
         }
         daemon::gateway::reconcile_gateway_runtimes(paths).await?;
         ensure!(
-            paths.worker_pid(admin_runtime_key).exists(),
+            paths.worker_runtime_metadata(admin_runtime_key).exists(),
             "admin.laravel.test is not on its own `{admin_runtime_key}` worker"
         );
 
@@ -250,27 +250,6 @@ fn seed_local_ca(paths: &PvPaths) -> Result<()> {
     let local_ca = platform::generate_local_ca()?;
     state::fs::write_sensitive_file(&paths.ca_certificate(), &local_ca.certificate_pem)?;
     state::fs::write_sensitive_file(&paths.ca_private_key(), &local_ca.private_key_pem)?;
-
-    Ok(())
-}
-
-async fn stop_gateway_runtimes(paths: &PvPaths, worker_runtime_keys: &[String]) -> Result<()> {
-    let supervisor = ProcessSupervisor::new(paths.clone());
-    let worker_records = worker_runtime_keys.iter().map(|runtime_key| {
-        (
-            paths.worker_pid(runtime_key),
-            paths.worker_runtime_metadata(runtime_key),
-        )
-    });
-
-    for (pid_path, metadata_path) in
-        std::iter::once((paths.gateway_pid(), paths.gateway_runtime_metadata()))
-            .chain(worker_records)
-    {
-        if let Some(runtime) = supervisor.adopt_recorded(&pid_path, &metadata_path)? {
-            runtime.stop(Duration::from_secs(1)).await?;
-        }
-    }
 
     Ok(())
 }

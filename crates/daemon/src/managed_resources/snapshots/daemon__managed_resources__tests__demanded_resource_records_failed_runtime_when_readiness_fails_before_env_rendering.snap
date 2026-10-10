@@ -59,7 +59,6 @@ expression: snapshot
         },
     ],
     RuntimeFilePresence {
-        pid: false,
         metadata: false,
         config: false,
     },

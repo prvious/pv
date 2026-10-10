@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
-use std::process::Stdio;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 use std::time::{Duration, Instant as StdInstant};
 use std::{fmt, future::Future, io};
 
@@ -18,20 +17,19 @@ use sha2::{Digest, Sha256};
 use state::{PvPaths, StateError, fs};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::process::Child;
 use tokio::time::{Instant, sleep, timeout};
 use tokio_rustls::TlsConnector;
 
-use crate::DaemonError;
+use crate::monitor::{self, MonitorCleanup, MonitorExit, MonitorStart, MonitorState, MonitorStop};
+use crate::{DaemonError, structured_log};
 
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
-const PROCESS_IDENTITY_POLL_INTERVAL: Duration = Duration::from_millis(10);
-const PROCESS_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
-const SCRIPT_IDENTITY_STABILIZATION: Duration = Duration::from_millis(250);
+/// How long past a stop's grace period to wait for its monitor: the SIGKILL wait and the final
+/// group check, with room to spare.
+const MONITOR_STOP_MARGIN: Duration = Duration::from_secs(5);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
-pub(crate) const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 const POSTGRES_RECOVERY: &str = "Restart your Mac, then run this command again.";
 pub(crate) const RUNTIME_READINESS_CONCURRENCY_LIMIT: usize = 4;
 
@@ -113,9 +111,14 @@ pub struct ProcessSupervisor {
     paths: PvPaths,
 }
 
+/// A runtime this supervisor has just started under a monitor.
 pub struct ManagedProcess {
+    paths: PvPaths,
     pid: u32,
-    child: Child,
+    /// The runtime's birth identity, or `None` if it had exited before the monitor reported it.
+    start_identity: Option<platform::ProcessStartIdentity>,
+    subject: String,
+    instance: String,
     log_path: Utf8PathBuf,
     pid_path: Utf8PathBuf,
     metadata_path: Utf8PathBuf,
@@ -130,16 +133,17 @@ pub(crate) enum RecordedConfigFingerprint {
     Staged(String),
 }
 
+/// A runtime whose monitor still runs it as its record names.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OwnedRuntime {
+    paths: PvPaths,
     pid: u32,
+    subject: String,
+    instance: String,
     command: Utf8PathBuf,
-    arguments: Vec<String>,
     replacement_required: bool,
     applied_config_fingerprint: Option<String>,
     desired_config_fingerprint: Option<String>,
-    process_start_identity: platform::ProcessStartIdentity,
-    process_executable_identity: Option<ProcessExecutableIdentity>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -182,10 +186,15 @@ pub enum ReadinessCheck {
     },
 }
 
+/// A runtime's record beside its monitor: its spec identity and config proofs. A record PV wrote
+/// before monitors names its process by pid file and identity instead of a monitor instance.
 #[derive(Deserialize, Eq, PartialEq, Serialize)]
 struct RuntimeMetadata {
     name: String,
+    /// The runtime's pid when it started, for diagnostics; ownership comes from the monitor.
     pid: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    monitor_instance: Option<String>,
     command: String,
     arguments: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -210,7 +219,7 @@ struct RuntimeMetadata {
     started_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     boot_session_id: Option<platform::BootSessionId>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     process_start_identity: Option<platform::ProcessStartIdentity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     process_executable_identity: Option<ProcessExecutableIdentity>,
@@ -227,9 +236,13 @@ impl ProcessSupervisor {
         Self { paths }
     }
 
-    pub(crate) async fn stop_recorded_for_shutdown(
+    /// Stops a runtime that a PV release from before monitors started, proven by its pid file and
+    /// live identity. Then it removes the pid file and, unless `keep_metadata`, the record, whose
+    /// config proofs a restarted runtime may still need.
+    pub(crate) async fn stop_legacy_runtime(
         &self,
         pid_path: &Utf8Path,
+        keep_metadata: bool,
     ) -> Result<(), DaemonError> {
         let metadata_path = pid_path.with_extension("json");
         for path in [pid_path, metadata_path.as_path()] {
@@ -270,32 +283,34 @@ impl ProcessSupervisor {
         {
             // A previous kernel's processes cannot survive this boot. Do not inspect
             // or signal the recorded PID: it may now belong to an unrelated process.
-            return remove_unchanged_runtime_records(pid_path, &metadata_path, &metadata);
+            return remove_unchanged_runtime_records(
+                pid_path,
+                &metadata_path,
+                &metadata,
+                keep_metadata,
+            );
         }
-        if let Some(adopted) = self.adopt_recorded(pid_path, &metadata_path)? {
+        if legacy_process_matches(pid, &metadata)? {
             // Postgres backends can leave the postmaster's process group, so an empty
             // group proves nothing about them. The postmaster exits successfully only
             // after its backends exit. Watch before signalling, then recheck ownership.
             let exit_watch = if metadata.resource_name == "postgres" {
                 let watch = platform::ProcessExitWatch::new(pid)?;
-                if !adopted.owned.matches_live()? {
+                if !legacy_process_matches(pid, &metadata)? {
                     return Err(DaemonError::RuntimeProcessIdentityChanged { pid });
                 }
                 Some(watch)
             } else {
                 None
             };
-            let signal = if metadata.resource_name == "postgres" {
-                StopSignal::Interrupt
-            } else {
-                StopSignal::Terminate
-            };
-            let grace = if matches!(metadata.resource_name.as_str(), "caddy" | "frankenphp") {
-                Duration::from_secs(1)
-            } else {
-                Duration::from_secs(10)
-            };
-            adopted.stop_with(signal, grace).await?;
+            let stop = stop_policy(&metadata.resource_name);
+            // An adopted leader can be reaped during the grace period, by launchd once the
+            // daemon that started it has exited. Do not signal a group whose recorded
+            // leader no longer matches.
+            stop_process_group(pid, stop.signal, stop_grace(stop), || {
+                legacy_process_matches(pid, &metadata)
+            })
+            .await?;
             if let Some(mut watch) = exit_watch {
                 let status = timeout(Duration::from_secs(1), async {
                     loop {
@@ -336,96 +351,149 @@ impl ProcessSupervisor {
                 ),
             });
         }
-        remove_unchanged_runtime_records(pid_path, &metadata_path, &metadata)
+        remove_unchanged_runtime_records(pid_path, &metadata_path, &metadata, keep_metadata)
     }
 
+    /// Starts `spec`'s runtime under a new monitor, run by the installed `pv`, and records it.
     pub async fn start(&self, spec: ProcessSpec) -> Result<ManagedProcess, DaemonError> {
-        self.start_inner(spec, |_pid| async {}).await
-    }
-
-    async fn start_inner<PostSpawn, PostSpawnFuture>(
-        &self,
-        spec: ProcessSpec,
-        post_spawn: PostSpawn,
-    ) -> Result<ManagedProcess, DaemonError>
-    where
-        PostSpawn: FnOnce(u32) -> PostSpawnFuture,
-        PostSpawnFuture: Future<Output = ()>,
-    {
         require_process_containment()?;
         state::fs::ensure_layout(&self.paths)?;
+        let subject = monitor_subject(&self.paths, &spec.metadata_path)?;
+        let stop = stop_policy(&spec.resource_name);
+        // A monitor left by a cancelled start or an earlier daemon must not outlive its subject.
+        self.stop_subject(&spec.metadata_path, stop.signal, stop_grace(stop))
+            .await?;
 
-        let stdout = fs::open_append_file(&spec.log_path)?;
-        let stderr = fs::open_append_file(&spec.log_path)?;
-        let mut command = process_command(&spec);
-        command.stdout(Stdio::from(stdout));
-        command.stderr(Stdio::from(stderr));
-
-        let child = command.spawn()?;
-        let Some(pid) = child.id() else {
-            return Err(DaemonError::MissingProcessId { name: spec.name });
+        let state = monitor::start_monitor(
+            &self.paths,
+            &self.paths.active_pv_binary(),
+            MonitorStart {
+                subject: subject.clone(),
+                command: spec.command.clone(),
+                arguments: spec.arguments.clone(),
+                private_environment: spec.private_environment.clone(),
+                log_path: spec.log_path.clone(),
+                fallback_stop: stop,
+                lifeline_fd: None,
+            },
+        )
+        .await?;
+        let instance =
+            monitor::recorded_monitor_instance(&self.paths, &subject)?.ok_or_else(|| {
+                DaemonError::MonitorUnavailable {
+                    subject: subject.clone(),
+                    reason: "the monitor published no record".to_owned(),
+                }
+            })?;
+        let process = ManagedProcess {
+            paths: self.paths.clone(),
+            pid: state.runtime_pid,
+            start_identity: platform::inspect_process_start_identity(state.runtime_pid)?,
+            subject,
+            instance,
+            log_path: spec.log_path.clone(),
+            pid_path: spec.pid_path.clone(),
+            metadata_path: spec.metadata_path.clone(),
         };
-        let mut spawned = SpawnedProcessGroup::armed(pid, child);
-        post_spawn(pid).await;
+        if let Err(error) = write_runtime_metadata(&spec, process.pid, &process.instance) {
+            let _stop_result =
+                stop_monitored_runtime(&self.paths, &process.subject, &process.instance, stop)
+                    .await;
+            return Err(error);
+        }
 
-        match spawned.commit(&spec).await {
-            Ok(Some(child)) => Ok(ManagedProcess {
-                pid,
-                child,
-                log_path: spec.log_path,
-                pid_path: spec.pid_path,
-                metadata_path: spec.metadata_path,
-            }),
-            Ok(None) => Err(DaemonError::MissingProcessId { name: spec.name }),
-            Err(error) => {
-                spawned.terminate().await;
+        Ok(process)
+    }
 
-                Err(error)
+    /// Whether a monitor for `metadata_path`'s subject still runs its runtime, recorded or not.
+    pub(crate) fn subject_runtime_is_live(
+        &self,
+        metadata_path: &Utf8Path,
+    ) -> Result<bool, DaemonError> {
+        require_process_containment()?;
+        let subject = monitor_subject(&self.paths, metadata_path)?;
+
+        Ok(monitor::live_runtime(&self.paths, &subject)?.is_some())
+    }
+
+    /// Stops `subject`'s monitored runtime for disable or uninstall, by its usual stop. Postgres
+    /// counts as stopped only once it has exited 0: its backends can leave its process group,
+    /// and the postmaster exits successfully only after they have.
+    pub(crate) async fn stop_monitored_for_shutdown(
+        &self,
+        subject: &str,
+    ) -> Result<(), DaemonError> {
+        let Some(instance) = monitor::recorded_monitor_instance(&self.paths, subject)? else {
+            return Ok(());
+        };
+        let postgres = subject_resource_name(subject) == "postgres";
+        let stop = stop_policy(subject_resource_name(subject));
+        match stop_monitor_instance(&self.paths, subject, &instance, stop).await? {
+            MonitorStopped::Stopped(state)
+                if postgres && state.exit != Some(MonitorExit::Code(0)) =>
+            {
+                Err(DaemonError::RuntimeCleanupUnproven {
+                    pid: state.runtime_pid,
+                    reason: format!(
+                        "Postgres ended with {}, so PV kept its records. {POSTGRES_RECOVERY}",
+                        exit_description(state.exit)
+                    ),
+                })
             }
+            MonitorStopped::Stopped(state) => {
+                structured_log::runtime_exited(&self.paths, subject, &exit_description(state.exit));
+                monitor::release_monitor(&self.paths, subject).await
+            }
+            MonitorStopped::Unavailable if postgres => Err(DaemonError::MonitorUnavailable {
+                subject: subject.to_owned(),
+                reason: format!(
+                    "PV could not confirm that Postgres shut down cleanly, so it kept its records. {POSTGRES_RECOVERY}"
+                ),
+            }),
+            MonitorStopped::Unavailable => monitor::recover_monitor(&self.paths, subject).await,
+            MonitorStopped::Gone => Ok(()),
         }
     }
 
+    /// Stops and releases whatever monitor `metadata_path`'s subject has, including one with no
+    /// record beside it, one whose runtime has exited, and one that died. Returns whether there
+    /// was one.
+    pub async fn stop_subject(
+        &self,
+        metadata_path: &Utf8Path,
+        signal: StopSignal,
+        grace_period: Duration,
+    ) -> Result<bool, DaemonError> {
+        require_process_containment()?;
+        let subject = monitor_subject(&self.paths, metadata_path)?;
+        let Some(instance) = monitor::recorded_monitor_instance(&self.paths, &subject)? else {
+            return Ok(false);
+        };
+        stop_monitored_runtime(
+            &self.paths,
+            &subject,
+            &instance,
+            monitor_stop(signal, grace_period),
+        )
+        .await?;
+
+        Ok(true)
+    }
+
+    /// The runtime `spec` describes, if its monitor still runs it as recorded.
     pub fn verify_ownership(
         &self,
         spec: &ProcessSpec,
     ) -> Result<Option<OwnedRuntime>, DaemonError> {
         require_process_containment()?;
-        let Some(pid) = read_pid_file(&spec.pid_path)? else {
-            return Ok(None);
-        };
         let Some(metadata) = read_runtime_metadata(&spec.metadata_path)? else {
             return Ok(None);
         };
-
-        let Some(process_start_identity) = metadata.process_start_identity else {
+        if !metadata.matches(spec) {
             return Ok(None);
-        };
-
-        if metadata.matches(spec, pid)
-            && live_process_matches(
-                pid,
-                &spec.command,
-                &spec.arguments,
-                process_start_identity,
-                metadata.process_executable_identity.as_ref(),
-            )?
-        {
-            return Ok(Some(OwnedRuntime {
-                pid,
-                command: spec.command.clone(),
-                arguments: spec.arguments.clone(),
-                replacement_required: metadata.replacement_required,
-                applied_config_fingerprint: match metadata.recorded_config_fingerprint() {
-                    Some(RecordedConfigFingerprint::Applied(fingerprint)) => Some(fingerprint),
-                    Some(RecordedConfigFingerprint::Staged(_)) | None => None,
-                },
-                desired_config_fingerprint: metadata.desired_config_fingerprint,
-                process_start_identity,
-                process_executable_identity: metadata.process_executable_identity,
-            }));
         }
 
-        Ok(None)
+        self.owned_runtime(&spec.metadata_path, metadata)
     }
 
     /// Returns recorded config identity without proving that a process is alive.
@@ -433,13 +501,13 @@ impl ProcessSupervisor {
         &self,
         spec: &ProcessSpec,
     ) -> Result<Option<RecordedConfigFingerprint>, DaemonError> {
-        let Some(pid) = read_pid_file(&spec.pid_path)? else {
-            return Ok(None);
-        };
         let Some(metadata) = read_runtime_metadata(&spec.metadata_path)? else {
             return Ok(None);
         };
-        if metadata.matches(spec, pid) && metadata.process_start_identity.is_some() {
+        // A record that names neither a monitor nor a process identity is incomplete.
+        if metadata.matches(spec)
+            && (metadata.monitor_instance.is_some() || metadata.process_start_identity.is_some())
+        {
             return Ok(metadata.recorded_config_fingerprint());
         }
 
@@ -507,24 +575,13 @@ impl ProcessSupervisor {
         desired_config_fingerprint: Option<&str>,
     ) -> Result<bool, DaemonError> {
         require_process_containment()?;
-        let Some(pid) = read_pid_file(&spec.pid_path)? else {
-            return Ok(false);
-        };
         let Some(mut metadata) = read_runtime_metadata(&spec.metadata_path)? else {
             return Ok(false);
         };
-        let Some(process_start_identity) = metadata.process_start_identity else {
-            return Ok(false);
-        };
-
-        if !metadata.matches(spec, pid)
-            || !live_process_matches(
-                pid,
-                &spec.command,
-                &spec.arguments,
-                process_start_identity,
-                metadata.process_executable_identity.as_ref(),
-            )?
+        if !metadata.matches(spec)
+            || self
+                .owned_monitor(&spec.metadata_path, &metadata)?
+                .is_none()
         {
             return Ok(false);
         }
@@ -552,51 +609,62 @@ impl ProcessSupervisor {
             .map(|owned| AdoptedProcess { owned }))
     }
 
+    /// The runtime recorded at `metadata_path`, if its monitor still runs it, whatever its
+    /// current spec. `_pid_path` names a record PV wrote before monitors.
     pub fn adopt_recorded(
         &self,
-        pid_path: &Utf8Path,
+        _pid_path: &Utf8Path,
         metadata_path: &Utf8Path,
     ) -> Result<Option<AdoptedProcess>, DaemonError> {
         require_process_containment()?;
-        let Some(pid) = read_pid_file(pid_path)? else {
-            return Ok(None);
-        };
         let Some(metadata) = read_runtime_metadata(metadata_path)? else {
             return Ok(None);
         };
-        let spec = metadata.process_spec(pid_path.to_path_buf(), metadata_path.to_path_buf());
 
-        let Some(process_start_identity) = metadata.process_start_identity else {
+        Ok(self
+            .owned_runtime(metadata_path, metadata)?
+            .map(|owned| AdoptedProcess { owned }))
+    }
+
+    fn owned_runtime(
+        &self,
+        metadata_path: &Utf8Path,
+        metadata: RuntimeMetadata,
+    ) -> Result<Option<OwnedRuntime>, DaemonError> {
+        let Some((subject, instance)) = self.owned_monitor(metadata_path, &metadata)? else {
             return Ok(None);
         };
 
-        if metadata.matches_recorded(&spec, pid)
-            && live_process_matches(
-                pid,
-                &spec.command,
-                &spec.arguments,
-                process_start_identity,
-                metadata.process_executable_identity.as_ref(),
-            )?
-        {
-            return Ok(Some(AdoptedProcess {
-                owned: OwnedRuntime {
-                    pid,
-                    command: spec.command,
-                    arguments: spec.arguments,
-                    replacement_required: metadata.replacement_required,
-                    applied_config_fingerprint: match metadata.recorded_config_fingerprint() {
-                        Some(RecordedConfigFingerprint::Applied(fingerprint)) => Some(fingerprint),
-                        Some(RecordedConfigFingerprint::Staged(_)) | None => None,
-                    },
-                    desired_config_fingerprint: metadata.desired_config_fingerprint,
-                    process_start_identity,
-                    process_executable_identity: metadata.process_executable_identity,
-                },
-            }));
-        }
+        Ok(Some(OwnedRuntime {
+            paths: self.paths.clone(),
+            pid: metadata.pid,
+            subject,
+            instance,
+            command: metadata.command.as_str().into(),
+            replacement_required: metadata.replacement_required,
+            applied_config_fingerprint: match metadata.recorded_config_fingerprint() {
+                Some(RecordedConfigFingerprint::Applied(fingerprint)) => Some(fingerprint),
+                Some(RecordedConfigFingerprint::Staged(_)) | None => None,
+            },
+            desired_config_fingerprint: metadata.desired_config_fingerprint,
+        }))
+    }
 
-        Ok(None)
+    /// The subject and instance of the monitor `metadata` names, while it still runs the
+    /// recorded runtime.
+    fn owned_monitor(
+        &self,
+        metadata_path: &Utf8Path,
+        metadata: &RuntimeMetadata,
+    ) -> Result<Option<(String, String)>, DaemonError> {
+        let Some(instance) = &metadata.monitor_instance else {
+            return Ok(None);
+        };
+        let subject = monitor_subject(&self.paths, metadata_path)?;
+        let owned = monitor::live_runtime(&self.paths, &subject)?
+            .is_some_and(|live| &live.instance == instance && live.runtime_pid == metadata.pid);
+
+        Ok(owned.then(|| (subject, instance.clone())))
     }
 }
 
@@ -617,8 +685,14 @@ impl ManagedProcess {
         &self.metadata_path
     }
 
+    /// Whether the runtime has exited. An identity lookup never finds an exited process, so a
+    /// changed identity is enough; the monitor keeps the exit status.
     pub fn has_exited(&mut self) -> Result<bool, DaemonError> {
-        Ok(self.child.try_wait()?.is_some())
+        let Some(start_identity) = self.start_identity else {
+            return Ok(true);
+        };
+
+        Ok(platform::inspect_process_start_identity(self.pid)? != Some(start_identity))
     }
 
     pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
@@ -626,42 +700,18 @@ impl ManagedProcess {
     }
 
     pub async fn stop_with(
-        mut self,
+        self,
         signal: StopSignal,
         grace_period: Duration,
     ) -> Result<(), DaemonError> {
         require_process_containment()?;
-        if self.child.try_wait()?.is_some() && !process_group_exists(self.pid)? {
-            return Ok(());
-        }
-
-        signal_process_group(self.pid, ProcessSignal::Stop(signal))?;
-
-        match timeout(
-            grace_period,
-            wait_for_managed_process_group_exit(&mut self.child, self.pid),
+        stop_monitored_runtime(
+            &self.paths,
+            &self.subject,
+            &self.instance,
+            monitor_stop(signal, grace_period),
         )
         .await
-        {
-            Ok(result) => return result,
-            Err(_elapsed) => {
-                signal_process_group(self.pid, ProcessSignal::Kill)?;
-            }
-        }
-
-        match timeout(
-            Duration::from_secs(1),
-            wait_for_managed_process_group_exit(&mut self.child, self.pid),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_elapsed) => Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                format!("process group {} did not exit after signal", self.pid),
-            )
-            .into()),
-        }
     }
 }
 
@@ -732,14 +782,10 @@ impl OwnedRuntime {
             .is_some_and(|desired| self.applied_config_fingerprint.as_ref() == Some(desired))
     }
 
+    /// Whether the monitor still runs this runtime as recorded.
     fn matches_live(&self) -> Result<bool, DaemonError> {
-        live_process_matches(
-            self.pid,
-            &self.command,
-            &self.arguments,
-            self.process_start_identity,
-            self.process_executable_identity.as_ref(),
-        )
+        Ok(monitor::live_runtime(&self.paths, &self.subject)?
+            .is_some_and(|live| live.instance == self.instance && live.runtime_pid == self.pid))
     }
 }
 
@@ -760,13 +806,13 @@ impl AdoptedProcess {
         self.owned.has_applied_desired_config()
     }
 
-    /// Kills a still-matching test process group and synchronously verifies its exit.
+    /// Kills a still-matching test process group and synchronously verifies that no live member
+    /// remains. Its monitor reaps the leader and keeps the exit until released.
     #[doc(hidden)]
     pub fn kill_and_wait_for_test(&self, timeout: Duration) -> Result<(), DaemonError> {
         require_process_containment()?;
         if !self.owned.matches_live()? {
-            reap_process_if_child(self.owned.pid)?;
-            if !process_and_group_are_absent(self.owned.pid)? {
+            if !process_group_has_exited(self.owned.pid)? {
                 return Err(io::Error::other(format!(
                     "process {} remained after its recorded identity stopped matching",
                     self.owned.pid
@@ -779,8 +825,7 @@ impl AdoptedProcess {
         signal_process_group(self.owned.pid, ProcessSignal::Kill)?;
         let deadline = StdInstant::now() + timeout;
         loop {
-            reap_process_if_child(self.owned.pid)?;
-            if process_and_group_are_absent(self.owned.pid)? {
+            if process_group_has_exited(self.owned.pid)? {
                 return Ok(());
             }
             if StdInstant::now() >= deadline {
@@ -807,16 +852,13 @@ impl AdoptedProcess {
         grace_period: Duration,
     ) -> Result<(), DaemonError> {
         require_process_containment()?;
-        if !self.owned.matches_live()? {
-            if process_and_group_are_absent(self.owned.pid)? {
-                return Ok(());
-            }
-            return Err(DaemonError::RuntimeProcessIdentityChanged {
-                pid: self.owned.pid,
-            });
-        }
-
-        stop_process_group_by_pid(&self.owned, signal, grace_period).await
+        stop_monitored_runtime(
+            &self.owned.paths,
+            &self.owned.subject,
+            &self.owned.instance,
+            monitor_stop(signal, grace_period),
+        )
+        .await
     }
 }
 
@@ -1132,103 +1174,6 @@ fn signal_process_group(_pid: u32, _signal: ProcessSignal) -> Result<(), DaemonE
     require_process_containment()
 }
 
-/// Owns a freshly spawned process group until its runtime files are durably committed.
-///
-/// Explicit startup failures terminate and await the child on the current runtime. If cancellation
-/// drops the guard, it synchronously requests group and leader termination, then transfers leader
-/// reaping to an independent thread so Tokio runtime teardown cannot leave a zombie.
-struct SpawnedProcessGroup {
-    pid: u32,
-    child: Option<Child>,
-}
-
-impl SpawnedProcessGroup {
-    fn armed(pid: u32, child: Child) -> Self {
-        Self {
-            pid,
-            child: Some(child),
-        }
-    }
-
-    /// Commits the PID and runtime metadata, releasing the child only once both are durable.
-    /// Nothing is awaited between a successful commit and taking ownership back.
-    async fn commit(&mut self, spec: &ProcessSpec) -> Result<Option<Child>, DaemonError> {
-        let Some(child) = self.child.as_mut() else {
-            return Ok(None);
-        };
-        persist_runtime_files(spec, self.pid, child).await?;
-
-        Ok(self.child.take())
-    }
-
-    async fn terminate(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            terminate_spawned_child(self.pid, &mut child).await;
-        }
-    }
-}
-
-impl Drop for SpawnedProcessGroup {
-    fn drop(&mut self) {
-        let Some(mut child) = self.child.take() else {
-            return;
-        };
-
-        #[cfg(target_os = "macos")]
-        let _group_kill_result = signal_process_group(self.pid, ProcessSignal::Kill);
-        let _child_kill_result = child.start_kill();
-        reap_spawned_child(child);
-    }
-}
-
-fn reap_spawned_child(child: Child) {
-    let (child_sender, child_receiver) = mpsc::channel();
-    let reaper = std::thread::Builder::new()
-        .name("pv-process-reaper".to_string())
-        .spawn(move || {
-            if let Ok(child) = child_receiver.recv() {
-                wait_for_spawned_child(child);
-            }
-        });
-
-    match reaper {
-        Ok(_reaper) => {
-            if let Err(error) = child_sender.send(child) {
-                wait_for_spawned_child(error.0);
-            }
-        }
-        Err(_error) => wait_for_spawned_child(child),
-    }
-}
-
-fn wait_for_spawned_child(mut child: Child) {
-    while matches!(child.try_wait(), Ok(None)) {
-        std::thread::sleep(READINESS_POLL_INTERVAL);
-    }
-}
-
-async fn terminate_spawned_child(pid: u32, child: &mut Child) {
-    #[cfg(target_os = "macos")]
-    let _group_kill_result = signal_process_group(pid, ProcessSignal::Kill);
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    let _pid = pid;
-
-    let _result = child.kill().await;
-
-    let _result = child.wait().await;
-}
-
-async fn stop_process_group_by_pid(
-    owned: &OwnedRuntime,
-    signal: StopSignal,
-    grace_period: Duration,
-) -> Result<(), DaemonError> {
-    // An adopted leader can be reaped during the grace period, by launchd once the
-    // daemon that started it has exited. Do not signal a group whose recorded
-    // leader no longer matches.
-    stop_process_group(owned.pid, signal, grace_period, || owned.matches_live()).await
-}
-
 /// Signals `pid`'s process group with `signal`, then SIGKILL once `grace_period` passes, and
 /// waits until no live member remains. Escalates only while `leader_still_owned` proves the
 /// group still belongs to the runtime.
@@ -1264,19 +1209,6 @@ pub(crate) async fn stop_process_group(
     .into())
 }
 
-async fn wait_for_managed_process_group_exit(
-    child: &mut Child,
-    pid: u32,
-) -> Result<(), DaemonError> {
-    child.wait().await?;
-
-    while process_group_exists(pid)? {
-        sleep(READINESS_POLL_INTERVAL).await;
-    }
-
-    Ok(())
-}
-
 pub(crate) async fn wait_for_process_group_exit(
     pid: u32,
     readiness_timeout: Duration,
@@ -1294,129 +1226,166 @@ pub(crate) async fn wait_for_process_group_exit(
     process_group_has_exited(pid)
 }
 
-#[expect(
-    clippy::disallowed_types,
-    reason = "PV process supervisor owns child process spawning"
-)]
-fn process_command(spec: &ProcessSpec) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(&spec.command);
-    command.args(&spec.arguments);
-    for key in PHP_INI_ENVIRONMENT_KEYS {
-        command.env_remove(key);
-    }
-    command.envs(&spec.private_environment);
-    #[cfg(target_os = "macos")]
-    command.process_group(0);
-
-    command
+/// The monitor subject of the runtime recorded at `metadata_path`: the record's path under
+/// `run/` without its extension, such as `gateway`, `workers/php-8.4` or `resources/redis/7`.
+pub(crate) fn monitor_subject(
+    paths: &PvPaths,
+    metadata_path: &Utf8Path,
+) -> Result<String, DaemonError> {
+    metadata_path
+        .strip_prefix(paths.run())
+        .ok()
+        .map(|relative| relative.with_extension(""))
+        .filter(|subject| !subject.as_str().is_empty())
+        .map(Into::into)
+        .ok_or_else(|| DaemonError::InvalidRuntimeRecord {
+            path: metadata_path.to_owned(),
+        })
 }
 
-async fn persist_runtime_files(
-    spec: &ProcessSpec,
-    pid: u32,
-    child: &mut Child,
-) -> Result<(), DaemonError> {
-    let (process_identity, process_executable_identity) =
-        process_identity_for_runtime_metadata(spec, pid, child).await?;
-
-    fs::write_sensitive_file(&spec.pid_path, &format!("{pid}\n"))?;
-    write_runtime_metadata(
-        spec,
-        pid,
-        process_identity.start_identity,
-        process_executable_identity,
-    )
+/// The resource a monitor subject runs: the Gateway's Caddy, a worker's FrankenPHP, or the
+/// Managed Resource named in `resources/<name>/<track>`.
+fn subject_resource_name(subject: &str) -> &str {
+    if subject == "gateway" {
+        "caddy"
+    } else if subject.starts_with("workers/") {
+        "frankenphp"
+    } else {
+        subject
+            .strip_prefix("resources/")
+            .and_then(|resource| resource.split('/').next())
+            .unwrap_or(subject)
+    }
 }
 
-async fn process_identity_for_runtime_metadata(
-    spec: &ProcessSpec,
-    pid: u32,
-    child: &mut Child,
-) -> Result<(platform::ProcessIdentity, Option<ProcessExecutableIdentity>), DaemonError> {
-    let identity_started_at = Instant::now();
-    let mut process_identity =
-        inspect_spawned_process_identity(spec, pid, child, &identity_started_at).await?;
-    if executable_matches(&process_identity, &spec.command) {
-        return Ok((process_identity, None));
-    }
-    let script_candidate = process_identity
-        .arguments
-        .iter()
-        .take(2)
-        .any(|argument| argument == spec.command.as_str());
-    if !script_candidate {
-        return Ok((process_identity, None));
-    }
-    let source = fs::read_to_string(&spec.command)?;
-    if !source.starts_with("#!") {
-        return Ok((process_identity, None));
-    }
-
-    let started_at = Instant::now();
-    let mut stable_identity: Option<(platform::ProcessIdentity, Instant)> = None;
-    loop {
-        if script_arguments_match(&process_identity, &spec.command, &spec.arguments) {
-            match &stable_identity {
-                Some((identity, observed_at))
-                    if identity == &process_identity
-                        && observed_at.elapsed() >= SCRIPT_IDENTITY_STABILIZATION =>
-                {
-                    let executable_identity = ProcessExecutableIdentity {
-                        executable: process_identity.executable.to_string(),
-                        argument_zero: process_identity.argument_zero.clone(),
-                    };
-
-                    return Ok((process_identity, Some(executable_identity)));
-                }
-                Some((identity, _)) if identity == &process_identity => {}
-                _ => stable_identity = Some((process_identity.clone(), Instant::now())),
-            }
+/// How a runtime is stopped when nobody chooses otherwise: Postgres by its fast shutdown, and
+/// the Gateway and workers with less grace than the data stores.
+fn stop_policy(resource_name: &str) -> MonitorStop {
+    MonitorStop {
+        signal: if resource_name == "postgres" {
+            StopSignal::Interrupt
         } else {
-            stable_identity = None;
-        }
-        if started_at.elapsed() >= PROCESS_IDENTITY_TIMEOUT {
-            return Err(DaemonError::MissingProcessIdentity {
-                name: spec.name.clone(),
-                pid,
-            });
-        }
-
-        sleep(PROCESS_IDENTITY_POLL_INTERVAL).await;
-        process_identity = inspect_spawned_process_identity(spec, pid, child, &started_at).await?;
+            StopSignal::Terminate
+        },
+        grace_ms: if matches!(resource_name, "caddy" | "frankenphp") {
+            1_000
+        } else {
+            10_000
+        },
     }
 }
 
-async fn inspect_spawned_process_identity(
-    spec: &ProcessSpec,
-    pid: u32,
-    child: &mut Child,
-    started_at: &Instant,
-) -> Result<platform::ProcessIdentity, DaemonError> {
-    loop {
-        if let Some(process_identity) = platform::inspect_process_identity(pid)? {
-            return Ok(process_identity);
+fn monitor_stop(signal: StopSignal, grace_period: Duration) -> MonitorStop {
+    MonitorStop {
+        signal,
+        grace_ms: u64::try_from(grace_period.as_millis()).unwrap_or(u64::MAX),
+    }
+}
+
+fn stop_grace(stop: MonitorStop) -> Duration {
+    Duration::from_millis(stop.grace_ms)
+}
+
+/// Stops the runtime of `subject`'s monitor `instance`, logs how it exited, and releases the
+/// monitor. A monitor whose record names another instance, or none, is not this runtime's and is
+/// left alone; a monitor that died is recovered from its record.
+async fn stop_monitored_runtime(
+    paths: &PvPaths,
+    subject: &str,
+    instance: &str,
+    stop: MonitorStop,
+) -> Result<(), DaemonError> {
+    match stop_monitor_instance(paths, subject, instance, stop).await? {
+        MonitorStopped::Stopped(state) => {
+            structured_log::runtime_exited(paths, subject, &exit_description(state.exit));
+            monitor::release_monitor(paths, subject).await
         }
-        if child.try_wait()?.is_some() || started_at.elapsed() >= PROCESS_IDENTITY_TIMEOUT {
-            return Err(DaemonError::MissingProcessIdentity {
-                name: spec.name.clone(),
-                pid,
+        MonitorStopped::Unavailable => monitor::recover_monitor(paths, subject).await,
+        MonitorStopped::Gone => Ok(()),
+    }
+}
+
+pub(crate) enum MonitorStopped {
+    /// The runtime exited and its whole process group is proven gone; the monitor awaits release.
+    Stopped(MonitorState),
+    /// The monitor could not be reached; it may have died.
+    Unavailable,
+    /// The record no longer names this instance: it was released, or replaced.
+    Gone,
+}
+
+/// Has `subject`'s monitor `instance` stop its runtime, waiting up to the grace period plus a
+/// margin. Cleanup that the monitor cannot prove keeps the monitor and its records, and fails.
+pub(crate) async fn stop_monitor_instance(
+    paths: &PvPaths,
+    subject: &str,
+    instance: &str,
+    stop: MonitorStop,
+) -> Result<MonitorStopped, DaemonError> {
+    if monitor::recorded_monitor_instance(paths, subject)?.as_deref() != Some(instance) {
+        return Ok(MonitorStopped::Gone);
+    }
+    let state = match timeout(
+        stop_grace(stop).saturating_add(MONITOR_STOP_MARGIN),
+        monitor::stop_monitor(paths, subject, stop),
+    )
+    .await
+    {
+        Ok(Ok(state)) => state,
+        Ok(Err(DaemonError::MonitorUnavailable { .. })) => return Ok(MonitorStopped::Unavailable),
+        Ok(Err(error)) => return Err(error),
+        Err(_elapsed) => {
+            return Err(DaemonError::MonitorUnavailable {
+                subject: subject.to_owned(),
+                reason: "the monitor did not finish stopping its runtime".to_owned(),
             });
         }
-
-        sleep(PROCESS_IDENTITY_POLL_INTERVAL).await;
+    };
+    if state.cleanup != MonitorCleanup::Complete {
+        return Err(DaemonError::RuntimeCleanupUnproven {
+            pid: state.runtime_pid,
+            reason: format!(
+                "PV could not prove that the runtime's processes exited, so it kept its monitor and records. {POSTGRES_RECOVERY}"
+            ),
+        });
     }
+
+    Ok(MonitorStopped::Stopped(state))
+}
+
+pub(crate) fn exit_description(exit: Option<MonitorExit>) -> String {
+    match exit {
+        Some(MonitorExit::Code(code)) => format!("exit code {code}"),
+        Some(MonitorExit::Signal(signal)) => format!("signal {signal}"),
+        None => "unknown".to_owned(),
+    }
+}
+
+/// Whether the process at `pid` is still the one a record from before monitors names.
+fn legacy_process_matches(pid: u32, metadata: &RuntimeMetadata) -> Result<bool, DaemonError> {
+    let Some(start_identity) = metadata.process_start_identity else {
+        return Ok(false);
+    };
+
+    live_process_matches(
+        pid,
+        Utf8Path::new(&metadata.command),
+        &metadata.arguments,
+        start_identity,
+        metadata.process_executable_identity.as_ref(),
+    )
 }
 
 fn write_runtime_metadata(
     spec: &ProcessSpec,
     pid: u32,
-    process_start_identity: platform::ProcessStartIdentity,
-    process_executable_identity: Option<ProcessExecutableIdentity>,
+    monitor_instance: &str,
 ) -> Result<(), DaemonError> {
     let started_at = timestamp()?;
     let metadata = RuntimeMetadata {
         name: spec.name.clone(),
         pid,
+        monitor_instance: Some(monitor_instance.to_owned()),
         command: spec.command.to_string(),
         arguments: spec.arguments.clone(),
         private_environment_fingerprint: private_environment_fingerprint(&spec.private_environment),
@@ -1430,9 +1399,9 @@ fn write_runtime_metadata(
         staged_config_fingerprint: None,
         log_path: spec.log_path.to_string(),
         started_at,
-        boot_session_id: Some(platform::current_boot_session_id()?),
-        process_start_identity: Some(process_start_identity),
-        process_executable_identity,
+        boot_session_id: None,
+        process_start_identity: None,
+        process_executable_identity: None,
     };
     let encoded = serde_json::to_string(&metadata)?;
 
@@ -1445,6 +1414,7 @@ fn remove_unchanged_runtime_records(
     pid_path: &Utf8Path,
     metadata_path: &Utf8Path,
     metadata: &RuntimeMetadata,
+    keep_metadata: bool,
 ) -> Result<(), DaemonError> {
     // Admission is closed and the daemon has stopped. Still compare both records
     // before removal so another instance's evidence cannot be removed by this stop.
@@ -1454,7 +1424,9 @@ fn remove_unchanged_runtime_records(
         return Err(DaemonError::RuntimeProcessIdentityChanged { pid: metadata.pid });
     }
     fs::remove_file_if_exists(pid_path)?;
-    fs::remove_file_if_exists(metadata_path)?;
+    if !keep_metadata {
+        fs::remove_file_if_exists(metadata_path)?;
+    }
     Ok(())
 }
 
@@ -1489,11 +1461,6 @@ fn read_optional_file(path: &Utf8Path) -> Result<Option<String>, DaemonError> {
 }
 
 #[cfg(target_os = "macos")]
-fn process_group_exists(pid: u32) -> Result<bool, DaemonError> {
-    Ok(platform::process_group_has_live_members(pid)?)
-}
-
-#[cfg(target_os = "macos")]
 fn process_group_has_exited(pid: u32) -> Result<bool, DaemonError> {
     Ok(!platform::process_group_has_live_members(pid)?)
 }
@@ -1525,13 +1492,6 @@ pub(crate) fn reap_process_if_child(pid: u32) -> Result<(), DaemonError> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn process_group_exists(_pid: u32) -> Result<bool, DaemonError> {
-    require_process_containment()?;
-
-    Ok(false)
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn process_group_has_exited(_pid: u32) -> Result<bool, DaemonError> {
     require_process_containment()?;
 
@@ -1543,11 +1503,6 @@ fn process_and_group_are_absent(_pid: u32) -> Result<bool, DaemonError> {
     require_process_containment()?;
 
     Ok(false)
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-pub(crate) fn reap_process_if_child(_pid: u32) -> Result<(), DaemonError> {
-    require_process_containment()
 }
 
 fn live_process_matches(
@@ -1633,31 +1588,8 @@ impl RuntimeMetadata {
         }
     }
 
-    fn process_spec(&self, pid_path: Utf8PathBuf, metadata_path: Utf8PathBuf) -> ProcessSpec {
-        ProcessSpec {
-            name: self.name.clone(),
-            command: self.command.as_str().into(),
-            arguments: self.arguments.clone(),
-            private_environment: BTreeMap::new(),
-            config_path: self.config_path.as_str().into(),
-            config_fingerprint: self.config_fingerprint.clone(),
-            log_path: self.log_path.as_str().into(),
-            pid_path,
-            metadata_path,
-            resource_name: self.resource_name.clone(),
-            track: self.track.clone(),
-        }
-    }
-
-    fn matches(&self, spec: &ProcessSpec, pid: u32) -> bool {
-        self.matches_recorded(spec, pid)
-            && self.private_environment_fingerprint.as_deref()
-                == private_environment_fingerprint(&spec.private_environment).as_deref()
-    }
-
-    fn matches_recorded(&self, spec: &ProcessSpec, pid: u32) -> bool {
+    fn matches(&self, spec: &ProcessSpec) -> bool {
         self.name == spec.name
-            && self.pid == pid
             && self.command == spec.command.as_str()
             && self.arguments == spec.arguments
             && self.config_path == spec.config_path.as_str()
@@ -1665,6 +1597,8 @@ impl RuntimeMetadata {
             && self.resource_name == spec.resource_name
             && self.track == spec.track
             && self.log_path == spec.log_path.as_str()
+            && self.private_environment_fingerprint.as_deref()
+                == private_environment_fingerprint(&spec.private_environment).as_deref()
     }
 }
 
@@ -1778,27 +1712,23 @@ mod bounded_readiness_tests {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use std::future::pending;
     use std::net::TcpListener;
-    use std::os::unix::fs::PermissionsExt;
     use std::time::Duration;
 
     use anyhow::{Context, Result, anyhow, bail};
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
-    use rustix::process::{Pid, Signal, kill_process, kill_process_group, test_kill_process};
-    use tokio::sync::oneshot;
+    use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
     use tokio::time::sleep;
 
     use super::{
-        ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint, process_and_group_are_absent,
-        process_group_exists, read_runtime_metadata, remove_unchanged_runtime_records,
+        ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint, monitor_subject,
+        process_group_has_exited, read_runtime_metadata, remove_unchanged_runtime_records,
     };
+    use crate::StopSignal;
+    use crate::monitor::{self, MonitorStart, MonitorStop};
     use state::PvPaths;
 
-    /// Shorter than the script identity stabilization window, so cancellation lands while
-    /// the runtime files are still uncommitted.
-    const IDENTITY_CANCEL_DELAY: Duration = Duration::from_millis(150);
     /// Keeps a shell alive until it is stopped, but for 150 s at most, so a test that dies before
     /// stopping it leaves nothing running for long. That outlasts the CI profile's 120 s limit on
     /// a test, so a stalled test can't pass because its fixture exited on its own.
@@ -1829,7 +1759,7 @@ mod tests {
             }
             let before = state::fs::read_to_string(&metadata_path)?;
             assert!(matches!(
-                remove_unchanged_runtime_records(&pid_path, &metadata_path, &inspected),
+                remove_unchanged_runtime_records(&pid_path, &metadata_path, &inspected, false),
                 Err(crate::DaemonError::RuntimeProcessIdentityChanged { pid: 42 }),
             ));
             assert_eq!(state::fs::read_to_string(&pid_path)?, current_pid);
@@ -1839,250 +1769,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn startup_persistence_failure_terminates_process_group_descendants() -> Result<()> {
+    async fn start_replaces_a_monitor_left_without_a_record() -> Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         state::fs::ensure_layout(&paths)?;
-        let descendant_pid_path = paths.run().join("startup-descendant.pid");
-        let metadata_parent_blocker = paths.run().join("metadata-parent");
-        state::fs::write_sensitive_file(&metadata_parent_blocker, "not a directory")?;
-        let descendant_pid_path_for_command = descendant_pid_path.clone();
-        let descendant_pid_path_for_hook = descendant_pid_path.clone();
-        let (leader_sender, leader_receiver) = oneshot::channel();
-        let result = ProcessSupervisor::new(paths.clone())
-            .start_inner(
-                ProcessSpec {
-                    name: "startup-descendant".to_string(),
-                    command: "/bin/sh".into(),
-                    arguments: vec![
-                        "-c".to_string(),
-                        descendant_shell_body(&descendant_pid_path_for_command),
-                    ],
-                    private_environment: Default::default(),
-                    config_path: paths.config().join("startup-descendant.json"),
-                    config_fingerprint: None,
-                    log_path: paths.logs().join("startup-descendant.log"),
-                    pid_path: paths.run().join("startup-descendant-leader.pid"),
-                    metadata_path: metadata_parent_blocker.join("metadata.json"),
-                    resource_name: "startup-descendant".to_string(),
-                    track: "test".to_string(),
-                },
-                move |pid| async move {
-                    let _delivered = leader_sender.send(pid);
-                    wait_for_test_path(&descendant_pid_path_for_hook).await;
-                },
-            )
-            .await;
-
-        assert!(result.is_err());
-        let leader_pid = leader_receiver.await?;
-        let descendant_pid = state::fs::read_to_string(&descendant_pid_path)?
-            .trim()
-            .parse::<u32>()?;
-        let group_exited = wait_for_test_process_group_exit_synchronously(leader_pid)?;
-        let leader_exited = wait_for_test_process_exit(leader_pid).await?;
-        let descendant_exited = wait_for_test_process_exit(descendant_pid).await?;
-        let emergency_cleanup = if group_exited {
-            "not needed".to_owned()
-        } else {
-            match kill_process_group(test_pid(leader_pid)?, Signal::KILL) {
-                Ok(()) => match wait_for_test_process_group_exit_synchronously(leader_pid) {
-                    Ok(true) => "sent KILL and the process group exited".to_owned(),
-                    Ok(false) => "sent KILL but the process group remained alive".to_owned(),
-                    Err(error) => format!("sent KILL but the follow-up probe failed: {error}"),
-                },
-                Err(error) => format!("failed to send KILL: {error}"),
-            }
-        };
-
-        if !descendant_exited && group_exited {
-            kill_test_process(descendant_pid)?;
-            let _cleanup_complete = wait_for_test_process_exit(descendant_pid).await?;
-        }
-
-        assert!(
-            group_exited,
-            "startup persistence failure left process group {leader_pid} alive; emergency cleanup: {emergency_cleanup}"
-        );
-        assert!(
-            leader_exited,
-            "startup persistence failure left leader process {leader_pid} alive"
-        );
-
-        assert!(
-            descendant_exited,
-            "startup persistence failure left descendant process {descendant_pid} alive"
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn canceled_spawn_reaps_uncommitted_process_group() -> Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        state::fs::ensure_layout(&paths)?;
-        let supervisor = ProcessSupervisor::new(paths.clone());
-
-        let hook_descendant_pid_path = paths.run().join("hook-cancel-descendant.pid");
-        let hook_observed_pid_path = hook_descendant_pid_path.clone();
-        let (hook_pid_sender, hook_pid_receiver) = oneshot::channel();
-        let mut hook_start = Box::pin(supervisor.start_inner(
-            descendant_spec(
-                &paths,
-                "hook-cancel",
-                "/bin/sh".into(),
-                shell_arguments(&hook_descendant_pid_path),
-            ),
-            move |pid| async move {
-                wait_for_test_path(&hook_observed_pid_path).await;
-                let _delivered = hook_pid_sender.send(pid);
-                pending::<()>().await;
-            },
-        ));
-        let hook_leader_pid = tokio::select! {
-            _result = &mut hook_start => {
-                return Err(anyhow!(
-                    "start_inner returned while the post-spawn hook was parked"
-                ));
-            }
-            pid = hook_pid_receiver => pid?,
-        };
-        drop(hook_start);
-
-        assert_process_group_reaped(hook_leader_pid, &hook_descendant_pid_path).await?;
-
-        let identity_descendant_pid_path = paths.run().join("identity-cancel-descendant.pid");
-        let identity_command = paths.run().join("identity-cancel.sh");
-        write_descendant_script(&identity_command, &identity_descendant_pid_path)?;
-        let identity_observed_pid_path = identity_descendant_pid_path.clone();
-        let (identity_pid_sender, identity_pid_receiver) = oneshot::channel();
-        let mut identity_start = Box::pin(supervisor.start_inner(
-            descendant_spec(&paths, "identity-cancel", identity_command, Vec::new()),
-            move |pid| async move {
-                wait_for_test_path(&identity_observed_pid_path).await;
-                let _delivered = identity_pid_sender.send(pid);
-            },
-        ));
-        let identity_leader_pid = tokio::select! {
-            _result = &mut identity_start => {
-                return Err(anyhow!(
-                    "start_inner returned before the spawned process was observed"
-                ));
-            }
-            pid = identity_pid_receiver => pid?,
-        };
-        tokio::select! {
-            _result = &mut identity_start => {
-                return Err(anyhow!(
-                    "start_inner committed runtime files before cancellation"
-                ));
-            }
-            () = sleep(IDENTITY_CANCEL_DELAY) => {}
-        }
-        drop(identity_start);
-
-        assert_process_group_reaped(identity_leader_pid, &identity_descendant_pid_path).await?;
-
-        let committed_descendant_pid_path = paths.run().join("committed-descendant.pid");
-        let committed = ProcessSupervisor::new(paths.clone())
-            .start(descendant_spec(
-                &paths,
-                "committed",
-                "/bin/sh".into(),
-                shell_arguments(&committed_descendant_pid_path),
-            ))
-            .await?;
-        let committed_pid = committed.pid();
-        wait_for_test_path(&committed_descendant_pid_path).await;
-
-        assert!(
-            test_kill_process(test_pid(committed_pid)?).is_ok(),
-            "committed runtime {committed_pid} was reaped despite durable runtime files"
-        );
-
-        committed.stop(Duration::from_secs(5)).await?;
-
-        Ok(())
-    }
-
-    #[test]
-    fn runtime_teardown_reaps_uncommitted_process_group() -> Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        state::fs::ensure_layout(&paths)?;
-        let descendant_pid_path = paths.run().join("runtime-teardown-descendant.pid");
-        let listener_ready_path = paths.run().join("runtime-teardown-listener.ready");
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
-        let listener_port = listener.local_addr()?.port();
-        drop(listener);
-
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
+        pv_fake::install_monitor(&paths)?;
         let spec = descendant_spec(
             &paths,
-            "runtime-teardown",
+            "orphaned",
             "/bin/sh".into(),
-            listener_descendant_arguments(
-                listener_port,
-                &listener_ready_path,
-                &descendant_pid_path,
-            ),
+            vec!["-c".to_owned(), IDLE_SHELL_LOOP.to_owned()],
         );
-        let supervisor = ProcessSupervisor::new(paths);
-        let listener_ready_path_for_hook = listener_ready_path.clone();
-        let (pid_sender, pid_receiver) = oneshot::channel();
-        let startup_task = runtime.spawn(async move {
-            supervisor
-                .start_inner(spec, move |pid| async move {
-                    wait_for_test_path(&listener_ready_path_for_hook).await;
-                    let _delivered = pid_sender.send(pid);
-                    pending::<()>().await;
-                })
-                .await
-        });
-        let leader_pid = runtime.block_on(pid_receiver)?;
-        drop(runtime);
-        drop(startup_task);
-
-        let descendant_pid = state::fs::read_to_string(&descendant_pid_path)?
-            .trim()
-            .parse::<u32>()?;
-        let group_exited = wait_for_test_process_group_exit_synchronously(leader_pid)?;
-        let leader_exited = wait_for_test_process_exit_synchronously(leader_pid)?;
-        let descendant_exited = wait_for_test_process_exit_synchronously(descendant_pid)?;
-        let listener_released = wait_for_test_listener_release(listener_port);
-
-        let emergency_cleanup = if group_exited {
-            "not needed".to_owned()
-        } else {
-            match kill_process_group(test_pid(leader_pid)?, Signal::KILL) {
-                Ok(()) => match wait_for_test_process_group_exit_synchronously(leader_pid) {
-                    Ok(true) => "sent KILL and the process group exited".to_owned(),
-                    Ok(false) => "sent KILL but the process group remained alive".to_owned(),
-                    Err(error) => format!("sent KILL but the follow-up probe failed: {error}"),
+        // As a start cancelled after its monitor began, before the runtime's record was written.
+        let orphan = monitor::start_monitor(
+            &paths,
+            &paths.active_pv_binary(),
+            MonitorStart {
+                subject: monitor_subject(&paths, &spec.metadata_path)?,
+                command: spec.command.clone(),
+                arguments: spec.arguments.clone(),
+                private_environment: spec.private_environment.clone(),
+                log_path: spec.log_path.clone(),
+                fallback_stop: MonitorStop {
+                    signal: StopSignal::Terminate,
+                    grace_ms: 1_000,
                 },
-                Err(error) => format!("failed to send KILL: {error}"),
-            }
-        };
+                lifeline_fd: None,
+            },
+        )
+        .await?;
+        let supervisor = ProcessSupervisor::new(paths.clone());
 
-        assert!(
-            group_exited,
-            "runtime teardown left process group {leader_pid} alive; emergency cleanup: {emergency_cleanup}"
-        );
-        assert!(
-            leader_exited,
-            "runtime teardown left leader process {leader_pid} unreaped"
-        );
-        assert!(
-            descendant_exited,
-            "runtime teardown left descendant process {descendant_pid} alive"
-        );
-        assert!(
-            listener_released,
-            "runtime teardown left listener port {listener_port} occupied"
-        );
+        let process = supervisor.start(spec.clone()).await?;
+        let orphan_exited = wait_for_test_process_exit(orphan.runtime_pid).await?;
+        let owned = supervisor.verify_ownership(&spec)?;
+        let replacement_pid = process.pid();
+        process.stop(Duration::from_secs(5)).await?;
+
+        assert!(orphan_exited);
+        assert_ne!(replacement_pid, orphan.runtime_pid);
+        assert_eq!(owned.map(|owned| owned.pid()), Some(replacement_pid));
 
         Ok(())
     }
@@ -2092,6 +1818,7 @@ mod tests {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         state::fs::ensure_layout(&paths)?;
+        pv_fake::install_monitor(&paths)?;
         let supervisor = ProcessSupervisor::new(paths.clone());
         let spec = descendant_spec(
             &paths,
@@ -2114,9 +1841,8 @@ mod tests {
         );
 
         // Once the recorded process is dead, prior proof is refused even though the
-        // recording files are intact.
+        // record is intact.
         process.stop(Duration::from_secs(5)).await?;
-        assert!(spec.pid_path.exists());
         assert!(spec.metadata_path.exists());
         assert!(
             supervisor
@@ -2132,6 +1858,7 @@ mod tests {
         let tempdir = tempdir().context("create temp directory")?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         state::fs::ensure_layout(&paths).context("create test layout")?;
+        pv_fake::install_monitor(&paths)?;
         let descendant_pid_path = paths.run().join("adopted-kill-descendant.pid");
         let listener_ready_path = paths.run().join("adopted-kill-listener.ready");
         let listener = TcpListener::bind(("127.0.0.1", 0)).context("reserve listener port")?;
@@ -2183,7 +1910,8 @@ mod tests {
         }
         cleanup_result?;
 
-        assert!(process_and_group_are_absent(leader_pid)?);
+        // The monitor keeps the leader unreaped until it is released.
+        assert!(process_group_has_exited(leader_pid)?);
         assert!(wait_for_test_process_exit_synchronously(descendant_pid)?);
         assert!(wait_for_test_listener_release(listener_port));
 
@@ -2211,18 +1939,6 @@ mod tests {
         }
     }
 
-    fn shell_arguments(descendant_pid_path: &Utf8Path) -> Vec<String> {
-        vec!["-c".to_string(), descendant_shell_body(descendant_pid_path)]
-    }
-
-    /// A shell that starts a descendant and records its PID. The PID file appears by rename, so a
-    /// test that finds it never reads it half written.
-    fn descendant_shell_body(descendant_pid_path: &Utf8Path) -> String {
-        format!(
-            "sh -c '{IDLE_SHELL_LOOP}' & echo $! > \"{descendant_pid_path}.tmp\"; mv \"{descendant_pid_path}.tmp\" \"{descendant_pid_path}\"; {IDLE_SHELL_LOOP}"
-        )
-    }
-
     fn listener_descendant_arguments(
         port: u16,
         listener_ready_path: &Utf8Path,
@@ -2238,51 +1954,6 @@ mod tests {
             listener_ready_path.to_string(),
             descendant_pid_path.to_string(),
         ]
-    }
-
-    #[expect(
-        clippy::disallowed_methods,
-        reason = "supervisor cancellation test sets its fixture executable bit directly"
-    )]
-    fn write_descendant_script(path: &Utf8Path, descendant_pid_path: &Utf8Path) -> Result<()> {
-        let body = descendant_shell_body(descendant_pid_path);
-        state::fs::write_sensitive_file(path, &format!("#!/bin/sh\n{body}\n"))?;
-        let mut permissions = std::fs::metadata(path)?.permissions();
-        permissions.set_mode(0o755);
-        std::fs::set_permissions(path, permissions)?;
-
-        Ok(())
-    }
-
-    async fn assert_process_group_reaped(
-        leader_pid: u32,
-        descendant_pid_path: &Utf8Path,
-    ) -> Result<()> {
-        let descendant_pid = state::fs::read_to_string(descendant_pid_path)?
-            .trim()
-            .parse::<u32>()?;
-        let leader_exited = wait_for_test_process_exit(leader_pid).await?;
-        let descendant_exited = wait_for_test_process_exit(descendant_pid).await?;
-        for (pid, exited) in [
-            (leader_pid, leader_exited),
-            (descendant_pid, descendant_exited),
-        ] {
-            if !exited {
-                kill_test_process(pid)?;
-                let _cleanup_complete = wait_for_test_process_exit(pid).await?;
-            }
-        }
-
-        assert!(
-            leader_exited,
-            "canceled spawn left leader process {leader_pid} unreaped"
-        );
-        assert!(
-            descendant_exited,
-            "canceled spawn left descendant process {descendant_pid} unreaped"
-        );
-
-        Ok(())
     }
 
     async fn wait_for_test_path(path: &Utf8Path) {
@@ -2312,7 +1983,7 @@ mod tests {
 
     fn wait_for_test_process_group_exit_synchronously(pid: u32) -> Result<bool> {
         for _attempt in 0..100 {
-            if !process_group_exists(pid)? {
+            if process_group_has_exited(pid)? {
                 return Ok(true);
             }
 
@@ -2347,12 +2018,6 @@ mod tests {
         }
 
         false
-    }
-
-    fn kill_test_process(pid: u32) -> Result<()> {
-        kill_process(test_pid(pid)?, Signal::KILL)?;
-
-        Ok(())
     }
 
     fn test_pid(pid: u32) -> Result<Pid> {

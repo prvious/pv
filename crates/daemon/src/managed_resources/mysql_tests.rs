@@ -87,8 +87,7 @@ async fn mysql_reconciliation_creates_database_allocation_and_renders_env() -> R
         resources::default_artifact_manifest_url(),
         admin.clone(),
     )?;
-    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
-    runtimes.register("mysql", MYSQL_TRACK);
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_mysql_fixture_artifact(&paths, MYSQL_TRACK)?;
 
     run_project_reconciliation(&paths, &project, &catalog).await?;
@@ -127,8 +126,7 @@ async fn mysql_project_demand_installs_missing_fixture_track_before_start() -> R
         OFFLINE_TEST_MANIFEST_URL,
         admin.clone(),
     )?;
-    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
-    runtimes.register("mysql", MYSQL_TRACK);
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_mysql_cached_fixture(&paths, tempdir.path())?;
 
     run_project_reconciliation(&paths, &project, &catalog).await?;
@@ -167,8 +165,7 @@ async fn mysql_reconciliation_reuses_admin_env_and_ready_allocation() -> Result<
         resources::default_artifact_manifest_url(),
         admin,
     )?;
-    let mut runtimes = ManagedResourceFixtureGuard::new(&paths);
-    runtimes.register("mysql", MYSQL_TRACK);
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_mysql_fixture_artifact(&paths, MYSQL_TRACK)?;
 
     run_project_reconciliation(&paths, &project, &catalog).await?;
@@ -276,14 +273,8 @@ fn read_dotenv(project: &ProjectRecord) -> Result<String> {
 fn read_runtime_metadata(paths: &PvPaths, track: &str) -> Result<Value> {
     let content = state::fs::read_to_string(&paths.resource_runtime_metadata("mysql", track))?;
     let mut metadata: Value = serde_json::from_str(&content)?;
-    if let Some(boot_session_id) = metadata.get_mut("boot_session_id") {
-        *boot_session_id = json!("<boot-session-id>");
-    }
-    if let Some(process_start_identity) = metadata.get_mut("process_start_identity") {
-        *process_start_identity = json!("<native-start-identity>");
-    }
-    if let Some(process_executable_identity) = metadata.get_mut("process_executable_identity") {
-        *process_executable_identity = json!("<native-executable-identity>");
+    if let Some(monitor_instance) = metadata.get_mut("monitor_instance") {
+        *monitor_instance = json!("<monitor-instance>");
     }
 
     Ok(metadata)
@@ -312,6 +303,7 @@ fn seed_mysql_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
 }
 
 fn seed_mysql_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {
+    pv_fake::install_monitor(paths)?;
     let archive_path = tempdir.join(MYSQL_ARCHIVE_FILE_NAME);
 
     create_mysql_archive(tempdir, &archive_path)?;

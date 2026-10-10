@@ -41,15 +41,11 @@ pub use client::{
 };
 pub use dns::{dns_port_available, response_bytes};
 pub use error::{DaemonError, ManagedResourceProjectFailure, RuntimeReconciliationFailure};
-#[cfg(target_os = "macos")]
 pub use monitor::{
-    LiveRuntime, live_runtime, monitor_state, recorded_monitor_subjects, recover_monitor,
-    release_monitor, start_monitor, stop_monitor,
-};
-pub use monitor::{
-    MONITOR_GATE_COMMAND, MONITOR_RUN_COMMAND, MonitorCleanup, MonitorErrorKind, MonitorExit,
-    MonitorHooks, MonitorPause, MonitorStart, MonitorState, MonitorStop, run_monitor_blocking,
-    run_monitor_gate,
+    LiveRuntime, MONITOR_GATE_COMMAND, MONITOR_RUN_COMMAND, MonitorCleanup, MonitorErrorKind,
+    MonitorExit, MonitorHooks, MonitorPause, MonitorStart, MonitorState, MonitorStop, live_runtime,
+    monitor_state, recorded_monitor_instance, recorded_monitor_subjects, recover_monitor,
+    release_monitor, run_monitor_blocking, run_monitor_gate, start_monitor, stop_monitor,
 };
 pub use protocol::PROTOCOL_VERSION;
 pub use reconciliation::{

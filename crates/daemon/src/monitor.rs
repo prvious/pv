@@ -20,19 +20,29 @@ use std::time::Duration;
 
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
-#[cfg(not(target_os = "macos"))]
-use state::PvPaths;
 
-#[cfg(not(target_os = "macos"))]
-use crate::DaemonError;
 use crate::StopSignal;
 use crate::supervisor::PrivateEnvironmentDebug;
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    LiveRuntime, live_runtime, monitor_state, recorded_monitor_subjects, recover_monitor,
-    release_monitor, run_monitor_blocking, run_monitor_gate, start_monitor, stop_monitor,
+    live_runtime, monitor_state, recorded_monitor_instance, recorded_monitor_subjects,
+    recover_monitor, release_monitor, run_monitor_blocking, run_monitor_gate, start_monitor,
+    stop_monitor,
 };
+#[cfg(not(target_os = "macos"))]
+pub use unsupported::{
+    live_runtime, monitor_state, recorded_monitor_instance, recorded_monitor_subjects,
+    recover_monitor, release_monitor, run_monitor_blocking, run_monitor_gate, start_monitor,
+    stop_monitor,
+};
+
+/// A monitor's runtime that is still running; see [`live_runtime`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiveRuntime {
+    pub instance: String,
+    pub runtime_pid: u32,
+}
 
 /// The hidden command that runs a monitor.
 pub const MONITOR_RUN_COMMAND: &str = "monitor:run";
@@ -192,16 +202,96 @@ impl MonitorPause {
     }
 }
 
+/// Monitors need process containment, which only macOS supports yet. Every entry point fails
+/// before any side effect.
 #[cfg(not(target_os = "macos"))]
-pub fn run_monitor_blocking(_paths: PvPaths, _hooks: MonitorHooks) -> Result<(), DaemonError> {
-    platform::require_capability(platform::PlatformCapability::ProcessContainment)?;
+mod unsupported {
+    use camino::Utf8Path;
+    use platform::PlatformCapability;
+    use state::PvPaths;
 
-    Ok(())
-}
+    use super::{LiveRuntime, MonitorHooks, MonitorStart, MonitorState, MonitorStop};
+    use crate::DaemonError;
 
-#[cfg(not(target_os = "macos"))]
-pub fn run_monitor_gate(_hooks: &MonitorHooks) -> Result<(), DaemonError> {
-    platform::require_capability(platform::PlatformCapability::ProcessContainment)?;
+    fn require_process_containment() -> Result<(), DaemonError> {
+        platform::require_capability(PlatformCapability::ProcessContainment)?;
 
-    Ok(())
+        Ok(())
+    }
+
+    fn unavailable(subject: &str) -> DaemonError {
+        DaemonError::MonitorUnavailable {
+            subject: subject.to_owned(),
+            reason: "monitors are not supported on this platform".to_owned(),
+        }
+    }
+
+    pub fn run_monitor_blocking(_paths: PvPaths, _hooks: MonitorHooks) -> Result<(), DaemonError> {
+        require_process_containment()
+    }
+
+    pub fn run_monitor_gate(_hooks: &MonitorHooks) -> Result<(), DaemonError> {
+        require_process_containment()
+    }
+
+    pub async fn start_monitor(
+        _paths: &PvPaths,
+        _executable: &Utf8Path,
+        start: MonitorStart,
+    ) -> Result<MonitorState, DaemonError> {
+        require_process_containment()?;
+
+        Err(unavailable(&start.subject))
+    }
+
+    pub async fn monitor_state(
+        _paths: &PvPaths,
+        subject: &str,
+    ) -> Result<MonitorState, DaemonError> {
+        require_process_containment()?;
+
+        Err(unavailable(subject))
+    }
+
+    pub async fn stop_monitor(
+        _paths: &PvPaths,
+        subject: &str,
+        _stop: MonitorStop,
+    ) -> Result<MonitorState, DaemonError> {
+        require_process_containment()?;
+
+        Err(unavailable(subject))
+    }
+
+    pub async fn release_monitor(_paths: &PvPaths, _subject: &str) -> Result<(), DaemonError> {
+        require_process_containment()
+    }
+
+    pub async fn recover_monitor(_paths: &PvPaths, _subject: &str) -> Result<(), DaemonError> {
+        require_process_containment()
+    }
+
+    pub fn live_runtime(
+        _paths: &PvPaths,
+        _subject: &str,
+    ) -> Result<Option<LiveRuntime>, DaemonError> {
+        require_process_containment()?;
+
+        Ok(None)
+    }
+
+    pub fn recorded_monitor_instance(
+        _paths: &PvPaths,
+        _subject: &str,
+    ) -> Result<Option<String>, DaemonError> {
+        require_process_containment()?;
+
+        Ok(None)
+    }
+
+    pub fn recorded_monitor_subjects(_paths: &PvPaths) -> Result<Vec<String>, DaemonError> {
+        require_process_containment()?;
+
+        Ok(Vec::new())
+    }
 }
