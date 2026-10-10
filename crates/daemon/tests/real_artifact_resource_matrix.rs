@@ -436,9 +436,10 @@ fn assert_resource_matrix_evidence(paths: &PvPaths, project: &ProjectRecord) -> 
         "MYSQL_URL=mysql://",
         "POSTGRES_URL=postgres://",
         "REDIS_URL=redis://",
-        "REDIS_PREFIX=real-artifact-resources-test-cache-",
+        // Allocation names start with the Project's slug, which comes from its directory name.
+        "REDIS_PREFIX=project-cache-",
         "MAILPIT_DASHBOARD=http://127.0.0.1:",
-        "AWS_BUCKET=real-artifact-resources-test-uploads",
+        "AWS_BUCKET=project-uploads",
         "AWS_ENDPOINT=http://127.0.0.1:",
     ] {
         assert_dotenv_contains(&dotenv, expected)?;
