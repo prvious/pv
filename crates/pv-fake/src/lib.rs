@@ -47,7 +47,10 @@ pub use events::{Event, EventKind};
 #[cfg(unix)]
 pub use gateway::write_gateway_control;
 #[cfg(unix)]
-pub use install::{InstalledFake, binary, install, install_with, install_with_settings};
+pub use install::{
+    InstalledFake, binary, example_binary, install, install_with, install_with_settings,
+    lifeline_fd,
+};
 
 /// The argument a fake starts its descendant with, followed by the descendant's parent pipe.
 #[cfg(unix)]
