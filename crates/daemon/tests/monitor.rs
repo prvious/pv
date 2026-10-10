@@ -14,8 +14,8 @@ use anyhow::{Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::{Utf8TempDir, tempdir};
 use daemon::{
-    DaemonError, MonitorCleanup, MonitorErrorKind, MonitorExit, MonitorHooks, MonitorPause,
-    MonitorStart, MonitorState, MonitorStop, StopSignal,
+    DaemonError, LiveRuntime, MonitorCleanup, MonitorErrorKind, MonitorExit, MonitorHooks,
+    MonitorPause, MonitorStart, MonitorState, MonitorStop, StopSignal,
 };
 use insta::{Settings, assert_snapshot};
 use pv_fake::{EventKind, FakeSettings, InstalledFake, Persona, Scenario};
@@ -54,12 +54,27 @@ async fn monitor_runs_a_runtime_through_stop_and_release() -> Result<()> {
         .await?;
     let fake_pid = wait_for_fake_start(&fake).await?;
     let record = harness.record()?;
+    let instance = harness.instance()?;
     let runtime_birth = platform::inspect_process_start_identity(started.runtime_pid)?;
+    let running = daemon::live_runtime(&harness.paths, SUBJECT)?;
+    let recorded_subjects = daemon::recorded_monitor_subjects(&harness.paths)?;
     let stopped = daemon::stop_monitor(&harness.paths, SUBJECT, STOP).await?;
+    // The monitor still holds the exit until release.
+    let after_stop = daemon::live_runtime(&harness.paths, SUBJECT)?;
     daemon::release_monitor(&harness.paths, SUBJECT).await?;
 
     assert_eq!(started.cleanup, MonitorCleanup::Pending);
     assert_eq!(started.exit, None);
+    assert_eq!(
+        running,
+        Some(LiveRuntime {
+            instance,
+            runtime_pid: started.runtime_pid,
+        })
+    );
+    assert_eq!(recorded_subjects, [SUBJECT]);
+    assert_eq!(after_stop, None);
+    assert!(daemon::recorded_monitor_subjects(&harness.paths)?.is_empty());
     // The runtime is the gate after exec: same pid, same birth identity.
     assert_eq!(fake_pid, started.runtime_pid);
     assert_eq!(
@@ -464,7 +479,13 @@ async fn concurrent_spawns_never_inherit_the_reservation() -> Result<()> {
 
 #[tokio::test]
 async fn closed_lifeline_stops_the_runtime_and_releases_the_monitor() -> Result<()> {
-    let harness = Harness::new()?;
+    let (read, write) = rustix::pipe::pipe()?;
+    fcntl_setfd(&write, FdFlags::CLOEXEC)?;
+    // Through the hooks, as for a daemon running inside a test, whose starts pass no lifeline.
+    let harness = Harness::with_hooks(MonitorHooks {
+        lifeline_fd: Some(read.as_raw_fd()),
+        ..MonitorHooks::default()
+    })?;
     let executable = harness.paths.root().join("runtime/bin/runtime");
     // The fake's own lifeline is off, so only the monitor can stop it.
     let fake = pv_fake::install_with(
@@ -476,10 +497,8 @@ async fn closed_lifeline_stops_the_runtime_and_releases_the_monitor() -> Result<
             settings: FakeSettings::default(),
         },
     )?;
-    let (read, write) = rustix::pipe::pipe()?;
-    fcntl_setfd(&write, FdFlags::CLOEXEC)?;
     let mut start = harness.start_for(fake.executable(), &[])?;
-    start.lifeline_fd = Some(read.as_raw_fd());
+    start.lifeline_fd = None;
     let started = harness.start(start).await?;
     drop(read);
     wait_for_fake_start(&fake).await?;

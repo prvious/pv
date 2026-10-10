@@ -133,6 +133,13 @@ struct RecordedProcess {
     start_identity: ProcessStartIdentity,
 }
 
+/// A monitor's runtime that is still running; see [`live_runtime`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiveRuntime {
+    pub instance: String,
+    pub runtime_pid: u32,
+}
+
 #[derive(Deserialize, Serialize)]
 struct GatePermission {
     command: Utf8PathBuf,
@@ -258,7 +265,7 @@ async fn recover_reserved(paths: &PvPaths, subject: &str) -> Result<(), DaemonEr
                     runtime.pid,
                     record.fallback_stop.signal,
                     record.fallback_stop.grace(),
-                    || runtime_matches(runtime),
+                    || process_matches(runtime),
                 )
                 .await?;
             }
@@ -273,8 +280,52 @@ async fn recover_reserved(paths: &PvPaths, subject: &str) -> Result<(), DaemonEr
     remove_monitor_dir(paths, subject)
 }
 
-fn runtime_matches(runtime: RecordedProcess) -> Result<bool, DaemonError> {
-    Ok(platform::inspect_process_start_identity(runtime.pid)? == Some(runtime.start_identity))
+/// The runtime of `subject`'s monitor, while both the monitor and its runtime still run as
+/// recorded, from this boot.
+///
+/// It needs no request to the monitor: an identity lookup never finds a process that has exited,
+/// and the monitor reaps its runtime only after recording the exit. So `Some` means the monitor
+/// is alive and its runtime has not exited.
+pub fn live_runtime(paths: &PvPaths, subject: &str) -> Result<Option<LiveRuntime>, DaemonError> {
+    let Some(record) = read_record(paths, subject)? else {
+        return Ok(None);
+    };
+    let live = record.boot_session_id == platform::current_boot_session_id()?
+        && process_matches(record.monitor)?
+        && process_matches(record.runtime)?;
+
+    Ok(live.then_some(LiveRuntime {
+        instance: record.instance,
+        runtime_pid: record.runtime.pid,
+    }))
+}
+
+/// The subjects of every monitor that has published its record.
+pub fn recorded_monitor_subjects(paths: &PvPaths) -> Result<Vec<String>, DaemonError> {
+    let directories = match fs::read_dir_paths(&paths.monitors()) {
+        Ok(directories) => directories,
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
+            return Ok(Vec::new());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    let mut subjects = Vec::new();
+    // Reservation locks sit beside the directories; a directory without a record belongs to a
+    // monitor that has not published yet.
+    for directory in directories {
+        if fs::path_is_directory(&directory)?
+            && let Some(record) = read_record_at(directory.join(RECORD_FILE))?
+        {
+            subjects.push(record.subject);
+        }
+    }
+    subjects.sort();
+
+    Ok(subjects)
+}
+
+fn process_matches(process: RecordedProcess) -> Result<bool, DaemonError> {
+    Ok(platform::inspect_process_start_identity(process.pid)? == Some(process.start_identity))
 }
 
 #[expect(
@@ -496,7 +547,11 @@ async fn start_runtime(
         MonitorReservation::adopt(paths, subject, io::stdin().as_fd().try_clone_to_owned()?)?;
     let socket = monitor_socket(paths, subject)?;
     let log = fs::open_private_log_file(&start.log_path)?;
-    let lifeline = start.lifeline_fd.map(lifeline_path).transpose()?;
+    let lifeline = start
+        .lifeline_fd
+        .or(hooks.lifeline_fd)
+        .map(lifeline_path)
+        .transpose()?;
     fs::ensure_user_dir(&paths.monitor_dir(subject))?;
     let (gate, gate_end) = StdUnixStream::pair()?;
     let pid = spawn_gate(start, &log, gate_end)?;
@@ -1145,10 +1200,13 @@ fn record_path(paths: &PvPaths, subject: &str) -> Utf8PathBuf {
     paths.monitor_dir(subject).join(RECORD_FILE)
 }
 
-/// The monitor record of `subject`, refusing one written under another protocol version: its
-/// identities and stop policy may not mean what this version reads them as.
 fn read_record(paths: &PvPaths, subject: &str) -> Result<Option<MonitorRecord>, DaemonError> {
-    let path = record_path(paths, subject);
+    read_record_at(record_path(paths, subject))
+}
+
+/// The monitor record at `path`, refusing one written under another protocol version: its
+/// identities and stop policy may not mean what this version reads them as.
+fn read_record_at(path: Utf8PathBuf) -> Result<Option<MonitorRecord>, DaemonError> {
     match fs::read_to_string(&path) {
         Ok(content) => {
             let record: MonitorRecord = serde_json::from_str(&content)?;
