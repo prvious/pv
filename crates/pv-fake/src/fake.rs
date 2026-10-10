@@ -222,11 +222,21 @@ fn spawn_descendant(argv: &[String], events: &EventLog) -> Result<Descendant> {
 /// is gone, or it is signaled.
 async fn run_descendant(scenario: Scenario, parent_fd: i32, events: EventLog) -> Result<ExitCode> {
     let mut signals = Signals::new()?;
+    let resident_mib = scenario.settings.descendant_resident_mib;
+    let mut resident = vec![0_u8; usize::try_from(resident_mib)? * 1024 * 1024];
+    // Writing one byte per page makes every page resident.
+    for byte in resident.iter_mut().step_by(4096) {
+        *byte = 1;
+    }
+    if resident_mib > 0 {
+        events.record(EventKind::DescendantResident)?;
+    }
     if let Some(fd) = scenario.lifeline_fd {
         lifeline::arm(fd, events.clone(), EventKind::LifelineFired);
     }
     lifeline::arm(parent_fd, events, EventKind::ParentExited);
     signals.next().await;
+    std::hint::black_box(&resident);
 
     Ok(ExitCode::SUCCESS)
 }

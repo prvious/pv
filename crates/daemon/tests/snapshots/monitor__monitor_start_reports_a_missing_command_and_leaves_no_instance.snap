@@ -1,0 +1,5 @@
+---
+source: crates/daemon/tests/monitor.rs
+expression: message
+---
+cannot start <tempdir>/home/.pv/runtime/bin/missing: No such file or directory (os error 2)

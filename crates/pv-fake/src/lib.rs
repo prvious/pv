@@ -47,7 +47,10 @@ pub use events::{Event, EventKind};
 #[cfg(unix)]
 pub use gateway::write_gateway_control;
 #[cfg(unix)]
-pub use install::{InstalledFake, binary, install, install_with, install_with_settings};
+pub use install::{
+    InstalledFake, binary, example_binary, install, install_with, install_with_settings,
+    lifeline_fd,
+};
 
 /// The argument a fake starts its descendant with, followed by the descendant's parent pipe.
 #[cfg(unix)]
@@ -106,6 +109,9 @@ pub struct FakeSettings {
     /// Starts one child process in the fake's process group, as runtimes start workers. It exits
     /// when the fake does.
     pub descendant: bool,
+    /// Makes the descendant hold this much resident memory, so its exit takes long enough to
+    /// overlap a stop that starts once the fake itself has exited.
+    pub descendant_resident_mib: u32,
     /// Makes a `pv_fake_mailpit` persona exit 0 once it has answered its first HTTP request, for
     /// tests of runtimes that exit after becoming ready.
     pub exit_after_first_http_response: bool,

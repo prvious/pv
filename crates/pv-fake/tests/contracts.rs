@@ -1690,6 +1690,7 @@ fn event_names(fake: &InstalledFake) -> Result<Vec<String>> {
             EventKind::LifelineFired => "lifeline_fired".to_owned(),
             EventKind::Held { .. } => "held".to_owned(),
             EventKind::DescendantSpawned { .. } => "descendant_spawned".to_owned(),
+            EventKind::DescendantResident => "descendant_resident".to_owned(),
             EventKind::ParentExited => "parent_exited".to_owned(),
             EventKind::Exit { code } => format!("exit {code}"),
         })

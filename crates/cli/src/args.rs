@@ -47,6 +47,20 @@ pub(crate) enum Command {
     DaemonRun,
 
     #[command(
+        name = "monitor:run",
+        about = "Run an internal PV runtime monitor",
+        hide = true
+    )]
+    MonitorRun,
+
+    #[command(
+        name = "monitor:gate",
+        about = "Start a runtime for an internal PV runtime monitor",
+        hide = true
+    )]
+    MonitorGate,
+
+    #[command(
         name = "shim:php",
         about = "Run the internal PV PHP shim",
         hide = true,

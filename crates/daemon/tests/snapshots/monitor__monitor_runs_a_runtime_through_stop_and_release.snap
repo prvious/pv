@@ -1,0 +1,31 @@
+---
+source: crates/daemon/tests/monitor.rs
+expression: record
+---
+{
+  "arguments": [],
+  "boot_session_id": "<boot>",
+  "command": "<tempdir>/home/.pv/runtime/bin/runtime",
+  "fallback_stop": {
+    "grace_ms": 1000,
+    "signal": "terminate"
+  },
+  "instance": "<instance>",
+  "log_path": "<tempdir>/home/.pv/logs/runtime.log",
+  "monitor": {
+    "pid": <number>,
+    "start_identity": {
+      "microseconds": <number>,
+      "seconds": <number>
+    }
+  },
+  "runtime": {
+    "pid": <number>,
+    "start_identity": {
+      "microseconds": <number>,
+      "seconds": <number>
+    }
+  },
+  "subject": "gateway",
+  "version": 1
+}

@@ -8,6 +8,7 @@ mod health;
 mod ipc;
 mod jobs;
 mod managed_resources;
+mod monitor;
 mod project_env;
 mod reconciliation;
 mod runtime_stop;
@@ -40,6 +41,13 @@ pub use client::{
 };
 pub use dns::{dns_port_available, response_bytes};
 pub use error::{DaemonError, ManagedResourceProjectFailure, RuntimeReconciliationFailure};
+pub use monitor::{
+    MONITOR_GATE_COMMAND, MONITOR_RUN_COMMAND, MonitorCleanup, MonitorErrorKind, MonitorExit,
+    MonitorHooks, MonitorPause, MonitorStart, MonitorState, MonitorStop, run_monitor_blocking,
+    run_monitor_gate,
+};
+#[cfg(target_os = "macos")]
+pub use monitor::{monitor_state, recover_monitor, release_monitor, start_monitor, stop_monitor};
 pub use protocol::PROTOCOL_VERSION;
 pub use reconciliation::{
     EnqueueResult, QueuedReconciliation, ReconciliationDebouncer, ReconciliationJob,

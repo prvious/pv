@@ -44,6 +44,8 @@ pub enum EventKind {
     DescendantSpawned {
         descendant_pid: i32,
     },
+    /// Recorded by a descendant once its `descendant_resident_mib` of memory is resident.
+    DescendantResident,
     /// Recorded by a descendant once its parent fake closes their pipe, on exit or by dying, just
     /// before the descendant exits too.
     ParentExited,

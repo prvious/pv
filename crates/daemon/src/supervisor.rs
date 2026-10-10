@@ -31,12 +31,13 @@ const PROCESS_IDENTITY_TIMEOUT: Duration = Duration::from_secs(5);
 const SCRIPT_IDENTITY_STABILIZATION: Duration = Duration::from_millis(250);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
-const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
+pub(crate) const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 const POSTGRES_RECOVERY: &str = "Restart your Mac, then run this command again.";
 pub(crate) const RUNTIME_READINESS_CONCURRENCY_LIMIT: usize = 4;
 
 /// The signal that asks a runtime to shut down gracefully, before the grace period ends in SIGKILL.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StopSignal {
     /// SIGTERM.
     Terminate,
@@ -92,7 +93,7 @@ impl fmt::Debug for ProcessSpec {
     }
 }
 
-struct PrivateEnvironmentDebug<'a>(&'a BTreeMap<String, String>);
+pub(crate) struct PrivateEnvironmentDebug<'a>(pub(crate) &'a BTreeMap<String, String>);
 
 impl fmt::Debug for PrivateEnvironmentDebug<'_> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -1114,7 +1115,10 @@ fn signal_process_group(pid: u32, signal: ProcessSignal) -> Result<(), DaemonErr
         Ok(()) => Ok(()),
         Err(source) => {
             let error = io::Error::from(source);
-            if process_not_found(&error) {
+            // macOS answers EPERM, not ESRCH, when no member can take a signal: each is an
+            // unreaped zombie or already exiting, as a killed runtime's children briefly are.
+            // Every caller then waits for the group to end, which decides the stop.
+            if process_not_found(&error) || error.kind() == io::ErrorKind::PermissionDenied {
                 return Ok(());
             }
 
@@ -1219,17 +1223,28 @@ async fn stop_process_group_by_pid(
     signal: StopSignal,
     grace_period: Duration,
 ) -> Result<(), DaemonError> {
-    let pid = owned.pid;
+    // An adopted leader can be reaped during the grace period, by launchd once the
+    // daemon that started it has exited. Do not signal a group whose recorded
+    // leader no longer matches.
+    stop_process_group(owned.pid, signal, grace_period, || owned.matches_live()).await
+}
+
+/// Signals `pid`'s process group with `signal`, then SIGKILL once `grace_period` passes, and
+/// waits until no live member remains. Escalates only while `leader_still_owned` proves the
+/// group still belongs to the runtime.
+pub(crate) async fn stop_process_group(
+    pid: u32,
+    signal: StopSignal,
+    grace_period: Duration,
+    leader_still_owned: impl Fn() -> Result<bool, DaemonError>,
+) -> Result<(), DaemonError> {
     signal_process_group(pid, ProcessSignal::Stop(signal))?;
 
     if wait_for_process_group_exit(pid, grace_period).await? {
         return Ok(());
     }
 
-    // An adopted leader can be reaped during the grace period, by launchd once the
-    // daemon that started it has exited. Do not signal a group whose recorded
-    // leader no longer matches.
-    if !owned.matches_live()? {
+    if !leader_still_owned()? {
         return Err(DaemonError::RuntimeCleanupUnproven {
             pid,
             reason: "runtime leader changed before escalation; group ownership is unproven"
@@ -1262,7 +1277,7 @@ async fn wait_for_managed_process_group_exit(
     Ok(())
 }
 
-async fn wait_for_process_group_exit(
+pub(crate) async fn wait_for_process_group_exit(
     pid: u32,
     readiness_timeout: Duration,
 ) -> Result<bool, DaemonError> {
@@ -1501,7 +1516,7 @@ fn process_and_group_are_absent(pid: u32) -> Result<bool, DaemonError> {
 }
 
 #[cfg(target_os = "macos")]
-fn reap_process_if_child(pid: u32) -> Result<(), DaemonError> {
+pub(crate) fn reap_process_if_child(pid: u32) -> Result<(), DaemonError> {
     let process = process_group_pid(pid)?;
     match waitpid(Some(process), WaitOptions::NOHANG) {
         Ok(_) | Err(rustix::io::Errno::CHILD) => Ok(()),
@@ -1531,7 +1546,7 @@ fn process_and_group_are_absent(_pid: u32) -> Result<bool, DaemonError> {
 }
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
-fn reap_process_if_child(_pid: u32) -> Result<(), DaemonError> {
+pub(crate) fn reap_process_if_child(_pid: u32) -> Result<(), DaemonError> {
     require_process_containment()
 }
 

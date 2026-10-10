@@ -74,23 +74,34 @@ pub fn install_with(
 }
 
 /// The daemon's `pv-fake` example, which Cargo builds along with the daemon's tests.
+pub fn binary() -> Result<Utf8PathBuf> {
+    example_binary("pv-fake")
+}
+
+/// The daemon's example `name`, which Cargo builds along with the daemon's tests.
 #[expect(
     clippy::disallowed_methods,
     reason = "pv-fake finds the example target next to the running test executable"
 )]
-pub fn binary() -> Result<Utf8PathBuf> {
+pub fn example_binary(name: &str) -> Result<Utf8PathBuf> {
     let test_executable = Utf8PathBuf::try_from(std::env::current_exe()?)?;
     // Test executables run from target/<profile>/deps; examples live in target/<profile>/examples.
     let Some(profile_dir) = test_executable.parent().and_then(Utf8Path::parent) else {
         bail!("test executable {test_executable} is not inside a Cargo target directory");
     };
-    let binary = profile_dir.join("examples/pv-fake");
+    let binary = profile_dir.join("examples").join(name);
     if !state::fs::path_is_file(&binary)? {
         bail!(
-            "pv-fake binary {binary} is missing; `cargo nextest run -p daemon` builds the daemon's \
+            "{name} binary {binary} is missing; `cargo nextest run -p daemon` builds the daemon's \
              examples, `cargo test --lib` does not"
         );
     }
 
     Ok(binary)
+}
+
+/// The inheritable read end of this test process's lifeline, for processes a test starts
+/// outside a fake, such as a runtime monitor.
+pub fn lifeline_fd() -> Result<i32> {
+    lifeline::test_process_read_fd()
 }
