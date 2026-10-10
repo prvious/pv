@@ -124,10 +124,26 @@ impl PvPaths {
     }
 
     pub fn worker_admin_socket(&self, php_runtime: &str) -> Utf8PathBuf {
-        let digest = format!("{:x}", Sha256::digest(php_runtime.as_bytes()));
-
         self.run()
-            .join(format!("worker-admin-{}.sock", &digest[..12]))
+            .join(format!("worker-admin-{}.sock", short_digest(php_runtime)))
+    }
+
+    /// The directories of per-runtime monitors and their reservations.
+    pub fn monitors(&self) -> Utf8PathBuf {
+        self.run().join("m")
+    }
+
+    /// The control socket and recovery record of the monitor that owns `subject`'s runtime. The
+    /// short digest keeps the socket path within macOS's Unix socket limit.
+    pub fn monitor_dir(&self, subject: &str) -> Utf8PathBuf {
+        self.monitors().join(short_digest(subject))
+    }
+
+    /// The reservation for `subject`'s monitor. It sits beside the monitor's directory, so removing
+    /// that directory for a replacement never unlinks a lock another process still holds.
+    pub fn monitor_lock(&self, subject: &str) -> Utf8PathBuf {
+        self.monitors()
+            .join(format!("{}.lock", short_digest(subject)))
     }
 
     pub fn daemon_startup_error(&self) -> Utf8PathBuf {
@@ -362,4 +378,12 @@ impl PvPaths {
             },
         ]
     }
+}
+
+/// The first 12 hex digits of `value`'s SHA-256: short enough for socket paths, and unique across
+/// the few runtimes one PV home runs.
+fn short_digest(value: &str) -> String {
+    let digest = format!("{:x}", Sha256::digest(value.as_bytes()));
+
+    digest[..12].to_owned()
 }

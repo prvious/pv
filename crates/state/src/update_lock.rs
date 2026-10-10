@@ -1,9 +1,9 @@
 #[cfg(unix)]
 use std::io;
 #[cfg(unix)]
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, OwnedFd};
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 #[cfg(unix)]
 use rustix::fs::FlockOperation;
 
@@ -46,6 +46,80 @@ pub struct HelperLifecycleLock {
 )]
 pub struct RuntimeLifecycleLock {
     _file: std::fs::File,
+}
+
+/// Reserves one runtime subject for one monitor. A controller acquires it before starting the
+/// monitor and passes the same locked file to the monitor as stdin, so the reservation stays held,
+/// with no gap, until the monitor process dies.
+#[derive(Debug)]
+#[must_use = "dropping the reservation lets another monitor start for this subject"]
+#[expect(
+    clippy::disallowed_types,
+    reason = "monitor reservation owns the OS-locked file handle"
+)]
+pub struct MonitorReservation {
+    file: std::fs::File,
+    path: Utf8PathBuf,
+}
+
+impl MonitorReservation {
+    pub fn acquire(paths: &PvPaths, subject: &str) -> Result<Self, StateError> {
+        require_file_locking()?;
+        fs::ensure_user_dir(paths.run())?;
+        fs::ensure_user_dir(&paths.monitors())?;
+        let path = paths.monitor_lock(subject);
+        let file = open_lock_file(&path)?;
+        fs::secure_sensitive_file(&path)?;
+        lock_exclusively(&file, &path)?;
+
+        Ok(Self { file, path })
+    }
+
+    /// Another descriptor for the same locked file, for a child process's stdin. The lock stays
+    /// held while any descriptor for the file is open.
+    pub fn child_stdio(&self) -> Result<std::process::Stdio, StateError> {
+        let file = self
+            .file
+            .try_clone()
+            .map_err(|source| StateError::filesystem(self.path.clone(), source))?;
+
+        Ok(file.into())
+    }
+}
+
+#[cfg(unix)]
+impl MonitorReservation {
+    /// Adopts a reservation inherited as `descriptor`. It must be `subject`'s lock file, and it
+    /// must hold the lock: locking again succeeds on the open file that already holds it.
+    pub fn adopt(paths: &PvPaths, subject: &str, descriptor: OwnedFd) -> Result<Self, StateError> {
+        let path = paths.monitor_lock(subject);
+        let held = rustix::fs::fstat(&descriptor)
+            .map_err(|error| StateError::filesystem(path.clone(), io::Error::from(error)))?;
+        let expected = rustix::fs::statat(
+            rustix::fs::CWD,
+            path.as_std_path(),
+            rustix::fs::AtFlags::SYMLINK_NOFOLLOW,
+        )
+        .map_err(|error| StateError::filesystem(path.clone(), io::Error::from(error)))?;
+        if rustix::fs::FileType::from_raw_mode(held.st_mode) != rustix::fs::FileType::RegularFile
+            || held.st_dev != expected.st_dev
+            || held.st_ino != expected.st_ino
+        {
+            return Err(StateError::filesystem(
+                path,
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "inherited descriptor is not this monitor's reservation",
+                ),
+            ));
+        }
+        lock_exclusively(&descriptor, &path)?;
+
+        Ok(Self {
+            file: descriptor.into(),
+            path,
+        })
+    }
 }
 
 impl RuntimeLifecycleLock {

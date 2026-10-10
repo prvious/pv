@@ -38,6 +38,15 @@ pub struct ProcessStartIdentity {
     pub microseconds: u64,
 }
 
+/// What a watched process did since [`ProcessExitWatch::try_events`] last collected its events.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ProcessEvents {
+    /// The process replaced its program with `exec`. Its pid and birth identity are unchanged.
+    pub exec: bool,
+    /// The exact status of an exit the watch observed without reaping the process.
+    pub exit: Option<std::process::ExitStatus>,
+}
+
 /// Identifies one kernel boot, independently of wall-clock changes.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(try_from = "String", into = "String")]
