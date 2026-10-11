@@ -4621,6 +4621,12 @@ async fn demanded_resource_cleans_runtime_files_when_process_exits_after_readine
         },
         "expected fast-exit failure cleanup to remove runtime files"
     );
+    assert!(
+        !state::fs::path_exists(
+            &paths.monitor_dir(&format!("resources/mailpit/{FAKE_MAILPIT_TRACK}"))
+        ),
+        "expected fast-exit failure cleanup to release the runtime's monitor"
+    );
     assert_with_normalized_runtime(
         tempdir.path(),
         "demanded_resource_cleans_runtime_files_when_process_exits_after_readiness",

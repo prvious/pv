@@ -2517,6 +2517,10 @@ impl PendingManagedResourceReadiness {
         }
         tokio::time::sleep(RESOURCE_PROCESS_EXIT_POLL_INTERVAL).await;
         if process.has_exited()? {
+            // Releases the monitor, which logs the exit it holds.
+            process
+                .stop_with(self.stop_signal, RESOURCE_STOP_GRACE_PERIOD)
+                .await?;
             cleanup_started_runtime_files(&self.spec)?;
 
             return Err(runtime_exited_before_readiness_error(&self.spec.name));
