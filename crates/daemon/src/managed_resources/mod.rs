@@ -2458,7 +2458,6 @@ async fn start_or_adopt_runtime(
         .stop_subject(&spec.metadata_path, stop_signal, RESOURCE_STOP_GRACE_PERIOD)
         .await?
     {
-        delete_optional_file(&spec.pid_path)?;
         delete_optional_file(&spec.metadata_path)?;
     } else if let ManagedResourceReadiness::TcpHttp(check) = &readiness
         && crate::supervisor::probe_readiness_once(check).await.is_ok()
@@ -2579,7 +2578,6 @@ fn remaining_timeout(started_at: Instant, readiness_timeout: Duration) -> Option
 }
 
 fn cleanup_started_runtime_files(spec: &ProcessSpec) -> Result<(), DaemonError> {
-    delete_optional_file(&spec.pid_path)?;
     delete_optional_file(&spec.metadata_path)?;
     delete_optional_file(&spec.config_path)?;
 
@@ -2704,7 +2702,6 @@ fn cleanup_resource_runtime_files_for_track(
     resource_name: &str,
     track: &str,
 ) -> Result<(), DaemonError> {
-    delete_optional_file(&paths.resource_pid(resource_name, track))?;
     delete_optional_file(&paths.resource_runtime_metadata(resource_name, track))?;
     delete_optional_file(&paths.resource_runtime_config(resource_name, track))?;
 

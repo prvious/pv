@@ -99,7 +99,6 @@ impl ManagedResourceRuntimeAdapter for PostgresRuntimeAdapter {
             config_path: paths.resource_runtime_config(&context.resource_name, &context.track),
             config_fingerprint: Some(config_fingerprint(&config)),
             log_path: paths.resource_log(&context.resource_name, &context.track),
-            pid_path: paths.resource_pid(&context.resource_name, &context.track),
             metadata_path: paths.resource_runtime_metadata(&context.resource_name, &context.track),
             resource_name: context.resource_name.clone(),
             track: context.track.clone(),

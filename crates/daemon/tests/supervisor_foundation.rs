@@ -30,11 +30,6 @@ use tokio_rustls::TlsAcceptor;
 )]
 type TestProcessCommand = std::process::Command;
 
-#[cfg(target_os = "macos")]
-const OWNED_PYTHON_RUNTIME_SCRIPT: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/test-fixtures/supervisor/owned-python-runtime.py"
-));
 /// Keeps a shell alive until it is stopped, but for 150 s at most, so a test that dies before
 /// stopping it leaves nothing running for long. That outlasts the CI profile's 120 s limit on a
 /// test, so a stalled test can't pass because its fixture exited on its own.
@@ -594,7 +589,6 @@ async fn supervisor_stops_its_runtime_when_runtime_metadata_persistence_fails() 
     pv_fake::install_monitor(&paths)?;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let metadata_parent_blocker = paths.run().join("metadata-parent");
-    let pid_path = paths.run().join("metadata-failure.pid");
     state::fs::write_sensitive_file(&metadata_parent_blocker, "not a directory")?;
 
     let result = supervisor
@@ -606,7 +600,6 @@ async fn supervisor_stops_its_runtime_when_runtime_metadata_persistence_fails() 
             config_path: paths.config().join("metadata-failure.json"),
             config_fingerprint: None,
             log_path: paths.logs().join("metadata-failure.log"),
-            pid_path: pid_path.clone(),
             metadata_path: metadata_parent_blocker.join("metadata.json"),
             resource_name: "metadata-failure".to_string(),
             track: "test".to_string(),
@@ -681,7 +674,7 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
     assert!(replacement.replacement_required());
     assert!(supervisor.adopt(&spec)?.is_some());
     let replacement = supervisor
-        .adopt_recorded(&spec.pid_path, &spec.metadata_path)?
+        .adopt_recorded(&spec.metadata_path)?
         .ok_or_else(|| anyhow!("replacement-required runtime was not adoptable by its record"))?;
     assert_eq!(replacement.pid(), process.pid());
     assert!(supervisor.clear_replacement_required(&spec)?);
@@ -707,45 +700,6 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-async fn supervisor_verifies_owned_python_shebang_script() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_layout(&paths)?;
-    pv_fake::install_monitor(&paths)?;
-    let runtime = paths.run().join("owned-python-runtime");
-    state::fs::write_sensitive_file(&runtime, OWNED_PYTHON_RUNTIME_SCRIPT)?;
-    set_executable(&runtime)?;
-
-    let supervisor = ProcessSupervisor::new(paths.clone());
-    let spec = process_spec(
-        &paths,
-        "owned-python-runtime",
-        runtime,
-        vec!["1025".to_string(), "8025".to_string()],
-    );
-    let process = supervisor.start(spec.clone()).await?;
-    let pid = process.pid();
-    let ownership = timeout(Duration::from_secs(1), async {
-        loop {
-            if let Some(owned) = supervisor.verify_ownership(&spec)? {
-                return Ok::<_, daemon::DaemonError>(owned);
-            }
-
-            sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await;
-
-    process.stop(Duration::from_secs(1)).await?;
-    let owned = ownership??;
-
-    assert_eq!(owned.pid(), pid);
-
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
 async fn supervisor_owns_pv_fake_by_direct_identity_with_an_armed_lifeline() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -760,13 +714,10 @@ async fn supervisor_owns_pv_fake_by_direct_identity_with_an_armed_lifeline() -> 
     let process = supervisor.start(spec.clone()).await?;
     let lifeline_armed = wait_for_fake_start(&fake).await;
     let owned = supervisor.verify_ownership(&spec);
-    let metadata = runtime_metadata(&spec.metadata_path);
     process.stop(Duration::from_secs(1)).await?;
 
     assert!(lifeline_armed?);
     assert!(owned?.is_some());
-    // Script runtimes record an executable identity; a directly matched binary does not.
-    assert_eq!(metadata?.get("process_executable_identity"), None);
 
     Ok(())
 }
@@ -904,7 +855,7 @@ async fn adopted_stop_accepts_runtime_already_stopped_by_its_owner() -> Result<(
     );
     let process = supervisor.start(spec.clone()).await?;
     let adopted = supervisor
-        .adopt_recorded(&spec.pid_path, &spec.metadata_path)?
+        .adopt_recorded(&spec.metadata_path)?
         .ok_or_else(|| anyhow!("runtime was not adoptable before owner cleanup"))?;
 
     process.stop(Duration::from_secs(1)).await?;
@@ -1050,7 +1001,6 @@ fn process_spec(
         config_path: paths.config().join(format!("{name}.json")),
         config_fingerprint: None,
         log_path: paths.logs().join(format!("{name}.log")),
-        pid_path: paths.run().join(format!("{name}.pid")),
         metadata_path: paths.run().join(format!("{name}.json")),
         resource_name: name.to_string(),
         track: "test".to_string(),

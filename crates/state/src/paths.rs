@@ -260,25 +260,12 @@ impl PvPaths {
             .join(format!("resources/{resource_name}/{track}.log"))
     }
 
-    pub fn gateway_pid(&self) -> Utf8PathBuf {
-        self.run().join("gateway.pid")
-    }
-
     pub fn gateway_runtime_metadata(&self) -> Utf8PathBuf {
         self.run().join("gateway.json")
     }
 
-    pub fn worker_pid(&self, php_runtime: &str) -> Utf8PathBuf {
-        self.run().join(format!("workers/php-{php_runtime}.pid"))
-    }
-
     pub fn worker_runtime_metadata(&self, php_runtime: &str) -> Utf8PathBuf {
         self.run().join(format!("workers/php-{php_runtime}.json"))
-    }
-
-    pub fn resource_pid(&self, resource_name: &str, track: &str) -> Utf8PathBuf {
-        self.run()
-            .join(format!("resources/{resource_name}/{track}.pid"))
     }
 
     pub fn resource_runtime_metadata(&self, resource_name: &str, track: &str) -> Utf8PathBuf {

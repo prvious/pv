@@ -170,41 +170,11 @@ pub async fn stop_recorded_runtimes(paths: PvPaths) -> Result<(), DaemonError> {
             failures.push(RuntimeReconciliationFailure::new(subject, error));
         }
     }
-    for pid_path in records {
-        let result = if fs::path_entry_exists(&pid_path)? {
-            supervisor.stop_legacy_runtime(&pid_path, false).await
-        } else {
-            // Only proofs remain once a monitored runtime is gone; one still running keeps them.
-            remove_record_without_monitor(&paths, &pid_path.with_extension("json"))
-        };
-        if let Err(error) = result {
+    // Only proofs remain once a monitored runtime is gone; one still running keeps them.
+    for metadata_path in records {
+        if let Err(error) = remove_record_without_monitor(&paths, &metadata_path) {
             failures.push(RuntimeReconciliationFailure::new(
-                pid_path.to_string(),
-                error,
-            ));
-        }
-    }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(DaemonError::RuntimeStopFailures { failures })
-    }
-}
-
-/// Stops the runtimes a PV release from before monitors left running, keeping their records'
-/// config proofs, so they restart under monitors. Once none remain, it does nothing.
-pub(crate) async fn stop_legacy_runtimes(paths: &PvPaths) -> Result<(), DaemonError> {
-    if !fs::path_entry_exists(paths.run())? {
-        return Ok(());
-    }
-    let supervisor = ProcessSupervisor::new(paths.clone());
-    let mut failures = Vec::new();
-    for pid_path in runtime_records(paths)? {
-        if fs::path_entry_exists(&pid_path)?
-            && let Err(error) = supervisor.stop_legacy_runtime(&pid_path, true).await
-        {
-            failures.push(RuntimeReconciliationFailure::new(
-                pid_path.to_string(),
+                metadata_path.to_string(),
                 error,
             ));
         }
@@ -228,14 +198,12 @@ fn remove_record_without_monitor(
     Ok(())
 }
 
-/// The pid-file path of every runtime record, whether only its pid file, only its JSON record,
-/// or both exist.
+/// The path of every runtime's JSON record.
 fn runtime_records(paths: &PvPaths) -> Result<BTreeSet<Utf8PathBuf>, DaemonError> {
     let mut records = BTreeSet::new();
-    for path in [paths.gateway_pid(), paths.gateway_runtime_metadata()] {
-        if fs::path_entry_exists(&path)? {
-            records.insert(path.with_extension("pid"));
-        }
+    let gateway = paths.gateway_runtime_metadata();
+    if fs::path_entry_exists(&gateway)? {
+        records.insert(gateway);
     }
     collect_records(&paths.run().join("workers"), &mut records)?;
     let resources = paths.run().join("resources");
@@ -248,7 +216,7 @@ fn runtime_records(paths: &PvPaths) -> Result<BTreeSet<Utf8PathBuf>, DaemonError
             continue;
         }
         // MySQL keeps its initialization SQL beside the per-resource directories.
-        if fs::path_is_file(&resource)? && !matches!(resource.extension(), Some("pid" | "json")) {
+        if fs::path_is_file(&resource)? && resource.extension() != Some("json") {
             continue;
         }
         require_directory(&resource)?;
@@ -267,11 +235,11 @@ fn collect_records(
     }
     require_directory(directory)?;
     for path in fs::read_dir_paths(directory)? {
-        if matches!(path.extension(), Some("pid" | "json")) {
+        if path.extension() == Some("json") {
             if !fs::path_is_file(&path)? {
                 return Err(DaemonError::InvalidRuntimeRecord { path });
             }
-            records.insert(path.with_extension("pid"));
+            records.insert(path);
         }
     }
     Ok(())

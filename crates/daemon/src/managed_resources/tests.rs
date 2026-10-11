@@ -2649,10 +2649,9 @@ async fn assert_fallback_during_project_resource_readiness(
     let runtime_files_after_reconciliation =
         runtime_files_exist_for_resource(&paths, "mysql", FAKE_SQL_TRACK)?;
     let supervisor = ProcessSupervisor::new(paths.clone());
-    if let Some(adopted) = supervisor.adopt_recorded(
-        &paths.resource_pid("mysql", FAKE_SQL_TRACK),
-        &paths.resource_runtime_metadata("mysql", FAKE_SQL_TRACK),
-    )? {
+    if let Some(adopted) =
+        supervisor.adopt_recorded(&paths.resource_runtime_metadata("mysql", FAKE_SQL_TRACK))?
+    {
         adopted.stop(Duration::from_secs(1)).await?;
     }
     super::cleanup_resource_runtime_files(
@@ -5265,10 +5264,7 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
         );
         let pid = resource_runtime_metadata_pid(&paths, "mysql", track)?;
         let adopted = supervisor
-            .adopt_recorded(
-                &paths.resource_pid("mysql", track),
-                &paths.resource_runtime_metadata("mysql", track),
-            )?
+            .adopt_recorded(&paths.resource_runtime_metadata("mysql", track))?
             .ok_or_else(|| anyhow!("cancelled mysql {track} runtime was not live"))?;
         assert_eq!(u64::from(adopted.pid()), pid);
         cancelled_pids.insert(track, pid);
@@ -6354,10 +6350,9 @@ async fn delete_rustfs_bucket(paths: &PvPaths, bucket: &str) -> Result<()> {
 }
 
 async fn stop_recorded_rustfs_runtime(paths: &PvPaths) -> Result<()> {
-    if let Some(process) = ProcessSupervisor::new(paths.clone()).adopt_recorded(
-        &paths.resource_pid("rustfs", RUSTFS_TRACK),
-        &paths.resource_runtime_metadata("rustfs", RUSTFS_TRACK),
-    )? {
+    if let Some(process) = ProcessSupervisor::new(paths.clone())
+        .adopt_recorded(&paths.resource_runtime_metadata("rustfs", RUSTFS_TRACK))?
+    {
         process.stop(Duration::from_secs(1)).await?;
     }
 
@@ -6365,10 +6360,9 @@ async fn stop_recorded_rustfs_runtime(paths: &PvPaths) -> Result<()> {
 }
 
 async fn stop_recorded_redis_runtime(paths: &PvPaths) -> Result<()> {
-    if let Some(process) = ProcessSupervisor::new(paths.clone()).adopt_recorded(
-        &paths.resource_pid("redis", REDIS_TRACK),
-        &paths.resource_runtime_metadata("redis", REDIS_TRACK),
-    )? {
+    if let Some(process) = ProcessSupervisor::new(paths.clone())
+        .adopt_recorded(&paths.resource_runtime_metadata("redis", REDIS_TRACK))?
+    {
         process.stop(Duration::from_secs(1)).await?;
     }
 
@@ -7682,7 +7676,6 @@ impl super::ManagedResourceRuntimeAdapter for AsyncSqlHookRuntimeAdapter {
             config_path,
             config_fingerprint: None,
             log_path: paths.resource_log(&context.resource_name, &context.track),
-            pid_path: paths.resource_pid(&context.resource_name, &context.track),
             metadata_path: paths.resource_runtime_metadata(&context.resource_name, &context.track),
             resource_name: context.resource_name.clone(),
             track: context.track.clone(),
@@ -7895,7 +7888,6 @@ impl super::ManagedResourceRuntimeAdapter for GatedSqlRuntimeAdapter {
             config_path,
             config_fingerprint: None,
             log_path: paths.resource_log(&context.resource_name, &context.track),
-            pid_path: paths.resource_pid(&context.resource_name, &context.track),
             metadata_path: paths.resource_runtime_metadata(&context.resource_name, &context.track),
             resource_name: context.resource_name.clone(),
             track: context.track.clone(),

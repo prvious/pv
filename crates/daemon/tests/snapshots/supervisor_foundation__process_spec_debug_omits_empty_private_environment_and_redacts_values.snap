@@ -1,6 +1,6 @@
 ---
 source: crates/daemon/tests/supervisor_foundation.rs
-expression: (empty_private_env, private_env)
+expression: "(empty_private_env, private_env)"
 ---
 (
     ProcessSpec {
@@ -12,7 +12,6 @@ expression: (empty_private_env, private_env)
         ],
         config_path: "<tempdir>/home/.pv/config/empty-private-env.json",
         log_path: "<tempdir>/home/.pv/logs/empty-private-env.log",
-        pid_path: "<tempdir>/home/.pv/run/empty-private-env.pid",
         metadata_path: "<tempdir>/home/.pv/run/empty-private-env.json",
         resource_name: "empty-private-env",
         track: "test",
@@ -30,7 +29,6 @@ expression: (empty_private_env, private_env)
         },
         config_path: "<tempdir>/home/.pv/config/private-env.json",
         log_path: "<tempdir>/home/.pv/logs/private-env.log",
-        pid_path: "<tempdir>/home/.pv/run/private-env.pid",
         metadata_path: "<tempdir>/home/.pv/run/private-env.json",
         resource_name: "private-env",
         track: "test",

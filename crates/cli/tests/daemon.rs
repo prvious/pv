@@ -367,21 +367,18 @@ fn daemon_disable_stops_live_runtimes_without_a_plist_or_database() -> anyhow::R
     worker.command = paths
         .resources()
         .join("frankenphp/8.5/fixture/bin/frankenphp");
-    worker.pid_path = paths.worker_pid("8.5-test");
     worker.metadata_path = paths.worker_runtime_metadata("8.5-test");
     let mut resource = gateway.clone();
     resource.name = "mailpit".to_owned();
     resource.resource_name = "mailpit".to_owned();
     resource.track = "1".to_owned();
     resource.command = paths.resources().join("mailpit/1/fixture/bin/mailpit");
-    resource.pid_path = paths.resource_pid("mailpit", "1");
     resource.metadata_path = paths.resource_runtime_metadata("mailpit", "1");
     let mut mysql = resource.clone();
     mysql.name = "mysql".to_owned();
     mysql.resource_name = "mysql".to_owned();
     mysql.track = "8.4".to_owned();
     mysql.command = paths.resources().join("mysql/8.4/fixture/bin/mysqld");
-    mysql.pid_path = paths.resource_pid("mysql", "8.4");
     mysql.metadata_path = paths.resource_runtime_metadata("mysql", "8.4");
     let mut fixtures = Vec::new();
     for spec in [gateway, worker, resource, mysql] {
@@ -441,7 +438,6 @@ fn daemon_disable_waits_for_process_death_after_its_socket_is_gone() -> anyhow::
     let mut daemon_spec = gateway_spec(&paths);
     daemon_spec.command = paths.bin().join("releases/fixture/pv");
     daemon_spec.arguments = vec!["daemon:run".to_owned()];
-    daemon_spec.pid_path = paths.run().join("fixture-daemon.pid");
     daemon_spec.metadata_path = paths.run().join("fixture-daemon.json");
     let mut daemon = RuntimeFixture::start(&paths, daemon_spec)?;
     let pid = daemon.pid()?;
@@ -493,7 +489,6 @@ fn daemon_disable_keeps_dead_postgres_records_when_cleanup_is_unproven() -> anyh
     let mut spec = gateway_spec(&paths);
     spec.resource_name = "postgres".to_owned();
     spec.track = "18".to_owned();
-    spec.pid_path = paths.resource_pid("postgres", "18");
     spec.metadata_path = paths.resource_runtime_metadata("postgres", "18");
     let mut runtime = RuntimeFixture::start(&paths, spec)?;
     // Killed, Postgres exits by signal, which proves nothing about its backends.
@@ -512,55 +507,6 @@ fn daemon_disable_keeps_dead_postgres_records_when_cleanup_is_unproven() -> anyh
 }
 
 #[test]
-fn daemon_disable_removes_previous_boot_postgres_records_without_signalling_reused_pid()
--> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(&home);
-    let environment = TestEnvironment::new(
-        &home,
-        tempdir.path(),
-        &paths.active_pv_binary(),
-        &tempdir.path().join("absent.plist"),
-    );
-    // A process outside PV now holds the pid that a previous boot's Postgres recorded.
-    let foreign = ChildGuard(
-        TestCommand::new("/bin/sleep")
-            .arg("30")
-            .process_group(0)
-            .spawn()?,
-    );
-    let foreign_pid = foreign.0.id();
-    let previous_boot =
-        platform::BootSessionId::try_from("00000000-0000-0000-0000-000000000001".to_owned())?;
-    assert_ne!(previous_boot, platform::current_boot_session_id()?);
-    let pid_path = paths.resource_pid("postgres", "18");
-    let metadata_path = paths.resource_runtime_metadata("postgres", "18");
-    state::fs::write_sensitive_file(&pid_path, &format!("{foreign_pid}\n"))?;
-    let metadata = json!({
-        "name": "postgres",
-        "pid": foreign_pid,
-        "command": "/bin/sleep",
-        "arguments": ["30"],
-        "resource_name": "postgres",
-        "track": "18",
-        "log_path": paths.logs().join("postgres.log"),
-        "started_at": "2026-10-09T00:00:00Z",
-        "boot_session_id": previous_boot,
-        "process_start_identity": platform::inspect_process_start_identity(foreign_pid)?,
-    });
-    state::fs::write_sensitive_file(&metadata_path, &serde_json::to_string(&metadata)?)?;
-
-    let output = run_pv(&["daemon:disable"], &environment)?;
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(!state::fs::path_entry_exists(&pid_path)?);
-    assert!(!state::fs::path_entry_exists(&metadata_path)?);
-    assert!(platform::process_group_has_live_members(foreign_pid)?);
-    drop(foreign);
-    Ok(())
-}
-
-#[test]
 fn daemon_disable_clears_a_previous_boot_postgres_monitor_without_signalling_reused_pid()
 -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -575,7 +521,6 @@ fn daemon_disable_clears_a_previous_boot_postgres_monitor_without_signalling_reu
     let mut spec = gateway_spec(&paths);
     spec.resource_name = "postgres".to_owned();
     spec.track = "18".to_owned();
-    spec.pid_path = paths.resource_pid("postgres", "18");
     spec.metadata_path = paths.resource_runtime_metadata("postgres", "18");
     let mut runtime = RuntimeFixture::start(&paths, spec)?;
     runtime.cleanup()?;
@@ -639,7 +584,6 @@ fn daemon_replacement_waits_for_delayed_exit_before_bootstrap() -> anyhow::Resul
         let mut spec = gateway_spec(&paths);
         spec.command = paths.bin().join("releases/fixture/pv");
         spec.arguments = vec!["daemon:run".to_owned()];
-        spec.pid_path = paths.run().join("fixture-daemon.pid");
         spec.metadata_path = paths.run().join("fixture-daemon.json");
         let mut previous = RuntimeFixture::start(&paths, spec)?;
         let pid = previous.pid()?;
@@ -714,7 +658,6 @@ fn daemon_replacement_refuses_to_bootstrap_while_previous_daemon_is_alive() -> a
         let mut spec = gateway_spec(&paths);
         spec.command = paths.bin().join("releases/fixture/pv");
         spec.arguments = vec!["daemon:run".to_owned()];
-        spec.pid_path = paths.run().join("fixture-daemon.pid");
         spec.metadata_path = paths.run().join("fixture-daemon.json");
         let mut daemon = RuntimeFixture::start(&paths, spec)?;
         let pid = daemon.pid()?;

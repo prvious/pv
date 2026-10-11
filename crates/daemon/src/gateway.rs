@@ -2615,7 +2615,6 @@ pub fn gateway_process_spec(paths: &PvPaths, command: &CaddyCliCommand) -> Proce
         config_path: paths.gateway_root_config(),
         config_fingerprint: None,
         log_path: paths.gateway_supervisor_log(),
-        pid_path: paths.gateway_pid(),
         metadata_path: paths.gateway_runtime_metadata(),
         resource_name: "caddy".to_owned(),
         track: "2".to_owned(),
@@ -2636,7 +2635,6 @@ pub fn worker_process_spec(
         config_path: paths.worker_root_config(&worker.runtime_key),
         config_fingerprint: None,
         log_path: paths.worker_log(&worker.runtime_key),
-        pid_path: paths.worker_pid(&worker.runtime_key),
         metadata_path: paths.worker_runtime_metadata(&worker.runtime_key),
         resource_name: "frankenphp".to_owned(),
         track: worker.runtime_key.clone(),
@@ -4760,19 +4758,7 @@ async fn cleanup_fresh_runtime(
 }
 
 fn cleanup_fresh_runtime_files(spec: &ProcessSpec) -> Result<(), DaemonError> {
-    let pid_error = delete_optional_file(&spec.pid_path).err();
-    let metadata_error = delete_optional_file(&spec.metadata_path).err();
-
-    match (pid_error, metadata_error) {
-        (None, None) => Ok(()),
-        (Some(error), None) | (None, Some(error)) => Err(error),
-        (Some(pid_error), Some(metadata_error)) => Err(DaemonError::UnexpectedProtocolResponse {
-            reason: format!(
-                "failed to remove runtime `{}` pid file: {pid_error}; failed to remove metadata file: {metadata_error}",
-                spec.name
-            ),
-        }),
-    }
+    delete_optional_file(&spec.metadata_path)
 }
 
 #[derive(Debug)]
@@ -5343,7 +5329,6 @@ fn cleanup_stale_worker_runtime(paths: &PvPaths, runtime_key: &str) -> Result<()
         php_runtime_key: runtime_key.to_owned(),
     })?;
 
-    delete_optional_file(&paths.worker_pid(runtime_key))?;
     delete_optional_file(&paths.worker_admin_socket(runtime_key))?;
     delete_optional_dir(&paths.worker_config_dir(runtime_key))?;
     delete_optional_file(&paths.worker_runtime_metadata(runtime_key))?;

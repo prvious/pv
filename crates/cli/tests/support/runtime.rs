@@ -39,7 +39,7 @@ impl RuntimeFixture {
         fixture.process = Some(runtime.block_on(supervisor.start(fixture.spec.clone()))?);
         fixture.ownership = Some(
             supervisor
-                .adopt_recorded(&fixture.spec.pid_path, &fixture.spec.metadata_path)?
+                .adopt_recorded(&fixture.spec.metadata_path)?
                 .ok_or_else(|| anyhow!("fixture did not publish ownership"))?,
         );
         for _attempt in 0..200 {
@@ -140,7 +140,6 @@ pub fn gateway_spec(paths: &PvPaths) -> ProcessSpec {
         config_path: paths.gateway_root_config(),
         config_fingerprint: None,
         log_path: paths.gateway_supervisor_log(),
-        pid_path: paths.gateway_pid(),
         metadata_path: paths.gateway_runtime_metadata(),
         resource_name: "caddy".to_owned(),
         track: "2".to_owned(),

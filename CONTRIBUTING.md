@@ -20,7 +20,7 @@ Avoid `panic!`, `unreachable!`, `.unwrap()`, and `.expect()` in production code.
 
 For running tests, we recommend [nextest](https://nexte.st/).
 
-Some tests require `python3` on `PATH`: the supervisor's script-identity tests, two supervisor process-group tests, and `pv-release`'s installer and smoke tests. They use only Python's standard library; no Python packages or virtual environment is required.
+Some tests require `python3` on `PATH`: two supervisor process-group tests, and `pv-release`'s installer and smoke tests. They use only Python's standard library; no Python packages or virtual environment is required.
 
 To run a specific test by name:
 
@@ -42,21 +42,24 @@ cargo insta test --accept --test-runner nextest -- <test_name>
 
 ## Fixture Lifecycle
 
-Tests that start long-running Managed Resource or Gateway fixtures must register
-each intended process's exact PID-path/runtime-metadata-path pair
-before startup or reconciliation. Capture assertions while the runtime is live,
-then use explicit cleanup where the guard exposes it so cleanup failures fail
-the test. If an operation has already failed, preserve that primary failure
-while also reporting cleanup failures. Cleanup validates the recorded metadata
-and process identity, stops the complete owned process group, waits for its
-members and listeners to disappear, and removes the exact records only after
-verified stop.
+Tests that start long-running Managed Resource or Gateway runtimes run them
+under the test monitor. Fixture setup calls `pv_fake::install_monitor(paths)`.
+That links the daemon's `pv-monitor` example into the test's PV home as its
+`pv` binary and gives the monitors the test process's lifeline. Capture
+assertions while the runtime is live, then use explicit cleanup where the guard
+exposes it so cleanup failures fail the test. If an operation has already
+failed, preserve that primary failure while also reporting cleanup failures.
+Cleanup goes through `stop_recorded_runtimes` or
+`ProcessSupervisor::stop_subject`. The runtime's monitor stops its whole
+process group and waits for the members to exit. PV removes the records only
+after that verified stop.
 
-Fixture guards must also clean up from `Drop` so normal return, early return,
-panic unwind, and cancellation cannot bypass teardown. The fallback uses an
-independent cleanup runtime and reports failures because `Drop` cannot return
-them to the test. The Rust guard or supervisor owns whole-process-group
-cleanup.
+Fixture guards also clean up from `Drop` where they can, so normal return,
+early return, panic unwind, and cancellation cannot bypass teardown. The
+fallback uses an independent cleanup runtime and reports failures, because
+`Drop` cannot return them to the test. Whenever the test process exits, even by
+SIGKILL, its lifeline closes and every monitor it started stops its runtime and
+exits. A failed test therefore leaves nothing running.
 
 Long-running fixtures that stand in for a runtime use `pv-fake`, not a script.
 `pv_fake::install(executable, persona)` places a native fake at the
@@ -65,15 +68,13 @@ it dies, SIGKILL included, so it needs no parent watcher. It records its
 lifecycle in `<executable>.pv-fake.events.jsonl`. `cargo nextest run` builds it
 as the daemon's `pv-fake` example, but runs narrowed with `--lib` or
 `--test <name>` do not; filter with `-E` instead. A fake from an older build
-refuses to start and says how to rebuild. Guard registration and explicit
-cleanup still apply. To stop a fake at a known point, pass `FakeSettings` to
+refuses to start and says how to rebuild. Explicit cleanup still applies. To stop a fake at a known point, pass `FakeSettings` to
 `pv_fake::install_with_settings` and wait on its events, such as `held` and
 `descendant_spawned`, instead of marker files. Steer a running Gateway fake
 with `pv_fake::write_gateway_control`, which rejects unknown keys.
 
 Shell scripts remain only where a test needs what the fake doesn't do: the
-supervisor's script-identity tests, which need a script as the runtime, and
-the process-group tests, which need a child that outlives its parent or ignores
+process-group tests, which need a child that outlives its parent or ignores
 SIGTERM. A script that stays alive must give up on its own, so a test that dies
 before stopping it leaves nothing running for long, but not before the CI
 profile's 120-second test limit, so a stalled test can't pass because its
@@ -102,10 +103,11 @@ cargo nextest store export-chrome-trace nextest-run.zip -o trace.json
 `NEXTEST_EXPERIMENTAL_RECORD=1 cargo nextest replay -R nextest-run.zip` replays
 the run in the terminal.
 
-Persisted-runtime cleanup must never discover ownership through process-name
-scans or signal a PID found only in a record. A persisted PID is actionable
-only together with matching recorded metadata and a verified process identity.
-A test may signal and reap a child it directly spawned and still owns. These
+Runtime cleanup must never discover ownership through process-name scans or
+signal a PID found only in a record. A runtime is stopped through its monitor.
+If the monitor has died, recovery signals the runtime's process group only
+while the runtime identity and boot session in the monitor's record still
+match. A test may signal and reap a child it directly spawned and still owns. These
 guarantees do not cover machine or kernel failure, a test process that is
 stopped rather than killed (its fakes keep running), or descendants that
 deliberately escape their owned process group.

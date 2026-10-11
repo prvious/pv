@@ -211,7 +211,7 @@ async fn real_postgres_forced_exit_keeps_recovery_records() -> Result<()> {
         let backend_pid = u32::try_from(backend_pid)?;
         let backend_identity = platform::inspect_process_start_identity(backend_pid)?
             .ok_or_else(|| anyhow!("connected backend had no process identity"))?;
-        let postmaster = supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)?
+        let postmaster = supervisor.adopt_recorded( &spec.metadata_path)?
             .ok_or_else(|| anyhow!("Postgres ownership was not verified"))?;
         postmaster.kill_and_wait_for_test(Duration::from_secs(2))?;
         let stopped = crate::stop_recorded_runtimes(paths.clone()).await;
@@ -531,11 +531,7 @@ async fn start_wait_and_stop<Held>(
     check: impl Future<Output = Result<Held>>,
 ) -> Result<()> {
     let spec = adapter.build_process_spec(paths, context)?;
-    let (log_path, pid_path, metadata_path) = (
-        spec.log_path.clone(),
-        spec.pid_path.clone(),
-        spec.metadata_path.clone(),
-    );
+    let (log_path, metadata_path) = (spec.log_path.clone(), spec.metadata_path.clone());
     adapter.prepare_runtime(paths, context).await?;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let Some(pending) = start_or_adopt_runtime(
@@ -562,10 +558,6 @@ async fn start_wait_and_stop<Held>(
     // Released only now, so whatever the check held stayed open through the stop.
     checked.with_context(|| runtime_log(&log_path))?;
     stopped?;
-    ensure!(
-        !state::fs::path_entry_exists(&pid_path)?,
-        "runtime PID record remains after stop"
-    );
     ensure!(
         !state::fs::path_entry_exists(&metadata_path)?,
         "runtime metadata remains after stop"

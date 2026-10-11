@@ -104,10 +104,6 @@ fn pv_paths_include_gateway_and_worker_runtime_artifacts() {
         "/Users/alice/.pv/logs/workers/php-8.4.log"
     );
     assert_eq!(
-        paths.gateway_pid().as_str(),
-        "/Users/alice/.pv/run/gateway.pid"
-    );
-    assert_eq!(
         paths.gateway_admin_socket().as_str(),
         "/Users/alice/.pv/run/gateway-admin.sock"
     );
@@ -124,10 +120,6 @@ fn pv_paths_include_gateway_and_worker_runtime_artifacts() {
         "/Users/alice/.pv/run/gateway.json"
     );
     assert_eq!(
-        paths.worker_pid("8.4").as_str(),
-        "/Users/alice/.pv/run/workers/php-8.4.pid"
-    );
-    assert_eq!(
         paths.worker_runtime_metadata("8.4").as_str(),
         "/Users/alice/.pv/run/workers/php-8.4.json"
     );
@@ -138,10 +130,6 @@ fn pv_paths_include_gateway_and_worker_runtime_artifacts() {
     assert_eq!(
         paths.resource_log("mailpit", "1.0").as_str(),
         "/Users/alice/.pv/logs/resources/mailpit/1.0.log"
-    );
-    assert_eq!(
-        paths.resource_pid("mailpit", "1.0").as_str(),
-        "/Users/alice/.pv/run/resources/mailpit/1.0.pid"
     );
     assert_eq!(
         paths.resource_runtime_metadata("mailpit", "1.0").as_str(),

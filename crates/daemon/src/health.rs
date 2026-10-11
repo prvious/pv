@@ -347,7 +347,6 @@ fn collect_runtime_health_probes(
         let scope = ReconciliationScope::resource("caddy", "2")?;
         let (current, error) = recorded_runtime_is_current(
             &supervisor,
-            &paths.gateway_pid(),
             &paths.gateway_runtime_metadata(),
             caddy.current_artifact_path.as_deref(),
             true,
@@ -401,7 +400,6 @@ fn collect_runtime_health_probes(
             });
         let (current, error) = recorded_runtime_is_current(
             &supervisor,
-            &paths.worker_pid(&runtime_key),
             &paths.worker_runtime_metadata(&runtime_key),
             Some(artifact_root),
             true,
@@ -439,7 +437,6 @@ fn collect_runtime_health_probes(
         };
         let (current, ownership_error) = recorded_runtime_is_current(
             &supervisor,
-            &paths.resource_pid(&track.resource_name, &track.track),
             &paths.resource_runtime_metadata(&track.resource_name, &track.track),
             track.current_artifact_path.as_deref(),
             false,
@@ -535,7 +532,6 @@ fn collect_project_tls_health(
 
 fn recorded_runtime_is_current(
     supervisor: &ProcessSupervisor,
-    pid_path: &Utf8Path,
     metadata_path: &Utf8Path,
     artifact_root: Option<&Utf8Path>,
     requires_applied_config: bool,
@@ -543,7 +539,7 @@ fn recorded_runtime_is_current(
     let Some(artifact_root) = artifact_root else {
         return (false, None);
     };
-    match supervisor.adopt_recorded(pid_path, metadata_path) {
+    match supervisor.adopt_recorded(metadata_path) {
         Ok(Some(runtime)) => (
             runtime.uses_current_artifact(artifact_root)
                 && (!requires_applied_config || runtime.has_applied_desired_config()),
@@ -1612,7 +1608,6 @@ mod tests {
             config_path: paths.worker_root_config(php_track),
             config_fingerprint: None,
             log_path: paths.worker_log(php_track),
-            pid_path: paths.worker_pid(php_track),
             metadata_path: paths.worker_runtime_metadata(php_track),
             resource_name: "frankenphp".to_owned(),
             track: php_track.to_owned(),

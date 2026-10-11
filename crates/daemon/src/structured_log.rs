@@ -379,17 +379,6 @@ pub(crate) fn runtime_readiness_diagnostics(
     );
 }
 
-pub(crate) fn legacy_runtime_stop_failed(paths: &PvPaths, error: &str) {
-    append_best_effort(
-        paths,
-        "error",
-        "runtime",
-        "legacy_runtime_stop_failed",
-        "runtime from before monitors could not be stopped",
-        &[("error", error)],
-    );
-}
-
 /// Records how a monitored runtime exited before its monitor is released and forgets it.
 pub(crate) fn runtime_exited(paths: &PvPaths, subject: &str, exit: &str) {
     append_best_effort(
