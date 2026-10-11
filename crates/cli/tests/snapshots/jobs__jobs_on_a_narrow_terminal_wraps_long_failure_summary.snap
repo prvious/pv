@@ -1,9 +1,8 @@
 ---
 source: crates/cli/tests/jobs.rs
-assertion_line: 141
 expression: output.stdout
 ---
-[pv] jobs                                                                 v0.2.5
+[pv] jobs                                                                 v0.2.6
 ────────────────────────────────────────────────────────────────────────────────
 
 job_000001
