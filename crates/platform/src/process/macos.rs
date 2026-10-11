@@ -1,5 +1,6 @@
 use std::io;
 use std::mem::{self, MaybeUninit};
+use std::os::fd::{AsFd, AsRawFd, RawFd};
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 use std::ptr;
@@ -116,17 +117,96 @@ impl ProcessExitWatch {
         }
         Ok(Some(ExitStatus::from_raw(data)))
     }
+
+    /// Watches `pid`'s exec as well as its exit, for a child that cannot exec until the watch
+    /// exists. Events accumulate until [`ProcessExitWatch::try_events`] collects them, and the
+    /// watch's descriptor becomes readable while any are pending.
+    pub fn with_exec(pid: u32) -> Result<Self, PlatformError> {
+        if pid == 0 || i32::try_from(pid).is_err() {
+            return Err(exit_watch_error(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid process id",
+            )));
+        }
+        let queue = Kqueue::new().map_err(exit_watch_error)?;
+        let change = process_event(
+            pid,
+            EvFlags::EV_ADD | EvFlags::EV_CLEAR,
+            FilterFlag::NOTE_EXEC | FilterFlag::NOTE_EXIT | FilterFlag::NOTE_EXITSTATUS,
+        );
+        queue
+            .kevent(&[change], &mut [], Some(zero_timeout()))
+            .map_err(exit_watch_error)?;
+        Ok(Self { queue, pid })
+    }
+
+    /// Collects the exec and exit events of a watch made by [`ProcessExitWatch::with_exec`].
+    pub fn try_events(&mut self) -> Result<super::ProcessEvents, PlatformError> {
+        let mut events = [process_event(
+            self.pid,
+            EvFlags::empty(),
+            FilterFlag::empty(),
+        )];
+        let count = self
+            .queue
+            .kevent(&[], &mut events, Some(zero_timeout()))
+            .map_err(exit_watch_error)?;
+        if count == 0 {
+            return Ok(super::ProcessEvents::default());
+        }
+        let event = events[0];
+        let data = i32::try_from(event.data()).map_err(exit_watch_error)?;
+        if event.flags().contains(EvFlags::EV_ERROR) {
+            return Err(exit_watch_error(io::Error::from_raw_os_error(data)));
+        }
+        let flags = event.fflags();
+        let exit = if flags.contains(FilterFlag::NOTE_EXIT) {
+            if !flags.contains(FilterFlag::NOTE_EXITSTATUS) {
+                return Err(exit_watch_error(io::Error::other(
+                    "exit event omitted process status",
+                )));
+            }
+            Some(ExitStatus::from_raw(data))
+        } else {
+            None
+        };
+        Ok(super::ProcessEvents {
+            exec: flags.contains(FilterFlag::NOTE_EXEC),
+            exit,
+        })
+    }
+}
+
+impl AsRawFd for ProcessExitWatch {
+    fn as_raw_fd(&self) -> RawFd {
+        self.queue.as_fd().as_raw_fd()
+    }
 }
 
 fn exit_event(pid: u32, flags: EvFlags) -> KEvent {
+    process_event(
+        pid,
+        flags,
+        FilterFlag::NOTE_EXIT | FilterFlag::NOTE_EXITSTATUS,
+    )
+}
+
+fn process_event(pid: u32, flags: EvFlags, filter_flags: FilterFlag) -> KEvent {
     KEvent::new(
         pid as usize,
         EventFilter::EVFILT_PROC,
         flags,
-        FilterFlag::NOTE_EXIT | FilterFlag::NOTE_EXITSTATUS,
+        filter_flags,
         0,
         0,
     )
+}
+
+const fn zero_timeout() -> libc::timespec {
+    libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    }
 }
 
 fn exit_watch_error(source: impl std::error::Error + Send + Sync + 'static) -> PlatformError {

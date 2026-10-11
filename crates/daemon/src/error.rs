@@ -254,6 +254,30 @@ pub enum DaemonError {
     #[error("cleanup of process {pid} is unproven: {reason}")]
     RuntimeCleanupUnproven { pid: u32, reason: String },
 
+    #[error("monitor socket path {path} is longer than the {limit}-byte Unix socket limit")]
+    MonitorSocketPathTooLong {
+        path: camino::Utf8PathBuf,
+        limit: usize,
+    },
+
+    #[error(
+        "the monitor of `{subject}` left records for instance {instance}; recover them before starting it again"
+    )]
+    MonitorUnresolved { subject: String, instance: String },
+
+    #[error("the monitor of `{subject}` failed to start: {message}")]
+    MonitorStartupFailed { subject: String, message: String },
+
+    #[error("the monitor of `{subject}` is unavailable: {reason}")]
+    MonitorUnavailable { subject: String, reason: String },
+
+    #[error("the monitor of `{subject}` rejected the request ({kind}): {message}")]
+    MonitorRejected {
+        subject: String,
+        kind: crate::monitor::MonitorErrorKind,
+        message: String,
+    },
+
     #[error("runtime record is incomplete or invalid: {path}")]
     InvalidRuntimeRecord { path: camino::Utf8PathBuf },
 

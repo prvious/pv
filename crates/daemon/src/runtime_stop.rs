@@ -8,7 +8,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 use state::{PvPaths, fs};
 
-use crate::{DaemonError, ProcessSupervisor, RuntimeReconciliationFailure};
+use crate::supervisor::monitor_subject;
+use crate::{DaemonError, ProcessSupervisor, RuntimeReconciliationFailure, monitor};
 
 /// Captured process identity to wait on after unloading the LaunchAgent.
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
@@ -160,6 +161,76 @@ pub async fn stop_recorded_runtimes(paths: PvPaths) -> Result<(), DaemonError> {
     }
     require_directory(paths.run())?;
     let _jobs_lock = state::JobsLock::acquire(&paths)?;
+    let records = runtime_records(&paths)?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let mut failures = Vec::new();
+    // Every runtime started since monitors, including one whose record never got written.
+    for subject in monitor::recorded_monitor_subjects(&paths)? {
+        if let Err(error) = supervisor.stop_monitored_for_shutdown(&subject).await {
+            failures.push(RuntimeReconciliationFailure::new(subject, error));
+        }
+    }
+    for pid_path in records {
+        let result = if fs::path_entry_exists(&pid_path)? {
+            supervisor.stop_legacy_runtime(&pid_path, false).await
+        } else {
+            // Only proofs remain once a monitored runtime is gone; one still running keeps them.
+            remove_record_without_monitor(&paths, &pid_path.with_extension("json"))
+        };
+        if let Err(error) = result {
+            failures.push(RuntimeReconciliationFailure::new(
+                pid_path.to_string(),
+                error,
+            ));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(DaemonError::RuntimeStopFailures { failures })
+    }
+}
+
+/// Stops the runtimes a PV release from before monitors left running, keeping their records'
+/// config proofs, so they restart under monitors. Once none remain, it does nothing.
+pub(crate) async fn stop_legacy_runtimes(paths: &PvPaths) -> Result<(), DaemonError> {
+    if !fs::path_entry_exists(paths.run())? {
+        return Ok(());
+    }
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    let mut failures = Vec::new();
+    for pid_path in runtime_records(paths)? {
+        if fs::path_entry_exists(&pid_path)?
+            && let Err(error) = supervisor.stop_legacy_runtime(&pid_path, true).await
+        {
+            failures.push(RuntimeReconciliationFailure::new(
+                pid_path.to_string(),
+                error,
+            ));
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(DaemonError::RuntimeStopFailures { failures })
+    }
+}
+
+fn remove_record_without_monitor(
+    paths: &PvPaths,
+    metadata_path: &Utf8Path,
+) -> Result<(), DaemonError> {
+    let subject = monitor_subject(paths, metadata_path)?;
+    if monitor::recorded_monitor_instance(paths, &subject)?.is_none() {
+        fs::remove_file_if_exists(metadata_path)?;
+    }
+
+    Ok(())
+}
+
+/// The pid-file path of every runtime record, whether only its pid file, only its JSON record,
+/// or both exist.
+fn runtime_records(paths: &PvPaths) -> Result<BTreeSet<Utf8PathBuf>, DaemonError> {
     let mut records = BTreeSet::new();
     for path in [paths.gateway_pid(), paths.gateway_runtime_metadata()] {
         if fs::path_entry_exists(&path)? {
@@ -183,21 +254,8 @@ pub async fn stop_recorded_runtimes(paths: PvPaths) -> Result<(), DaemonError> {
         require_directory(&resource)?;
         collect_records(&resource, &mut records)?;
     }
-    let supervisor = ProcessSupervisor::new(paths);
-    let mut failures = Vec::new();
-    for pid_path in records {
-        if let Err(error) = supervisor.stop_recorded_for_shutdown(&pid_path).await {
-            failures.push(RuntimeReconciliationFailure::new(
-                pid_path.to_string(),
-                error,
-            ));
-        }
-    }
-    if failures.is_empty() {
-        Ok(())
-    } else {
-        Err(DaemonError::RuntimeStopFailures { failures })
-    }
+
+    Ok(records)
 }
 
 fn collect_records(

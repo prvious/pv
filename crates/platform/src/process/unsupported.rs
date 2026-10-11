@@ -18,6 +18,14 @@ impl ProcessExitWatch {
     pub fn try_exit_status(&mut self) -> Result<Option<std::process::ExitStatus>, PlatformError> {
         Err(unsupported(PlatformCapability::ProcessInspection)?)
     }
+
+    pub fn with_exec(_pid: u32) -> Result<Self, PlatformError> {
+        Err(unsupported(PlatformCapability::ProcessInspection)?)
+    }
+
+    pub fn try_events(&mut self) -> Result<crate::ProcessEvents, PlatformError> {
+        Err(unsupported(PlatformCapability::ProcessInspection)?)
+    }
 }
 
 pub(super) fn inspect_process_identity(

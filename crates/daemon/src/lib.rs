@@ -8,6 +8,7 @@ mod health;
 mod ipc;
 mod jobs;
 mod managed_resources;
+mod monitor;
 mod project_env;
 mod reconciliation;
 mod runtime_stop;
@@ -40,6 +41,12 @@ pub use client::{
 };
 pub use dns::{dns_port_available, response_bytes};
 pub use error::{DaemonError, ManagedResourceProjectFailure, RuntimeReconciliationFailure};
+pub use monitor::{
+    LiveRuntime, MONITOR_GATE_COMMAND, MONITOR_RUN_COMMAND, MonitorCleanup, MonitorErrorKind,
+    MonitorExit, MonitorHooks, MonitorPause, MonitorStart, MonitorState, MonitorStop, live_runtime,
+    monitor_state, recorded_monitor_instance, recorded_monitor_subjects, recover_monitor,
+    release_monitor, run_monitor_blocking, run_monitor_gate, start_monitor, stop_monitor,
+};
 pub use protocol::PROTOCOL_VERSION;
 pub use reconciliation::{
     EnqueueResult, QueuedReconciliation, ReconciliationDebouncer, ReconciliationJob,

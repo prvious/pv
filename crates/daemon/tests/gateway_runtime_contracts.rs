@@ -357,6 +357,7 @@ fn contract_paths() -> Result<(Utf8TempDir, PvPaths)> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
+    pv_fake::install_monitor(&paths)?;
 
     Ok((tempdir, paths))
 }

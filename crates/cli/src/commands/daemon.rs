@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
+use ::daemon::MonitorHooks;
 use camino::Utf8PathBuf;
 use platform::{LaunchAgentConfig, LaunchAgentFileState};
 use state::{PvPaths, StateError};
@@ -199,6 +200,21 @@ pub(crate) fn run() -> Result<ExitCode, ExecuteError> {
     let paths = PvPaths::default_home()?;
 
     ::daemon::run_blocking(paths)?;
+
+    Ok(ExitCode::SUCCESS)
+}
+
+pub(crate) fn run_monitor() -> Result<ExitCode, ExecuteError> {
+    let paths = PvPaths::default_home()?;
+
+    ::daemon::run_monitor_blocking(paths, MonitorHooks::default())?;
+
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Returns only when the runtime could not start: on success, the runtime replaces this process.
+pub(crate) fn run_monitor_gate() -> Result<ExitCode, ExecuteError> {
+    ::daemon::run_monitor_gate(&MonitorHooks::default())?;
 
     Ok(ExitCode::SUCCESS)
 }

@@ -1,13 +1,18 @@
 #![cfg(target_os = "macos")]
 
-use std::process::Child;
+use std::io::Write as _;
+use std::os::unix::process::ExitStatusExt;
+use std::process::{Child, Stdio};
 use std::thread;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
-use platform::{inspect_process_identity, inspect_process_start_identity};
+use platform::{
+    ProcessEvents, ProcessExitWatch, inspect_process_identity, inspect_process_start_identity,
+    process_is_zombie,
+};
 
 #[expect(
     clippy::disallowed_types,
@@ -65,6 +70,57 @@ fn native_process_identity_reports_shebang_script_and_ordered_arguments() -> Res
     );
 
     Ok(())
+}
+
+#[test]
+fn process_watch_reports_exec_then_exit_without_reaping() -> Result<()> {
+    // `/bin/sh` would re-exec itself as bash, so start bash directly: its only exec is the one the
+    // test releases by writing a line.
+    let mut child = ChildGuard(
+        TestCommand::new("/bin/bash")
+            .args(["-c", "read line; exec /bin/sleep 30"])
+            .stdin(Stdio::piped())
+            .spawn()?,
+    );
+    let pid = child.0.id();
+    let birth = inspect_process_start_identity(pid)?;
+    let mut watch = ProcessExitWatch::with_exec(pid)?;
+
+    assert_eq!(watch.try_events()?, ProcessEvents::default());
+    child
+        .0
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("bash stdin was not piped"))?
+        .write_all(b"go\n")?;
+    let exec = wait_for_events(&mut watch, |events| events.exec)?;
+    let identity = inspect_child(&mut child)?;
+    child.0.kill()?;
+    let exit = wait_for_events(&mut watch, |events| events.exit.is_some())?;
+
+    assert!(exec.exec);
+    assert_eq!(identity.executable, Utf8Path::new("/bin/sleep"));
+    assert_eq!(Some(identity.start_identity), birth);
+    assert_eq!(exit.exit.and_then(|status| status.signal()), Some(9));
+    assert!(process_is_zombie(pid)?);
+    assert_eq!(child.0.wait()?.signal(), Some(9));
+
+    Ok(())
+}
+
+fn wait_for_events(
+    watch: &mut ProcessExitWatch,
+    done: impl Fn(&ProcessEvents) -> bool,
+) -> Result<ProcessEvents> {
+    for _attempt in 0..500 {
+        let events = watch.try_events()?;
+        if done(&events) {
+            return Ok(events);
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+
+    Err(anyhow!("process events never arrived"))
 }
 
 fn inspect_child(child: &mut ChildGuard) -> Result<platform::ProcessIdentity> {

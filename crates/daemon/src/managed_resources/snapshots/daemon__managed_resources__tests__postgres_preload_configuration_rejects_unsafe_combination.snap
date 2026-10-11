@@ -6,7 +6,6 @@ expression: snapshot
     "18",
     "PostgreSQL track `18` cannot preload `timescaledb` with `pg_duckdb` until their compatibility is validated; remove one library from the track preload desired state",
     RuntimeFilePresence {
-        pid: false,
         metadata: false,
         config: false,
     },

@@ -27,7 +27,7 @@ const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
 
 #[path = "support/runtime.rs"]
 mod runtime;
-use runtime::{RuntimeFixture, gateway_spec};
+use runtime::{ForeignMonitorRecord, RuntimeFixture, gateway_spec};
 
 #[test]
 fn uninstall_stops_live_runtime_before_removing_files() -> anyhow::Result<()> {
@@ -56,14 +56,7 @@ fn uninstall_keeps_recovery_files_when_runtime_identity_is_unproven() -> anyhow:
         let fixture = Fixture::new(tempdir.path());
         seed_uninstall_files(&fixture.paths)?;
         let mut runtime = RuntimeFixture::start(&fixture.paths, gateway_spec(&fixture.paths))?;
-        let mut metadata: serde_json::Value = serde_json::from_str(&state::fs::read_to_string(
-            &fixture.paths.gateway_runtime_metadata(),
-        )?)?;
-        metadata["process_start_identity"]["seconds"] = json!(1);
-        state::fs::write_sensitive_file(
-            &fixture.paths.gateway_runtime_metadata(),
-            &serde_json::to_string(&metadata)?,
-        )?;
+        let monitor_record = ForeignMonitorRecord::write(&fixture.paths, "gateway")?;
         let output = run_pv(arguments, fixture.environment.as_ref())?;
         assert_eq!(output.exit_code, ExitCode::FAILURE);
         assert!(runtime.records_exist()?);
@@ -74,6 +67,7 @@ fn uninstall_keeps_recovery_files_when_runtime_identity_is_unproven() -> anyhow:
         assert!(state::fs::path_entry_exists(
             &gateway_spec(&fixture.paths).command
         )?);
+        monitor_record.restore()?;
         runtime.cleanup()?;
     }
     Ok(())

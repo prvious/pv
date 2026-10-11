@@ -514,6 +514,7 @@ async fn supervisor_captures_logs_and_runtime_metadata_then_stops_child() -> Res
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
+    pv_fake::install_monitor(&paths)?;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let process = supervisor
         .start(process_spec(
@@ -533,15 +534,10 @@ async fn supervisor_captures_logs_and_runtime_metadata_then_stops_child() -> Res
     let pid = process.pid();
     assert!(pid > 0);
     metadata["pid"] = json!("<pid>");
+    metadata["monitor_instance"] = json!("<monitor-instance>");
     metadata["config_path"] = json!("<home>/.pv/config/test-runtime.json");
     metadata["log_path"] = json!("<home>/.pv/logs/test-runtime.log");
     metadata["started_at"] = json!("<timestamp>");
-    metadata["process_start_identity"] = json!("<native-start-identity>");
-    assert_eq!(
-        metadata["boot_session_id"],
-        serde_json::to_value(platform::current_boot_session_id()?)?,
-    );
-    metadata["boot_session_id"] = json!("<boot-session-id>");
 
     process.stop(Duration::from_secs(1)).await?;
 
@@ -591,10 +587,11 @@ fn process_spec_debug_omits_empty_private_environment_and_redacts_values() -> Re
 }
 
 #[tokio::test]
-async fn supervisor_terminates_child_when_runtime_metadata_persistence_fails() -> Result<()> {
+async fn supervisor_stops_its_runtime_when_runtime_metadata_persistence_fails() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
+    pv_fake::install_monitor(&paths)?;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let metadata_parent_blocker = paths.run().join("metadata-parent");
     let pid_path = paths.run().join("metadata-failure.pid");
@@ -617,9 +614,8 @@ async fn supervisor_terminates_child_when_runtime_metadata_persistence_fails() -
         .await;
 
     assert!(result.is_err());
-    let pid = wait_for_file_contains(&pid_path, "\n").await?;
-    let pid = pid.trim().parse::<u32>()?;
-    wait_for_process_exit(pid).await?;
+    // A monitor is released only once its runtime's whole process group is proven gone.
+    assert!(daemon::recorded_monitor_subjects(&paths)?.is_empty());
 
     Ok(())
 }
@@ -629,6 +625,7 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
+    pv_fake::install_monitor(&paths)?;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let spec = process_spec(
         &paths,
@@ -714,6 +711,7 @@ async fn supervisor_verifies_owned_python_shebang_script() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
+    pv_fake::install_monitor(&paths)?;
     let runtime = paths.run().join("owned-python-runtime");
     state::fs::write_sensitive_file(&runtime, OWNED_PYTHON_RUNTIME_SCRIPT)?;
     set_executable(&runtime)?;
@@ -752,6 +750,7 @@ async fn supervisor_owns_pv_fake_by_direct_identity_with_an_armed_lifeline() -> 
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
+    pv_fake::install_monitor(&paths)?;
     let fake = pv_fake::install(
         &paths.root().join("fake-release/bin/mysqld"),
         Persona::LongRunning,
@@ -777,6 +776,7 @@ async fn supervisor_rejects_owned_runtime_when_private_environment_changes() -> 
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
+    pv_fake::install_monitor(&paths)?;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let mut spec = process_spec(
         &paths,
@@ -820,6 +820,7 @@ async fn supervisor_start_strips_parent_php_ini_env_inner() -> Result<()> {
     let root = Utf8Path::new(".");
     let paths = PvPaths::for_home(root.join("home"));
     state::fs::ensure_layout(&paths)?;
+    pv_fake::install_monitor(&paths)?;
     let runtime = root.join("env-runtime");
     let ready = root.join("runtime-ready");
     let observed_phprc = root.join("observed-phprc");
@@ -859,6 +860,7 @@ async fn supervisor_stop_waits_for_process_group_descendants() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
+    pv_fake::install_monitor(&paths)?;
     let child_pid_path = paths.run().join("descendant.pid");
     let process = ProcessSupervisor::new(paths.clone())
         .start(process_spec(
@@ -892,6 +894,7 @@ async fn adopted_stop_accepts_runtime_already_stopped_by_its_owner() -> Result<(
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
+    pv_fake::install_monitor(&paths)?;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let spec = process_spec(
         &paths,
@@ -906,409 +909,6 @@ async fn adopted_stop_accepts_runtime_already_stopped_by_its_owner() -> Result<(
 
     process.stop(Duration::from_secs(1)).await?;
     adopted.stop(Duration::from_secs(1)).await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn supervisor_rejects_metadata_for_a_reused_pid_with_a_different_command() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_layout(&paths)?;
-    let supervisor = ProcessSupervisor::new(paths.clone());
-    let actual = supervisor
-        .start(process_spec(
-            &paths,
-            "actual-runtime",
-            "/bin/sh",
-            vec!["-c".to_string(), "sleep 30".to_string()],
-        ))
-        .await?;
-    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
-    let forged = process_spec(
-        &paths,
-        "forged-runtime",
-        "/bin/echo",
-        vec!["not-the-live-process".to_string()],
-    );
-    state::fs::write_sensitive_file(&forged.pid_path, &format!("{}\n", actual.pid()))?;
-    state::fs::write_sensitive_file(
-        &forged.metadata_path,
-        &serde_json::to_string(&json!({
-            "name": "forged-runtime",
-            "pid": actual.pid(),
-            "command": "/bin/echo",
-            "arguments": ["not-the-live-process"],
-            "config_path": forged.config_path.as_str(),
-            "resource_name": "forged-runtime",
-            "track": "test",
-            "log_path": forged.log_path.as_str(),
-            "started_at": "2026-05-25T00:00:00Z",
-            "process_start_identity": process_start_identity,
-        }))?,
-    )?;
-
-    assert!(supervisor.verify_ownership(&forged)?.is_none());
-
-    actual.stop(Duration::from_secs(1)).await?;
-
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn supervisor_rejects_spoofed_argument_zero_for_wrong_executable() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_layout(&paths)?;
-    let supervisor = ProcessSupervisor::new(paths.clone());
-    let actual = supervisor
-        .start(process_spec(
-            &paths,
-            "spoofed-argument-zero-runtime",
-            "/bin/bash",
-            vec![
-                "-c".to_string(),
-                "exec -a /bin/sh /bin/sleep 30".to_string(),
-            ],
-        ))
-        .await?;
-    let pid = actual.pid();
-    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
-    let live_identity = timeout(Duration::from_secs(1), async {
-        loop {
-            if let Some(identity) = platform::inspect_process_identity(pid)?
-                && identity.executable == Utf8Path::new("/bin/sleep")
-            {
-                return Ok::<_, platform::PlatformError>(identity);
-            }
-
-            sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await??;
-    let forged = process_spec(
-        &paths,
-        "forged-spoofed-argument-zero-runtime",
-        "/bin/sh",
-        vec!["30".to_string()],
-    );
-    write_forged_runtime_files(&forged, pid, process_start_identity)?;
-
-    assert_eq!(live_identity.argument_zero, "/bin/sh");
-    assert_eq!(live_identity.arguments, ["30"]);
-    assert!(supervisor.verify_ownership(&forged)?.is_none());
-
-    actual.stop(Duration::from_secs(1)).await?;
-
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-#[tokio::test]
-async fn supervisor_rejects_shebang_identity_with_wrong_interpreter() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_layout(&paths)?;
-    let supervisor = ProcessSupervisor::new(paths.clone());
-    let runtime = paths.run().join("expected-script-runtime");
-    let ready = paths.run().join("wrong-interpreter-ready");
-    state::fs::write_sensitive_file(
-        &runtime,
-        &format!("#!/usr/bin/false\ntrap 'exit 0' TERM; touch \"{ready}\"; {IDLE_SHELL_LOOP}\n"),
-    )?;
-    set_executable(&runtime)?;
-    let actual = supervisor
-        .start(process_spec(
-            &paths,
-            "wrong-interpreter-runtime",
-            "/bin/sh",
-            vec![runtime.to_string()],
-        ))
-        .await?;
-    wait_for_path(&ready).await?;
-    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
-    let forged = process_spec(&paths, "forged-script-runtime", runtime, Vec::new());
-    write_forged_runtime_files(&forged, actual.pid(), process_start_identity)?;
-    let mut metadata = runtime_metadata(&forged.metadata_path)?;
-    metadata["process_executable_identity"] = json!({
-        "executable": "/usr/bin/false",
-        "argument_zero": "/usr/bin/false",
-    });
-    state::fs::write_sensitive_file(&forged.metadata_path, &serde_json::to_string(&metadata)?)?;
-
-    assert!(supervisor.verify_ownership(&forged)?.is_none());
-
-    actual.stop(Duration::from_secs(1)).await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn supervisor_rejects_reused_pid_when_expected_command_only_appears_in_arguments()
--> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_layout(&paths)?;
-    let supervisor = ProcessSupervisor::new(paths.clone());
-    let fake_command = paths.root().join("fake-pv-runtime");
-    let actual = supervisor
-        .start(process_spec(
-            &paths,
-            "argument-runtime",
-            "/bin/sh",
-            vec!["-c".to_string(), format!("sleep 30 # {fake_command}")],
-        ))
-        .await?;
-    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
-    let forged = process_spec(
-        &paths,
-        "forged-argument-runtime",
-        fake_command.clone(),
-        Vec::new(),
-    );
-    state::fs::write_sensitive_file(&forged.pid_path, &format!("{}\n", actual.pid()))?;
-    state::fs::write_sensitive_file(
-        &forged.metadata_path,
-        &serde_json::to_string(&json!({
-            "name": "forged-argument-runtime",
-            "pid": actual.pid(),
-            "command": fake_command.as_str(),
-            "arguments": [],
-            "config_path": forged.config_path.as_str(),
-            "resource_name": "forged-argument-runtime",
-            "track": "test",
-            "log_path": forged.log_path.as_str(),
-            "started_at": "2026-05-25T00:00:00Z",
-            "process_start_identity": process_start_identity,
-        }))?,
-    )?;
-
-    assert!(supervisor.verify_ownership(&forged)?.is_none());
-
-    actual.stop(Duration::from_secs(1)).await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn supervisor_rejects_reused_pid_with_same_binary_but_different_arguments() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_layout(&paths)?;
-    let supervisor = ProcessSupervisor::new(paths.clone());
-    let actual = supervisor
-        .start(process_spec(
-            &paths,
-            "actual-argument-runtime",
-            "/bin/sh",
-            vec!["-c".to_string(), IDLE_SHELL_LOOP.to_string()],
-        ))
-        .await?;
-    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
-    let forged = process_spec(
-        &paths,
-        "forged-argument-runtime",
-        "/bin/sh",
-        vec!["-c".to_string(), "echo wrong config".to_string()],
-    );
-    state::fs::write_sensitive_file(&forged.pid_path, &format!("{}\n", actual.pid()))?;
-    state::fs::write_sensitive_file(
-        &forged.metadata_path,
-        &serde_json::to_string(&json!({
-            "name": "forged-argument-runtime",
-            "pid": actual.pid(),
-            "command": "/bin/sh",
-            "arguments": ["-c", "echo wrong config"],
-            "config_path": forged.config_path.as_str(),
-            "resource_name": "forged-argument-runtime",
-            "track": "test",
-            "log_path": forged.log_path.as_str(),
-            "started_at": "2026-05-25T00:00:00Z",
-            "process_start_identity": process_start_identity,
-        }))?,
-    )?;
-
-    assert!(supervisor.verify_ownership(&forged)?.is_none());
-
-    actual.stop(Duration::from_secs(1)).await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn supervisor_rejects_reused_pid_with_same_binary_and_argument_prefix() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_layout(&paths)?;
-    let supervisor = ProcessSupervisor::new(paths.clone());
-    let expected_config = paths.config().join("Caddyfile");
-    let actual_config = paths.config().join("Caddyfile.backup");
-    let actual = supervisor
-        .start(process_spec(
-            &paths,
-            "actual-prefix-runtime",
-            "/bin/sh",
-            vec![
-                "-c".to_string(),
-                format!("{IDLE_SHELL_LOOP} # {actual_config}"),
-            ],
-        ))
-        .await?;
-    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
-    let forged = process_spec(
-        &paths,
-        "forged-prefix-runtime",
-        "/bin/sh",
-        vec!["-c".to_string(), expected_config.to_string()],
-    );
-    state::fs::write_sensitive_file(&forged.pid_path, &format!("{}\n", actual.pid()))?;
-    state::fs::write_sensitive_file(
-        &forged.metadata_path,
-        &serde_json::to_string(&json!({
-            "name": "forged-prefix-runtime",
-            "pid": actual.pid(),
-            "command": "/bin/sh",
-            "arguments": ["-c", expected_config.as_str()],
-            "config_path": forged.config_path.as_str(),
-            "resource_name": "forged-prefix-runtime",
-            "track": "test",
-            "log_path": forged.log_path.as_str(),
-            "started_at": "2026-05-25T00:00:00Z",
-            "process_start_identity": process_start_identity,
-        }))?,
-    )?;
-
-    assert!(supervisor.verify_ownership(&forged)?.is_none());
-
-    actual.stop(Duration::from_secs(1)).await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn supervisor_rejects_reused_pid_with_spaced_argument_prefix() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_layout(&paths)?;
-    let supervisor = ProcessSupervisor::new(paths.clone());
-    let runtime = paths.root().join("fake-runtime");
-    let expected_config = paths.config().join("Alice Smith/Caddyfile");
-    let actual_config = paths.config().join("Alice Smith/Caddyfile.backup");
-    state::fs::write_sensitive_file(&runtime, &format!("#!/bin/sh\n{IDLE_SHELL_LOOP}\n"))?;
-    set_executable(&runtime)?;
-    let actual = supervisor
-        .start(process_spec(
-            &paths,
-            "actual-spaced-prefix-runtime",
-            runtime.clone(),
-            vec![actual_config.to_string()],
-        ))
-        .await?;
-    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
-    let forged = process_spec(
-        &paths,
-        "forged-spaced-prefix-runtime",
-        runtime.clone(),
-        vec![expected_config.to_string()],
-    );
-    state::fs::write_sensitive_file(&forged.pid_path, &format!("{}\n", actual.pid()))?;
-    state::fs::write_sensitive_file(
-        &forged.metadata_path,
-        &serde_json::to_string(&json!({
-            "name": "forged-spaced-prefix-runtime",
-            "pid": actual.pid(),
-            "command": runtime.as_str(),
-            "arguments": [expected_config.as_str()],
-            "config_path": forged.config_path.as_str(),
-            "resource_name": "forged-spaced-prefix-runtime",
-            "track": "test",
-            "log_path": forged.log_path.as_str(),
-            "started_at": "2026-05-25T00:00:00Z",
-            "process_start_identity": process_start_identity,
-        }))?,
-    )?;
-
-    assert!(supervisor.verify_ownership(&forged)?.is_none());
-
-    actual.stop(Duration::from_secs(1)).await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn supervisor_rejects_reordered_missing_and_duplicated_arguments() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_layout(&paths)?;
-    let supervisor = ProcessSupervisor::new(paths.clone());
-    let actual = supervisor
-        .start(process_spec(
-            &paths,
-            "ordered-argument-runtime",
-            "/usr/bin/tail",
-            vec!["-f".to_string(), "/dev/null".to_string()],
-        ))
-        .await?;
-    let process_start_identity = runtime_process_start_identity(actual.metadata_path())?;
-    let forged_arguments = [
-        (
-            "reordered-argument-runtime",
-            vec!["/dev/null".to_string(), "-f".to_string()],
-        ),
-        ("missing-argument-runtime", vec!["-f".to_string()]),
-        (
-            "duplicated-argument-runtime",
-            vec!["-f".to_string(), "-f".to_string(), "/dev/null".to_string()],
-        ),
-    ];
-
-    for (name, arguments) in forged_arguments {
-        let forged = process_spec(&paths, name, "/usr/bin/tail", arguments);
-        write_forged_runtime_files(&forged, actual.pid(), process_start_identity.clone())?;
-
-        assert!(supervisor.verify_ownership(&forged)?.is_none());
-    }
-
-    actual.stop(Duration::from_secs(1)).await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn supervisor_fails_closed_for_missing_and_malformed_process_start_identity() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_layout(&paths)?;
-    let supervisor = ProcessSupervisor::new(paths.clone());
-    let spec = process_spec(
-        &paths,
-        "invalid-start-identity-runtime",
-        "/bin/sleep",
-        vec!["30".to_string()],
-    );
-    let process = supervisor.start(spec.clone()).await?;
-    let mut metadata = runtime_metadata(process.metadata_path())?;
-    let Some(metadata_object) = metadata.as_object_mut() else {
-        return Err(anyhow!("runtime metadata was not an object"));
-    };
-    let _removed_identity = metadata_object.remove("process_start_identity");
-    state::fs::write_sensitive_file(&spec.metadata_path, &serde_json::to_string(&metadata)?)?;
-
-    assert!(supervisor.verify_ownership(&spec)?.is_none());
-
-    metadata["process_start_identity"] = json!({
-        "seconds": "malformed",
-        "microseconds": 0,
-    });
-    state::fs::write_sensitive_file(&spec.metadata_path, &serde_json::to_string(&metadata)?)?;
-
-    assert!(matches!(
-        supervisor.verify_ownership(&spec),
-        Err(daemon::DaemonError::Json(_))
-    ));
-
-    process.stop(Duration::from_secs(1)).await?;
 
     Ok(())
 }
@@ -1397,38 +997,6 @@ fn runtime_metadata(path: &Utf8Path) -> Result<serde_json::Value> {
     Ok(serde_json::from_str(&state::testing::read_to_string(
         path,
     )?)?)
-}
-
-fn runtime_process_start_identity(path: &Utf8Path) -> Result<serde_json::Value> {
-    runtime_metadata(path)?
-        .get("process_start_identity")
-        .cloned()
-        .ok_or_else(|| anyhow!("runtime metadata did not contain process_start_identity"))
-}
-
-fn write_forged_runtime_files(
-    spec: &ProcessSpec,
-    pid: u32,
-    process_start_identity: serde_json::Value,
-) -> Result<()> {
-    state::fs::write_sensitive_file(&spec.pid_path, &format!("{pid}\n"))?;
-    state::fs::write_sensitive_file(
-        &spec.metadata_path,
-        &serde_json::to_string(&json!({
-            "name": spec.name,
-            "pid": pid,
-            "command": spec.command.as_str(),
-            "arguments": spec.arguments,
-            "config_path": spec.config_path.as_str(),
-            "resource_name": spec.resource_name,
-            "track": spec.track,
-            "log_path": spec.log_path.as_str(),
-            "started_at": "2026-05-25T00:00:00Z",
-            "process_start_identity": process_start_identity,
-        }))?,
-    )?;
-
-    Ok(())
 }
 
 fn with_normalized_process_values(assertion: impl FnOnce() -> Result<()>) -> Result<()> {

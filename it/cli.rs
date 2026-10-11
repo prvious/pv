@@ -1,10 +1,16 @@
+#[cfg(target_os = "macos")]
+use std::collections::BTreeMap;
 use std::process::ExitStatus;
 
 use anyhow::Result;
 use assert_cmd::Command;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
+#[cfg(target_os = "macos")]
+use daemon::{MonitorCleanup, MonitorExit, MonitorStart, MonitorStop, StopSignal};
 use insta::{assert_debug_snapshot, assert_snapshot};
+#[cfg(target_os = "macos")]
+use state::MonitorReservation;
 use state::{
     Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths, UpdateLock,
 };
@@ -217,6 +223,40 @@ fn daemon_run_is_hidden_from_top_level_help() -> Result<()> {
     let output = run_pv(&["--help"])?;
 
     assert_debug_snapshot!(output);
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn hidden_monitor_commands_run_a_runtime_until_released() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    let stop = MonitorStop {
+        signal: StopSignal::Terminate,
+        grace_ms: 5_000,
+    };
+    let start = MonitorStart {
+        subject: "smoke".to_owned(),
+        command: "/bin/sh".into(),
+        arguments: vec!["-c".to_owned(), "while :; do sleep 0.1; done".to_owned()],
+        private_environment: BTreeMap::new(),
+        log_path: paths.logs().join("smoke.log"),
+        fallback_stop: stop,
+        lifeline_fd: Some(pv_fake::lifeline_fd()?),
+    };
+
+    let started =
+        daemon::start_monitor(&paths, Utf8Path::new(env!("CARGO_BIN_EXE_pv")), start).await?;
+    let stopped = daemon::stop_monitor(&paths, "smoke", stop).await?;
+    daemon::release_monitor(&paths, "smoke").await?;
+
+    assert_eq!(started.cleanup, MonitorCleanup::Pending);
+    assert_eq!(stopped.exit, Some(MonitorExit::Signal(15)));
+    assert_eq!(stopped.cleanup, MonitorCleanup::Complete);
+    // The reservation is free only once the monitor process has exited.
+    assert!(MonitorReservation::acquire(&paths, "smoke").is_ok());
 
     Ok(())
 }

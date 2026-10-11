@@ -65,6 +65,8 @@ where
         Command::DaemonDisable => daemon::disable(environment, streams),
         Command::DaemonRestart => daemon::restart(environment, streams),
         Command::DaemonRun => daemon::run(),
+        Command::MonitorRun => daemon::run_monitor(),
+        Command::MonitorGate => daemon::run_monitor_gate(),
         Command::ShimPhp(args) => php::shim(args, environment, runtime_lifecycle_lock),
         Command::ShimComposer(args) => composer::shim(args, environment, runtime_lifecycle_lock),
         Command::DnsStatus => dns::status(environment, streams),
@@ -145,10 +147,14 @@ fn acquire_runtime_lifecycle(
     command: &Command,
     environment: &impl Environment,
 ) -> Result<Option<state::RuntimeLifecycleLock>, ExecuteError> {
+    // A monitor and its runtime outlive any command, so holding admission for their whole life
+    // would block `daemon:disable`; their controller holds it while starting them.
     if !cfg!(target_os = "macos")
         || matches!(
             command,
             Command::DaemonRun
+                | Command::MonitorRun
+                | Command::MonitorGate
                 | Command::Uninstall(_)
                 | Command::Env(_)
                 | Command::Completions(_)
@@ -198,6 +204,7 @@ fn required_capability(command: &Command) -> Option<PlatformCapability> {
         Command::DaemonRun | Command::Link(_) | Command::Unlink(_) => {
             Some(PlatformCapability::DaemonIpc)
         }
+        Command::MonitorRun | Command::MonitorGate => Some(PlatformCapability::ProcessContainment),
         Command::PortsStatus(_) | Command::PortsInstall | Command::PortsUninstall => {
             Some(PlatformCapability::LowPortFrontend)
         }
@@ -647,6 +654,14 @@ mod tests {
                 Command::Unlink(UnlinkArgs { hostname: None }),
             ],
             Some(PlatformCapability::DaemonIpc),
+        );
+    }
+
+    #[test]
+    fn required_capability_maps_runtime_monitor_commands() {
+        assert_required_capability(
+            &[Command::MonitorRun, Command::MonitorGate],
+            Some(PlatformCapability::ProcessContainment),
         );
     }
 

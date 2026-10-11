@@ -570,6 +570,54 @@ mod tests {
         })
     }
 
+    #[test]
+    fn follow_sources_continues_after_a_rotation_truncates_the_log() -> anyhow::Result<()> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+
+        runtime.block_on(async {
+            let tempdir = tempdir()?;
+            let gateway_log = tempdir.path().join("gateway.log");
+            write_test_file(&gateway_log, "")?;
+            let sources = vec![LogSource {
+                label: "gateway".to_string(),
+                active_path: gateway_log.clone(),
+            }];
+            let writer = tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                append_test_file(&gateway_log, "before rotation\n")?;
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                // A monitor rotates by truncating the log the runtime keeps appending to.
+                truncate_test_file(&gateway_log)?;
+                append_test_file(&gateway_log, "after\n")?;
+
+                anyhow::Ok(())
+            });
+            let mut stdout = Vec::new();
+
+            follow_sources_async(&sources, false, &mut stdout, Some(2)).await?;
+            writer.await??;
+
+            assert_eq!(String::from_utf8(stdout)?, "before rotation\nafter\n");
+
+            anyhow::Ok(())
+        })
+    }
+
+    #[expect(
+        clippy::disallowed_types,
+        reason = "logs tests truncate fixture logs as rotation does"
+    )]
+    fn truncate_test_file(path: &Utf8Path) -> anyhow::Result<()> {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)?
+            .set_len(0)?;
+
+        Ok(())
+    }
+
     #[expect(clippy::disallowed_methods, reason = "logs tests create fixture files")]
     fn write_test_file(path: &Utf8Path, contents: &str) -> anyhow::Result<()> {
         std::fs::write(path, contents)?;

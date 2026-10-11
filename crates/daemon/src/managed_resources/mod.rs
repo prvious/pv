@@ -2429,12 +2429,11 @@ fn ports_occupied_without_recorded_runtime(
     {
         return Ok(false);
     }
-    let recorded_runtime = supervisor.adopt_recorded(
-        &paths.resource_pid(&resource.resource_name, &resource.track),
+    let own_runtime = supervisor.subject_runtime_is_live(
         &paths.resource_runtime_metadata(&resource.resource_name, &resource.track),
     )?;
 
-    Ok(recorded_runtime.is_none())
+    Ok(!own_runtime)
 }
 
 async fn start_or_adopt_runtime(
@@ -2454,10 +2453,11 @@ async fn start_or_adopt_runtime(
             process: None,
         }));
     }
-    if let Some(adopted) = supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)? {
-        adopted
-            .stop_with(stop_signal, RESOURCE_STOP_GRACE_PERIOD)
-            .await?;
+    // Whatever monitor the subject still has, including one a cancelled start left with no record.
+    if supervisor
+        .stop_subject(&spec.metadata_path, stop_signal, RESOURCE_STOP_GRACE_PERIOD)
+        .await?
+    {
         delete_optional_file(&spec.pid_path)?;
         delete_optional_file(&spec.metadata_path)?;
     } else if let ManagedResourceReadiness::TcpHttp(check) = &readiness
@@ -2517,6 +2517,10 @@ impl PendingManagedResourceReadiness {
         }
         tokio::time::sleep(RESOURCE_PROCESS_EXIT_POLL_INTERVAL).await;
         if process.has_exited()? {
+            // Releases the monitor, which logs the exit it holds.
+            process
+                .stop_with(self.stop_signal, RESOURCE_STOP_GRACE_PERIOD)
+                .await?;
             cleanup_started_runtime_files(&self.spec)?;
 
             return Err(runtime_exited_before_readiness_error(&self.spec.name));
@@ -2657,14 +2661,13 @@ async fn stop_resource_runtime(
     track: &ManagedResourceTrackRecord,
     stop_signal: StopSignal,
 ) -> Result<(), DaemonError> {
-    if let Some(adopted) = supervisor.adopt_recorded(
-        &paths.resource_pid(&track.resource_name, &track.track),
-        &paths.resource_runtime_metadata(&track.resource_name, &track.track),
-    )? {
-        adopted
-            .stop_with(stop_signal, RESOURCE_STOP_GRACE_PERIOD)
-            .await?;
-    }
+    supervisor
+        .stop_subject(
+            &paths.resource_runtime_metadata(&track.resource_name, &track.track),
+            stop_signal,
+            RESOURCE_STOP_GRACE_PERIOD,
+        )
+        .await?;
     database.record_runtime_observed_snapshot(
         RuntimeSubject::Resource {
             name: track.resource_name.clone(),

@@ -155,6 +155,46 @@ pub fn open_append_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
     Ok(file)
 }
 
+/// Opens a runtime log for reading and appending without following a symlink at `path`, then
+/// proves through the open descriptor that it is a regular file with one link that this user owns.
+#[cfg(unix)]
+#[expect(
+    clippy::disallowed_types,
+    reason = "PV filesystem helper owns direct file handles"
+)]
+pub fn open_private_log_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    ensure_parent_dir(path)?;
+    let no_follow = i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits())
+        .map_err(|error| StateError::filesystem(path.to_path_buf(), io::Error::other(error)))?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(true)
+        .mode(SENSITIVE_FILE_MODE)
+        .custom_flags(no_follow)
+        .open(path)
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))?;
+    let metadata = file
+        .metadata()
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))?;
+    if !metadata.file_type().is_file() || metadata.nlink() != 1 || metadata.uid() != current_uid()?
+    {
+        return Err(StateError::filesystem(
+            path.to_path_buf(),
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "log is not a private regular file",
+            ),
+        ));
+    }
+    file.set_permissions(std::fs::Permissions::from_mode(SENSITIVE_FILE_MODE))
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))?;
+
+    Ok(file)
+}
+
 #[expect(
     clippy::disallowed_types,
     reason = "PV filesystem helper owns direct file handles"

@@ -1,0 +1,21 @@
+---
+source: crates/daemon/tests/monitor.rs
+expression: "replies.join(\"\\n\\n\")"
+---
+{"version":1,"instance":"<instance>","op":"state","added_later":true}
+{"version":1,"instance":"<instance>","result":"state","subject":"gateway","monitor_pid":<pid>,"runtime_pid":<pid>,"cleanup":"pending"}
+
+{"version":2,"instance":"<instance>","op":"state"}
+{"version":1,"instance":"<instance>","result":"error","kind":"unsupported_version","message":"this monitor speaks protocol version 1, not 2"}
+
+{"version":1,"instance":"another","op":"state"}
+{"version":1,"instance":"<instance>","result":"error","kind":"instance_mismatch","message":"the request names another monitor instance"}
+
+{"version":1,"instance":"<instance>","op":"restart"}
+{"version":1,"instance":"<instance>","result":"error","kind":"invalid_request","message":"unknown variant `restart`, expected one of `state`, `stop`, `release` at line 1 column 74"}
+
+{"version":1,"instance":"<instance>","op":"release"}
+{"version":1,"instance":"<instance>","result":"error","kind":"not_releasable","message":"the runtime has not exited with its cleanup complete"}
+
+not json
+{"version":1,"instance":"<instance>","result":"error","kind":"invalid_request","message":"expected ident at line 1 column 2"}

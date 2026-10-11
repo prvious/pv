@@ -45,7 +45,7 @@ use crate::supervisor::{
 use crate::{
     CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, CaddyAdminVerifier,
     DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, RuntimeReconciliationFailure,
-    wait_for_readiness,
+    StopSignal, wait_for_readiness,
 };
 
 #[expect(
@@ -4351,9 +4351,15 @@ async fn begin_runtime_transaction(
             StartedRuntimeTransaction::Matching,
         ));
     }
-    if let Some(adopted) = supervisor.adopt_recorded(&spec.pid_path, &spec.metadata_path)? {
-        adopted.stop(Duration::from_secs(1)).await?;
-    } else if foreign_listener_is_ready(&readiness.check).await {
+    // Whatever monitor the subject still has, including one a cancelled start left with no record.
+    let stopped_own_runtime = supervisor
+        .stop_subject(
+            &spec.metadata_path,
+            StopSignal::Terminate,
+            Duration::from_secs(1),
+        )
+        .await?;
+    if !stopped_own_runtime && foreign_listener_is_ready(&readiness.check).await {
         return Err(RuntimeTransactionError::new(
             DaemonError::UnexpectedProtocolResponse {
                 reason: format!(
@@ -4368,10 +4374,15 @@ async fn begin_runtime_transaction(
     if reconciliation_cancelled(shutdown) {
         return Ok(ReconciliationOutcome::Cancelled);
     }
-    let process = supervisor.start(spec.clone()).await?;
+    let mut process = supervisor.start(spec.clone()).await?;
     let staging_error = match supervisor.mark_replacement_required(spec, desired_fingerprint) {
         Ok(true) => None,
-        Ok(false) => Some(CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into()),
+        // A runtime that exits right after it starts is no longer PV's to stage.
+        Ok(false) => Some(match process.has_exited() {
+            Ok(true) => runtime_exited_before_readiness_error(&spec.name),
+            Ok(false) => CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
+            Err(error) => error,
+        }),
         Err(error) => Some(error),
     };
     if let Some(error) = staging_error {
@@ -5272,12 +5283,13 @@ async fn stop_stale_worker_runtimes(
         let subject = php_runtime_subject(&runtime_key);
 
         let result: Result<(), DaemonError> = async {
-            if let Some(adopted) = supervisor.adopt_recorded(
-                &paths.worker_pid(&runtime_key),
-                &paths.worker_runtime_metadata(&runtime_key),
-            )? {
-                adopted.stop(Duration::from_secs(1)).await?;
-            }
+            supervisor
+                .stop_subject(
+                    &paths.worker_runtime_metadata(&runtime_key),
+                    StopSignal::Terminate,
+                    Duration::from_secs(1),
+                )
+                .await?;
             record_runtime_observed(
                 paths,
                 subject,
@@ -5307,12 +5319,13 @@ async fn stop_worker_if_undemanded(
         return Ok(());
     }
 
-    if let Some(adopted) = supervisor.adopt_recorded(
-        &paths.worker_pid(runtime_key),
-        &paths.worker_runtime_metadata(runtime_key),
-    )? {
-        adopted.stop(Duration::from_secs(1)).await?;
-    }
+    supervisor
+        .stop_subject(
+            &paths.worker_runtime_metadata(runtime_key),
+            StopSignal::Terminate,
+            Duration::from_secs(1),
+        )
+        .await?;
     record_runtime_observed(
         paths,
         php_runtime_subject(runtime_key),
