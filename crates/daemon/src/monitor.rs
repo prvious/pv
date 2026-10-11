@@ -26,15 +26,15 @@ use crate::supervisor::PrivateEnvironmentDebug;
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    live_runtime, monitor_state, recorded_monitor_instance, recorded_monitor_subjects,
-    recover_monitor, release_monitor, run_monitor_blocking, run_monitor_gate, start_monitor,
-    stop_monitor,
+    live_runtime, monitor_from_earlier_boot, monitor_state, recorded_monitor_instance,
+    recorded_monitor_subjects, recover_monitor, release_monitor, run_monitor_blocking,
+    run_monitor_gate, start_monitor, stop_monitor,
 };
 #[cfg(not(target_os = "macos"))]
 pub use unsupported::{
-    live_runtime, monitor_state, recorded_monitor_instance, recorded_monitor_subjects,
-    recover_monitor, release_monitor, run_monitor_blocking, run_monitor_gate, start_monitor,
-    stop_monitor,
+    live_runtime, monitor_from_earlier_boot, monitor_state, recorded_monitor_instance,
+    recorded_monitor_subjects, recover_monitor, release_monitor, run_monitor_blocking,
+    run_monitor_gate, start_monitor, stop_monitor,
 };
 
 /// A monitor's runtime that is still running; see [`live_runtime`].
@@ -287,6 +287,15 @@ mod unsupported {
         require_process_containment()?;
 
         Ok(None)
+    }
+
+    pub fn monitor_from_earlier_boot(
+        _paths: &PvPaths,
+        _subject: &str,
+    ) -> Result<bool, DaemonError> {
+        require_process_containment()?;
+
+        Ok(false)
     }
 
     pub fn recorded_monitor_subjects(_paths: &PvPaths) -> Result<Vec<String>, DaemonError> {

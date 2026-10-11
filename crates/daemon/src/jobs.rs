@@ -485,11 +485,6 @@ pub(crate) async fn run_startup_reconciliation_job(
     let Some(running) = wait_for_startup_reconciliation_turn(queued, &mut shutdown).await else {
         return Ok(());
     };
-    // Runtimes from a release before monitors restart under monitors. Reconciliation reports any
-    // that couldn't be stopped, since it can't start a replacement over them.
-    if let Err(error) = runtime_stop::stop_legacy_runtimes(&paths).await {
-        structured_log::legacy_runtime_stop_failed(&paths, &error.to_string());
-    }
 
     complete_running_background_reconciliation_job(
         &paths,
@@ -499,6 +494,16 @@ pub(crate) async fn run_startup_reconciliation_job(
         Some(&fallback_shutdown),
     )
     .await
+}
+
+/// Stops the runtimes a release from before monitors left running, so they restart under
+/// monitors. Every job does this before it reconciles, since the first job after an update need
+/// not be the startup job. Once none remain, it only lists the run directory. Reconciliation
+/// reports any runtime it couldn't stop, since it can't start a replacement over one.
+async fn stop_legacy_runtimes_before_reconciliation(paths: &PvPaths) {
+    if let Err(error) = runtime_stop::stop_legacy_runtimes(paths).await {
+        structured_log::legacy_runtime_stop_failed(paths, &error.to_string());
+    }
 }
 
 async fn wait_for_startup_reconciliation_turn(
@@ -1662,6 +1667,7 @@ async fn complete_update_job_inner(
     if fallback_shutdown_requested(fallback_shutdown) {
         return Ok(ReconciliationOutcome::Cancelled);
     }
+    stop_legacy_runtimes_before_reconciliation(paths).await;
     let report = if runtime_catalog.is_none() {
         let update_paths = paths.clone();
         let update_progress = progress.clone();
@@ -2353,6 +2359,7 @@ async fn complete_reconciliation_job_with_progress_outcome(
         timing.queue_wait(),
         &[],
     );
+    stop_legacy_runtimes_before_reconciliation(paths).await;
     let obsolete_project = match (discard_obsolete_project, scope) {
         (true, ReconciliationScope::Project { id }) => {
             project_exists(paths, id.as_str()).map(|exists| !exists)
@@ -3787,6 +3794,7 @@ mod tests {
     use std::io::{self, Write};
     use std::net::{TcpListener, TcpStream};
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt as _;
     use std::pin::Pin;
     use std::process;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -4422,6 +4430,83 @@ mod tests {
         );
         caddy_guard.cleanup().await?;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn any_first_job_restarts_a_gateway_from_before_monitors_under_a_monitor()
+    -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        seed_installed_caddy(&paths)?;
+        let mut caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
+        // A Gateway that a release from before monitors started, known by its pid file.
+        let legacy_caddy = tempdir.path().join("legacy-caddy-release/bin/caddy");
+        pv_fake::install(&legacy_caddy, Persona::LongRunning)?;
+        let mut legacy = LegacyRuntime::spawn(&legacy_caddy)?;
+        let legacy_pid = legacy.0.id();
+        state::fs::write_sensitive_file(&paths.gateway_pid(), &format!("{legacy_pid}\n"))?;
+        let legacy_record = json!({
+            "name": "gateway",
+            "pid": legacy_pid,
+            "command": legacy_caddy,
+            "arguments": [],
+            "resource_name": "caddy",
+            "track": CADDY_TEST_TRACK,
+            "log_path": paths.gateway_supervisor_log(),
+            "started_at": "2026-10-09T00:00:00Z",
+            "boot_session_id": platform::current_boot_session_id()?,
+            "process_start_identity": platform::inspect_process_start_identity(legacy_pid)?,
+        });
+        state::fs::write_sensitive_file(
+            &paths.gateway_runtime_metadata(),
+            &serde_json::to_string(&legacy_record)?,
+        )?;
+
+        // An ordinary job, as `pv update` can queue ahead of the startup job.
+        let job = start_reconciliation_job(&paths, "system")?;
+        let result = super::complete_reconciliation_job(
+            &paths,
+            &job,
+            &ReconciliationScope::System,
+            None,
+            ReconciliationJobTiming::immediate(),
+            Some(GatewayPfRoutingState::Inactive),
+        )
+        .await;
+        let legacy_status = legacy.0.try_wait();
+        let record: serde_json::Value = serde_json::from_str(&state::fs::read_to_string(
+            &paths.gateway_runtime_metadata(),
+        )?)?;
+        caddy_guard.cleanup().await?;
+
+        result?;
+        assert!(legacy_status?.is_some());
+        assert!(!state::fs::path_entry_exists(&paths.gateway_pid())?);
+        assert_ne!(record["pid"], json!(legacy_pid));
+        assert!(record["monitor_instance"].is_string());
+        Ok(())
+    }
+
+    /// A runtime that a release from before monitors started outside the supervisor.
+    struct LegacyRuntime(process::Child);
+
+    impl LegacyRuntime {
+        #[expect(
+            clippy::disallowed_types,
+            reason = "a runtime from before monitors was started outside the supervisor"
+        )]
+        fn spawn(executable: &Utf8Path) -> anyhow::Result<Self> {
+            Ok(Self(
+                process::Command::new(executable).process_group(0).spawn()?,
+            ))
+        }
+    }
+
+    impl Drop for LegacyRuntime {
+        fn drop(&mut self) {
+            let _kill_result = self.0.kill();
+            let _wait_result = self.0.wait();
+        }
     }
 
     #[tokio::test]

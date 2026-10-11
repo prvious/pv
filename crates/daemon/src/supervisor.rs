@@ -444,12 +444,18 @@ impl ProcessSupervisor {
                 structured_log::runtime_exited(&self.paths, subject, &exit_description(state.exit));
                 monitor::release_monitor(&self.paths, subject).await
             }
-            MonitorStopped::Unavailable if postgres => Err(DaemonError::MonitorUnavailable {
-                subject: subject.to_owned(),
-                reason: format!(
-                    "PV could not confirm that Postgres shut down cleanly, so it kept its records. {POSTGRES_RECOVERY}"
-                ),
-            }),
+            // A record from an earlier boot names nothing that still runs; recovery removes it
+            // without signalling anything.
+            MonitorStopped::Unavailable
+                if postgres && !monitor::monitor_from_earlier_boot(&self.paths, subject)? =>
+            {
+                Err(DaemonError::MonitorUnavailable {
+                    subject: subject.to_owned(),
+                    reason: format!(
+                        "PV could not confirm that Postgres shut down cleanly, so it kept its records. {POSTGRES_RECOVERY}"
+                    ),
+                })
+            }
             MonitorStopped::Unavailable => monitor::recover_monitor(&self.paths, subject).await,
             MonitorStopped::Gone => Ok(()),
         }

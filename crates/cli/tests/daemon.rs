@@ -561,6 +561,69 @@ fn daemon_disable_removes_previous_boot_postgres_records_without_signalling_reus
 }
 
 #[test]
+fn daemon_disable_clears_a_previous_boot_postgres_monitor_without_signalling_reused_pid()
+-> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(&home);
+    let environment = TestEnvironment::new(
+        &home,
+        tempdir.path(),
+        &paths.active_pv_binary(),
+        &tempdir.path().join("absent.plist"),
+    );
+    let mut spec = gateway_spec(&paths);
+    spec.resource_name = "postgres".to_owned();
+    spec.track = "18".to_owned();
+    spec.pid_path = paths.resource_pid("postgres", "18");
+    spec.metadata_path = paths.resource_runtime_metadata("postgres", "18");
+    let mut runtime = RuntimeFixture::start(&paths, spec)?;
+    runtime.cleanup()?;
+    // A reboot ends the monitor too, and the runtime's pid may now be another process's.
+    let record_path = paths
+        .monitor_dir("resources/postgres/18")
+        .join("monitor.json");
+    let mut record: serde_json::Value =
+        serde_json::from_str(&state::fs::read_to_string(&record_path)?)?;
+    let monitor_pid = record["monitor"]["pid"]
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .ok_or_else(|| anyhow::anyhow!("monitor record has no pid"))?;
+    let killed = TestCommand::new("/bin/kill")
+        .args(["-KILL", &monitor_pid.to_string()])
+        .status()?;
+    assert!(killed.success());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while platform::inspect_process_start_identity(monitor_pid)?.is_some() {
+        assert!(
+            Instant::now() < deadline,
+            "monitor {monitor_pid} outlived SIGKILL"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+    let reused = ChildGuard(
+        TestCommand::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()?,
+    );
+    let previous_boot =
+        platform::BootSessionId::try_from("00000000-0000-0000-0000-000000000001".to_owned())?;
+    record["boot_session_id"] = serde_json::to_value(previous_boot)?;
+    record["runtime"]["pid"] = json!(reused.0.id());
+    state::fs::write_sensitive_file(&record_path, &serde_json::to_string(&record)?)?;
+
+    let output = run_pv(&["daemon:disable"], &environment)?;
+    assert_eq!(output.exit_code, ExitCode::SUCCESS, "{output:?}");
+    assert!(runtime.records_absent()?);
+    assert!(!state::fs::path_entry_exists(
+        &paths.monitor_dir("resources/postgres/18")
+    )?);
+    assert!(platform::process_group_has_live_members(reused.0.id())?);
+    Ok(())
+}
+
+#[test]
 fn daemon_replacement_waits_for_delayed_exit_before_bootstrap() -> anyhow::Result<()> {
     for publish_during_bootout in [false, true] {
         let tempdir = tempdir()?;

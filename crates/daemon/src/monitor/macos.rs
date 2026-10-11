@@ -299,6 +299,14 @@ pub fn recorded_monitor_instance(
     Ok(read_record(paths, subject)?.map(|record| record.instance))
 }
 
+/// Whether `subject`'s published monitor record was written during an earlier boot, so nothing it
+/// names can still run.
+pub fn monitor_from_earlier_boot(paths: &PvPaths, subject: &str) -> Result<bool, DaemonError> {
+    let current_boot = platform::current_boot_session_id()?;
+
+    Ok(read_record(paths, subject)?.is_some_and(|record| record.boot_session_id != current_boot))
+}
+
 /// The subjects of every monitor that has published its record.
 pub fn recorded_monitor_subjects(paths: &PvPaths) -> Result<Vec<String>, DaemonError> {
     let directories = match fs::read_dir_paths(&paths.monitors()) {
