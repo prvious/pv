@@ -44,6 +44,7 @@ pub enum StopSignal {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProcessSignal {
+    #[cfg(target_os = "macos")]
     Stop(StopSignal),
     Kill,
 }
@@ -1038,6 +1039,7 @@ fn signal_process_group(_pid: u32, _signal: ProcessSignal) -> Result<(), DaemonE
 /// Signals `pid`'s process group with `signal`, then SIGKILL once `grace_period` passes, and
 /// waits until no live member remains. Escalates only while `leader_still_owned` proves the
 /// group still belongs to the runtime.
+#[cfg(target_os = "macos")]
 pub(crate) async fn stop_process_group(
     pid: u32,
     signal: StopSignal,
@@ -1070,6 +1072,7 @@ pub(crate) async fn stop_process_group(
     .into())
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) async fn wait_for_process_group_exit(
     pid: u32,
     readiness_timeout: Duration,
