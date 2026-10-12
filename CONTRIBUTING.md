@@ -58,8 +58,10 @@ Fixture guards also clean up from `Drop` where they can, so normal return,
 early return, panic unwind, and cancellation cannot bypass teardown. The
 fallback uses an independent cleanup runtime and reports failures, because
 `Drop` cannot return them to the test. Whenever the test process exits, even by
-SIGKILL, its lifeline closes and every monitor it started stops its runtime and
-exits. A failed test therefore leaves nothing running.
+SIGKILL, its lifeline closes and every monitor it started stops its runtime's
+process group and exits. If a monitor can't prove the group is gone, it keeps its
+records for recovery, so check for leftover processes after an unexplained
+failure.
 
 Long-running fixtures that stand in for a runtime use `pv-fake`, not a script.
 `pv_fake::install(executable, persona)` places a native fake at the

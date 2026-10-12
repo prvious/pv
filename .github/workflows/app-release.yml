@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       minimum_pv_version:
-        description: "Minimum installed PV version that may apply this app release"
+        description: "Minimum installed PV version that may apply this app release; at least 0.2.6, which moves pid-file runtimes onto monitors"
         required: true
-        default: "0.1.0"
+        default: "0.2.6"
         type: string
       app_platforms:
         description: "Comma-separated app platforms to release; default is the Apple Silicon preview lane"

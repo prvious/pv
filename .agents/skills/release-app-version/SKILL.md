@@ -48,7 +48,7 @@ Use this workflow for PV application releases. This is separate from Managed Res
    - `PV App Publication`: git ref, `source_run_id`
    - whether this is build-only or build-and-publish
 
-Do not silently rely on defaults. Current checked-in defaults are `minimum_pv_version=0.1.0` and `app_platforms=darwin-arm64`, but always re-read the workflow first.
+Do not silently rely on defaults. Current checked-in defaults are `minimum_pv_version=0.2.6` and `app_platforms=darwin-arm64`, but always re-read the workflow first. Never set `minimum_pv_version` below 0.2.6 for a release after 0.2.6: only 0.2.6 moves runtimes from pid files onto monitors, so a lower minimum lets `pv update` skip that step.
 
 ## Bump The App Version
 
