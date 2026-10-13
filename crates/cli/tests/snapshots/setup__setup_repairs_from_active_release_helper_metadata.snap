@@ -13,7 +13,7 @@ expression: "(output, operations)"
         stderr: "Waiting for the reconciliation slot (elapsed: 0s)\nReconciliation slot acquired after <1s\n",
     },
     [
-        "install helper <tempdir>/home/.pv/bin/releases/0.2.6/pv-helper prepared <tempdir>/home/.pv/config/helper version 2.1.0 protocol 2 sha256 <fingerprint>",
+        "install helper <tempdir>/home/.pv/bin/releases/0.2.7/pv-helper prepared <tempdir>/home/.pv/config/helper version 2.1.0 protocol 2 sha256 <fingerprint>",
         "install resolver <tempdir>/home/.pv/config/resolver/test -> <tempdir>/etc/resolver/test",
         "install pf <tempdir>/home/.pv/config/pf/com.prvious.pv <tempdir>/home/.pv/config/pf/pf.conf -> <tempdir>/etc/pf.anchors/com.prvious.pv <tempdir>/etc/pf.conf",
         "trust <fingerprint>",

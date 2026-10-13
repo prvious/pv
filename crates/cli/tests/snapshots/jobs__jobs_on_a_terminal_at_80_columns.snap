@@ -2,7 +2,7 @@
 source: crates/cli/tests/jobs.rs
 expression: narrow.stdout
 ---
-[pv] jobs                                                                 v0.2.6
+[pv] jobs                                                                 v0.2.7
 ────────────────────────────────────────────────────────────────────────────────
 
 job_000003
