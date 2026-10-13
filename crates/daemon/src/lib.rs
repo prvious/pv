@@ -706,6 +706,7 @@ mod tests {
     async fn daemon_start_and_shutdown_write_structured_daemon_log() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
+        pv_fake::seed_dns_port(&paths)?;
         let daemon = RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
 
         daemon.shutdown().await?;

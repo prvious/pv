@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::io;
-use std::net::{Ipv4Addr, TcpListener, UdpSocket};
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration as StdDuration;
 
@@ -17,9 +16,9 @@ use rcgen::{
 use serde_json::{Value, json};
 use state::fs::write_sensitive_file;
 use state::{
-    Database, EnvContextValues, JobRecord, LinkProjectInput, PortOwner, PortRequest,
-    ProjectEnvObservedStatus, ProjectManagedResourceInput, ProjectMode, ProjectRecord, PvPaths,
-    ResourceAllocationInput, StateError,
+    Database, EnvContextValues, JobRecord, LinkProjectInput, ProjectEnvObservedStatus,
+    ProjectManagedResourceInput, ProjectMode, ProjectRecord, PvPaths, ResourceAllocationInput,
+    StateError,
 };
 use time::{Duration, OffsetDateTime};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -626,6 +625,7 @@ async fn daemon_health_tick_replaces_expiring_tls_certificate_without_explicit_r
     let config_modified_at = state::fs::modified_at(&project.config_path)?;
 
     let finished_system_jobs = finished_system_job_count(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     wait_for_new_finished_system_job(&paths, finished_system_jobs).await?;
@@ -1408,6 +1408,7 @@ async fn malformed_config_with_existing_tls_is_renewed_by_daemon_health() -> Res
     };
 
     let finished_system_jobs = finished_system_job_count(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     wait_for_new_finished_system_job(&paths, finished_system_jobs).await?;
@@ -1934,7 +1935,7 @@ async fn run_project_reconciliation(
     paths: &PvPaths,
     project: &ProjectRecord,
 ) -> Result<Vec<Value>> {
-    ensure_reconciliation_dns_port(paths)?;
+    pv_fake::seed_dns_port(paths)?;
 
     let finished_system_jobs = finished_system_job_count(paths)?;
     let daemon =
@@ -2002,39 +2003,6 @@ async fn wait_for_new_finished_system_job(paths: &PvPaths, existing_count: usize
     }
 
     Err(anyhow!("new finished startup System job was not recorded"))
-}
-
-fn ensure_reconciliation_dns_port(paths: &PvPaths) -> Result<()> {
-    let mut database = Database::open(paths)?;
-    if database
-        .assigned_ports()?
-        .into_iter()
-        .any(|assignment| assignment.owner == PortOwner::Dns)
-    {
-        return Ok(());
-    }
-
-    let (dns_port, _tcp_listener, _udp_socket) = bind_loopback_tcp_udp_pair()?;
-    database.assign_port(
-        PortRequest::dns(dns_port, dns_port, dns_port),
-        |candidate| candidate == dns_port,
-    )?;
-
-    Ok(())
-}
-
-fn bind_loopback_tcp_udp_pair() -> Result<(u16, TcpListener, UdpSocket)> {
-    for _attempt in 0..100 {
-        let tcp_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let port = tcp_listener.local_addr()?.port();
-        let Ok(udp_socket) = UdpSocket::bind((Ipv4Addr::LOCALHOST, port)) else {
-            continue;
-        };
-
-        return Ok((port, tcp_listener, udp_socket));
-    }
-
-    Err(anyhow!("could not bind a loopback TCP/UDP port pair"))
 }
 
 async fn request_lines(paths: &PvPaths, request: Value) -> Result<Vec<Value>> {
