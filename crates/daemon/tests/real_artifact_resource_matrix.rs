@@ -438,7 +438,7 @@ fn assert_resource_matrix_evidence(paths: &PvPaths, project: &ProjectRecord) -> 
         "POSTGRES_URL=postgres://",
         "REDIS_URL=redis://",
         // Allocation names start with the Project's slug, which comes from its directory name.
-        "REDIS_PREFIX=project-cache-",
+        "REDIS_PREFIX=project.cache.",
         "MAILPIT_DASHBOARD=http://127.0.0.1:",
         "AWS_BUCKET=project-uploads",
         "AWS_ENDPOINT=http://127.0.0.1:",

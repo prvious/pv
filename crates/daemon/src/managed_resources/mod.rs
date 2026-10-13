@@ -167,6 +167,28 @@ pub(crate) trait ManagedResourceRuntimeAdapter: Send + Sync {
     ) -> ManagedResourceAllocationFuture<'a> {
         Box::pin(async { Ok(()) })
     }
+
+    /// Deletes the object behind one Resource allocation: a database, the keys under a prefix, or
+    /// a bucket and its contents. Deleting an object that is already gone succeeds.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "worktree cleanup, which arrives in a later change, is the only caller"
+        )
+    )]
+    fn delete_allocation<'a>(
+        &'a self,
+        _context: &'a ManagedResourceRuntimeContext,
+        _resource_env: &'a EnvContextValues,
+        _generated_name: &'a str,
+    ) -> ManagedResourceAllocationFuture<'a> {
+        let resource = self.resource_name().to_string();
+
+        Box::pin(async move {
+            Err(resources::ResourcesError::UnsupportedResourceAllocation { resource }.into())
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

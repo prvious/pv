@@ -19,6 +19,7 @@ DatabaseInspection {
         "010:job_diagnostic_outcomes",
         "011:remove_admin_ports",
         "012:postgres_track_preload_libraries",
+        "013:retired_resource_allocations",
     ],
     tables: [
         "global_php_default_track",
@@ -35,5 +36,6 @@ DatabaseInspection {
         "pv_migrations",
         "resource_allocations",
         "resource_ports",
+        "retired_resource_allocations",
     ],
 }

@@ -171,6 +171,22 @@ impl ManagedResourceRuntimeAdapter for PostgresRuntimeAdapter {
             Ok(())
         })
     }
+
+    fn delete_allocation<'a>(
+        &'a self,
+        context: &'a ManagedResourceRuntimeContext,
+        _resource_env: &'a EnvContextValues,
+        generated_name: &'a str,
+    ) -> crate::managed_resources::ManagedResourceAllocationFuture<'a> {
+        Box::pin(async move {
+            sql::drop_database_if_exists(
+                &admin_context(context)?,
+                SqlEngine::Postgres,
+                generated_name,
+            )
+            .await
+        })
+    }
 }
 
 async fn spawn_postgres_preparation<Prepare>(prepare: Prepare) -> Result<(), DaemonError>

@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use aws_sdk_s3::config::{BehaviorVersion, Credentials, Region};
-use aws_sdk_s3::error::SdkError;
+use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_s3::operation::create_bucket::CreateBucketError;
+use aws_sdk_s3::types::{Delete, ObjectIdentifier};
 use aws_sdk_s3::{Client, Config};
 use aws_smithy_http_client::Builder as HttpClientBuilder;
 use object_store::ObjectStoreExt;
@@ -144,6 +145,81 @@ impl ManagedResourceRuntimeAdapter for RustfsRuntimeAdapter {
             Ok(())
         })
     }
+
+    fn delete_allocation<'a>(
+        &'a self,
+        _context: &'a ManagedResourceRuntimeContext,
+        resource_env: &'a EnvContextValues,
+        generated_name: &'a str,
+    ) -> super::ManagedResourceAllocationFuture<'a> {
+        Box::pin(async move { delete_bucket(&s3_client(resource_env)?, generated_name).await })
+    }
+}
+
+/// Deletes a bucket's objects one listed page at a time, then the bucket. PV never turns on
+/// versioning, so there are no object versions to delete.
+pub(super) async fn delete_bucket(client: &Client, bucket: &str) -> Result<(), DaemonError> {
+    loop {
+        let listed = match client.list_objects_v2().bucket(bucket).send().await {
+            Ok(output) => output,
+            Err(error) if missing_bucket(&error) => return Ok(()),
+            Err(error) => {
+                return Err(rustfs_admin_error(
+                    format!("failed to list objects in `{bucket}`"),
+                    error,
+                ));
+            }
+        };
+        let objects = listed
+            .contents()
+            .iter()
+            .filter_map(|object| object.key())
+            .map(|key| ObjectIdentifier::builder().key(key).build())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| rustfs_admin_error("failed to name objects to delete", source))?;
+        if objects.is_empty() {
+            break;
+        }
+        let delete = Delete::builder()
+            .set_objects(Some(objects))
+            .quiet(true)
+            .build()
+            .map_err(|source| rustfs_admin_error("failed to build object deletion", source))?;
+        let deleted = client
+            .delete_objects()
+            .bucket(bucket)
+            .delete(delete)
+            .send()
+            .await
+            .map_err(|source| {
+                rustfs_admin_error(format!("failed to delete objects in `{bucket}`"), source)
+            })?;
+        // A successful response still lists any object that failed to delete.
+        if let Some(failure) = deleted.errors().first() {
+            return Err(rustfs_admin_error(
+                format!(
+                    "failed to delete `{}` in `{bucket}`",
+                    failure.key().unwrap_or_default()
+                ),
+                failure.message().unwrap_or_default(),
+            ));
+        }
+    }
+
+    match client.delete_bucket().bucket(bucket).send().await {
+        Ok(_output) => Ok(()),
+        Err(error) if missing_bucket(&error) => Ok(()),
+        Err(error) => Err(rustfs_admin_error(
+            format!("failed to delete bucket `{bucket}`"),
+            error,
+        )),
+    }
+}
+
+fn missing_bucket<Error: ProvideErrorMetadata, Response>(
+    error: &SdkError<Error, Response>,
+) -> bool {
+    error.code() == Some("NoSuchBucket")
 }
 
 fn rustfs_resource_env(

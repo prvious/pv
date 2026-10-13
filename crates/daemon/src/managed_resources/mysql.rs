@@ -229,6 +229,21 @@ impl ManagedResourceRuntimeAdapter for MysqlRuntimeAdapter {
             Ok(())
         })
     }
+
+    fn delete_allocation<'a>(
+        &'a self,
+        context: &'a ManagedResourceRuntimeContext,
+        _resource_env: &'a EnvContextValues,
+        generated_name: &'a str,
+    ) -> ManagedResourceAllocationFuture<'a> {
+        Box::pin(async move {
+            let admin_context = self.admin_context(context)?;
+
+            self.admin
+                .drop_database_if_exists(&admin_context, generated_name)
+                .await
+        })
+    }
 }
 
 impl MysqlAdmin {
@@ -261,6 +276,20 @@ impl MysqlAdmin {
             Self::Recording(admin) => admin.ensure_database_allocation(database, request).await,
         }
     }
+
+    async fn drop_database_if_exists(
+        &self,
+        context: &sql::SqlAdminContext,
+        database: &str,
+    ) -> Result<(), DaemonError> {
+        match self {
+            Self::Production => {
+                sql::drop_database_if_exists(context, sql::SqlEngine::Mysql, database).await
+            }
+            #[cfg(test)]
+            Self::Recording(admin) => admin.drop_database_if_exists(database).await,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -287,6 +316,12 @@ impl RecordingMysqlAdmin {
         let mut admin = self.inner.lock().await;
 
         sql::ensure_database_allocation_for_test(database, &mut admin, request).await
+    }
+
+    async fn drop_database_if_exists(&self, database: &str) -> Result<(), DaemonError> {
+        let mut admin = self.inner.lock().await;
+
+        admin.drop_database_if_exists(sql::SqlEngine::Mysql, database)
     }
 }
 

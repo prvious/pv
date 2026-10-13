@@ -78,6 +78,34 @@ fn mysql_runtime_arguments_disable_x_protocol() -> Result<()> {
 }
 
 #[tokio::test]
+async fn mysql_allocation_cleanup_drops_only_the_named_database() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let admin = super::mysql::RecordingMysqlAdmin::default();
+    let adapter = super::mysql::MysqlRuntimeAdapter::with_recording_admin(admin.clone())?;
+    let context = super::ManagedResourceRuntimeContext {
+        resource_name: "mysql".to_string(),
+        track: MYSQL_TRACK.to_string(),
+        artifact_path: tempdir.path().join("mysql-artifact"),
+        data_dir: paths.resource_data_dir("mysql", MYSQL_TRACK),
+        ports: BTreeMap::from([("mysql".to_string(), 3307)]),
+        env: BTreeMap::from([
+            ("password".to_string(), "secret".to_string()),
+            ("username".to_string(), "pv_root".to_string()),
+        ]),
+        postgres_preload_libraries: Vec::new(),
+    };
+
+    adapter
+        .delete_allocation(&context, &context.env, "acme_app_db")
+        .await?;
+
+    assert_debug_snapshot!(admin.operations().await?);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn mysql_reconciliation_creates_database_allocation_and_renders_env() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

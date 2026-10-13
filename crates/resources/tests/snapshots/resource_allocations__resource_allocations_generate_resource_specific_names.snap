@@ -16,7 +16,7 @@ expression: allocations
     AllocationNameSnapshot {
         resource_name: "redis",
         allocation_name: "cache",
-        generated_name: "acme-cache-",
+        generated_name: "acme.cache.",
     },
     AllocationNameSnapshot {
         resource_name: "rustfs",
@@ -31,7 +31,7 @@ expression: allocations
     AllocationNameSnapshot {
         resource_name: "redis",
         allocation_name: "cache_bucket",
-        generated_name: "acme-store-cache-bucket-",
+        generated_name: "acme-store.cache-bucket.",
     },
     AllocationNameSnapshot {
         resource_name: "rustfs",

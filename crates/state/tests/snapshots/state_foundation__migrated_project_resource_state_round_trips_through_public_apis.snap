@@ -15,6 +15,7 @@ expression: "(before, after)"
                 "004:project_original_path",
                 "005:project_resource_requirements",
                 "009:project_mode_and_slug",
+                "013:retired_resource_allocations",
             ],
             tables: [
                 "jobs",
@@ -27,6 +28,7 @@ expression: "(before, after)"
                 "projects",
                 "pv_migrations",
                 "resource_allocations",
+                "retired_resource_allocations",
             ],
         },
         [

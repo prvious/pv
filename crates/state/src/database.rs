@@ -426,6 +426,14 @@ pub struct ResourceAllocationRecord {
     pub updated_at: String,
 }
 
+/// A Resource allocation object left on a track the Project no longer uses.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RetiredResourceAllocationRecord {
+    pub resource_name: String,
+    pub track: String,
+    pub generated_name: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectEnvStateContext {
     pub project_id: String,
@@ -1743,6 +1751,40 @@ impl Database {
 
         for allocation in allocations {
             if let Some(existing) = existing_by_name.get(&allocation.allocation_name) {
+                if existing.track != track {
+                    // The object on the previous track stays in place, so keep a record of it
+                    // for cleanup. Moving back reconnects to that object instead.
+                    transaction.execute(
+                        "INSERT INTO retired_resource_allocations (
+                            project_id,
+                            resource_name,
+                            track,
+                            generated_name,
+                            retired_at
+                        )
+                        VALUES (?1, ?2, ?3, ?4, ?5)",
+                        params![
+                            project_id,
+                            resource_name,
+                            existing.track.as_str(),
+                            existing.generated_name.as_str(),
+                            updated_at.as_str(),
+                        ],
+                    )?;
+                    transaction.execute(
+                        "DELETE FROM retired_resource_allocations
+                        WHERE project_id = ?1
+                        AND resource_name = ?2
+                        AND track = ?3
+                        AND generated_name = ?4",
+                        params![
+                            project_id,
+                            resource_name,
+                            track,
+                            existing.generated_name.as_str(),
+                        ],
+                    )?;
+                }
                 let status = if existing.track == track
                     && existing.status == ResourceAllocationStatus::Ready
                 {
@@ -1981,6 +2023,27 @@ impl Database {
             project_id,
             resource_name,
         )
+    }
+
+    pub fn retired_resource_allocations(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<RetiredResourceAllocationRecord>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT resource_name, track, generated_name
+            FROM retired_resource_allocations
+            WHERE project_id = ?1
+            ORDER BY resource_name, track, generated_name",
+        )?;
+        let rows = statement.query_map(params![project_id], |row| {
+            Ok(RetiredResourceAllocationRecord {
+                resource_name: row.get(0)?,
+                track: row.get(1)?,
+                generated_name: row.get(2)?,
+            })
+        })?;
+
+        rows.map(|row| Ok(row?)).collect()
     }
 
     pub fn project_env_context(
@@ -3482,6 +3545,12 @@ fn resource_allocation_generated_name_exists_in_transaction(
         "SELECT EXISTS(
             SELECT 1
             FROM resource_allocations
+            WHERE resource_name = ?1
+            AND track = ?2
+            AND generated_name = ?3
+        ) OR EXISTS(
+            SELECT 1
+            FROM retired_resource_allocations
             WHERE resource_name = ?1
             AND track = ?2
             AND generated_name = ?3

@@ -20,9 +20,10 @@ use s3s::auth::SimpleAuth;
 use s3s::crypto::{Checksum, Md5};
 use s3s::dto::{
     CreateBucketInput, CreateBucketOutput, DeleteBucketInput, DeleteBucketOutput,
-    DeleteObjectInput, DeleteObjectOutput, ETag, GetObjectInput, GetObjectOutput, HeadBucketInput,
-    HeadBucketOutput, HeadObjectInput, HeadObjectOutput, PutObjectInput, PutObjectOutput,
-    StreamingBlob,
+    DeleteObjectInput, DeleteObjectOutput, DeleteObjectsInput, DeleteObjectsOutput, DeletedObject,
+    ETag, GetObjectInput, GetObjectOutput, HeadBucketInput, HeadBucketOutput, HeadObjectInput,
+    HeadObjectOutput, ListObjectsV2Input, ListObjectsV2Output, Object as ListedObject,
+    PutObjectInput, PutObjectOutput, StreamingBlob,
 };
 use s3s::service::{S3Service, S3ServiceBuilder};
 use s3s::{Body, S3, S3Request, S3Response, S3Result, s3_error};
@@ -251,6 +252,71 @@ impl S3 for Store {
             last_modified: Some(object.last_modified.into()),
             body: Some(StreamingBlob::from(object.body)),
             ..GetObjectOutput::default()
+        }))
+    }
+
+    /// The first `max-keys` objects, 1,000 by default as in S3.
+    // ponytail: no continuation tokens, because PV deletes each page before listing again.
+    async fn list_objects_v2(
+        &self,
+        request: S3Request<ListObjectsV2Input>,
+    ) -> S3Result<S3Response<ListObjectsV2Output>> {
+        let buckets = self.buckets();
+        let Some(objects) = buckets.get(&request.input.bucket) else {
+            return Err(s3_error!(NoSuchBucket));
+        };
+        let max_keys = request.input.max_keys.unwrap_or(1000);
+        let contents = objects
+            .iter()
+            .take(usize::try_from(max_keys).unwrap_or(0))
+            .map(|(key, object)| {
+                Ok(ListedObject {
+                    key: Some(key.clone()),
+                    e_tag: Some(object.e_tag.clone()),
+                    last_modified: Some(object.last_modified.into()),
+                    size: Some(content_length(&object.body)?),
+                    ..ListedObject::default()
+                })
+            })
+            .collect::<S3Result<Vec<_>>>()?;
+
+        Ok(S3Response::new(ListObjectsV2Output {
+            name: Some(request.input.bucket),
+            key_count: Some(
+                i32::try_from(contents.len()).map_err(|_error| s3_error!(InternalError))?,
+            ),
+            is_truncated: Some(contents.len() < objects.len()),
+            max_keys: Some(max_keys),
+            contents: Some(contents),
+            ..ListObjectsV2Output::default()
+        }))
+    }
+
+    /// Deleting a missing object succeeds, as in S3.
+    async fn delete_objects(
+        &self,
+        request: S3Request<DeleteObjectsInput>,
+    ) -> S3Result<S3Response<DeleteObjectsOutput>> {
+        let DeleteObjectsInput { bucket, delete, .. } = request.input;
+        let mut buckets = self.buckets();
+        let Some(objects) = buckets.get_mut(&bucket) else {
+            return Err(s3_error!(NoSuchBucket));
+        };
+        let deleted = delete
+            .objects
+            .into_iter()
+            .map(|identifier| {
+                objects.remove(&identifier.key);
+                DeletedObject {
+                    key: Some(identifier.key),
+                    ..DeletedObject::default()
+                }
+            })
+            .collect();
+
+        Ok(S3Response::new(DeleteObjectsOutput {
+            deleted: Some(deleted),
+            ..DeleteObjectsOutput::default()
         }))
     }
 

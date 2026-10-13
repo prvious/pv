@@ -288,7 +288,7 @@ pub enum DaemonError {
         source: JsonError,
     },
 
-    #[error("Redis readiness failed: {0}")]
+    #[error("Redis request failed: {0}")]
     Redis(#[from] redis::RedisError),
 
     #[error("daemon task failed: {0}")]
