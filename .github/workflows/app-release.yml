@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       minimum_pv_version:
-        description: "Minimum installed PV version that may apply this app release"
+        description: "Minimum installed PV version that may apply this app release; at least 0.2.6, which moves pid-file runtimes onto monitors"
         required: true
-        default: "0.1.0"
+        default: "0.2.6"
         type: string
       app_platforms:
         description: "Comma-separated app platforms to release; default is the Apple Silicon preview lane"
@@ -58,6 +58,12 @@ jobs:
 
           if [ -z "$MINIMUM_PV_VERSION" ]; then
             printf '%s\n' "minimum_pv_version is required" >&2
+            exit 1
+          fi
+          # Only 0.2.6 moves runtimes from pid files onto monitors; no later release may skip it.
+          lowest_minimum=$(printf '%s\n' 0.2.6 "$MINIMUM_PV_VERSION" | sort -V | head -n 1)
+          if [ "$lowest_minimum" != "0.2.6" ]; then
+            printf '%s\n' "minimum_pv_version must be at least 0.2.6, the release that moves runtimes onto monitors" >&2
             exit 1
           fi
           case "$HELPER_ONLY" in

@@ -72,7 +72,6 @@ set-proc-title no
             config_path,
             config_fingerprint: None,
             log_path: paths.resource_log(&context.resource_name, &context.track),
-            pid_path: paths.resource_pid(&context.resource_name, &context.track),
             metadata_path: paths.resource_runtime_metadata(&context.resource_name, &context.track),
             resource_name: context.resource_name.clone(),
             track: context.track.clone(),

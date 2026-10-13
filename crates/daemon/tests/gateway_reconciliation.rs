@@ -363,8 +363,8 @@ root: public
     )?;
     assert_worker_command(&paths, "8.4", &fake_frankenphp)?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -565,9 +565,9 @@ async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled(
         assert!(metadata["staged_config_fingerprint"].is_null());
     }
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
     for runtime_key in runtime_keys {
-        stop_runtime_from_pid_file(&paths.worker_pid(&runtime_key)).await?;
+        stop_runtime(&paths.worker_runtime_metadata(&runtime_key)).await?;
     }
 
     runtime_guard.cleanup().await?;
@@ -712,8 +712,8 @@ async fn matching_worker_recovers_after_post_load_readiness_is_cancelled() -> Re
         gateway_load_count + 1
     );
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid(track)).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata(track)).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -795,9 +795,9 @@ async fn runtime_move_accepts_prior_proof_after_artifact_change() -> Result<()> 
         &paths.gateway_runtime_metadata()
     )?)?);
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.5")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.5")).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -1094,9 +1094,9 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
     assert_ne!(committed_metadata["replacement_required"], true);
     assert!(committed_metadata["applied_config_fingerprint"].is_string());
     assert!(committed_metadata["staged_config_fingerprint"].is_null());
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.5")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.5")).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -1155,12 +1155,8 @@ async fn worker_failure_starts_missing_gateway_without_reloading_live_gateway() 
         )?;
         link_project_record(&paths, &redis_project, "api.acme.test", Some(track))?;
         if !live_gateway {
-            stop_recorded_runtime_preserving_files(
-                &paths,
-                &paths.gateway_pid(),
-                &paths.gateway_runtime_metadata(),
-            )
-            .await?;
+            stop_recorded_runtime_preserving_files(&paths, &paths.gateway_runtime_metadata())
+                .await?;
             let tampered = format!(
                 "{}# tampered Gateway root\n",
                 fs::read_to_string(&paths.gateway_root_config())?
@@ -1196,10 +1192,10 @@ async fn worker_failure_starts_missing_gateway_without_reloading_live_gateway() 
         assert_eq!(fs::read_to_string(&source_fragment)?, source_content);
 
         fs::remove_file(&redis_failure_marker)?;
-        stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-        stop_runtime_from_pid_file(&paths.worker_pid(&base_runtime_key)).await?;
+        stop_runtime(&paths.gateway_runtime_metadata()).await?;
+        stop_runtime(&paths.worker_runtime_metadata(&base_runtime_key)).await?;
         if paths.worker_runtime_metadata(&redis_runtime_key).exists() {
-            stop_runtime_from_pid_file(&paths.worker_pid(&redis_runtime_key)).await?;
+            stop_runtime(&paths.worker_runtime_metadata(&redis_runtime_key)).await?;
         }
         runtime_guard.cleanup().await?;
     }
@@ -1356,12 +1352,7 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
         None
     };
     let peer_content_after_failure = fs::read_to_string(&peer_fragment)?;
-    stop_recorded_runtime_preserving_files(
-        &paths,
-        &paths.gateway_pid(),
-        &paths.gateway_runtime_metadata(),
-    )
-    .await?;
+    stop_recorded_runtime_preserving_files(&paths, &paths.gateway_runtime_metadata()).await?;
     let verified_gateway_root = fs::read_to_string(&paths.gateway_root_config())?;
     fs::write_sensitive_file(
         &paths.gateway_root_config(),
@@ -1420,10 +1411,10 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
         required_runtime_metadata_pid(&paths.worker_runtime_metadata(&xdebug_runtime_key))?,
         xdebug_worker_pid
     );
-    stop_runtime_from_pid_file(&paths.worker_pid(&redis_runtime_key)).await?;
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid(&base_runtime_key)).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid(&xdebug_runtime_key)).await?;
+    stop_runtime(&paths.worker_runtime_metadata(&redis_runtime_key)).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata(&base_runtime_key)).await?;
+    stop_runtime(&paths.worker_runtime_metadata(&xdebug_runtime_key)).await?;
 
     assert!(
         matches!(
@@ -1484,7 +1475,7 @@ async fn gateway_reconciliation_starts_gateway_without_linked_projects() -> Resu
     assert!(paths.gateway_runtime_metadata().exists());
     assert!(!paths.worker_runtime_metadata("8.4").exists());
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -1549,7 +1540,7 @@ async fn assert_uncertain_pf_state_preserves_gateway(
         Database::open(&paths)?.runtime_observed_states()?,
     )?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -1595,7 +1586,7 @@ async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() 
                 {
                     let supervisor = ProcessSupervisor::new(paths.clone());
                     let gateway = supervisor
-                        .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+                        .adopt_recorded(&paths.gateway_runtime_metadata())?
                         .ok_or_else(|| anyhow::anyhow!("fresh Gateway was not adoptable"))?;
                     fs::write_sensitive_file(&paths.gateway_runtime_metadata(), "{")?;
                     fs::write_sensitive_file(&admin_response_gate, "")?;
@@ -1838,8 +1829,8 @@ env:
     let invalid_defaults_result = reconcile_gateway_runtimes(&paths).await;
     let runtime_states = Database::open(&paths)?.runtime_observed_states()?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
 
     assert_eq!(second_gateway_pid, first_gateway_pid);
     assert_eq!(second_worker_pid, first_worker_pid);
@@ -1972,8 +1963,8 @@ async fn unchanged_gateway_config_is_rehardened() -> Result<()> {
     };
     let admin_loads = fake_admin_load_bodies(&root_config)?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
 
     assert_eq!(result?, GATEWAY_RECONCILIATION_SUMMARY);
     assert_eq!(second_gateway_pid, first_gateway_pid);
@@ -2432,9 +2423,9 @@ env:
         .map(|state| state.status);
     assert_eq!(worker_83_status, Some(RuntimeObservedStatus::Running));
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
     for track in ["8.3", "8.4", "8.5"] {
-        stop_runtime_from_pid_file(&paths.worker_pid(track)).await?;
+        stop_runtime(&paths.worker_runtime_metadata(track)).await?;
     }
 
     runtime_guard.cleanup().await?;
@@ -2570,8 +2561,8 @@ async fn targeted_project_reconciliation_does_not_activate_tampered_unrelated_fr
         worker_loads
     );
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -2715,8 +2706,8 @@ async fn targeted_project_reconciliation_promotes_split_peer_runtime_state() -> 
     );
     assert!(!paths.worker_runtime_metadata("8.5").exists());
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -2833,8 +2824,8 @@ async fn targeted_project_reconciliation_uses_verified_fragment_snapshot() -> Re
         peer_gateway_fragment
     );
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -3029,7 +3020,7 @@ async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is
     wait_for_process_exit(new_worker_pid).await?;
     assert!(!paths.worker_runtime_metadata("8.5").exists());
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -3077,7 +3068,7 @@ async fn gateway_reconciliation_takes_full_path_when_applied_fingerprint_is_miss
     let metadata: Value =
         serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
 
     assert_eq!(second_gateway_pid, first_gateway_pid);
     assert_eq!(
@@ -3150,7 +3141,7 @@ async fn gateway_reconciliation_validates_changed_or_missing_ca_key() -> Result<
         ));
     }
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
 
     assert_eq!(unchanged_result?, GATEWAY_RECONCILIATION_SUMMARY);
     assert_eq!(unchanged_metadata["pid"], initial_metadata["pid"]);
@@ -3280,7 +3271,7 @@ async fn gateway_reconciliation_keeps_pending_state_when_applied_fingerprint_com
         serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
 
     wait_for_process_exit(first_gateway_pid).await?;
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
 
     assert_ne!(replacement_gateway_pid, first_gateway_pid);
     assert_ne!(replacement_metadata["replacement_required"], true);
@@ -3333,12 +3324,8 @@ root: public
     drop(database);
 
     reconcile_gateway_runtimes(&paths).await?;
-    let first_gateway_pid =
-        runtime_guard.capture(paths.gateway_pid(), paths.gateway_runtime_metadata())?;
-    let first_worker_pid = runtime_guard.capture(
-        paths.worker_pid("8.4"),
-        paths.worker_runtime_metadata("8.4"),
-    )?;
+    let first_gateway_pid = runtime_guard.capture(paths.gateway_runtime_metadata())?;
+    let first_worker_pid = runtime_guard.capture(paths.worker_runtime_metadata("8.4"))?;
     replace_runtime_metadata_identity(&paths.gateway_runtime_metadata(), "gateway", "core")?;
     replace_runtime_metadata_identity(&paths.worker_runtime_metadata("8.4"), "php-worker", "8.4")?;
 
@@ -3361,8 +3348,8 @@ root: public
     assert_eq!(stable_gateway_pid, second_gateway_pid);
     assert_eq!(stable_worker_pid, second_worker_pid);
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
     runtime_guard.cleanup().await?;
 
     Ok(())
@@ -3406,7 +3393,7 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
     let mut legacy_process = supervisor.start(legacy_spec).await?;
     assert!(
         supervisor
-            .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata(),)?
+            .adopt_recorded(&paths.gateway_runtime_metadata(),)?
             .is_some(),
         "legacy fixture must be adoptable before reconciliation"
     );
@@ -3448,7 +3435,7 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
         .ok_or_else(|| anyhow::anyhow!("expected stable gateway metadata"))?;
     assert_eq!(stable_pid, replacement_pid);
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -3501,7 +3488,7 @@ root: public
     let first_metadata_json: serde_json::Value = serde_json::from_str(&first_metadata)?;
     let first_gateway_pid = metadata_pid(&first_metadata_json)?;
     let first_gateway = ProcessSupervisor::new(paths.clone())
-        .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+        .adopt_recorded(&paths.gateway_runtime_metadata())?
         .ok_or_else(|| anyhow::anyhow!("first Gateway was not adoptable"))?;
     assert_eq!(first_gateway.pid(), first_gateway_pid);
     first_gateway.stop(Duration::from_secs(1)).await?;
@@ -3509,8 +3496,8 @@ root: public
     reconcile_gateway_runtimes(&paths).await?;
     let second_metadata = state::testing::read_to_string(&paths.gateway_runtime_metadata())?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
 
     assert_ne!(first_metadata, second_metadata);
 
@@ -3565,7 +3552,7 @@ root: public
     let first_metadata_json: serde_json::Value = serde_json::from_str(&first_metadata)?;
     let first_gateway_pid = metadata_pid(&first_metadata_json)?;
     assert_eq!(
-        runtime_guard.capture(paths.gateway_pid(), paths.gateway_runtime_metadata())?,
+        runtime_guard.capture(paths.gateway_runtime_metadata())?,
         first_gateway_pid
     );
     // As a start cancelled after its monitor began: the runtime's monitor is PV's own, so its
@@ -3648,10 +3635,10 @@ root: public
     https_server.abort();
     drop(http_listener);
     if paths.worker_runtime_metadata("8.4").exists() {
-        stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+        stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
     }
     if paths.gateway_runtime_metadata().exists() {
-        stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+        stop_runtime(&paths.gateway_runtime_metadata()).await?;
     }
 
     assert!(
@@ -3841,9 +3828,8 @@ root: public
     .await;
     let daemon_log_result = state::fs::read_to_string(&paths.daemon_log());
 
-    let surviving_worker_cleanup_result =
-        stop_runtime_from_pid_file(&paths.worker_pid("8.3")).await;
-    let gateway_cleanup_result = stop_runtime_from_pid_file(&paths.gateway_pid()).await;
+    let surviving_worker_cleanup_result = stop_runtime(&paths.worker_runtime_metadata("8.3")).await;
+    let gateway_cleanup_result = stop_runtime(&paths.gateway_runtime_metadata()).await;
 
     targeted_reconcile_result?;
     let daemon_log = daemon_log_result?;
@@ -4029,8 +4015,8 @@ root: public
         edited_worker_fragment
     );
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -4110,8 +4096,8 @@ root: public
             .exists()
     );
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -4196,12 +4182,12 @@ root: public
         None => false,
     };
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
     if worker_83_alive {
-        stop_runtime_from_pid_file(&paths.worker_pid("8.3")).await?;
+        stop_runtime(&paths.worker_runtime_metadata("8.3")).await?;
     }
     if worker_84_alive {
-        stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+        stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
     }
 
     assert!(worker_83_alive);
@@ -4437,9 +4423,9 @@ env:
         state::ProjectEnvObservedStatus::Failed
     ));
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.3")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.3")).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -4518,8 +4504,8 @@ root: .
     );
     assert_eq!(fs::read_to_string(&worker_fragment_path)?, worker_fragment);
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -4631,9 +4617,9 @@ root: web
     assert!(!committed.contains("old.acme.test"));
     assert!(committed.contains("new.acme.test"));
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid(&base_runtime_key)).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid(&redis_runtime_key)).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata(&base_runtime_key)).await?;
+    stop_runtime(&paths.worker_runtime_metadata(&redis_runtime_key)).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -4807,11 +4793,11 @@ root: web
         .count();
     assert_eq!(stale_ports, 0);
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
     for track in ["8.4", "8.5"] {
-        let pid_path = paths.worker_pid(track);
-        if pid_path.exists() {
-            stop_runtime_from_pid_file(&pid_path).await?;
+        let metadata_path = paths.worker_runtime_metadata(track);
+        if metadata_path.exists() {
+            stop_runtime(&metadata_path).await?;
         }
     }
 
@@ -4925,9 +4911,9 @@ root: public
     let gateway_root = read_test_bytes(paths.gateway_root_config())?;
     let worker_root = read_test_bytes(paths.worker_root_config("8.4"))?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.3")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.3")).await?;
 
     assert_eq!(first_gateway_pid, second_gateway_pid);
     assert_eq!(first_worker_pid, second_worker_pid);
@@ -5068,8 +5054,8 @@ root: public
     let restored_metadata: Value =
         serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata("8.4"))?)?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
 
     assert!(
         matches!(&result, Err(DaemonError::ReadinessTimedOut { .. })),
@@ -5190,7 +5176,7 @@ async fn gateway_reconciliation_rejection_keeps_old_runtime_and_disk_state() -> 
         vec![Some(422)]
     );
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -5235,7 +5221,7 @@ async fn gateway_reconciliation_confirms_reverted_desired_config_without_reload(
         serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
     let final_loads = fake_admin_load_bodies(&paths.gateway_root_config())?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
     result?;
 
     assert_eq!(final_gateway_pid, initial_gateway_pid);
@@ -5298,7 +5284,7 @@ async fn gateway_reconciliation_rejects_load_error_reported_with_success_status(
     let root_after = read_test_bytes(paths.gateway_root_config())?;
     let current_config = fake_admin_current_bytes(&paths.gateway_root_config())?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
 
     assert!(matches!(
         result,
@@ -5410,7 +5396,7 @@ async fn gateway_reconciliation_replaces_runtime_before_newer_desired_state() ->
     let replacement_metadata: Value =
         serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
 
     assert_eq!(recovery_summary, "Gateway runtime reconciled");
     assert_ne!(first_gateway_pid, second_gateway_pid);
@@ -5501,7 +5487,7 @@ async fn gateway_reconciliation_preserves_accepted_config_for_pf_state(
     let metadata: Value =
         serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
 
     assert_eq!(first_gateway_pid, second_gateway_pid);
     assert_eq!(first_gateway_pid, third_gateway_pid);
@@ -5544,7 +5530,7 @@ async fn gateway_reconciliation_does_not_reload_after_runtime_exits_after_load()
     reconcile_gateway_runtimes(&paths).await?;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let captured_gateway = supervisor
-        .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+        .adopt_recorded(&paths.gateway_runtime_metadata())?
         .ok_or_else(|| anyhow::anyhow!("Gateway was not adoptable before its forced exit"))?;
     let gateway_pid = captured_gateway.pid();
     let previous_root = read_test_bytes(paths.gateway_root_config())?;
@@ -5571,7 +5557,7 @@ async fn gateway_reconciliation_does_not_reload_after_runtime_exits_after_load()
         timeout(Duration::from_secs(5), async {
             loop {
                 if supervisor
-                    .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+                    .adopt_recorded(&paths.gateway_runtime_metadata())?
                     .is_none()
                 {
                     return Ok::<_, anyhow::Error>(());
@@ -5590,7 +5576,6 @@ async fn gateway_reconciliation_does_not_reload_after_runtime_exits_after_load()
             .chain(&new_ports)
             .map(|port| TcpListener::bind(("127.0.0.1", *port)))
             .collect::<std::io::Result<Vec<_>>>()?;
-        fs::remove_file_if_exists(&paths.gateway_pid())?;
         fs::remove_file_if_exists(&paths.gateway_runtime_metadata())?;
         runtime_guard.cleanup().await
     }
@@ -5653,7 +5638,7 @@ async fn gateway_reconciliation_reports_compound_restore_failure() -> Result<()>
     let metadata: Value =
         serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
 
     let Err(DaemonError::CaddyAdmin(CaddyAdminError::RestoredConfigReloadFailed {
         original_error,
@@ -5782,8 +5767,8 @@ root: public
         serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
     let load_bodies = fake_admin_load_bodies(&paths.gateway_root_config())?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
 
     let Err(DaemonError::CaddyAdmin(CaddyAdminError::RestoredConfigReloadFailed {
         restored_error,
@@ -5856,7 +5841,7 @@ async fn gateway_reconciliation_reports_compound_restored_readiness_failure() ->
     let metadata: Value =
         serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
 
     let Err(DaemonError::CaddyAdmin(CaddyAdminError::RestoredConfigReloadFailed {
         original_error,
@@ -5931,7 +5916,7 @@ async fn gateway_reconciliation_rolls_back_config_when_runtime_readiness_fails()
     let previous_metadata: Value =
         serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
     let first_gateway = ProcessSupervisor::new(paths.clone())
-        .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+        .adopt_recorded(&paths.gateway_runtime_metadata())?
         .ok_or_else(|| anyhow::anyhow!("first Gateway was not adoptable"))?;
     assert_eq!(first_gateway.pid(), first_gateway_pid);
 
@@ -5956,10 +5941,9 @@ async fn gateway_reconciliation_rolls_back_config_when_runtime_readiness_fails()
     let first_gateway_is_alive = process_is_alive(first_gateway_pid)?;
     if first_gateway_is_alive {
         first_gateway.stop(Duration::from_secs(1)).await?;
-        fs::remove_file_if_exists(&paths.gateway_pid())?;
         fs::remove_file_if_exists(&paths.gateway_runtime_metadata())?;
     } else if paths.gateway_runtime_metadata().exists() {
-        stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+        stop_runtime(&paths.gateway_runtime_metadata()).await?;
     }
 
     let Err(error) = result else {
@@ -7198,9 +7182,9 @@ impl GatewayRuntimeGuard {
     }
 
     /// The pid of the runtime recorded at `metadata_path`.
-    fn capture(&mut self, _pid_path: Utf8PathBuf, metadata_path: Utf8PathBuf) -> Result<u32> {
+    fn capture(&mut self, metadata_path: Utf8PathBuf) -> Result<u32> {
         let process = ProcessSupervisor::new(self.paths.clone())
-            .adopt_recorded(&metadata_path.with_extension("pid"), &metadata_path)?
+            .adopt_recorded(&metadata_path)?
             .ok_or_else(|| anyhow::anyhow!("runtime at {metadata_path} was not adoptable"))?;
 
         Ok(process.pid())
@@ -7261,38 +7245,32 @@ fn report_gateway_cleanup_failure(paths: &PvPaths, message: &str) {
     let _write_result = writeln!(std::io::stderr().lock(), "{record}");
 }
 
-/// Stops the runtime whose records sit at `path`, through its monitor, and removes its record.
-async fn stop_runtime_from_pid_file(path: &Utf8Path) -> Result<()> {
-    let metadata_path = path.with_extension("json");
-    let pv_root = path
+/// Stops the runtime whose record is at `metadata_path`, through its monitor, and removes the
+/// record.
+async fn stop_runtime(metadata_path: &Utf8Path) -> Result<()> {
+    let pv_root = metadata_path
         .ancestors()
         .find(|ancestor| ancestor.file_name() == Some(".pv"))
-        .ok_or_else(|| anyhow::anyhow!("runtime path is outside a PV home: {path}"))?;
+        .ok_or_else(|| anyhow::anyhow!("runtime record is outside a PV home: {metadata_path}"))?;
     let home = pv_root
         .parent()
         .ok_or_else(|| anyhow::anyhow!("PV root has no home directory: {pv_root}"))?;
     ProcessSupervisor::new(PvPaths::for_home(home))
-        .stop_subject(
-            &metadata_path,
-            StopSignal::Terminate,
-            Duration::from_secs(1),
-        )
+        .stop_subject(metadata_path, StopSignal::Terminate, Duration::from_secs(1))
         .await?;
-    fs::remove_file_if_exists(path)?;
-    fs::remove_file_if_exists(&metadata_path)?;
+    fs::remove_file_if_exists(metadata_path)?;
 
     Ok(())
 }
 
 async fn stop_recorded_runtime_preserving_files(
     paths: &PvPaths,
-    pid_path: &Utf8Path,
     metadata_path: &Utf8Path,
 ) -> Result<()> {
     let supervisor = ProcessSupervisor::new(paths.clone());
     let runtime = supervisor
-        .adopt_recorded(pid_path, metadata_path)?
-        .ok_or_else(|| anyhow::anyhow!("runtime at {pid_path} was not adoptable"))?;
+        .adopt_recorded(metadata_path)?
+        .ok_or_else(|| anyhow::anyhow!("runtime at {metadata_path} was not adoptable"))?;
     runtime.stop(Duration::from_secs(1)).await?;
 
     Ok(())
@@ -7529,7 +7507,7 @@ async fn resource_only_target_recovers_alive_unready_gateway_with_invalid_config
         .find(|state| state.subject == RuntimeSubject::Gateway)
         .map(|state| state.status);
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
 
     assert_ne!(recovered_gateway_pid, initial_gateway_pid);
     assert!(fs::read_to_string(&paths.gateway_root_config())?.contains("PV Gateway is running"));
@@ -7596,8 +7574,8 @@ async fn targeted_inspection_promotes_only_recoverable_uncertainty() -> Result<(
         assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
         assert!(paths.gateway_runtime_metadata().exists());
 
-        stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-        stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+        stop_runtime(&paths.gateway_runtime_metadata()).await?;
+        stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
         runtime_guard.cleanup().await?;
     }
 
@@ -7699,8 +7677,8 @@ async fn targeted_inspection_promotes_only_recoverable_uncertainty() -> Result<(
             gateway_pid
         );
 
-        stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-        stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+        stop_runtime(&paths.gateway_runtime_metadata()).await?;
+        stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
         runtime_guard.cleanup().await?;
     }
 
@@ -7782,8 +7760,8 @@ async fn gateway_failure_preserves_primary_error_when_observation_write_fails() 
         "expected the recording SQLite failure, got {cleanup:?}"
     );
 
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
 
     runtime_guard.cleanup().await?;
 
@@ -7863,8 +7841,8 @@ async fn targeted_reconciliation_reports_alive_unready_worker() -> Result<()> {
     let still_owned = supervisor.verify_ownership(&spec)?.is_some();
     let still_unready = TcpStream::connect(("127.0.0.1", ports[2])).await.is_err();
     let final_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?;
-    stop_runtime_from_pid_file(&paths.gateway_pid()).await?;
-    stop_runtime_from_pid_file(&paths.worker_pid("8.4")).await?;
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
     let worker_status = Database::open(&paths)?
         .runtime_observed_states()?
         .into_iter()

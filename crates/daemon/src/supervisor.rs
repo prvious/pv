@@ -7,10 +7,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::{Stream, StreamExt, stream};
 use platform::PlatformCapability;
 #[cfg(target_os = "macos")]
-use rustix::process::{
-    Pid, Signal, WaitOptions, kill_process_group, test_kill_process, test_kill_process_group,
-    waitpid,
-};
+use rustix::process::{Pid, Signal, WaitOptions, kill_process_group, waitpid};
 use rustls::pki_types::ServerName;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -47,6 +44,7 @@ pub enum StopSignal {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProcessSignal {
+    #[cfg(target_os = "macos")]
     Stop(StopSignal),
     Kill,
 }
@@ -60,7 +58,6 @@ pub struct ProcessSpec {
     pub config_path: Utf8PathBuf,
     pub config_fingerprint: Option<String>,
     pub log_path: Utf8PathBuf,
-    pub pid_path: Utf8PathBuf,
     pub metadata_path: Utf8PathBuf,
     pub resource_name: String,
     pub track: String,
@@ -83,7 +80,6 @@ impl fmt::Debug for ProcessSpec {
             debug.field("config_fingerprint", config_fingerprint);
         }
         debug.field("log_path", &self.log_path);
-        debug.field("pid_path", &self.pid_path);
         debug.field("metadata_path", &self.metadata_path);
         debug.field("resource_name", &self.resource_name);
         debug.field("track", &self.track);
@@ -120,7 +116,6 @@ pub struct ManagedProcess {
     subject: String,
     instance: String,
     log_path: Utf8PathBuf,
-    pid_path: Utf8PathBuf,
     metadata_path: Utf8PathBuf,
 }
 
@@ -186,8 +181,7 @@ pub enum ReadinessCheck {
     },
 }
 
-/// A runtime's record beside its monitor: its spec identity and config proofs. A record PV wrote
-/// before monitors names its process by pid file and identity instead of a monitor instance.
+/// A runtime's record beside its monitor: its spec identity and config proofs.
 #[derive(Deserialize, Eq, PartialEq, Serialize)]
 struct RuntimeMetadata {
     name: String,
@@ -217,141 +211,11 @@ struct RuntimeMetadata {
     staged_config_fingerprint: Option<String>,
     log_path: String,
     started_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    boot_session_id: Option<platform::BootSessionId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    process_start_identity: Option<platform::ProcessStartIdentity>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    process_executable_identity: Option<ProcessExecutableIdentity>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct ProcessExecutableIdentity {
-    executable: String,
-    argument_zero: String,
 }
 
 impl ProcessSupervisor {
     pub fn new(paths: PvPaths) -> Self {
         Self { paths }
-    }
-
-    /// Stops a runtime that a PV release from before monitors started, proven by its pid file and
-    /// live identity. Then it removes the pid file and, unless `keep_metadata`, the record, whose
-    /// config proofs a restarted runtime may still need.
-    pub(crate) async fn stop_legacy_runtime(
-        &self,
-        pid_path: &Utf8Path,
-        keep_metadata: bool,
-    ) -> Result<(), DaemonError> {
-        let metadata_path = pid_path.with_extension("json");
-        for path in [pid_path, metadata_path.as_path()] {
-            if !fs::path_is_file(path)? {
-                return Err(DaemonError::InvalidRuntimeRecord {
-                    path: path.to_owned(),
-                });
-            }
-        }
-        let metadata = read_runtime_metadata(&metadata_path)?.ok_or_else(|| {
-            DaemonError::InvalidRuntimeRecord {
-                path: metadata_path.clone(),
-            }
-        })?;
-        let pid = read_pid_file(pid_path)?.ok_or_else(|| DaemonError::InvalidRuntimeRecord {
-            path: pid_path.to_owned(),
-        })?;
-        let subject_matches = if pid_path == self.paths.gateway_pid() {
-            metadata.resource_name == "caddy"
-        } else if pid_path.parent() == Some(self.paths.run().join("workers").as_path()) {
-            metadata.resource_name == "frankenphp"
-                && pid_path == self.paths.worker_pid(&metadata.track)
-        } else {
-            !metadata.resource_name.is_empty()
-                && !metadata.track.is_empty()
-                && pid_path
-                    == self
-                        .paths
-                        .resource_pid(&metadata.resource_name, &metadata.track)
-        };
-        if metadata.pid != pid || metadata.process_start_identity.is_none() || !subject_matches {
-            return Err(DaemonError::InvalidRuntimeRecord {
-                path: metadata_path,
-            });
-        }
-        if let Some(recorded_boot) = &metadata.boot_session_id
-            && recorded_boot != &platform::current_boot_session_id()?
-        {
-            // A previous kernel's processes cannot survive this boot. Do not inspect
-            // or signal the recorded PID: it may now belong to an unrelated process.
-            return remove_unchanged_runtime_records(
-                pid_path,
-                &metadata_path,
-                &metadata,
-                keep_metadata,
-            );
-        }
-        if legacy_process_matches(pid, &metadata)? {
-            // Postgres backends can leave the postmaster's process group, so an empty
-            // group proves nothing about them. The postmaster exits successfully only
-            // after its backends exit. Watch before signalling, then recheck ownership.
-            let exit_watch = if metadata.resource_name == "postgres" {
-                let watch = platform::ProcessExitWatch::new(pid)?;
-                if !legacy_process_matches(pid, &metadata)? {
-                    return Err(DaemonError::RuntimeProcessIdentityChanged { pid });
-                }
-                Some(watch)
-            } else {
-                None
-            };
-            let stop = stop_policy(&metadata.resource_name);
-            // An adopted leader can be reaped during the grace period, by launchd once the
-            // daemon that started it has exited. Do not signal a group whose recorded
-            // leader no longer matches.
-            stop_process_group(pid, stop.signal, stop_grace(stop), || {
-                legacy_process_matches(pid, &metadata)
-            })
-            .await?;
-            if let Some(mut watch) = exit_watch {
-                let status = timeout(Duration::from_secs(1), async {
-                    loop {
-                        if let Some(status) = watch.try_exit_status()? {
-                            return Ok::<_, DaemonError>(status);
-                        }
-                        sleep(READINESS_POLL_INTERVAL).await;
-                    }
-                })
-                .await;
-                let status = match status {
-                    Ok(status) => status?,
-                    Err(_elapsed) => {
-                        return Err(DaemonError::RuntimeCleanupUnproven {
-                            pid,
-                            reason: format!(
-                                "PV could not confirm that Postgres shut down cleanly, so it kept its records. {POSTGRES_RECOVERY}"
-                            ),
-                        });
-                    }
-                };
-                if !status.success() {
-                    return Err(DaemonError::RuntimeCleanupUnproven {
-                        pid,
-                        reason: format!(
-                            "Postgres ended with {status}, so PV kept its records. {POSTGRES_RECOVERY}"
-                        ),
-                    });
-                }
-            }
-        } else if !process_and_group_are_absent(pid)? {
-            return Err(DaemonError::RuntimeProcessIdentityChanged { pid });
-        } else if metadata.resource_name == "postgres" {
-            return Err(DaemonError::RuntimeCleanupUnproven {
-                pid,
-                reason: format!(
-                    "Postgres exited before PV could stop it, so PV kept its records. {POSTGRES_RECOVERY}"
-                ),
-            });
-        }
-        remove_unchanged_runtime_records(pid_path, &metadata_path, &metadata, keep_metadata)
     }
 
     /// Starts `spec`'s runtime under a new monitor, run by the installed `pv`, and records it.
@@ -392,7 +256,6 @@ impl ProcessSupervisor {
             subject,
             instance,
             log_path: spec.log_path.clone(),
-            pid_path: spec.pid_path.clone(),
             metadata_path: spec.metadata_path.clone(),
         };
         if let Err(error) = write_runtime_metadata(&spec, process.pid, &process.instance) {
@@ -510,17 +373,15 @@ impl ProcessSupervisor {
         let Some(metadata) = read_runtime_metadata(&spec.metadata_path)? else {
             return Ok(None);
         };
-        // A record that names neither a monitor nor a process identity is incomplete.
-        if metadata.matches(spec)
-            && (metadata.monitor_instance.is_some() || metadata.process_start_identity.is_some())
-        {
+        // A record that names no monitor is incomplete.
+        if metadata.matches(spec) && metadata.monitor_instance.is_some() {
             return Ok(metadata.recorded_config_fingerprint());
         }
 
         // The installed artifact changed under a live runtime: prove the prior recording
         // against its recorded spec so old applied fingerprints stay readable. Live
         // ownership decisions still use verify_ownership against the current spec.
-        let Some(adopted) = self.adopt_recorded(&spec.pid_path, &spec.metadata_path)? else {
+        let Some(adopted) = self.adopt_recorded(&spec.metadata_path)? else {
             return Ok(None);
         };
 
@@ -616,10 +477,9 @@ impl ProcessSupervisor {
     }
 
     /// The runtime recorded at `metadata_path`, if its monitor still runs it, whatever its
-    /// current spec. `_pid_path` names a record PV wrote before monitors.
+    /// current spec.
     pub fn adopt_recorded(
         &self,
-        _pid_path: &Utf8Path,
         metadata_path: &Utf8Path,
     ) -> Result<Option<AdoptedProcess>, DaemonError> {
         require_process_containment()?;
@@ -681,10 +541,6 @@ impl ManagedProcess {
 
     pub fn log_path(&self) -> &Utf8Path {
         &self.log_path
-    }
-
-    pub fn pid_path(&self) -> &Utf8Path {
-        &self.pid_path
     }
 
     pub fn metadata_path(&self) -> &Utf8Path {
@@ -1183,6 +1039,7 @@ fn signal_process_group(_pid: u32, _signal: ProcessSignal) -> Result<(), DaemonE
 /// Signals `pid`'s process group with `signal`, then SIGKILL once `grace_period` passes, and
 /// waits until no live member remains. Escalates only while `leader_still_owned` proves the
 /// group still belongs to the runtime.
+#[cfg(target_os = "macos")]
 pub(crate) async fn stop_process_group(
     pid: u32,
     signal: StopSignal,
@@ -1215,6 +1072,7 @@ pub(crate) async fn stop_process_group(
     .into())
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) async fn wait_for_process_group_exit(
     pid: u32,
     readiness_timeout: Duration,
@@ -1367,21 +1225,6 @@ pub(crate) fn exit_description(exit: Option<MonitorExit>) -> String {
     }
 }
 
-/// Whether the process at `pid` is still the one a record from before monitors names.
-fn legacy_process_matches(pid: u32, metadata: &RuntimeMetadata) -> Result<bool, DaemonError> {
-    let Some(start_identity) = metadata.process_start_identity else {
-        return Ok(false);
-    };
-
-    live_process_matches(
-        pid,
-        Utf8Path::new(&metadata.command),
-        &metadata.arguments,
-        start_identity,
-        metadata.process_executable_identity.as_ref(),
-    )
-}
-
 fn write_runtime_metadata(
     spec: &ProcessSpec,
     pid: u32,
@@ -1405,47 +1248,12 @@ fn write_runtime_metadata(
         staged_config_fingerprint: None,
         log_path: spec.log_path.to_string(),
         started_at,
-        boot_session_id: None,
-        process_start_identity: None,
-        process_executable_identity: None,
     };
     let encoded = serde_json::to_string(&metadata)?;
 
     fs::write_sensitive_file(&spec.metadata_path, &encoded)?;
 
     Ok(())
-}
-
-fn remove_unchanged_runtime_records(
-    pid_path: &Utf8Path,
-    metadata_path: &Utf8Path,
-    metadata: &RuntimeMetadata,
-    keep_metadata: bool,
-) -> Result<(), DaemonError> {
-    // Admission is closed and the daemon has stopped. Still compare both records
-    // before removal so another instance's evidence cannot be removed by this stop.
-    if read_pid_file(pid_path)? != Some(metadata.pid)
-        || read_runtime_metadata(metadata_path)?.is_none_or(|current| current != *metadata)
-    {
-        return Err(DaemonError::RuntimeProcessIdentityChanged { pid: metadata.pid });
-    }
-    fs::remove_file_if_exists(pid_path)?;
-    if !keep_metadata {
-        fs::remove_file_if_exists(metadata_path)?;
-    }
-    Ok(())
-}
-
-fn read_pid_file(path: &Utf8Path) -> Result<Option<u32>, DaemonError> {
-    let Some(content) = read_optional_file(path)? else {
-        return Ok(None);
-    };
-    let pid = content
-        .trim()
-        .parse::<u32>()
-        .map_err(|source| io::Error::new(io::ErrorKind::InvalidData, source))?;
-
-    Ok(Some(pid))
 }
 
 fn read_runtime_metadata(path: &Utf8Path) -> Result<Option<RuntimeMetadata>, DaemonError> {
@@ -1472,23 +1280,6 @@ fn process_group_has_exited(pid: u32) -> Result<bool, DaemonError> {
 }
 
 #[cfg(target_os = "macos")]
-fn process_and_group_are_absent(pid: u32) -> Result<bool, DaemonError> {
-    let process = process_group_pid(pid)?;
-    let process_absent = match test_kill_process(process) {
-        Err(rustix::io::Errno::SRCH) => true,
-        Ok(()) | Err(rustix::io::Errno::PERM) => false,
-        Err(source) => return Err(io::Error::from(source).into()),
-    };
-    let group_absent = match test_kill_process_group(process) {
-        Err(rustix::io::Errno::SRCH) => true,
-        Ok(()) | Err(rustix::io::Errno::PERM) => false,
-        Err(source) => return Err(io::Error::from(source).into()),
-    };
-
-    Ok(process_absent && group_absent)
-}
-
-#[cfg(target_os = "macos")]
 pub(crate) fn reap_process_if_child(pid: u32) -> Result<(), DaemonError> {
     let process = process_group_pid(pid)?;
     match waitpid(Some(process), WaitOptions::NOHANG) {
@@ -1502,74 +1293,6 @@ fn process_group_has_exited(_pid: u32) -> Result<bool, DaemonError> {
     require_process_containment()?;
 
     Ok(true)
-}
-
-#[cfg(any(target_os = "linux", target_os = "windows"))]
-fn process_and_group_are_absent(_pid: u32) -> Result<bool, DaemonError> {
-    require_process_containment()?;
-
-    Ok(false)
-}
-
-fn live_process_matches(
-    pid: u32,
-    command: &Utf8Path,
-    arguments: &[String],
-    process_start_identity: platform::ProcessStartIdentity,
-    process_executable_identity: Option<&ProcessExecutableIdentity>,
-) -> Result<bool, DaemonError> {
-    let Some(process_identity) = platform::inspect_process_identity(pid)? else {
-        return Ok(false);
-    };
-    if process_identity.start_identity != process_start_identity {
-        return Ok(false);
-    }
-
-    Ok(process_identity_matches(
-        &process_identity,
-        command,
-        arguments,
-        process_executable_identity,
-    ))
-}
-
-fn process_identity_matches(
-    process_identity: &platform::ProcessIdentity,
-    command: &Utf8Path,
-    arguments: &[String],
-    process_executable_identity: Option<&ProcessExecutableIdentity>,
-) -> bool {
-    let direct_arguments_match = process_identity.arguments == arguments;
-    let direct_command_matches = executable_matches(process_identity, command);
-    let script_arguments_match = script_arguments_match(process_identity, command, arguments);
-    let script_identity_matches = script_arguments_match
-        && fs::read_to_string(command).is_ok_and(|source| source.starts_with("#!"))
-        && process_executable_identity.is_some_and(|expected| {
-            expected.executable == process_identity.executable.as_str()
-                && expected.argument_zero == process_identity.argument_zero
-        });
-
-    (direct_command_matches && direct_arguments_match) || script_identity_matches
-}
-
-fn script_arguments_match(
-    process_identity: &platform::ProcessIdentity,
-    command: &Utf8Path,
-    arguments: &[String],
-) -> bool {
-    process_identity
-        .arguments
-        .split_first()
-        .is_some_and(|(script, live_arguments)| {
-            script == command.as_str() && live_arguments == arguments
-        })
-}
-
-fn executable_matches(process_identity: &platform::ProcessIdentity, command: &Utf8Path) -> bool {
-    process_identity.executable == command
-        || (command == Utf8Path::new("/bin/sh")
-            && process_identity.executable == Utf8Path::new("/bin/bash")
-            && process_identity.argument_zero == command.as_str())
 }
 
 #[cfg(target_os = "macos")]
@@ -1729,7 +1452,7 @@ mod tests {
 
     use super::{
         ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint, monitor_subject,
-        process_group_has_exited, read_runtime_metadata, remove_unchanged_runtime_records,
+        process_group_has_exited,
     };
     use crate::StopSignal;
     use crate::monitor::{self, MonitorStart, MonitorStop};
@@ -1739,40 +1462,6 @@ mod tests {
     /// stopping it leaves nothing running for long. That outlasts the CI profile's 120 s limit on
     /// a test, so a stalled test can't pass because its fixture exited on its own.
     const IDLE_SHELL_LOOP: &str = "i=0; while [ $i -lt 150 ]; do sleep 1; i=$((i + 1)); done";
-
-    #[test]
-    fn shutdown_cleanup_preserves_runtime_records_changed_after_inspection() -> Result<()> {
-        for change_pid in [false, true] {
-            let tempdir = tempdir()?;
-            let pid_path = tempdir.path().join("runtime.pid");
-            let metadata_path = tempdir.path().join("runtime.json");
-            let mut metadata = serde_json::json!({
-                "name": "postgres", "pid": 42, "command": "/owned/postgres",
-                "arguments": [], "log_path": "/owned/postgres.log", "started_at": "unused",
-            });
-            state::fs::write_sensitive_file(&pid_path, "42\n")?;
-            state::fs::write_sensitive_file(&metadata_path, &serde_json::to_string(&metadata)?)?;
-            let inspected = read_runtime_metadata(&metadata_path)?
-                .ok_or_else(|| anyhow!("runtime metadata was missing"))?;
-            let current_pid = if change_pid { "43\n" } else { "42\n" };
-            metadata["name"] = serde_json::json!("replacement");
-            state::fs::write_sensitive_file(&pid_path, current_pid)?;
-            if !change_pid {
-                state::fs::write_sensitive_file(
-                    &metadata_path,
-                    &serde_json::to_string(&metadata)?,
-                )?;
-            }
-            let before = state::fs::read_to_string(&metadata_path)?;
-            assert!(matches!(
-                remove_unchanged_runtime_records(&pid_path, &metadata_path, &inspected, false),
-                Err(crate::DaemonError::RuntimeProcessIdentityChanged { pid: 42 }),
-            ));
-            assert_eq!(state::fs::read_to_string(&pid_path)?, current_pid);
-            assert_eq!(state::fs::read_to_string(&metadata_path)?, before);
-        }
-        Ok(())
-    }
 
     #[tokio::test]
     async fn start_replaces_a_monitor_left_without_a_record() -> Result<()> {
@@ -1881,7 +1570,6 @@ mod tests {
                 &descendant_pid_path,
             ),
         );
-        let pid_path = spec.pid_path.clone();
         let metadata_path = spec.metadata_path.clone();
         let supervisor = ProcessSupervisor::new(paths);
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1903,7 +1591,7 @@ mod tests {
 
         let cleanup_result: Result<()> = (|| {
             let process = supervisor
-                .adopt_recorded(&pid_path, &metadata_path)?
+                .adopt_recorded(&metadata_path)?
                 .ok_or_else(|| anyhow!("recorded process was not adoptable"))?;
             process
                 .kill_and_wait_for_test(Duration::from_secs(1))
@@ -1938,7 +1626,6 @@ mod tests {
             config_path: paths.config().join(format!("{name}.json")),
             config_fingerprint: None,
             log_path: paths.logs().join(format!("{name}.log")),
-            pid_path: paths.run().join(format!("{name}.pid")),
             metadata_path: paths.run().join(format!("{name}-metadata.json")),
             resource_name: name.to_string(),
             track: "test".to_string(),

@@ -29,7 +29,6 @@ use std::io::{self, ErrorKind, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener, UdpSocket as StdUdpSocket};
 #[cfg(unix)]
 use std::os::fd::OwnedFd;
-use std::os::unix::process::CommandExt as _;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
@@ -37,12 +36,6 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UdpSocket, UnixListener, UnixStream};
 use tokio::time::{Instant as TokioInstant, sleep, timeout, timeout_at};
-
-#[expect(
-    clippy::disallowed_types,
-    reason = "a runtime from before monitors was started outside the supervisor"
-)]
-type TestCommand = std::process::Command;
 
 const EXPECTED_DNS_TTL_SECONDS: u32 = 5;
 const JOB_STATUS_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -475,7 +468,6 @@ async fn seeded_gateway_drop_does_not_block_current_thread_runtime() -> Result<(
     state::fs::ensure_layout(&supervisor_paths)?;
     pv_fake::install_monitor(&supervisor_paths)?;
     let output_path = tempdir.path().join("nested.output");
-    let nested_pid_path = supervisor_paths.run().join("nested-test.pid");
     let nested_metadata_path = supervisor_paths.run().join("nested-test.json");
     let nested_release_path = paths.run().join("nested-test.release");
     let fallback_ready_path = paths.run().join("nested-fallback-ready");
@@ -503,7 +495,6 @@ async fn seeded_gateway_drop_does_not_block_current_thread_runtime() -> Result<(
             config_path: paths.home().to_owned(),
             config_fingerprint: None,
             log_path: output_path.clone(),
-            pid_path: nested_pid_path.clone(),
             metadata_path: nested_metadata_path.clone(),
             resource_name: "test".to_owned(),
             track: "fallback".to_owned(),
@@ -512,7 +503,6 @@ async fn seeded_gateway_drop_does_not_block_current_thread_runtime() -> Result<(
     if let Err(error) = state::fs::write_sensitive_file(&nested_release_path, "release\n") {
         let cleanup_result = async {
             child.stop(Duration::from_millis(100)).await?;
-            state::fs::remove_file_if_exists(&nested_pid_path)?;
             state::fs::remove_file_if_exists(&nested_metadata_path)?;
             Ok(())
         }
@@ -526,7 +516,6 @@ async fn seeded_gateway_drop_does_not_block_current_thread_runtime() -> Result<(
             let cleanup_result = async {
                 let child_cleanup = async {
                     child.stop(Duration::from_millis(100)).await?;
-                    state::fs::remove_file_if_exists(&nested_pid_path)?;
                     state::fs::remove_file_if_exists(&nested_metadata_path)?;
                     Ok(())
                 }
@@ -554,7 +543,6 @@ async fn seeded_gateway_drop_does_not_block_current_thread_runtime() -> Result<(
             let mut cleanup_failures = Vec::new();
             if let Err(error) = async {
                 child.stop(Duration::from_millis(100)).await?;
-                state::fs::remove_file_if_exists(&nested_pid_path)?;
                 state::fs::remove_file_if_exists(&nested_metadata_path)?;
                 Ok::<(), anyhow::Error>(())
             }
@@ -582,7 +570,6 @@ async fn seeded_gateway_drop_does_not_block_current_thread_runtime() -> Result<(
     }
 
     child.stop(Duration::from_millis(100)).await?;
-    state::fs::remove_file_if_exists(&nested_pid_path)?;
     state::fs::remove_file_if_exists(&nested_metadata_path)?;
     let output = state::fs::read_to_string(&output_path)?;
     assert!(
@@ -887,10 +874,7 @@ async fn fallback_shutdown_preserves_pending_matching_worker_reload() -> Result<
     let supervisor = daemon::ProcessSupervisor::new(paths.clone());
     assert!(
         supervisor
-            .adopt_recorded(
-                &paths.worker_pid("8.4"),
-                &paths.worker_runtime_metadata("8.4")
-            )?
+            .adopt_recorded(&paths.worker_runtime_metadata("8.4"))?
             .is_some()
     );
     state::fs::write_sensitive_file(&release_load, "release\n")?;
@@ -970,10 +954,7 @@ async fn fallback_shutdown_cancels_watcher_reload_and_preserves_pending_worker()
     let supervisor = daemon::ProcessSupervisor::new(paths.clone());
     assert!(
         supervisor
-            .adopt_recorded(
-                &paths.worker_pid("8.4"),
-                &paths.worker_runtime_metadata("8.4")
-            )?
+            .adopt_recorded(&paths.worker_runtime_metadata("8.4"))?
             .is_some()
     );
 
@@ -1057,11 +1038,7 @@ async fn matching_cancellation_preserves_pending_runtime_without_restore_proof()
         metadata["desired_config_fingerprint"]
     );
     let supervisor = daemon::ProcessSupervisor::new(paths.clone());
-    assert!(
-        supervisor
-            .adopt_recorded(&paths.worker_pid("8.4"), &metadata_path)?
-            .is_some()
-    );
+    assert!(supervisor.adopt_recorded(&metadata_path)?.is_some());
     state::fs::write_sensitive_file(&release_load, "release\n")?;
     gateway_guard.shutdown_and_cleanup().await?;
 
@@ -1182,7 +1159,7 @@ async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
         sleep(Duration::from_millis(100)).await;
         let supervisor = daemon::ProcessSupervisor::new(paths.clone());
         let gateway = supervisor
-            .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+            .adopt_recorded(&paths.gateway_runtime_metadata())?
             .ok_or_else(|| anyhow!("Gateway was not running after startup"))?;
         let gateway_pid = gateway.pid();
         gateway.stop(Duration::from_secs(1)).await?;
@@ -1200,7 +1177,7 @@ async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
         tokio::time::resume();
         wait_for_succeeded_job_scope(&paths, "resource:caddy:2").await?;
         let recovered_gateway = supervisor
-            .adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
+            .adopt_recorded(&paths.gateway_runtime_metadata())?
             .ok_or_else(|| anyhow!("health recovery did not restart the Gateway"))?;
         let database = Database::open(&paths)?;
         let http_port = database
@@ -1332,13 +1309,9 @@ async fn daemon_shutdown_joins_health_triggered_worker_recovery() -> Result<()> 
     let (worker_fake, release_validation) = install_worker_validation_barrier(&paths, true)?;
     let supervisor = daemon::ProcessSupervisor::new(paths.clone());
     let worker = supervisor
-        .adopt_recorded(
-            &paths.worker_pid("8.4"),
-            &paths.worker_runtime_metadata("8.4"),
-        )?
+        .adopt_recorded(&paths.worker_runtime_metadata("8.4"))?
         .ok_or_else(|| anyhow!("worker was not running before health recovery"))?;
     worker.stop(Duration::from_secs(1)).await?;
-    state::fs::remove_file_if_exists(&paths.worker_pid("8.4"))?;
     state::fs::remove_file_if_exists(&paths.worker_runtime_metadata("8.4"))?;
 
     tokio::time::pause();
@@ -1824,60 +1797,6 @@ async fn startup_reconciliation_logs_and_replaces_a_gateway_killed_while_the_dae
 }
 
 #[tokio::test]
-async fn startup_reconciliation_restarts_a_gateway_from_before_monitors_under_a_monitor()
--> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    seed_foundation_caddy(&paths)?;
-    let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
-    // A Gateway that a PV release from before monitors started, known by its pid file.
-    let legacy_caddy = tempdir.path().join("legacy-caddy-release/bin/caddy");
-    pv_fake::install(&legacy_caddy, Persona::LongRunning)?;
-    let mut legacy = ChildGuard(TestCommand::new(&legacy_caddy).process_group(0).spawn()?);
-    let legacy_pid = legacy.0.id();
-    state::fs::write_sensitive_file(&paths.gateway_pid(), &format!("{legacy_pid}\n"))?;
-    let legacy_record = json!({
-        "name": "gateway",
-        "pid": legacy_pid,
-        "command": legacy_caddy,
-        "arguments": [],
-        "resource_name": "caddy",
-        "track": "2",
-        "log_path": paths.gateway_supervisor_log(),
-        "started_at": "2026-10-09T00:00:00Z",
-        "boot_session_id": platform::current_boot_session_id()?,
-        "process_start_identity": platform::inspect_process_start_identity(legacy_pid)?,
-    });
-    state::fs::write_sensitive_file(
-        &paths.gateway_runtime_metadata(),
-        &serde_json::to_string(&legacy_record)?,
-    )?;
-
-    let result = async {
-        let daemon =
-            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
-        gateway_guard.attach_daemon(daemon);
-        wait_for_succeeded_job_id(&paths, "job_000001").await?;
-        let record: Value = serde_json::from_str(&state::fs::read_to_string(
-            &paths.gateway_runtime_metadata(),
-        )?)?;
-
-        Ok::<_, anyhow::Error>(record)
-    }
-    .await;
-    let legacy_status = legacy.0.try_wait();
-    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
-    let record = propagate_after_cleanup(result, cleanup_result)?;
-
-    assert!(legacy_status?.is_some());
-    assert!(!state::fs::path_entry_exists(&paths.gateway_pid())?);
-    assert_ne!(record["pid"], json!(legacy_pid));
-    assert!(record["monitor_instance"].is_string());
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn repeated_system_requests_during_startup_create_one_trailing_job() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -2158,9 +2077,7 @@ async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_suc
     })
     .await??;
     let supervisor = daemon::ProcessSupervisor::new(paths.clone());
-    if let Some(gateway) =
-        supervisor.adopt_recorded(&paths.gateway_pid(), &paths.gateway_runtime_metadata())?
-    {
+    if let Some(gateway) = supervisor.adopt_recorded(&paths.gateway_runtime_metadata())? {
         gateway.stop(Duration::from_secs(1)).await?;
     }
     daemon.shutdown().await?;
@@ -2706,10 +2623,7 @@ impl FoundationWorkerPortHandoff {
 
         let supervisor = daemon::ProcessSupervisor::new(paths.clone());
         let recorded_pid = supervisor
-            .adopt_recorded(
-                &paths.worker_pid(php_track),
-                &paths.worker_runtime_metadata(php_track),
-            )?
+            .adopt_recorded(&paths.worker_runtime_metadata(php_track))?
             .ok_or_else(|| anyhow!("seeded FrankenPHP runtime was not adoptable"))?
             .pid();
         daemon::wait_for_readiness(
@@ -2721,10 +2635,7 @@ impl FoundationWorkerPortHandoff {
         )
         .await?;
         let published_pid = supervisor
-            .adopt_recorded(
-                &paths.worker_pid(php_track),
-                &paths.worker_runtime_metadata(php_track),
-            )?
+            .adopt_recorded(&paths.worker_runtime_metadata(php_track))?
             .ok_or_else(|| anyhow!("seeded FrankenPHP runtime was not adoptable after readiness"))?
             .pid();
         if published_pid != recorded_pid {
@@ -2840,15 +2751,6 @@ impl Drop for SeededGatewayGuard {
                 &format!("daemon shutdown failed: {failure:#}"),
             );
         }
-    }
-}
-
-struct ChildGuard(std::process::Child);
-
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        let _kill_result = self.0.kill();
-        let _wait_result = self.0.wait();
     }
 }
 
@@ -3404,10 +3306,7 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
     initial_daemon.shutdown().await?;
     let supervisor = daemon::ProcessSupervisor::new(paths.clone());
     let initial_worker = supervisor
-        .adopt_recorded(
-            &paths.worker_pid("8.4"),
-            &paths.worker_runtime_metadata("8.4"),
-        )?
+        .adopt_recorded(&paths.worker_runtime_metadata("8.4"))?
         .ok_or_else(|| anyhow!("worker was not running before health recovery"))?;
     let initial_worker_pid = initial_worker.pid();
     state::fs::write_sensitive_file(&config_path, "php: [\n")?;
