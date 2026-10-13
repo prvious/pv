@@ -1917,6 +1917,14 @@ fn resource_allocation_track_switches_retire_previous_track_objects() -> Result<
     let after_switch = database.retired_resource_allocations(&project.id)?;
     let reserved =
         database.replace_project_resource_allocations(&other.id, "mysql", "8.0", &app_db);
+    database.replace_project_resource_allocations(&other.id, "mysql", "5.7", &app_db)?;
+    let switched_onto_reserved =
+        database.replace_project_resource_allocations(&other.id, "mysql", "8.0", &app_db);
+    let other_tracks = database
+        .resource_allocations(&other.id, "mysql")?
+        .into_iter()
+        .map(|allocation| allocation.track)
+        .collect::<Vec<_>>();
     database.replace_project_resource_allocations(&project.id, "mysql", "8.0", &app_db)?;
     let after_switch_back = database.retired_resource_allocations(&project.id)?;
     database.unlink_project(&project.id)?;
@@ -1926,6 +1934,11 @@ fn resource_allocation_track_switches_retire_previous_track_objects() -> Result<
         reserved,
         Err(StateError::ResourceAllocationGeneratedNameCollision { track, .. }) if track == "8.0"
     ));
+    assert!(matches!(
+        switched_onto_reserved,
+        Err(StateError::ResourceAllocationGeneratedNameCollision { track, .. }) if track == "8.0"
+    ));
+    assert_eq!(other_tracks, ["5.7"]);
     assert_debug_snapshot!((after_switch, after_switch_back, after_unlink));
 
     Ok(())

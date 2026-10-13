@@ -219,42 +219,37 @@ fn keyspace_reply(
     Some(reply)
 }
 
-/// `SCAN <cursor> MATCH <prefix>* COUNT <count>`: the cursor is an offset into the sorted keys,
-/// and each call looks at `count` keys, so a caller has to follow the cursor to the end as with
-/// real Redis. Only a prefix pattern is supported, which is all PV sends.
+/// `SCAN 0 MATCH <prefix>* COUNT <count>`: every matching key in one reply, with cursor 0 to end
+/// the iteration. `COUNT` is only a hint, and real Redis also answers small keyspaces in one reply.
+/// Only a prefix pattern is supported, which is all PV sends.
+// ponytail: one reply, so deleting returned keys mid-iteration can't make the fake skip any. The
+// real-artifact contract covers following a cursor across replies.
 fn scan(keys: &BTreeMap<String, String>, cursor: &str, options: &[String]) -> OwnedFrame {
     let [match_keyword, pattern, count_keyword, count] = options else {
         return error("ERR syntax error");
     };
-    let (Ok(cursor), Ok(count), Some(prefix)) = (
-        cursor.parse::<usize>(),
-        count.parse::<usize>(),
+    let (Ok(0), Ok(1..), Some(prefix)) = (
+        cursor.parse::<u64>(),
+        count.parse::<u64>(),
         pattern.strip_suffix('*'),
     ) else {
         return error("ERR syntax error");
     };
     if !match_keyword.eq_ignore_ascii_case("MATCH")
         || !count_keyword.eq_ignore_ascii_case("COUNT")
-        || count == 0
         || prefix.contains(['*', '?', '[', '\\'])
     {
         return error("ERR syntax error");
     }
 
-    let scanned = keys.keys().skip(cursor).take(count).collect::<Vec<_>>();
-    let next = if cursor + scanned.len() >= keys.len() {
-        0
-    } else {
-        cursor + scanned.len()
-    };
-    let matches = scanned
-        .into_iter()
+    let matches = keys
+        .keys()
         .filter(|key| key.starts_with(prefix))
         .map(|key| OwnedFrame::BulkString(key.clone().into_bytes()))
         .collect();
 
     OwnedFrame::Array(vec![
-        OwnedFrame::BulkString(next.to_string().into_bytes()),
+        OwnedFrame::BulkString(b"0".to_vec()),
         OwnedFrame::Array(matches),
     ])
 }

@@ -299,7 +299,7 @@ async fn redis_deletes_allocations(
     context: &ManagedResourceRuntimeContext,
     port: u16,
 ) -> Result<()> {
-    // More keys than one `SCAN` call looks at, so cleanup has to follow the cursor.
+    // More keys than one real `SCAN` call looks at, so cleanup has to follow the cursor.
     let deleted = (0..1500)
         .map(|index| format!("acme.cache.{index}"))
         .collect::<Vec<_>>();
@@ -320,27 +320,28 @@ async fn redis_deletes_allocations(
         pipeline.query_async::<()>(&mut connection).await?;
     }
 
-    // Twice, as a retried cleanup runs again after the keys are gone.
-    for _attempt in 0..2 {
+    // Checked after each call: the first must finish the job, and a retried cleanup that runs
+    // again after the keys are gone must succeed.
+    for attempt in 1..=2 {
         adapter
             .delete_allocation(context, &context.env, "acme.cache.")
             .await?;
-    }
-
-    for database in [0, 1] {
-        let mut connection = redis_connection(port, database).await?;
-        let deleted_left: usize = redis::cmd("EXISTS")
-            .arg(&deleted)
-            .query_async(&mut connection)
-            .await?;
-        let kept_left: usize = redis::cmd("EXISTS")
-            .arg(&kept)
-            .query_async(&mut connection)
-            .await?;
-        ensure!(
-            (deleted_left, kept_left) == (0, kept.len()),
-            "database {database} kept {deleted_left} deleted and {kept_left} kept keys"
-        );
+        for database in [0, 1] {
+            let mut connection = redis_connection(port, database).await?;
+            let deleted_left: usize = redis::cmd("EXISTS")
+                .arg(&deleted)
+                .query_async(&mut connection)
+                .await?;
+            let kept_left: usize = redis::cmd("EXISTS")
+                .arg(&kept)
+                .query_async(&mut connection)
+                .await?;
+            ensure!(
+                (deleted_left, kept_left) == (0, kept.len()),
+                "after cleanup {attempt}, database {database} kept {deleted_left} deleted and \
+                 {kept_left} kept keys"
+            );
+        }
     }
 
     Ok(())
@@ -422,29 +423,29 @@ async fn rustfs_deletes_allocations(
         }
     }
 
-    // Twice, as a retried cleanup runs again after the bucket is gone.
-    for _attempt in 0..2 {
+    // Checked after each call: the first must finish the job, and a retried cleanup that runs
+    // again after the bucket is gone must succeed.
+    for attempt in 1..=2 {
         adapter.delete_allocation(context, env, deleted).await?;
+        let deleted_bucket = s3_error_code(client.head_bucket().bucket(deleted).send().await);
+        let kept_objects = client
+            .list_objects_v2()
+            .bucket(kept)
+            .send()
+            .await?
+            .contents()
+            .iter()
+            .filter_map(|object| object.key().map(str::to_owned))
+            .collect::<Vec<_>>();
+        ensure!(
+            deleted_bucket.as_deref() == Some("NotFound"),
+            "after cleanup {attempt}, the deleted bucket answered {deleted_bucket:?}"
+        );
+        ensure!(
+            kept_objects == keys,
+            "after cleanup {attempt}, the kept bucket holds {kept_objects:?}"
+        );
     }
-
-    let deleted_bucket = s3_error_code(client.head_bucket().bucket(deleted).send().await);
-    let kept_objects = client
-        .list_objects_v2()
-        .bucket(kept)
-        .send()
-        .await?
-        .contents()
-        .iter()
-        .filter_map(|object| object.key().map(str::to_owned))
-        .collect::<Vec<_>>();
-    ensure!(
-        deleted_bucket.as_deref() == Some("NotFound"),
-        "the deleted bucket answered {deleted_bucket:?}"
-    );
-    ensure!(
-        kept_objects == keys,
-        "the kept bucket holds {kept_objects:?}"
-    );
 
     Ok(())
 }
@@ -581,25 +582,29 @@ async fn postgres_serves_allocations(
     sql::create_database_if_missing(&admin, SqlEngine::Postgres, kept).await?;
     // An app connected to the database doesn't stop cleanup.
     let app = PgPool::connect_with(sql::postgres_options(&admin).database(database)).await?;
-    // Twice, as a retried cleanup runs again after the database is gone.
-    for _attempt in 0..2 {
+    // Checked after each call: the first must finish the job, and a retried cleanup that runs
+    // again after the database is gone must succeed.
+    for attempt in 1..=2 {
         adapter
             .delete_allocation(context, &context.env, database)
             .await?;
+        let mut left = Vec::new();
+        for name in [database, kept] {
+            if sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
+                .bind(name)
+                .fetch_optional(&pool)
+                .await?
+                .is_some()
+            {
+                left.push(name);
+            }
+        }
+        ensure!(
+            left == [kept],
+            "after cleanup {attempt}, databases {left:?} remain"
+        );
     }
     drop(app);
-    let mut left = Vec::new();
-    for name in [database, kept] {
-        if sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
-            .bind(name)
-            .fetch_optional(&pool)
-            .await?
-            .is_some()
-        {
-            left.push(name);
-        }
-    }
-    ensure!(left == [kept], "cleanup left databases {left:?}");
 
     Ok(pool)
 }
@@ -647,12 +652,6 @@ async fn real_mysql_deletes_allocations(
         for database in [deleted, kept] {
             sql::create_database_if_missing(&admin, SqlEngine::Mysql, database).await?;
         }
-        // Twice, as a retried cleanup runs again after the database is gone.
-        for _attempt in 0..2 {
-            adapter
-                .delete_allocation(&context, &context.env, deleted)
-                .await?;
-        }
         let pool = MySqlPool::connect_with(
             MySqlConnectOptions::new()
                 .host(&admin.host)
@@ -661,19 +660,29 @@ async fn real_mysql_deletes_allocations(
                 .password(&admin.password),
         )
         .await?;
-        let mut left = Vec::new();
-        for database in [deleted, kept] {
-            let count: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = ?",
-            )
-            .bind(database)
-            .fetch_one(&pool)
-            .await?;
-            if count > 0 {
-                left.push(database);
+        // Checked after each call: the first must finish the job, and a retried cleanup that
+        // runs again after the database is gone must succeed.
+        for attempt in 1..=2 {
+            adapter
+                .delete_allocation(&context, &context.env, deleted)
+                .await?;
+            let mut left = Vec::new();
+            for database in [deleted, kept] {
+                let count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = ?",
+                )
+                .bind(database)
+                .fetch_one(&pool)
+                .await?;
+                if count > 0 {
+                    left.push(database);
+                }
             }
+            ensure!(
+                left == [kept],
+                "after cleanup {attempt}, databases {left:?} remain"
+            );
         }
-        ensure!(left == [kept], "cleanup left databases {left:?}");
 
         Ok(())
     })

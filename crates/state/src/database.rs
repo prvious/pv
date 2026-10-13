@@ -1752,8 +1752,36 @@ impl Database {
         for allocation in allocations {
             if let Some(existing) = existing_by_name.get(&allocation.allocation_name) {
                 if existing.track != track {
+                    // Moving back to a track reconnects to this Project's own object there. Any
+                    // other owner of the name on the new track, active or retired, is a collision:
+                    // two Project slugs and allocation names can generate the same name.
+                    transaction.execute(
+                        "DELETE FROM retired_resource_allocations
+                        WHERE project_id = ?1
+                        AND resource_name = ?2
+                        AND track = ?3
+                        AND generated_name = ?4",
+                        params![
+                            project_id,
+                            resource_name,
+                            track,
+                            existing.generated_name.as_str(),
+                        ],
+                    )?;
+                    if resource_allocation_generated_name_exists_in_transaction(
+                        &transaction,
+                        resource_name,
+                        track,
+                        &existing.generated_name,
+                    )? {
+                        return Err(StateError::ResourceAllocationGeneratedNameCollision {
+                            resource: resource_name.to_string(),
+                            track: track.to_string(),
+                            generated: existing.generated_name.clone(),
+                        });
+                    }
                     // The object on the previous track stays in place, so keep a record of it
-                    // for cleanup. Moving back reconnects to that object instead.
+                    // for cleanup.
                     transaction.execute(
                         "INSERT INTO retired_resource_allocations (
                             project_id,
@@ -1769,19 +1797,6 @@ impl Database {
                             existing.track.as_str(),
                             existing.generated_name.as_str(),
                             updated_at.as_str(),
-                        ],
-                    )?;
-                    transaction.execute(
-                        "DELETE FROM retired_resource_allocations
-                        WHERE project_id = ?1
-                        AND resource_name = ?2
-                        AND track = ?3
-                        AND generated_name = ?4",
-                        params![
-                            project_id,
-                            resource_name,
-                            track,
-                            existing.generated_name.as_str(),
                         ],
                     )?;
                 }
