@@ -10,6 +10,46 @@ use crate::{ResourcesError, Result, php_track_environment};
 
 pub const PHP_EXTENSION_METADATA_PATH: &str = "share/pv/php-extensions.json";
 
+/// The extensions every PV PHP build loads: the PHP recipe's `expected_extensions`, which each
+/// release checks. A Project that lists one already has it, so PV neither loads nor ignores it.
+pub const BUILT_IN_PHP_EXTENSIONS: &[&str] = &[
+    "bcmath",
+    "ctype",
+    "curl",
+    "dom",
+    "exif",
+    "fileinfo",
+    "filter",
+    "ftp",
+    "gd",
+    "hash",
+    "iconv",
+    "intl",
+    "json",
+    "libxml",
+    "mbstring",
+    "openssl",
+    "pcntl",
+    "pcre",
+    "pdo",
+    "pdo_mysql",
+    "pdo_pgsql",
+    "pdo_sqlite",
+    "phar",
+    "posix",
+    "session",
+    "simplexml",
+    "sockets",
+    "sodium",
+    "sqlite3",
+    "tokenizer",
+    "xml",
+    "xmlreader",
+    "xmlwriter",
+    "zip",
+    "zlib",
+];
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum PhpExtensionLoadKind {
     Extension,
@@ -89,7 +129,9 @@ pub fn resolve_php_extension_request(
         if !requested_unique.insert(name.clone()) {
             continue;
         }
-        if !catalog.iter().any(|module| module.name == *name) {
+        if !BUILT_IN_PHP_EXTENSIONS.contains(&name.as_str())
+            && !catalog.iter().any(|module| module.name == *name)
+        {
             ignored.push(name.clone());
         }
     }
