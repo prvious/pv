@@ -49,10 +49,10 @@ pub use php_defaults::{
     php_track_environment, php_track_exec_environment,
 };
 pub use php_extensions::{
-    PHP_EXTENSION_METADATA_PATH, PhpExtensionLoadKind, PhpExtensionModule, PhpExtensionResolution,
-    ensure_php_runtime_overlay, php_runtime_environment, php_runtime_exec_environment,
-    read_php_extension_metadata, resolve_persisted_php_extension_modules,
-    resolve_php_extension_request,
+    BUILT_IN_PHP_EXTENSIONS, PHP_EXTENSION_METADATA_PATH, PhpExtensionLoadKind, PhpExtensionModule,
+    PhpExtensionResolution, ensure_php_runtime_overlay, php_runtime_environment,
+    php_runtime_exec_environment, read_php_extension_metadata,
+    resolve_persisted_php_extension_modules, resolve_php_extension_request,
 };
 pub use platform::{ArtifactPlatform, TargetPlatform};
 pub use registry::{ResourceCapability, ResourceDescriptor, ResourceKind};

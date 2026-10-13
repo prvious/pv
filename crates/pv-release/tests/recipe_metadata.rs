@@ -8,7 +8,7 @@ use pv_release::recipe::{
     BackingRecipe, BackingRecipeKind, ComposerRecipe, PhpRecipe, backing_recipe_env,
     composer_recipe_env, php_recipe_env,
 };
-use resources::{ArtifactPlatform, ResourceName};
+use resources::{ArtifactPlatform, BUILT_IN_PHP_EXTENSIONS, ResourceName};
 use std::collections::BTreeSet;
 
 #[test]
@@ -207,6 +207,17 @@ fn committed_recipe_metadata_parses() -> Result<()> {
     assert_default_track(&defaults, "mailpit", "1")?;
     assert_default_track(&defaults, "caddy", "2")?;
     assert_default_track(&defaults, "rustfs", "1")?;
+
+    Ok(())
+}
+
+#[test]
+fn built_in_php_extensions_match_the_committed_recipe() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let php = PhpRecipe::load(&workspace_root.join("release/artifacts/recipes/php/tracks.toml"))?;
+
+    // PV accepts these in Project config without a diagnostic, so each build must load them.
+    assert_eq!(php.expected_extensions(), BUILT_IN_PHP_EXTENSIONS);
 
     Ok(())
 }

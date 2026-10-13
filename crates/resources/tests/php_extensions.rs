@@ -22,12 +22,18 @@ fn resolves_available_and_ignored_php_extensions_from_artifact_metadata() -> Res
     fs::write_sensitive_file(&artifact.join("lib/php/extensions/redis.so"), "")?;
     fs::write_sensitive_file(&artifact.join("lib/php/extensions/xdebug.so"), "")?;
 
+    // `gd` is built in, so a Project that lists it already has it.
     let resolution = resolve_php_extension_request(
         &artifact,
-        &["xdebug".into(), "missing".into(), "redis".into()],
+        &[
+            "xdebug".into(),
+            "missing".into(),
+            "gd".into(),
+            "redis".into(),
+        ],
     )?;
 
-    assert_eq!(resolution.requested, ["xdebug", "missing", "redis"]);
+    assert_eq!(resolution.requested, ["xdebug", "missing", "gd", "redis"]);
     assert_eq!(
         resolution
             .loaded
