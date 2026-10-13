@@ -10,7 +10,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::StreamExt as _;
 use platform::{BootSessionId, ProcessEvents, ProcessExitWatch, ProcessStartIdentity};
 use protocol::{DaemonTransport, ProtocolError, transport, write_line};
-use rustix::fs::FileType;
 use serde::{Deserialize, Serialize};
 use state::{MonitorReservation, PvPaths, StateError, fs};
 use tokio::io::Interest;
@@ -557,7 +556,7 @@ async fn start_runtime(
     let lifeline = start
         .lifeline_fd
         .or(hooks.lifeline_fd)
-        .map(lifeline_path)
+        .map(open_lifeline)
         .transpose()?;
     fs::ensure_user_dir(&paths.monitor_dir(subject))?;
     let (gate, gate_end) = StdUnixStream::pair()?;
@@ -792,7 +791,7 @@ struct Monitor {
     watch: Option<AsyncFd<ProcessExitWatch>>,
     listener: UnixListener,
     log: std::fs::File,
-    lifeline: Option<Utf8PathBuf>,
+    lifeline: Option<io::PipeReader>,
     _reservation: MonitorReservation,
     stop: Option<MonitorStop>,
     exit: Option<MonitorExit>,
@@ -1093,30 +1092,27 @@ async fn lifeline_closed(lifeline: &mut Option<oneshot::Receiver<()>>) {
     }
 }
 
-fn lifeline_path(fd: i32) -> Result<Utf8PathBuf, DaemonError> {
-    // Opening /dev/fd/N duplicates descriptor N, so the monitor never owns a raw descriptor.
-    let path = Utf8PathBuf::from(format!("/dev/fd/{fd}"));
-    let is_pipe = fd > 2
-        && rustix::fs::stat(path.as_std_path())
-            .is_ok_and(|stat| FileType::from_raw_mode(stat.st_mode) == FileType::Fifo);
-    if !is_pipe {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("lifeline descriptor {fd} is not an inherited pipe"),
-        )
-        .into());
+fn open_lifeline(fd: i32) -> Result<io::PipeReader, DaemonError> {
+    if fd > 2
+        && let Ok(lifeline) = fs::open_inherited_pipe(fd)
+    {
+        return Ok(lifeline);
     }
 
-    Ok(path)
+    Err(io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("lifeline descriptor {fd} is not an inherited pipe"),
+    )
+    .into())
 }
 
-fn watch_lifeline(path: Utf8PathBuf) -> Result<oneshot::Receiver<()>, DaemonError> {
+fn watch_lifeline(mut lifeline: io::PipeReader) -> Result<oneshot::Receiver<()>, DaemonError> {
     let (closed, receiver) = oneshot::channel();
     std::thread::Builder::new()
         .name("pv-monitor-lifeline".to_owned())
         .spawn(move || {
             // Returns once every write end is closed: the controller holding it is gone.
-            let _read_result = fs::read_to_string(&path);
+            let _read_result = io::copy(&mut lifeline, &mut io::sink());
             let _send_result = closed.send(());
         })?;
 

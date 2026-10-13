@@ -195,6 +195,34 @@ pub fn open_private_log_file(path: &Utf8Path) -> Result<std::fs::File, StateErro
     Ok(file)
 }
 
+/// Opens the inherited pipe `fd` through `/dev/fd/<fd>`, which duplicates it, so the caller never
+/// owns a raw descriptor. Fails unless `fd` is a pipe.
+#[cfg(unix)]
+pub fn open_inherited_pipe(fd: i32) -> Result<io::PipeReader, StateError> {
+    use rustix::fs::{FileType, Mode, OFlags};
+
+    let path = Utf8PathBuf::from(format!("/dev/fd/{fd}"));
+    let pipe = rustix::fs::open(
+        path.as_std_path(),
+        OFlags::RDONLY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(|error| StateError::filesystem(path.clone(), io::Error::from(error)))?;
+    // Check the duplicate, never the path. macOS shares the vnode behind /dev/fd/<fd> between all
+    // processes and resets its type on every lookup, so stat on the path fails with EBADF whenever
+    // another process looks up the same number at that moment.
+    let stat = rustix::fs::fstat(&pipe)
+        .map_err(|error| StateError::filesystem(path.clone(), io::Error::from(error)))?;
+    if FileType::from_raw_mode(stat.st_mode) != FileType::Fifo {
+        return Err(StateError::filesystem(
+            path,
+            io::Error::new(io::ErrorKind::InvalidInput, "not a pipe"),
+        ));
+    }
+
+    Ok(io::PipeReader::from(pipe))
+}
+
 #[expect(
     clippy::disallowed_types,
     reason = "PV filesystem helper owns direct file handles"

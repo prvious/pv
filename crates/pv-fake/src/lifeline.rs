@@ -6,12 +6,11 @@
 //! every write end is closed. That happens when the test process exits for any reason, SIGKILL
 //! included.
 
+use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::{Mutex, PoisonError};
 
 use anyhow::Result;
-use camino::Utf8PathBuf;
-use rustix::fs::FileType;
 use rustix::io::{FdFlags, fcntl_setfd};
 use rustix::process::{Signal, getpgrp, getpid, kill_process, kill_process_group};
 
@@ -48,18 +47,14 @@ pub(crate) fn test_process_read_fd() -> Result<i32> {
 /// Watches the inherited pipe `fd` in the background, recording `fired` and terminating once
 /// every write end is closed. Returns whether it is armed.
 pub(crate) fn arm(fd: i32, events: EventLog, fired: EventKind) -> bool {
-    // Opening /dev/fd/N duplicates descriptor N, so the watcher never owns a raw descriptor.
-    let path = Utf8PathBuf::from(format!("/dev/fd/{fd}"));
-    let is_pipe = rustix::fs::stat(path.as_std_path())
-        .is_ok_and(|stat| FileType::from_raw_mode(stat.st_mode) == FileType::Fifo);
-    if !is_pipe {
+    let Ok(mut pipe) = state::fs::open_inherited_pipe(fd) else {
         // Nothing to watch, e.g. a fake started by hand; it must not treat this as parent loss.
         return false;
-    }
+    };
 
     tokio::task::spawn_blocking(move || {
         // Returns once every write end is closed: the process holding it is gone.
-        let _read_result = state::fs::read_to_string(&path);
+        let _read_result = io::copy(&mut pipe, &mut io::sink());
         let _record_result = events.record(fired);
         terminate();
     });
