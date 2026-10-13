@@ -33,6 +33,7 @@ mod lifeline;
 mod mailpit;
 #[cfg(unix)]
 mod mysql;
+mod port;
 #[cfg(unix)]
 mod postgres;
 #[cfg(unix)]
@@ -51,6 +52,7 @@ pub use install::{
     InstalledFake, binary, example_binary, install, install_monitor, install_with,
     install_with_settings, lifeline_fd,
 };
+pub use port::{port, seed_dns_port};
 
 /// The argument a fake starts its descendant with, followed by the descendant's parent pipe.
 #[cfg(unix)]

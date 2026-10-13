@@ -82,6 +82,16 @@ first, so Gateway readiness never probes those ports. Daemons started with
 `RunningDaemon::start_without_managed_resource_adapters` fetch the artifact
 manifest from a closed loopback port, so the fetch fails at once.
 
+A port a test hands to a fake, a runtime, or `pv.db` comes from
+`pv_fake::port()`, never from binding port 0 and closing the listener, which
+lets another test take the port before it is used. The pool's ports are below
+every OS's outgoing-connection range and away from PV's own ports, and each
+block is held under a file lock, so concurrent test runs, including runs in
+other worktrees, never get the same port. A test that starts a daemon first
+calls `pv_fake::seed_dns_port(paths)`: a restart rebinds the saved DNS port
+without retrying, and a first start gives up after 10 tries when many tests
+start daemons at once.
+
 Shell scripts remain only where a test needs what the fake doesn't do: the
 process-group tests, which need a child that outlives its parent or ignores
 SIGTERM. A script that stays alive must give up on its own, so a test that dies
