@@ -8,6 +8,7 @@
 //! process keeps its blocks until it exits and never hands out a port twice.
 
 use std::fs::TryLockError;
+use std::io;
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use std::ops::Range;
 use std::sync::{Mutex, PoisonError};
@@ -75,8 +76,10 @@ impl Pool {
 
     fn port(&mut self) -> Result<u16> {
         loop {
-            if let Some(port) = self.ports.by_ref().find(|port| is_free(*port)) {
-                return Ok(port);
+            for port in self.ports.by_ref() {
+                if is_free(port).with_context(|| format!("could not probe port {port}"))? {
+                    return Ok(port);
+                }
             }
             self.claim_block()?;
         }
@@ -129,19 +132,29 @@ fn open_lock_file(path: &Utf8Path) -> Result<std::fs::File> {
 
 /// Whether nothing uses `port` for TCP on loopback or the wildcard address, or for UDP on
 /// loopback. The TCP probe sets `SO_REUSEADDR` as runtimes do, so closing connections don't count.
-fn is_free(port: u16) -> bool {
-    let tcp_free = [Ipv4Addr::LOCALHOST, Ipv4Addr::UNSPECIFIED]
-        .into_iter()
-        .all(|address| {
-            Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).is_ok_and(|socket| {
-                socket.set_reuse_address(true).is_ok()
-                    && socket
-                        .bind(&SocketAddrV4::new(address, port).into())
-                        .is_ok()
-            })
-        });
+/// Only a port in use counts as busy: any other failure, such as a sandbox refusing to bind, is an
+/// error, so it isn't reported as a pool whose every block is taken.
+fn is_free(port: u16) -> io::Result<bool> {
+    for address in [Ipv4Addr::LOCALHOST, Ipv4Addr::UNSPECIFIED] {
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+        socket.set_reuse_address(true)?;
+        if in_use(socket.bind(&SocketAddrV4::new(address, port).into()))? {
+            return Ok(false);
+        }
+    }
 
-    tcp_free && UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).is_ok()
+    Ok(!in_use(
+        UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).map(drop),
+    )?)
+}
+
+/// Whether a bind failed because its port is in use. Any other failure is returned.
+fn in_use(bind: io::Result<()>) -> io::Result<bool> {
+    match bind {
+        Ok(()) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::AddrInUse => Ok(true),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
@@ -248,6 +261,9 @@ mod tests {
         let mut child = TestProcessCommand::new(test_binary)
             .args(["--exact", CHILD_TEST, "--ignored", "--nocapture"])
             .env(CHILD_POOL_DIRECTORY, directory.path())
+            // One test thread makes libtest print the test name before the child's report, on the
+            // same line, so the parser always handles that format.
+            .env("RUST_TEST_THREADS", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()?;
@@ -307,7 +323,7 @@ mod tests {
     fn read_child_port(child_output: &mut impl BufRead) -> Result<u16> {
         let mut line = String::new();
         while child_output.read_line(&mut line)? > 0 {
-            if let Some(port) = line.trim_end().strip_prefix("port=") {
+            if let Some((_test_name, port)) = line.trim_end().split_once("port=") {
                 return Ok(port.parse()?);
             }
             line.clear();
