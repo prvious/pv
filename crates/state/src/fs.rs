@@ -214,12 +214,16 @@ pub fn create_new_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
 )]
 pub fn write_new_file(path: &Utf8Path, content: &str) -> Result<(), StateError> {
     let temporary_path = temporary_path_for(path);
-    let published = std::fs::write(&temporary_path, content)
+    // Creating the temporary file exclusively refuses an existing file or symlink, so this never
+    // writes through or removes a path it didn't just create.
+    let mut temporary_file = create_new_file_handle(&temporary_path)?;
+    let published = io::Write::write_all(&mut temporary_file, content.as_bytes())
         .map_err(|source| StateError::filesystem(temporary_path.clone(), source))
         .and_then(|()| {
             std::fs::hard_link(&temporary_path, path)
                 .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
         });
+    drop(temporary_file);
     let removed = std::fs::remove_file(&temporary_path)
         .map_err(|source| StateError::filesystem(temporary_path.clone(), source));
 
