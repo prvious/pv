@@ -216,6 +216,7 @@ fn source_worktrees(source_path: &Utf8Path) -> Result<Option<Vec<Worktree>>, Dae
         return Ok(None);
     };
     let mut worktrees = Vec::new();
+    let mut worktree_ids = BTreeSet::new();
 
     // Git deletes `worktrees/` with its last worktree, so a missing directory means none.
     for entry_dir in state::fs::read_dir_paths(&main_checkout.join(".git/worktrees"))? {
@@ -245,9 +246,19 @@ fn source_worktrees(source_path: &Utf8Path) -> Result<Option<Vec<Worktree>>, Dae
         } else {
             path
         };
+        let worktree_id = read_worktree_id(&entry_dir)?;
+        // Two entries with one ID, such as a copied `pv-id`, would both claim one Project.
+        if let Some(worktree_id) = &worktree_id
+            && !worktree_ids.insert(worktree_id.clone())
+        {
+            return Err(invalid_entry(
+                &entry_dir,
+                "its pv-id repeats another entry's",
+            ));
+        }
 
         worktrees.push(Worktree {
-            worktree_id: read_worktree_id(&entry_dir)?,
+            worktree_id,
             worktree_name: worktree_name.to_string(),
             entry_dir,
             path,

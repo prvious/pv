@@ -282,10 +282,19 @@ fn discovery_changes_nothing_while_an_entry_is_half_written_or_corrupt() -> Resu
     let after_corrupt_id = fixture.discovered()?;
     let skipped = plan_worktree_changes(&Database::open(&fixture.paths)?)?.skipped;
     state::fs::write_sensitive_file(&entry.join("pv-id"), &worktree_id)?;
+    let after_repair = fixture.discovered()?;
+    // Two entries holding one ID, as after copying a `pv-id` by hand.
+    let copy = fixture.add_worktree(&repo, "copy", "worktrees/copy")?;
+    discover_worktrees(&fixture.paths)?;
+    let with_copy = fixture.discovered()?;
+    state::fs::write_sensitive_file(&copy.join("pv-id"), &worktree_id)?;
+    discover_worktrees(&fixture.paths)?;
 
     assert_eq!(after_corrupt_id, before);
     assert_eq!(skipped.len(), 1);
-    assert_eq!(fixture.discovered()?, before);
+    assert_eq!(after_repair, before);
+    assert_eq!(with_copy.len(), 2);
+    assert_eq!(fixture.discovered()?, with_copy);
 
     Ok(())
 }

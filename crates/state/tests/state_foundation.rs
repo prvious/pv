@@ -2365,6 +2365,25 @@ fn unlink_project_clears_project_env_observed_state() -> Result<()> {
 }
 
 #[test]
+fn write_new_file_publishes_whole_files_and_never_replaces_one() -> Result<()> {
+    let tempdir = tempdir()?;
+    let path = tempdir.path().join("pv-id");
+
+    state::fs::write_new_file(&path, "first\n")?;
+    let again = state::fs::write_new_file(&path, "second\n");
+
+    assert!(matches!(
+        again,
+        Err(StateError::Filesystem { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists
+    ));
+    assert_eq!(state::fs::read_to_string(&path)?, "first\n");
+    // The temporary file is gone in both cases.
+    assert_eq!(state::fs::read_dir_paths(tempdir.path())?, [path]);
+
+    Ok(())
+}
+
+#[test]
 fn discovered_projects_take_source_names_and_follow_moves() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
