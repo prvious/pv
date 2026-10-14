@@ -117,10 +117,8 @@ pub(crate) fn plan_worktree_changes(database: &Database) -> Result<WorktreePlan,
 // health scan request system reconciliation; give failed changes a backoff if that shows up.
 pub(crate) fn discover_worktrees(paths: &PvPaths) -> Result<(), DaemonError> {
     let mut database = Database::open(paths)?;
+    // The health scan reports skipped sources every 30 seconds.
     let plan = plan_worktree_changes(&database)?;
-    for (project_id, error) in plan.skipped {
-        structured_log::worktree_discovery_failed(paths, &project_id, &error.to_string());
-    }
     for change in plan.changes {
         let subject = change_subject(&change).to_string();
         if let Err(error) = apply_change(paths, &mut database, change) {
@@ -226,8 +224,15 @@ fn source_worktrees(source_path: &Utf8Path) -> Result<Option<Vec<Worktree>>, Dae
         }
         let gitdir = state::fs::read_to_string(&entry_dir.join("gitdir"))?;
         // `gitdir` names the checkout's `.git` file, relative to the entry directory when Git's
-        // `worktree.useRelativePaths` is on.
+        // `worktree.useRelativePaths` is on. Git truncates the file before rewriting it, so an
+        // empty or partly written path is uncertain rather than a move.
         let checkout_git_file = normalize(&entry_dir.join(gitdir.trim()));
+        if checkout_git_file.file_name() != Some(".git") {
+            return Err(invalid_entry(
+                &entry_dir,
+                "its gitdir doesn't name a checkout's .git file",
+            ));
+        }
         let Some(checkout) = checkout_git_file.parent() else {
             return Err(invalid_entry(&entry_dir, "its gitdir names no checkout"));
         };
@@ -277,12 +282,7 @@ fn read_worktree_id(entry_dir: &Utf8Path) -> Result<Option<String>, DaemonError>
         return Ok(None);
     }
     let worktree_id = state::fs::read_to_string(&path)?.trim().to_string();
-    if worktree_id.is_empty() || !worktree_id.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
-        return Err(invalid_entry(
-            entry_dir,
-            "its pv-id file holds no worktree ID",
-        ));
-    }
+    state::validate_worktree_id(&worktree_id)?;
 
     Ok(Some(worktree_id))
 }
@@ -389,12 +389,20 @@ fn write_new_worktree_id(entry_dir: &Utf8Path) -> Result<String, DaemonError> {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    state::fs::write_new_file(
+    match state::fs::write_new_file(
         &entry_dir.join(WORKTREE_ID_FILE),
         &format!("{worktree_id}\n"),
-    )?;
-
-    Ok(worktree_id)
+    ) {
+        Ok(()) => Ok(worktree_id),
+        // Another source in the same repository linked this worktree earlier in the run.
+        Err(StateError::Filesystem { source, .. })
+            if source.kind() == io::ErrorKind::AlreadyExists =>
+        {
+            read_worktree_id(entry_dir)?
+                .ok_or_else(|| invalid_entry(entry_dir, "its pv-id file disappeared"))
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn change_subject(change: &WorktreeChange) -> &str {

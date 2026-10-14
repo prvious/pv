@@ -23,7 +23,7 @@ pub use database::{
     RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
     ResourceAllocationRecord, ResourceAllocationStatus, RetiredResourceAllocationRecord,
     RuntimeObservedStateRecord, RuntimeObservedStatus, RuntimeSubject, UnresolvedJobFailure,
-    WorktreeOptOutRecord, php_runtime_key,
+    WorktreeOptOutRecord, php_runtime_key, validate_worktree_id,
 };
 pub use error::{StateCapability, StateError};
 pub use paths::{PathSummaryEntry, PvPaths};

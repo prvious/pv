@@ -1472,7 +1472,7 @@ When a worktree's entry directory no longer exists, including after `git worktre
 
 Only a missing entry directory counts as removal. A missing source directory, an unreadable `.git/worktrees/` directory or entry, or any other uncertain result changes nothing for that source, and PV retries on the next scan.
 
-`pv unlink` on a discovered Project keeps its data and stops PV from discovering that worktree again until Git removes it. Running `pv link` on its path links it as an ordinary Project. Unlinking a source also unlinks its discovered Projects, keeps their data, and lists them in its output. When Git later removes a worktree whose Project was unlinked, PV deletes nothing.
+`pv unlink` on a discovered Project keeps its data and stops PV from discovering that worktree again until Git removes it. After that, running `pv link` on its path links it as an ordinary Project. Running `pv link` on a discovered Project that is still linked updates it like any relink, and it stays discovered. Unlinking a source also unlinks its discovered Projects, keeps their data, and lists them in its output. When Git later removes a worktree whose Project was unlinked, PV deletes nothing.
 
 ## Opening Projects
 

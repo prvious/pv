@@ -767,7 +767,8 @@ fn project_list_status(
     database: &Database,
     project: &ProjectRecord,
 ) -> Result<ProjectListStatus, ExecuteError> {
-    if !state::fs::path_entry_exists(&project.path)? {
+    // An unreadable path falls through to the config read, which reports it on this row alone.
+    if matches!(state::fs::path_entry_exists(&project.path), Ok(false)) {
         return Ok(ProjectListStatus {
             project: ProjectStatus::Missing,
             env: ProjectEnvStatus::Invalid,

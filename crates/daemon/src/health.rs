@@ -466,12 +466,21 @@ fn collect_runtime_health_probes(
             }],
         ),
     };
-    // System reconciliation applies worktree changes. Unreadable sources are logged there.
+    // System reconciliation applies worktree changes. A source whose worktrees can't be read is
+    // reported here, on every scan, until it can.
     match crate::worktrees::plan_worktree_changes(&database) {
-        Ok(plan) if !plan.changes.is_empty() => {
-            maintenance_scopes.push(ReconciliationScope::System)
+        Ok(plan) => {
+            if !plan.changes.is_empty() {
+                maintenance_scopes.push(ReconciliationScope::System);
+            }
+            errors.extend(plan.skipped.into_iter().map(|(project_id, error)| {
+                RuntimeHealthScanError {
+                    subject: "worktrees".to_owned(),
+                    scope: format!("project:{project_id}"),
+                    error: error.to_string(),
+                }
+            }));
         }
-        Ok(_plan) => {}
         Err(error) => errors.push(RuntimeHealthScanError {
             subject: "worktrees".to_owned(),
             scope: "system".to_owned(),

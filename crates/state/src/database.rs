@@ -4311,7 +4311,7 @@ fn slugify(name: &str) -> String {
 }
 
 /// PV writes worktree IDs itself, but they're read back from the user's `.git` directory.
-fn validate_worktree_id(worktree_id: &str) -> Result<(), StateError> {
+pub fn validate_worktree_id(worktree_id: &str) -> Result<(), StateError> {
     if worktree_id.is_empty()
         || worktree_id.len() > MAX_DNS_LABEL_LENGTH
         || !worktree_id.bytes().all(|byte| byte.is_ascii_alphanumeric())

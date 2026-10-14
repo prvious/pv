@@ -259,6 +259,77 @@ fn discovery_changes_nothing_for_a_source_with_an_unreadable_entry() -> Result<(
 }
 
 #[test]
+fn discovery_changes_nothing_while_an_entry_is_half_written_or_corrupt() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let repo = fixture.main_checkout("repo")?;
+    fixture.link("repo", "repo.test")?;
+    let entry = fixture.add_worktree(&repo, "feat", "worktrees/feat")?;
+    discover_worktrees(&fixture.paths)?;
+    let before = fixture.discovered()?;
+    let gitdir = state::fs::read_to_string(&entry.join("gitdir"))?;
+    let worktree_id = worktree_id(&entry)?;
+
+    // Git truncates `gitdir` before writing it during `git worktree move` or `repair`.
+    for contents in ["", "/Users/me/Co"] {
+        state::fs::write_sensitive_file(&entry.join("gitdir"), contents)?;
+        discover_worktrees(&fixture.paths)?;
+        assert_eq!(fixture.discovered()?, before, "gitdir {contents:?}");
+    }
+    state::fs::write_sensitive_file(&entry.join("gitdir"), &gitdir)?;
+    // A `pv-id` PV would never write, such as one longer than a worktree ID can be.
+    state::fs::write_sensitive_file(&entry.join("pv-id"), &"a".repeat(64))?;
+    discover_worktrees(&fixture.paths)?;
+    let after_corrupt_id = fixture.discovered()?;
+    let skipped = plan_worktree_changes(&Database::open(&fixture.paths)?)?.skipped;
+    state::fs::write_sensitive_file(&entry.join("pv-id"), &worktree_id)?;
+
+    assert_eq!(after_corrupt_id, before);
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(fixture.discovered()?, before);
+
+    Ok(())
+}
+
+#[test]
+fn every_source_in_a_repository_links_its_part_of_a_new_worktree_in_one_run() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let repo = fixture.main_checkout("repo")?;
+    fixture.link("repo/apps/web", "web.test")?;
+    fixture.link("repo/apps/api", "api.test")?;
+    let entry = fixture.add_worktree(&repo, "feat", "worktrees/feat")?;
+    for app in ["web", "api"] {
+        state::fs::ensure_user_dir(&fixture.root.join("worktrees/feat/apps").join(app))?;
+    }
+
+    discover_worktrees(&fixture.paths)?;
+    let worktree_id = worktree_id(&entry)?;
+
+    assert_eq!(
+        fixture
+            .discovered()?
+            .into_iter()
+            .map(|(id, slug, _hostname, path)| (id == worktree_id, slug, path))
+            .collect::<std::collections::BTreeSet<_>>(),
+        [
+            (
+                true,
+                "api-feat".to_string(),
+                "worktrees/feat/apps/api".to_string()
+            ),
+            (
+                true,
+                "web-feat".to_string(),
+                "worktrees/feat/apps/web".to_string()
+            ),
+        ]
+        .into_iter()
+        .collect()
+    );
+
+    Ok(())
+}
+
+#[test]
 fn an_unlinked_worktree_stays_unlinked_until_git_drops_it() -> Result<()> {
     let fixture = Fixture::new()?;
     let repo = fixture.main_checkout("repo")?;
@@ -309,12 +380,25 @@ async fn the_health_scan_requests_system_reconciliation_for_worktree_changes() -
         .await?
         .maintenance_scopes;
     discover_worktrees(&fixture.paths)?;
-    let after = crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog))
+    let after = crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog.clone()))
         .await?
         .maintenance_scopes;
+    // An entry without `gitdir` makes the source unreadable, which every scan reports.
+    state::fs::ensure_user_dir(&repo.join(".git/worktrees/new"))?;
+    let unreadable = crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog))
+        .await?
+        .errors;
 
     assert!(before.contains(&crate::ReconciliationScope::System));
     assert!(!after.contains(&crate::ReconciliationScope::System));
+    assert!(
+        unreadable.iter().any(|error| error.subject == "worktrees"),
+        "unreadable source not reported: {:?}",
+        unreadable
+            .iter()
+            .map(|error| &error.error)
+            .collect::<Vec<_>>()
+    );
 
     Ok(())
 }
