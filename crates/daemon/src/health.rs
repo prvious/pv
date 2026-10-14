@@ -519,11 +519,9 @@ fn collect_project_tls_health(
     state::fs::read_to_string(&paths.ca_private_key())?;
     let mut scopes = Vec::new();
     let mut errors = Vec::new();
-    // A held worktree gets its TLS files from its first reconciliation, like everything else.
-    let held_project_ids = database.held_project_ids()?;
 
     for project in database.projects()? {
-        if project.mode == ProjectMode::ResourceOnly || held_project_ids.contains(&project.id) {
+        if project.mode == ProjectMode::ResourceOnly {
             continue;
         }
         let scope = ReconciliationScope::project(&project.id)?;

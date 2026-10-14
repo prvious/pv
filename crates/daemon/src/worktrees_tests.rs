@@ -457,6 +457,34 @@ fn a_worktree_waits_while_the_source_env_file_cannot_be_copied() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn a_held_worktree_stays_eligible_for_tls_repair() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let repo = fixture.main_checkout("repo")?;
+    fixture.link("repo", "repo.test")?;
+    fixture.add_worktree(&repo, "feat", "worktrees/feat")?;
+    state::fs::write_sensitive_file(
+        &fixture.root.join("worktrees/feat/pv.yml"),
+        "env:\n  APP_CERT: \"${tls.cert}\"\n",
+    )?;
+    state::fs::write_sensitive_file(&fixture.paths.ca_certificate(), "unused certificate")?;
+    state::fs::write_sensitive_file(&fixture.paths.ca_private_key(), "unused private key")?;
+    discover_worktrees(&fixture.paths)?;
+    let database = Database::open(&fixture.paths)?;
+
+    // Its first reconciliation hasn't written TLS files yet, so the health scan retries it.
+    let held = database.held_project_ids()?;
+    let scopes = crate::health::collect_project_tls_health_scopes(&fixture.paths, &database)?;
+
+    let Some(worktree_id) = held.iter().next() else {
+        return Err(anyhow!("the worktree isn't held"));
+    };
+    assert_eq!(held.len(), 1);
+    assert_eq!(scopes, [crate::ReconciliationScope::project(worktree_id)?]);
+
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn the_health_scan_requests_system_reconciliation_for_worktree_changes() -> Result<()> {
