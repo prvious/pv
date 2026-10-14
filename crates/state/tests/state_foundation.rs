@@ -1,5 +1,9 @@
 use std::collections::BTreeMap;
+use std::io;
+use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::PermissionsExt;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 
 use anyhow::{Result, anyhow};
 use camino::Utf8Path;
@@ -373,6 +377,36 @@ fn helper_lifecycle_lock_preserves_home_directory_permissions() -> Result<()> {
 
     assert_eq!(file_mode(&home)?, "755");
     drop(lock);
+
+    Ok(())
+}
+
+/// macOS shares the vnode behind `/dev/fd/<n>` between all processes and threads. Every test
+/// process's monitors and fakes look up the same lifeline number at once, and that must not make
+/// the pipe fail its check.
+#[test]
+fn inherited_pipe_opens_while_its_descriptor_path_is_looked_up_elsewhere() -> Result<()> {
+    let (reader, _writer) = io::pipe()?;
+    let fd = reader.as_raw_fd();
+    let path = format!("/dev/fd/{fd}");
+    let looking_up = AtomicBool::new(true);
+
+    let opened = thread::scope(|scope| {
+        for _thread in 0..4 {
+            scope.spawn(|| {
+                while looking_up.load(Ordering::Relaxed) {
+                    let _stat_result = rustix::fs::stat(path.as_str());
+                }
+            });
+        }
+        let opened =
+            (0..10_000).try_for_each(|_attempt| state::fs::open_inherited_pipe(fd).map(drop));
+        looking_up.store(false, Ordering::Relaxed);
+
+        opened
+    });
+
+    opened?;
 
     Ok(())
 }
