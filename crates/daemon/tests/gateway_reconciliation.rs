@@ -22,7 +22,7 @@ use state::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
-use std::io::{ErrorKind, Write};
+use std::io::Write;
 use std::net::TcpListener;
 use std::process::Output;
 use std::time::{Duration, Instant};
@@ -2224,10 +2224,9 @@ env:
     );
 
     fs::write_sensitive_file(&acme.config_path, "php: \"8.5\"\nroot: web\n")?;
-    // System reconciliation releases undesired workers' assignments. Reserve the new
+    // System reconciliation releases undesired workers' assignments. Seed the new
     // worker's test port at the transition, rather than racing other tests for 45000.
-    let worker_85_reservation = TcpListener::bind("127.0.0.1:0")?;
-    let worker_85_port = worker_85_reservation.local_addr()?.port();
+    let worker_85_port = pv_fake::port()?;
     let mut database = Database::open(&paths)?;
     database.assign_port(
         PortRequest::php_worker("8.5", worker_85_port, worker_85_port, worker_85_port),
@@ -2243,7 +2242,6 @@ env:
         }),
     )?;
     drop(database);
-    drop(worker_85_reservation);
     reconcile_project_gateway_runtimes_for_test(
         &paths,
         &acme.id,
@@ -2369,10 +2367,9 @@ env:
         assert!(!gateway_fragment.exists());
         assert!(!worker_fragment.exists());
         fs::write_sensitive_file(&acme.config_path, "php: \"8.5\"\n")?;
-        // Stopping the undemanded worker releases its seeded port. Reserve a
+        // Stopping the undemanded worker releases its seeded port. Seed a
         // fresh one for each restart instead of racing parallel tests on defaults.
-        let port_reservation = reserve_loopback_ports(1)?;
-        let worker_port = loopback_ports(&port_reservation)?[0];
+        let worker_port = pv_fake::port()?;
         let mut database = Database::open(&paths)?;
         database.assign_port(
             PortRequest::php_worker("8.5", worker_port, worker_port, worker_port),
@@ -2389,7 +2386,6 @@ env:
             ProjectMode::Served,
         )?;
         drop(database);
-        drop(port_reservation);
         reconcile_gateway_runtimes(&paths)
             .await
             .context("restore the served Project after stopping its PHP 8.5 worker")?;
@@ -3378,8 +3374,7 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
         "fake-caddy-pv1",
         &caddy_release,
     )?;
-    let port_reservations = reserve_loopback_ports_in_range(2, 40_000, 44_999)?;
-    let ports = loopback_ports(&port_reservations)?;
+    let ports = pv_fake::ports::<2>()?;
     seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
     drop(database);
 
@@ -3391,7 +3386,6 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
     legacy_spec.resource_name = "gateway".to_owned();
     legacy_spec.track = "core".to_owned();
     let supervisor = ProcessSupervisor::new(paths.clone());
-    drop(port_reservations);
     let mut legacy_process = supervisor.start(legacy_spec).await?;
     assert!(
         supervisor
@@ -6806,8 +6800,7 @@ fn seed_gateway_test_tls(paths: &PvPaths) -> Result<()> {
 }
 
 fn available_loopback_ports(count: usize) -> Result<Vec<u16>> {
-    let listeners = reserve_loopback_ports(count)?;
-    loopback_ports(&listeners)
+    (0..count).map(|_port| pv_fake::port()).collect()
 }
 
 async fn wait_for_existing_path_count(paths: &[Utf8PathBuf], expected: usize) -> Result<()> {
@@ -6825,49 +6818,6 @@ async fn wait_for_existing_path_count(paths: &[Utf8PathBuf], expected: usize) ->
     .with_context(|| format!("expected {expected} readiness probes"))?;
 
     Ok(())
-}
-
-fn reserve_loopback_ports(count: usize) -> Result<Vec<TcpListener>> {
-    let mut listeners = Vec::with_capacity(count);
-    let mut ports = Vec::with_capacity(count);
-
-    while ports.len() < count {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let port = listener.local_addr()?.port();
-        if ports.contains(&port) {
-            continue;
-        }
-
-        ports.push(port);
-        listeners.push(listener);
-    }
-
-    Ok(listeners)
-}
-
-fn reserve_loopback_ports_in_range(count: usize, start: u16, end: u16) -> Result<Vec<TcpListener>> {
-    let mut listeners = Vec::with_capacity(count);
-
-    for port in start..=end {
-        match TcpListener::bind(("127.0.0.1", port)) {
-            Ok(listener) => listeners.push(listener),
-            Err(error) if error.kind() == ErrorKind::AddrInUse => continue,
-            Err(error) => return Err(error.into()),
-        }
-
-        if listeners.len() == count {
-            return Ok(listeners);
-        }
-    }
-
-    bail!("expected {count} available loopback ports in {start}..={end}")
-}
-
-fn loopback_ports(listeners: &[TcpListener]) -> Result<Vec<u16>> {
-    listeners
-        .iter()
-        .map(|listener| Ok(listener.local_addr()?.port()))
-        .collect()
 }
 
 #[cfg(unix)]

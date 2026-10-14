@@ -3793,7 +3793,7 @@ mod tests {
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
     use std::fs;
     use std::io::{self, Write};
-    use std::net::{TcpListener, TcpStream};
+    use std::net::{Ipv4Addr, SocketAddr, TcpStream};
     use std::os::unix::fs::PermissionsExt;
     use std::pin::Pin;
     use std::process;
@@ -6544,10 +6544,8 @@ mod tests {
             config_path: config_path.clone(),
             desired_php_track: None,
         })?;
-        let mut port_guards = Vec::new();
-        for port_name in ["smtp", "dashboard"] {
-            let listener = TcpListener::bind(("127.0.0.1", 0))?;
-            let port = listener.local_addr()?.port();
+        let [smtp_port, dashboard_port] = pv_fake::ports()?;
+        for (port_name, port) in [("smtp", smtp_port), ("dashboard", dashboard_port)] {
             database.assign_port(
                 PortRequest::resource_port(
                     "mailpit",
@@ -6559,10 +6557,8 @@ mod tests {
                 ),
                 |candidate| candidate == port,
             )?;
-            port_guards.push(listener);
         }
-        let smtp_address = port_guards[0].local_addr()?;
-        drop(port_guards);
+        let smtp_address = SocketAddr::from((Ipv4Addr::LOCALHOST, smtp_port));
         drop(database);
         reconcile_project_env_with_runtime_catalog_and_progress(
             &paths,
@@ -11539,22 +11535,10 @@ mod tests {
     }
 
     fn seed_gateway_ports(database: &mut Database) -> anyhow::Result<()> {
-        let mut listeners = Vec::with_capacity(2);
-        let mut ports = Vec::with_capacity(2);
-        while ports.len() < 2 {
-            let listener = TcpListener::bind("127.0.0.1:0")?;
-            let port = listener.local_addr()?.port();
-            if ports.contains(&port) {
-                continue;
-            }
-
-            ports.push(port);
-            listeners.push(listener);
-        }
-
+        let [http_port, https_port] = pv_fake::ports()?;
         for (gateway_port, port) in [
-            (GatewayPort::Http, ports[0]),
-            (GatewayPort::Https, ports[1]),
+            (GatewayPort::Http, http_port),
+            (GatewayPort::Https, https_port),
         ] {
             database.assign_port(
                 PortRequest::gateway(gateway_port, port, port, port),
@@ -11562,7 +11546,6 @@ mod tests {
             )?;
         }
 
-        drop(listeners);
         Ok(())
     }
 

@@ -8,7 +8,7 @@ use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::process::Output;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use camino::Utf8Path;
 use camino_tempfile::{Utf8TempDir, tempdir};
 use daemon::gateway::{
@@ -106,7 +106,7 @@ async fn real_frankenphp_satisfies_the_worker_contract() -> Result<()> {
 /// period.
 async fn gateway_contract(paths: &PvPaths, executable: &Utf8Path) -> Result<()> {
     seed_local_ca(paths)?;
-    let [http_port, https_port, moved_http_port, moved_https_port] = available_ports()?;
+    let [http_port, https_port, moved_http_port, moved_https_port] = pv_fake::ports()?;
     state::fs::ensure_user_dir(&paths.gateway_projects_config_dir())?;
     let config = gateway_config(paths, http_port, https_port)?;
     let config_path = paths.gateway_root_config();
@@ -185,7 +185,7 @@ async fn gateway_contract(paths: &PvPaths, executable: &Utf8Path) -> Result<()> 
 /// site, start it through the supervisor, wait for the admin API and the worker's health route,
 /// move the worker to a new port with a reload, and stop within the grace period.
 async fn worker_contract(paths: &PvPaths, artifact_root: &Utf8Path, php_track: &str) -> Result<()> {
-    let [port, moved_port] = available_ports()?;
+    let [port, moved_port] = pv_fake::ports()?;
     let runtime_key = php_track.to_owned();
     let project_root = paths.home().join("contract-project");
     state::fs::ensure_user_dir(&project_root)?;
@@ -377,20 +377,6 @@ fn with_skip_install_trust(config: &str) -> Result<String> {
     };
 
     Ok(format!("{{\n    skip_install_trust\n{global_options}"))
-}
-
-fn available_ports<const COUNT: usize>() -> Result<[u16; COUNT]> {
-    let listeners = (0..COUNT)
-        .map(|_index| TcpListener::bind((Ipv4Addr::LOCALHOST, 0)))
-        .collect::<Result<Vec<_>, _>>()?;
-    let ports = listeners
-        .iter()
-        .map(|listener| Ok(listener.local_addr()?.port()))
-        .collect::<Result<Vec<_>>>()?;
-
-    ports
-        .try_into()
-        .map_err(|_ports| anyhow!("expected {COUNT} ports"))
 }
 
 fn run_runtime_cli(executable: &Utf8Path, arguments: &[String]) -> Result<Output> {

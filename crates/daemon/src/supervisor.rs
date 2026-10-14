@@ -1573,9 +1573,7 @@ mod tests {
         pv_fake::install_monitor(&paths)?;
         let descendant_pid_path = paths.run().join("adopted-kill-descendant.pid");
         let listener_ready_path = paths.run().join("adopted-kill-listener.ready");
-        let listener = TcpListener::bind(("127.0.0.1", 0)).context("reserve listener port")?;
-        let listener_port = listener.local_addr().context("read listener port")?.port();
-        drop(listener);
+        let listener_port = pv_fake::port()?;
 
         let spec = descendant_spec(
             &paths,

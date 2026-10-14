@@ -541,7 +541,7 @@ async fn postgres_reconciliation_creates_database_allocation_and_renders_env() -
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
-    reserve_postgres_port(&paths, 19_060)?;
+    reserve_postgres_port(&paths)?;
 
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
     let snapshot = {
@@ -651,7 +651,7 @@ async fn postgres_project_demand_installs_missing_fixture_track_before_start() -
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_postgres_cached_fixture(&paths, tempdir.path())?;
-    reserve_postgres_port(&paths, 19_061)?;
+    reserve_postgres_port(&paths)?;
 
     reconcile_project_env_with_postgres_runtime_catalog_and_manifest_url(
         &paths,
@@ -730,7 +730,7 @@ async fn postgres_reconciliation_writes_tcp_only_runtime_config() -> Result<()> 
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
-    reserve_postgres_port(&paths, 19_064)?;
+    reserve_postgres_port(&paths)?;
 
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
     let data_config = state::fs::read_to_string(
@@ -770,11 +770,11 @@ async fn postgres_replacement_and_stop_do_not_wait_for_an_open_client() -> Resul
         POSTGRES_TRACK,
         &[PostgresPreloadLibrary::PgStatStatements],
     )?;
-    reserve_postgres_port(&paths, 19_071)?;
+    let postgres_port = reserve_postgres_port(&paths)?;
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
     let original_pid = resource_runtime_metadata_pid(&paths, "postgres", POSTGRES_TRACK)?;
 
-    let first_client = connect_postgres_admin(&paths, 19_071).await?;
+    let first_client = connect_postgres_admin(&paths, postgres_port).await?;
     Database::open(&paths)?.replace_postgres_track_preload_libraries(
         POSTGRES_TRACK,
         &["pg_stat_statements".to_owned()],
@@ -784,7 +784,7 @@ async fn postgres_replacement_and_stop_do_not_wait_for_an_open_client() -> Resul
     let replaced_within = replacement_started.elapsed();
     let replacement_pid = resource_runtime_metadata_pid(&paths, "postgres", POSTGRES_TRACK)?;
 
-    let second_client = connect_postgres_admin(&paths, 19_071).await?;
+    let second_client = connect_postgres_admin(&paths, postgres_port).await?;
     Database::open(&paths)?.replace_project_managed_resources(&project.id, &[])?;
     let stop_started = Instant::now();
     super::reconcile_persisted_resource_track_with_progress(
@@ -832,15 +832,16 @@ async fn postgres_preload_configuration_reconciles_tracks_17_and_18() -> Result<
     let mut snapshots = Vec::new();
     let mut runtime_pids = Vec::new();
 
+    let [track_17_port, track_18_port] = pv_fake::ports()?;
     for (track, port, requested) in [
         (
             "17",
-            19_067,
+            track_17_port,
             vec!["timescaledb", "pg_cron", "pg_stat_statements", "pg_cron"],
         ),
         (
             "18",
-            19_068,
+            track_18_port,
             vec!["pg_duckdb", "pg_stat_statements", "pg_duckdb"],
         ),
     ] {
@@ -899,6 +900,12 @@ async fn postgres_preload_configuration_reconciles_tracks_17_and_18() -> Result<
         crate::project_env::reconcile_project_env(&paths, &project.id).await?;
         let cleared_config = postgres_runtime_config(&paths, track)?;
         let cleared_pid = resource_runtime_metadata_pid(&paths, "postgres", track)?;
+        for config in [&default_config, &enabled_config, &cleared_config] {
+            assert!(
+                config.contains(&format!("\nport = {port}\n")),
+                "expected PostgreSQL {track} config to use port {port}: {config}"
+            );
+        }
         crate::project_env::reconcile_project_env(&paths, &project.id).await?;
         let stable_cleared_config = postgres_runtime_config(&paths, track)?;
         let stable_cleared_pid = resource_runtime_metadata_pid(&paths, "postgres", track)?;
@@ -975,7 +982,7 @@ async fn postgres_preload_configuration_rejects_missing_library() -> Result<()> 
         "17",
     )?;
     seed_postgres_fixture_artifact_for_track(&paths, "17")?;
-    reserve_postgres_track_port(&paths, "17", 19_069)?;
+    reserve_postgres_track_port(&paths, "17", pv_fake::port()?)?;
     {
         let mut database = Database::open(&paths)?;
         database.replace_postgres_track_preload_libraries("17", &["pg_cron".to_string()])?;
@@ -1038,7 +1045,7 @@ async fn postgres_preload_configuration_rejects_unsafe_combination() -> Result<(
             PostgresPreloadLibrary::PgDuckDb,
         ],
     )?;
-    reserve_postgres_track_port(&paths, "18", 19_070)?;
+    reserve_postgres_track_port(&paths, "18", pv_fake::port()?)?;
     {
         let mut database = Database::open(&paths)?;
         database.replace_postgres_track_preload_libraries(
@@ -1083,7 +1090,7 @@ async fn postgres_reconciliation_replaces_stale_admin_username_from_track_env() 
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
-    reserve_postgres_port(&paths, 19_062)?;
+    reserve_postgres_port(&paths)?;
     {
         let mut database = Database::open(&paths)?;
         database.record_managed_resource_track_env_context(
@@ -1141,7 +1148,7 @@ async fn postgres_reconciliation_retries_with_initialized_password_after_config_
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
-    reserve_postgres_port(&paths, 19_065)?;
+    reserve_postgres_port(&paths)?;
     let config_parent_blocker = paths.config().join("resources");
     state::fs::write_sensitive_file(&config_parent_blocker, "not a directory")?;
 
@@ -1223,7 +1230,7 @@ async fn postgres_reconciliation_records_generated_env_when_readiness_fails_afte
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_unready_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
-    reserve_postgres_port(&paths, 19_063)?;
+    reserve_postgres_port(&paths)?;
 
     let result =
         reconcile_project_env_with_unready_postgres_runtime_catalog(&paths, &project.id).await;
@@ -1300,9 +1307,8 @@ async fn mailpit_reconciliation_records_smtp_and_dashboard_env() -> Result<()> {
     )?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_mailpit_fixture_artifact(&paths, FAKE_MAILPIT_TRACK)?;
-    let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
-    drop(mailpit_port_guards);
     mailpit_fixture_result(
         &paths,
         crate::project_env::reconcile_project_env(&paths, &project.id).await,
@@ -1361,9 +1367,8 @@ async fn mailpit_project_demand_installs_missing_fixture_track_before_start() ->
     )?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_mailpit_cached_fixture(&paths, tempdir.path())?;
-    let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
-    drop(mailpit_port_guards);
     mailpit_fixture_result(
         &paths,
         reconcile_project_env_with_mailpit_runtime_catalog_and_manifest_url(
@@ -1481,9 +1486,8 @@ async fn demanded_resource_starts_fake_multi_port_runtime_before_env_rendering()
     )?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
-    let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
-    drop(mailpit_port_guards);
     reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
     let started_snapshot = {
         let database = Database::open(&paths)?;
@@ -1604,9 +1608,8 @@ async fn targeted_resource_reconciliation_preserves_other_tracks_and_stops_final
     )?;
     seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
     seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_NEXT_TRACK)?;
-    let current_track_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
-    let other_track_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_NEXT_TRACK)?;
-    drop((current_track_port_guards, other_track_port_guards));
+    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_NEXT_TRACK)?;
 
     reconcile_project_env_with_fake_runtime_catalog(&paths, &first.id).await?;
     reconcile_project_env_with_fake_runtime_catalog(&paths, &second.id).await?;
@@ -1935,9 +1938,8 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
 "#,
     )?;
     seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
-    let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
-    drop(mailpit_port_guards);
     reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
     let first_project = link_project(
         &paths,
@@ -1973,8 +1975,7 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
         pid_before_apply,
         "applying an earlier Project should preserve a later Project's discovered runtime"
     );
-    let stale_port_guard = seed_mailpit_runtime_port(&paths, FAKE_MAILPIT_TRACK, "obsolete")?;
-    drop(stale_port_guard);
+    seed_mailpit_runtime_port(&paths, FAKE_MAILPIT_TRACK, "obsolete")?;
     let caddy_fixture = setup_default_fixture("caddy")?;
     seed_setup_default_cached_fixture(&paths, tempdir.path(), &[caddy_fixture])?;
 
@@ -2661,8 +2662,7 @@ async fn assert_fallback_during_project_resource_readiness(
     let baseline_env = "REVISION=baseline\n";
     state::fs::write_sensitive_file(&project.path.join(".env"), baseline_env)?;
     seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
-    let port_guard = TcpListener::bind(("127.0.0.1", 0))?;
-    let port = port_guard.local_addr()?.port();
+    let port = pv_fake::port()?;
     let mut database = Database::open(&paths)?;
     database.assign_port(
         PortRequest::resource_port("mysql", FAKE_SQL_TRACK, "mysql", port, port, port),
@@ -2673,7 +2673,6 @@ async fn assert_fallback_during_project_resource_readiness(
         .ok_or_else(|| anyhow!("missing linked Project"))?;
     let observed_before = database.project_env_observed_state(&project.id)?;
     drop(database);
-    drop(port_guard);
 
     let gate = Arc::new(match readiness_error {
         Some(reason) => ReadinessWaveGate::with_failing_readiness(reason),
@@ -2974,7 +2973,7 @@ async fn project_manifest_failure_preserves_earlier_installed_resource_work() ->
         "env: {}\n",
     )?;
     seed_mailpit_fixture_artifact(&paths, FAKE_MAILPIT_TRACK)?;
-    drop(seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?);
+    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
     let manifest_requests = Arc::new(AtomicUsize::new(0));
     let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
     catalog.install_options.manifest_url = TEST_ARTIFACT_MANIFEST_URL.to_owned();
@@ -3128,8 +3127,8 @@ async fn project_application_pins_resource_track_until_selector_changes() -> Res
         progress.clone(),
     )
     .await?;
-    drop(seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?);
-    drop(seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_NEXT_TRACK)?);
+    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_NEXT_TRACK)?;
     state::fs::write_sensitive_file(
         &project.config_path,
         "serve: false\nmailpit:\n  version: latest\n",
@@ -3754,10 +3753,10 @@ async fn demanded_resource_reassigns_persisted_port_when_non_pv_listener_occupie
     )?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
-    let stale_smtp_guard = seed_mailpit_runtime_port(&paths, FAKE_MAILPIT_TRACK, "smtp")?;
-    let stale_smtp_port = stale_smtp_guard.local_addr()?.port();
-    let stale_dashboard_guard = seed_mailpit_runtime_port(&paths, FAKE_MAILPIT_TRACK, "dashboard")?;
-    let stale_dashboard_port = stale_dashboard_guard.local_addr()?.port();
+    let stale_smtp_port = seed_mailpit_runtime_port(&paths, FAKE_MAILPIT_TRACK, "smtp")?;
+    let _stale_smtp_guard = TcpListener::bind(("127.0.0.1", stale_smtp_port))?;
+    let stale_dashboard_port = seed_mailpit_runtime_port(&paths, FAKE_MAILPIT_TRACK, "dashboard")?;
+    let _stale_dashboard_guard = TcpListener::bind(("127.0.0.1", stale_dashboard_port))?;
 
     let result = reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await;
     let reassign_snapshot = {
@@ -3833,9 +3832,8 @@ async fn demanded_resource_installs_fake_multi_port_runtime_from_cached_fixture_
     )?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_fake_mailpit_cached_fixture(&paths, tempdir.path())?;
-    let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
-    drop(mailpit_port_guards);
     reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
         &paths,
         &project.id,
@@ -3897,7 +3895,7 @@ async fn rustfs_reconciliation_creates_bucket_and_renders_env() -> Result<()> {
     let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
-    reserve_rustfs_ports(&paths, 19_000, 19_001)?;
+    reserve_available_rustfs_ports(&paths)?;
 
     reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
     let snapshot = {
@@ -3941,7 +3939,7 @@ async fn rustfs_project_demand_installs_missing_fixture_track_before_start() -> 
     let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_rustfs_cached_fixture(&paths, tempdir.path())?;
-    reserve_rustfs_ports(&paths, 19_010, 19_011)?;
+    reserve_available_rustfs_ports(&paths)?;
 
     reconcile_project_env_with_rustfs_runtime_catalog_and_manifest_url(
         &paths,
@@ -3986,7 +3984,7 @@ async fn rustfs_ready_allocation_reconciliation_repairs_missing_bucket_and_prese
     let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
-    reserve_rustfs_ports(&paths, 19_020, 19_021)?;
+    reserve_available_rustfs_ports(&paths)?;
 
     reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
     let (bucket, allocation_env_before) = {
@@ -4051,7 +4049,7 @@ async fn rustfs_port_reassignment_renders_current_endpoint_for_ready_allocation(
     let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
-    reserve_rustfs_ports(&paths, 19_030, 19_031)?;
+    let rustfs_ports = reserve_available_rustfs_ports(&paths)?;
 
     reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
     let (bucket, initial_endpoint) = {
@@ -4068,7 +4066,7 @@ async fn rustfs_port_reassignment_renders_current_endpoint_for_ready_allocation(
         )
     };
     stop_recorded_rustfs_runtime(&paths).await?;
-    let _port_guards = bind_loopback_ports_when_available([19_030, 19_031]).await?;
+    let _port_guards = bind_loopback_ports_when_available(rustfs_ports).await?;
 
     reconcile_project_env_with_rustfs_runtime_catalog(&paths, &project.id).await?;
     let snapshot = {
@@ -4658,9 +4656,8 @@ async fn demanded_resource_cleans_runtime_files_when_process_exits_after_readine
     )?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_fast_exit_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
-    let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
-    drop(mailpit_port_guards);
     let result =
         reconcile_project_env_with_fast_exit_fake_runtime_catalog(&paths, &project.id).await;
     if let Err(error) = &result
@@ -4837,9 +4834,8 @@ async fn demanded_removed_track_fails_without_starting_runtime() -> Result<()> {
             true,
         )?;
     }
-    let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
-    drop(mailpit_port_guards);
     let result = reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await;
     let failure_snapshot = {
         let database = Database::open(&paths)?;
@@ -4996,9 +4992,8 @@ async fn demand_change_stops_previous_runtime_when_new_runtime_readiness_fails()
     )?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
-    let mailpit_port_guards = seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
+    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
 
-    drop(mailpit_port_guards);
     reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
 
     write_project_config(
@@ -5129,18 +5124,14 @@ async fn resource_readiness_slots_include_start_and_poll_during_preparation() ->
     )?;
     let tracks = ["8.0", "8.1", "8.2", "8.3", "8.4"];
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
-    let mut port_guards = Vec::new();
     for track in tracks {
         seed_fake_sql_artifact(&paths, "mysql", track)?;
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
-        let port = listener.local_addr()?.port();
+        let port = pv_fake::port()?;
         Database::open(&paths)?.assign_port(
             PortRequest::resource_port("mysql", track, "mysql", port, port, port),
             |candidate| candidate == port,
         )?;
-        port_guards.push(listener);
     }
-    drop(port_guards);
     let gate = Arc::new(ReadinessWaveGate::with_gated_preparation("8.4"));
     let allocation_events = Arc::new(Mutex::new(Vec::new()));
     let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
@@ -5241,17 +5232,13 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
     for track in ready_tracks {
         seed_fake_sql_artifact(&paths, "mysql", track)?;
     }
-    let mut port_guards = Vec::new();
     for track in ready_tracks {
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
-        let port = listener.local_addr()?.port();
+        let port = pv_fake::port()?;
         Database::open(&paths)?.assign_port(
             PortRequest::resource_port("mysql", track, "mysql", port, port, port),
             |candidate| candidate == port,
         )?;
-        port_guards.push(listener);
     }
-    drop(port_guards);
     let cancelled_gate = Arc::new(ReadinessWaveGate::new());
     let allocation_events = Arc::new(Mutex::new(Vec::new()));
     let cancelled_catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
@@ -5657,9 +5644,8 @@ async fn redis_reconciliation_marks_prefix_allocation_ready_and_renders_env() ->
     )?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_redis_fixture_artifact(&paths, REDIS_TRACK)?;
-    let redis_port_guard = seed_redis_runtime_port(&paths)?;
+    seed_redis_runtime_port(&paths)?;
 
-    drop(redis_port_guard);
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
     let snapshot = {
         let database = Database::open(&paths)?;
@@ -5866,9 +5852,8 @@ async fn redis_port_reassignment_refreshes_ready_allocation_env() -> Result<()> 
     )?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_redis_fixture_artifact(&paths, REDIS_TRACK)?;
-    let redis_port_guard = seed_redis_runtime_port(&paths)?;
+    seed_redis_runtime_port(&paths)?;
 
-    drop(redis_port_guard);
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
     let (prefix, initial_port) = {
         let database = Database::open(&paths)?;
@@ -5955,9 +5940,8 @@ async fn redis_project_demand_installs_missing_fixture_track_before_start() -> R
     )?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_redis_cached_fixture(&paths, tempdir.path())?;
-    let redis_port_guard = seed_redis_runtime_port(&paths)?;
+    seed_redis_runtime_port(&paths)?;
 
-    drop(redis_port_guard);
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
     let snapshot = {
         let database = Database::open(&paths)?;
@@ -6318,15 +6302,11 @@ fn reserve_rustfs_ports(paths: &PvPaths, api_port: u16, console_port: u16) -> Re
     Ok(())
 }
 
-fn reserve_available_rustfs_ports(paths: &PvPaths) -> Result<()> {
-    let api_listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let console_listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let api_port = api_listener.local_addr()?.port();
-    let console_port = console_listener.local_addr()?.port();
-    drop(api_listener);
-    drop(console_listener);
+fn reserve_available_rustfs_ports(paths: &PvPaths) -> Result<[u16; 2]> {
+    let [api_port, console_port] = pv_fake::ports()?;
+    reserve_rustfs_ports(paths, api_port, console_port)?;
 
-    reserve_rustfs_ports(paths, api_port, console_port)
+    Ok([api_port, console_port])
 }
 
 fn reserve_rustfs_port(database: &mut Database, port_name: &str, port: u16) -> Result<()> {
@@ -6338,8 +6318,11 @@ fn reserve_rustfs_port(database: &mut Database, port_name: &str, port: u16) -> R
     Ok(())
 }
 
-fn reserve_postgres_port(paths: &PvPaths, port: u16) -> Result<()> {
-    reserve_postgres_track_port(paths, POSTGRES_TRACK, port)
+fn reserve_postgres_port(paths: &PvPaths) -> Result<u16> {
+    let port = pv_fake::port()?;
+    reserve_postgres_track_port(paths, POSTGRES_TRACK, port)?;
+
+    Ok(port)
 }
 
 fn reserve_postgres_track_port(paths: &PvPaths, track: &str, port: u16) -> Result<()> {
@@ -6824,24 +6807,22 @@ fn seed_fast_exit_fake_mailpit_artifact(paths: &PvPaths, track: &str) -> Result<
     )
 }
 
-fn seed_mailpit_runtime_ports(paths: &PvPaths, track: &str) -> Result<[TcpListener; 2]> {
-    let smtp_guard = seed_mailpit_runtime_port(paths, track, "smtp")?;
-    let dashboard_guard = seed_mailpit_runtime_port(paths, track, "dashboard")?;
-
-    Ok([smtp_guard, dashboard_guard])
+fn seed_mailpit_runtime_ports(paths: &PvPaths, track: &str) -> Result<[u16; 2]> {
+    Ok([
+        seed_mailpit_runtime_port(paths, track, "smtp")?,
+        seed_mailpit_runtime_port(paths, track, "dashboard")?,
+    ])
 }
 
-fn seed_mailpit_runtime_port(paths: &PvPaths, track: &str, port_name: &str) -> Result<TcpListener> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let port = listener.local_addr()?.port();
-
+fn seed_mailpit_runtime_port(paths: &PvPaths, track: &str, port_name: &str) -> Result<u16> {
+    let port = pv_fake::port()?;
     let mut database = Database::open(paths)?;
     database.assign_port(
         PortRequest::resource_port("mailpit", track, port_name, port, port, port),
         |candidate| candidate == port,
     )?;
 
-    Ok(listener)
+    Ok(port)
 }
 
 fn seed_fake_sql_artifact(paths: &PvPaths, resource: &str, track: &str) -> Result<()> {
@@ -7119,17 +7100,15 @@ fn seed_rustfs_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()>
     Ok(())
 }
 
-fn seed_redis_runtime_port(paths: &PvPaths) -> Result<TcpListener> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let port = listener.local_addr()?.port();
-
+fn seed_redis_runtime_port(paths: &PvPaths) -> Result<u16> {
+    let port = pv_fake::port()?;
     let mut database = Database::open(paths)?;
     database.assign_port(
         PortRequest::resource_port("redis", REDIS_TRACK, "redis", port, port, port),
         |candidate| candidate == port,
     )?;
 
-    Ok(listener)
+    Ok(port)
 }
 
 fn create_postgres_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
@@ -8066,6 +8045,7 @@ fn assert_with_normalized_postgres_runtime(
         "postgres://pv_root:<postgres_password>@127.0.0.1:<postgres_port>",
     );
     settings.add_filter(r"DB_PORT=\d+", "DB_PORT=<postgres_port>");
+    settings.add_filter(r"port = \d+", "port = <postgres_port>");
     settings.add_filter(r"PGPORT=\d+", "PGPORT=<postgres_port>");
     settings.add_filter(r#""port": "\d+""#, r#""port": "<postgres_port>""#);
     settings.add_filter(r"port: \d+", "port: <postgres_port>");

@@ -37,8 +37,8 @@ const IDLE_SHELL_LOOP: &str = "i=0; while [ $i -lt 150 ]; do sleep 1; i=$((i + 1
 
 #[tokio::test]
 async fn tcp_readiness_succeeds_for_listening_ports_and_times_out() -> Result<()> {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    let port = listener.local_addr()?.port();
+    let port = pv_fake::port()?;
+    let listener = TcpListener::bind(("127.0.0.1", port)).await?;
 
     wait_for_readiness(
         ReadinessCheck::Tcp {

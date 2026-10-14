@@ -143,15 +143,11 @@ fn probes_separate_process_socket_classes() -> Result<()> {
         ("ipv6_loopback", "[::1]:0", false, false, false, true, true),
     ] {
         let tempdir = tempdir()?;
-        // IPv6-only allocation does not reserve the same number in IPv4's port space.
-        let reservation = if expected {
-            Some(TcpListener::bind(("0.0.0.0", 0))?)
-        } else {
-            None
-        };
+        // IPv6-only allocation does not reserve the same number in IPv4's port space, so those
+        // holders bind a pool port that is free for IPv4.
         let mut address: SocketAddr = address.parse()?;
-        if let Some(reservation) = &reservation {
-            address.set_port(reservation.local_addr()?.port());
+        if expected {
+            address.set_port(pv_fake::port()?);
         }
         let fake = pv_fake::install_with_settings(
             &tempdir.path().join("tcp-holder"),
@@ -169,7 +165,6 @@ fn probes_separate_process_socket_classes() -> Result<()> {
         )?;
         let mut holder = start_holder(fake)?;
         let address = holder.wait_for(|event| matches!(event, EventKind::TcpReady { .. }))?;
-        drop(reservation);
         let available = loopback_tcp_port_available(address.port());
         holder.stop()?;
         assert_eq!(available, expected, "unexpected probe verdict for {name}");
@@ -182,7 +177,7 @@ fn probes_separate_process_socket_classes() -> Result<()> {
 fn server_time_wait_does_not_churn_the_port() -> Result<()> {
     let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
     socket.set_reuse_address(true)?;
-    socket.bind(&"127.0.0.1:0".parse::<SocketAddr>()?.into())?;
+    socket.bind(&SocketAddr::from(([127, 0, 0, 1], pv_fake::port()?)).into())?;
     socket.listen(1)?;
     let listener = TcpListener::from(socket);
     let address = listener.local_addr()?;
@@ -215,7 +210,7 @@ fn killed_server_with_connected_client_does_not_churn_the_port() -> Result<()> {
         Persona::TcpHolder,
         FakeSettings {
             tcp_holder: Some(TcpHolderConfig {
-                address: "127.0.0.1:0".parse()?,
+                address: SocketAddr::from(([127, 0, 0, 1], pv_fake::port()?)),
                 reuse_address: true,
                 reuse_port: false,
                 ipv6_only: false,

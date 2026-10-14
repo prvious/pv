@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 use std::io;
-#[cfg(test)]
-use std::net::TcpListener;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use state::{Database, EnvContextValues, PvPaths, ResourceAllocationRecord};
@@ -341,10 +339,7 @@ pub(crate) fn mysql_runtime_catalog_with_recording_admin(
 
 #[cfg(test)]
 fn available_test_port() -> Result<u16, DaemonError> {
-    let listener = TcpListener::bind((RESOURCE_HOST, 0))?;
-    let port = listener.local_addr()?.port();
-
-    Ok(port)
+    Ok(pv_fake::port().map_err(io::Error::other)?)
 }
 
 fn required_mysql_port(context: &ManagedResourceRuntimeContext) -> Result<u16, DaemonError> {
