@@ -36,6 +36,16 @@ pub fn port() -> Result<u16> {
         .port()
 }
 
+/// `COUNT` distinct ports from [`port`].
+pub fn ports<const COUNT: usize>() -> Result<[u16; COUNT]> {
+    let mut ports = [0; COUNT];
+    for slot in &mut ports {
+        *slot = port()?;
+    }
+
+    Ok(ports)
+}
+
 /// Gives the PV home at `paths` a DNS port from [`port`] unless it already has one, and returns
 /// the home's DNS port. A daemon that restarts rebinds its saved DNS port without retrying, so the
 /// port must be one no other test can take in between.

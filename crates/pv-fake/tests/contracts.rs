@@ -183,7 +183,7 @@ fn fake_from_another_build_refuses_to_start() -> Result<()> {
 #[test]
 fn gateway_controls_are_used_up_per_request_and_single_values_persist() -> Result<()> {
     let tempdir = tempdir()?;
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let gateway = GatewayFake::start(tempdir.path(), port)?;
     gateway.control(json!({
         "load_statuses": [422, 200, 200],
@@ -246,7 +246,7 @@ fn gateway_controls_are_used_up_per_request_and_single_values_persist() -> Resul
 #[test]
 fn rejected_loads_leave_accepted_load_controls_queued() -> Result<()> {
     let tempdir = tempdir()?;
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let gateway = GatewayFake::start(tempdir.path(), port)?;
     let marker = tempdir.path().join("load-accepted");
     gateway.control(json!({"load_statuses": [422], "load_accepted_marker": [marker]}))?;
@@ -279,7 +279,7 @@ fn rejected_loads_leave_accepted_load_controls_queued() -> Result<()> {
 #[test]
 fn gateway_controls_reject_unknown_keys_and_malformed_files() -> Result<()> {
     let tempdir = tempdir()?;
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let gateway = GatewayFake::start(tempdir.path(), port)?;
 
     let unknown =
@@ -312,7 +312,7 @@ fn gateway_controls_reject_unknown_keys_and_malformed_files() -> Result<()> {
 #[test]
 fn load_applies_after_its_client_disconnects() -> Result<()> {
     let tempdir = tempdir()?;
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let gateway = GatewayFake::start(tempdir.path(), port)?;
     gateway.control(json!({"load_delay_ms": [100]}))?;
     let load = gateway.config(port, "applied late");
@@ -334,7 +334,7 @@ fn load_applies_after_its_client_disconnects() -> Result<()> {
 #[test]
 fn held_load_is_recorded_and_leaves_the_admin_api_responsive() -> Result<()> {
     let tempdir = tempdir()?;
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let gateway = GatewayFake::start(tempdir.path(), port)?;
     let release = tempdir.path().join("release-load");
     gateway.control(json!({"load_response_gate": [release]}))?;
@@ -358,7 +358,7 @@ fn held_load_is_recorded_and_leaves_the_admin_api_responsive() -> Result<()> {
 #[test]
 fn stopped_service_closes_the_http_port_and_keeps_the_admin_api() -> Result<()> {
     let tempdir = tempdir()?;
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let gateway = GatewayFake::start(tempdir.path(), port)?;
     gateway.control(json!({"stop_service": true}))?;
 
@@ -376,7 +376,7 @@ fn stopped_service_closes_the_http_port_and_keeps_the_admin_api() -> Result<()> 
 #[test]
 fn admin_off_serves_http_without_an_admin_socket() -> Result<()> {
     let tempdir = tempdir()?;
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let admin_socket = tempdir.path().join("admin.sock");
     let config = gateway_config(&admin_socket, port, "legacy")
         .replace(&format!("admin \"unix/{admin_socket}|0600\""), "admin off");
@@ -403,7 +403,7 @@ fn admin_off_serves_http_without_an_admin_socket() -> Result<()> {
 #[test]
 fn admin_only_listeners_accept_loads_without_opening_ports() -> Result<()> {
     let tempdir = tempdir()?;
-    let [port, moved_port] = available_ports()?;
+    let [port, moved_port] = pv_fake::ports()?;
     let gateway = GatewayFake::start_with(
         tempdir.path(),
         port,
@@ -427,7 +427,7 @@ fn admin_only_listeners_accept_loads_without_opening_ports() -> Result<()> {
 #[test]
 fn listeners_set_to_nothing_stay_alive_without_serving() -> Result<()> {
     let tempdir = tempdir()?;
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let admin_socket = tempdir.path().join("admin.sock");
     let (fake, mut process) = spawn_gateway(
         tempdir.path(),
@@ -482,7 +482,7 @@ fn validate_pause_holds_then_exits_with_the_chosen_code() -> Result<()> {
 #[test]
 fn run_pause_holds_with_http_open_and_no_admin_socket() -> Result<()> {
     let tempdir = tempdir()?;
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let admin_socket = tempdir.path().join("admin.sock");
     let release = tempdir.path().join("release-run");
     let (fake, _process) = spawn_gateway(
@@ -604,7 +604,7 @@ fn fake_whose_lifeline_closed_before_it_started_exits_at_once() -> Result<()> {
 #[test]
 fn gateway_records_restart_with_each_process() -> Result<()> {
     let tempdir = tempdir()?;
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let first = GatewayFake::start(tempdir.path(), port)?;
     first.admin("POST", "/load", &first.config(port, "first process"))?;
     drop(first);
@@ -658,7 +658,7 @@ fn validate_records_each_validated_config() -> Result<()> {
 #[test]
 fn redis_fake_answers_as_recorded_and_exits_cleanly_on_sigterm() -> Result<()> {
     let tempdir = tempdir()?;
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let data_dir = tempdir.path().join("data");
     state::fs::ensure_user_dir(&data_dir)?;
     let (fake, mut process) = spawn_redis(tempdir.path(), port, &data_dir)?;
@@ -721,7 +721,7 @@ fn redis_fake_answers_as_recorded_and_exits_cleanly_on_sigterm() -> Result<()> {
 #[test]
 fn redis_fake_rejects_a_missing_data_dir_as_redis_does() -> Result<()> {
     let tempdir = tempdir()?;
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let data_dir = tempdir.path().join("missing");
     let (_fake, mut process) = spawn_redis(tempdir.path(), port, &data_dir)?;
 
@@ -742,7 +742,7 @@ fn redis_fake_rejects_a_missing_data_dir_as_redis_does() -> Result<()> {
 #[test]
 fn mailpit_fake_greets_and_serves_the_dashboard_routes_as_recorded() -> Result<()> {
     let tempdir = tempdir()?;
-    let [smtp_port, dashboard_port] = available_ports()?;
+    let [smtp_port, dashboard_port] = pv_fake::ports()?;
     state::fs::ensure_user_dir(&tempdir.path().join("data"))?;
     let (fake, mut process) = spawn_service(
         tempdir.path(),
@@ -782,7 +782,7 @@ fn mailpit_fake_fails_as_mailpit_does() -> Result<()> {
     let tempdir = tempdir()?;
     let busy = TcpListener::bind(("127.0.0.1", 0))?;
     let busy_port = busy.local_addr()?.port();
-    let [free_port] = available_ports()?;
+    let [free_port] = pv_fake::ports()?;
     let missing_database = tempdir.path().join("missing/mailpit.db");
     let database = tempdir.path().join("mailpit.db");
     let runs = [
@@ -835,9 +835,8 @@ fn mailpit_fake_fails_as_mailpit_does() -> Result<()> {
 #[test]
 fn pv_fake_mailpit_waits_for_busy_ports_and_answers_ready() -> Result<()> {
     let tempdir = tempdir()?;
-    let smtp_reservation = TcpListener::bind(("127.0.0.1", 0))?;
-    let smtp_port = smtp_reservation.local_addr()?.port();
-    let [dashboard_port] = available_ports()?;
+    let [smtp_port, dashboard_port] = pv_fake::ports()?;
+    let smtp_reservation = TcpListener::bind(("127.0.0.1", smtp_port))?;
     let (fake, mut process) = spawn_service(
         tempdir.path(),
         "pv-fake-mailpit",
@@ -874,7 +873,7 @@ fn pv_fake_mailpit_waits_for_busy_ports_and_answers_ready() -> Result<()> {
 #[test]
 fn pv_fake_mailpit_can_exit_after_its_first_response() -> Result<()> {
     let tempdir = tempdir()?;
-    let [smtp_port, dashboard_port] = available_ports()?;
+    let [smtp_port, dashboard_port] = pv_fake::ports()?;
     let (fake, mut process) = spawn_service(
         tempdir.path(),
         "pv-fake-mailpit",
@@ -909,7 +908,7 @@ fn pv_fake_mailpit_can_exit_after_its_first_response() -> Result<()> {
 #[test]
 fn rustfs_fake_answers_health_and_refuses_unsigned_requests() -> Result<()> {
     let tempdir = tempdir()?;
-    let [api_port, console_port] = available_ports()?;
+    let [api_port, console_port] = pv_fake::ports()?;
     let (fake, mut process) = spawn_service(
         tempdir.path(),
         "rustfs",
@@ -1097,7 +1096,7 @@ fn mysqld_fake_accepts_connections_and_exits_on_sigterm_but_not_sigint() -> Resu
     let tempdir = tempdir()?;
     let data_dir = tempdir.path().join("data");
     run_mysqld_initialize(tempdir.path(), &data_dir)?;
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let port_argument = port.to_string();
     let (fake, mut process) = spawn_service(
         &tempdir.path().join("server"),
@@ -1197,7 +1196,7 @@ fn start_postgres_with_client(
     root: &Utf8Path,
     data_dir: &Utf8Path,
 ) -> Result<(InstalledFake, FakeProcess, TcpStream, Vec<u8>)> {
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let port_argument = port.to_string();
     let (fake, process) = spawn_service(
         root,
@@ -1479,20 +1478,6 @@ fn install_gateway(root: &Utf8Path, settings: FakeSettings) -> Result<InstalledF
             settings,
         },
     )
-}
-
-fn available_ports<const COUNT: usize>() -> Result<[u16; COUNT]> {
-    let listeners = (0..COUNT)
-        .map(|_index| TcpListener::bind(("127.0.0.1", 0)))
-        .collect::<Result<Vec<_>, _>>()?;
-    let ports = listeners
-        .iter()
-        .map(|listener| Ok(listener.local_addr()?.port()))
-        .collect::<Result<Vec<_>>>()?;
-
-    ports
-        .try_into()
-        .map_err(|_ports| anyhow!("expected {COUNT} ports"))
 }
 
 fn http_get(port: u16, path: &str) -> Result<(u16, String)> {
