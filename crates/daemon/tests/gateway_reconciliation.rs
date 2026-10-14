@@ -4,7 +4,8 @@ use camino_tempfile::tempdir;
 use daemon::gateway::{
     CaddyCliCommand, GatewayPfRoutingState, build_runtime_plan, gateway_process_spec,
     promote_validated_config_for_test, reconcile_gateway_runtimes_with_pf_state_for_test,
-    reconcile_project_gateway_runtimes_for_test, validate_config, worker_process_spec,
+    reconcile_project_gateway_runtimes_for_test, use_unrouted_public_probe_ports_for_test,
+    validate_config, worker_process_spec,
 };
 use daemon::{CaddyAdminError, CaddyAdminOperation, DaemonError, ProcessSupervisor, StopSignal};
 use insta::{Settings, allow_duplicates, assert_debug_snapshot};
@@ -202,6 +203,7 @@ async fn gateway_reconciliation_rolls_back_after_fresh_admin_startup_failure() -
     let fake_caddy = caddy_release.join("bin/caddy");
     let previous_root_config = "previous gateway config\n";
 
+    use_unrouted_public_probe_ports_for_test();
     pv_fake::install_with_settings(
         &fake_caddy,
         Persona::Caddy,
@@ -255,6 +257,7 @@ async fn gateway_reconciliation_rolls_back_after_fresh_service_readiness_failure
     let fake_caddy = caddy_release.join("bin/caddy");
     let previous_root_config = "previous gateway config\n";
 
+    use_unrouted_public_probe_ports_for_test();
     pv_fake::install_with_settings(
         &fake_caddy,
         Persona::Caddy,
@@ -6778,6 +6781,7 @@ fn ensure_fake_caddy(paths: &PvPaths) -> Result<()> {
 }
 
 fn write_fake_caddy(path: &Utf8Path) -> Result<()> {
+    use_unrouted_public_probe_ports_for_test();
     pv_fake::install(path, Persona::Caddy)?;
 
     Ok(())

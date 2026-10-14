@@ -75,6 +75,13 @@ refuses to start and says how to rebuild. Explicit cleanup still applies. To sto
 `descendant_spawned`, instead of marker files. Steer a running Gateway fake
 with `pv_fake::write_gateway_control`, which rejects unknown keys.
 
+Tests must not reach the PV installed on the machine running them, whose pf rules
+send loopback ports `80` and `443` to its real Gateway. A fixture that installs
+a fake Caddy calls `daemon::gateway::use_unrouted_public_probe_ports_for_test()`
+first, so Gateway readiness never probes those ports. Daemons started with
+`RunningDaemon::start_without_managed_resource_adapters` fetch the artifact
+manifest from a closed loopback port, so the fetch fails at once.
+
 Shell scripts remain only where a test needs what the fake doesn't do: the
 process-group tests, which need a child that outlives its parent or ignores
 SIGTERM. A script that stays alive must give up on its own, so a test that dies

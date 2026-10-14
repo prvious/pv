@@ -2051,6 +2051,7 @@ async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_suc
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let caddy_path = paths.resources().join("caddy/2/releases/2.11.4-pv1");
     let caddy_executable = caddy_path.join("bin/caddy");
+    daemon::gateway::use_unrouted_public_probe_ports_for_test();
     pv_fake::install(&caddy_executable, Persona::Caddy)?;
     state::fs::symlink_file(
         camino::Utf8Path::new("releases/2.11.4-pv1"),
@@ -2177,6 +2178,7 @@ fn seed_foundation_caddy(paths: &PvPaths) -> Result<InstalledFake> {
 
 fn seed_foundation_caddy_with(paths: &PvPaths, settings: FakeSettings) -> Result<InstalledFake> {
     let release_path = paths.home().join("fake-caddy-release");
+    daemon::gateway::use_unrouted_public_probe_ports_for_test();
     let caddy =
         pv_fake::install_with_settings(&release_path.join("bin/caddy"), Persona::Caddy, settings)?;
     seed_local_ca(paths)?;
