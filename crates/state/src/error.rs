@@ -151,6 +151,9 @@ pub enum StateError {
     #[error("Project `{project_id}` has no stored Project slug")]
     ProjectSlugMissing { project_id: String },
 
+    #[error("worktree ID `{worktree_id}` must be 1 to 63 ASCII letters and digits")]
+    InvalidWorktreeId { worktree_id: String },
+
     #[error("could not allocate a unique Project slug after {attempts} attempts")]
     ProjectSlugExhausted { attempts: usize },
 

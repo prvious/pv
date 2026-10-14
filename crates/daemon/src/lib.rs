@@ -16,6 +16,9 @@ mod server;
 mod structured_log;
 mod supervisor;
 mod watcher;
+mod worktrees;
+#[cfg(test)]
+mod worktrees_tests;
 
 use std::future::Future;
 use std::io;

@@ -2569,6 +2569,8 @@ async fn complete_system_reconciliation_with_progress(
         return Ok(ReconciliationOutcome::Cancelled);
     }
 
+    // Worktree discovery links, moves, and unlinks Projects, so it runs before PV reads them.
+    crate::worktrees::discover_worktrees(paths)?;
     let discovery_timer = phase_log.start(ReconciliationPhase::DemandDiscovery, "linked_projects");
     let discovery_result = discover_system_project_demand(paths);
     finish_demand_discovery_phase(discovery_timer, &discovery_result);

@@ -20,6 +20,7 @@ DatabaseInspection {
         "011:remove_admin_ports",
         "012:postgres_track_preload_libraries",
         "013:retired_resource_allocations",
+        "014:discovered_worktrees",
     ],
     tables: [
         "global_php_default_track",
@@ -37,5 +38,6 @@ DatabaseInspection {
         "resource_allocations",
         "resource_ports",
         "retired_resource_allocations",
+        "worktree_opt_outs",
     ],
 }

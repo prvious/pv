@@ -23,6 +23,7 @@ const POSTGRES_TRACK_PRELOAD_LIBRARIES_SQL: &str =
     include_str!("sql/012_postgres_track_preload_libraries.sql");
 const RETIRED_RESOURCE_ALLOCATIONS_SQL: &str =
     include_str!("sql/013_retired_resource_allocations.sql");
+const DISCOVERED_WORKTREES_SQL: &str = include_str!("sql/014_discovered_worktrees.sql");
 
 pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
     Migration::new(1, "core_state_schema", CORE_SCHEMA_SQL),
@@ -62,6 +63,7 @@ pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
         "retired_resource_allocations",
         RETIRED_RESOURCE_ALLOCATIONS_SQL,
     ),
+    Migration::new(14, "discovered_worktrees", DISCOVERED_WORKTREES_SQL),
 ];
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

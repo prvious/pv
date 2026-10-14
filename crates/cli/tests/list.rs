@@ -90,6 +90,28 @@ fn list_json_outputs_linked_projects() -> anyhow::Result<()> {
 }
 
 #[test]
+fn list_reports_a_project_whose_directory_is_gone_as_missing() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    let paths = PvPaths::for_home(home.clone());
+    let environment = TestEnvironment::new(&home, tempdir.path());
+    seed_project(&paths, &project)?;
+
+    let output = run_pv(&["list", "--json"], &environment)?;
+    let json = parse_json_output(output)?;
+
+    assert_eq!(json["projects"][0]["status"], "missing");
+    assert_list_json_snapshot(
+        "list_reports_a_project_whose_directory_is_gone_as_missing",
+        tempdir.path(),
+        &json,
+    );
+
+    Ok(())
+}
+
+#[test]
 fn list_json_exposes_resource_only_mode_slug_and_env_file_without_sentinel() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

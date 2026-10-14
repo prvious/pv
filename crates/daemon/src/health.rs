@@ -455,7 +455,7 @@ fn collect_runtime_health_probes(
     }
     probes.sort_by(|left, right| left.subject.cmp(&right.subject));
 
-    let (maintenance_scopes, errors) = match collect_project_tls_health(paths, &database) {
+    let (mut maintenance_scopes, mut errors) = match collect_project_tls_health(paths, &database) {
         Ok(health) => (health.scopes, health.errors),
         Err(error) => (
             Vec::new(),
@@ -466,6 +466,18 @@ fn collect_runtime_health_probes(
             }],
         ),
     };
+    // System reconciliation applies worktree changes. Unreadable sources are logged there.
+    match crate::worktrees::plan_worktree_changes(&database) {
+        Ok(plan) if !plan.changes.is_empty() => {
+            maintenance_scopes.push(ReconciliationScope::System)
+        }
+        Ok(_plan) => {}
+        Err(error) => errors.push(RuntimeHealthScanError {
+            subject: "worktrees".to_owned(),
+            scope: "system".to_owned(),
+            error: error.to_string(),
+        }),
+    }
 
     Ok(CollectedRuntimeHealth {
         probes,

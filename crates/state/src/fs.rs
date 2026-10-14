@@ -204,8 +204,31 @@ pub fn create_new_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
     create_new_file_handle(path)
 }
 
+/// Writes a new file in a directory PV doesn't own, such as a user's `.git` directory. It fails if
+/// the file exists and, unlike PV's own-file helpers, leaves the directory's permissions alone.
+pub fn write_new_file(path: &Utf8Path, content: &str) -> Result<(), StateError> {
+    io::Write::write_all(&mut create_new_file_handle(path)?, content.as_bytes())
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
+}
+
 pub fn read_to_string(path: &Utf8Path) -> Result<String, StateError> {
     read_utf8_file(path)
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns path canonicalization"
+)]
+pub fn canonicalize(path: &Utf8Path) -> Result<Utf8PathBuf, StateError> {
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))?;
+
+    Utf8PathBuf::from_path_buf(canonical).map_err(|canonical| {
+        StateError::filesystem(
+            canonical.to_string_lossy().as_ref(),
+            io::Error::new(io::ErrorKind::InvalidData, "path is not valid UTF-8"),
+        )
+    })
 }
 
 pub fn read_dir_paths(path: &Utf8Path) -> Result<Vec<Utf8PathBuf>, StateError> {

@@ -379,6 +379,19 @@ pub(crate) fn runtime_readiness_diagnostics(
     );
 }
 
+/// Records worktree discovery work that failed and will be retried on the next scan: a source
+/// Project whose Git worktrees PV couldn't read, or one change it couldn't make.
+pub(crate) fn worktree_discovery_failed(paths: &PvPaths, subject: &str, error: &str) {
+    append_best_effort(
+        paths,
+        "warn",
+        "worktrees",
+        "worktree_discovery_failed",
+        "worktree discovery failed",
+        &[("subject", subject), ("error", error)],
+    );
+}
+
 /// Records how a monitored runtime exited before its monitor is released and forgets it.
 pub(crate) fn runtime_exited(paths: &PvPaths, subject: &str, exit: &str) {
     append_best_effort(

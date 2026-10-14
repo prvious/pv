@@ -9,20 +9,21 @@ mod update_lock;
 
 pub use app_release::{AppReleaseInstall, AppReleaseLayout};
 pub use database::{
-    DNS_PREFERRED_PORT, Database, DatabaseInspection, EnvContextValues,
+    DNS_PREFERRED_PORT, Database, DatabaseInspection, DiscoveredProjectRecord, EnvContextValues,
     GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, GatewayPortAssignments,
-    JobDiagnosticSubject, JobRecord, JobStatus, LinkProjectInput, LinkProjectResult,
-    LinkProjectStatus, ManagedResourceDesiredState, ManagedResourceTrackDesiredInput,
-    ManagedResourceTrackInstallInput, ManagedResourceTrackRecord, ManagedResourceTrackRemovalInput,
-    PortAssignment, PortOwner, PortRequest, PostgresPreloadLibrary, ProjectConfigWatch,
-    ProjectEnvAllocationContext, ProjectEnvObservedStateRecord, ProjectEnvObservedStatus,
-    ProjectEnvObservedWarningInput, ProjectEnvObservedWarningRecord, ProjectEnvResourceContext,
-    ProjectEnvStateContext, ProjectManagedResourceInput, ProjectManagedResourceRecord, ProjectMode,
-    ProjectPhpRuntimeInput, ProjectPhpRuntimeRecord, ProjectReconciliationStateInput,
-    ProjectRecord, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
+    JobDiagnosticSubject, JobRecord, JobStatus, LinkDiscoveredProjectInput, LinkProjectInput,
+    LinkProjectResult, LinkProjectStatus, ManagedResourceDesiredState,
+    ManagedResourceTrackDesiredInput, ManagedResourceTrackInstallInput, ManagedResourceTrackRecord,
+    ManagedResourceTrackRemovalInput, PortAssignment, PortOwner, PortRequest,
+    PostgresPreloadLibrary, ProjectConfigWatch, ProjectEnvAllocationContext,
+    ProjectEnvObservedStateRecord, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput,
+    ProjectEnvObservedWarningRecord, ProjectEnvResourceContext, ProjectEnvStateContext,
+    ProjectManagedResourceInput, ProjectManagedResourceRecord, ProjectMode, ProjectPhpRuntimeInput,
+    ProjectPhpRuntimeRecord, ProjectReconciliationStateInput, ProjectRecord,
+    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
     ResourceAllocationRecord, ResourceAllocationStatus, RetiredResourceAllocationRecord,
     RuntimeObservedStateRecord, RuntimeObservedStatus, RuntimeSubject, UnresolvedJobFailure,
-    php_runtime_key,
+    WorktreeOptOutRecord, php_runtime_key,
 };
 pub use error::{StateCapability, StateError};
 pub use paths::{PathSummaryEntry, PvPaths};
