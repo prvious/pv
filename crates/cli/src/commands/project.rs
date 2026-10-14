@@ -139,21 +139,35 @@ pub(crate) fn unlink(
     let paths = pv_paths(environment)?;
     let mut database = Database::open(&paths)?;
     let project = resolve_project(&database, args.hostname.as_deref(), environment)?;
-    delete_optional_project_tls_dir(&paths, &project)?;
-    let project = database.unlink_project(&project.id)?;
-    if streams.out.surface().decorated() {
-        streams.out.success(Line::field(
-            "Unlinked ",
-            super::project_display_name(&project),
-        ))?;
-        streams
-            .out
-            .detail(Line::default().value(project.path.as_str()))?;
-    } else {
-        streams.out.success(Line::field(
-            &format!("Unlinked {} -> ", super::project_display_name(&project)),
-            &project.path,
-        ))?;
+    // Unlinking a source also unlinks the worktree Projects PV discovered for it.
+    let project_id = project.id.clone();
+    let mut unlinked = vec![project];
+    for discovered in database.discovered_projects()? {
+        if discovered.source_project_id == project_id
+            && let Some(project) = database.project_by_id(&discovered.project_id)?
+        {
+            unlinked.push(project);
+        }
+    }
+    for project in &unlinked {
+        delete_optional_project_tls_dir(&paths, project)?;
+    }
+    database.unlink_project(&project_id)?;
+    for project in &unlinked {
+        if streams.out.surface().decorated() {
+            streams.out.success(Line::field(
+                "Unlinked ",
+                super::project_display_name(project),
+            ))?;
+            streams
+                .out
+                .detail(Line::default().value(project.path.as_str()))?;
+        } else {
+            streams.out.success(Line::field(
+                &format!("Unlinked {} -> ", super::project_display_name(project)),
+                &project.path,
+            ))?;
+        }
     }
     super::request_system_reconciliation(&paths, streams)?;
 
@@ -693,6 +707,7 @@ struct ProjectListResource {
 
 enum ProjectStatus {
     ConfigInvalid,
+    Missing,
     Unknown,
 }
 
@@ -700,13 +715,14 @@ impl ProjectStatus {
     const fn as_str(&self) -> &'static str {
         match self {
             Self::ConfigInvalid => "config-invalid",
+            Self::Missing => "missing",
             Self::Unknown => "unknown",
         }
     }
 
     fn cell(&self) -> Line {
         let mark = match self {
-            Self::ConfigInvalid => Mark::Failure,
+            Self::ConfigInvalid | Self::Missing => Mark::Failure,
             Self::Unknown => Mark::Idle,
         };
 
@@ -751,6 +767,16 @@ fn project_list_status(
     database: &Database,
     project: &ProjectRecord,
 ) -> Result<ProjectListStatus, ExecuteError> {
+    // An unreadable path falls through to the config read, which reports it on this row alone.
+    if matches!(state::fs::path_entry_exists(&project.path), Ok(false)) {
+        return Ok(ProjectListStatus {
+            project: ProjectStatus::Missing,
+            env: ProjectEnvStatus::Invalid,
+            declared_resources: None,
+            config_error: None,
+            env_detail: None,
+        });
+    }
     let config_file = match ProjectConfigFile::read_from_root(&project.path) {
         Ok(config_file) => config_file,
         Err(error) => {

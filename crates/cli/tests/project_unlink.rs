@@ -7,7 +7,9 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::{Settings, assert_debug_snapshot};
-use state::{Database, LinkProjectInput, ProjectRecord, PvPaths};
+use state::{
+    Database, LinkDiscoveredProjectInput, LinkProjectInput, ProjectMode, ProjectRecord, PvPaths,
+};
 
 #[derive(Debug)]
 struct TestEnvironment {
@@ -113,6 +115,44 @@ fn unlink_resolves_resource_only_slug_and_leaves_managed_env_block() -> anyhow::
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.bind(|| {
         assert_debug_snapshot!((link, unlink, env_before));
+    });
+
+    Ok(())
+}
+
+#[test]
+fn unlinking_a_source_unlinks_its_discovered_worktrees() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project_path = tempdir.path().join("acme");
+    let worktree_path = tempdir.path().join("worktrees/feat");
+    let paths = PvPaths::for_home(home.clone());
+    let source = seed_project(&paths, &project_path)?;
+    let worktree = Database::open(&paths)?.link_discovered_project(LinkDiscoveredProjectInput {
+        source_project_id: source.id.clone(),
+        worktree_id: "w1".to_string(),
+        worktree_name: "feat".to_string(),
+        config_path: worktree_path.join("pv.yml"),
+        path: worktree_path,
+        mode: ProjectMode::Served,
+    })?;
+    state::fs::write_sensitive_file(
+        &paths.project_tls_certificate(&worktree.id),
+        "test certificate\n",
+    )?;
+    let environment = TestEnvironment::new(&home, &project_path);
+
+    let output = run_pv(&["unlink", "acme.test"], &environment)?;
+    let database = Database::open(&paths)?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(database.projects()?.is_empty());
+    assert!(!path_exists(&paths.project_tls_dir(&worktree.id)));
+    let mut settings = Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!((&output.stdout, &output.stderr));
     });
 
     Ok(())

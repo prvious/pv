@@ -14,12 +14,13 @@ use state::testing::Migration;
 use state::{
     AppReleaseLayout, Database, EnvContextValues, GATEWAY_HTTP_PREFERRED_PORT,
     GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, HelperLifecycleLock, JobDiagnosticSubject,
-    JobStatus, JobsLock, ManagedResourceDesiredState, ManagedResourceTrackInstallInput,
-    ManagedResourceTrackRemovalInput, PortOwner, PortRequest, PostgresPreloadLibrary,
-    ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, ProjectManagedResourceInput,
-    ProjectMode, ProjectPhpRuntimeInput, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END,
-    RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput, ResourceAllocationStatus,
-    RuntimeLifecycleLock, RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
+    JobStatus, JobsLock, LinkDiscoveredProjectInput, ManagedResourceDesiredState,
+    ManagedResourceTrackInstallInput, ManagedResourceTrackRemovalInput, PortOwner, PortRequest,
+    PostgresPreloadLibrary, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput,
+    ProjectManagedResourceInput, ProjectMode, ProjectPhpRuntimeInput, ProjectRecord, PvPaths,
+    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
+    ResourceAllocationStatus, RuntimeLifecycleLock, RuntimeObservedStatus, RuntimeSubject,
+    StateError, UpdateLock,
 };
 
 #[test]
@@ -2398,6 +2399,167 @@ fn unlink_project_clears_project_env_observed_state() -> Result<()> {
 }
 
 #[test]
+fn write_new_file_publishes_whole_files_and_never_replaces_one() -> Result<()> {
+    let tempdir = tempdir()?;
+    let path = tempdir.path().join("pv-id");
+
+    state::fs::write_new_file(&path, "first\n")?;
+    let again = state::fs::write_new_file(&path, "second\n");
+
+    assert!(matches!(
+        again,
+        Err(StateError::Filesystem { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists
+    ));
+    assert_eq!(state::fs::read_to_string(&path)?, "first\n");
+    // The temporary file is gone in both cases.
+    assert_eq!(state::fs::read_dir_paths(tempdir.path())?, [path]);
+
+    Ok(())
+}
+
+#[test]
+fn discovered_projects_take_source_names_and_follow_moves() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let source = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+    // Another Project already has `acme-feat`'s hostname, so the slug moves on to a free pair.
+    link_test_project(&mut database, tempdir.path(), "other", "acme-feat.test")?;
+
+    let feat = database.link_discovered_project(discovered_input(
+        &source,
+        tempdir.path(),
+        "w1",
+        "Feat",
+        ProjectMode::Served,
+    ))?;
+    let otter = database.link_discovered_project(discovered_input(
+        &source,
+        tempdir.path(),
+        "w2",
+        "happy otter",
+        ProjectMode::ResourceOnly,
+    ))?;
+    let moved_path = tempdir.path().join("moved/feat");
+    database.move_discovered_project(&feat.id, &moved_path, &moved_path.join("pv.yml"))?;
+    let Some(moved) = database.project_by_id(&feat.id)? else {
+        return Err(anyhow!("moved Project is missing"));
+    };
+    let invalid_id = database.link_discovered_project(discovered_input(
+        &source,
+        tempdir.path(),
+        "not-an-id",
+        "bad",
+        ProjectMode::Served,
+    ));
+
+    let names = [&feat, &otter].map(|project| {
+        (
+            project.slug.as_str(),
+            project.primary_hostname.as_deref(),
+            project.mode,
+        )
+    });
+    let relative = |path: &Utf8Path| path.strip_prefix(tempdir.path()).map(Utf8Path::to_string);
+    assert_debug_snapshot!(names, @r#"
+    [
+        (
+            "acme-feat-1",
+            Some(
+                "acme-feat-1.test",
+            ),
+            Served,
+        ),
+        (
+            "acme-happy-otter",
+            None,
+            ResourceOnly,
+        ),
+    ]
+    "#);
+    assert_eq!(
+        (
+            moved.slug.as_str(),
+            relative(&moved.path)?,
+            relative(&moved.config_path)?
+        ),
+        (
+            "acme-feat-1",
+            "moved/feat".to_string(),
+            "moved/feat/pv.yml".to_string()
+        )
+    );
+    assert_eq!(
+        database
+            .discovered_projects()?
+            .into_iter()
+            .map(|project| (project.worktree_id, project.source_project_id == source.id))
+            .collect::<Vec<_>>(),
+        [("w1".to_string(), true), ("w2".to_string(), true)]
+    );
+    assert!(matches!(
+        invalid_id,
+        Err(StateError::InvalidWorktreeId { worktree_id }) if worktree_id == "not-an-id"
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn unlinking_discovered_projects_opts_out_and_unlinking_a_source_unlinks_them() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let source = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+    let input = |worktree_id: &str| {
+        discovered_input(
+            &source,
+            tempdir.path(),
+            worktree_id,
+            worktree_id,
+            ProjectMode::Served,
+        )
+    };
+    let opt_out_ids = |database: &Database| -> Result<Vec<String>> {
+        Ok(database
+            .worktree_opt_outs()?
+            .into_iter()
+            .map(|opt_out| opt_out.worktree_id)
+            .collect())
+    };
+
+    // The user unlinks one worktree, and Git removes another.
+    let unlinked = database.link_discovered_project(input("w1"))?;
+    let removed = database.link_discovered_project(input("w2"))?;
+    database.unlink_project(&unlinked.id)?;
+    database.remove_discovered_project(&removed.id)?;
+    let after_unlinks = opt_out_ids(&database)?;
+    database.forget_worktree_opt_out(&source.id, "w1")?;
+    let after_forget = opt_out_ids(&database)?;
+
+    // Unlinking the source unlinks its remaining worktree and drops the opt-outs.
+    let kept = database.link_discovered_project(input("w3"))?;
+    let gone = database.link_discovered_project(input("w4"))?;
+    database.unlink_project(&gone.id)?;
+    database.record_project_env_observed_snapshot(
+        &kept.id,
+        ProjectEnvObservedStatus::Rendered,
+        None,
+        &[],
+    )?;
+    database.unlink_project(&source.id)?;
+
+    assert_eq!(after_unlinks, ["w1"]);
+    assert!(after_forget.is_empty());
+    assert!(database.project_by_id(&kept.id)?.is_none());
+    assert!(database.project_env_observed_state(&kept.id)?.is_none());
+    assert!(database.discovered_projects()?.is_empty());
+    assert!(opt_out_ids(&database)?.is_empty());
+
+    Ok(())
+}
+
+#[test]
 fn runtime_observed_state_round_trips_through_observed_states() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -4315,6 +4477,25 @@ fn link_test_project(
             desired_php_track: None,
         })?
         .project)
+}
+
+fn discovered_input(
+    source: &ProjectRecord,
+    root: &Utf8Path,
+    worktree_id: &str,
+    worktree_name: &str,
+    mode: ProjectMode,
+) -> LinkDiscoveredProjectInput {
+    let path = root.join("worktrees").join(worktree_name);
+
+    LinkDiscoveredProjectInput {
+        source_project_id: source.id.clone(),
+        worktree_id: worktree_id.to_string(),
+        worktree_name: worktree_name.to_string(),
+        config_path: path.join("pv.yml"),
+        path,
+        mode,
+    }
 }
 
 fn env_context(values: &[(&str, &str)]) -> EnvContextValues {

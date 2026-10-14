@@ -1,0 +1,8 @@
+---
+source: crates/cli/tests/project_unlink.rs
+expression: "(&output.stdout, &output.stderr)"
+---
+(
+    "Unlinked acme.test -> <tempdir>/acme\nUnlinked acme-feat.test -> <tempdir>/worktrees/feat\n",
+    "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+)

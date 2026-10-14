@@ -233,8 +233,50 @@ pub fn create_new_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
     create_new_file_handle(path)
 }
 
+/// Writes a new file in a directory PV doesn't own, such as a user's `.git` directory. It fails if
+/// the file exists and, unlike PV's own-file helpers, leaves the directory's permissions alone.
+/// The content goes to a temporary file that a hard link then publishes only if nothing exists at
+/// `path`, so a failed write or a crash never leaves a partly written file there.
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns no-replace file publication"
+)]
+pub fn write_new_file(path: &Utf8Path, content: &str) -> Result<(), StateError> {
+    let temporary_path = temporary_path_for(path);
+    // Creating the temporary file exclusively refuses an existing file or symlink, so this never
+    // writes through or removes a path it didn't just create.
+    let mut temporary_file = create_new_file_handle(&temporary_path)?;
+    let published = io::Write::write_all(&mut temporary_file, content.as_bytes())
+        .map_err(|source| StateError::filesystem(temporary_path.clone(), source))
+        .and_then(|()| {
+            std::fs::hard_link(&temporary_path, path)
+                .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
+        });
+    drop(temporary_file);
+    let removed = std::fs::remove_file(&temporary_path)
+        .map_err(|source| StateError::filesystem(temporary_path.clone(), source));
+
+    published.and(removed)
+}
+
 pub fn read_to_string(path: &Utf8Path) -> Result<String, StateError> {
     read_utf8_file(path)
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "PV filesystem helper owns path canonicalization"
+)]
+pub fn canonicalize(path: &Utf8Path) -> Result<Utf8PathBuf, StateError> {
+    let canonical = std::fs::canonicalize(path)
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))?;
+
+    Utf8PathBuf::from_path_buf(canonical).map_err(|canonical| {
+        StateError::filesystem(
+            canonical.to_string_lossy().as_ref(),
+            io::Error::new(io::ErrorKind::InvalidData, "path is not valid UTF-8"),
+        )
+    })
 }
 
 pub fn read_dir_paths(path: &Utf8Path) -> Result<Vec<Utf8PathBuf>, StateError> {

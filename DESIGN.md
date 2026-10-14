@@ -1454,7 +1454,7 @@ A discovery source is a linked Project inside a repository's main checkout, the 
 
 For each source, PV reads the repository's `.git/worktrees/` directory directly instead of running `git`. Each entry directory holds a `gitdir` file naming the worktree checkout's `.git` file; PV resolves a relative `gitdir` path against the entry directory. The main checkout is never discovered. The discovered Project's path is the source's path relative to the main checkout, applied to the worktree checkout: a source linked at `<repo>/apps/web` discovers `<worktree>/apps/web`. PV does not register a worktree until that directory exists. If the discovered path is already a linked Project, it stays an ordinary Project.
 
-PV scans for worktrees when the daemon starts, after a source is linked, and during the daemon's 30-second runtime health scan. A scan only reads. When it finds a change, it requests reconciliation, and the queued job reads the worktree entries again before changing state. A new worktree can take up to about 30 seconds to be served.
+Every system reconciliation, including the one at daemon startup, applies worktree discovery before it reads the linked Projects. The daemon's 30-second runtime health scan reads the worktree entries without changing anything and requests system reconciliation when they no longer match the linked Projects. The queued job reads the entries again before changing state. A new worktree, or the worktrees of a newly linked source, can take up to about 30 seconds to be served.
 
 On first discovery, PV writes a random worktree ID to a PV-owned `pv-id` file inside the worktree's entry directory, such as `.git/worktrees/feature/pv-id`. Git keeps that directory when it moves a worktree and deletes it when it removes or prunes one, so the ID lasts exactly as long as Git's registration. A discovered Project is identified by its source Project and its worktree ID rather than by its path. Moving a worktree updates the Project's path and keeps its Project ID, slug, hostname, and Resource allocations. If an entry has no ID file but its checkout path matches a discovered Project's stored path, PV treats it as the same worktree and writes the ID again. Any other entry without a known ID is a new worktree, even when Git reuses the entry name of a removed worktree.
 
@@ -1472,7 +1472,7 @@ When a worktree's entry directory no longer exists, including after `git worktre
 
 Only a missing entry directory counts as removal. A missing source directory, an unreadable `.git/worktrees/` directory or entry, or any other uncertain result changes nothing for that source, and PV retries on the next scan.
 
-`pv unlink` on a discovered Project keeps its data and stops PV from discovering that worktree again until Git removes it. Running `pv link` on its path clears that and links it as an ordinary Project. Unlinking a source also unlinks its discovered Projects and keeps their data. When Git later removes a worktree whose Project was unlinked, PV deletes nothing.
+`pv unlink` on a discovered Project keeps its data and stops PV from discovering that worktree again until Git removes it. After that, running `pv link` on its path links it as an ordinary Project. Running `pv link` on a discovered Project that is still linked updates it like any relink, and it stays discovered. Unlinking a source also unlinks its discovered Projects, keeps their data, and lists them in its output. When Git later removes a worktree whose Project was unlinked, PV deletes nothing.
 
 ## Opening Projects
 
@@ -1511,6 +1511,8 @@ Status values use words such as `ok`, `pending`, `failed`, `degraded`, or `unkno
 If the daemon has not reconciled a Project yet, the Project still appears with pending or unknown observed status.
 
 In the Project field, `pv list` normally shows the primary hostname for a served Project and the immutable slug for a resource-only Project.
+
+A Project whose directory no longer exists shows the `missing` status.
 
 `pv list --json` includes `mode`, `slug`, nullable `hostname`, and `env_file` for every Project. The internal `.invalid` compatibility hostname is represented as `null`, never as a string.
 

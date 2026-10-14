@@ -299,6 +299,33 @@ pub struct LinkProjectInput {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LinkDiscoveredProjectInput {
+    pub source_project_id: String,
+    pub worktree_id: String,
+    /// The worktree checkout's directory name, which names the Project.
+    pub worktree_name: String,
+    pub path: Utf8PathBuf,
+    pub config_path: Utf8PathBuf,
+    pub mode: ProjectMode,
+}
+
+/// A Project PV discovered as a Git worktree of a source Project.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DiscoveredProjectRecord {
+    pub project_id: String,
+    pub source_project_id: String,
+    pub worktree_id: String,
+    pub path: Utf8PathBuf,
+}
+
+/// A worktree the user unlinked, which PV doesn't discover again until Git drops it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorktreeOptOutRecord {
+    pub source_project_id: String,
+    pub worktree_id: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LinkProjectResult {
     pub status: LinkProjectStatus,
     pub project: ProjectRecord,
@@ -1010,7 +1037,7 @@ impl Database {
         };
         let project_slug = match &existing {
             Some(project) => project.slug.clone(),
-            None => generate_project_slug(&transaction, &input.path)?,
+            None => generate_project_slug(&transaction, &project_slug_base(&input.path)?, false)?,
         };
         if mode == ProjectMode::ResourceOnly {
             input.primary_hostname = existing
@@ -1062,7 +1089,26 @@ impl Database {
         Ok(LinkProjectResult { status, project })
     }
 
+    /// Unlinks a Project at the user's request. Unlinking a discovered worktree Project also stops
+    /// PV from discovering that worktree again, and unlinking a source unlinks its discovered
+    /// Projects too.
     pub fn unlink_project(&mut self, project_id: &str) -> Result<ProjectRecord, StateError> {
+        self.unlink_project_with_opt_out(project_id, true)
+    }
+
+    /// Unlinks a discovered worktree Project whose Git worktree is gone, without an opt-out.
+    pub fn remove_discovered_project(
+        &mut self,
+        project_id: &str,
+    ) -> Result<ProjectRecord, StateError> {
+        self.unlink_project_with_opt_out(project_id, false)
+    }
+
+    fn unlink_project_with_opt_out(
+        &mut self,
+        project_id: &str,
+        opt_out: bool,
+    ) -> Result<ProjectRecord, StateError> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1071,8 +1117,24 @@ impl Database {
                 target: project_id.to_string(),
             }
         })?;
+        if opt_out {
+            transaction.execute(
+                "INSERT OR IGNORE INTO worktree_opt_outs (source_project_id, worktree_id)
+                SELECT source_project_id, worktree_id
+                FROM projects
+                WHERE id = ?1 AND source_project_id IS NOT NULL",
+                params![project_id],
+            )?;
+        }
+        // Deleting a source deletes its discovered Projects through the foreign key, but their
+        // observed state is keyed by subject, so clear it here.
         transaction.execute(
-            "DELETE FROM observed_states WHERE subject_kind = ?1 AND subject_id = ?2",
+            "DELETE FROM observed_states
+            WHERE subject_kind = ?1
+            AND (
+                subject_id = ?2
+                OR subject_id IN (SELECT id FROM projects WHERE source_project_id = ?2)
+            )",
             params![PROJECT_ENV_OBSERVED_SUBJECT_KIND, project_id],
         )?;
         let deleted =
@@ -1086,6 +1148,146 @@ impl Database {
         transaction.commit()?;
 
         Ok(project)
+    }
+
+    /// Links a Git worktree of a source Project as its own Project. The slug is
+    /// `<source-slug>-<worktree-name>` with the first numeric suffix that leaves both the slug and
+    /// `<slug>.test` free, and a served Project's hostname is that `<slug>.test`.
+    pub fn link_discovered_project(
+        &mut self,
+        input: LinkDiscoveredProjectInput,
+    ) -> Result<ProjectRecord, StateError> {
+        validate_project_path("path", &input.path)?;
+        validate_project_path("config path", &input.config_path)?;
+        validate_worktree_id(&input.worktree_id)?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let source = project_by_id_in_transaction(&transaction, &input.source_project_id)?
+            .ok_or_else(|| StateError::ProjectNotFound {
+                target: input.source_project_id.clone(),
+            })?;
+        let project_id = generate_project_id(&transaction)?;
+        let base = discovered_project_slug_base(&source.slug, &input.worktree_name);
+        let project_slug = generate_project_slug(&transaction, &base, true)?;
+        let primary_hostname = match input.mode {
+            ProjectMode::Served => {
+                let hostname = format!("{project_slug}.test");
+                validate_project_hostname_owner(&transaction, &project_id, &hostname)?;
+                hostname
+            }
+            ProjectMode::ResourceOnly => internal_project_hostname(&project_id),
+        };
+        let link = LinkProjectInput {
+            path: input.path.clone(),
+            original_path: input.path,
+            primary_hostname,
+            config_path: input.config_path,
+            desired_php_track: None,
+        };
+        insert_project_in_transaction(&transaction, &project_id, &project_slug, &link, input.mode)?;
+        transaction.execute(
+            "UPDATE projects SET source_project_id = ?1, worktree_id = ?2 WHERE id = ?3",
+            params![input.source_project_id, input.worktree_id, project_id],
+        )?;
+        if input.mode == ProjectMode::Served {
+            insert_project_primary_hostname_in_transaction(
+                &transaction,
+                &project_id,
+                &link.primary_hostname,
+            )?;
+        }
+        let project =
+            project_by_id_in_transaction(&transaction, &project_id)?.ok_or_else(|| {
+                StateError::ProjectNotFound {
+                    target: project_id.clone(),
+                }
+            })?;
+        transaction.commit()?;
+
+        Ok(project)
+    }
+
+    /// Follows `git worktree move`: the discovered Project keeps its ID, slug, hostname, and
+    /// Resource allocations at its new path.
+    pub fn move_discovered_project(
+        &mut self,
+        project_id: &str,
+        path: &Utf8Path,
+        config_path: &Utf8Path,
+    ) -> Result<(), StateError> {
+        validate_project_path("path", path)?;
+        validate_project_path("config path", config_path)?;
+        let moved = self.connection.execute(
+            "UPDATE projects
+            SET path = ?1,
+                original_path = ?1,
+                config_path = ?2,
+                updated_at = ?3
+            WHERE id = ?4 AND source_project_id IS NOT NULL",
+            params![
+                path.as_str(),
+                config_path.as_str(),
+                timestamp()?,
+                project_id
+            ],
+        )?;
+        if moved == 0 {
+            return Err(StateError::ProjectNotFound {
+                target: project_id.to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
+    pub fn discovered_projects(&self) -> Result<Vec<DiscoveredProjectRecord>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, source_project_id, worktree_id, path
+            FROM projects
+            WHERE source_project_id IS NOT NULL
+            ORDER BY source_project_id, worktree_id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(DiscoveredProjectRecord {
+                project_id: row.get(0)?,
+                source_project_id: row.get(1)?,
+                worktree_id: row.get(2)?,
+                path: Utf8PathBuf::from(row.get::<_, String>(3)?),
+            })
+        })?;
+
+        rows.map(|row| Ok(row?)).collect()
+    }
+
+    pub fn worktree_opt_outs(&self) -> Result<Vec<WorktreeOptOutRecord>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT source_project_id, worktree_id
+            FROM worktree_opt_outs
+            ORDER BY source_project_id, worktree_id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(WorktreeOptOutRecord {
+                source_project_id: row.get(0)?,
+                worktree_id: row.get(1)?,
+            })
+        })?;
+
+        rows.map(|row| Ok(row?)).collect()
+    }
+
+    /// Drops an opt-out once Git no longer registers its worktree.
+    pub fn forget_worktree_opt_out(
+        &mut self,
+        source_project_id: &str,
+        worktree_id: &str,
+    ) -> Result<(), StateError> {
+        self.connection.execute(
+            "DELETE FROM worktree_opt_outs WHERE source_project_id = ?1 AND worktree_id = ?2",
+            params![source_project_id, worktree_id],
+        )?;
+
+        Ok(())
     }
 
     pub fn validate_project_primary_hostname(
@@ -4020,15 +4222,16 @@ fn generate_project_id(transaction: &Transaction<'_>) -> Result<String, StateErr
     })
 }
 
+/// The first free slug from `base`, adding `-1`, `-2`, and so on. With `hostname_free`, the slug's
+/// `.test` hostname must also be free.
 fn generate_project_slug(
     transaction: &Transaction<'_>,
-    project_path: &Utf8Path,
+    base: &str,
+    hostname_free: bool,
 ) -> Result<String, StateError> {
-    let base = project_slug_base(project_path)?;
-
     for attempt in 0..PROJECT_SLUG_ATTEMPTS {
         let slug = if attempt == 0 {
-            base.clone()
+            base.to_string()
         } else {
             let suffix = format!("-{attempt}");
             let maximum_base_length = MAX_DNS_LABEL_LENGTH - suffix.len();
@@ -4042,7 +4245,10 @@ fn generate_project_slug(
             params![slug.as_str()],
             |row| row.get::<_, i64>(0),
         )?;
-        if count == 0 {
+        if count == 0
+            && (!hostname_free
+                || project_owner_for_hostname(transaction, &format!("{slug}.test"))?.is_none())
+        {
             return Ok(slug);
         }
     }
@@ -4058,10 +4264,36 @@ fn project_slug_base(project_path: &Utf8Path) -> Result<String, StateError> {
             name: project_path.to_string(),
         });
     };
+    let slug = slugify(file_name);
+
+    if slug.is_empty() || slug.len() > MAX_DNS_LABEL_LENGTH {
+        return Err(StateError::InvalidProjectSlug {
+            name: file_name.to_string(),
+        });
+    }
+
+    Ok(slug)
+}
+
+/// `<source-slug>-<worktree-name>`, shortened to one DNS label. A worktree name with no usable
+/// characters becomes `worktree`.
+fn discovered_project_slug_base(source_slug: &str, worktree_name: &str) -> String {
+    let name = match slugify(worktree_name) {
+        name if name.is_empty() => "worktree".to_string(),
+        name => name,
+    };
+    let base = format!("{source_slug}-{name}");
+    let length = base.len().min(MAX_DNS_LABEL_LENGTH);
+
+    base[..length].trim_end_matches('-').to_string()
+}
+
+/// Lowercase ASCII letters and digits, with each run of other characters turned into one `-`.
+fn slugify(name: &str) -> String {
     let mut slug = String::new();
     let mut previous_was_hyphen = false;
 
-    for character in file_name.chars().flat_map(char::to_lowercase) {
+    for character in name.chars().flat_map(char::to_lowercase) {
         if character.is_ascii_alphanumeric() {
             slug.push(character);
             previous_was_hyphen = false;
@@ -4075,13 +4307,21 @@ fn project_slug_base(project_path: &Utf8Path) -> Result<String, StateError> {
         slug.pop();
     }
 
-    if slug.is_empty() || slug.len() > MAX_DNS_LABEL_LENGTH {
-        return Err(StateError::InvalidProjectSlug {
-            name: file_name.to_string(),
+    slug
+}
+
+/// PV writes worktree IDs itself, but they're read back from the user's `.git` directory.
+pub fn validate_worktree_id(worktree_id: &str) -> Result<(), StateError> {
+    if worktree_id.is_empty()
+        || worktree_id.len() > MAX_DNS_LABEL_LENGTH
+        || !worktree_id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return Err(StateError::InvalidWorktreeId {
+            worktree_id: worktree_id.to_string(),
         });
     }
 
-    Ok(slug)
+    Ok(())
 }
 
 fn internal_project_hostname(project_id: &str) -> String {
