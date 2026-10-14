@@ -1376,6 +1376,13 @@ impl Database {
             input.env_message.as_deref(),
             &input.env_warnings,
         )?;
+        // The first full success ends a discovered worktree's wait to be served.
+        transaction.execute(
+            "UPDATE projects
+            SET first_reconciled_at = COALESCE(first_reconciled_at, ?1)
+            WHERE id = ?2",
+            params![timestamp()?, project.id],
+        )?;
         let project =
             project_by_id_in_transaction(&transaction, &project.id)?.ok_or_else(|| {
                 StateError::ProjectNotFound {
@@ -1385,6 +1392,20 @@ impl Database {
         transaction.commit()?;
 
         Ok(project)
+    }
+
+    /// Discovered worktree Projects that haven't had a full reconciliation succeed yet. They get no
+    /// Gateway route or PHP worker until one does.
+    pub fn held_project_ids(&self) -> Result<BTreeSet<String>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT id
+            FROM projects
+            WHERE source_project_id IS NOT NULL
+            AND first_reconciled_at IS NULL",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+
+        rows.map(|row| Ok(row?)).collect()
     }
 
     pub fn project_by_id(&self, project_id: &str) -> Result<Option<ProjectRecord>, StateError> {
@@ -1603,7 +1624,8 @@ impl Database {
             "SELECT id, desired_php_track, desired_php_loaded_extensions_json
             FROM projects
             WHERE serves_http = 1
-            AND desired_php_track IS NOT NULL",
+            AND desired_php_track IS NOT NULL
+            AND NOT (source_project_id IS NOT NULL AND first_reconciled_at IS NULL)",
         )?;
         let rows = statement.query_map([], |row| {
             Ok((

@@ -233,9 +233,9 @@ pub fn create_new_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
     create_new_file_handle(path)
 }
 
-/// Writes a new file in a directory PV doesn't own, such as a user's `.git` directory. It fails if
-/// the file exists and, unlike PV's own-file helpers, leaves the directory's permissions alone.
-/// The content goes to a temporary file that a hard link then publishes only if nothing exists at
+/// Writes a new owner-only file in a directory PV doesn't own, such as a user's `.git` directory or
+/// Project directory. It fails if the file exists and, unlike PV's own-file helpers, leaves the
+/// directory's permissions alone. The content goes to a temporary file that a hard link then publishes only if nothing exists at
 /// `path`, so a failed write or a crash never leaves a partly written file there.
 #[expect(
     clippy::disallowed_methods,
@@ -246,8 +246,12 @@ pub fn write_new_file(path: &Utf8Path, content: &str) -> Result<(), StateError> 
     // Creating the temporary file exclusively refuses an existing file or symlink, so this never
     // writes through or removes a path it didn't just create.
     let mut temporary_file = create_new_file_handle(&temporary_path)?;
-    let published = io::Write::write_all(&mut temporary_file, content.as_bytes())
-        .map_err(|source| StateError::filesystem(temporary_path.clone(), source))
+    // The hard link shares this file, so the published file is owner-only too.
+    let published = set_file_mode(&temporary_path, SENSITIVE_FILE_MODE)
+        .and_then(|()| {
+            io::Write::write_all(&mut temporary_file, content.as_bytes())
+                .map_err(|source| StateError::filesystem(temporary_path.clone(), source))
+        })
         .and_then(|()| {
             std::fs::hard_link(&temporary_path, path)
                 .map_err(|source| StateError::filesystem(path.to_path_buf(), source))

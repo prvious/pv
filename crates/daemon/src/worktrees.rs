@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use std::io;
 
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
-use config::ProjectConfigFile;
+use config::{ProjectConfigFile, RenderedProjectEnv};
 use state::{
     Database, DiscoveredProjectRecord, LinkDiscoveredProjectInput, ProjectMode, ProjectRecord,
     PvPaths, StateError,
@@ -331,27 +331,21 @@ fn apply_change(
                 Some(worktree_id) => worktree_id,
                 None => write_new_worktree_id(&entry_dir)?,
             };
-            let (path, config_path, mode) = match ProjectConfigFile::read_from_root(&path) {
-                Ok(config_file) => {
-                    let mode = if config_file.config.serve {
-                        ProjectMode::Served
-                    } else {
-                        ProjectMode::ResourceOnly
-                    };
-                    (path, config_file.path, mode)
-                }
-                // Reconciliation reports the invalid config, as for any linked Project.
-                Err(_error) => {
-                    let config_path = path.join(CONFIG_FILE);
-                    (path, config_path, ProjectMode::Served)
-                }
+            // Linking needs the worktree's Project config, and the env copy needs the source's too.
+            // If either can't be read, the worktree waits for the next scan.
+            let config_file = ProjectConfigFile::read_from_root(&path)?;
+            copy_source_env_file(database, &source_project_id, &path, &config_file)?;
+            let mode = if config_file.config.serve {
+                ProjectMode::Served
+            } else {
+                ProjectMode::ResourceOnly
             };
             database.link_discovered_project(LinkDiscoveredProjectInput {
                 source_project_id,
                 worktree_id,
                 worktree_name,
                 path,
-                config_path,
+                config_path: config_file.path,
                 mode,
             })?;
         }
@@ -387,6 +381,37 @@ fn apply_change(
             database.forget_worktree_opt_out(&source_project_id, &worktree_id)?;
         }
     }
+
+    Ok(())
+}
+
+/// Copies the source Project's configured env file to a new worktree that has none. The copy gets
+/// the user's `# pv: ` lines back and an empty PV-managed block, so nothing in it points at the
+/// source's databases before reconciliation renders the worktree's own block.
+fn copy_source_env_file(
+    database: &Database,
+    source_project_id: &str,
+    path: &Utf8Path,
+    config_file: &ProjectConfigFile,
+) -> Result<(), DaemonError> {
+    let target = config::resolve_project_env_file_path(path, &config_file.config)?;
+    let Some(source) = database.project_by_id(source_project_id)? else {
+        return Ok(());
+    };
+    if state::fs::path_entry_exists(&target)? {
+        return Ok(());
+    }
+    let source_config = ProjectConfigFile::read_from_root(&source.path)?;
+    let source_env_file =
+        config::resolve_project_env_file_path(&source.path, &source_config.config)?;
+    if !state::fs::path_entry_exists(&source_env_file)? {
+        return Ok(());
+    }
+    let copy = config::transform_managed_env_block(
+        Some(&state::fs::read_to_string(&source_env_file)?),
+        &RenderedProjectEnv::default(),
+    )?;
+    state::fs::write_new_file(&target, &copy.content)?;
 
     Ok(())
 }

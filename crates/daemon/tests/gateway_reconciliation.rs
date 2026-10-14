@@ -15,11 +15,12 @@ use rusqlite::Connection;
 use rustix::process::{Pid, test_kill_process};
 use serde_json::{Value, json};
 use state::{
-    Database, GatewayPort, LinkProjectInput, PortOwner, PortRequest, ProjectMode,
-    ProjectPhpRuntimeInput, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
-    RuntimeObservedStatus, RuntimeSubject, StateError, fs,
+    Database, GatewayPort, LinkDiscoveredProjectInput, LinkProjectInput, PortOwner, PortRequest,
+    ProjectEnvObservedStatus, ProjectMode, ProjectPhpRuntimeInput, ProjectReconciliationStateInput,
+    PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, RuntimeObservedStatus,
+    RuntimeSubject, StateError, fs,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io::{ErrorKind, Write};
 use std::net::TcpListener;
@@ -6088,6 +6089,76 @@ async fn runtime_plan_excludes_resource_only_project_with_explicit_php() -> Resu
 
     assert_eq!(project_ids, [served.id.as_str()]);
     assert!(!project_ids.contains(&resource_only.id.as_str()));
+
+    runtime_guard.cleanup().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_plan_holds_a_discovered_worktree_until_its_first_reconciliation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
+    let source_path = tempdir.path().join("acme");
+    let worktree_path = tempdir.path().join("worktrees/feat");
+    create_project(&source_path, "php: \"8.4\"\n")?;
+    create_project(&worktree_path, "php: \"8.4\"\n")?;
+
+    let mut database = Database::open(&paths)?;
+    let source = database
+        .link_project(LinkProjectInput {
+            path: source_path.clone(),
+            original_path: source_path.clone(),
+            primary_hostname: "acme.test".to_owned(),
+            config_path: source_path.join("pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+        })?
+        .project;
+    let worktree = database.link_discovered_project(LinkDiscoveredProjectInput {
+        source_project_id: source.id.clone(),
+        worktree_id: "w1".to_owned(),
+        worktree_name: "feat".to_owned(),
+        path: worktree_path.clone(),
+        config_path: worktree_path.join("pv.yml"),
+        mode: ProjectMode::Served,
+    })?;
+    seed_stable_runtime_plan_ports(&mut database, &["8.4"])?;
+    drop(database);
+    let planned_project_ids = |paths: &PvPaths| -> Result<BTreeSet<String>> {
+        Ok(build_runtime_plan(paths)?
+            .workers
+            .iter()
+            .flat_map(|worker| worker.projects.iter())
+            .map(|project| project.id.clone())
+            .collect())
+    };
+
+    let held = planned_project_ids(&paths)?;
+    Database::open(&paths)?.finalize_project_reconciliation(ProjectReconciliationStateInput {
+        project_id: worktree.id.clone(),
+        link: LinkProjectInput {
+            path: worktree_path.clone(),
+            original_path: worktree_path.clone(),
+            primary_hostname: "acme-feat.test".to_owned(),
+            config_path: worktree_path.join("pv.yml"),
+            desired_php_track: Some("8.4".to_owned()),
+        },
+        mode: ProjectMode::Served,
+        php_runtime: Some(ProjectPhpRuntimeInput {
+            track: "8.4".to_owned(),
+            requested_extensions: Vec::new(),
+            loaded_extensions: Vec::new(),
+            ignored_extensions: Vec::new(),
+        }),
+        env_status: ProjectEnvObservedStatus::Rendered,
+        env_message: None,
+        env_warnings: Vec::new(),
+    })?;
+    let released = planned_project_ids(&paths)?;
+
+    assert_eq!(held, BTreeSet::from([source.id.clone()]));
+    assert_eq!(released, BTreeSet::from([source.id, worktree.id]));
 
     runtime_guard.cleanup().await?;
 

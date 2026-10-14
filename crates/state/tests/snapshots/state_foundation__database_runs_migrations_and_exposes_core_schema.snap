@@ -21,6 +21,7 @@ DatabaseInspection {
         "012:postgres_track_preload_libraries",
         "013:retired_resource_allocations",
         "014:discovered_worktrees",
+        "015:project_first_reconciled_at",
     ],
     tables: [
         "global_php_default_track",

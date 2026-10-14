@@ -17,10 +17,10 @@ use state::{
     JobStatus, JobsLock, LinkDiscoveredProjectInput, ManagedResourceDesiredState,
     ManagedResourceTrackInstallInput, ManagedResourceTrackRemovalInput, PortOwner, PortRequest,
     PostgresPreloadLibrary, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput,
-    ProjectManagedResourceInput, ProjectMode, ProjectPhpRuntimeInput, ProjectRecord, PvPaths,
-    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
-    ResourceAllocationStatus, RuntimeLifecycleLock, RuntimeObservedStatus, RuntimeSubject,
-    StateError, UpdateLock,
+    ProjectManagedResourceInput, ProjectMode, ProjectPhpRuntimeInput,
+    ProjectReconciliationStateInput, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END,
+    RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput, ResourceAllocationStatus,
+    RuntimeLifecycleLock, RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
 };
 
 #[test]
@@ -2411,6 +2411,7 @@ fn write_new_file_publishes_whole_files_and_never_replaces_one() -> Result<()> {
         Err(StateError::Filesystem { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists
     ));
     assert_eq!(state::fs::read_to_string(&path)?, "first\n");
+    assert_eq!(file_mode(&path)?, "600");
     // The temporary file is gone in both cases.
     assert_eq!(state::fs::read_dir_paths(tempdir.path())?, [path]);
 
@@ -2501,6 +2502,61 @@ fn discovered_projects_take_source_names_and_follow_moves() -> Result<()> {
         invalid_id,
         Err(StateError::InvalidWorktreeId { worktree_id }) if worktree_id == "not-an-id"
     ));
+
+    Ok(())
+}
+
+#[test]
+fn held_worktrees_demand_no_php_worker_until_their_first_reconciliation() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let source = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+    let worktree = database.link_discovered_project(discovered_input(
+        &source,
+        tempdir.path(),
+        "w1",
+        "feat",
+        ProjectMode::Served,
+    ))?;
+    let link = state::LinkProjectInput {
+        path: worktree.path.clone(),
+        original_path: worktree.path.clone(),
+        primary_hostname: "acme-feat.test".to_string(),
+        config_path: worktree.config_path.clone(),
+        desired_php_track: Some("8.4".to_string()),
+    };
+    // A relink, as `pv link` in the worktree does, records a PHP track before any reconciliation.
+    database.link_project(link.clone())?;
+    let held = (
+        database.held_project_ids()?,
+        database.php_runtime_is_demanded("8.4")?,
+    );
+
+    for _reconciliation in 0..2 {
+        database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+            project_id: worktree.id.clone(),
+            link: link.clone(),
+            mode: ProjectMode::Served,
+            php_runtime: Some(ProjectPhpRuntimeInput {
+                track: "8.4".to_string(),
+                requested_extensions: Vec::new(),
+                loaded_extensions: Vec::new(),
+                ignored_extensions: Vec::new(),
+            }),
+            env_status: ProjectEnvObservedStatus::Rendered,
+            env_message: None,
+            env_warnings: Vec::new(),
+        })?;
+    }
+    let released = (
+        database.held_project_ids()?,
+        database.php_runtime_is_demanded("8.4")?,
+    );
+
+    assert_eq!(held, ([worktree.id].into_iter().collect(), false));
+    // Ordinary Projects are never held.
+    assert_eq!(released, (Default::default(), true));
 
     Ok(())
 }

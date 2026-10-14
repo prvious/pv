@@ -361,8 +361,10 @@ fn collect_runtime_health_probes(
     }
 
     let mut projects_by_runtime = BTreeMap::<String, (String, BTreeSet<_>)>::new();
+    let held_project_ids = database.held_project_ids()?;
     for project in database.projects()? {
         if project.mode == ProjectMode::Served
+            && !held_project_ids.contains(&project.id)
             && let Some(track) = &project.php_runtime.track
         {
             let runtime_key =
@@ -517,9 +519,11 @@ fn collect_project_tls_health(
     state::fs::read_to_string(&paths.ca_private_key())?;
     let mut scopes = Vec::new();
     let mut errors = Vec::new();
+    // A held worktree gets its TLS files from its first reconciliation, like everything else.
+    let held_project_ids = database.held_project_ids()?;
 
     for project in database.projects()? {
-        if project.mode == ProjectMode::ResourceOnly {
+        if project.mode == ProjectMode::ResourceOnly || held_project_ids.contains(&project.id) {
             continue;
         }
         let scope = ReconciliationScope::project(&project.id)?;
