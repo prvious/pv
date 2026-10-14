@@ -20,8 +20,9 @@ pub use database::{
     ProjectEnvStateContext, ProjectManagedResourceInput, ProjectManagedResourceRecord, ProjectMode,
     ProjectPhpRuntimeInput, ProjectPhpRuntimeRecord, ProjectReconciliationStateInput,
     ProjectRecord, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput,
-    ResourceAllocationRecord, ResourceAllocationStatus, RuntimeObservedStateRecord,
-    RuntimeObservedStatus, RuntimeSubject, UnresolvedJobFailure, php_runtime_key,
+    ResourceAllocationRecord, ResourceAllocationStatus, RetiredResourceAllocationRecord,
+    RuntimeObservedStateRecord, RuntimeObservedStatus, RuntimeSubject, UnresolvedJobFailure,
+    php_runtime_key,
 };
 pub use error::{StateCapability, StateError};
 pub use paths::{PathSummaryEntry, PvPaths};

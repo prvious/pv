@@ -15,6 +15,10 @@ const PORTS: &[ManagedResourcePortSpec] = &[ManagedResourcePortSpec {
     name: "redis",
     preferred_port: 6379,
 }];
+/// Redis's default `databases` setting, which PV's config keeps.
+const DATABASES: u8 = 16;
+/// How many keys each `SCAN` call looks at.
+const SCAN_COUNT: u32 = 1000;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RedisRuntimeAdapter;
@@ -137,6 +141,52 @@ set-proc-title no
             Ok(())
         })
     }
+
+    fn delete_allocation<'a>(
+        &'a self,
+        context: &'a ManagedResourceRuntimeContext,
+        _resource_env: &'a EnvContextValues,
+        generated_name: &'a str,
+    ) -> super::ManagedResourceAllocationFuture<'a> {
+        Box::pin(async move {
+            delete_prefixed_keys(required_port(context, "redis")?, generated_name).await
+        })
+    }
+}
+
+/// Deletes every key that starts with `prefix`, in each logical database: an app can keep one
+/// prefix's keys in several, as Laravel keeps its cache in database 1. Generated prefixes contain
+/// no glob characters, so the `MATCH` pattern only matches keys that start with the prefix.
+async fn delete_prefixed_keys(port: u16, prefix: &str) -> Result<(), DaemonError> {
+    let pattern = format!("{prefix}*");
+
+    for database in 0..DATABASES {
+        let client = redis::Client::open(format!("redis://{RESOURCE_HOST}:{port}/{database}"))?;
+        let mut connection = client.get_multiplexed_async_connection().await?;
+        let mut cursor = 0_u64;
+        loop {
+            let (next, keys): (u64, Vec<Vec<u8>>) = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(SCAN_COUNT)
+                .query_async(&mut connection)
+                .await?;
+            if !keys.is_empty() {
+                let _deleted: u64 = redis::cmd("UNLINK")
+                    .arg(&keys)
+                    .query_async(&mut connection)
+                    .await?;
+            }
+            if next == 0 {
+                break;
+            }
+            cursor = next;
+        }
+    }
+
+    Ok(())
 }
 
 fn redis_env(port: u16, prefix: Option<&str>) -> EnvContextValues {

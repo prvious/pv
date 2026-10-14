@@ -114,6 +114,31 @@ pub(crate) async fn create_database_if_missing(
     Ok(())
 }
 
+pub(crate) async fn drop_database_if_exists(
+    context: &SqlAdminContext,
+    engine: SqlEngine,
+    database: &str,
+) -> Result<(), DaemonError> {
+    let statement = drop_database_statement(engine, database)?;
+
+    match engine {
+        SqlEngine::Mysql => {
+            let pool = MySqlPool::connect_with(mysql_options(context)).await?;
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&pool)
+                .await?;
+        }
+        SqlEngine::Postgres => {
+            let pool = PgPool::connect_with(postgres_options(context)).await?;
+            sqlx::query(sqlx::AssertSqlSafe(statement))
+                .execute(&pool)
+                .await?;
+        }
+    }
+
+    Ok(())
+}
+
 pub(crate) async fn ensure_database_allocation(
     database: &mut Database,
     request: SqlAllocationRequest<'_>,
@@ -153,6 +178,20 @@ impl RecordingSqlAdmin {
             engine,
             database: database.to_string(),
             statement: create_database_statement(engine, database)?,
+        });
+
+        Ok(())
+    }
+
+    pub(crate) fn drop_database_if_exists(
+        &mut self,
+        engine: SqlEngine,
+        database: &str,
+    ) -> Result<(), DaemonError> {
+        self.operations.push(RecordedSqlAdminOperation {
+            engine,
+            database: database.to_string(),
+            statement: drop_database_statement(engine, database)?,
         });
 
         Ok(())
@@ -286,6 +325,18 @@ fn create_database_statement(engine: SqlEngine, database: &str) -> Result<String
     let statement = match engine {
         SqlEngine::Mysql => format!("CREATE DATABASE IF NOT EXISTS {identifier}"),
         SqlEngine::Postgres => format!("CREATE DATABASE {identifier}"),
+    };
+
+    Ok(statement)
+}
+
+fn drop_database_statement(engine: SqlEngine, database: &str) -> Result<String, DaemonError> {
+    let identifier = quote_database_identifier(engine, database)?;
+    let statement = match engine {
+        SqlEngine::Mysql => format!("DROP DATABASE IF EXISTS {identifier}"),
+        // `WITH (FORCE)` ends other sessions on the database, such as a running app's, which
+        // would otherwise make the drop fail.
+        SqlEngine::Postgres => format!("DROP DATABASE IF EXISTS {identifier} WITH (FORCE)"),
     };
 
     Ok(statement)

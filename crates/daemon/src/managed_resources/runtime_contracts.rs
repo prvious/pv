@@ -18,6 +18,7 @@ use resources::{
     ManagedResourceCommands, ManagedResourceInstall, ResourceAdapter, TargetPlatform,
     TrackSelector, mailpit_adapter, mysql_adapter, postgres_adapter, redis_adapter, rustfs_adapter,
 };
+use sqlx::mysql::{MySqlConnectOptions, MySqlPool};
 use sqlx::postgres::PgPool;
 use state::{EnvContextValues, PvPaths};
 use tokio::io::AsyncReadExt;
@@ -267,22 +268,89 @@ async fn real_mysql_satisfies_the_runtime_contract() -> Result<()> {
         mysql.current_artifact_path(),
         mysql.track().as_str(),
     )
+    .await?;
+    real_mysql_deletes_allocations(
+        &paths,
+        mysql.current_artifact_path(),
+        mysql.track().as_str(),
+    )
     .await
 }
 
 /// PV's Redis runtime: start it from the adapter's rendered config and wait for its readiness
-/// check, which runs the `redis` crate's connection handshake and `PING`, then stop it.
+/// check, which runs the `redis` crate's connection handshake and `PING`. Then PV's allocation
+/// cleanup deletes one prefix's keys and nothing else, and PV stops it.
 async fn redis_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) -> Result<()> {
     let [port] = available_ports()?;
     let adapter = super::redis::RedisRuntimeAdapter::new();
+    let context = runtime_context(paths, "redis", track, artifact_path, [("redis", port)]);
 
     run_contract(
         paths,
         &adapter,
-        runtime_context(paths, "redis", track, artifact_path, [("redis", port)]),
-        future::ready(Ok(())),
+        context.clone(),
+        redis_deletes_allocations(&adapter, &context, port),
     )
     .await
+}
+
+async fn redis_deletes_allocations(
+    adapter: &dyn ManagedResourceRuntimeAdapter,
+    context: &ManagedResourceRuntimeContext,
+    port: u16,
+) -> Result<()> {
+    // More keys than one real `SCAN` call looks at, so cleanup has to follow the cursor.
+    let deleted = (0..1500)
+        .map(|index| format!("acme.cache.{index}"))
+        .collect::<Vec<_>>();
+    // Another allocation, another Project, and the old prefix format all survive.
+    let kept = [
+        "acme.cache-jobs.1",
+        "acme-feat.cache.1",
+        "acme-cache-1",
+        "acme.cachex",
+    ];
+    // Laravel keeps its cache in database 1, so cleanup covers every database.
+    for database in [0, 1] {
+        let mut connection = redis_connection(port, database).await?;
+        let mut pipeline = redis::pipe();
+        for key in deleted.iter().map(String::as_str).chain(kept) {
+            pipeline.cmd("SET").arg(key).arg("1").ignore();
+        }
+        pipeline.query_async::<()>(&mut connection).await?;
+    }
+
+    // Checked after each call: the first must finish the job, and a retried cleanup that runs
+    // again after the keys are gone must succeed.
+    for attempt in 1..=2 {
+        adapter
+            .delete_allocation(context, &context.env, "acme.cache.")
+            .await?;
+        for database in [0, 1] {
+            let mut connection = redis_connection(port, database).await?;
+            let deleted_left: usize = redis::cmd("EXISTS")
+                .arg(&deleted)
+                .query_async(&mut connection)
+                .await?;
+            let kept_left: usize = redis::cmd("EXISTS")
+                .arg(&kept)
+                .query_async(&mut connection)
+                .await?;
+            ensure!(
+                (deleted_left, kept_left) == (0, kept.len()),
+                "after cleanup {attempt}, database {database} kept {deleted_left} deleted and \
+                 {kept_left} kept keys"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+async fn redis_connection(port: u16, database: u8) -> Result<redis::aio::MultiplexedConnection> {
+    let client = redis::Client::open(format!("redis://127.0.0.1:{port}/{database}"))?;
+
+    Ok(client.get_multiplexed_async_connection().await?)
 }
 
 /// PV's Mailpit runtime: once the adapter's dashboard readiness check passes, the SMTP port PV
@@ -311,7 +379,8 @@ async fn mailpit_contract(
 }
 
 /// PV's RustFS runtime, started with the keys PV generates: once `/health` answers, PV's allocation
-/// step works, and the S3 operations the daemon tests use to inspect buckets behave as RustFS's do.
+/// step works, PV's allocation cleanup empties and deletes one bucket and nothing else, and the S3
+/// operations the daemon tests use to inspect buckets behave as RustFS's do.
 async fn rustfs_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) -> Result<()> {
     let [api_port, console_port] = available_ports()?;
     let adapter = super::rustfs::RustfsRuntimeAdapter;
@@ -326,7 +395,59 @@ async fn rustfs_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str)
     context.env = adapter.resource_env(&context)?;
     let env = context.env.clone();
 
-    run_contract(paths, &adapter, context, rustfs_serves_allocations(env)).await
+    run_contract(paths, &adapter, context.clone(), async {
+        rustfs_serves_allocations(env.clone()).await?;
+        rustfs_deletes_allocations(&adapter, &context, &env).await
+    })
+    .await
+}
+
+async fn rustfs_deletes_allocations(
+    adapter: &dyn ManagedResourceRuntimeAdapter,
+    context: &ManagedResourceRuntimeContext,
+    env: &EnvContextValues,
+) -> Result<()> {
+    let (deleted, kept) = ("acme-uploads", "acme-uploads-kept");
+    let keys = ["a.txt", "nested/b.txt"];
+    let client = super::rustfs::s3_client(env)?;
+    for bucket in [deleted, kept] {
+        super::rustfs::create_bucket(&client, bucket).await?;
+        for key in keys {
+            client
+                .put_object()
+                .bucket(bucket)
+                .key(key)
+                .body(key.as_bytes().to_vec().into())
+                .send()
+                .await?;
+        }
+    }
+
+    // Checked after each call: the first must finish the job, and a retried cleanup that runs
+    // again after the bucket is gone must succeed.
+    for attempt in 1..=2 {
+        adapter.delete_allocation(context, env, deleted).await?;
+        let deleted_bucket = s3_error_code(client.head_bucket().bucket(deleted).send().await);
+        let kept_objects = client
+            .list_objects_v2()
+            .bucket(kept)
+            .send()
+            .await?
+            .contents()
+            .iter()
+            .filter_map(|object| object.key().map(str::to_owned))
+            .collect::<Vec<_>>();
+        ensure!(
+            deleted_bucket.as_deref() == Some("NotFound"),
+            "after cleanup {attempt}, the deleted bucket answered {deleted_bucket:?}"
+        );
+        ensure!(
+            kept_objects == keys,
+            "after cleanup {attempt}, the kept bucket holds {kept_objects:?}"
+        );
+    }
+
+    Ok(())
 }
 
 async fn rustfs_serves_allocations(env: EnvContextValues) -> Result<()> {
@@ -393,8 +514,9 @@ async fn rustfs_serves_allocations(env: EnvContextValues) -> Result<()> {
 }
 
 /// PV's Postgres runtime: preparation runs `initdb` with PV's arguments, the readiness check signs
-/// in with SCRAM, PV's allocation step creates a database and then finds it, and PV's stop
-/// finishes within the grace period while a client is still connected (#391).
+/// in with SCRAM, PV's allocation step creates a database and then finds it, PV's allocation
+/// cleanup drops one database even while an app is connected to it, and PV's stop finishes within
+/// the grace period while a client is still connected (#391).
 async fn postgres_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) -> Result<()> {
     let [port] = available_ports()?;
     let adapter = super::postgres::PostgresRuntimeAdapter::new();
@@ -414,11 +536,21 @@ async fn postgres_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &st
         password: context.env.get("password").cloned().unwrap_or_default(),
     };
 
-    run_contract(paths, &adapter, context, postgres_serves_allocations(admin)).await
+    run_contract(
+        paths,
+        &adapter,
+        context.clone(),
+        postgres_serves_allocations(&adapter, &context, admin),
+    )
+    .await
 }
 
 /// Returns a connected client for the contract to hold through the stop.
-async fn postgres_serves_allocations(admin: SqlAdminContext) -> Result<PgPool> {
+async fn postgres_serves_allocations(
+    adapter: &dyn ManagedResourceRuntimeAdapter,
+    context: &ManagedResourceRuntimeContext,
+    admin: SqlAdminContext,
+) -> Result<PgPool> {
     let database = "pv_contract";
     // PV's allocation step, run twice as reconciliation does for a Ready allocation. The second
     // run creates nothing only if the first database is found.
@@ -433,7 +565,7 @@ async fn postgres_serves_allocations(admin: SqlAdminContext) -> Result<PgPool> {
     );
     let wrong_password = SqlAdminContext {
         password: "not-the-password".to_owned(),
-        ..admin
+        ..admin.clone()
     };
     let refused = sql_state(PgPool::connect_with(sql::postgres_options(&wrong_password)).await);
 
@@ -445,6 +577,34 @@ async fn postgres_serves_allocations(admin: SqlAdminContext) -> Result<PgPool> {
         refused.as_deref() == Some("28P01"),
         "a wrong password failed with {refused:?}"
     );
+
+    let kept = "pv_contract_kept";
+    sql::create_database_if_missing(&admin, SqlEngine::Postgres, kept).await?;
+    // An app connected to the database doesn't stop cleanup.
+    let app = PgPool::connect_with(sql::postgres_options(&admin).database(database)).await?;
+    // Checked after each call: the first must finish the job, and a retried cleanup that runs
+    // again after the database is gone must succeed.
+    for attempt in 1..=2 {
+        adapter
+            .delete_allocation(context, &context.env, database)
+            .await?;
+        let mut left = Vec::new();
+        for name in [database, kept] {
+            if sqlx::query("SELECT 1 FROM pg_database WHERE datname = $1")
+                .bind(name)
+                .fetch_optional(&pool)
+                .await?
+                .is_some()
+            {
+                left.push(name);
+            }
+        }
+        ensure!(
+            left == [kept],
+            "after cleanup {attempt}, databases {left:?} remain"
+        );
+    }
+    drop(app);
 
     Ok(pool)
 }
@@ -465,6 +625,67 @@ async fn mysql_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) 
         runtime_context(paths, "mysql", track, artifact_path, [("mysql", port)]),
         future::ready(Ok(())),
     )
+    .await
+}
+
+/// Real MySQL with PV's own SQL client, which the fake can't speak: PV's allocation cleanup drops
+/// one database and leaves another.
+async fn real_mysql_deletes_allocations(
+    paths: &PvPaths,
+    artifact_path: &Utf8Path,
+    track: &str,
+) -> Result<()> {
+    let [port] = available_ports()?;
+    let adapter = super::mysql::MysqlRuntimeAdapter::new();
+    let mut context = runtime_context(paths, "mysql", track, artifact_path, [("mysql", port)]);
+    // Fix the generated password up front, so the check signs in with the one MySQL gets.
+    context.env = adapter.resource_env(&context)?;
+    let admin = SqlAdminContext {
+        host: Ipv4Addr::LOCALHOST.to_string(),
+        port,
+        username: context.env.get("username").cloned().unwrap_or_default(),
+        password: context.env.get("password").cloned().unwrap_or_default(),
+    };
+
+    run_contract(paths, &adapter, context.clone(), async {
+        let (deleted, kept) = ("pv_contract", "pv_contract_kept");
+        for database in [deleted, kept] {
+            sql::create_database_if_missing(&admin, SqlEngine::Mysql, database).await?;
+        }
+        let pool = MySqlPool::connect_with(
+            MySqlConnectOptions::new()
+                .host(&admin.host)
+                .port(admin.port)
+                .username(&admin.username)
+                .password(&admin.password),
+        )
+        .await?;
+        // Checked after each call: the first must finish the job, and a retried cleanup that
+        // runs again after the database is gone must succeed.
+        for attempt in 1..=2 {
+            adapter
+                .delete_allocation(&context, &context.env, deleted)
+                .await?;
+            let mut left = Vec::new();
+            for database in [deleted, kept] {
+                let count: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM information_schema.schemata WHERE schema_name = ?",
+                )
+                .bind(database)
+                .fetch_one(&pool)
+                .await?;
+                if count > 0 {
+                    left.push(database);
+                }
+            }
+            ensure!(
+                left == [kept],
+                "after cleanup {attempt}, databases {left:?} remain"
+            );
+        }
+
+        Ok(())
+    })
     .await
 }
 

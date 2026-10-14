@@ -85,7 +85,7 @@ pub fn generated_allocation_name(
             )
         }
         ResourceAllocationKind::RedisPrefix => {
-            format!("{}-{}-", project_slug, allocation_name.replace('_', "-"))
+            format!("{}.{}.", project_slug, allocation_name.replace('_', "-"))
         }
         ResourceAllocationKind::RustfsBucket => {
             format!("{}-{}", project_slug, allocation_name.replace('_', "-"))

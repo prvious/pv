@@ -1176,7 +1176,7 @@ Generated credentials are stable. PV creates them once for the relevant Managed 
 
 PV v1 does not support credential rotation commands.
 
-Redis Resource allocations create generated key prefixes only in v1. PV does not manage Redis logical DB indexes or ACL users in v1. Redis prefix values use `<project-slug>-<allocation>-`. For example, Project slug `acme` and allocation `cache` renders `acme-cache-`. Redis prefixes are generated when the Resource allocation is first created and then stored in `pv.db`. Later Project changes do not switch the stored key namespace.
+Redis Resource allocations create generated key prefixes only in v1. PV does not manage Redis logical DB indexes or ACL users in v1. Redis prefix values use `<project-slug>.<allocation>.`. For example, Project slug `acme` and allocation `cache` renders `acme.cache.`. Slugs and normalized allocation names never contain `.`, so one generated prefix is never the start of another, and deleting one allocation's keys cannot match another allocation's keys. Allocations created before this format keep their stored `<project-slug>-<allocation>-` prefix. Only discovered worktree Projects are ever cleaned up, and their allocations always use the new format. Redis prefixes are generated when the Resource allocation is first created and then stored in `pv.db`. Later Project changes do not switch the stored key namespace.
 
 For Redis prefixes, allocation names are normalized the same way as RustFS bucket allocation segments: underscores are converted to hyphens.
 
@@ -1208,13 +1208,15 @@ Empty allocation configs such as `app: {}` are valid; the allocation name alone 
 
 If a Resource allocation is removed from Project config, PV stops reconciling it but leaves the underlying database, bucket, prefix, credentials, or other resource-specific objects in place.
 
-PV v1 does not automatically garbage-collect orphaned Resource allocations.
+PV v1 does not automatically garbage-collect orphaned Resource allocations. The only automatic deletion is the cleanup of a discovered worktree Project after Git removes the worktree, described in Git Worktrees.
 
-PV uses readable Project-slug-based generated names for user-visible Resource allocation objects. SQL database names use `<project_slug>_<allocation_name>`, RustFS bucket names use `<project-slug>-<allocation_name>`, and Redis prefixes use `<project-slug>-<allocation>-`. These names are generated at first allocation creation and stored in `pv.db`; reconciliation always reuses the persisted `generated_name` and never renames an existing database, bucket, or prefix.
+PV uses readable Project-slug-based generated names for user-visible Resource allocation objects. SQL database names use `<project_slug>_<allocation_name>`, RustFS bucket names use `<project-slug>-<allocation_name>`, and Redis prefixes use `<project-slug>.<allocation>.`. These names are generated at first allocation creation and stored in `pv.db`; reconciliation always reuses the persisted `generated_name` and never renames an existing database, bucket, or prefix.
 
 PV applies a hard 63-character maximum to generated Resource allocation object names in v1. If the generated SQL database name, Redis prefix, or RustFS bucket name would exceed 63 characters, PV fails Project config/reconciliation with a clear error. PV does not truncate, hash, or silently rewrite generated Resource allocation names in v1.
 
 If a Resource allocation is removed from Project config and later re-added with the same name for the same Project and Managed Resource, PV reuses the same stored generated Resource allocation object name and reconnects to the existing underlying object when it still exists.
+
+If Project config moves a Managed Resource to a different track, PV creates each allocation on the new track under its stored generated name. It leaves the object on the previous track in place and records it in `pv.db` as a retired allocation, so worktree cleanup can still find it. A retired allocation keeps its generated name reserved on that track. Moving back to the previous track reconnects to the existing object and removes the retired record.
 
 If an underlying object for a desired Resource allocation is manually deleted outside PV, reconciliation recreates it and records the drift repair.
 
@@ -1394,7 +1396,7 @@ Project hostnames are normalized to lowercase and validated as DNS-safe `.test` 
 
 `pv.test` is reserved for PV diagnostics or future internal UI and cannot be assigned to a Project.
 
-PV identifies a Project by its canonical absolute path. Project slugs, generated names, and Project hostnames are unique attributes, but they are not Project identity. Running `pv link` more than once for the same canonical path updates the existing Project record.
+PV identifies a Project by its canonical absolute path. Project slugs, generated names, and Project hostnames are unique attributes, but they are not Project identity. Discovered worktree Projects are the exception: Git Worktrees describes their identity. Running `pv link` more than once for the same canonical path updates the existing Project record.
 
 PV stores both the original linked path string and the canonical absolute path. The canonical path is used for identity, routing, and equality; the original path is display/debug metadata.
 
@@ -1406,9 +1408,9 @@ The Project slug is the stable readable namespace for all newly generated Resour
 
 Persisted Project state records serving mode and Project slug additively. Where the current database hostname invariants require a non-null unique value for a newly linked resource-only Project, PV stores a unique internal `.invalid` hostname. This compatibility value is storage-only and must never appear in user-facing text or JSON, selectors, Gateway or TLS planning, env rendering, Resource allocation names, status, or logs.
 
-If a Project directory moves and is linked again at the new path, PV v1 treats it as a new Project. Path-move semantics may be added later if needed.
+If a Project directory moves and is linked again at the new path, PV v1 treats it as a new Project. Path-move semantics may be added later if needed. A discovered worktree Project instead follows `git worktree move`, as described in Git Worktrees.
 
-If a linked Project path no longer exists, PV marks the Project failed or missing in observed state but keeps desired state. PV does not auto-unlink missing Projects.
+If a linked Project path no longer exists, PV marks the Project failed or missing in observed state but keeps desired state. PV does not auto-unlink missing Projects. A discovered worktree Project is unlinked only when Git no longer registers its worktree.
 
 Missing Projects continue to own their Project hostnames until the user unlinks or repairs them. If technically feasible, the Gateway returns a specific missing-Project response for linked hostnames whose Project path is missing.
 
@@ -1440,9 +1442,37 @@ If a bare selector could resolve both an exact Project slug and a normalized hos
 
 `pv unlink` exits non-zero if the target cannot be resolved to a linked Project.
 
-`pv unlink` removes the Project from desired state and requests reconciliation. It never deletes the Project directory. Resource allocations, databases, Redis data, RustFS data, and other managed service data remain unless a separate destructive command is introduced. PV stops reconciling and watching them for that Project.
+`pv unlink` removes the Project from desired state and requests reconciliation. It never deletes the Project directory. Resource allocations, databases, Redis data, RustFS data, and other managed service data remain unless a separate destructive command is introduced. PV stops reconciling and watching them for that Project. This also applies to discovered worktree Projects; Git Worktrees describes the separate cleanup that follows Git removing a worktree.
 
 If PV previously generated a Project `.env` block, `pv unlink` leaves the block and any `# pv: ` lines in place and stops updating them.
+
+## Git Worktrees
+
+PV discovers the Git worktrees of linked Projects and links each one as its own Project. There is no worktree config key and no PV worktree command. A discovered worktree Project gets its own hostname and its own Resource allocations, and shares the running Managed Resource processes with every other Project.
+
+A discovery source is a linked Project inside a repository's main checkout, the checkout whose `.git` is a directory. Projects linked inside a linked worktree, including every checkout of a bare repository, are ordinary Projects and never sources. Discovered Projects never act as sources.
+
+For each source, PV reads the repository's `.git/worktrees/` directory directly instead of running `git`. Each entry directory holds a `gitdir` file naming the worktree checkout's `.git` file; PV resolves a relative `gitdir` path against the entry directory. The main checkout is never discovered. The discovered Project's path is the source's path relative to the main checkout, applied to the worktree checkout: a source linked at `<repo>/apps/web` discovers `<worktree>/apps/web`. PV does not register a worktree until that directory exists. If the discovered path is already a linked Project, it stays an ordinary Project.
+
+PV scans for worktrees when the daemon starts, after a source is linked, and during the daemon's 30-second runtime health scan. A scan only reads. When it finds a change, it requests reconciliation, and the queued job reads the worktree entries again before changing state. A new worktree can take up to about 30 seconds to be served.
+
+On first discovery, PV writes a random worktree ID to a PV-owned `pv-id` file inside the worktree's entry directory, such as `.git/worktrees/feature/pv-id`. Git keeps that directory when it moves a worktree and deletes it when it removes or prunes one, so the ID lasts exactly as long as Git's registration. A discovered Project is identified by its source Project and its worktree ID rather than by its path. Moving a worktree updates the Project's path and keeps its Project ID, slug, hostname, and Resource allocations. If an entry has no ID file but its checkout path matches a discovered Project's stored path, PV treats it as the same worktree and writes the ID again. Any other entry without a known ID is a new worktree, even when Git reuses the entry name of a removed worktree.
+
+A discovered Project's slug is `<source-slug>-<worktree-directory>`, where the worktree directory is the basename of the worktree checkout, normalized like any other slug. Its primary hostname is the slug followed by `.test`. For example, source slug `acme` and a worktree at `.claude/worktrees/happy-otter` become slug `acme-happy-otter` and hostname `acme-happy-otter.test`. If either is taken, PV appends the first numeric suffix that leaves both free. The name does not follow the branch and does not change when the worktree moves. Because the hostname sits beside the source's hostname rather than under it, it never takes over one of the source's wildcard subdomains.
+
+A discovered Project reads only its own Project config. It does not inherit the source's config; without a `pv.yml`, it behaves like any linked Project without Project config.
+
+When PV first discovers a worktree and the discovered Project's configured env file does not exist, PV copies the source Project's configured env file to it. In the copy, PV restores the source's `# pv: ` lines and removes the source's PV-managed blocks, then renders the discovered Project's own block as usual. PV never overwrites an existing env file and never changes the source's env file. PV does not install dependencies or run migrations, seeders, or other application commands for a worktree.
+
+A discovered Project gets no Gateway route or PHP worker until its first reconciliation of Resource allocations and env completes successfully, including when there is nothing to render. PV records that success in `pv.db`. After it, the normal rules apply, including serving the last valid state when later reconciliation fails.
+
+A worktree whose checkout directory is missing while Git still registers it remains a linked, missing Project. Git keeps such entries, reported as prunable, until they are pruned.
+
+When a worktree's entry directory no longer exists, including after `git worktree remove` or `git worktree prune`, PV deletes the discovered Project's PV-owned data. In one transaction, PV unlinks the Project and records each allocation object it owned in a cleanup list: active and inactive allocations, and retired allocations left on previous tracks. Because the Project is no longer linked, reconciliation cannot recreate those objects. After the Gateway reloads without the Project's routes, PV deletes each object: MySQL and Postgres databases, Redis keys with the allocation's prefix in every logical database, and RustFS buckets with their contents. A deletion that finds the object already gone succeeds. PV removes an object from the cleanup list only after its deletion succeeds and retries the rest; `pv status` reports pending cleanup. If an object's track is installed but stopped, PV starts it for cleanup. If the track is no longer installed, the object stays pending and `pv status` names the track to reinstall. Slugs and generated names in the cleanup list stay reserved, so no new Project receives a name that is about to be deleted. PV never deletes Project directories, env files, shared Managed Resource data directories, or Mailpit data, which has no per-Project allocation.
+
+Only a missing entry directory counts as removal. A missing source directory, an unreadable `.git/worktrees/` directory or entry, or any other uncertain result changes nothing for that source, and PV retries on the next scan.
+
+`pv unlink` on a discovered Project keeps its data and stops PV from discovering that worktree again until Git removes it. Running `pv link` on its path clears that and links it as an ordinary Project. Unlinking a source also unlinks its discovered Projects and keeps their data. When Git later removes a worktree whose Project was unlinked, PV deletes nothing.
 
 ## Opening Projects
 

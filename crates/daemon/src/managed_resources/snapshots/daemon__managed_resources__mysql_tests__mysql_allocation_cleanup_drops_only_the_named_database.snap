@@ -1,0 +1,11 @@
+---
+source: crates/daemon/src/managed_resources/mysql_tests.rs
+expression: admin.operations().await?
+---
+[
+    RecordedSqlAdminOperation {
+        engine: Mysql,
+        database: "acme_app_db",
+        statement: "DROP DATABASE IF EXISTS `acme_app_db`",
+    },
+]

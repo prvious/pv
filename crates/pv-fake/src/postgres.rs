@@ -207,6 +207,17 @@ impl Cluster {
 
         Ok(Response::Execution(Tag::new("CREATE DATABASE")))
     }
+
+    /// `DROP DATABASE IF EXISTS`, which succeeds when the database is already gone.
+    fn drop_database(&self, name: &str) -> PgWireResult<Response> {
+        let Some(path) = self.database(name) else {
+            return Err(unsupported(&format!("DROP DATABASE \"{name}\"")));
+        };
+        state::fs::remove_file_if_exists(&path)
+            .map_err(|source| PgWireError::ApiError(Box::new(source)))?;
+
+        Ok(Response::Execution(Tag::new("DROP DATABASE")))
+    }
 }
 
 fn database_path(data_dir: &Utf8Path, name: &str) -> Utf8PathBuf {
@@ -234,6 +245,7 @@ enum Statement {
     SelectOne,
     DatabaseExists,
     CreateDatabase(String),
+    DropDatabase(String),
 }
 
 impl Statement {
@@ -244,11 +256,17 @@ impl Statement {
         if sql == DATABASE_EXISTS {
             return Ok(Self::DatabaseExists);
         }
-        match sql
+        if let Some(name) = sql
             .strip_prefix("CREATE DATABASE \"")
             .and_then(|rest| rest.strip_suffix('"'))
         {
-            Some(name) => Ok(Self::CreateDatabase(name.to_owned())),
+            return Ok(Self::CreateDatabase(name.to_owned()));
+        }
+        match sql
+            .strip_prefix("DROP DATABASE IF EXISTS \"")
+            .and_then(|rest| rest.strip_suffix("\" WITH (FORCE)"))
+        {
+            Some(name) => Ok(Self::DropDatabase(name.to_owned())),
             None => Err(unsupported(sql)),
         }
     }
@@ -256,7 +274,7 @@ impl Statement {
     fn parameter_types(&self) -> Vec<Type> {
         match self {
             Self::DatabaseExists => vec![Type::TEXT],
-            Self::SelectOne | Self::CreateDatabase(_) => Vec::new(),
+            Self::SelectOne | Self::CreateDatabase(_) | Self::DropDatabase(_) => Vec::new(),
         }
     }
 
@@ -270,7 +288,7 @@ impl Statement {
                 Type::INT4,
                 format.format_for(0),
             )],
-            Self::CreateDatabase(_) => Vec::new(),
+            Self::CreateDatabase(_) | Self::DropDatabase(_) => Vec::new(),
         }
     }
 }
@@ -319,6 +337,7 @@ impl ExtendedQueryHandler for Cluster {
                 ones(columns, usize::from(exists))
             }
             Statement::CreateDatabase(name) => self.create_database(&name),
+            Statement::DropDatabase(name) => self.drop_database(&name),
         }
     }
 

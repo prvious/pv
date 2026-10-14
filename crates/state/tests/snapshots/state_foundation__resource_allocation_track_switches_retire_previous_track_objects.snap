@@ -1,0 +1,21 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: "(after_switch, after_switch_back, after_unlink)"
+---
+(
+    [
+        RetiredResourceAllocationRecord {
+            resource_name: "mysql",
+            track: "8.0",
+            generated_name: "acme_test_app_db",
+        },
+    ],
+    [
+        RetiredResourceAllocationRecord {
+            resource_name: "mysql",
+            track: "8.4",
+            generated_name: "acme_test_app_db",
+        },
+    ],
+    [],
+)
