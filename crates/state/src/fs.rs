@@ -233,9 +233,9 @@ pub fn create_new_file(path: &Utf8Path) -> Result<std::fs::File, StateError> {
     create_new_file_handle(path)
 }
 
-/// Writes a new file in a directory PV doesn't own, such as a user's `.git` directory. It fails if
-/// the file exists and, unlike PV's own-file helpers, leaves the directory's permissions alone.
-/// The content goes to a temporary file that a hard link then publishes only if nothing exists at
+/// Writes a new owner-only file in a directory PV doesn't own, such as a user's `.git` directory or
+/// Project directory. It fails if the file exists and, unlike PV's own-file helpers, leaves the
+/// directory's permissions alone. The content goes to a temporary file that a hard link then publishes only if nothing exists at
 /// `path`, so a failed write or a crash never leaves a partly written file there.
 #[expect(
     clippy::disallowed_methods,
@@ -245,7 +245,9 @@ pub fn write_new_file(path: &Utf8Path, content: &str) -> Result<(), StateError> 
     let temporary_path = temporary_path_for(path);
     // Creating the temporary file exclusively refuses an existing file or symlink, so this never
     // writes through or removes a path it didn't just create.
-    let mut temporary_file = create_new_file_handle(&temporary_path)?;
+    // It's owner-only from creation, so no other user can open it before the content arrives, and
+    // the hard link shares it, so the published file is owner-only too.
+    let mut temporary_file = create_new_private_file_handle(&temporary_path)?;
     let published = io::Write::write_all(&mut temporary_file, content.as_bytes())
         .map_err(|source| StateError::filesystem(temporary_path.clone(), source))
         .and_then(|()| {
@@ -476,6 +478,31 @@ fn create_new_file_handle(path: &Utf8Path) -> Result<std::fs::File, StateError> 
         .create_new(true)
         .open(path)
         .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
+}
+
+#[cfg(unix)]
+#[expect(
+    clippy::disallowed_types,
+    reason = "PV filesystem helper owns direct file handles"
+)]
+fn create_new_private_file_handle(path: &Utf8Path) -> Result<std::fs::File, StateError> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(SENSITIVE_FILE_MODE)
+        .open(path)
+        .map_err(|source| StateError::filesystem(path.to_path_buf(), source))
+}
+
+#[cfg(not(unix))]
+#[expect(
+    clippy::disallowed_types,
+    reason = "PV filesystem helper owns direct file handles"
+)]
+fn create_new_private_file_handle(path: &Utf8Path) -> Result<std::fs::File, StateError> {
+    create_new_file_handle(path)
 }
 
 #[expect(

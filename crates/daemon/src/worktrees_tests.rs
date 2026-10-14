@@ -374,6 +374,117 @@ fn an_unlinked_worktree_stays_unlinked_until_git_drops_it() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn discovery_copies_the_source_env_file_without_the_sources_pv_values() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let repo = fixture.main_checkout("repo")?;
+    fixture.link("repo", "repo.test")?;
+    state::fs::write_sensitive_file(
+        &repo.join(".env"),
+        "# pv: APP_URL=https://user.test\nAPP_KEY=base64:secret\n# >>> PV MANAGED\n\
+         APP_URL=https://repo.test\nDB_DATABASE=repo_app\n# <<< PV MANAGED\n",
+    )?;
+    fixture.add_worktree(&repo, "feat", "worktrees/feat")?;
+
+    discover_worktrees(&fixture.paths)?;
+
+    // Reconciliation fills the empty block with the worktree's own values.
+    assert_eq!(
+        state::fs::read_to_string(&fixture.root.join("worktrees/feat/.env"))?,
+        "APP_URL=https://user.test\nAPP_KEY=base64:secret\n# >>> PV MANAGED\n# <<< PV MANAGED\n"
+    );
+    assert_eq!(fixture.discovered()?.len(), 1);
+
+    Ok(())
+}
+
+#[test]
+fn the_env_copy_respects_env_file_and_never_overwrites() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let repo = fixture.main_checkout("repo")?;
+    fixture.link("repo", "repo.test")?;
+    state::fs::write_sensitive_file(&repo.join(".env"), "APP_KEY=base64:secret\n")?;
+    // This branch keeps its env in `.env.local`.
+    fixture.add_worktree(&repo, "custom", "worktrees/custom")?;
+    let custom = fixture.root.join("worktrees/custom");
+    state::fs::write_sensitive_file(&custom.join("pv.yml"), "env_file: .env.local\n")?;
+    // This worktree already has its own env file.
+    fixture.add_worktree(&repo, "own", "worktrees/own")?;
+    let own = fixture.root.join("worktrees/own/.env");
+    state::fs::write_sensitive_file(&own, "APP_KEY=base64:mine\n")?;
+
+    discover_worktrees(&fixture.paths)?;
+
+    assert_eq!(
+        state::fs::read_to_string(&custom.join(".env.local"))?,
+        "APP_KEY=base64:secret\n"
+    );
+    assert!(!state::fs::path_entry_exists(&custom.join(".env"))?);
+    assert_eq!(state::fs::read_to_string(&own)?, "APP_KEY=base64:mine\n");
+    assert_eq!(fixture.discovered()?.len(), 2);
+
+    Ok(())
+}
+
+#[test]
+fn a_worktree_waits_while_the_source_env_file_cannot_be_copied() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let repo = fixture.main_checkout("repo")?;
+    fixture.link("repo", "repo.test")?;
+    // Without a source env file there is nothing to copy, and the worktree is linked as is.
+    fixture.add_worktree(&repo, "plain", "worktrees/plain")?;
+    discover_worktrees(&fixture.paths)?;
+    let without_source_env = fixture.discovered()?.len();
+    // A PV block with no end marker can't be copied safely.
+    state::fs::write_sensitive_file(&repo.join(".env"), "# >>> PV MANAGED\nAPP_URL=x\n")?;
+    fixture.add_worktree(&repo, "feat", "worktrees/feat")?;
+    discover_worktrees(&fixture.paths)?;
+    let while_broken = fixture.discovered()?.len();
+    state::fs::write_sensitive_file(&repo.join(".env"), "APP_KEY=base64:secret\n")?;
+    discover_worktrees(&fixture.paths)?;
+
+    assert_eq!(without_source_env, 1);
+    assert!(!state::fs::path_entry_exists(
+        &fixture.root.join("worktrees/plain/.env")
+    )?);
+    assert_eq!(while_broken, 1);
+    assert_eq!(fixture.discovered()?.len(), 2);
+    assert_eq!(
+        state::fs::read_to_string(&fixture.root.join("worktrees/feat/.env"))?,
+        "APP_KEY=base64:secret\n"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn a_held_worktree_stays_eligible_for_tls_repair() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let repo = fixture.main_checkout("repo")?;
+    fixture.link("repo", "repo.test")?;
+    fixture.add_worktree(&repo, "feat", "worktrees/feat")?;
+    state::fs::write_sensitive_file(
+        &fixture.root.join("worktrees/feat/pv.yml"),
+        "env:\n  APP_CERT: \"${tls.cert}\"\n",
+    )?;
+    state::fs::write_sensitive_file(&fixture.paths.ca_certificate(), "unused certificate")?;
+    state::fs::write_sensitive_file(&fixture.paths.ca_private_key(), "unused private key")?;
+    discover_worktrees(&fixture.paths)?;
+    let database = Database::open(&fixture.paths)?;
+
+    // Its first reconciliation hasn't written TLS files yet, so the health scan retries it.
+    let held = database.held_project_ids()?;
+    let scopes = crate::health::collect_project_tls_health_scopes(&fixture.paths, &database)?;
+
+    let Some(worktree_id) = held.iter().next() else {
+        return Err(anyhow!("the worktree isn't held"));
+    };
+    assert_eq!(held.len(), 1);
+    assert_eq!(scopes, [crate::ReconciliationScope::project(worktree_id)?]);
+
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn the_health_scan_requests_system_reconciliation_for_worktree_changes() -> Result<()> {

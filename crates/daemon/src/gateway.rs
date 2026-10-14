@@ -2667,9 +2667,10 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
     let mut database = Database::open(paths)?;
     let gateway_ports = database.assign_gateway_ports(loopback_tcp_port_available)?;
     let mut projects_by_runtime_key: BTreeMap<String, PhpWorkerRuntimePlan> = BTreeMap::new();
+    let held_project_ids = database.held_project_ids()?;
 
     for project in database.projects()? {
-        if project.mode == ProjectMode::ResourceOnly {
+        if project.mode == ProjectMode::ResourceOnly || held_project_ids.contains(&project.id) {
             continue;
         }
 
@@ -2784,8 +2785,10 @@ fn build_target_runtime_plan(
             .ok_or_else(|| StateError::ProjectNotFound {
                 target: project_id.to_owned(),
             })?;
+    // A held worktree is planned like a resource-only Project: no route and no worker yet.
+    let held = database.held_project_ids()?.contains(&project.id);
 
-    if project.mode == ProjectMode::Served {
+    if project.mode == ProjectMode::Served && !held {
         // Project-to-System promotion is fail-closed: unreadable or invalid Project
         // config is a typed error, never uncertainty. Only a valid config that
         // contradicts the stored mode hands off to System reconciliation.
@@ -2856,9 +2859,11 @@ fn complete_targeted_runtime_plan(
         .into_iter()
         .map(|worker| (worker.runtime_key.clone(), worker))
         .collect::<BTreeMap<_, _>>();
+    let held_project_ids = database.held_project_ids()?;
 
     for project in database.projects()? {
         if project.id != project_id
+            && !held_project_ids.contains(&project.id)
             && !append_targeted_persisted_runtime_project(
                 paths,
                 &mut database,
