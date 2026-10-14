@@ -92,6 +92,7 @@ async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Res
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     seed_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -163,6 +164,7 @@ async fn gateway_lookup_failure_streams_and_records_failed_gateway_phase() -> Re
         "2.11.4-pv1",
         &paths.resources().join("caddy/2/releases/missing"),
     )?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
@@ -246,6 +248,7 @@ async fn unsupported_job_streams_failure_event_and_persists_failed_status() -> R
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let jobs_lock = JobsLock::acquire(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
 
     let lines = request_lines(
@@ -278,6 +281,7 @@ async fn valid_reconciliation_scopes_stream_stub_completion() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     seed_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -319,6 +323,7 @@ async fn update_locks_delay_startup_reconciliation_but_keep_health_available() -
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
     let update_lock = UpdateLock::acquire(&paths)?;
     let jobs_lock = JobsLock::acquire(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -400,6 +405,7 @@ async fn daemon_shutdown_cancels_startup_reconciliation_waiting_for_jobs_lock() 
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let jobs_lock = JobsLock::acquire(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
 
@@ -421,6 +427,7 @@ async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
 
     let result = async {
+        pv_fake::seed_dns_port(&paths)?;
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
         gateway_guard.attach_daemon(daemon);
@@ -628,6 +635,7 @@ async fn seeded_gateway_drop_current_thread_inner() -> Result<()> {
         },
     )?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -647,13 +655,7 @@ async fn seeded_gateway_drop_current_thread_inner() -> Result<()> {
 
     let project_path = paths.home().join("validator-project");
     let (project_id, _worker_port_handoff) = FoundationWorkerPortHandoff::new(|| {
-        seed_foundation_php_project_after_caddy(
-            &paths,
-            &project_path,
-            "php: \"8.4\"\n",
-            45_000,
-            49_999,
-        )
+        seed_foundation_php_project_after_caddy(&paths, &project_path, "php: \"8.4\"\n")
     })?;
     let (worker, _release_validation) = install_worker_validation_barrier(&paths, false)?;
     let request_paths = paths.clone();
@@ -703,6 +705,7 @@ async fn fallback_shutdown_prevents_late_gateway_startup() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let (caddy, release_validation) = seed_barrier_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -735,6 +738,7 @@ async fn fallback_shutdown_prevents_late_worker_startup() -> Result<()> {
     let ((worker, release_validation), _port_reservation) =
         seed_barrier_foundation_worker(&paths, &project_path)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -767,18 +771,14 @@ async fn fallback_shutdown_cancels_fresh_worker_readiness() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_path = tempdir.path().join("project");
-    let (_project_id, mut port_handoff) = seed_foundation_php_project_in_range(
-        &paths,
-        &project_path,
-        "php: \"8.4\"\n",
-        50_000,
-        54_999,
-    )?;
+    let (_project_id, mut port_handoff) =
+        seed_foundation_php_project(&paths, &project_path, "php: \"8.4\"\n")?;
     let worker_port = port_handoff.port();
     let worker = install_worker_readiness_barrier(&paths)?;
     port_handoff.release_for_runtime_start();
     let worker_root_config = paths.worker_root_config("8.4");
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -814,13 +814,8 @@ async fn fallback_shutdown_preserves_pending_matching_worker_reload() -> Result<
     let project_path = tempdir.path().join("project");
     state::fs::ensure_user_dir(&project_path.join("public"))?;
     state::fs::ensure_user_dir(&project_path.join("web"))?;
-    let (project_id, mut port_handoff) = seed_foundation_php_project_in_range(
-        &paths,
-        &project_path,
-        "php: \"8.4\"\nroot: public\n",
-        55_000,
-        59_999,
-    )?;
+    let (project_id, mut port_handoff) =
+        seed_foundation_php_project(&paths, &project_path, "php: \"8.4\"\nroot: public\n")?;
     let release_load = install_worker_load_barrier(&paths)?;
     port_handoff.release_for_runtime_start();
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
@@ -836,6 +831,7 @@ async fn fallback_shutdown_preserves_pending_matching_worker_reload() -> Result<
     let previous_fragment = state::fs::read_to_string(&worker_fragment)?;
     state::fs::write_sensitive_file(&project_path.join("pv.yml"), "php: \"8.4\"\nroot: web\n")?;
 
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -890,13 +886,8 @@ async fn fallback_shutdown_cancels_watcher_reload_and_preserves_pending_worker()
     let project_path = tempdir.path().join("project");
     state::fs::ensure_user_dir(&project_path.join("public"))?;
     state::fs::ensure_user_dir(&project_path.join("web"))?;
-    let (project_id, mut port_handoff) = seed_foundation_php_project_in_range(
-        &paths,
-        &project_path,
-        "php: \"8.4\"\nroot: public\n",
-        55_000,
-        59_999,
-    )?;
+    let (project_id, mut port_handoff) =
+        seed_foundation_php_project(&paths, &project_path, "php: \"8.4\"\nroot: public\n")?;
     let release_load = install_worker_load_barrier(&paths)?;
     port_handoff.release_for_runtime_start();
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
@@ -910,6 +901,7 @@ async fn fallback_shutdown_cancels_watcher_reload_and_preserves_pending_worker()
         .worker_projects_config_dir("8.4")
         .join(format!("{project_id}.Caddyfile"));
     let previous_fragment = state::fs::read_to_string(&worker_fragment)?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -971,13 +963,8 @@ async fn matching_cancellation_preserves_pending_runtime_without_restore_proof()
     let project_path = tempdir.path().join("project");
     state::fs::ensure_user_dir(&project_path.join("public"))?;
     state::fs::ensure_user_dir(&project_path.join("web"))?;
-    let (project_id, mut port_handoff) = seed_foundation_php_project_in_range(
-        &paths,
-        &project_path,
-        "php: \"8.4\"\nroot: public\n",
-        60_000,
-        64_999,
-    )?;
+    let (project_id, mut port_handoff) =
+        seed_foundation_php_project(&paths, &project_path, "php: \"8.4\"\nroot: public\n")?;
     let release_load = install_worker_load_barrier(&paths)?;
     port_handoff.release_for_runtime_start();
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
@@ -1003,6 +990,7 @@ async fn matching_cancellation_preserves_pending_runtime_without_restore_proof()
         .context("remove matching runtime fingerprint")?;
     state::fs::write_sensitive_file(&project_path.join("pv.yml"), "php: \"8.4\"\nroot: web\n")?;
 
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -1133,6 +1121,7 @@ async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
     seed_foundation_caddy(&paths)?;
     let jobs_lock = JobsLock::acquire(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -1225,6 +1214,7 @@ async fn fallback_shutdown_cancels_foreground_socket_reconciliation() -> Result<
     seed_foundation_caddy(&paths)?;
     let mut port_handoff;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -1233,13 +1223,7 @@ async fn fallback_shutdown_cancels_foreground_socket_reconciliation() -> Result<
 
     let project_path = tempdir.path().join("project");
     let (project_id, worker_port_handoff) = FoundationWorkerPortHandoff::new(|| {
-        seed_foundation_php_project_after_caddy(
-            &paths,
-            &project_path,
-            "php: \"8.4\"\n",
-            40_000,
-            44_999,
-        )
+        seed_foundation_php_project_after_caddy(&paths, &project_path, "php: \"8.4\"\n")
     })?;
     let (worker, release_validation) = install_worker_validation_barrier(&paths, false)?;
     port_handoff = worker_port_handoff;
@@ -1290,15 +1274,11 @@ async fn daemon_shutdown_joins_health_triggered_worker_recovery() -> Result<()> 
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_path = tempdir.path().join("project");
-    let (project_id, mut port_handoff) = seed_foundation_php_project_in_range(
-        &paths,
-        &project_path,
-        "php: \"8.4\"\n",
-        30_000,
-        34_999,
-    )?;
+    let (project_id, mut port_handoff) =
+        seed_foundation_php_project(&paths, &project_path, "php: \"8.4\"\n")?;
     port_handoff.release_for_runtime_start();
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -1429,6 +1409,7 @@ async fn daemon_shutdown_keeps_jobs_lock_until_blocking_install_finishes() -> Re
         started: Arc::clone(&started),
         release: Mutex::new(blocked),
     };
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
             paths.clone(),
@@ -1484,6 +1465,7 @@ async fn fallback_shutdown_wakes_blocked_resource_request() -> Result<()> {
         started: Arc::clone(&started),
         release: Mutex::new(blocked),
     };
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client_and_blocked_request_release(
                 paths.clone(),
@@ -1551,6 +1533,7 @@ async fn fallback_shutdown_drains_blocked_foreground_update_and_preserves_its_er
         update_started: Arc::clone(&update_started),
         release_receiver: Mutex::new(release_receiver),
     };
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client_and_blocked_request_release(
             paths.clone(),
@@ -1633,6 +1616,7 @@ async fn startup_reconciliation_records_non_contention_enqueue_failure() -> Resu
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_user_dir(&paths.jobs_lock())?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
 
@@ -1687,6 +1671,7 @@ async fn startup_reconciliation_replaces_dual_loopback_project_fragments() -> Re
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
 
     let result = async {
+        pv_fake::seed_dns_port(&paths)?;
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
         gateway_guard.attach_daemon(daemon);
@@ -1714,6 +1699,7 @@ async fn startup_reconciliation_starts_then_adopts_gateway_across_daemon_restart
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     seed_foundation_caddy(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
 
     let result = async {
@@ -1757,6 +1743,7 @@ async fn startup_reconciliation_logs_and_replaces_a_gateway_killed_while_the_dae
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     seed_foundation_caddy(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
 
     let result = async {
@@ -1804,6 +1791,7 @@ async fn repeated_system_requests_during_startup_create_one_trailing_job() -> Re
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
 
     let result = async {
+        pv_fake::seed_dns_port(&paths)?;
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
         gateway_guard.attach_daemon(daemon);
@@ -1935,6 +1923,7 @@ async fn daemon_start_removes_stale_startup_marker_before_health() -> Result<()>
         r#"{"kind":"startup_failed","message":"stale"}"#,
     )?;
 
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     let health_lines = request_lines(
@@ -1965,6 +1954,7 @@ async fn daemon_start_marks_abandoned_running_jobs_failed() -> Result<()> {
     drop(database);
     let jobs_lock = JobsLock::acquire(&paths)?;
 
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     daemon.shutdown().await?;
@@ -2016,6 +2006,7 @@ async fn managed_resource_update_check_returns_success_response() -> Result<()> 
     let jobs_lock = JobsLock::acquire(&paths)?;
     let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
     let manifest_requests = manifest_client.request_count();
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
             paths.clone(),
@@ -2064,6 +2055,7 @@ async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_suc
 
     let manifest_client = ScriptedManifestClient::new(CADDY_ARTIFACT_MANIFEST);
     let manifest_requests = manifest_client.request_count();
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
             paths.clone(),
@@ -2120,6 +2112,7 @@ async fn jobs_lock_rejects_update_jobs_before_manifest_refresh() -> Result<()> {
     let jobs_lock = JobsLock::acquire(&paths)?;
     let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
     let manifest_requests = manifest_client.request_count();
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
             paths.clone(),
@@ -2184,7 +2177,8 @@ fn seed_foundation_caddy_with(paths: &PvPaths, settings: FakeSettings) -> Result
     seed_local_ca(paths)?;
 
     let mut database = Database::open(paths)?;
-    let [http_port, https_port] = available_foundation_gateway_ports()?;
+    let http_port = pv_fake::port()?;
+    let https_port = pv_fake::port()?;
     database.record_managed_resource_track_installed(
         "caddy",
         "2",
@@ -2216,25 +2210,9 @@ fn seed_foundation_php_project(
     project_path: &Utf8Path,
     config: &str,
 ) -> Result<(String, FoundationWorkerPortHandoff)> {
-    seed_foundation_php_project_in_range(paths, project_path, config, 40_000, 44_999)
-}
-
-fn seed_foundation_php_project_in_range(
-    paths: &PvPaths,
-    project_path: &Utf8Path,
-    config: &str,
-    port_range_start: u16,
-    port_range_end: u16,
-) -> Result<(String, FoundationWorkerPortHandoff)> {
     FoundationWorkerPortHandoff::new(|| {
         seed_foundation_caddy(paths)?;
-        seed_foundation_php_project_after_caddy(
-            paths,
-            project_path,
-            config,
-            port_range_start,
-            port_range_end,
-        )
+        seed_foundation_php_project_after_caddy(paths, project_path, config)
     })
 }
 
@@ -2242,8 +2220,6 @@ fn seed_foundation_php_project_after_caddy(
     paths: &PvPaths,
     project_path: &Utf8Path,
     config: &str,
-    port_range_start: u16,
-    port_range_end: u16,
 ) -> Result<(String, StdTcpListener)> {
     let manifest_cache = resources::ArtifactManifestCache::new(paths.downloads());
     let php_track = "8.4";
@@ -2272,11 +2248,7 @@ fn seed_foundation_php_project_after_caddy(
         "8.4.8-pv1",
         &frankenphp_release,
     )?;
-    let mut worker_port_reservations =
-        reserve_foundation_ports(1, port_range_start, port_range_end)?;
-    let worker_port_reservation = worker_port_reservations
-        .pop()
-        .ok_or_else(|| anyhow!("expected one reserved worker port"))?;
+    let worker_port_reservation = reserve_foundation_port()?;
     let worker_service_port = worker_port_reservation.local_addr()?.port();
     database.assign_port(
         PortRequest::php_worker(
@@ -2551,28 +2523,6 @@ async fn wait_for_runtime_descendant(fake: &InstalledFake) -> Result<Pid> {
     })?
 }
 
-fn available_foundation_gateway_ports() -> Result<[u16; 2]> {
-    let mut listeners = Vec::with_capacity(2);
-    let mut ports = Vec::with_capacity(2);
-
-    while ports.len() < 2 {
-        let listener = StdTcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let port = listener.local_addr()?.port();
-        if ports.contains(&port) {
-            continue;
-        }
-
-        ports.push(port);
-        listeners.push(listener);
-    }
-
-    drop(listeners);
-
-    ports
-        .try_into()
-        .map_err(|_| anyhow!("expected two available gateway ports"))
-}
-
 struct FoundationWorkerPortHandoff {
     port: u16,
     reservation: Option<StdTcpListener>,
@@ -2655,24 +2605,11 @@ impl FoundationWorkerPortHandoff {
     }
 }
 
-fn reserve_foundation_ports(count: usize, start: u16, end: u16) -> Result<Vec<StdTcpListener>> {
-    let mut listeners = Vec::with_capacity(count);
-
-    for port in start..=end {
-        match StdTcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
-            Ok(listener) => listeners.push(listener),
-            Err(error) if error.kind() == ErrorKind::AddrInUse => continue,
-            Err(error) => return Err(error.into()),
-        }
-
-        if listeners.len() == count {
-            return Ok(listeners);
-        }
-    }
-
-    Err(anyhow!(
-        "expected {count} available foundation ports in {start}..={end}"
-    ))
+fn reserve_foundation_port() -> Result<StdTcpListener> {
+    Ok(StdTcpListener::bind((
+        Ipv4Addr::LOCALHOST,
+        pv_fake::port()?,
+    ))?)
 }
 
 /// Installs the test monitor PV starts runtimes through, then shuts down the seeded daemon and
@@ -2850,6 +2787,7 @@ async fn blocking_client_submits_reconciliation_jobs() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     seed_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -2876,6 +2814,7 @@ async fn blocking_client_waits_for_reconciliation_stream_completion() -> Result<
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     seed_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -2906,6 +2845,7 @@ async fn blocking_client_checks_managed_resource_updates() -> Result<()> {
     let jobs_lock = JobsLock::acquire(&paths)?;
     let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
     let manifest_requests = manifest_client.request_count();
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
             paths.clone(),
@@ -2942,6 +2882,7 @@ async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
     worker_port_handoff.release_for_runtime_start();
 
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -3084,16 +3025,12 @@ async fn targeted_scenario_timeout_still_cleans_owned_state() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_path = tempdir.path().join("project");
-    let (_project_id, mut port_handoff) = seed_foundation_php_project_in_range(
-        &paths,
-        &project_path,
-        "php: \"8.4\"\n",
-        35_000,
-        39_999,
-    )?;
+    let (_project_id, mut port_handoff) =
+        seed_foundation_php_project(&paths, &project_path, "php: \"8.4\"\n")?;
     let worker = install_worker_readiness_barrier(&paths)?;
     port_handoff.release_for_runtime_start();
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -3169,8 +3106,8 @@ async fn run_targeted_gateway_phase_scenario(
         "8.4.8-pv1",
         &frankenphp_release,
     )?;
-    let worker_port_reservations = reserve_foundation_ports(1, 25_000, 29_999)?;
-    let worker_service_port = worker_port_reservations[0].local_addr()?.port();
+    let worker_port_reservation = reserve_foundation_port()?;
+    let worker_service_port = worker_port_reservation.local_addr()?.port();
     database.assign_port(
         PortRequest::php_worker(
             php_track,
@@ -3206,11 +3143,12 @@ async fn run_targeted_gateway_phase_scenario(
     drop(database);
 
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
     let operation_result = timeout(TARGETED_SCENARIO_TIMEOUT, async {
-        drop(worker_port_reservations);
+        drop(worker_port_reservation);
         let initial_lines = request_lines(
             &paths,
             json!({
@@ -3299,6 +3237,7 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
     let config_path = project_path.join("pv.yml");
     let (project_id, mut worker_port_handoff) =
         seed_foundation_php_project(&paths, &project_path, "php: \"8.4\"\n")?;
+    pv_fake::seed_dns_port(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
     worker_port_handoff.release_for_runtime_start();
 
@@ -3376,6 +3315,7 @@ async fn blocking_client_reports_failed_job_streams() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let jobs_lock = JobsLock::acquire(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
     let client_paths = paths.clone();
 
@@ -3492,6 +3432,7 @@ async fn invalid_reconciliation_scope_reports_scope_parse_failure() -> Result<()
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let jobs_lock = JobsLock::acquire(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
 
     let lines = request_lines(
@@ -3523,6 +3464,7 @@ async fn protocol_mismatch_returns_restart_guidance_without_creating_a_job() -> 
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let _jobs_lock = JobsLock::acquire(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
 
     let lines = request_lines(
@@ -3550,6 +3492,7 @@ async fn protocol_mismatch_returns_restart_guidance_without_creating_a_job() -> 
 async fn malformed_request_does_not_stop_accepting_connections() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
 
     send_raw_request(&paths, "not-json\n").await?;
@@ -3573,6 +3516,7 @@ async fn malformed_request_does_not_stop_accepting_connections() -> Result<()> {
 async fn idle_client_without_newline_does_not_block_health_requests() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
     let mut idle_stream = UnixStream::connect(paths.daemon_socket()).await?;
 
@@ -3601,6 +3545,7 @@ async fn idle_client_without_newline_does_not_block_health_requests() -> Result<
 async fn fallback_shutdown_drains_idle_client_without_waiting_for_request_timeout() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     let mut idle_stream = UnixStream::connect(paths.daemon_socket()).await?;
@@ -3637,6 +3582,7 @@ async fn start_removes_stale_socket_before_binding() -> Result<()> {
     let stale_listener = tokio::net::UnixListener::bind(paths.daemon_socket())?;
     drop(stale_listener);
 
+    pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
     let lines = request_lines(
         &paths,
@@ -3660,6 +3606,7 @@ async fn disconnected_job_stream_still_persists_final_status() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     seed_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
@@ -3737,6 +3684,7 @@ async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> 
 
         Ok(())
     })?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
 
     write_file_after_modified_time_tick(
@@ -3787,6 +3735,7 @@ async fn daemon_shutdown_cancels_watcher_retry_waiting_for_jobs_lock() -> Result
     })?;
     drop(database);
     let jobs_lock = JobsLock::acquire(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
 
     write_file_after_modified_time_tick(
@@ -3813,6 +3762,7 @@ async fn daemon_shutdown_cancels_watcher_retry_waiting_for_jobs_lock() -> Result
 async fn dns_resolver_answers_udp_a_and_nodata_for_aaaa() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
     let port = dns_port(&paths)?;
 
@@ -3838,6 +3788,7 @@ async fn dns_resolver_answers_udp_a_and_nodata_for_aaaa() -> Result<()> {
 async fn dns_resolver_returns_nodata_and_survives_malformed_udp() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
     let port = dns_port(&paths)?;
     let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
@@ -3863,6 +3814,7 @@ async fn dns_resolver_returns_nodata_and_survives_malformed_udp() -> Result<()> 
 async fn dns_resolver_answers_tcp_queries() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
+    pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
     let port = dns_port(&paths)?;
 
