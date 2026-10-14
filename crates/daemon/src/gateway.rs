@@ -66,10 +66,14 @@ const OWNED_READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const OWNED_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const PUBLIC_HTTP_PORT: u16 = 80;
 const PUBLIC_HTTPS_PORT: u16 = 443;
+/// Nothing listens on loopback port 9 and pf doesn't redirect it, so a probe there is refused at
+/// once, as on a machine without PV.
+const UNROUTED_PROBE_PORT: u16 = 9;
 const GATEWAY_RUNTIME_RECONCILED: &str = "Gateway runtime reconciled";
 const RUNTIME_CONFIG_FINGERPRINT_SCHEME: &[u8] = b"pv-runtime-config:v1";
 pub(crate) const CADDY_NOT_INSTALLED: &str = "Gateway runtime skipped; Caddy is not installed";
 static CANDIDATE_CONFIG_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
+static UNROUTED_PUBLIC_PROBES: AtomicBool = AtomicBool::new(false);
 
 /// Result of reconciliation while the daemon's test-only fallback shutdown is armed.
 ///
@@ -1645,16 +1649,37 @@ struct GatewayReadinessPorts {
     https: u16,
 }
 
+/// Sends every later public readiness probe in this process to a port nothing listens on.
+///
+/// On a Mac with PV installed, pf redirects loopback ports `80` and `443` to that machine's real
+/// Gateway. A test that runs a fake Gateway calls this so its probes never reach the real one or
+/// fill pf's state table.
+#[doc(hidden)]
+pub fn use_unrouted_public_probe_ports_for_test() {
+    UNROUTED_PUBLIC_PROBES.store(true, Ordering::Relaxed);
+}
+
+fn public_probe_ports() -> GatewayReadinessPorts {
+    if UNROUTED_PUBLIC_PROBES.load(Ordering::Relaxed) {
+        return GatewayReadinessPorts {
+            http: UNROUTED_PROBE_PORT,
+            https: UNROUTED_PROBE_PORT,
+        };
+    }
+
+    GatewayReadinessPorts {
+        http: PUBLIC_HTTP_PORT,
+        https: PUBLIC_HTTPS_PORT,
+    }
+}
+
 fn gateway_readiness_ports(
     plan: &RuntimePlan,
     pf_routing_state: GatewayPfRoutingState,
 ) -> GatewayReadinessPorts {
     // macOS pf can make direct connections to an active rdr target port hang.
     if pf_routing_state != GatewayPfRoutingState::Inactive {
-        return GatewayReadinessPorts {
-            http: PUBLIC_HTTP_PORT,
-            https: PUBLIC_HTTPS_PORT,
-        };
+        return public_probe_ports();
     }
 
     GatewayReadinessPorts {
@@ -1719,10 +1744,7 @@ pub async fn persisted_gateway_is_ready_with_pf_state_for_test(
             https: https_port,
         }
     } else {
-        GatewayReadinessPorts {
-            http: PUBLIC_HTTP_PORT,
-            https: PUBLIC_HTTPS_PORT,
-        }
+        public_probe_ports()
     };
     let check = gateway_identity_readiness_check(
         http_port,

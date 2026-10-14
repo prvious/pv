@@ -56,6 +56,9 @@ const RESOURCE_STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 const RESOURCE_PROCESS_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const RESOURCE_START_ATTEMPTS: usize = 10;
 const RESERVED_RESOURCE_PORT_NAME: &str = "default";
+/// Nothing listens on loopback port 9, so a test daemon's manifest fetch fails at once. The
+/// compiled default is a `.test` host, which a Mac with PV installed resolves to its own Gateway.
+const OFFLINE_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
 
 pub(crate) type ManagedResourceReadinessFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(), DaemonError>> + Send + 'a>>;
@@ -257,7 +260,7 @@ impl ManagedResourceRuntimeCatalog {
     }
 
     pub(crate) fn without_adapters() -> Result<Self, DaemonError> {
-        Self::without_adapters_with_manifest_url(resources::default_artifact_manifest_url())
+        Self::without_adapters_with_manifest_url(OFFLINE_MANIFEST_URL)
     }
 
     pub(crate) fn without_adapters_with_manifest_url(

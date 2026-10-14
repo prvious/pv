@@ -302,12 +302,12 @@ fn production_catalog_uses_compiled_artifact_manifest_endpoint() -> Result<()> {
 }
 
 #[test]
-fn without_adapters_catalog_uses_compiled_artifact_manifest_endpoint() -> Result<()> {
+fn without_adapters_catalog_uses_offline_manifest_endpoint() -> Result<()> {
     let catalog = super::ManagedResourceRuntimeCatalog::without_adapters()?;
 
     assert_eq!(
         catalog.install_options.manifest_url,
-        resources::default_artifact_manifest_url()
+        super::OFFLINE_MANIFEST_URL
     );
 
     Ok(())
