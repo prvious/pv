@@ -633,18 +633,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 fn bind_loopback_tcp_udp_pair() -> anyhow::Result<(u16, TcpListener, UdpSocket)> {
-    for _attempt in 0..100 {
-        let tcp_listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let port = tcp_listener.local_addr()?.port();
-        let Ok(udp_socket) = UdpSocket::bind((Ipv4Addr::LOCALHOST, port)) else {
-            continue;
-        };
+    let port = pv_fake::port()?;
 
-        return Ok((port, tcp_listener, udp_socket));
-    }
-
-    Err(anyhow::anyhow!(
-        "could not bind a loopback TCP/UDP port pair"
+    Ok((
+        port,
+        TcpListener::bind((Ipv4Addr::LOCALHOST, port))?,
+        UdpSocket::bind((Ipv4Addr::LOCALHOST, port))?,
     ))
 }
 
