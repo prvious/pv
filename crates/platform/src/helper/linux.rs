@@ -62,7 +62,7 @@ impl std::str::FromStr for PrivilegedHelperLifecycleAction {
     clippy::disallowed_types,
     reason = "root helper owns validated native file descriptors"
 )]
-type RootFile = std::fs::File;
+pub(crate) type RootFile = std::fs::File;
 
 #[derive(Clone, Copy)]
 struct Artifact {
@@ -809,16 +809,20 @@ fn validate_existing_owner(
     Ok(None)
 }
 
-fn checksum_bytes(content: &[u8]) -> String {
+pub(crate) fn checksum_bytes(content: &[u8]) -> String {
     format!("{:x}", Sha256::digest(content))
 }
 
-fn restore_file(path: &Utf8Path, mode: u32, checksum: Option<&str>) -> Result<(), PlatformError> {
+pub(crate) fn restore_file(
+    path: &Utf8Path,
+    mode: u32,
+    checksum: Option<&str>,
+) -> Result<(), PlatformError> {
     let backup = sibling(path.as_str(), "rollback");
     if let Some(content) = read_root_file(&backup, mode)? {
         if checksum != Some(checksum_bytes(&content).as_str()) {
             return Err(installation_error(format!(
-                "helper rollback checksum does not match the previous file: {backup}"
+                "rollback checksum does not match the previous root file: {backup}"
             )));
         }
         return rename(&backup, path);
@@ -833,7 +837,7 @@ fn restore_file(path: &Utf8Path, mode: u32, checksum: Option<&str>) -> Result<()
         return Ok(());
     }
     Err(installation_error(format!(
-        "previous helper file and its rollback could not be verified: {path}"
+        "previous root file and its rollback could not be verified: {path}"
     )))
 }
 

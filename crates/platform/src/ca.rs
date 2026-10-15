@@ -444,6 +444,10 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::DaemonRegistrationBus(_)
         | PlatformError::PrivilegedHelperBus(_)
         | PlatformError::PrivilegedHelperVerification { .. }
+        | PlatformError::LowPortProcfs(_)
+        | PlatformError::PortProxyBus(_)
+        | PlatformError::PortProxyIo(_)
+        | PlatformError::PortProxyMutation { .. }
         | PlatformError::ResolverBus(_)
         | PlatformError::ResolverNetlink(_)
         | PlatformError::ResolverIo(_)

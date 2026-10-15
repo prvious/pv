@@ -5,8 +5,11 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "macos")]
 use crate::command::run_system_command_output_with_timeout;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use crate::{PlatformError, loopback_tcp_port_available};
+
+#[cfg(target_os = "linux")]
+mod linux;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LowPortInspection {
@@ -47,8 +50,8 @@ impl LowPortState {
     }
 }
 
-/// Root decides availability with a bind probe; `lsof` supplies diagnostics only.
-#[cfg(target_os = "macos")]
+/// Root decides availability with a bind probe; listener inspection supplies diagnostics only.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn inspect_loopback_ports(ports: &[u16]) -> Result<LowPortInspection, PlatformError> {
     let mut inspection = LowPortInspection {
         ports: ports
@@ -63,20 +66,26 @@ pub(crate) fn inspect_loopback_ports(ports: &[u16]) -> Result<LowPortInspection,
     if inspection.ports.iter().all(|port| port.available) {
         return Ok(inspection);
     }
-    let port_list = ports
-        .iter()
-        .map(u16::to_string)
-        .collect::<Vec<_>>()
-        .join(",");
-    // One selector avoids failure when only some requested ports have listeners.
-    let selector = format!("-iTCP:{port_list}");
-    let output = run_system_command_output_with_timeout(
-        "/usr/sbin/lsof",
-        &["-nP", &selector, "-sTCP:LISTEN", "-F", "pcn"],
-        Duration::from_secs(2),
-        Some(1),
-    )?;
-    parse_lsof_owners(&output, &mut inspection.ports);
+    #[cfg(target_os = "macos")]
+    {
+        let port_list = ports
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        // One selector avoids failure when only some requested ports have listeners.
+        let selector = format!("-iTCP:{port_list}");
+        let output = run_system_command_output_with_timeout(
+            "/usr/sbin/lsof",
+            &["-nP", &selector, "-sTCP:LISTEN", "-F", "pcn"],
+            Duration::from_secs(2),
+            Some(1),
+        )?;
+        parse_lsof_owners(&output, &mut inspection.ports);
+    }
+    #[cfg(target_os = "linux")]
+    linux::populate_owners(&mut inspection.ports)
+        .map_err(|source| PlatformError::LowPortProcfs(Box::new(source)))?;
     Ok(inspection)
 }
 
@@ -96,29 +105,36 @@ fn parse_lsof_owners(output: &str, ports: &mut [LowPortState]) {
             && let Some((address, port)) = value.rsplit_once(':')
             && matches!(address, "*" | "127.0.0.1" | "[::]")
             && let Ok(port) = port.parse::<u16>()
-            && let Some(state) = ports
-                .iter_mut()
-                .find(|state| state.port == port && !state.available)
-            // Bound diagnostics so the helper reply stays within its 16 KiB frame.
-            && state.owners.len() < 8
-            && !state.owners.iter().any(|owner| owner.pid == pid)
         {
-            state.owners.push(PortOwner {
-                pid,
-                command: command.to_owned(),
-            });
+            record_owner(ports, port, pid, command);
         }
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+fn record_owner(ports: &mut [LowPortState], port: u16, pid: u32, command: &str) {
+    if let Some(state) = ports
+        .iter_mut()
+        .find(|state| state.port == port && !state.available)
+        // Bound diagnostics so the helper reply stays within its 16 KiB frame.
+        && state.owners.len() < 8
+        && !state.owners.iter().any(|owner| owner.pid == pid)
+    {
+        state.owners.push(PortOwner {
+            pid,
+            command: command.to_owned(),
+        });
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     use std::net::TcpListener;
 
     use insta::assert_debug_snapshot;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::inspect_loopback_ports;
     use super::{LowPortInspection, LowPortState, parse_lsof_owners};
 
@@ -188,11 +204,11 @@ mod tests {
         assert_debug_snapshot!(states);
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn inspection_finds_one_held_port_when_the_other_is_free() -> anyhow::Result<()> {
-        let listener = TcpListener::bind(("127.0.0.1", 0))?;
-        let port = listener.local_addr()?.port();
+        let port = pv_fake::port()?;
+        let listener = TcpListener::bind(("127.0.0.1", port))?;
         let unused_port = pv_fake::port()?;
         let inspection = inspect_loopback_ports(&[port, unused_port])?;
         assert_eq!(inspection.ports.len(), 2);
@@ -205,6 +221,7 @@ mod tests {
         );
         assert!(inspection.ports[1].available);
         assert!(inspection.ports[1].owners.is_empty());
+        drop(listener);
         Ok(())
     }
 }

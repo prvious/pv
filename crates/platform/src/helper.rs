@@ -1230,6 +1230,12 @@ fn call_helper(
             HelperOperation::DnsInspect { .. } => {
                 crate::resolver::DNS_INSPECTION_TIMEOUT + HELPER_IO_TIMEOUT
             }
+            HelperOperation::PfApply { .. } | HelperOperation::PfRemove => {
+                crate::pf::PORT_PROXY_MUTATION_TIMEOUT + HELPER_IO_TIMEOUT
+            }
+            HelperOperation::PfInspect => {
+                crate::pf::PORT_PROXY_INSPECTION_TIMEOUT + HELPER_IO_TIMEOUT
+            }
             _ => HELPER_IO_TIMEOUT,
         }))
         .map_err(PlatformError::PrivilegedHelperIo)?;
@@ -1241,16 +1247,24 @@ fn call_helper(
     write_message(&mut stream, &request)?;
     let response: Result<HelperResponse, PlatformError> = read_message(&mut stream);
     #[cfg(target_os = "linux")]
-    let response = response.map_err(|source| {
-        let operation = match request.operation {
-            HelperOperation::DnsApply { .. } => "apply",
-            HelperOperation::DnsRemove => "remove",
-            _ => return source,
-        };
-        PlatformError::ResolverMutation {
-            operation,
+    let response = response.map_err(|source| match request.operation {
+        HelperOperation::DnsApply { .. } => PlatformError::ResolverMutation {
+            operation: "apply",
             source: Box::new(source),
-        }
+        },
+        HelperOperation::DnsRemove => PlatformError::ResolverMutation {
+            operation: "remove",
+            source: Box::new(source),
+        },
+        HelperOperation::PfApply { .. } => PlatformError::PortProxyMutation {
+            operation: "apply",
+            source: Box::new(source),
+        },
+        HelperOperation::PfRemove => PlatformError::PortProxyMutation {
+            operation: "remove",
+            source: Box::new(source),
+        },
+        _ => source,
     });
     let response = response?;
 
@@ -1677,11 +1691,10 @@ fn dispatch_request(
             crate::resolver::remove_resolver_config_privileged()?;
             Ok(HelperPayload::Empty)
         }
-        #[cfg(target_os = "macos")]
         HelperOperation::LowPortInspect => Ok(HelperPayload::LowPorts(
             crate::low_port::inspect_loopback_ports(&[80, 443])?,
         )),
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         HelperOperation::PfInspect => Ok(HelperPayload::PfInspection(
             crate::pf::inspect_active_pf_redirects_privileged()?,
         )),
@@ -1770,12 +1783,20 @@ fn dispatch_request(
             Ok(HelperPayload::Empty)
         }
         #[cfg(target_os = "linux")]
-        HelperOperation::LowPortInspect
-        | HelperOperation::PfInspect
-        | HelperOperation::PfApply { .. }
-        | HelperOperation::PfRemove => Err(crate::capability::unsupported(
-            crate::PlatformCapability::LowPortFrontend,
-        )?),
+        HelperOperation::PfApply {
+            http_port,
+            https_port,
+        } => {
+            crate::pf::apply_pf_redirects_privileged(&PfRedirectConfig::new(
+                http_port, https_port,
+            ))?;
+            Ok(HelperPayload::Empty)
+        }
+        #[cfg(target_os = "linux")]
+        HelperOperation::PfRemove => {
+            crate::pf::remove_pf_redirects_privileged()?;
+            Ok(HelperPayload::Empty)
+        }
         #[cfg(target_os = "linux")]
         HelperOperation::CaInspect
         | HelperOperation::CaApply { .. }
@@ -1999,7 +2020,9 @@ fn helper_error_code(error: &PlatformError) -> HelperErrorCode {
         PlatformError::PrivilegedHelperProtocolMismatch { .. } => HelperErrorCode::ProtocolMismatch,
         PlatformError::PrivilegedHelperRejected { .. } => HelperErrorCode::InvalidRequest,
         #[cfg(target_os = "linux")]
-        PlatformError::ResolverMutation { .. } => HelperErrorCode::SystemIntegrationFailed,
+        PlatformError::ResolverMutation { .. } | PlatformError::PortProxyMutation { .. } => {
+            HelperErrorCode::SystemIntegrationFailed
+        }
         PlatformError::SystemIntegration(_)
         | PlatformError::Unsupported { .. }
         | PlatformError::SystemIntegrationCommand { .. }
@@ -2264,63 +2287,85 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn dns_mutation_waits_beyond_the_lifecycle_deadline_and_preserves_unknown_outcomes()
+    fn mutations_wait_beyond_the_lifecycle_deadline_and_preserve_unknown_outcomes()
     -> anyhow::Result<()> {
-        let directory = tempdir()?;
-        let socket = directory.path().join("dns-helper.sock");
-        let listener = std::os::unix::net::UnixListener::bind(&socket)?;
-        listener.set_nonblocking(true)?;
-        let (response, unknown_outcome, server_result) = thread::scope(|scope| {
-            let server = scope.spawn(|| -> anyhow::Result<()> {
-                for (operation, reply) in [
-                    (HelperOperation::DnsApply { port: 35353 }, true),
-                    (HelperOperation::DnsRemove, false),
-                ] {
-                    let started = Instant::now();
-                    let mut stream = loop {
-                        match listener.accept() {
-                            Ok((stream, _)) => break stream,
-                            Err(error)
-                                if error.kind() == ErrorKind::WouldBlock
-                                    && started.elapsed() < Duration::from_secs(2) =>
-                            {
-                                thread::sleep(Duration::from_millis(10))
+        for (apply_operation, remove_operation) in [
+            (
+                HelperOperation::DnsApply { port: 35353 },
+                HelperOperation::DnsRemove,
+            ),
+            (
+                HelperOperation::PfApply {
+                    http_port: 48080,
+                    https_port: 48443,
+                },
+                HelperOperation::PfRemove,
+            ),
+        ] {
+            let directory = tempdir()?;
+            let socket = directory.path().join("mutation-helper.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&socket)?;
+            listener.set_nonblocking(true)?;
+            let (response, unknown_outcome, server_result) = thread::scope(|scope| {
+                let server = scope.spawn(|| -> anyhow::Result<()> {
+                    for (operation, reply) in [
+                        (apply_operation.clone(), true),
+                        (remove_operation.clone(), false),
+                    ] {
+                        let started = Instant::now();
+                        let mut stream = loop {
+                            match listener.accept() {
+                                Ok((stream, _)) => break stream,
+                                Err(error)
+                                    if error.kind() == ErrorKind::WouldBlock
+                                        && started.elapsed() < Duration::from_secs(2) =>
+                                {
+                                    thread::sleep(Duration::from_millis(10))
+                                }
+                                Err(error) => return Err(error.into()),
                             }
-                            Err(error) => return Err(error.into()),
+                        };
+                        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+                        stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+                        let request: HelperRequest = read_message(&mut stream)?;
+                        assert_eq!(request.protocol_version, HELPER_PROTOCOL_VERSION);
+                        assert_eq!(request.operation, operation);
+                        if reply {
+                            thread::sleep(Duration::from_millis(5500));
+                            write_message(
+                                &mut stream,
+                                &super::successful_response(HelperPayload::Empty),
+                            )?;
                         }
-                    };
-                    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-                    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-                    let request: HelperRequest = read_message(&mut stream)?;
-                    assert_eq!(request.protocol_version, HELPER_PROTOCOL_VERSION);
-                    assert_eq!(request.operation, operation);
-                    if reply {
-                        thread::sleep(Duration::from_millis(5500));
-                        write_message(
-                            &mut stream,
-                            &super::successful_response(HelperPayload::Empty),
-                        )?;
                     }
-                }
-                Ok(())
+                    Ok(())
+                });
+                let response = call_helper(&socket, apply_operation.clone());
+                let unknown_outcome = response
+                    .is_ok()
+                    .then(|| call_helper(&socket, remove_operation.clone()));
+                (response, unknown_outcome, server.join())
             });
-            let response = call_helper(&socket, HelperOperation::DnsApply { port: 35353 });
-            let unknown_outcome = response
-                .is_ok()
-                .then(|| call_helper(&socket, HelperOperation::DnsRemove));
-            (response, unknown_outcome, server.join())
-        });
-        assert!(matches!(response?, HelperPayload::Empty));
-        server_result.map_err(|_| anyhow!("DNS response fixture thread failed"))??;
-        let error = unknown_outcome
-            .ok_or_else(|| anyhow!("DNS removal request was not sent"))?
-            .err()
-            .ok_or_else(|| anyhow!("DNS removal unexpectedly succeeded without a response"))?;
-        assert!(
-            matches!(&error, PlatformError::ResolverMutation { operation: "remove", source }
-            if matches!(source.as_ref(), PlatformError::PrivilegedHelperIo(source) if source.kind() == ErrorKind::UnexpectedEof))
-        );
-        assert_snapshot!(error.to_string(), @"resolver remove failed: PV privileged helper I/O failed: helper protocol connection closed before a complete frame was received; DNS state may be partial and a queued or in-flight request may still complete; inspect pv-dns.service, pv-dns.service.candidate and pv0 with an administrator before retrying `pv dns:install` or `pv dns:uninstall`");
+            assert!(matches!(response?, HelperPayload::Empty));
+            server_result.map_err(|_| anyhow!("mutation response fixture thread failed"))??;
+            let error = unknown_outcome
+                .ok_or_else(|| anyhow!("removal request was not sent"))?
+                .err()
+                .ok_or_else(|| anyhow!("removal unexpectedly succeeded without a response"))?;
+            assert!(matches!((&remove_operation, &error),
+                    (HelperOperation::DnsRemove, PlatformError::ResolverMutation { operation: "remove", source })
+                    | (HelperOperation::PfRemove, PlatformError::PortProxyMutation { operation: "remove", source })
+                    if matches!(source.as_ref(), PlatformError::PrivilegedHelperIo(source) if source.kind() == ErrorKind::UnexpectedEof)));
+            match error {
+                PlatformError::ResolverMutation { .. } => {
+                    assert_snapshot!(error.to_string(), @"resolver remove failed: PV privileged helper I/O failed: helper protocol connection closed before a complete frame was received; DNS state may be partial and a queued or in-flight request may still complete; inspect pv-dns.service, pv-dns.service.candidate and pv0 with an administrator before retrying `pv dns:install` or `pv dns:uninstall`")
+                }
+                PlatformError::PortProxyMutation { .. } => {
+                    assert_snapshot!(error.to_string(), @"socket proxy remove failed: PV privileged helper I/O failed: helper protocol connection closed before a complete frame was received; port routing may be partial and a queued or in-flight request may still complete; inspect pv-http and pv-https units, their .candidate and .rollback files with an administrator before retrying `pv ports:install` or `pv ports:uninstall`")
+                }
+                error => return Err(error.into()),
+            }
+        }
         Ok(())
     }
 
