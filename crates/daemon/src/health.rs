@@ -1573,13 +1573,12 @@ mod tests {
         database: &mut Database,
         php_track: &str,
     ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
-        let mut listener = None;
-        database.assign_php_worker_port(php_track, |port| {
-            listener = StdTcpListener::bind(("127.0.0.1", port)).ok();
-            listener.is_some()
-        })?;
-        let listener =
-            listener.ok_or_else(|| anyhow!("assigned PHP worker port was not reserved"))?;
+        let port = pv_fake::port()?;
+        let assignment = database.assign_port(
+            PortRequest::php_worker(php_track, port, port, port),
+            |_port| true,
+        )?;
+        let listener = StdTcpListener::bind(("127.0.0.1", assignment.port))?;
         let body = worker_health_response(listener.local_addr()?.port());
         listener.set_nonblocking(true)?;
         let listener = tokio::net::TcpListener::from_std(listener)?;

@@ -3908,6 +3908,11 @@ mod tests {
             "fake-frankenphp-pv1",
             &release,
         )?;
+        let worker_port = pv_fake::port()?;
+        database.assign_port(
+            PortRequest::php_worker("8.4", worker_port, worker_port, worker_port),
+            |_port| true,
+        )?;
         drop(database);
         reconcile_gateway_runtimes_with_pf_state_for_test(
             &paths,
