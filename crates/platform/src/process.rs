@@ -101,14 +101,14 @@ pub fn inspect_process_start_identity(
     implementation::inspect_process_start_identity(pid)
 }
 
-/// Whether `pid` is a zombie waiting to be reaped, or in Linux's dead state.
+/// Whether the whole process exited and is waiting to be reaped, or is in Linux's dead state.
 /// Returns `false` for a live or absent process.
 pub fn process_is_zombie(pid: u32) -> Result<bool, crate::PlatformError> {
     implementation::process_is_zombie(pid)
 }
 
 /// Whether a process group contains a member that can still run. Inspection failures are
-/// errors, not evidence that the group has stopped. Zombies cannot run or retain listeners.
+/// errors, not evidence that the group has stopped. A zombie leader can still have live threads.
 pub fn process_group_has_live_members(process_group: u32) -> Result<bool, crate::PlatformError> {
     implementation::process_group_has_live_members(process_group)
 }
