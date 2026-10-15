@@ -4,6 +4,8 @@ use clap::{Parser, Subcommand};
 use platform::serve_privileged_helper;
 #[cfg(target_os = "linux")]
 use platform::{PrivilegedHelperLifecycleAction, run_privileged_helper_lifecycle};
+#[cfg(target_os = "linux")]
+use std::io;
 
 #[cfg(target_os = "linux")]
 #[derive(Parser)]
@@ -45,13 +47,16 @@ fn main() -> anyhow::Result<()> {
             sha256,
             helper_version,
             protocol_version,
-        }) => run_privileged_helper_lifecycle(
-            action,
-            owner_uid,
-            &sha256,
-            &helper_version,
-            protocol_version,
-        )?,
+        }) => {
+            let warning = run_privileged_helper_lifecycle(
+                action,
+                owner_uid,
+                &sha256,
+                &helper_version,
+                protocol_version,
+            )?;
+            serde_json::to_writer(io::stdout().lock(), &warning)?;
+        }
         None => serve_privileged_helper()?,
     }
     Ok(())

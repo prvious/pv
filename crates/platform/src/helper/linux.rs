@@ -7,7 +7,7 @@ use async_io::Async;
 use camino::{Utf8Path, Utf8PathBuf};
 use futures_lite::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use futures_util::StreamExt as _;
-use rustix::fs::{FlockOperation, Mode, OFlags, flock, open};
+use rustix::fs::{AtFlags, CWD, FlockOperation, Mode, OFlags, flock, open, unlinkat};
 use rustix::process::{Uid, geteuid, getuid};
 use rustix::thread::set_thread_res_uid;
 use sha2::{Digest, Sha256};
@@ -18,8 +18,8 @@ use super::{
     HELPER_EXECUTABLE_PATH, HELPER_IO_TIMEOUT, HELPER_LIFECYCLE_PROBE, HELPER_METADATA_PATH,
     HELPER_PROTOCOL_VERSION, HELPER_SOCKET_PATH, MAX_MESSAGE_BYTES, PRIVILEGED_HELPER_VERSION,
     PrivilegedHelperInstallOutcome, PrivilegedHelperMetadata, PrivilegedHelperStatus,
-    parse_helper_lifecycle_response, require_matching_helper_owner, run_sudo, sha256_file,
-    validate_fingerprint, validate_helper_identity, validate_regular_file_owned_by,
+    parse_helper_lifecycle_response, require_matching_helper_owner, run_sudo, run_sudo_output,
+    sha256_file, validate_fingerprint, validate_helper_identity, validate_regular_file_owned_by,
     validate_root_owned_regular_file,
 };
 use crate::PlatformError;
@@ -129,7 +129,7 @@ pub(super) fn install(
     if sha256_file(candidate)? != expected_sha256 {
         return Err(installation_error("helper candidate checksum mismatch"));
     }
-    stage_and_run(
+    let cleanup_warning = stage_and_run(
         candidate,
         if state::fs::path_entry_exists(Utf8Path::new(HELPER_EXECUTABLE_PATH))
             .map_err(|error| installation_error(error.to_string()))?
@@ -145,7 +145,11 @@ pub(super) fn install(
     )?;
     let status = async_io::block_on(wait_for_ready(Utf8Path::new(HELPER_SOCKET_PATH), owner_uid))?;
     require_identity(&status, owner_uid, helper_version, protocol_version)?;
-    Ok(PrivilegedHelperInstallOutcome::successful(status))
+    let mut outcome = PrivilegedHelperInstallOutcome::successful(status);
+    if let Some(warning) = cleanup_warning {
+        outcome = outcome.with_cleanup_warning(warning);
+    }
+    Ok(outcome)
 }
 
 pub(super) fn remove() -> Result<(), PlatformError> {
@@ -183,6 +187,7 @@ pub(super) fn remove() -> Result<(), PlatformError> {
         PRIVILEGED_HELPER_VERSION,
         HELPER_PROTOCOL_VERSION,
     )
+    .map(|_| ())
 }
 
 fn non_root_caller() -> Result<u32, PlatformError> {
@@ -203,7 +208,7 @@ fn stage_and_run(
     checksum: &str,
     helper_version: &str,
     protocol_version: u32,
-) -> Result<(), PlatformError> {
+) -> Result<Option<String>, PlatformError> {
     validate_directory_chain(Utf8Path::new(EXECUTABLE_DIRECTORY), false)?;
     run_sudo(&[
         "/usr/bin/install",
@@ -221,7 +226,7 @@ fn stage_and_run(
     if sha256_file(Utf8Path::new(CANDIDATE_PATH))? != checksum {
         return Err(installation_error("root-staged helper checksum mismatch"));
     }
-    run_sudo(&[
+    let response = run_sudo_output(&[
         CANDIDATE_PATH,
         "helper-lifecycle",
         action,
@@ -233,16 +238,18 @@ fn stage_and_run(
         helper_version,
         "--protocol-version",
         &protocol_version.to_string(),
-    ])
+    ])?;
+    Ok(serde_json::from_str(&response)?)
 }
 
+/// Runs the fixed Linux helper lifecycle as root. A committed install may return a cleanup warning.
 pub fn run_privileged_helper_lifecycle(
     action: PrivilegedHelperLifecycleAction,
     owner_uid: u32,
     expected_sha256: &str,
     helper_version: &str,
     protocol_version: u32,
-) -> Result<(), PlatformError> {
+) -> Result<Option<String>, PlatformError> {
     if !getuid().is_root() || !geteuid().is_root() {
         return Err(PlatformError::PrivilegedHelperAuthentication(
             "helper lifecycle must run as root".to_owned(),
@@ -254,7 +261,10 @@ pub fn run_privileged_helper_lifecycle(
         ));
     }
     validate_helper_identity(helper_version, protocol_version)?;
-    if helper_version != PRIVILEGED_HELPER_VERSION || protocol_version != HELPER_PROTOCOL_VERSION {
+    if action != PrivilegedHelperLifecycleAction::Remove
+        && (helper_version != PRIVILEGED_HELPER_VERSION
+            || protocol_version != HELPER_PROTOCOL_VERSION)
+    {
         return Err(installation_error(
             "candidate helper identity does not match its lifecycle request",
         ));
@@ -271,6 +281,15 @@ pub fn run_privileged_helper_lifecycle(
         ));
     }
     let metadata = validate_existing_owner(owner_uid)?;
+    if action == PrivilegedHelperLifecycleAction::Remove
+        && let Some(metadata) = &metadata
+        && (metadata.helper_version != PRIVILEGED_HELPER_VERSION
+            || metadata.protocol_version != HELPER_PROTOCOL_VERSION)
+    {
+        return Err(installation_error(
+            "installed helper metadata does not match the staged removal binary",
+        ));
+    }
     for artifact in ARTIFACTS {
         if read_root_file(&sibling(artifact.path, "rollback"), artifact.mode)?.is_some() {
             return Err(installation_error(format!(
@@ -298,16 +317,16 @@ pub fn run_privileged_helper_lifecycle(
         if let Err(error) = result {
             return Err(rollback(&manager, &previous, enablement_attempted, error).await);
         }
-        clear_transaction_files().map_err(|error| {
-            installation_error(format!(
-                "helper lifecycle completed, but transaction cleanup failed: {error}; administrator recovery is required"
-            ))
-        })?;
+        let cleanup = clear_transaction_files();
         if action == PrivilegedHelperLifecycleAction::Remove {
+            cleanup?;
             remove_owned_directory(Utf8Path::new(WORK_DIRECTORY))?;
             remove_owned_directory(Utf8Path::new(EXECUTABLE_DIRECTORY))?;
+            return Ok(None);
         }
-        Ok(())
+        Ok(cleanup.err().map(|error| format!(
+            "helper lifecycle completed, but transaction cleanup failed: {error}; administrator recovery is required"
+        )))
     })
 }
 
@@ -369,6 +388,7 @@ async fn rollback(
     original: PlatformError,
 ) -> PlatformError {
     let mut errors = Vec::new();
+    let fresh_install = previous.checksums.iter().all(Option::is_none);
     for unit in [SOCKET_UNIT, SERVICE_UNIT] {
         if let Err(error) = job(manager, "StopUnit", unit).await {
             errors.push(error.to_string());
@@ -378,6 +398,35 @@ async fn rollback(
     // when there are no enablement links. Earlier failures never enabled a new unit.
     if enablement_attempted && let Err(error) = disable(manager).await {
         errors.push(error.to_string());
+    }
+    // Failed units survive file removal and Reload. Clear only this fresh transaction's
+    // stopped units, while their marked files and selected fragments still prove ownership.
+    if fresh_install && enablement_attempted && errors.is_empty() {
+        for (unit, path) in [
+            (SOCKET_UNIT, SOCKET_UNIT_PATH),
+            (SERVICE_UNIT, SERVICE_UNIT_PATH),
+        ] {
+            if let Err(error) = async {
+                if unit_active(manager, unit, path).await? {
+                    return Err(installation_error(format!(
+                        "helper unit {unit} is still active during fresh-install rollback"
+                    )));
+                }
+                match bounded_call::<()>(manager, "ResetFailedUnit", &(unit,)).await {
+                    Err(PlatformError::PrivilegedHelperBus(source))
+                        if matches!(source.as_ref(), zbus::Error::MethodError(name, _, _)
+                            if name.as_str() == "org.freedesktop.systemd1.NoSuchUnit") =>
+                    {
+                        Ok(())
+                    }
+                    result => result,
+                }
+            }
+            .await
+            {
+                errors.push(error.to_string());
+            }
+        }
     }
     for (artifact, checksum) in ARTIFACTS.into_iter().zip(&previous.checksums) {
         if let Err(error) = restore_file(
@@ -427,6 +476,13 @@ async fn rollback(
         && let Err(error) = clear_transaction_files()
     {
         errors.push(error.to_string());
+    }
+    if errors.is_empty() && fresh_install {
+        for path in [WORK_DIRECTORY, EXECUTABLE_DIRECTORY] {
+            if let Err(error) = remove_empty_root_directory(Utf8Path::new(path)) {
+                errors.push(error.to_string());
+            }
+        }
     }
     if errors.is_empty() {
         installation_error(format!(
@@ -893,6 +949,16 @@ fn clear_transaction_files() -> Result<(), PlatformError> {
 fn remove_owned_directory(path: &Utf8Path) -> Result<(), PlatformError> {
     validate_directory_chain(path, false)?;
     state::fs::delete_dir_all(path).map_err(|error| installation_error(error.to_string()))
+}
+
+fn remove_empty_root_directory(path: &Utf8Path) -> Result<(), PlatformError> {
+    validate_directory_chain(path, false)?;
+    unlinkat(CWD, path.as_std_path(), AtFlags::REMOVEDIR).map_err(|error| {
+        installation_error(format!(
+            "could not remove empty helper directory {path}: {error}"
+        ))
+    })?;
+    state::fs::sync_parent_directory(path).map_err(|error| installation_error(error.to_string()))
 }
 
 #[cfg(test)]
