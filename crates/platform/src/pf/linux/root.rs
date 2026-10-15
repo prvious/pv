@@ -115,6 +115,20 @@ pub(in crate::pf) fn remove() -> Result<(), PlatformError> {
             for unit in &previous {
                 disable(&manager, &unit.name, unit.checksum.is_none()).await?;
             }
+            require_owned_units(&manager, &previous, false).await?;
+            for unit in &previous {
+                if unit.checksum.is_some() {
+                    match manager
+                        .call::<_, _, ()>("ResetFailedUnit", &(unit.name.as_str(),))
+                        .await
+                    {
+                        Ok(()) => {}
+                        Err(zbus::Error::MethodError(name, _, _))
+                            if name.as_str() == "org.freedesktop.systemd1.NoSuchUnit" => {}
+                        Err(error) => return Err(bus_error(error)),
+                    }
+                }
+            }
             for unit in &previous {
                 read_owned_unit(&path(&unit.name))?;
                 remove_file(&path(&unit.name))?;

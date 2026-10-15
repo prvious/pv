@@ -294,8 +294,63 @@ impl PortsFixture {
         self.command("ports:install")?;
         self.require_active(&config)?;
 
+        helper_fixture.root_file(
+            "failed-proxy.service",
+            "# Managed by PV\n[Service]\nType=oneshot\nExecStart=/usr/bin/false\n",
+            "/etc/systemd/system/pv-http.service",
+            "0644",
+        )?;
+        root(&["/usr/bin/systemctl", "daemon-reload"])?;
+        ensure!(root(&["/usr/bin/systemctl", "restart", "pv-http.service"]).is_err());
+        assert_eq!(
+            service_property("pv-http.service", "ActiveState")?,
+            "failed"
+        );
         self.command("ports:uninstall")?;
         self.command("ports:uninstall")?;
+        require_absent()?;
+        self.command("ports:install")?;
+        self.require_active(&config)?;
+
+        root(&[
+            "/usr/bin/systemctl",
+            "stop",
+            "pv-http.service",
+            "pv-http.socket",
+        ])?;
+        let foreign_socket = "[Socket]\nListenStream=127.0.0.1:80\n";
+        helper_fixture.root_file(
+            "conflicting.socket",
+            foreign_socket,
+            &format!("{SYSTEM_SOCKET_PROXY_DIRECTORY}/{FOREIGN_SOCKET}"),
+            "0644",
+        )?;
+        helper_fixture.root_file(
+            "conflicting.service",
+            "[Service]\nExecStart=/usr/bin/true\n",
+            &format!("{SYSTEM_SOCKET_PROXY_DIRECTORY}/{FOREIGN_SERVICE}"),
+            "0644",
+        )?;
+        root(&["/usr/bin/systemctl", "daemon-reload"])?;
+        root(&["/usr/bin/systemctl", "start", FOREIGN_SOCKET])?;
+        ensure!(root(&["/usr/bin/systemctl", "start", "pv-http.socket"]).is_err());
+        assert_eq!(service_property("pv-http.socket", "ActiveState")?, "failed");
+        self.command("ports:uninstall")?;
+        self.command("ports:uninstall")?;
+        assert_eq!(service_property(FOREIGN_SOCKET, "ActiveState")?, "active");
+        assert_eq!(
+            fs::read_to_string(&Utf8Path::new(SYSTEM_SOCKET_PROXY_DIRECTORY).join(FOREIGN_SOCKET))?,
+            foreign_socket
+        );
+        root(&["/usr/bin/systemctl", "stop", FOREIGN_SOCKET])?;
+        for name in [FOREIGN_SOCKET, FOREIGN_SERVICE] {
+            root(&[
+                "/usr/bin/rm",
+                "--",
+                &format!("{SYSTEM_SOCKET_PROXY_DIRECTORY}/{name}"),
+            ])?;
+        }
+        root(&["/usr/bin/systemctl", "daemon-reload"])?;
         require_absent()?;
         self.require_status("inactive", "systemd")?;
         for name in socket_proxy_unit_names() {
