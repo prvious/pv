@@ -161,7 +161,8 @@ async fn real_postgres_satisfies_the_runtime_contract() -> Result<()> {
         return Ok(());
     };
     let (_tempdir, paths) = contract_paths()?;
-    let postgres = install_real_artifact(&paths, manifest_url, &postgres_adapter()?)?;
+    let postgres =
+        install_real_artifact(&paths, manifest_url, &postgres_adapter(target_platform())?)?;
 
     postgres_contract(
         &paths,
@@ -178,10 +179,11 @@ async fn real_postgres_forced_exit_keeps_recovery_records() -> Result<()> {
         return Ok(());
     };
     let (_tempdir, paths) = contract_paths()?;
-    let postgres = install_real_artifact(&paths, manifest_url, &postgres_adapter()?)?;
+    let postgres =
+        install_real_artifact(&paths, manifest_url, &postgres_adapter(target_platform())?)?;
     let track = postgres.track().as_str();
     let [port] = pv_fake::ports()?;
-    let adapter = super::postgres::PostgresRuntimeAdapter::new();
+    let adapter = super::postgres::PostgresRuntimeAdapter::new(target_platform());
     let mut context = runtime_context(
         &paths,
         "postgres",
@@ -519,7 +521,7 @@ async fn rustfs_serves_allocations(env: EnvContextValues) -> Result<()> {
 /// the grace period while a client is still connected (#391).
 async fn postgres_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) -> Result<()> {
     let [port] = pv_fake::ports()?;
-    let adapter = super::postgres::PostgresRuntimeAdapter::new();
+    let adapter = super::postgres::PostgresRuntimeAdapter::new(target_platform());
     let mut context = runtime_context(
         paths,
         "postgres",
