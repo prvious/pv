@@ -36,12 +36,8 @@ pub(crate) struct Control {
     retain_previous_listeners: Option<Setting<bool>>,
     /// Holds `POST /load`, after recording it, until this path exists.
     load_response_gate: Option<Setting<Utf8PathBuf>>,
-    /// Delays the `/load` response.
+    /// Delays the `/load` response; an accepted load applies just before it.
     load_delay_ms: Option<Setting<u64>>,
-    /// With `late_apply_delay_ms`, applies the load that long after it arrived, even when the
-    /// client gave up waiting.
-    late_accept: Option<Setting<bool>>,
-    late_apply_delay_ms: Option<Setting<u64>>,
     /// Replaces the `/load` response body.
     load_response_body: Option<Setting<String>>,
     /// Written once a load is accepted.
@@ -92,8 +88,6 @@ pub(crate) struct LoadControl {
     pub(crate) retain_listeners: bool,
     pub(crate) gate: Option<Utf8PathBuf>,
     pub(crate) delay: Duration,
-    pub(crate) late_accept: bool,
-    pub(crate) late_apply_delay: Duration,
     pub(crate) response_body: Option<String>,
     pub(crate) accepted_marker: Option<Utf8PathBuf>,
     pub(crate) exit_after: bool,
@@ -112,10 +106,6 @@ impl LoadControl {
                 && next(&mut control.retain_previous_listeners).unwrap_or(false),
             gate: next(&mut control.load_response_gate),
             delay: Duration::from_millis(next(&mut control.load_delay_ms).unwrap_or(0)),
-            late_accept: next(&mut control.late_accept).unwrap_or(false),
-            late_apply_delay: Duration::from_millis(
-                next(&mut control.late_apply_delay_ms).unwrap_or(0),
-            ),
             response_body: next(&mut control.load_response_body),
             accepted_marker: accepted
                 .then(|| next(&mut control.load_accepted_marker))

@@ -933,13 +933,10 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
     assert_eq!(fs::read_to_string(&gateway_fragment)?, previous_gateway);
     pv_fake::write_gateway_control(
         &paths.worker_root_config("8.4"),
-        json!({
-            "late_accept": [true], "late_apply_delay_ms": [2000],
-            "load_delay_ms": [2000], "load_statuses": [200]
-        }),
+        json!({"load_response_body": ["not json"]}),
     )?;
     let uncertain_source =
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(150)).await;
+        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(5)).await;
     assert!(matches!(
         uncertain_source,
         Err(DaemonError::CaddyAdmin(
@@ -1018,13 +1015,10 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
 
     pv_fake::write_gateway_control(
         &paths.gateway_root_config(),
-        json!({
-            "late_accept": [true], "late_apply_delay_ms": [2000],
-            "load_delay_ms": [2000], "load_statuses": [200]
-        }),
+        json!({"load_response_body": ["not json"]}),
     )?;
     let uncertain =
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(150)).await;
+        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(5)).await;
     assert!(matches!(
         uncertain,
         Err(DaemonError::CaddyAdmin(
@@ -5334,12 +5328,7 @@ async fn gateway_reconciliation_replaces_runtime_before_newer_desired_state() ->
     let previous_root = read_test_bytes(paths.gateway_root_config())?;
     pv_fake::write_gateway_control(
         &paths.gateway_root_config(),
-        json!({
-            "late_accept": [true],
-            "late_apply_delay_ms": [2000],
-            "load_delay_ms": [2000],
-            "load_statuses": [200]
-        }),
+        json!({"load_response_body": ["not json"]}),
     )?;
 
     let mut database = Database::open(&paths)?;
@@ -5349,7 +5338,7 @@ async fn gateway_reconciliation_replaces_runtime_before_newer_desired_state() ->
     drop(database);
 
     let result =
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(150)).await;
+        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(5)).await;
     let initial_load_bodies = fake_admin_load_bodies(&paths.gateway_root_config())?;
     let first_candidate_root = initial_load_bodies
         .first()

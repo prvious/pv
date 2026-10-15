@@ -533,7 +533,7 @@ impl Runtime {
     }
 
     /// Records the load, then finishes it in its own task: hyper drops a request's handler when
-    /// the client disconnects, and a late accept must still apply after PV has stopped waiting.
+    /// the client disconnects, and Caddy still applies a load after its client stops waiting.
     async fn load(self: Arc<Self>, body: Bytes) -> Result<Response<Full<Bytes>>> {
         let source = String::from_utf8_lossy(&body).into_owned();
         // Caddy adapts the config, reading its imports, as soon as it arrives.
@@ -563,19 +563,15 @@ impl Runtime {
         if let Some(gate) = &control.gate {
             wait_for_path(gate).await?;
         }
+        tokio::time::sleep(control.delay).await;
         let (applied, adapt_error) = match adapted {
             Ok((config, plan)) if control.apply => (
-                self.apply_after(&control, config, &plan, source).await,
+                self.apply(config, &plan, source, control.retain_listeners)
+                    .await,
                 None,
             ),
-            Ok(_adapted) => {
-                tokio::time::sleep(control.delay).await;
-                (Ok(()), None)
-            }
-            Err(error) => {
-                tokio::time::sleep(control.delay).await;
-                (Ok(()), Some(error))
-            }
+            Ok(_adapted) => (Ok(()), None),
+            Err(error) => (Ok(()), Some(error)),
         };
         let body = match (&control.response_body, adapt_error, applied) {
             (Some(body), _, _) => body.clone(),
@@ -609,29 +605,6 @@ impl Runtime {
             "application/json",
             body,
         ))
-    }
-
-    /// Applies a load just before responding, `load_delay_ms` after it arrived; a late accept
-    /// applies `late_apply_delay_ms` after it arrived instead.
-    async fn apply_after(
-        self: &Arc<Self>,
-        control: &LoadControl,
-        config: GatewayConfig,
-        plan: &ListenerPlan,
-        source: &str,
-    ) -> Result<(), String> {
-        let apply_delay = if control.late_accept {
-            control.late_apply_delay
-        } else {
-            control.delay
-        };
-        tokio::time::sleep(apply_delay).await;
-        let applied = self
-            .apply(config, plan, source, control.retain_listeners)
-            .await;
-        tokio::time::sleep(control.delay.saturating_sub(apply_delay)).await;
-
-        applied
     }
 
     /// Test controls next to the runtime config: `.readiness-fail` makes the runtime exit during

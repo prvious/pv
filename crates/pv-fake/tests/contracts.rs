@@ -324,15 +324,11 @@ fn gateway_controls_reject_unknown_keys_and_malformed_files() -> Result<()> {
 }
 
 #[test]
-fn late_accepted_load_applies_after_its_client_disconnects() -> Result<()> {
+fn load_applies_after_its_client_disconnects() -> Result<()> {
     let tempdir = tempdir()?;
     let [port] = available_ports()?;
     let gateway = GatewayFake::start(tempdir.path(), port)?;
-    gateway.control(json!({
-        "late_accept": [true],
-        "late_apply_delay_ms": [100],
-        "load_delay_ms": [30_000],
-    }))?;
+    gateway.control(json!({"load_delay_ms": [100]}))?;
     let load = gateway.config(port, "applied late");
 
     // Hang up once the fake has the load, as PV does when its load times out.

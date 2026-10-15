@@ -59,7 +59,12 @@ const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
 const CONFIG_VALIDATION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
 #[cfg(target_os = "macos")]
 const CONFIG_VALIDATION_GROUP_ANCHOR: &str = "while IFS= read -r _line; do :; done\nkill -KILL 0\n";
-const RUNTIME_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a Gateway or worker gets to become ready after it starts. A first launch of a newly
+/// installed binary can be slow while macOS scans it.
+const RUNTIME_START_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long a running Gateway or worker gets to become ready after a `/load`, which returns only
+/// once Caddy has started the new config.
+const RUNTIME_RELOAD_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 const PF_PUBLIC_READINESS_TIMEOUT: Duration = Duration::from_secs(2);
 const FOREIGN_LISTENER_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
 const OWNED_READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -244,7 +249,7 @@ pub fn promote_validated_config_for_test(
 }
 
 pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, DaemonError> {
-    reconcile_gateway_runtimes_with_readiness_timeout(paths, RUNTIME_READINESS_TIMEOUT).await
+    reconcile_gateway_runtimes_with_readiness_timeout(paths, RUNTIME_START_READINESS_TIMEOUT).await
 }
 
 pub(crate) async fn reconcile_gateway_runtimes_with_phase_log(
@@ -253,7 +258,7 @@ pub(crate) async fn reconcile_gateway_runtimes_with_phase_log(
 ) -> Result<String, DaemonError> {
     reconcile_gateway_runtimes_with_pf_state(
         paths,
-        RUNTIME_READINESS_TIMEOUT,
+        RUNTIME_START_READINESS_TIMEOUT,
         None,
         Some(phase_log),
         None,
@@ -269,7 +274,7 @@ pub(crate) async fn reconcile_gateway_runtimes_with_phase_log_and_fallback_shutd
 ) -> Result<ReconciliationOutcome<String>, DaemonError> {
     reconcile_gateway_runtimes_with_pf_state(
         paths,
-        RUNTIME_READINESS_TIMEOUT,
+        RUNTIME_START_READINESS_TIMEOUT,
         None,
         Some(phase_log),
         Some(fallback_shutdown),
@@ -304,7 +309,7 @@ pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log_and_fallba
     reconcile_project_gateway_runtimes(
         paths,
         project_id,
-        RUNTIME_READINESS_TIMEOUT,
+        RUNTIME_START_READINESS_TIMEOUT,
         pf_routing_state,
         phase_log,
         fallback_shutdown,
@@ -4348,7 +4353,7 @@ async fn begin_runtime_transaction(
         }
 
         let active_content = read_config_bytes(&spec.config_path)?;
-        let client = CaddyAdminClient::new().with_timeout(readiness.timeout);
+        let client = CaddyAdminClient::new();
         mark_runtime_config_pending(supervisor, spec, desired_fingerprint, false)?;
         let load_result = wait_for_transaction_step(
             Box::pin(load_runtime_config(
@@ -4448,11 +4453,12 @@ async fn finish_runtime_transaction(
         if reconciliation_cancelled(shutdown) {
             return Ok(ReconciliationOutcome::Cancelled);
         }
-        let client = CaddyAdminClient::new().with_timeout(*readiness_timeout);
+        let reload_timeout = (*readiness_timeout).min(RUNTIME_RELOAD_READINESS_TIMEOUT);
+        let client = CaddyAdminClient::new();
         let readiness_result = wait_for_transaction_step(
             Box::pin(wait_for_owned_readiness(
                 check.clone(),
-                *readiness_timeout,
+                reload_timeout,
                 || verify_runtime_ownership(supervisor, spec),
             )),
             shutdown,
@@ -4472,7 +4478,7 @@ async fn finish_runtime_transaction(
                 let admin_result = wait_for_transaction_step(
                     Box::pin(client.wait_until_ready_with(
                         admin_endpoint,
-                        *readiness_timeout,
+                        reload_timeout,
                         runtime_ownership_verifier(paths, spec),
                     )),
                     shutdown,
@@ -4515,7 +4521,6 @@ async fn finish_runtime_transaction(
     }
     let admin_readiness = async {
         CaddyAdminClient::new()
-            .with_timeout(*readiness_timeout)
             .wait_until_ready_with(
                 admin_endpoint,
                 *readiness_timeout,
@@ -4863,7 +4868,8 @@ async fn restore_runtime_after_load(
     verify_runtime_ownership(supervisor, spec)?;
 
     let restored_content = read_config_bytes(&spec.config_path)?;
-    let client = CaddyAdminClient::new().with_timeout(readiness.timeout);
+    let client = CaddyAdminClient::new();
+    let reload_timeout = readiness.timeout.min(RUNTIME_RELOAD_READINESS_TIMEOUT);
     mark_runtime_config_pending(supervisor, spec, previous_fingerprint, true)
         .map_err(|error| *error.error)?;
     load_runtime_config(
@@ -4879,12 +4885,12 @@ async fn restore_runtime_after_load(
     client
         .wait_until_ready_with(
             &readiness.admin_endpoint,
-            readiness.timeout,
+            reload_timeout,
             runtime_ownership_verifier(paths, spec),
         )
         .await
         .map_err(DaemonError::from)?;
-    wait_for_owned_readiness(readiness.check.clone(), readiness.timeout, || {
+    wait_for_owned_readiness(readiness.check.clone(), reload_timeout, || {
         verify_runtime_ownership(supervisor, spec)
     })
     .await?;
