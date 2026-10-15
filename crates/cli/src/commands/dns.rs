@@ -10,7 +10,7 @@ use crate::error::{CliError, ExecuteError};
 use crate::output::{Line, Mark, Output, Streams};
 
 #[cfg(target_os = "linux")]
-pub(super) const RESOLVER_CONFLICT_GUIDANCE: &str = "Ask an administrator to inspect pv-dns.service and its overrides, pv0 ownership, and other links' ~test routes; remove or rename the conflicting configuration manually before retrying `pv dns:install` or `pv dns:uninstall`.";
+pub(super) const RESOLVER_CONFLICT_GUIDANCE: &str = "Ask an administrator to inspect pv-dns.service and its overrides, pv0 ownership, and competing test search or routing domains, including subdomains. Repair conflicts before retrying `pv dns:install`; `pv dns:uninstall` removes only PV-owned configuration. For a retained unit cache, run `sudo systemctl daemon-reload` before retrying.";
 
 pub(crate) fn status(
     environment: &impl Environment,
@@ -223,7 +223,7 @@ pub(crate) fn uninstall(
 
             Ok(ExitCode::SUCCESS)
         }
-        ResolverFileState::Unreadable { path, message } => {
+        ResolverFileState::Unreadable { path, message } if !cfg!(target_os = "linux") => {
             super::write_left_in_place(
                 output,
                 "System resolver config could not be inspected: ",
@@ -233,7 +233,15 @@ pub(crate) fn uninstall(
 
             Ok(ExitCode::FAILURE)
         }
-        ResolverFileState::Current { path, .. } | ResolverFileState::Stale { path, .. } => {
+        ResolverFileState::Conflict { path } if !cfg!(target_os = "linux") => {
+            write_resolver_conflict(output, &path)?;
+
+            Ok(ExitCode::FAILURE)
+        }
+        ResolverFileState::Current { path, .. }
+        | ResolverFileState::Stale { path, .. }
+        | ResolverFileState::Conflict { path }
+        | ResolverFileState::Unreadable { path, .. } => {
             environment.remove_resolver_config(&system_path)?;
             if output.surface().decorated() {
                 output.success(".test domain routing removed")?;
@@ -246,11 +254,6 @@ pub(crate) fn uninstall(
             }
 
             Ok(ExitCode::SUCCESS)
-        }
-        ResolverFileState::Conflict { path } => {
-            write_resolver_conflict(output, &path)?;
-
-            Ok(ExitCode::FAILURE)
         }
     }
 }
