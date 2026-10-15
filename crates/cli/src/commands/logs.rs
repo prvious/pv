@@ -1,9 +1,11 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::io;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::process::ExitCode;
+use std::sync::mpsc;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use notify::{EventKind, RecursiveMode, Watcher};
 use resources::{ArtifactManifestCache, ResourceName, TrackSelector};
 use state::{Database, PvPaths, StateError};
 
@@ -422,45 +424,128 @@ fn follow_sources(
     color_enabled: bool,
     stdout: &mut dyn Write,
 ) -> Result<(), ExecuteError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()?;
-
-    runtime.block_on(follow_sources_async(sources, color_enabled, stdout, None))
+    follow_sources_until(sources, color_enabled, stdout, None)
 }
 
-async fn follow_sources_async(
+/// Prints the lines appended to each source's active log, as file events report them, until
+/// `max_lines` have been printed or forever.
+fn follow_sources_until(
     sources: &[LogSource],
     color_enabled: bool,
     stdout: &mut dyn Write,
     max_lines: Option<usize>,
 ) -> Result<(), ExecuteError> {
-    let mut muxed_lines = linemux::MuxedLines::new()?;
+    let (sender, events) = mpsc::channel();
+    let mut watcher = notify::recommended_watcher(sender)?;
     let prefixed = sources.len() > 1;
-    let mut prefixes = BTreeMap::new();
+    let mut logs = Vec::new();
+    let mut directories = BTreeSet::new();
 
     for source in sources {
-        let path = muxed_lines
-            .add_file(source.active_path.as_std_path())
-            .await?;
-        prefixes.insert(path, log_prefix(&source.label, prefixed, color_enabled));
+        let log = FollowedLog::new(source, log_prefix(&source.label, prefixed, color_enabled))?;
+        if let Some(directory) = log.path.parent() {
+            directories.insert(directory.to_path_buf());
+        }
+        logs.push(log);
+    }
+    // Watching the directory follows a log that doesn't exist yet.
+    for directory in directories {
+        watcher.watch(directory.as_std_path(), RecursiveMode::NonRecursive)?;
     }
 
-    let unknown_source = log_prefix("log", prefixed, color_enabled);
     let mut emitted_lines = 0usize;
-    while let Some(line) = muxed_lines.next_line().await? {
-        let prefix = prefixes.get(line.source()).unwrap_or(&unknown_source);
-        writeln!(stdout, "{prefix}{}", line.line())?;
-        stdout.flush()?;
-        emitted_lines += 1;
-        if let Some(max_lines) = max_lines
-            && emitted_lines >= max_lines
-        {
-            break;
+    for event in events {
+        let event = event?;
+        // Reading a log doesn't change it, and this loop reads them.
+        if matches!(event.kind, EventKind::Access(_)) {
+            continue;
+        }
+        for log in &mut logs {
+            if !event.need_rescan()
+                && !event
+                    .paths
+                    .iter()
+                    .any(|path| path == log.path.as_std_path())
+            {
+                continue;
+            }
+            for line in log.read_new_lines()? {
+                writeln!(stdout, "{}{line}", log.prefix)?;
+                stdout.flush()?;
+                emitted_lines += 1;
+                if max_lines.is_some_and(|max_lines| emitted_lines >= max_lines) {
+                    return Ok(());
+                }
+            }
         }
     }
 
     Ok(())
+}
+
+struct FollowedLog {
+    /// The active log in its canonical directory, as file events name it.
+    path: Utf8PathBuf,
+    prefix: String,
+    offset: u64,
+    /// The start of a line whose end hasn't been written yet.
+    partial: Vec<u8>,
+}
+
+impl FollowedLog {
+    /// Follows `source` from its current end.
+    fn new(source: &LogSource, prefix: String) -> Result<Self, ExecuteError> {
+        let (Some(directory), Some(file_name)) =
+            (source.active_path.parent(), source.active_path.file_name())
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("log path {} has no file name", source.active_path),
+            )
+            .into());
+        };
+        let path = state::fs::canonicalize(directory)?.join(file_name);
+        let offset = match state::fs::open_read_file(&path)? {
+            Some(file) => file.metadata()?.len(),
+            None => 0,
+        };
+
+        Ok(Self {
+            path,
+            prefix,
+            offset,
+            partial: Vec::new(),
+        })
+    }
+
+    /// The complete lines appended since the last read. A log created later is read from its
+    /// start, and so is one that shrank, as a monitor's rotation truncates the log in place.
+    fn read_new_lines(&mut self) -> Result<Vec<String>, ExecuteError> {
+        let file = state::fs::open_read_file(&self.path)?;
+        let length = match &file {
+            Some(file) => file.metadata()?.len(),
+            None => 0,
+        };
+        if length < self.offset {
+            self.offset = 0;
+            self.partial.clear();
+        }
+        let Some(mut file) = file else {
+            return Ok(Vec::new());
+        };
+        file.seek(SeekFrom::Start(self.offset))?;
+        let read = file.read_to_end(&mut self.partial)?;
+        self.offset += u64::try_from(read).map_err(io::Error::other)?;
+        let Some(end) = self.partial.iter().rposition(|byte| *byte == b'\n') else {
+            return Ok(Vec::new());
+        };
+        let complete = self.partial.drain(..=end).collect::<Vec<_>>();
+
+        Ok(String::from_utf8_lossy(&complete)
+            .lines()
+            .map(ToOwned::to_owned)
+            .collect())
+    }
 }
 
 fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
@@ -525,84 +610,103 @@ mod tests {
 
     #[test]
     fn follow_sources_multiplexes_active_files() -> anyhow::Result<()> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
+        let tempdir = tempdir()?;
+        let daemon_log = tempdir.path().join("daemon.log");
+        let gateway_log = tempdir.path().join("gateway.log");
+        write_test_file(&daemon_log, "before follow\n")?;
+        write_test_file(&gateway_log, "")?;
+        let sources = vec![
+            LogSource {
+                label: "daemon".to_string(),
+                active_path: daemon_log.clone(),
+            },
+            LogSource {
+                label: "gateway".to_string(),
+                active_path: gateway_log.clone(),
+            },
+        ];
+        let mut stdout = Vec::new();
 
-        runtime.block_on(async {
-            let tempdir = tempdir()?;
-            let daemon_log = tempdir.path().join("daemon.log");
-            let gateway_log = tempdir.path().join("gateway.log");
-            write_test_file(&daemon_log, "")?;
-            write_test_file(&gateway_log, "")?;
-            let sources = vec![
-                LogSource {
-                    label: "daemon".to_string(),
-                    active_path: daemon_log.clone(),
-                },
-                LogSource {
-                    label: "gateway".to_string(),
-                    active_path: gateway_log.clone(),
-                },
-            ];
-            let writer = tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(250)).await;
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(250));
                 append_test_file(&daemon_log, "daemon follow\n")?;
-                append_test_file(&gateway_log, "gateway follow\n")?;
-
-                anyhow::Ok(())
+                append_test_file(&gateway_log, "gateway follow\n")
             });
-            let mut stdout = Vec::new();
+            follow_sources_until(&sources, false, &mut stdout, Some(2))?;
+            writer
+                .join()
+                .map_err(|_panic| anyhow::anyhow!("log writer panicked"))?
+        })?;
 
-            follow_sources_async(&sources, false, &mut stdout, Some(2)).await?;
-            writer.await??;
+        let output = String::from_utf8(stdout)?;
+        let mut lines = output.lines().collect::<Vec<_>>();
+        lines.sort();
+        assert_eq!(
+            lines,
+            vec!["daemon | daemon follow", "gateway | gateway follow"]
+        );
 
-            let output = String::from_utf8(stdout)?;
-            let mut lines = output.lines().collect::<Vec<_>>();
-            lines.sort();
-
-            assert_eq!(
-                lines,
-                vec!["daemon | daemon follow", "gateway | gateway follow"]
-            );
-
-            anyhow::Ok(())
-        })
+        Ok(())
     }
 
     #[test]
     fn follow_sources_continues_after_a_rotation_truncates_the_log() -> anyhow::Result<()> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
+        let tempdir = tempdir()?;
+        let gateway_log = tempdir.path().join("gateway.log");
+        write_test_file(&gateway_log, "")?;
+        let sources = vec![LogSource {
+            label: "gateway".to_string(),
+            active_path: gateway_log.clone(),
+        }];
+        let mut stdout = Vec::new();
 
-        runtime.block_on(async {
-            let tempdir = tempdir()?;
-            let gateway_log = tempdir.path().join("gateway.log");
-            write_test_file(&gateway_log, "")?;
-            let sources = vec![LogSource {
-                label: "gateway".to_string(),
-                active_path: gateway_log.clone(),
-            }];
-            let writer = tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_millis(250)).await;
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(250));
                 append_test_file(&gateway_log, "before rotation\n")?;
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                std::thread::sleep(Duration::from_millis(250));
                 // A monitor rotates by truncating the log the runtime keeps appending to.
                 truncate_test_file(&gateway_log)?;
-                append_test_file(&gateway_log, "after\n")?;
-
-                anyhow::Ok(())
+                append_test_file(&gateway_log, "after\n")
             });
-            let mut stdout = Vec::new();
+            follow_sources_until(&sources, false, &mut stdout, Some(2))?;
+            writer
+                .join()
+                .map_err(|_panic| anyhow::anyhow!("log writer panicked"))?
+        })?;
 
-            follow_sources_async(&sources, false, &mut stdout, Some(2)).await?;
-            writer.await??;
+        assert_eq!(String::from_utf8(stdout)?, "before rotation\nafter\n");
 
-            assert_eq!(String::from_utf8(stdout)?, "before rotation\nafter\n");
+        Ok(())
+    }
 
-            anyhow::Ok(())
-        })
+    #[test]
+    fn follow_sources_reads_a_log_created_later_and_holds_partial_lines() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let worker_log = tempdir.path().join("worker.log");
+        let sources = vec![LogSource {
+            label: "worker:8.4".to_string(),
+            active_path: worker_log.clone(),
+        }];
+        let mut stdout = Vec::new();
+
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(250));
+                write_test_file(&worker_log, "first line\nsecond ")?;
+                std::thread::sleep(Duration::from_millis(250));
+                append_test_file(&worker_log, "line\n")
+            });
+            follow_sources_until(&sources, false, &mut stdout, Some(2))?;
+            writer
+                .join()
+                .map_err(|_panic| anyhow::anyhow!("log writer panicked"))?
+        })?;
+
+        assert_eq!(String::from_utf8(stdout)?, "first line\nsecond line\n");
+
+        Ok(())
     }
 
     #[expect(
