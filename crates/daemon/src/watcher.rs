@@ -2,7 +2,7 @@
 //! sources, through OS file events, so an idle daemon does no watcher work. DESIGN.md has the
 //! rules.
 
-use std::collections::{BTreeMap, BTreeSet, btree_map};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::SystemTime;
@@ -37,15 +37,17 @@ struct WatchState {
     messages: UnboundedSender<WatchMessage>,
     watched: BTreeMap<Utf8PathBuf, RecursiveMode>,
     projects: BTreeMap<String, WatchedProject>,
-    /// The `.git` directories of the repositories that hold discovery sources.
-    repositories: BTreeMap<Utf8PathBuf, WorktreeEntries>,
 }
 
 struct WatchedProject {
     path: Utf8PathBuf,
-    /// The canonical Project directory while it exists. Events name canonical paths.
-    directory: Option<Utf8PathBuf>,
+    /// The canonical paths whose events change the config: `pv.yml` and `pv.yaml` in the Project
+    /// directory, and the files they link to. Events name canonical paths.
+    config_paths: BTreeSet<Utf8PathBuf>,
     config: ConfigModifiedTimes,
+    /// For a discovery source, its repository's `.git` directory and the worktree entries last
+    /// read there.
+    worktrees: Option<(Utf8PathBuf, WorktreeEntries)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -82,7 +84,6 @@ impl ProjectConfigWatcher {
                 messages,
                 watched: BTreeMap::new(),
                 projects: BTreeMap::new(),
-                repositories: BTreeMap::new(),
             })),
         };
         watcher.watch(database.project_config_watches()?);
@@ -131,46 +132,61 @@ impl ProjectConfigWatcher {
         let mut state = lock_watch_state(&self.state);
         let state = &mut *state;
         let mut watched = BTreeMap::new();
-        let mut repositories = BTreeMap::new();
         let mut watched_projects = BTreeMap::new();
 
         for project in projects {
             // A new Project's times are read before its directory is watched, so the check after
             // the restart catches a save in between.
-            let config = match state.projects.remove(&project.project_id) {
-                Some(watched) if watched.path == project.project_path => watched.config,
-                _ => config_modified_times(&project.project_path),
+            let (config, previous_worktrees) = match state.projects.remove(&project.project_id) {
+                Some(watched) if watched.path == project.project_path => {
+                    (watched.config, watched.worktrees)
+                }
+                _ => (config_modified_times(&project.project_path), None),
             };
-            let directory = existing_directory(&self.paths, &project.project_path);
-            if let Some(directory) = &directory {
+            let mut config_paths = BTreeSet::new();
+            let mut worktrees = None;
+            if let Some(directory) = existing_directory(&self.paths, &project.project_path) {
                 watched.insert(directory.clone(), RecursiveMode::NonRecursive);
+                for file_name in [PREFERRED_CONFIG_FILE, ALTERNATE_CONFIG_FILE] {
+                    let config_path = directory.join(file_name);
+                    // Editing the file a config links to doesn't touch the link.
+                    if let Ok(target) = fs::canonicalize(&config_path)
+                        && target != config_path
+                        && let Some(target_directory) = target.parent()
+                    {
+                        watched.insert(target_directory.to_path_buf(), RecursiveMode::NonRecursive);
+                        config_paths.insert(target);
+                    }
+                    config_paths.insert(config_path);
+                }
                 if !project.discovered
-                    && let Some(git) = repository_git_dir(&self.paths, directory)
+                    && let Some(git) = repository_git_dir(&self.paths, &directory)
                 {
                     // `.git` shows `worktrees/` appearing with the first worktree.
                     watched.insert(git.clone(), RecursiveMode::NonRecursive);
-                    let worktrees = git.join("worktrees");
-                    if matches!(fs::path_is_directory(&worktrees), Ok(true)) {
-                        watched.insert(worktrees, RecursiveMode::Recursive);
+                    let worktrees_directory = git.join("worktrees");
+                    if matches!(fs::path_is_directory(&worktrees_directory), Ok(true)) {
+                        watched.insert(worktrees_directory, RecursiveMode::Recursive);
                     }
-                    // A newly linked source's worktrees are new to discovery too.
-                    if let btree_map::Entry::Vacant(repository) = repositories.entry(git) {
-                        let entries = state.repositories.remove(repository.key());
-                        repository.insert(entries.unwrap_or_default());
-                    }
+                    // A new source's worktrees are new to discovery too, even in a repository
+                    // that another source already watches.
+                    let entries = previous_worktrees
+                        .filter(|(previous_git, _entries)| *previous_git == git)
+                        .map_or_else(WorktreeEntries::new, |(_git, entries)| entries);
+                    worktrees = Some((git, entries));
                 }
             }
             watched_projects.insert(
                 project.project_id,
                 WatchedProject {
                     path: project.project_path,
-                    directory,
+                    config_paths,
                     config,
+                    worktrees,
                 },
             );
         }
         state.projects = watched_projects;
-        state.repositories = repositories;
         if watched == state.watched {
             return;
         }
@@ -226,9 +242,9 @@ impl WatchState {
                 project.config = config;
                 scopes.extend(ReconciliationScope::project(project_id.clone()).ok());
             }
-        }
-        for (git, entries) in &mut self.repositories {
-            if worktree_entries_changed(git, entries) {
+            if let Some((git, entries)) = &mut project.worktrees
+                && worktree_entries_changed(git, entries)
+            {
                 scopes.insert(ReconciliationScope::System);
             }
         }
@@ -247,19 +263,15 @@ impl WatchState {
             let Some(path) = Utf8Path::from_path(path) else {
                 continue;
             };
-            if let (Some(directory), Some(PREFERRED_CONFIG_FILE | ALTERNATE_CONFIG_FILE)) =
-                (path.parent(), path.file_name())
-            {
-                for (project_id, project) in &mut self.projects {
-                    if project.directory.as_deref() == Some(directory) {
-                        // Every save counts, even one the modified time can't tell apart.
-                        project.config = config_modified_times(&project.path);
-                        scopes.extend(ReconciliationScope::project(project_id.clone()).ok());
-                    }
+            for (project_id, project) in &mut self.projects {
+                if project.config_paths.contains(path) {
+                    // Every save counts, even one the modified time can't tell apart.
+                    project.config = config_modified_times(&project.path);
+                    scopes.extend(ReconciliationScope::project(project_id.clone()).ok());
                 }
-            }
-            for (git, entries) in &mut self.repositories {
-                if path.starts_with(git.join("worktrees")) && worktree_entries_changed(git, entries)
+                if let Some((git, entries)) = &mut project.worktrees
+                    && path.starts_with(git.join("worktrees"))
+                    && worktree_entries_changed(git, entries)
                 {
                     scopes.insert(ReconciliationScope::System);
                 }
@@ -405,7 +417,7 @@ mod tests {
             let project = Database::open(&self.paths)?
                 .link_project(LinkProjectInput {
                     original_path: path.clone(),
-                    primary_hostname: format!("{name}.test"),
+                    primary_hostname: format!("{}.test", name.replace('/', "-")),
                     config_path: path.join("pv.yml"),
                     desired_php_track: None,
                     path: path.clone(),
@@ -450,6 +462,15 @@ mod tests {
             timeout(EVENT_TIMEOUT, self.scopes.recv())
                 .await?
                 .ok_or_else(|| anyhow!("watcher scope recorder closed"))
+        }
+
+        /// The scopes requested, waiting up to [`EVENT_TIMEOUT`] for the first one and then until
+        /// nothing arrives for [`QUIET_PERIOD`].
+        async fn requested(&mut self) -> Result<Vec<String>> {
+            let mut scopes = vec![self.next_scope().await?];
+            scopes.extend(self.settle().await);
+
+            Ok(scopes)
         }
 
         /// The scopes requested until nothing arrives for [`QUIET_PERIOD`].
@@ -531,6 +552,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn watcher_enqueues_an_edit_to_the_file_a_config_links_to() -> Result<()> {
+        let fixture = Fixture::new()?;
+        let (project_path, scope) = fixture.link("project")?;
+        let target = project_path.join("config/project.yml");
+        write(&target, "php: '8.3'\n")?;
+        state::fs::symlink_file(&target, &project_path.join("pv.yml"))?;
+        let mut watcher = fixture.run()?;
+
+        write(&target, "php: '8.4'\n")?;
+
+        assert_eq!(watcher.requested().await?, vec![scope]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn atomic_save_enqueues_one_reconciliation_and_ignores_other_files() -> Result<()> {
         let fixture = Fixture::new()?;
         let (project_path, scope) = fixture.link("project")?;
@@ -546,7 +583,7 @@ mod tests {
             &project_path.join("pv.yml"),
         )?;
 
-        assert_eq!(watcher.settle().await, vec![scope]);
+        assert_eq!(watcher.requested().await?, vec![scope]);
 
         Ok(())
     }
@@ -560,7 +597,7 @@ mod tests {
 
         watcher.watcher.reload();
         write(&project_path.join("pv.yml"), "php: '8.4'\n")?;
-        assert_eq!(watcher.settle().await, vec![scope.clone()]);
+        assert_eq!(watcher.requested().await?, vec![scope.clone()]);
 
         let project_id = scope.trim_start_matches("project:");
         Database::open(&fixture.paths)?.unlink_project(project_id)?;
@@ -585,7 +622,7 @@ mod tests {
         assert_eq!(watcher.next_scope().await?, scope);
         write(&project_path.join("pv.yml"), "php: '8.3'\n")?;
 
-        assert_eq!(watcher.settle().await, vec![scope]);
+        assert_eq!(watcher.requested().await?, vec![scope]);
 
         Ok(())
     }
@@ -649,7 +686,7 @@ mod tests {
         // The first worktree creates `.git/worktrees/`, which the system job's reload watches.
         write(&entry.join("gitdir"), "/elsewhere/feature/.git\n")?;
         write(&entry.join("locked"), "initializing\n")?;
-        assert_eq!(watcher.settle().await, system);
+        assert_eq!(watcher.requested().await?, system);
         watcher.watcher.reload();
         assert_eq!(watcher.settle().await, Vec::<String>::new());
         // Every Git command run in the worktree rewrites its index.
@@ -657,20 +694,20 @@ mod tests {
         assert_eq!(watcher.settle().await, Vec::<String>::new());
         // `git worktree add` has checked the worktree out.
         state::fs::remove_file(&entry.join("locked"))?;
-        assert_eq!(watcher.settle().await, system);
+        assert_eq!(watcher.requested().await?, system);
         // `git worktree move`.
         write(&entry.join("gitdir"), "/moved/feature/.git\n")?;
-        assert_eq!(watcher.settle().await, system);
+        assert_eq!(watcher.requested().await?, system);
         // `git worktree remove`.
         state::fs::delete_dir_all(&entry)?;
 
-        assert_eq!(watcher.settle().await, system);
+        assert_eq!(watcher.requested().await?, system);
 
         Ok(())
     }
 
     #[tokio::test]
-    async fn reload_requests_discovery_for_a_newly_linked_source_with_worktrees() -> Result<()> {
+    async fn reload_requests_discovery_for_newly_linked_sources_with_worktrees() -> Result<()> {
         let fixture = Fixture::new()?;
         let worktree_entry = ".git/worktrees/feature/gitdir";
         let (startup_source, _scope) = fixture.link("startup")?;
@@ -682,8 +719,14 @@ mod tests {
         let (linked_source, _scope) = fixture.link("linked")?;
         write(&linked_source.join(worktree_entry), "/elsewhere/b/.git\n")?;
         watcher.watcher.reload();
+        assert_eq!(watcher.requested().await?, vec!["system".to_string()]);
+        // A second source in a repository another source already watches, such as another app
+        // in a monorepo.
+        let (second_source, _scope) = fixture.link("startup/apps/api")?;
+        state::fs::ensure_user_dir(&second_source)?;
+        watcher.watcher.reload();
 
-        assert_eq!(watcher.settle().await, vec!["system".to_string()]);
+        assert_eq!(watcher.requested().await?, vec!["system".to_string()]);
 
         Ok(())
     }
