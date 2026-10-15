@@ -191,7 +191,8 @@ Build the Ubuntu 22.04 development image on the host's native architecture:
 ```shell
 df -h /
 docker build -f scripts/linux/builder.Dockerfile -t pv-linux-builder .
-docker run --rm --mount "type=bind,src=$PWD,dst=/src,readonly" \
+pv_mount_source=${PWD//\"/\"\"}
+docker run --rm --mount "type=bind,\"src=$pv_mount_source\",dst=/src,readonly" \
   --mount type=volume,src=pv-linux-target,dst=/target \
   --env CARGO_TARGET_DIR=/target --env CARGO_BUILD_JOBS=1 --workdir /src pv-linux-builder \
   cargo nextest run --profile ci --locked -p resources -p self-update
