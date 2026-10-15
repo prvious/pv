@@ -416,8 +416,17 @@ fn daemon_registration_manager_check(environment: &impl Environment) -> DoctorCh
             );
             match platform::inspect_daemon_registration_file(&status.fragment_path, None) {
                 DaemonRegistrationFileState::Current { .. }
-                | DaemonRegistrationFileState::Stale { .. } => {
+                | DaemonRegistrationFileState::Stale { .. }
+                    if status.load_state == "loaded"
+                        && status.active_state == "active"
+                        && status.main_pid != 0 =>
+                {
                     DoctorCheck::pass(name, "reachable").with_detail(detail)
+                }
+                DaemonRegistrationFileState::Current { .. }
+                | DaemonRegistrationFileState::Stale { .. } => {
+                    DoctorCheck::fail(name, "daemon service is not healthy", "pv daemon:restart")
+                        .with_detail(detail)
                 }
                 DaemonRegistrationFileState::Unreadable { message, .. } => DoctorCheck::fail(
                     name,
@@ -430,6 +439,13 @@ fn daemon_registration_manager_check(environment: &impl Environment) -> DoctorCh
             }
         }
         Ok(None) => DoctorCheck::pass(name, "reachable; daemon unit is not loaded"),
+        Err(error @ platform::PlatformError::DaemonRegistrationConflict { .. }) => {
+            DoctorCheck::fail(
+                name,
+                error.to_string(),
+                "review the conflicting systemd unit or drop-in before retrying",
+            )
+        }
         Err(error) => DoctorCheck::fail(
             name,
             error.to_string(),

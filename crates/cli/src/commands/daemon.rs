@@ -170,6 +170,8 @@ pub(crate) fn restart(
 
     match state {
         DaemonRegistrationFileState::Current { .. } => {
+            #[cfg(target_os = "linux")]
+            environment.enable_daemon_registration(&path)?;
             environment.restart_daemon_registration()?;
             output.success(restarted_message)?;
             wait_for_daemon_and_submit_reconciliation(paths, output)?;
