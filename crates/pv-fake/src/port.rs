@@ -36,6 +36,16 @@ pub fn port() -> Result<u16> {
         .port()
 }
 
+/// `COUNT` distinct ports from [`port`].
+pub fn ports<const COUNT: usize>() -> Result<[u16; COUNT]> {
+    let mut ports = [0; COUNT];
+    for slot in &mut ports {
+        *slot = port()?;
+    }
+
+    Ok(ports)
+}
+
 /// Gives the PV home at `paths` a DNS port from [`port`] unless it already has one, and returns
 /// the home's DNS port. A daemon that restarts rebinds its saved DNS port without retrying, so the
 /// port must be one no other test can take in between.
@@ -131,13 +141,14 @@ fn open_lock_file(path: &Utf8Path) -> Result<std::fs::File> {
 }
 
 /// Whether nothing uses `port` for TCP on loopback or the wildcard address, or for UDP on
-/// loopback. The TCP probe sets `SO_REUSEADDR` as runtimes do, so closing connections don't count.
+/// loopback. The TCP probe binds without `SO_REUSEADDR`, so a port that an earlier test left with
+/// closing connections (`TIME_WAIT`) counts as busy: a fixture that binds without `SO_REUSEADDR`
+/// could not take it, while a fresh `bind` to port 0 never returns one.
 /// Only a port in use counts as busy: any other failure, such as a sandbox refusing to bind, is an
 /// error, so it isn't reported as a pool whose every block is taken.
 fn is_free(port: u16) -> io::Result<bool> {
     for address in [Ipv4Addr::LOCALHOST, Ipv4Addr::UNSPECIFIED] {
         let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
-        socket.set_reuse_address(true)?;
         if in_use(socket.bind(&SocketAddrV4::new(address, port).into()))? {
             return Ok(false);
         }
@@ -161,6 +172,7 @@ fn in_use(bind: io::Result<()>) -> io::Result<bool> {
 mod tests {
     use std::collections::BTreeSet;
     use std::io::{self, BufRead, BufReader, Read, Write};
+    use std::net::{TcpListener, TcpStream};
     use std::process::Stdio;
     use std::thread;
 
@@ -168,7 +180,7 @@ mod tests {
     use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
 
-    use super::{BLOCK_SIZE, FIRST_PORT, LAST_PORT, Pool, open_lock_file, port};
+    use super::{BLOCK_SIZE, FIRST_PORT, LAST_PORT, Pool, is_free, open_lock_file, port};
 
     /// A private pool of two blocks outside the shared pool's ports, so these tests never probe a
     /// port another test was handed.
@@ -224,6 +236,16 @@ mod tests {
         let port = pool.port()?;
 
         assert_eq!(block_start(port), TEST_FIRST_PORT + BLOCK_SIZE);
+
+        Ok(())
+    }
+
+    #[test]
+    fn a_port_with_closing_connections_is_not_free() -> Result<()> {
+        let port = port()?;
+        leave_server_closing_connection(port)?;
+
+        assert!(!is_free(port)?);
 
         Ok(())
     }
@@ -308,6 +330,17 @@ mod tests {
         writeln!(io::stdout(), "port={port}")?;
         io::stdout().flush()?;
         io::stdin().read_to_end(&mut Vec::new())?;
+
+        Ok(())
+    }
+
+    /// Leaves `port` with a server-side `TIME_WAIT`, as a test whose server closes first does.
+    fn leave_server_closing_connection(port: u16) -> Result<()> {
+        let listener = TcpListener::bind(("127.0.0.1", port))?;
+        let mut client = TcpStream::connect(("127.0.0.1", port))?;
+        let (server, _client_address) = listener.accept()?;
+        drop(server);
+        client.read_to_end(&mut Vec::new())?;
 
         Ok(())
     }

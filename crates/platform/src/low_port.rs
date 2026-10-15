@@ -193,9 +193,7 @@ mod tests {
     fn inspection_finds_one_held_port_when_the_other_is_free() -> anyhow::Result<()> {
         let listener = TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
-        let unused_listener = TcpListener::bind(("127.0.0.1", 0))?;
-        let unused_port = unused_listener.local_addr()?.port();
-        drop(unused_listener);
+        let unused_port = pv_fake::port()?;
         let inspection = inspect_loopback_ports(&[port, unused_port])?;
         assert_eq!(inspection.ports.len(), 2);
         assert!(!inspection.ports[0].available);

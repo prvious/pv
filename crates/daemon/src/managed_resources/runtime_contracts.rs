@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 use std::future;
-use std::net::{Ipv4Addr, TcpListener};
+use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
@@ -180,7 +180,7 @@ async fn real_postgres_forced_exit_keeps_recovery_records() -> Result<()> {
     let (_tempdir, paths) = contract_paths()?;
     let postgres = install_real_artifact(&paths, manifest_url, &postgres_adapter()?)?;
     let track = postgres.track().as_str();
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let adapter = super::postgres::PostgresRuntimeAdapter::new();
     let mut context = runtime_context(
         &paths,
@@ -281,7 +281,7 @@ async fn real_mysql_satisfies_the_runtime_contract() -> Result<()> {
 /// check, which runs the `redis` crate's connection handshake and `PING`. Then PV's allocation
 /// cleanup deletes one prefix's keys and nothing else, and PV stops it.
 async fn redis_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) -> Result<()> {
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let adapter = super::redis::RedisRuntimeAdapter::new();
     let context = runtime_context(paths, "redis", track, artifact_path, [("redis", port)]);
 
@@ -361,7 +361,7 @@ async fn mailpit_contract(
     artifact_path: &Utf8Path,
     track: &str,
 ) -> Result<()> {
-    let [smtp_port, dashboard_port] = available_ports()?;
+    let [smtp_port, dashboard_port] = pv_fake::ports()?;
 
     run_contract(
         paths,
@@ -382,7 +382,7 @@ async fn mailpit_contract(
 /// step works, PV's allocation cleanup empties and deletes one bucket and nothing else, and the S3
 /// operations the daemon tests use to inspect buckets behave as RustFS's do.
 async fn rustfs_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) -> Result<()> {
-    let [api_port, console_port] = available_ports()?;
+    let [api_port, console_port] = pv_fake::ports()?;
     let adapter = super::rustfs::RustfsRuntimeAdapter;
     let mut context = runtime_context(
         paths,
@@ -518,7 +518,7 @@ async fn rustfs_serves_allocations(env: EnvContextValues) -> Result<()> {
 /// cleanup drops one database even while an app is connected to it, and PV's stop finishes within
 /// the grace period while a client is still connected (#391).
 async fn postgres_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) -> Result<()> {
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let adapter = super::postgres::PostgresRuntimeAdapter::new();
     let mut context = runtime_context(
         paths,
@@ -614,7 +614,7 @@ async fn postgres_serves_allocations(
 /// speaks no MySQL protocol, so the readiness check is the daemon tests' TCP connect; PV's SQL
 /// client meets real MySQL in `tests/real_artifact_resource_matrix.rs`.
 async fn mysql_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) -> Result<()> {
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let adapter = super::mysql::MysqlRuntimeAdapter::with_recording_admin(
         super::mysql::RecordingMysqlAdmin::default(),
     )?;
@@ -635,7 +635,7 @@ async fn real_mysql_deletes_allocations(
     artifact_path: &Utf8Path,
     track: &str,
 ) -> Result<()> {
-    let [port] = available_ports()?;
+    let [port] = pv_fake::ports()?;
     let adapter = super::mysql::MysqlRuntimeAdapter::new();
     let mut context = runtime_context(paths, "mysql", track, artifact_path, [("mysql", port)]);
     // Fix the generated password up front, so the check signs in with the one MySQL gets.
@@ -871,20 +871,6 @@ fn contract_paths() -> Result<(Utf8TempDir, PvPaths)> {
     pv_fake::install_monitor(&paths)?;
 
     Ok((tempdir, paths))
-}
-
-fn available_ports<const COUNT: usize>() -> Result<[u16; COUNT]> {
-    let listeners = (0..COUNT)
-        .map(|_index| TcpListener::bind((Ipv4Addr::LOCALHOST, 0)))
-        .collect::<Result<Vec<_>, _>>()?;
-    let ports = listeners
-        .iter()
-        .map(|listener| Ok(listener.local_addr()?.port()))
-        .collect::<Result<Vec<_>>>()?;
-
-    ports
-        .try_into()
-        .map_err(|_ports| anyhow!("expected {COUNT} ports"))
 }
 
 fn runtime_log(path: &Utf8Path) -> String {

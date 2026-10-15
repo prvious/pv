@@ -89,7 +89,7 @@ fn rustfs_open_does_not_open_stale_observed_runtime() -> anyhow::Result<()> {
     let home = tempdir.path().join("home");
     let paths = PvPaths::for_home(home.clone());
     let environment = TestEnvironment::new(&home);
-    let stale_console_port = unused_loopback_port()?;
+    let stale_console_port = pv_fake::port()?;
     seed_running_rustfs_console(&paths, stale_console_port)?;
 
     let output = run_pv(&["rustfs:open"], &environment)?;
@@ -165,14 +165,6 @@ fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOu
         stdout: String::from_utf8(stdout)?,
         stderr: String::from_utf8(stderr)?,
     })
-}
-
-fn unused_loopback_port() -> anyhow::Result<u16> {
-    let listener = TcpListener::bind(("127.0.0.1", 0))?;
-    let port = listener.local_addr()?.port();
-    drop(listener);
-
-    Ok(port)
 }
 
 fn seed_running_rustfs_console(paths: &PvPaths, console_port: u16) -> anyhow::Result<()> {
