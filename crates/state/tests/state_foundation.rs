@@ -2649,18 +2649,25 @@ fn cleanup_forgets_a_name_a_linked_project_owns_again() -> Result<()> {
         allocation_name: "app".to_string(),
         generated_name: "acme_feat_app".to_string(),
     }];
+    let cache = [ResourceAllocationInput {
+        allocation_name: "cache".to_string(),
+        generated_name: "acme-feat.cache.".to_string(),
+    }];
     database.replace_project_resource_allocations(&feat.id, "mysql", "8.0", &app_db)?;
     database.replace_project_resource_allocations(&feat.id, "mysql", "8.4", &app_db)?;
+    database.replace_project_resource_allocations(&feat.id, "redis", "8.8", &cache)?;
     database.remove_discovered_project(&feat.id)?;
     // A previous PV version ignores the list, so after a rollback it can hand a listed name to a
-    // new Project.
+    // new Project. That Project still owns its object after moving it to another track.
     let connection = Connection::open(paths.db())?;
     connection.execute_batch(
         "CREATE TEMP TABLE hidden AS SELECT * FROM pending_cleanups;
         DELETE FROM pending_cleanups;",
     )?;
     let other = link_test_project(&mut database, tempdir.path(), "other", "other.test")?;
+    database.replace_project_resource_allocations(&other.id, "redis", "8.8", &cache)?;
     database.replace_project_resource_allocations(&other.id, "mysql", "8.4", &app_db)?;
+    database.replace_project_resource_allocations(&other.id, "mysql", "9.0", &app_db)?;
     connection.execute_batch("INSERT INTO pending_cleanups SELECT * FROM hidden;")?;
 
     database.forget_reclaimed_cleanups()?;
