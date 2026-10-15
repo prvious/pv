@@ -17,7 +17,7 @@ use daemon::{
     DaemonError, LiveRuntime, MonitorCleanup, MonitorErrorKind, MonitorExit, MonitorHooks,
     MonitorPause, MonitorStart, MonitorState, MonitorStop, StopSignal,
 };
-use insta::{Settings, assert_snapshot};
+use insta::{Settings, allow_duplicates, assert_snapshot};
 use pv_fake::{EventKind, FakeSettings, InstalledFake, Persona, Scenario};
 use rustix::io::{FdFlags, fcntl_setfd};
 use rustix::process::{Pid, Signal, kill_process, kill_process_group, test_kill_process};
@@ -146,23 +146,85 @@ async fn monitor_start_reports_a_missing_command_and_leaves_no_instance() -> Res
 
 #[tokio::test]
 async fn gate_death_before_exec_is_a_startup_failure() -> Result<()> {
-    let harness = Harness::with_hooks(MonitorHooks {
-        pauses: vec![MonitorPause::GateAfterPermission],
+    #[cfg(target_os = "linux")]
+    let launch_paths = [false, true];
+    #[cfg(not(target_os = "linux"))]
+    let launch_paths = [false];
+    for installed_path in launch_paths {
+        #[cfg(target_os = "linux")]
+        let pauses = vec![
+            MonitorPause::GateAfterPermission,
+            MonitorPause::AfterGateEof,
+        ];
+        #[cfg(not(target_os = "linux"))]
+        let pauses = vec![MonitorPause::GateAfterPermission];
+        let mut harness = Harness::with_hooks(MonitorHooks {
+            pauses,
+            ..MonitorHooks::default()
+        })?;
+        if installed_path {
+            pv_fake::install_monitor(&harness.paths)?;
+            harness.monitor = harness.paths.active_pv_binary();
+        }
+        let fake = harness.fake(Persona::LongRunning)?;
+        let start = harness.start_for(fake.executable(), &[])?;
+
+        let (started, killed) = tokio::join!(harness.start(start), async {
+            let gate = harness.reached(MonitorPause::GateAfterPermission).await?;
+            #[cfg(target_os = "linux")]
+            harness.reached(MonitorPause::AfterGateEof).await?;
+            kill(gate, Signal::KILL)?;
+            #[cfg(target_os = "linux")]
+            harness.resume(MonitorPause::AfterGateEof)?;
+            Ok::<_, anyhow::Error>(())
+        });
+        killed?;
+        let Err(DaemonError::MonitorStartupFailed { message, .. }) = started else {
+            bail!("expected a gate startup failure, got {started:?}");
+        };
+        harness.snapshot(|| {
+            allow_duplicates! {
+                assert_snapshot!(message);
+            }
+        });
+        assert!(fake.events()?.is_empty());
+        assert!(!state::fs::path_exists(&harness.monitor_dir()));
+        assert!(harness.reservation_is_free()?);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn gate_eof_before_exec_waits_for_the_live_runtime() -> Result<()> {
+    let mut harness = Harness::with_hooks(MonitorHooks {
+        pauses: vec![
+            MonitorPause::GateAfterPermission,
+            MonitorPause::AfterGateEof,
+        ],
         ..MonitorHooks::default()
     })?;
+    pv_fake::install_monitor(&harness.paths)?;
+    harness.monitor = harness.paths.active_pv_binary();
     let fake = harness.fake(Persona::LongRunning)?;
     let start = harness.start_for(fake.executable(), &[])?;
 
-    let (started, killed) = tokio::join!(harness.start(start), async {
-        let gate = harness.reached(MonitorPause::GateAfterPermission).await?;
-        kill(gate, Signal::KILL)
+    let (started, resumed) = tokio::join!(harness.start(start), async {
+        harness.reached(MonitorPause::GateAfterPermission).await?;
+        harness.reached(MonitorPause::AfterGateEof).await?;
+        harness.resume(MonitorPause::AfterGateEof)?;
+        harness.resume(MonitorPause::GateAfterPermission)
     });
-    killed?;
-    let Err(DaemonError::MonitorStartupFailed { message, .. }) = started else {
-        bail!("expected a gate startup failure, got {started:?}");
-    };
-    harness.snapshot(|| assert_snapshot!(message));
-    assert!(fake.events()?.is_empty());
+    resumed?;
+    let started = started?;
+    let fake_pid = wait_for_fake_start(&fake).await?;
+    let stopped = daemon::stop_monitor(&harness.paths, SUBJECT, STOP).await?;
+    daemon::release_monitor(&harness.paths, SUBJECT).await?;
+
+    assert_eq!(started.runtime_pid, fake_pid);
+    assert_eq!(started.exit, None);
+    assert_eq!(stopped.exit, Some(MonitorExit::Code(0)));
+    assert_eq!(stopped.cleanup, MonitorCleanup::Complete);
     assert!(!state::fs::path_exists(&harness.monitor_dir()));
     assert!(harness.reservation_is_free()?);
     Ok(())

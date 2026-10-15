@@ -140,7 +140,11 @@ fn verify_daemon_process(
 ) -> Result<platform::ProcessIdentity, DaemonError> {
     let identity = platform::inspect_process_identity(pid)?
         .ok_or(DaemonError::RuntimeProcessIdentityChanged { pid })?;
+    #[cfg(not(target_os = "linux"))]
     let executable = fs::canonicalize(&identity.executable)?;
+    // Linux's /proc executable path is resolved even when its file was unlinked.
+    #[cfg(target_os = "linux")]
+    let executable = &identity.executable;
     let binaries = fs::canonicalize(paths.bin())?;
     if identity.arguments != ["daemon:run"] || !executable.starts_with(binaries) {
         return Err(DaemonError::RuntimeProcessIdentityChanged { pid });
@@ -310,6 +314,11 @@ mod tests {
 
         let identity = verify_daemon_process(&paths, child.0.id())?;
         assert_eq!(identity.arguments, ["daemon:run"]);
+        #[cfg(target_os = "linux")]
+        {
+            fs::delete_file(fake.executable())?;
+            assert_eq!(verify_daemon_process(&paths, child.0.id())?, identity);
+        }
         Ok(())
     }
 }
