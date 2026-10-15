@@ -31,6 +31,8 @@ impl PfRoutingState {
 #[serde(rename_all = "lowercase")]
 pub(super) enum PfRoutingEvidence {
     Pfctl,
+    #[cfg(target_os = "linux")]
+    Systemd,
     Probe,
     Unavailable,
 }
@@ -39,6 +41,8 @@ impl PfRoutingEvidence {
     pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Pfctl => "pfctl",
+            #[cfg(target_os = "linux")]
+            Self::Systemd => "systemd",
             Self::Probe => "probe",
             Self::Unavailable => "unavailable",
         }
@@ -63,29 +67,48 @@ impl PfRoutingDiagnostic {
         database: Option<&Database>,
     ) -> Result<Self, ExecuteError> {
         let expected = expected_redirect_config(database)?;
-        let prepared_anchor =
-            platform::inspect_pf_anchor_file(&paths.pf_anchor_config(), expected.as_ref());
-        let expected_reference = PfConfReference;
-        let prepared_reference = platform::inspect_pf_conf_reference(
-            &paths.pf_conf_reference_config(),
-            Some(&expected_reference),
-        );
-        let system_anchor_path = utf8_path(environment.pf_anchor_path())?;
-        let system_reference_path = utf8_path(environment.pf_conf_path())?;
-        let system_anchor =
-            platform::inspect_pf_anchor_file(&system_anchor_path, expected.as_ref());
-        let system_reference =
-            platform::inspect_pf_conf_reference(&system_reference_path, Some(&expected_reference));
-        let files_current = matches!(prepared_anchor, PfFileState::Current { .. })
-            && matches!(prepared_reference, PfFileState::Current { .. })
-            && matches!(system_anchor, PfFileState::Current { .. })
-            && matches!(system_reference, PfFileState::Current { .. });
+        let files_current = files_current(environment, paths, expected.as_ref())?;
 
         let (state, evidence, active_http_port, active_https_port) =
             match environment.inspect_active_pf_redirects_unprivileged() {
-                Ok(inspection) => classify_pfctl(expected.as_ref(), files_current, &inspection),
+                Ok(inspection) => {
+                    let (state, evidence, http_port, https_port) =
+                        classify_pfctl(expected.as_ref(), files_current, &inspection);
+                    #[cfg(target_os = "linux")]
+                    let state = if environment.platform_target()? == platform::PlatformTarget::Linux
+                        && expected.is_none()
+                        && inspection.has_unresolved_redirect_targets
+                    {
+                        PfRoutingState::Drifted
+                    } else {
+                        state
+                    };
+                    (state, evidence, http_port, https_port)
+                }
                 Err(_) => classify_probe(environment, paths, expected.as_ref(), files_current),
             };
+
+        #[cfg(target_os = "linux")]
+        let (state, evidence) = if environment.platform_target()? == platform::PlatformTarget::Linux
+            && evidence == PfRoutingEvidence::Pfctl
+        {
+            if state == PfRoutingState::Active {
+                // Loaded Listen describes configuration, not the held kernel socket after reload.
+                if let Some(expected) = expected.as_ref()
+                    && environment
+                        .probe_gateway_redirects(expected, &paths.ca_certificate())
+                        .is_ok()
+                {
+                    (PfRoutingState::Active, PfRoutingEvidence::Probe)
+                } else {
+                    (PfRoutingState::Unknown, PfRoutingEvidence::Systemd)
+                }
+            } else {
+                (state, PfRoutingEvidence::Systemd)
+            }
+        } else {
+            (state, evidence)
+        };
 
         Ok(Self {
             state,
@@ -101,6 +124,41 @@ impl PfRoutingDiagnostic {
     pub(super) const fn is_active(&self) -> bool {
         matches!(self.state, PfRoutingState::Active)
     }
+}
+
+fn files_current(
+    environment: &impl Environment,
+    paths: &PvPaths,
+    expected: Option<&PfRedirectConfig>,
+) -> Result<bool, ExecuteError> {
+    #[cfg(target_os = "linux")]
+    if environment.platform_target()? == platform::PlatformTarget::Linux {
+        let Some(expected) = expected else {
+            return Ok(false);
+        };
+        let installed_directory = utf8_path(environment.socket_proxy_directory())?;
+        return Ok(platform::socket_proxy_files_current(
+            expected,
+            &paths.ports_config(),
+            &installed_directory,
+        ));
+    }
+
+    let prepared_anchor = platform::inspect_pf_anchor_file(&paths.pf_anchor_config(), expected);
+    let expected_reference = PfConfReference;
+    let prepared_reference = platform::inspect_pf_conf_reference(
+        &paths.pf_conf_reference_config(),
+        Some(&expected_reference),
+    );
+    let system_anchor_path = utf8_path(environment.pf_anchor_path())?;
+    let system_reference_path = utf8_path(environment.pf_conf_path())?;
+    let system_anchor = platform::inspect_pf_anchor_file(&system_anchor_path, expected);
+    let system_reference =
+        platform::inspect_pf_conf_reference(&system_reference_path, Some(&expected_reference));
+    Ok(matches!(prepared_anchor, PfFileState::Current { .. })
+        && matches!(prepared_reference, PfFileState::Current { .. })
+        && matches!(system_anchor, PfFileState::Current { .. })
+        && matches!(system_reference, PfFileState::Current { .. }))
 }
 
 fn classify_pfctl(

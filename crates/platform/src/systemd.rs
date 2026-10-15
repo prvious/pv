@@ -1,4 +1,6 @@
 use std::future::Future;
+use std::io;
+use state::StateError;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::StreamExt;
@@ -12,6 +14,14 @@ use crate::PlatformError;
 use crate::helper::linux as root_files;
 
 const PV_MARKER: &str = "# Managed by PV";
+
+pub(crate) fn read_unit(path: &Utf8Path) -> io::Result<Option<String>> {
+    match state::fs::read_to_string(path) {
+        Ok(content) => Ok(Some(content)),
+        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io::Error::other(error)),
+    }
+}
 
 pub(crate) fn read_owned_unit(path: &Utf8Path) -> Result<Option<Vec<u8>>, PlatformError> {
     let content = root_files::read_root_file(path, 0o644)?;
