@@ -167,11 +167,10 @@ fn process_identity_resolves_a_symlinked_home() -> Result<()> {
             .arg("30")
             .spawn()?,
     );
+    let expected = fs::canonicalize(&executable)?;
+    wait_for_executable(child.0.id(), &expected)?;
 
-    assert_eq!(
-        inspect_child(&mut child)?.executable,
-        fs::canonicalize(&executable)?
-    );
+    assert_eq!(inspect_child(&mut child)?.executable, expected);
     Ok(())
 }
 
@@ -184,6 +183,7 @@ fn process_identity_preserves_the_path_of_a_deleted_executable() -> Result<()> {
     set_executable(&executable)?;
     let mut child = ChildGuard(TestCommand::new(&executable).arg("30").spawn()?);
     let expected = fs::canonicalize(&executable)?;
+    wait_for_executable(child.0.id(), &expected)?;
     fs::remove_file_if_exists(&executable)?;
 
     assert_eq!(inspect_child(&mut child)?.executable, expected);
@@ -414,6 +414,18 @@ fn inspect_child(child: &mut ChildGuard) -> Result<platform::ProcessIdentity> {
     let pid = child.0.id();
 
     inspect_process_identity(pid)?.ok_or_else(|| anyhow!("process {pid} had no native identity"))
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_executable(pid: u32, expected: &Utf8Path) -> Result<()> {
+    let process = Process::new(i32::try_from(pid)?)?;
+    for _attempt in 0..500 {
+        if process.exe()? == expected.as_std_path() {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    Err(anyhow!("process {pid} did not execute {expected}"))
 }
 
 struct ChildGuard(Child);
