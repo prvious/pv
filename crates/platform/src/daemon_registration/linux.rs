@@ -3,7 +3,7 @@ use std::future::Future;
 use std::io;
 use std::path::Path;
 use std::pin::pin;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_io::Timer;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -233,7 +233,9 @@ pub(super) fn enable(path: &Utf8Path, session_address: &str) -> Result<(), Platf
 pub(super) fn remove(path: &Utf8Path, session_address: &str) -> Result<(), PlatformError> {
     require_owned_file(path)?;
     let manager = manager(session_address)?;
-    run_operation("remove", Duration::from_secs(10), async {
+    let started = Instant::now();
+    let timeout = Duration::from_secs(10);
+    run_operation("remove", timeout, async {
         require_owned_unit(&manager).await?;
         manager
             .call::<_, _, Vec<(String, String, String)>>(
@@ -241,10 +243,46 @@ pub(super) fn remove(path: &Utf8Path, session_address: &str) -> Result<(), Platf
                 &([DAEMON_REGISTRATION_LABEL].as_slice(), false),
             )
             .await?;
-        delete_registration_file(path)?;
+        Ok(())
+    })?;
+    remove_file_and_reload(path, timeout.saturating_sub(started.elapsed()), async {
         manager.call::<_, _, ()>("Reload", &()).await?;
         Ok(())
     })
+}
+
+fn remove_file_and_reload(
+    path: &Utf8Path,
+    timeout: Duration,
+    reload: impl Future<Output = Result<(), PlatformError>>,
+) -> Result<(), PlatformError> {
+    require_owned_file(path)?;
+    let previous = match state::fs::read_to_string(path) {
+        Ok(content) => Some(content),
+        Err(state::StateError::Filesystem { source, .. })
+            if source.kind() == io::ErrorKind::NotFound =>
+        {
+            None
+        }
+        Err(error) => return Err(PlatformError::DaemonRegistrationFile(error)),
+    };
+    delete_registration_file(path)?;
+    if let Err(original) = run_operation("remove", timeout, reload) {
+        if let Some(content) = previous {
+            let restored = require_owned_file(path).and_then(|()| {
+                state::fs::write_sensitive_file(path, &content)
+                    .map_err(PlatformError::DaemonRegistrationFile)
+            });
+            if let Err(error) = restored {
+                return Err(PlatformError::DaemonRegistrationState {
+                    operation: "remove",
+                    message: format!("{original}; restoring the unit file also failed: {error}"),
+                });
+            }
+        }
+        return Err(original);
+    }
+    Ok(())
 }
 
 pub(super) fn restart(session_address: &str) -> Result<(), PlatformError> {
@@ -353,4 +391,80 @@ async fn within<T>(timeout: Duration, future: impl Future<Output = T>) -> Option
 
 fn is_method_error(error: &zbus::Error, expected: &str) -> bool {
     matches!(error, zbus::Error::MethodError(name, _, _) if name.as_str() == expected)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::{pending, ready};
+    use std::time::Duration;
+
+    use camino_tempfile::tempdir;
+    use insta::assert_snapshot;
+    use state::fs;
+
+    use super::{DaemonRegistrationConfig, remove_file_and_reload};
+    use crate::PlatformError;
+
+    #[test]
+    fn failed_or_timed_out_removal_reload_keeps_the_unit_retryable() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let path = directory.path().join("pv-daemon.service");
+        let content = format!(
+            "{}# retained local comment\n",
+            DaemonRegistrationConfig.render()?
+        );
+        for timeout_reload in [false, true] {
+            fs::write_sensitive_file(&path, &content)?;
+            let result = remove_file_and_reload(&path, Duration::from_millis(10), async {
+                if timeout_reload {
+                    pending().await
+                } else {
+                    Err(PlatformError::DaemonRegistrationState {
+                        operation: "reload",
+                        message: "fixture rejected reload".to_owned(),
+                    })
+                }
+            });
+            assert!(matches!(
+                result,
+                Err(PlatformError::DaemonRegistrationState { .. })
+            ));
+            assert_eq!(fs::read_to_string(&path)?, content);
+
+            remove_file_and_reload(&path, Duration::from_secs(1), ready(Ok(())))?;
+            assert!(!fs::path_entry_exists(&path)?);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failed_removal_preserves_a_foreign_replacement_and_reports_both_errors() -> anyhow::Result<()>
+    {
+        let directory = tempdir()?;
+        let path = directory.path().join("pv-daemon.service");
+        fs::write_sensitive_file(&path, &DaemonRegistrationConfig.render()?)?;
+        let foreign = "[Service]\nExecStart=/another/daemon\n";
+        let result = remove_file_and_reload(&path, Duration::from_secs(1), async {
+            fs::write_sensitive_file(&path, foreign)
+                .map_err(PlatformError::DaemonRegistrationFile)?;
+            Err(PlatformError::DaemonRegistrationState {
+                operation: "reload",
+                message: "fixture rejected reload".to_owned(),
+            })
+        });
+        let Err(PlatformError::DaemonRegistrationState { operation, message }) = result else {
+            anyhow::bail!("expected a failed removal, got {result:?}");
+        };
+        assert_eq!(fs::read_to_string(&path)?, foreign);
+        assert_eq!(operation, "remove");
+        let message = message.replace(directory.path().as_str(), "<tempdir>");
+        assert_snapshot!(message, @"daemon registration reload failed: fixture rejected reload; restoring the unit file also failed: daemon registration file is not PV-owned: <tempdir>/pv-daemon.service");
+        let retry = remove_file_and_reload(&path, Duration::from_secs(1), ready(Ok(())));
+        assert!(matches!(
+            retry,
+            Err(PlatformError::DaemonRegistrationConflict { path: conflict_path }) if conflict_path == path
+        ));
+        assert_eq!(fs::read_to_string(&path)?, foreign);
+        Ok(())
+    }
 }
