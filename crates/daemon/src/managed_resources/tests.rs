@@ -33,7 +33,7 @@ use rcgen::{
 };
 use resources::{
     ManagedResourceCommandError, ResourceAdapter, ResourceName, ResourcesError,
-    RuntimeArtifactAdapter,
+    RuntimeArtifactAdapter, TargetPlatform,
 };
 use rusqlite::{TransactionBehavior, params};
 use rustix::process::{Pid, test_kill_process, test_kill_process_group};
@@ -190,21 +190,8 @@ fn fixture_identity_is_absent(pid: u64) -> Result<bool> {
     Ok(leader_absent && group_absent)
 }
 
-const SETUP_DEFAULT_POSTGRES_SUPPORT_FILES: &[(&str, &str)] = &[
-    ("bin/initdb", "#!/bin/sh\nexit 0\n"),
-    ("share/postgres.bki", "postgres catalog"),
-    ("lib/libcrypto.3.dylib", "fixture libcrypto"),
-    ("lib/libssl.3.dylib", "fixture libssl"),
-    ("lib/postgresql/pg_trgm.dylib", "fixture pg_trgm"),
-    ("lib/postgresql/pgcrypto.dylib", "fixture pgcrypto"),
-    ("lib/postgresql/sslinfo.dylib", "fixture sslinfo"),
-    ("share/extension/pg_trgm.control", "fixture pg_trgm control"),
-    (
-        "share/extension/pgcrypto.control",
-        "fixture pgcrypto control",
-    ),
-    ("share/extension/sslinfo.control", "fixture sslinfo control"),
-];
+const SETUP_DEFAULT_POSTGRES_SUPPORT_FILES: &[(&str, &str)] =
+    &[("bin/initdb", "#!/bin/sh\nexit 0\n")];
 const SETUP_DEFAULT_FIXTURES: &[SetupDefaultFixture] = &[
     SetupDefaultFixture {
         resource_name: "caddy",
@@ -1006,7 +993,11 @@ async fn postgres_preload_configuration_rejects_missing_library() -> Result<()> 
     assert_eq!(library, "pg_cron");
     assert_with_normalized_postgres_runtime(
         tempdir.path(),
-        "postgres_preload_configuration_rejects_missing_library",
+        if cfg!(target_os = "linux") {
+            "postgres_preload_configuration_rejects_missing_library_linux"
+        } else {
+            "postgres_preload_configuration_rejects_missing_library"
+        },
         (
             track,
             library,
@@ -6703,6 +6694,9 @@ fn create_setup_default_archive(
     for (relative_path, content) in fixture.support_files {
         state::fs::write_sensitive_file(&root.join(relative_path), content)?;
     }
+    if fixture.resource_name == "postgres" {
+        write_postgres_support_files(&root)?;
+    }
 
     create_archive(&archive_parent, archive_path, &root_name)
 }
@@ -6887,6 +6881,7 @@ fn seed_postgres_preload_modules(
     track: &str,
     libraries: &[PostgresPreloadLibrary],
 ) -> Result<()> {
+    let suffix = TargetPlatform::current()?.shared_library_suffix();
     let release_path = paths
         .resources()
         .join("postgres")
@@ -6895,7 +6890,7 @@ fn seed_postgres_preload_modules(
 
     for library in libraries {
         state::fs::write_sensitive_file(
-            &release_path.join(format!("lib/postgresql/{}.dylib", library.as_str())),
+            &release_path.join(format!("lib/postgresql/{}{suffix}", library.as_str())),
             "fixture shared library",
         )?;
     }
@@ -7254,20 +7249,26 @@ fn install_postgres_fakes(release_path: &Utf8Path, postgres: Persona) -> Result<
 
 fn write_postgres_support_files(release_path: &Utf8Path) -> Result<()> {
     state::fs::write_sensitive_file(&release_path.join("share/postgres.bki"), "postgres catalog")?;
-    for relative_path in [
-        "lib/libcrypto.3.dylib",
-        "lib/libssl.3.dylib",
-        "lib/postgresql/pg_trgm.dylib",
-        "lib/postgresql/pgcrypto.dylib",
-        "lib/postgresql/sslinfo.dylib",
-        "share/extension/pg_trgm.control",
-        "share/extension/pgcrypto.control",
-        "share/extension/sslinfo.control",
-    ] {
+    let target_platform = TargetPlatform::current()?;
+    for library in target_platform.openssl_library_names() {
         state::fs::write_sensitive_file(
-            &release_path.join(relative_path),
+            &release_path.join("lib").join(library),
             "postgres pv2 support file",
         )?;
+    }
+    for library in ["pg_trgm", "pgcrypto", "sslinfo"] {
+        for relative_path in [
+            format!(
+                "lib/postgresql/{library}{}",
+                target_platform.shared_library_suffix()
+            ),
+            format!("share/extension/{library}.control"),
+        ] {
+            state::fs::write_sensitive_file(
+                &release_path.join(relative_path),
+                "postgres pv2 support file",
+            )?;
+        }
     }
 
     Ok(())

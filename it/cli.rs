@@ -21,6 +21,7 @@ use anyhow::Result;
 use assert_cmd::Command;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
+use command::run_pv_in;
 #[cfg(target_os = "macos")]
 use config::ProjectConfigFile;
 #[cfg(target_os = "macos")]
@@ -38,10 +39,12 @@ use state::{
     JobRecord, JobStatus, LinkDiscoveredProjectInput, LinkProjectInput, ProjectMode,
     RuntimeLifecycleLock,
 };
-use support::{create_dir, create_laravel_init_fixture, run_pv_in, write_file};
+use support::{create_dir, create_laravel_init_fixture, write_file};
 #[cfg(target_os = "macos")]
 use tokio::time::{sleep, timeout};
 
+#[path = "support/command.rs"]
+mod command;
 mod support;
 
 #[derive(Debug)]

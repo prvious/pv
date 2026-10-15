@@ -101,7 +101,7 @@ pub fn daemon_process_for_stop(paths: &PvPaths) -> Result<Option<DaemonProcess>,
         }
         return Ok(Some(record));
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     return super::build_runtime()?.block_on(async {
         match tokio::time::timeout(Duration::from_secs(3), crate::ipc::connect(paths)).await {
             Ok(Ok(stream)) => {
@@ -130,7 +130,7 @@ pub fn daemon_process_for_stop(paths: &PvPaths) -> Result<Option<DaemonProcess>,
             Err(error) => Err(io::Error::new(io::ErrorKind::TimedOut, error).into()),
         }
     });
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(unix))]
     Ok(None)
 }
 

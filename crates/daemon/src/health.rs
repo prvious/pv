@@ -663,25 +663,25 @@ fn php_runtime_subject(runtime_key: &str) -> RuntimeSubject {
 mod tests {
     use std::collections::BTreeSet;
     use std::io;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use std::net::TcpListener as StdTcpListener;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use std::sync::Arc;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use anyhow::anyhow;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use pv_fake::Persona;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use state::{
         Database, LinkProjectInput, ManagedResourceDesiredState, PortRequest,
         ProjectManagedResourceInput,
     };
     use state::{PvPaths, RuntimeSubject};
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::time::{Duration, Instant, advance, sleep};
 
@@ -691,15 +691,15 @@ mod tests {
         RuntimeHealthScan, RuntimeReadinessProbe, RuntimeRecoveryBackoff, RuntimeRecoveryEntry,
         gateway_readiness_probe_outcome, inspect_runtime_probe,
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use super::{RUNTIME_RECOVERY_EXHAUSTED, RUNTIME_RECOVERY_RESTORED, scan_runtime_health};
     use crate::ReconciliationScope;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use crate::gateway_config::worker_health_response;
     use crate::managed_resources::ManagedResourceReadiness;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use crate::managed_resources::ManagedResourceRuntimeCatalog;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use crate::{ProcessSpec, ProcessSupervisor};
 
     fn scan(healthy: bool) -> anyhow::Result<RuntimeHealthScan> {
@@ -862,7 +862,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[test]
     fn exhausted_recovery_records_runtime_failure() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
@@ -900,7 +900,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test(start_paused = true)]
     async fn healthy_reset_retracts_exhausted_runtime_failure() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
@@ -1099,7 +1099,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn scanner_excludes_incomplete_caddy_installations() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
@@ -1122,7 +1122,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn scanner_excludes_incomplete_frankenphp_installations() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
@@ -1159,7 +1159,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn scanner_selects_only_gateway_caddy_track_two() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
@@ -1199,7 +1199,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn scanner_uses_persisted_runtime_state_without_writing_or_assigning_ports()
     -> anyhow::Result<()> {
@@ -1263,7 +1263,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn killed_shared_worker_selects_one_project_scope() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
@@ -1333,7 +1333,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn scanner_rejects_replacement_required_and_stale_worker_artifacts() -> anyhow::Result<()>
     {
@@ -1417,7 +1417,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn one_metadata_error_does_not_discard_other_runtime_observations() -> anyhow::Result<()>
     {
@@ -1490,7 +1490,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn managed_resource_scan_does_not_prepare_or_write_runtime_files() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
@@ -1551,7 +1551,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     fn link_runtime_project(
         database: &mut Database,
         root: &Utf8Path,
@@ -1575,13 +1575,13 @@ mod tests {
         Ok(project.id)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     fn loopback_port_available(port: u16) -> bool {
         StdTcpListener::bind(("127.0.0.1", port)).is_ok()
     }
 
     /// Holds the assigned PHP worker port and answers its health route, as a running worker does.
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     fn assign_php_worker_listener(
         database: &mut Database,
         php_track: &str,
@@ -1609,7 +1609,7 @@ mod tests {
         }))
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     async fn record_applied_fixture_config(
         supervisor: &ProcessSupervisor,
         spec: &ProcessSpec,
@@ -1630,7 +1630,7 @@ mod tests {
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     fn prepare_worker_artifact(
         database: &mut Database,
         root: &Utf8Path,
@@ -1649,7 +1649,7 @@ mod tests {
         Ok(runtime)
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     fn worker_process_spec(paths: &PvPaths, runtime: &Utf8Path, php_track: &str) -> ProcessSpec {
         ProcessSpec {
             name: format!("php-worker-{php_track}"),

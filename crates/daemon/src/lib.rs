@@ -450,7 +450,7 @@ mod tests {
     use tokio::sync::{oneshot, watch};
     use tokio::time::timeout;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use super::publish_started_daemon;
 
     use super::{
@@ -464,13 +464,13 @@ mod tests {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
 
-        let result = RunningDaemon::start_for_target(paths.clone(), PlatformTarget::Linux).await;
+        let result = RunningDaemon::start_for_target(paths.clone(), PlatformTarget::Windows).await;
 
         assert!(matches!(
             result,
             Err(DaemonError::Platform(PlatformError::Unsupported {
                 capability: PlatformCapability::DaemonIpc,
-                target: PlatformTarget::Linux,
+                target: PlatformTarget::Windows,
             }))
         ));
         assert!(!paths.home().exists());
@@ -483,13 +483,13 @@ mod tests {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
 
-        let result = run_blocking_for_target(paths.clone(), PlatformTarget::Linux);
+        let result = run_blocking_for_target(paths.clone(), PlatformTarget::Windows);
 
         assert!(matches!(
             result,
             Err(DaemonError::Platform(PlatformError::Unsupported {
                 capability: PlatformCapability::DaemonIpc,
-                target: PlatformTarget::Linux,
+                target: PlatformTarget::Windows,
             }))
         ));
         assert!(!paths.home().exists());
@@ -539,7 +539,7 @@ mod tests {
         assert!(message.contains("socket cleanup failed"), "{message}");
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn daemon_publication_failure_records_startup_and_cleanup_errors() -> anyhow::Result<()> {
         for cleanup_fails in [false, true] {
@@ -598,7 +598,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn startup_records_invalid_previous_daemon_record() -> anyhow::Result<()> {
         let tempdir = tempdir()?;

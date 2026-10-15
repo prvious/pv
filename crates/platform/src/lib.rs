@@ -14,6 +14,9 @@ mod resolver;
 mod target;
 mod trust;
 
+#[cfg(target_os = "linux")]
+pub use process::inspect_process_comm;
+
 pub use browser::open_url;
 pub use ca::{
     CaFileState, CaRepairReason, GeneratedLocalCa, GeneratedProjectCertificate, LocalCaMetadata,
@@ -112,13 +115,23 @@ mod tests {
             require_capability_for(PlatformTarget::Linux, PlatformCapability::ProcessInspection)
                 .is_ok()
         );
-        assert!(matches!(
+        assert!(
             require_capability_for(
                 PlatformTarget::Linux,
                 PlatformCapability::ProcessContainment
+            )
+            .is_ok()
+        );
+        assert!(
+            require_capability_for(PlatformTarget::Linux, PlatformCapability::DaemonIpc).is_ok()
+        );
+        assert!(matches!(
+            require_capability_for(
+                PlatformTarget::Linux,
+                PlatformCapability::DaemonRegistration
             ),
             Err(PlatformError::Unsupported {
-                capability: PlatformCapability::ProcessContainment,
+                capability: PlatformCapability::DaemonRegistration,
                 target: PlatformTarget::Linux
             })
         ));

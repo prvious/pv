@@ -3,7 +3,7 @@
 //! Each monitor watches this test process's lifeline, so a test that fails part-way leaves no
 //! monitor or runtime behind: when the test process exits, the monitor stops the runtime.
 
-#![cfg(target_os = "macos")]
+#![cfg(unix)]
 
 use std::collections::BTreeMap;
 use std::os::fd::{AsRawFd as _, OwnedFd};
@@ -145,6 +145,59 @@ async fn monitor_start_reports_a_missing_command_and_leaves_no_instance() -> Res
 }
 
 #[tokio::test]
+async fn gate_death_before_exec_is_a_startup_failure() -> Result<()> {
+    let harness = Harness::with_hooks(MonitorHooks {
+        pauses: vec![MonitorPause::GateAfterPermission],
+        ..MonitorHooks::default()
+    })?;
+    let fake = harness.fake(Persona::LongRunning)?;
+    let start = harness.start_for(fake.executable(), &[])?;
+
+    let (started, killed) = tokio::join!(harness.start(start), async {
+        let gate = harness.reached(MonitorPause::GateAfterPermission).await?;
+        kill(gate, Signal::KILL)
+    });
+    killed?;
+    let Err(DaemonError::MonitorStartupFailed { message, .. }) = started else {
+        bail!("expected a gate startup failure, got {started:?}");
+    };
+    harness.snapshot(|| assert_snapshot!(message));
+    assert!(fake.events()?.is_empty());
+    assert!(!state::fs::path_exists(&harness.monitor_dir()));
+    assert!(harness.reservation_is_free()?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn exec_then_exit_before_confirmation_preserves_the_status() -> Result<()> {
+    let harness = Harness::with_hooks(MonitorHooks {
+        pauses: vec![MonitorPause::AfterPermission],
+        ..MonitorHooks::default()
+    })?;
+    let start = harness.start_for(Utf8Path::new("/bin/sh"), &["-c", "exit 7"])?;
+    let (started, resumed) = tokio::join!(harness.start(start), async {
+        harness.reached(MonitorPause::AfterPermission).await?;
+        let runtime_pid = harness.record()?["runtime"]["pid"]
+            .as_u64()
+            .and_then(|pid| u32::try_from(pid).ok())
+            .ok_or_else(|| anyhow!("record has no runtime pid"))?;
+        wait_until(|| Ok(platform::process_is_zombie(runtime_pid)?)).await?;
+        harness.resume(MonitorPause::AfterPermission)
+    });
+    resumed?;
+    let started = started?;
+    let stopped = harness
+        .wait_for_state(|state| state.cleanup != MonitorCleanup::Pending)
+        .await?;
+    assert_eq!(started.exit, Some(MonitorExit::Code(7)));
+    assert_eq!(stopped.exit, Some(MonitorExit::Code(7)));
+    assert_eq!(stopped.cleanup, MonitorCleanup::Complete);
+    daemon::release_monitor(&harness.paths, SUBJECT).await?;
+    assert!(harness.reservation_is_free()?);
+    Ok(())
+}
+
+#[tokio::test]
 async fn monitor_retains_an_exit_nobody_was_connected_for() -> Result<()> {
     let harness = Harness::new()?;
     let shell = Utf8Path::new("/bin/sh");
@@ -229,6 +282,7 @@ async fn monitor_reports_a_leader_exit_while_its_group_lives_on() -> Result<()> 
     harness.start(start.clone()).await?;
 
     let exited = harness.wait_for_state(|state| state.exit.is_some()).await?;
+    assert!(daemon::live_runtime(&harness.paths, SUBJECT)?.is_none());
     let release = daemon::release_monitor(&harness.paths, SUBJECT).await;
     let restart = harness.start(start).await;
     let cleaned = harness
@@ -307,6 +361,7 @@ async fn monitor_keeps_its_records_when_group_cleanup_is_unproven() -> Result<()
     let stopped = daemon::stop_monitor(&harness.paths, SUBJECT, STOP).await?;
     let release = daemon::release_monitor(&harness.paths, SUBJECT).await;
     let records_kept = state::fs::path_exists(&harness.monitor_dir().join("monitor.json"));
+    let leader_held = platform::process_is_zombie(started.runtime_pid)?;
     kill(started.monitor_pid, Signal::KILL)?;
     wait_until(|| harness.reservation_is_free()).await?;
     daemon::recover_monitor(&harness.paths, SUBJECT).await?;
@@ -321,6 +376,7 @@ async fn monitor_keeps_its_records_when_group_cleanup_is_unproven() -> Result<()
         })
     ));
     assert!(records_kept);
+    assert!(leader_held);
     assert!(!state::fs::path_exists(&harness.monitor_dir()));
 
     Ok(())

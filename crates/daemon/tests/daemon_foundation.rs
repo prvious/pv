@@ -10,7 +10,7 @@ use platform::loopback_tcp_port_available;
 use pv_fake::{EventKind, FakeSettings, InstalledFake, Pause, Persona};
 use rusqlite::{Connection, params};
 use rustix::io::Errno;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use rustix::process::getpgid;
 use rustix::process::{
     Pid, Signal, kill_process_group, test_kill_process, test_kill_process_group,
@@ -1083,12 +1083,12 @@ async fn wait_for_test_process_group_exit(process_group: Pid) -> Result<()> {
     .map_err(|_elapsed| anyhow!("process group {process_group} remained after cleanup"))?
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn captured_validation_process_group(leader: Pid) -> Result<Pid> {
     Ok(getpgid(Some(leader))?)
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(not(unix))]
 fn captured_validation_process_group(leader: Pid) -> Result<Pid> {
     Ok(leader)
 }

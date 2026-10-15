@@ -6,19 +6,24 @@ use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use cli::{Answer, Environment, Prompt, run_with_environment};
+#[cfg(target_os = "macos")]
+use cli::{Answer, Prompt};
+use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
 use state::{Database, ProjectMode, PvPaths};
 
+#[cfg(target_os = "macos")]
 #[path = "support/prompts.rs"]
 mod prompts;
 
+#[cfg(target_os = "macos")]
 use prompts::{ScriptedPrompts, Step};
 
 #[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
     current_dir: RefCell<PathBuf>,
+    #[cfg(target_os = "macos")]
     prompts: ScriptedPrompts,
     opened_urls: RefCell<Vec<String>>,
     stdin_terminal: bool,
@@ -29,12 +34,14 @@ impl TestEnvironment {
         Self {
             home: home.as_std_path().to_path_buf(),
             current_dir: RefCell::new(current_dir.as_std_path().to_path_buf()),
+            #[cfg(target_os = "macos")]
             prompts: ScriptedPrompts::default(),
             opened_urls: RefCell::new(Vec::new()),
             stdin_terminal: false,
         }
     }
 
+    #[cfg(target_os = "macos")]
     fn interactive(mut self, steps: impl IntoIterator<Item = Step>) -> Self {
         self.stdin_terminal = true;
         self.prompts = ScriptedPrompts::new(steps);
@@ -42,10 +49,12 @@ impl TestEnvironment {
         self
     }
 
+    #[cfg(target_os = "macos")]
     fn set_current_dir(&self, current_dir: &Utf8Path) {
         *self.current_dir.borrow_mut() = current_dir.as_std_path().to_path_buf();
     }
 
+    #[cfg(target_os = "macos")]
     fn opened_urls(&self) -> Vec<String> {
         self.opened_urls.borrow().clone()
     }
@@ -80,6 +89,7 @@ impl Environment for TestEnvironment {
         self.stdin_terminal
     }
 
+    #[cfg(target_os = "macos")]
     fn prompt(&self, prompt: &Prompt<'_>) -> io::Result<Answer> {
         self.prompts.ask(prompt)
     }
@@ -91,6 +101,7 @@ impl Environment for TestEnvironment {
     }
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn open_primary_hostname_argument_normalizes_and_opens_project() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -221,6 +232,7 @@ postgres:
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn open_subdomain_argument_does_not_resolve_parent_project() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -250,6 +262,7 @@ fn open_subdomain_argument_does_not_resolve_parent_project() -> anyhow::Result<(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn open_without_hostname_uses_current_project_primary_hostname() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -280,6 +293,7 @@ fn open_without_hostname_uses_current_project_primary_hostname() -> anyhow::Resu
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn open_uses_project_picker_when_outside_a_linked_project() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -310,6 +324,7 @@ fn open_uses_project_picker_when_outside_a_linked_project() -> anyhow::Result<()
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn open_rejects_resource_only_target_and_excludes_it_from_picker() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -356,6 +371,7 @@ fn open_rejects_resource_only_target_and_excludes_it_from_picker() -> anyhow::Re
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn open_project_picker_sorts_projects_by_primary_hostname() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -399,6 +415,7 @@ fn open_project_picker_sorts_projects_by_primary_hostname() -> anyhow::Result<()
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn open_without_current_project_fails_when_non_interactive() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -429,6 +446,7 @@ fn open_without_current_project_fails_when_non_interactive() -> anyhow::Result<(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn open_picker_cancel_exits_130_without_opening() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -459,6 +477,13 @@ fn open_picker_cancel_exits_130_without_opening() -> anyhow::Result<()> {
 struct RunOutput {
     exit_code: ExitCode,
     stdout: String,
+    #[cfg_attr(
+        target_os = "linux",
+        expect(
+            dead_code,
+            reason = "Linux snapshots read this field through derived Debug"
+        )
+    )]
     stderr: String,
 }
 
