@@ -17,7 +17,7 @@ The design also makes four related changes:
 - **Flaky tests.** Several `gateway_reconciliation` tests fail on slow CI runners:
   - CI run 38589045125, plus 2026-09-22, 2026-10-01 and two runs on main on 2026-10-14.
   - A test passes a 150–250 ms readiness budget so a readiness check fails fast. The same budget also caps the admin `POST /load`, which has to succeed (`CaddyAdminClient::new().with_timeout(readiness.timeout)`, `crates/daemon/src/gateway.rs`).
-  - Under `taskpolicy -b` with `--stress-count 40 -j 32`, 3 of 40 rounds failed, with 6 test failures in all. Seven of the eleven affected tests check the post-load rollback.
+  - Running the 18 tests that pass short budgets under `taskpolicy -b` with `--stress-count 40 -j 32`, 3 of 40 rounds failed, with 6 test failures in all. Seven of the eleven affected tests check the post-load rollback.
 - **The rollback has no real trigger.**
   - Caddy 2.11.4 binds a new config's ports before it answers `/load`, closes the old ports first, and rolls back its own failed starts (`caddy.go` `changeConfig`/`unsyncedDecodeAndRun`; recorded in #379).
   - The rollback tests get there with `retain_previous_listeners`. That control was added in #379 only so tests written for the old Python fixture keep passing.
@@ -135,19 +135,17 @@ http://pv-worker.localhost:<port> {
 ```
 
 - A readiness check sends `GET /__pv/health` with `Host: pv-worker.localhost` and expects that exact body. It is plain HTTP only, and shares the body comparison with `GatewayIdentity`.
-- It replaces `Tcp` in four places, which must all move together:
-  - fresh-start and after-reload readiness;
-  - the fast-path probe;
-  - the targeted skip probe;
+- It replaces `Tcp` everywhere PV checks a worker, which must all move together:
+  - fresh-start and after-reload readiness, and the fast-path probe, which all use the worker's readiness plan;
   - the health tick's worker probe (`health.rs`).
-  If one of them still uses `Tcp`, recovery sees a "ready" worker and stops retrying.
+  If one of them still used `Tcp`, recovery would see a "ready" worker and stop retrying. (The targeted skip probe checks the Gateway, not workers.)
 - The foreign-listener probe keeps `Tcp`, because a foreign process wouldn't return the body.
 - Changing the root changes every worker's fingerprint, so each running worker reloads once after the upgrade.
 - What it proves: Caddy on the worker's port is serving PV's config for that port. What it doesn't prove: that PHP is running (see Non-Goals).
 
 ## Implementation Sequence
 
-Four stacked PRs, each opened as soon as the one below it is up.
+Four commits on one branch and PR, in this order (the owner chose one PR over a stack).
 
 1. **Separate admin timeouts and split readiness budgets.**
    - Remove `.with_timeout(readiness.timeout)` from admin clients.
@@ -187,14 +185,15 @@ Four stacked PRs, each opened as soon as the one below it is up.
 
 ## Verification
 
-For every PR:
+For every commit:
 - `cargo nextest run --workspace` passes.
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` and `cargo fmt --all` are clean.
-- `taskpolicy -b cargo nextest run -p daemon -E 'binary(gateway_reconciliation)' --stress-count 40 -j 32` has no failures. Baseline today: 3 of 40 rounds failed.
 
-Also:
-- PRs 1, 2 and 4 run the Real Artifact E2E workflow (`real-artifact-e2e.yml`) against real Caddy and FrankenPHP.
-- PR 4 adds a contract test, run against both the fake and the real binaries, for the worker health route.
+For the branch:
+- `taskpolicy -b` with `--stress-count 40 -j 32` on the short-budget tests that remain. On main, 3 of 40 rounds failed on the original 18. On the branch, the original flakes are gone: 2 runs of 40 rounds failed 6 and 1 times, all in `gateway_reconciliation_rolls_back_after_fresh_service_readiness_failure`, whose 500 ms budget also had to cover a new process's admin readiness. That test now gets 2 s.
+- The whole `gateway_reconciliation` binary under the same throttling is far beyond what CI sees. 10 rounds had 219 test failures on main and 67 on the branch, mostly 1-second admin waits and timing assertions that fail on main too.
+- The Real Artifact E2E workflow (`real-artifact-e2e.yml`) runs against real Caddy and FrankenPHP.
+- The worker contract in `gateway_runtime_contracts.rs` checks the worker health route against both the fake and the real binaries. Real FrankenPHP 1.12.4's answer was recorded first (pv-fake spec, Recorded Behavior).
 
 ## Risks And Mitigations
 
@@ -208,8 +207,8 @@ Also:
 - No admin request is limited by a readiness budget.
 - No code path sends a previous config back to Caddy after Caddy accepted a new one.
 - pv-fake no longer has `late_accept`, `late_apply_delay_ms` or `admin_statuses`, and `retain_previous_listeners` is gone or has a documented use.
-- The throttled stress run of `gateway_reconciliation` passes 40 of 40 rounds.
-- Worker readiness, the fast path, the targeted skip probe and the health tick all use the worker health route.
+- No throttled stress failure on the remaining short-budget tests comes from a `/load` or a restore sharing a readiness budget.
+- Worker readiness (start, reload and the fast path) and the health tick use the worker health route; the foreign-listener probe keeps a TCP check.
 - DESIGN.md describes the new contract, and nothing in it still mentions restored loads, backup verification or per-request peer checks.
 
 ## Rejected Alternatives
