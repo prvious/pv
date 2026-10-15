@@ -279,14 +279,18 @@ async fn gateway_reconciliation_rolls_back_after_fresh_service_readiness_failure
     drop(database);
     fs::write_sensitive_file(&paths.gateway_root_config(), previous_root_config)?;
 
+    // The budget also covers the new process's admin readiness, which has to pass first.
     let result = reconcile_gateway_runtimes_with_pf_state_for_test(
         &paths,
-        Duration::from_millis(500),
+        Duration::from_secs(2),
         GatewayPfRoutingState::Inactive,
     )
     .await;
 
-    assert!(matches!(result, Err(DaemonError::ReadinessTimedOut { .. })));
+    assert!(
+        matches!(result, Err(DaemonError::ReadinessTimedOut { .. })),
+        "{result:?}"
+    );
     assert_eq!(
         fs::read_to_string(&paths.gateway_root_config())?,
         previous_root_config
