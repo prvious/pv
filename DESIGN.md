@@ -386,7 +386,7 @@ admin "unix/<absolute-socket-path>|0600"
 persist_config off
 ```
 
-The `~/.pv/run/` directory is owner-only (`0700`), and Caddy creates each admin socket as owner-only (`0600`). After connecting, the daemon verifies the peer process group against the managed runtime's root PID on that same socket before sending any HTTP bytes. There is no TCP admin fallback. A recorded runtime whose active config does not use its desired Unix socket, including a pre-migration TCP or `admin off` runtime, is stopped and replaced before any admin request.
+The `~/.pv/run/` directory is owner-only (`0700`), and Caddy creates each admin socket as owner-only (`0600`). PV deletes a runtime's socket before starting it, so only that runtime can create it. PV verifies runtime ownership through the runtime's monitor once when a config change starts and again before recording the change as applied, not before each admin request. There is no TCP admin fallback. A recorded runtime whose active config does not use its desired Unix socket, including a pre-migration TCP or `admin off` runtime, is stopped and replaced before any admin request.
 
 PV-generated config files and `pv.db` remain authoritative. Caddy must not create a competing autosave config. The daemon reloads a runtime only by sending the promoted active root Caddyfile, byte-for-byte including its trailing newlines, as a whole-config `POST /load` request with `Content-Type: text/caddyfile` to that process's admin socket. Unix reload signals and `caddy reload` commands are not part of PV.
 

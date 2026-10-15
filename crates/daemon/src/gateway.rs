@@ -43,9 +43,9 @@ use crate::supervisor::{
     runtime_exited_before_readiness_error, wait_for_started_runtime_readiness,
 };
 use crate::{
-    CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, CaddyAdminVerifier,
-    DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, RuntimeReconciliationFailure,
-    StopSignal, wait_for_readiness,
+    CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, DaemonError,
+    ProcessSpec, ProcessSupervisor, ReadinessCheck, RuntimeReconciliationFailure, StopSignal,
+    wait_for_readiness,
 };
 
 #[expect(
@@ -3881,7 +3881,6 @@ async fn prepare_promoted_runtime(
         });
     let matching_runtime = matching_runtime.is_some();
     let started = match begin_runtime_transaction(
-        paths,
         &supervisor,
         &spec,
         &readiness,
@@ -4062,20 +4061,11 @@ fn runtime_config_uses_admin_endpoint(config: &str, endpoint: &CaddyAdminEndpoin
 }
 
 async fn load_runtime_config(
-    paths: &PvPaths,
-    spec: &ProcessSpec,
     client: CaddyAdminClient,
     admin_endpoint: &CaddyAdminEndpoint,
     content: Vec<u8>,
 ) -> Result<(), RuntimeTransactionError> {
-    match client
-        .load_caddyfile_with(
-            admin_endpoint,
-            content,
-            runtime_ownership_verifier(paths, spec),
-        )
-        .await
-    {
+    match client.load_caddyfile(admin_endpoint, content).await {
         Ok(()) => Ok(()),
         Err(
             error @ CaddyAdminError::RequestOutcomeUnknown {
@@ -4111,7 +4101,6 @@ enum StartedRuntimeTransaction {
 }
 
 async fn begin_runtime_transaction(
-    paths: &PvPaths,
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
     readiness: &RuntimeReadinessPlan,
@@ -4134,8 +4123,6 @@ async fn begin_runtime_transaction(
         mark_runtime_config_pending(supervisor, spec, desired_fingerprint)?;
         let load_result = wait_for_transaction_step(
             Box::pin(load_runtime_config(
-                paths,
-                spec,
                 client,
                 &readiness.admin_endpoint,
                 active_content,
@@ -4253,11 +4240,7 @@ async fn finish_runtime_transaction(
                     .is_some()
             {
                 let admin_result = wait_for_transaction_step(
-                    Box::pin(client.wait_until_ready_with(
-                        admin_endpoint,
-                        reload_timeout,
-                        runtime_ownership_verifier(paths, spec),
-                    )),
+                    Box::pin(client.wait_until_ready(admin_endpoint, reload_timeout)),
                     shutdown,
                 )
                 .await;
@@ -4300,11 +4283,7 @@ async fn finish_runtime_transaction(
     }
     let admin_readiness = async {
         CaddyAdminClient::new()
-            .wait_until_ready_with(
-                admin_endpoint,
-                *readiness_timeout,
-                runtime_ownership_verifier(paths, spec),
-            )
+            .wait_until_ready(admin_endpoint, *readiness_timeout)
             .await
             .map_err(DaemonError::from)
     };
@@ -4618,36 +4597,15 @@ fn verify_runtime_ownership(
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
 ) -> Result<(), DaemonError> {
-    verify_runtime_ownership_for_admin(supervisor, spec, CaddyAdminOperation::Readiness)
-        .map(|_pid| ())
-        .map_err(DaemonError::from)
-}
-
-fn verify_runtime_ownership_for_admin(
-    supervisor: &ProcessSupervisor,
-    spec: &ProcessSpec,
-    operation: CaddyAdminOperation,
-) -> Result<Option<u32>, CaddyAdminError> {
     match supervisor.verify_ownership(spec) {
-        Ok(Some(runtime)) => Ok(Some(runtime.pid())),
-        Ok(None) => Err(CaddyAdminError::runtime_ownership_changed(
-            spec.name.clone(),
-        )),
+        Ok(Some(_runtime)) => Ok(()),
+        Ok(None) => Err(CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into()),
         Err(error) => Err(CaddyAdminError::TaskFailed {
-            operation,
+            operation: CaddyAdminOperation::Readiness,
             reason: error.to_string(),
-        }),
+        }
+        .into()),
     }
-}
-
-fn runtime_ownership_verifier(paths: &PvPaths, spec: &ProcessSpec) -> CaddyAdminVerifier {
-    let paths = paths.clone();
-    let spec = spec.clone();
-
-    Arc::new(move |operation| {
-        let supervisor = ProcessSupervisor::new(paths.clone());
-        verify_runtime_ownership_for_admin(&supervisor, &spec, operation)
-    })
 }
 
 fn daemon_error_as_caddy_admin(error: DaemonError) -> CaddyAdminError {

@@ -34,7 +34,7 @@ use tokio::task::JoinHandle;
 
 pub use caddy_admin::{
     CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, CaddyAdminTimeouts,
-    CaddyAdminVerifier, MAX_RESPONSE_DETAIL_BYTES, load_caddyfile, wait_until_ready,
+    MAX_RESPONSE_DETAIL_BYTES, load_caddyfile, wait_until_ready,
 };
 pub use client::{
     CompletedJob, JobDownloadProgress, JobEventHandler, SubmittedJob, health_blocking,
