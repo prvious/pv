@@ -1,0 +1,29 @@
+---
+source: crates/cli/tests/linux_daemon_registration.rs
+expression: (first, retry, environment.operations.borrow().clone())
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "",
+        stderr: "error: daemon registration enable failed: fixture rejected enable\n",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "",
+        stderr: "error: daemon registration restart failed: fixture stopped before health\n",
+    },
+    [
+        "enable",
+        "enable",
+        "restart",
+    ],
+)

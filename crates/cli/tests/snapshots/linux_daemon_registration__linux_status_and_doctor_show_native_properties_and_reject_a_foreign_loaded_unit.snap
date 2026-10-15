@@ -1,0 +1,53 @@
+---
+source: crates/cli/tests/linux_daemon_registration.rs
+expression: observed
+---
+[
+    Object {
+        "daemon": Object {
+            "failure": Bool(true),
+            "registration": String("current"),
+            "registration_runtime": Object {
+                "active_state": String("active"),
+                "fragment_path": String("<tempdir>/owned/.config/systemd/user/pv-daemon.service"),
+                "load_state": String("loaded"),
+                "main_pid": Number(42),
+                "sub_state": String("running"),
+            },
+            "socket": String("missing"),
+            "state": String("down"),
+        },
+        "manager": Object {
+            "detail": String("load=loaded state=active/running pid=42 fragment=<tempdir>/owned/.config/systemd/user/pv-daemon.service"),
+            "message": String("reachable"),
+            "name": String("Systemd user manager"),
+            "repair": Null,
+            "status": String("pass"),
+        },
+        "plain_status": String("PV status\nOverall: failed\nDaemon: down\n  systemd user service: current\n  Socket: missing\n  systemd: load=loaded state=active/running pid=42 fragment=<tempdir>/owned/.config/systemd/user/pv-daemon.service\nIntegrations:\n  DNS: missing\n  Ports: drifted\n    repair: pv ports:install\n  CA: missing\nLogs: <tempdir>/owned/.pv/logs\nManaged Resources:\n  none\nProjects:\n  none\nRecent errors:\n  none\n"),
+    },
+    Object {
+        "daemon": Object {
+            "failure": Bool(true),
+            "registration": String("conflict"),
+            "registration_error": String("systemd loaded a service that is not PV-owned: <tempdir>/foreign/.config/systemd/user/pv-daemon.service"),
+            "registration_runtime": Object {
+                "active_state": String("active"),
+                "fragment_path": String("<tempdir>/foreign/.config/systemd/user/pv-daemon.service"),
+                "load_state": String("loaded"),
+                "main_pid": Number(42),
+                "sub_state": String("running"),
+            },
+            "socket": String("missing"),
+            "state": String("unknown"),
+        },
+        "manager": Object {
+            "detail": String("load=loaded state=active/running pid=42 fragment=<tempdir>/foreign/.config/systemd/user/pv-daemon.service"),
+            "message": String("loaded service is not PV-owned"),
+            "name": String("Systemd user manager"),
+            "repair": String("pv daemon:enable"),
+            "status": String("fail"),
+        },
+        "plain_status": String("PV status\nOverall: failed\nDaemon: unknown\n  systemd user service: conflict\n  Socket: missing\n  systemd loaded a service that is not PV-owned: <tempdir>/foreign/.config/systemd/user/pv-daemon.service\nIntegrations:\n  DNS: missing\n  Ports: drifted\n    repair: pv ports:install\n  CA: missing\nLogs: <tempdir>/foreign/.pv/logs\nManaged Resources:\n  none\nProjects:\n  none\nRecent errors:\n  none\n"),
+    },
+]

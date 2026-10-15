@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use ::daemon::MonitorHooks;
 use camino::Utf8PathBuf;
-use platform::{LaunchAgentConfig, LaunchAgentFileState};
+use platform::{DAEMON_REGISTRATION_NAME, DaemonRegistrationConfig, DaemonRegistrationFileState};
 use state::{PvPaths, StateError};
 
 use crate::environment::Environment;
@@ -34,9 +34,9 @@ fn enable_inner(
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
 
-    let config = launch_agent_config(&paths);
-    let path = launch_agent_path(environment)?;
-    let state = platform::inspect_launch_agent_file(&path, Some(&config));
+    let config = DaemonRegistrationConfig::for_paths(&paths);
+    let path = daemon_registration_path(environment)?;
+    let state = platform::inspect_daemon_registration_file(&path, Some(&config));
     let output = &mut streams.out;
     let started_message = if output.surface().decorated() {
         "PV started · starts at login"
@@ -45,9 +45,11 @@ fn enable_inner(
     };
 
     match state {
-        LaunchAgentFileState::Current { .. } => {
-            environment.kickstart_launch_agent()?;
-            output.note("LaunchAgent already installed")?;
+        DaemonRegistrationFileState::Current { .. } => {
+            #[cfg(target_os = "linux")]
+            environment.enable_daemon_registration(&path)?;
+            environment.restart_daemon_registration()?;
+            output.note(format!("{DAEMON_REGISTRATION_NAME} already installed"))?;
             output.success(started_message)?;
             wait_for_daemon(paths.clone(), output)?;
             if request_reconciliation {
@@ -56,7 +58,7 @@ fn enable_inner(
 
             Ok(ExitCode::SUCCESS)
         }
-        LaunchAgentFileState::Missing { .. } => install_and_start_launch_agent(
+        DaemonRegistrationFileState::Missing { .. } => install_and_start_daemon_registration(
             environment,
             &path,
             &config,
@@ -65,9 +67,9 @@ fn enable_inner(
             started_message,
             request_reconciliation,
         ),
-        LaunchAgentFileState::Stale { .. } => {
+        DaemonRegistrationFileState::Stale { .. } => {
             unload_and_wait_for_daemon(environment, &paths)?;
-            install_and_start_launch_agent(
+            install_and_start_daemon_registration(
                 environment,
                 &path,
                 &config,
@@ -77,8 +79,9 @@ fn enable_inner(
                 request_reconciliation,
             )
         }
-        LaunchAgentFileState::Conflict { .. } | LaunchAgentFileState::Unreadable { .. } => {
-            refuse_launch_agent(&mut streams.err, &state)
+        DaemonRegistrationFileState::Conflict { .. }
+        | DaemonRegistrationFileState::Unreadable { .. } => {
+            refuse_daemon_registration(&mut streams.err, &state)
         }
     }
 }
@@ -87,35 +90,39 @@ pub(crate) fn disable(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    let path = launch_agent_path(environment)?;
-    let state = platform::inspect_launch_agent_file(&path, None);
+    let path = daemon_registration_path(environment)?;
+    let state = platform::inspect_daemon_registration_file(&path, None);
     let output = &mut streams.out;
 
     match state {
-        LaunchAgentFileState::Missing { .. } => {
+        DaemonRegistrationFileState::Missing { .. } => {
             stop_daemon_and_runtimes(environment)?;
             output.note(if output.surface().decorated() {
-                "PV is already disabled"
+                "PV is already disabled".to_string()
             } else {
-                "LaunchAgent already absent"
+                format!("{DAEMON_REGISTRATION_NAME} already absent")
             })?;
 
             Ok(ExitCode::SUCCESS)
         }
-        LaunchAgentFileState::Current { .. } | LaunchAgentFileState::Stale { .. } => {
+        DaemonRegistrationFileState::Current { .. } | DaemonRegistrationFileState::Stale { .. } => {
             stop_daemon_and_runtimes(environment)?;
-            platform::remove_launch_agent_file(&path)?;
+            environment.remove_daemon_registration(&path)?;
             output.success(if output.surface().decorated() {
                 "PV stopped · automatic startup disabled"
             } else {
                 "Daemon disabled"
             })?;
-            output.success(Line::field("LaunchAgent removed: ", &path))?;
+            output.success(Line::field(
+                &format!("{DAEMON_REGISTRATION_NAME} removed: "),
+                &path,
+            ))?;
 
             Ok(ExitCode::SUCCESS)
         }
-        LaunchAgentFileState::Conflict { .. } | LaunchAgentFileState::Unreadable { .. } => {
-            refuse_launch_agent(&mut streams.err, &state)
+        DaemonRegistrationFileState::Conflict { .. }
+        | DaemonRegistrationFileState::Unreadable { .. } => {
+            refuse_daemon_registration(&mut streams.err, &state)
         }
     }
 }
@@ -132,8 +139,8 @@ pub(crate) fn unload_and_wait_for_daemon(
     paths: &PvPaths,
 ) -> Result<(), ExecuteError> {
     let daemon = environment.daemon_process_for_stop(paths)?;
-    bootout_launch_agent_if_loaded(environment)?;
-    // Startup can publish the daemon identity while bootout is in progress.
+    stop_daemon_registration_if_loaded(environment)?;
+    // Startup can publish the daemon identity while the registration is stopping.
     let daemon = match daemon {
         Some(daemon) => Some(daemon),
         None => environment.daemon_process_for_stop(paths)?,
@@ -151,9 +158,9 @@ pub(crate) fn restart(
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
 
-    let config = launch_agent_config(&paths);
-    let path = launch_agent_path(environment)?;
-    let state = platform::inspect_launch_agent_file(&path, Some(&config));
+    let config = DaemonRegistrationConfig::for_paths(&paths);
+    let path = daemon_registration_path(environment)?;
+    let state = platform::inspect_daemon_registration_file(&path, Some(&config));
     let output = &mut streams.out;
     let restarted_message = if output.surface().decorated() {
         "PV restarted"
@@ -162,14 +169,14 @@ pub(crate) fn restart(
     };
 
     match state {
-        LaunchAgentFileState::Current { .. } => {
-            environment.kickstart_launch_agent()?;
+        DaemonRegistrationFileState::Current { .. } => {
+            environment.restart_daemon_registration()?;
             output.success(restarted_message)?;
             wait_for_daemon_and_submit_reconciliation(paths, output)?;
 
             Ok(ExitCode::SUCCESS)
         }
-        LaunchAgentFileState::Missing { .. } => install_and_start_launch_agent(
+        DaemonRegistrationFileState::Missing { .. } => install_and_start_daemon_registration(
             environment,
             &path,
             &config,
@@ -178,9 +185,9 @@ pub(crate) fn restart(
             restarted_message,
             true,
         ),
-        LaunchAgentFileState::Stale { .. } => {
+        DaemonRegistrationFileState::Stale { .. } => {
             unload_and_wait_for_daemon(environment, &paths)?;
-            install_and_start_launch_agent(
+            install_and_start_daemon_registration(
                 environment,
                 &path,
                 &config,
@@ -190,8 +197,9 @@ pub(crate) fn restart(
                 true,
             )
         }
-        LaunchAgentFileState::Conflict { .. } | LaunchAgentFileState::Unreadable { .. } => {
-            refuse_launch_agent(&mut streams.err, &state)
+        DaemonRegistrationFileState::Conflict { .. }
+        | DaemonRegistrationFileState::Unreadable { .. } => {
+            refuse_daemon_registration(&mut streams.err, &state)
         }
     }
 }
@@ -219,35 +227,31 @@ pub(crate) fn run_monitor_gate() -> Result<ExitCode, ExecuteError> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// Returns success when PV may touch the LaunchAgent file; otherwise writes
+/// Returns success when PV may touch the registration file; otherwise writes
 /// the refusal to stderr and returns failure, for a file PV does not own or
 /// cannot read.
-fn refuse_launch_agent(
+fn refuse_daemon_registration(
     stderr: &mut Output<'_>,
-    state: &LaunchAgentFileState,
+    state: &DaemonRegistrationFileState,
 ) -> Result<ExitCode, ExecuteError> {
     let message = match state {
-        LaunchAgentFileState::Conflict { path } => {
-            format!("LaunchAgent file is not PV-owned; leaving it unchanged\npath: {path}")
+        DaemonRegistrationFileState::Conflict { path } => {
+            format!(
+                "{DAEMON_REGISTRATION_NAME} file is not PV-owned; leaving it unchanged\npath: {path}"
+            )
         }
-        LaunchAgentFileState::Unreadable { message, .. } => {
-            format!("LaunchAgent file is unreadable; leaving it unchanged\n{message}")
+        DaemonRegistrationFileState::Unreadable { message, .. } => {
+            format!(
+                "{DAEMON_REGISTRATION_NAME} file is unreadable; leaving it unchanged\n{message}"
+            )
         }
-        LaunchAgentFileState::Missing { .. }
-        | LaunchAgentFileState::Current { .. }
-        | LaunchAgentFileState::Stale { .. } => return Ok(ExitCode::SUCCESS),
+        DaemonRegistrationFileState::Missing { .. }
+        | DaemonRegistrationFileState::Current { .. }
+        | DaemonRegistrationFileState::Stale { .. } => return Ok(ExitCode::SUCCESS),
     };
     stderr.error(&message)?;
 
     Ok(ExitCode::FAILURE)
-}
-
-fn launch_agent_config(paths: &PvPaths) -> LaunchAgentConfig {
-    LaunchAgentConfig::new(
-        paths.active_pv_binary(),
-        paths.logs().join("launchd.out.log"),
-        paths.logs().join("launchd.err.log"),
-    )
 }
 
 fn wait_for_daemon_and_submit_reconciliation(
@@ -275,19 +279,22 @@ fn submit_system_reconciliation(
     Ok(())
 }
 
-fn install_and_start_launch_agent(
+fn install_and_start_daemon_registration(
     environment: &impl Environment,
     path: &Utf8PathBuf,
-    config: &LaunchAgentConfig,
+    config: &DaemonRegistrationConfig,
     paths: PvPaths,
     output: &mut Output<'_>,
     started_message: &str,
     request_reconciliation: bool,
 ) -> Result<ExitCode, ExecuteError> {
-    platform::write_launch_agent_file(path, config)?;
-    environment.bootstrap_launch_agent(path)?;
-    environment.kickstart_launch_agent()?;
-    output.success(Line::field("LaunchAgent installed: ", path))?;
+    platform::write_daemon_registration_file(path, config)?;
+    environment.enable_daemon_registration(path)?;
+    environment.restart_daemon_registration()?;
+    output.success(Line::field(
+        &format!("{DAEMON_REGISTRATION_NAME} installed: "),
+        path,
+    ))?;
     output.success(started_message)?;
     wait_for_daemon(paths.clone(), output)?;
     if request_reconciliation {
@@ -297,15 +304,15 @@ fn install_and_start_launch_agent(
     Ok(ExitCode::SUCCESS)
 }
 
-fn bootout_launch_agent_if_loaded(environment: &impl Environment) -> Result<(), ExecuteError> {
-    match environment.bootout_launch_agent() {
+fn stop_daemon_registration_if_loaded(environment: &impl Environment) -> Result<(), ExecuteError> {
+    match environment.stop_daemon_registration() {
         Ok(()) => Ok(()),
-        Err(error) if launch_agent_is_already_unloaded(&error) => Ok(()),
+        Err(error) if daemon_registration_is_already_stopped(&error) => Ok(()),
         Err(error) => Err(error.into()),
     }
 }
 
-fn launch_agent_is_already_unloaded(error: &platform::PlatformError) -> bool {
+fn daemon_registration_is_already_stopped(error: &platform::PlatformError) -> bool {
     match error {
         platform::PlatformError::LaunchAgent(message) => {
             let message = message.to_ascii_lowercase();
@@ -326,8 +333,8 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
     Ok(PvPaths::for_home(home))
 }
 
-fn launch_agent_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
-    utf8_path(environment.launch_agent_path())
+fn daemon_registration_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
+    utf8_path(environment.daemon_registration_path())
 }
 
 fn utf8_path(path: impl Into<std::path::PathBuf>) -> Result<Utf8PathBuf, ExecuteError> {

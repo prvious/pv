@@ -22,7 +22,7 @@ expression: "(output, PfRedirectConfig::parse_anchor(&prepared_anchor),\nPfConfR
         PfConfReference,
     ),
     Some(
-        LaunchAgentConfig {
+        DaemonRegistrationConfig {
             program_path: "<tempdir>/home/.pv/bin/pv",
             stdout_path: "<tempdir>/home/.pv/logs/launchd.out.log",
             stderr_path: "<tempdir>/home/.pv/logs/launchd.err.log",

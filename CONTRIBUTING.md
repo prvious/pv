@@ -232,6 +232,22 @@ Run `python3 scripts/linux/test_container.py` and `shellcheck scripts/linux/*.sh
 when changing the helper. Distro acceptance is a separate gate; a successful
 build or unit suite does not establish supported Linux distributions.
 
+The daemon-registration system test requires a disposable user's real user
+manager and refuses an existing PV home, unit file, or loaded service. Build PV
+and the daemon examples first, then run as that user with its session-bus
+environment intact:
+
+```shell
+cargo build --locked -p pv -p daemon --examples --bins
+PV_LINUX_SYSTEM_TESTS=1 PV_LINUX_SYSTEM_PV="$PWD/target/debug/pv" \
+  cargo nextest run --profile ci --locked -p cli -p daemon --run-ignored only \
+  -E 'test(=systemd_user_registration_preserves_monitors_and_refuses_foreign_units)'
+```
+
+This test installs its own real daemon and a fake Redis runtime. A test-only
+150-second user timer stops them if the test is killed; successful cleanup
+cancels it. The ordinary workspace suite compiles this test but leaves it ignored.
+
 ## Crate structure
 
 Rust does not allow circular dependencies between crates. To visualize the crate hierarchy, install

@@ -1,10 +1,10 @@
-#![cfg(not(target_os = "macos"))]
+#![cfg(target_os = "windows")]
 
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use platform::{
-    LaunchAgentConfig, PlatformCapability, PlatformError, remove_launch_agent_file,
-    write_launch_agent_file,
+    DaemonRegistrationConfig, PlatformCapability, PlatformError, remove_daemon_registration,
+    write_daemon_registration_file,
 };
 
 #[test]
@@ -13,13 +13,9 @@ fn public_launch_agent_write_rejects_unsupported_platform_without_creating_home(
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let path = home.join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
-    let config = LaunchAgentConfig::new(
-        home.join(".pv/bin/pv"),
-        home.join(".pv/logs/launchd.out.log"),
-        home.join(".pv/logs/launchd.err.log"),
-    );
+    let config = DaemonRegistrationConfig::for_paths(&state::PvPaths::for_home(&home));
 
-    let result = write_launch_agent_file(&path, &config);
+    let result = write_daemon_registration_file(&path, &config);
 
     assert!(matches!(
         result,
@@ -41,7 +37,7 @@ fn public_launch_agent_removal_rejects_unsupported_platform_without_removing_fil
     let original = "existing launch agent\n";
     write_test_file(&path, original)?;
 
-    let result = remove_launch_agent_file(&path);
+    let result = remove_daemon_registration(&path);
 
     assert!(matches!(
         result,
