@@ -183,12 +183,20 @@ impl PvPaths {
         }
     }
 
-    pub fn launchd_stdout_log(&self) -> Utf8PathBuf {
-        self.logs().join("launchd.out.log")
+    pub fn daemon_registration_stdout_log(&self) -> Utf8PathBuf {
+        self.logs().join(if cfg!(target_os = "linux") {
+            "systemd.out.log"
+        } else {
+            "launchd.out.log"
+        })
     }
 
-    pub fn launchd_stderr_log(&self) -> Utf8PathBuf {
-        self.logs().join("launchd.err.log")
+    pub fn daemon_registration_stderr_log(&self) -> Utf8PathBuf {
+        self.logs().join(if cfg!(target_os = "linux") {
+            "systemd.err.log"
+        } else {
+            "launchd.err.log"
+        })
     }
 
     pub fn downloads(&self) -> &Utf8Path {

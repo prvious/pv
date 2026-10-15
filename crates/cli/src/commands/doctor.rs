@@ -2,8 +2,8 @@ use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
 use platform::{
-    CaFileState, LaunchAgentFileState, LocalCaMetadata, ResolverConfig, ResolverFileState,
-    TrustDomainState,
+    CaFileState, DAEMON_REGISTRATION_NAME, DaemonRegistrationFileState, LocalCaMetadata,
+    ResolverConfig, ResolverFileState, TrustDomainState,
 };
 use self_update::AppUpdateVersion;
 use serde::Serialize;
@@ -55,8 +55,9 @@ impl DoctorReport {
     fn read(environment: &impl Environment) -> Result<Self, ExecuteError> {
         let paths = pv_paths(environment)?;
         let database = Database::open_read_only(&paths)?;
-        let launch_agent_path = launch_agent_path(environment)?;
-        let launch_agent = platform::inspect_launch_agent_file(&launch_agent_path, None);
+        let daemon_registration_path = daemon_registration_path(environment)?;
+        let registration =
+            platform::inspect_daemon_registration_file(&daemon_registration_path, None);
         let sections = [
             DoctorSection {
                 title: "System",
@@ -77,8 +78,10 @@ impl DoctorReport {
             DoctorSection {
                 title: "Daemon & jobs",
                 checks: vec![
-                    launch_agent_check(&launch_agent),
-                    daemon_socket_check(&paths, &launch_agent),
+                    daemon_registration_check(&registration),
+                    #[cfg(target_os = "linux")]
+                    daemon_registration_manager_check(environment),
+                    daemon_socket_check(&paths, &registration),
                     recent_jobs_check(database.as_ref())?,
                     runtime_states_check(database.as_ref())?,
                     manifest_cache_check(&paths),
@@ -359,42 +362,85 @@ fn database_check(paths: &PvPaths, database: Option<&Database>) -> DoctorCheck {
     }
 }
 
-fn launch_agent_check(state: &LaunchAgentFileState) -> DoctorCheck {
+fn daemon_registration_check(state: &DaemonRegistrationFileState) -> DoctorCheck {
+    let name = if cfg!(target_os = "linux") {
+        "Daemon service"
+    } else {
+        "Daemon LaunchAgent"
+    };
     match state {
-        LaunchAgentFileState::Current { path, .. } => {
-            DoctorCheck::pass("Daemon LaunchAgent", "PV-owned LaunchAgent is installed")
-                .with_detail(format!("path: {path}"))
-        }
-        LaunchAgentFileState::Missing { path } => DoctorCheck::fail(
-            "Daemon LaunchAgent",
-            "LaunchAgent is missing",
+        DaemonRegistrationFileState::Current { path, .. } => DoctorCheck::pass(
+            name,
+            format!("PV-owned {DAEMON_REGISTRATION_NAME} is installed"),
+        )
+        .with_detail(format!("path: {path}")),
+        DaemonRegistrationFileState::Missing { path } => DoctorCheck::fail(
+            name,
+            format!("{DAEMON_REGISTRATION_NAME} is missing"),
             "pv daemon:enable",
         )
         .with_detail(format!("path: {path}")),
-        LaunchAgentFileState::Stale { path, .. } => DoctorCheck::fail(
-            "Daemon LaunchAgent",
-            "LaunchAgent is PV-owned but stale",
+        DaemonRegistrationFileState::Stale { path, .. } => DoctorCheck::fail(
+            name,
+            format!("{DAEMON_REGISTRATION_NAME} is PV-owned but stale"),
             "pv daemon:restart",
         )
         .with_detail(format!("path: {path}")),
-        LaunchAgentFileState::Conflict { path } => DoctorCheck::fail(
-            "Daemon LaunchAgent",
-            "LaunchAgent file is not PV-owned",
+        DaemonRegistrationFileState::Conflict { path } => DoctorCheck::fail(
+            name,
+            format!("{DAEMON_REGISTRATION_NAME} file is not PV-owned"),
             "pv daemon:enable",
         )
         .with_detail(format!("path: {path}")),
-        LaunchAgentFileState::Unreadable { path, message } => DoctorCheck::fail(
-            "Daemon LaunchAgent",
-            "LaunchAgent file could not be inspected",
+        DaemonRegistrationFileState::Unreadable { path, message } => DoctorCheck::fail(
+            name,
+            format!("{DAEMON_REGISTRATION_NAME} file could not be inspected"),
             "pv daemon:enable",
         )
         .with_detail(format!("{path}: {message}")),
     }
 }
 
-fn daemon_socket_check(paths: &PvPaths, launch_agent: &LaunchAgentFileState) -> DoctorCheck {
-    let repair = match launch_agent {
-        LaunchAgentFileState::Current { .. } => "pv daemon:restart",
+#[cfg(target_os = "linux")]
+fn daemon_registration_manager_check(environment: &impl Environment) -> DoctorCheck {
+    let name = "Systemd user manager";
+    match environment.inspect_daemon_registration() {
+        Ok(Some(status)) => {
+            let detail = format!(
+                "load={} state={}/{} pid={} fragment={}",
+                status.load_state,
+                status.active_state,
+                status.sub_state,
+                status.main_pid,
+                status.fragment_path,
+            );
+            match platform::inspect_daemon_registration_file(&status.fragment_path, None) {
+                DaemonRegistrationFileState::Current { .. }
+                | DaemonRegistrationFileState::Stale { .. } => {
+                    DoctorCheck::pass(name, "reachable").with_detail(detail)
+                }
+                DaemonRegistrationFileState::Unreadable { message, .. } => DoctorCheck::fail(
+                    name,
+                    "loaded service file is unreadable",
+                    "pv daemon:enable",
+                )
+                .with_detail(format!("{detail}; {message}")),
+                _ => DoctorCheck::fail(name, "loaded service is not PV-owned", "pv daemon:enable")
+                    .with_detail(detail),
+            }
+        }
+        Ok(None) => DoctorCheck::pass(name, "reachable; daemon unit is not loaded"),
+        Err(error) => DoctorCheck::fail(
+            name,
+            error.to_string(),
+            "run PV from a logged-in user session",
+        ),
+    }
+}
+
+fn daemon_socket_check(paths: &PvPaths, registration: &DaemonRegistrationFileState) -> DoctorCheck {
+    let repair = match registration {
+        DaemonRegistrationFileState::Current { .. } => "pv daemon:restart",
         _ => "pv daemon:enable",
     };
 
@@ -790,8 +836,8 @@ fn ca_trust_state(
     platform::inspect_system_ca_trust(metadata, &inspector)
 }
 
-fn launch_agent_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
-    Utf8PathBuf::from_path_buf(environment.launch_agent_path())
+fn daemon_registration_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
+    Utf8PathBuf::from_path_buf(environment.daemon_registration_path())
         .map_err(|path| CliError::NonUtf8Path { path }.into())
 }
 
