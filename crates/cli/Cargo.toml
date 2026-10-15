@@ -38,4 +38,4 @@ yaml_serde = { workspace = true }
 camino-tempfile = { workspace = true }
 insta = { workspace = true }
 pv-fake = { path = "../pv-fake" }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread"] }

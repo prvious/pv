@@ -1,5 +1,5 @@
 #[cfg(target_os = "linux")]
-mod linux;
+pub(crate) mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::{
     PrivilegedHelperLifecycleAction, installed_helper_artifacts_present,
@@ -1221,13 +1221,38 @@ fn call_helper(
     operation: HelperOperation,
 ) -> Result<HelperPayload, PlatformError> {
     let mut stream = connect_helper(socket_path)?;
+    #[cfg(target_os = "linux")]
+    stream
+        .set_read_timeout(Some(match &operation {
+            HelperOperation::DnsApply { .. } | HelperOperation::DnsRemove => {
+                crate::resolver::DNS_MUTATION_TIMEOUT + HELPER_IO_TIMEOUT
+            }
+            HelperOperation::DnsInspect { .. } => {
+                crate::resolver::DNS_INSPECTION_TIMEOUT + HELPER_IO_TIMEOUT
+            }
+            _ => HELPER_IO_TIMEOUT,
+        }))
+        .map_err(PlatformError::PrivilegedHelperIo)?;
 
     let request = HelperRequest {
         protocol_version: HELPER_PROTOCOL_VERSION,
         operation,
     };
     write_message(&mut stream, &request)?;
-    let response: HelperResponse = read_message(&mut stream)?;
+    let response: Result<HelperResponse, PlatformError> = read_message(&mut stream);
+    #[cfg(target_os = "linux")]
+    let response = response.map_err(|source| {
+        let operation = match request.operation {
+            HelperOperation::DnsApply { .. } => "apply",
+            HelperOperation::DnsRemove => "remove",
+            _ => return source,
+        };
+        PlatformError::ResolverMutation {
+            operation,
+            source: Box::new(source),
+        }
+    });
+    let response = response?;
 
     if response.protocol_version != HELPER_PROTOCOL_VERSION {
         return Err(PlatformError::PrivilegedHelperProtocolMismatch {
@@ -1636,7 +1661,6 @@ fn dispatch_request(
             protocol_version: HELPER_PROTOCOL_VERSION,
             owner_uid: metadata.owner_uid,
         })),
-        #[cfg(target_os = "macos")]
         HelperOperation::DnsInspect { expected_port } => {
             let expected = expected_port.map(ResolverConfig::new);
             Ok(HelperPayload::ResolverState(crate::inspect_resolver_file(
@@ -1644,13 +1668,11 @@ fn dispatch_request(
                 expected.as_ref(),
             )))
         }
-        #[cfg(target_os = "macos")]
         HelperOperation::DnsApply { port } => {
             validate_high_port("DNS", port)?;
             crate::resolver::apply_resolver_config_privileged(&ResolverConfig::new(port))?;
             Ok(HelperPayload::Empty)
         }
-        #[cfg(target_os = "macos")]
         HelperOperation::DnsRemove => {
             crate::resolver::remove_resolver_config_privileged()?;
             Ok(HelperPayload::Empty)
@@ -1747,12 +1769,6 @@ fn dispatch_request(
             crate::trust::untrust_system_ca_privileged(&fingerprint)?;
             Ok(HelperPayload::Empty)
         }
-        #[cfg(target_os = "linux")]
-        HelperOperation::DnsInspect { .. }
-        | HelperOperation::DnsApply { .. }
-        | HelperOperation::DnsRemove => Err(crate::capability::unsupported(
-            crate::PlatformCapability::ResolverIntegration,
-        )?),
         #[cfg(target_os = "linux")]
         HelperOperation::LowPortInspect
         | HelperOperation::PfInspect
@@ -1946,8 +1962,8 @@ pub(crate) fn write_root_work_file(
     validate_root_owned_regular_file(path, 0o600)
 }
 
-#[cfg(any(target_os = "macos", test))]
-fn validate_high_port(label: &str, port: u16) -> Result<(), PlatformError> {
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+pub(crate) fn validate_high_port(label: &str, port: u16) -> Result<(), PlatformError> {
     if port >= 1024 {
         return Ok(());
     }
@@ -1982,6 +1998,8 @@ fn helper_error_code(error: &PlatformError) -> HelperErrorCode {
         PlatformError::PrivilegedHelperAuthentication(_) => HelperErrorCode::AuthenticationFailed,
         PlatformError::PrivilegedHelperProtocolMismatch { .. } => HelperErrorCode::ProtocolMismatch,
         PlatformError::PrivilegedHelperRejected { .. } => HelperErrorCode::InvalidRequest,
+        #[cfg(target_os = "linux")]
+        PlatformError::ResolverMutation { .. } => HelperErrorCode::SystemIntegrationFailed,
         PlatformError::SystemIntegration(_)
         | PlatformError::Unsupported { .. }
         | PlatformError::SystemIntegrationCommand { .. }
@@ -2005,12 +2023,14 @@ mod tests {
     use std::thread;
     #[cfg(unix)]
     use std::time::Duration;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     use std::time::Instant;
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use anyhow::anyhow;
     use camino_tempfile::tempdir;
+    #[cfg(target_os = "linux")]
+    use insta::assert_snapshot;
     #[cfg(target_os = "macos")]
     use insta::{Settings, assert_debug_snapshot};
     #[cfg(target_os = "macos")]
@@ -2239,6 +2259,68 @@ mod tests {
             HelperPayload::Status(status) if status.owner_uid == owner_uid
         ));
 
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dns_mutation_waits_beyond_the_lifecycle_deadline_and_preserves_unknown_outcomes()
+    -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let socket = directory.path().join("dns-helper.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket)?;
+        listener.set_nonblocking(true)?;
+        let (response, unknown_outcome, server_result) = thread::scope(|scope| {
+            let server = scope.spawn(|| -> anyhow::Result<()> {
+                for (operation, reply) in [
+                    (HelperOperation::DnsApply { port: 35353 }, true),
+                    (HelperOperation::DnsRemove, false),
+                ] {
+                    let started = Instant::now();
+                    let mut stream = loop {
+                        match listener.accept() {
+                            Ok((stream, _)) => break stream,
+                            Err(error)
+                                if error.kind() == ErrorKind::WouldBlock
+                                    && started.elapsed() < Duration::from_secs(2) =>
+                            {
+                                thread::sleep(Duration::from_millis(10))
+                            }
+                            Err(error) => return Err(error.into()),
+                        }
+                    };
+                    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+                    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+                    let request: HelperRequest = read_message(&mut stream)?;
+                    assert_eq!(request.protocol_version, HELPER_PROTOCOL_VERSION);
+                    assert_eq!(request.operation, operation);
+                    if reply {
+                        thread::sleep(Duration::from_millis(5500));
+                        write_message(
+                            &mut stream,
+                            &super::successful_response(HelperPayload::Empty),
+                        )?;
+                    }
+                }
+                Ok(())
+            });
+            let response = call_helper(&socket, HelperOperation::DnsApply { port: 35353 });
+            let unknown_outcome = response
+                .is_ok()
+                .then(|| call_helper(&socket, HelperOperation::DnsRemove));
+            (response, unknown_outcome, server.join())
+        });
+        assert!(matches!(response?, HelperPayload::Empty));
+        server_result.map_err(|_| anyhow!("DNS response fixture thread failed"))??;
+        let error = unknown_outcome
+            .ok_or_else(|| anyhow!("DNS removal request was not sent"))?
+            .err()
+            .ok_or_else(|| anyhow!("DNS removal unexpectedly succeeded without a response"))?;
+        assert!(
+            matches!(&error, PlatformError::ResolverMutation { operation: "remove", source }
+            if matches!(source.as_ref(), PlatformError::PrivilegedHelperIo(source) if source.kind() == ErrorKind::UnexpectedEof))
+        );
+        assert_snapshot!(error.to_string(), @"resolver remove failed: PV privileged helper I/O failed: helper protocol connection closed before a complete frame was received; DNS state may be partial and a queued or in-flight request may still complete; inspect pv-dns.service, pv-dns.service.candidate and pv0 with an administrator before retrying `pv dns:install` or `pv dns:uninstall`");
         Ok(())
     }
 

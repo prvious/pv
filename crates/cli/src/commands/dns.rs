@@ -2,12 +2,15 @@ use std::io;
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use platform::{ResolverConfig, ResolverFileState};
+use platform::{PlatformError, ResolverConfig, ResolverFileState};
 use state::{Database, PortOwner, PortRequest, PvPaths, StateError};
 
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Line, Mark, Output, Streams};
+
+#[cfg(target_os = "linux")]
+pub(super) const RESOLVER_CONFLICT_GUIDANCE: &str = "Ask an administrator to inspect pv-dns.service and its overrides, pv0 ownership, and other links' ~test routes; remove or rename the conflicting configuration manually before retrying `pv dns:install` or `pv dns:uninstall`.";
 
 pub(crate) fn status(
     environment: &impl Environment,
@@ -77,12 +80,7 @@ fn install_inner(
         | ResolverFileState::Stale { .. } => {}
         ResolverFileState::Conflict { path } => {
             release_new_dns_port(&mut database, had_dns_assignment)?;
-            super::write_left_in_place(
-                output,
-                "System resolver config is not PV-owned: ",
-                path,
-                None,
-            )?;
+            write_resolver_conflict(output, path)?;
 
             return Ok(ExitCode::FAILURE);
         }
@@ -119,7 +117,9 @@ fn install_inner(
         }
         ResolverFileState::Missing { path } | ResolverFileState::Stale { path, .. } => {
             if let Err(error) = environment.install_resolver_config(&prepared_path, &system_path) {
-                release_new_dns_port(&mut database, had_dns_assignment)?;
+                if resolver_apply_cannot_have_changed_state(&error) {
+                    release_new_dns_port(&mut database, had_dns_assignment)?;
+                }
 
                 return Err(error.into());
             }
@@ -136,6 +136,21 @@ fn install_inner(
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+fn resolver_apply_cannot_have_changed_state(error: &PlatformError) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        !matches!(
+            error,
+            PlatformError::ResolverMutation { .. } | PlatformError::SystemIntegration(_)
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = error;
+        true
+    }
 }
 
 fn release_new_dns_port(
@@ -200,6 +215,8 @@ pub(crate) fn uninstall(
 
     match system_state {
         ResolverFileState::Missing { path } => {
+            #[cfg(target_os = "linux")]
+            environment.remove_resolver_config(&system_path)?;
             output.note(Line::field(
                 "System resolver config already absent: ",
                 &path,
@@ -234,16 +251,23 @@ pub(crate) fn uninstall(
             Ok(ExitCode::SUCCESS)
         }
         ResolverFileState::Conflict { path } => {
-            super::write_left_in_place(
-                output,
-                "System resolver config is not PV-owned: ",
-                &path,
-                None,
-            )?;
+            write_resolver_conflict(output, &path)?;
 
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+fn write_resolver_conflict(output: &mut Output<'_>, path: &Utf8Path) -> io::Result<()> {
+    let summary = if cfg!(target_os = "linux") {
+        "System DNS routing conflicts with existing configuration: "
+    } else {
+        "System resolver config is not PV-owned: "
+    };
+    super::write_left_in_place(output, summary, path, None)?;
+    #[cfg(target_os = "linux")]
+    output.detail(RESOLVER_CONFLICT_GUIDANCE)?;
+    Ok(())
 }
 
 fn write_resolver_state(
@@ -255,7 +279,15 @@ fn write_resolver_state(
         ResolverFileState::Missing { path } => (Mark::Idle, "missing", path),
         ResolverFileState::Current { path, .. } => (Mark::Success, "current", path),
         ResolverFileState::Stale { path, .. } => (Mark::Warning, "stale", path),
-        ResolverFileState::Conflict { path } => (Mark::Failure, "not PV-owned", path),
+        ResolverFileState::Conflict { path } => (
+            Mark::Failure,
+            if cfg!(target_os = "linux") {
+                "conflict"
+            } else {
+                "not PV-owned"
+            },
+            path,
+        ),
         ResolverFileState::Unreadable { path, .. } => (Mark::Failure, "unreadable", path),
     };
     output.status(mark, format!("{label}: {status}"))?;

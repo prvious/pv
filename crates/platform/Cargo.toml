@@ -38,7 +38,9 @@ futures-lite = "2.6.1"
 futures-util = { workspace = true }
 listenfd = "1.0.2"
 procfs = { version = "0.18.0", default-features = false }
+rtnetlink = "0.23.0"
 rustix = { workspace = true, features = ["net", "thread"] }
+tokio = { workspace = true }
 zbus = "5.19.0"
 
 [dev-dependencies]
@@ -48,6 +50,3 @@ insta = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 pv-fake = { path = "../pv-fake" }
-
-[target.'cfg(target_os = "linux")'.dev-dependencies]
-tokio = { workspace = true }
