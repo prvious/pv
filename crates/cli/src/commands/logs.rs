@@ -5,7 +5,8 @@ use std::process::ExitCode;
 use std::sync::mpsc;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use notify::{EventKind, RecursiveMode, Watcher};
+use notify::event::Flag;
+use notify::{Event, EventKind, RecursiveMode, Watcher};
 use resources::{ArtifactManifestCache, ResourceName, TrackSelector};
 use state::{Database, PvPaths, StateError};
 
@@ -454,7 +455,9 @@ fn follow_sources_until(
     }
 
     let mut emitted_lines = 0usize;
-    for event in events {
+    // Lines written while the watch started have no event, so every log is read once first.
+    let rescan = Event::new(EventKind::Other).set_flag(Flag::Rescan);
+    for event in std::iter::once(Ok(rescan)).chain(events) {
         let event = event?;
         // Reading a log doesn't change it, and this loop reads them.
         if matches!(event.kind, EventKind::Access(_)) {

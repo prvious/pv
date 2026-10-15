@@ -136,12 +136,11 @@ impl ProjectConfigWatcher {
 
         for project in projects {
             // A new Project's times are read before its directory is watched, so the check after
-            // the restart catches a save in between.
+            // the restart catches a save in between. A worktree Project that discovery moved keeps
+            // its times for the same reason: its config may have changed while that job ran.
             let (config, previous_worktrees) = match state.projects.remove(&project.project_id) {
-                Some(watched) if watched.path == project.project_path => {
-                    (watched.config, watched.worktrees)
-                }
-                _ => (config_modified_times(&project.project_path), None),
+                Some(watched) => (watched.config, watched.worktrees),
+                None => (config_modified_times(&project.project_path), None),
             };
             let mut config_paths = BTreeSet::new();
             let mut worktrees = None;
@@ -150,8 +149,7 @@ impl ProjectConfigWatcher {
                 for file_name in [PREFERRED_CONFIG_FILE, ALTERNATE_CONFIG_FILE] {
                     let config_path = directory.join(file_name);
                     // Editing the file a config links to doesn't touch the link.
-                    if let Ok(target) = fs::canonicalize(&config_path)
-                        && target != config_path
+                    if let Some(target) = link_target(&config_path)
                         && let Some(target_directory) = target.parent()
                     {
                         watched.insert(target_directory.to_path_buf(), RecursiveMode::NonRecursive);
@@ -268,6 +266,18 @@ impl WatchState {
                     // Every save counts, even one the modified time can't tell apart.
                     project.config = config_modified_times(&project.path);
                     scopes.extend(ReconciliationScope::project(project_id.clone()).ok());
+                } else if project
+                    .config_paths
+                    .iter()
+                    .any(|config_path| config_path.parent() == Some(path))
+                {
+                    // Moving a directory, or putting it in the Trash, reports only the directory,
+                    // and so does a change to its own metadata.
+                    let config = config_modified_times(&project.path);
+                    if config != project.config {
+                        project.config = config;
+                        scopes.extend(ReconciliationScope::project(project_id.clone()).ok());
+                    }
                 }
                 if let Some((git, entries)) = &mut project.worktrees
                     && path.starts_with(git.join("worktrees"))
@@ -345,6 +355,22 @@ fn repository_git_dir(paths: &PvPaths, directory: &Utf8Path) -> Option<Utf8PathB
         Err(error) => {
             structured_log::file_watch_failed(paths, directory.as_str(), &error.to_string());
             None
+        }
+    }
+}
+
+/// The canonical file `config_path` links to, or `None` when it isn't a link. A link whose target
+/// is gone still names the file, so recreating it is an event in a watched directory.
+fn link_target(config_path: &Utf8Path) -> Option<Utf8PathBuf> {
+    match fs::canonicalize(config_path) {
+        Ok(target) => (target != config_path).then_some(target),
+        Err(_error) => {
+            let target = config_path.parent()?.join(fs::read_link(config_path).ok()?);
+            Some(
+                fs::canonicalize(target.parent()?)
+                    .ok()?
+                    .join(target.file_name()?),
+            )
         }
     }
 }
@@ -434,20 +460,27 @@ mod tests {
             )?)
         }
 
-        /// Watches the linked Projects and records the scopes the watcher requests.
-        fn run(&self) -> Result<RunningWatcher> {
+        /// Watches the linked Projects and records the scopes the watcher requests. Returns once
+        /// the check after startup has run without requesting anything, so a test's change can
+        /// only reach the watcher as an event.
+        async fn run(&self) -> Result<RunningWatcher> {
             let (watcher, messages) = self.watch()?;
             let (sender, scopes) = unbounded_channel();
             let debouncer = ReconciliationDebouncer::new(Duration::from_millis(50), move |scope| {
                 let _result = sender.send(scope.to_string());
             });
             let task = tokio::spawn(watcher.clone().run(messages, debouncer));
-
-            Ok(RunningWatcher {
+            let mut running = RunningWatcher {
                 watcher,
                 scopes,
                 task,
-            })
+            };
+            let startup = running.settle().await;
+            if !startup.is_empty() {
+                return Err(anyhow!("startup requested {startup:?}"));
+            }
+
+            Ok(running)
         }
     }
 
@@ -499,7 +532,7 @@ mod tests {
         let fixture = Fixture::new()?;
         let (project_path, scope) = fixture.link("project")?;
         state::fs::ensure_user_dir(&project_path)?;
-        let mut watcher = fixture.run()?;
+        let mut watcher = fixture.run().await?;
 
         write(&project_path.join("pv.yml"), "php: '8.4'\n")?;
 
@@ -513,7 +546,7 @@ mod tests {
         let fixture = Fixture::new()?;
         let (project_path, scope) = fixture.link("project")?;
         state::fs::ensure_user_dir(&project_path)?;
-        let mut watcher = fixture.run()?;
+        let mut watcher = fixture.run().await?;
 
         write(&project_path.join("pv.yaml"), "php: '8.4'\n")?;
 
@@ -527,7 +560,7 @@ mod tests {
         let fixture = Fixture::new()?;
         let (project_path, scope) = fixture.link("project")?;
         write(&project_path.join("pv.yml"), "php: '8.3'\n")?;
-        let mut watcher = fixture.run()?;
+        let mut watcher = fixture.run().await?;
 
         write(&project_path.join("pv.yaml"), "php: '8.4'\n")?;
 
@@ -542,7 +575,7 @@ mod tests {
         let (project_path, scope) = fixture.link("project")?;
         let config_path = project_path.join("pv.yml");
         write(&config_path, "php: '8.3'\n")?;
-        let mut watcher = fixture.run()?;
+        let mut watcher = fixture.run().await?;
 
         state::fs::open_append_file(&config_path)?.write_all(b"serve: true\n")?;
 
@@ -558,7 +591,7 @@ mod tests {
         let target = project_path.join("config/project.yml");
         write(&target, "php: '8.3'\n")?;
         state::fs::symlink_file(&target, &project_path.join("pv.yml"))?;
-        let mut watcher = fixture.run()?;
+        let mut watcher = fixture.run().await?;
 
         write(&target, "php: '8.4'\n")?;
 
@@ -568,11 +601,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn watcher_enqueues_a_linked_config_recreated_after_a_reload() -> Result<()> {
+        let fixture = Fixture::new()?;
+        let (project_path, scope) = fixture.link("project")?;
+        let target = project_path.join("config/project.yml");
+        write(&target, "php: '8.3'\n")?;
+        state::fs::symlink_file(&target, &project_path.join("pv.yml"))?;
+        let mut watcher = fixture.run().await?;
+
+        state::fs::remove_file(&target)?;
+        assert_eq!(watcher.requested().await?, vec![scope.clone()]);
+        // The reconciliation's jobs re-read the watch list while the link dangles.
+        watcher.watcher.reload();
+        assert_eq!(watcher.settle().await, Vec::<String>::new());
+        write(&target, "php: '8.4'\n")?;
+
+        assert_eq!(watcher.requested().await?, vec![scope]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn watcher_enqueues_a_project_directory_moved_away() -> Result<()> {
+        let fixture = Fixture::new()?;
+        let (project_path, scope) = fixture.link("project")?;
+        write(&project_path.join("pv.yml"), "php: '8.4'\n")?;
+        let mut watcher = fixture.run().await?;
+
+        // Moving a directory, or putting it in the Trash, reports only the directory.
+        state::fs::rename(&project_path, &fixture.root.join("moved"))?;
+
+        assert_eq!(watcher.requested().await?, vec![scope]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reload_keeps_config_times_when_a_project_moves() -> Result<()> {
+        let fixture = Fixture::new()?;
+        let (project_path, scope) = fixture.link("feature")?;
+        write(&project_path.join("pv.yml"), "php: '8.3'\n")?;
+        let moved_path = fixture.root.join("moved/feature");
+        write(&moved_path.join("pv.yml"), "php: '8.3'\n")?;
+        let (watcher, _messages) = fixture.watch()?;
+
+        // Discovery follows `git worktree move`, and the config changes before its job ends.
+        let mut database = Database::open(&fixture.paths)?;
+        state::testing::transaction(&mut database, |transaction| {
+            transaction.execute(
+                "UPDATE projects SET path = ?1 WHERE id = ?2",
+                rusqlite::params![moved_path.as_str(), scope.trim_start_matches("project:")],
+            )?;
+
+            Ok(())
+        })?;
+        write(&moved_path.join("pv.yml"), "php: '8.4'\n")?;
+        watcher.reload();
+        let scopes = watcher
+            .scopes(WatchMessage::Restarted)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+
+        assert_eq!(scopes, vec![scope]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn atomic_save_enqueues_one_reconciliation_and_ignores_other_files() -> Result<()> {
         let fixture = Fixture::new()?;
         let (project_path, scope) = fixture.link("project")?;
         write(&project_path.join("pv.yml"), "php: '8.3'\n")?;
-        let mut watcher = fixture.run()?;
+        let mut watcher = fixture.run().await?;
 
         write(&project_path.join(".env"), "APP_NAME=unwatched\n")?;
         assert_eq!(watcher.settle().await, Vec::<String>::new());
@@ -591,7 +692,7 @@ mod tests {
     #[tokio::test]
     async fn reload_follows_linked_and_unlinked_projects() -> Result<()> {
         let fixture = Fixture::new()?;
-        let mut watcher = fixture.run()?;
+        let mut watcher = fixture.run().await?;
         let (project_path, scope) = fixture.link("project")?;
         state::fs::ensure_user_dir(&project_path)?;
 
@@ -613,7 +714,7 @@ mod tests {
     async fn reload_watches_a_project_directory_that_appeared() -> Result<()> {
         let fixture = Fixture::new()?;
         let (project_path, scope) = fixture.link("project")?;
-        let mut watcher = fixture.run()?;
+        let mut watcher = fixture.run().await?;
 
         write(&project_path.join("pv.yml"), "php: '8.4'\n")?;
         assert_eq!(watcher.settle().await, Vec::<String>::new());
@@ -679,7 +780,7 @@ mod tests {
         let (main_checkout, _scope) = fixture.link("repo")?;
         let git = main_checkout.join(".git");
         state::fs::ensure_user_dir(&git)?;
-        let mut watcher = fixture.run()?;
+        let mut watcher = fixture.run().await?;
         let entry = git.join("worktrees/feature");
         let system = vec!["system".to_string()];
 
@@ -712,9 +813,9 @@ mod tests {
         let worktree_entry = ".git/worktrees/feature/gitdir";
         let (startup_source, _scope) = fixture.link("startup")?;
         write(&startup_source.join(worktree_entry), "/elsewhere/a/.git\n")?;
-        let mut watcher = fixture.run()?;
-        // Startup reconciliation discovers the worktrees that already exist.
-        assert_eq!(watcher.settle().await, Vec::<String>::new());
+        // Startup reconciliation discovers the worktrees that already exist, so `run` finds no
+        // request.
+        let mut watcher = fixture.run().await?;
 
         let (linked_source, _scope) = fixture.link("linked")?;
         write(&linked_source.join(worktree_entry), "/elsewhere/b/.git\n")?;
