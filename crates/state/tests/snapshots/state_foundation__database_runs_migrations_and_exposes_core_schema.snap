@@ -22,6 +22,7 @@ DatabaseInspection {
         "013:retired_resource_allocations",
         "014:discovered_worktrees",
         "015:project_first_reconciled_at",
+        "016:pending_cleanups",
     ],
     tables: [
         "global_php_default_track",
@@ -29,6 +30,7 @@ DatabaseInspection {
         "jobs",
         "managed_resource_tracks",
         "observed_states",
+        "pending_cleanups",
         "ports",
         "postgres_track_preload_libraries",
         "project_env_observed_warnings",

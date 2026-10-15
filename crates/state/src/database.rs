@@ -318,6 +318,16 @@ pub struct DiscoveredProjectRecord {
     pub path: Utf8PathBuf,
 }
 
+/// An allocation object of a removed worktree Project that PV still has to delete.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingCleanupRecord {
+    pub resource_name: String,
+    pub track: String,
+    pub generated_name: String,
+    /// Why the last attempt didn't delete it, if one failed.
+    pub last_error: Option<String>,
+}
+
 /// A worktree the user unlinked, which PV doesn't discover again until Git drops it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorktreeOptOutRecord {
@@ -1093,21 +1103,23 @@ impl Database {
     /// PV from discovering that worktree again, and unlinking a source unlinks its discovered
     /// Projects too.
     pub fn unlink_project(&mut self, project_id: &str) -> Result<ProjectRecord, StateError> {
-        self.unlink_project_with_opt_out(project_id, true)
+        self.unlink_project_in_transaction(project_id, false)
     }
 
-    /// Unlinks a discovered worktree Project whose Git worktree is gone, without an opt-out.
+    /// Unlinks a discovered worktree Project whose Git worktree is gone, and lists every
+    /// allocation object it owned, on any track, for deletion. Its slug and generated names stay
+    /// reserved until each object is deleted.
     pub fn remove_discovered_project(
         &mut self,
         project_id: &str,
     ) -> Result<ProjectRecord, StateError> {
-        self.unlink_project_with_opt_out(project_id, false)
+        self.unlink_project_in_transaction(project_id, true)
     }
 
-    fn unlink_project_with_opt_out(
+    fn unlink_project_in_transaction(
         &mut self,
         project_id: &str,
-        opt_out: bool,
+        removed_by_git: bool,
     ) -> Result<ProjectRecord, StateError> {
         let transaction = self
             .connection
@@ -1117,7 +1129,27 @@ impl Database {
                 target: project_id.to_string(),
             }
         })?;
-        if opt_out {
+        if removed_by_git {
+            // The allocation rows go with the Project, so this is the last chance to name them.
+            transaction.execute(
+                "INSERT OR IGNORE INTO pending_cleanups (
+                    resource_name,
+                    track,
+                    generated_name,
+                    project_slug,
+                    created_at
+                )
+                SELECT resource_name, track, generated_name, ?2, ?3
+                FROM resource_allocations
+                WHERE project_id = ?1
+                UNION
+                SELECT resource_name, track, generated_name, ?2, ?3
+                FROM retired_resource_allocations
+                WHERE project_id = ?1",
+                params![project_id, project.slug, timestamp()?],
+            )?;
+        } else {
+            // A user unlinking a discovered Project opts its worktree out of discovery.
             transaction.execute(
                 "INSERT OR IGNORE INTO worktree_opt_outs (source_project_id, worktree_id)
                 SELECT source_project_id, worktree_id
@@ -1285,6 +1317,56 @@ impl Database {
         self.connection.execute(
             "DELETE FROM worktree_opt_outs WHERE source_project_id = ?1 AND worktree_id = ?2",
             params![source_project_id, worktree_id],
+        )?;
+
+        Ok(())
+    }
+
+    /// Allocation objects of removed worktree Projects that PV still has to delete.
+    pub fn pending_cleanups(&self) -> Result<Vec<PendingCleanupRecord>, StateError> {
+        let mut statement = self.connection.prepare(
+            "SELECT resource_name, track, generated_name, last_error
+            FROM pending_cleanups
+            ORDER BY resource_name, track, generated_name",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok(PendingCleanupRecord {
+                resource_name: row.get(0)?,
+                track: row.get(1)?,
+                generated_name: row.get(2)?,
+                last_error: row.get(3)?,
+            })
+        })?;
+
+        rows.map(|row| Ok(row?)).collect()
+    }
+
+    /// Forgets a cleanup whose object is deleted, which also frees its names.
+    pub fn complete_cleanup(&mut self, cleanup: &PendingCleanupRecord) -> Result<(), StateError> {
+        self.connection.execute(
+            "DELETE FROM pending_cleanups
+            WHERE resource_name = ?1 AND track = ?2 AND generated_name = ?3",
+            params![cleanup.resource_name, cleanup.track, cleanup.generated_name],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn record_cleanup_failure(
+        &mut self,
+        cleanup: &PendingCleanupRecord,
+        error: &str,
+    ) -> Result<(), StateError> {
+        self.connection.execute(
+            "UPDATE pending_cleanups
+            SET last_error = ?4
+            WHERE resource_name = ?1 AND track = ?2 AND generated_name = ?3",
+            params![
+                cleanup.resource_name,
+                cleanup.track,
+                cleanup.generated_name,
+                error
+            ],
         )?;
 
         Ok(())
@@ -3793,6 +3875,12 @@ fn resource_allocation_generated_name_exists_in_transaction(
             WHERE resource_name = ?1
             AND track = ?2
             AND generated_name = ?3
+        ) OR EXISTS(
+            SELECT 1
+            FROM pending_cleanups
+            WHERE resource_name = ?1
+            AND track = ?2
+            AND generated_name = ?3
         )",
         params![resource_name, track, generated_name],
         |row| row.get::<_, bool>(0),
@@ -4262,8 +4350,11 @@ fn generate_project_slug(
 
             format!("{shortened_base}{suffix}")
         };
+        // A slug whose allocation objects are waiting for deletion stays taken.
         let count = transaction.query_row(
-            "SELECT COUNT(*) FROM projects WHERE project_slug = ?1",
+            "SELECT
+                (SELECT COUNT(*) FROM projects WHERE project_slug = ?1)
+                + (SELECT COUNT(*) FROM pending_cleanups WHERE project_slug = ?1)",
             params![slug.as_str()],
             |row| row.get::<_, i64>(0),
         )?;

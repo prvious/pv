@@ -52,8 +52,19 @@ struct StatusSnapshot {
     managed_resources: Vec<ManagedResourceStatus>,
     runtimes: Vec<RuntimeStatus>,
     projects: Vec<ProjectStatus>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    worktree_cleanups: Vec<WorktreeCleanupStatus>,
     recent_errors: Vec<JobStatusSummary>,
     log_directory: String,
+}
+
+/// An allocation object of a removed worktree that PV hasn't deleted yet.
+#[derive(Serialize)]
+struct WorktreeCleanupStatus {
+    resource: String,
+    track: String,
+    name: String,
+    error: Option<String>,
 }
 
 impl StatusSnapshot {
@@ -78,6 +89,19 @@ impl StatusSnapshot {
         let runtimes = runtime_statuses(&runtime_states);
         let projects = match &database {
             Some(database) => project_statuses(database)?,
+            None => Vec::new(),
+        };
+        let worktree_cleanups = match &database {
+            Some(database) => database
+                .pending_cleanups()?
+                .into_iter()
+                .map(|cleanup| WorktreeCleanupStatus {
+                    resource: cleanup.resource_name,
+                    track: cleanup.track,
+                    name: cleanup.generated_name,
+                    error: cleanup.last_error,
+                })
+                .collect(),
             None => Vec::new(),
         };
         let recent_errors = match &database {
@@ -105,6 +129,7 @@ impl StatusSnapshot {
             managed_resources,
             runtimes,
             projects,
+            worktree_cleanups,
             recent_errors,
             log_directory: paths.logs().to_string(),
         })
@@ -173,6 +198,18 @@ impl StatusSnapshot {
                     project.display_name(),
                     project.env_status,
                     project.message.as_deref().unwrap_or("-"),
+                ))?;
+            }
+        }
+        if !self.worktree_cleanups.is_empty() {
+            output.line("Worktree cleanup:")?;
+            for cleanup in &self.worktree_cleanups {
+                output.line(&format!(
+                    "  {} {} {} {}",
+                    cleanup.resource,
+                    cleanup.track,
+                    cleanup.name,
+                    cleanup.error.as_deref().unwrap_or("pending"),
                 ))?;
             }
         }
@@ -329,6 +366,25 @@ impl StatusSnapshot {
             )?;
             if let Some(message) = &project.message {
                 output.detail(message)?;
+            }
+        }
+
+        if !self.worktree_cleanups.is_empty() {
+            output.section("Worktree cleanup")?;
+            for cleanup in &self.worktree_cleanups {
+                let mark = if cleanup.error.is_some() {
+                    Mark::Warning
+                } else {
+                    Mark::Idle
+                };
+                output.status(
+                    mark,
+                    Line::from(format!("{} {}  ", cleanup.resource, cleanup.track))
+                        .value(cleanup.name.as_str()),
+                )?;
+                if let Some(error) = &cleanup.error {
+                    output.detail(error)?;
+                }
             }
         }
 
@@ -858,6 +914,24 @@ mod tests {
                 observed_at: Some("2026-09-26T12:00:00Z".to_string()),
                 mark: Mark::Warning,
             }],
+            worktree_cleanups: vec![
+                WorktreeCleanupStatus {
+                    resource: "mysql".to_string(),
+                    track: "8.0".to_string(),
+                    name: "acme_feat_app".to_string(),
+                    error: Some(
+                        "`mysql` track `8.0` isn't installed, so PV can't delete this object; \
+                         reinstall the track, or uninstall it with --prune to delete its data"
+                            .to_string(),
+                    ),
+                },
+                WorktreeCleanupStatus {
+                    resource: "redis".to_string(),
+                    track: "8.8".to_string(),
+                    name: "acme-feat.cache.".to_string(),
+                    error: None,
+                },
+            ],
             recent_errors: Vec::new(),
             log_directory: "/home/acme/.pv/logs".to_string(),
         };

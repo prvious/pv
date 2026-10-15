@@ -1,0 +1,24 @@
+---
+source: crates/state/tests/state_foundation.rs
+expression: listed
+---
+[
+    PendingCleanupRecord {
+        resource_name: "mysql",
+        track: "8.0",
+        generated_name: "acme_feat_app",
+        last_error: None,
+    },
+    PendingCleanupRecord {
+        resource_name: "mysql",
+        track: "8.4",
+        generated_name: "acme_feat_app",
+        last_error: None,
+    },
+    PendingCleanupRecord {
+        resource_name: "redis",
+        track: "8.8",
+        generated_name: "acme-feat.cache.",
+        last_error: None,
+    },
+]

@@ -392,6 +392,19 @@ pub(crate) fn worktree_discovery_failed(paths: &PvPaths, subject: &str, error: &
     );
 }
 
+/// Records a cleanup run for removed worktrees that stopped early. The cleanup list keeps every
+/// object it didn't delete for the next system reconciliation.
+pub(crate) fn worktree_cleanup_failed(paths: &PvPaths, error: &str) {
+    append_best_effort(
+        paths,
+        "warn",
+        "worktrees",
+        "worktree_cleanup_failed",
+        "worktree cleanup failed",
+        &[("error", error)],
+    );
+}
+
 /// Records how a monitored runtime exited before its monitor is released and forgets it.
 pub(crate) fn runtime_exited(paths: &PvPaths, subject: &str, exit: &str) {
     append_best_effort(

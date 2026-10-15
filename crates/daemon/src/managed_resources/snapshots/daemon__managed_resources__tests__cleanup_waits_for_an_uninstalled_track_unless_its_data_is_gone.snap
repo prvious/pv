@@ -1,0 +1,14 @@
+---
+source: crates/daemon/src/managed_resources/tests.rs
+expression: waiting
+---
+[
+    PendingCleanupRecord {
+        resource_name: "postgres",
+        track: "17",
+        generated_name: "project_app_db",
+        last_error: Some(
+            "`postgres` track `17` isn't installed, so PV can't delete this object; reinstall the track, or uninstall it with --prune to delete its data",
+        ),
+    },
+]

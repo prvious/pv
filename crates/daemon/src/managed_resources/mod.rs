@@ -29,10 +29,10 @@ use protocol::{
 };
 use resources::{ManagedResourceCommands, ResourceAdapter, TrackName};
 use state::{
-    Database, EnvContextValues, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
-    PortRequest, PostgresPreloadLibrary, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END,
-    RUNTIME_PORT_FALLBACK_START, ResourceAllocationRecord, RuntimeObservedStatus, RuntimeSubject,
-    StateError,
+    Database, EnvContextValues, ManagedResourceDesiredState, ManagedResourceTrackRecord,
+    PendingCleanupRecord, PortOwner, PortRequest, PostgresPreloadLibrary, ProjectRecord, PvPaths,
+    RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationRecord,
+    RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 use tokio::sync::watch;
 use tokio::time::{sleep, timeout};
@@ -173,13 +173,6 @@ pub(crate) trait ManagedResourceRuntimeAdapter: Send + Sync {
 
     /// Deletes the object behind one Resource allocation: a database, the keys under a prefix, or
     /// a bucket and its contents. Deleting an object that is already gone succeeds.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "worktree cleanup, which arrives in a later change, is the only caller"
-        )
-    )]
     fn delete_allocation<'a>(
         &'a self,
         _context: &'a ManagedResourceRuntimeContext,
@@ -973,6 +966,123 @@ pub(crate) fn verify_system_resource_installations(
     for installed in commands.list(None)? {
         commands.validate_installed_track(&installed)?;
     }
+    Ok(())
+}
+
+/// Deletes the allocation objects that removed worktree Projects left in `pending_cleanups`. Runs
+/// after the Gateway has reloaded without their routes. An installed track that isn't running is
+/// started for this and stopped again if no Project uses it. A failure stays on its row, and the
+/// next system reconciliation tries again.
+pub(crate) async fn clean_up_removed_allocations(
+    paths: &PvPaths,
+    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
+    fallback_shutdown: Option<&watch::Receiver<bool>>,
+) -> Result<(), DaemonError> {
+    let mut database = Database::open(paths)?;
+    let mut cleanups_by_track = BTreeMap::<(String, String), Vec<PendingCleanupRecord>>::new();
+    for cleanup in database.pending_cleanups()? {
+        cleanups_by_track
+            .entry((cleanup.resource_name.clone(), cleanup.track.clone()))
+            .or_default()
+            .push(cleanup);
+    }
+    if cleanups_by_track.is_empty() {
+        return Ok(());
+    }
+    let production_catalog;
+    let catalog = if let Some(catalog) = runtime_catalog {
+        catalog
+    } else {
+        production_catalog = ManagedResourceRuntimeCatalog::production()?;
+        &production_catalog
+    };
+    let supervisor = ProcessSupervisor::new(paths.clone());
+
+    for ((resource_name, track), cleanups) in cleanups_by_track {
+        if fallback_shutdown_requested(fallback_shutdown) {
+            break;
+        }
+        let resource = state::ProjectManagedResourceInput {
+            resource_name,
+            track,
+        };
+        if let Err(error) = clean_up_track(
+            paths,
+            &mut database,
+            catalog,
+            &supervisor,
+            fallback_shutdown,
+            &resource,
+            &cleanups,
+        )
+        .await
+        {
+            for cleanup in &cleanups {
+                database.record_cleanup_failure(cleanup, &error.to_string())?;
+            }
+        }
+    }
+
+    stop_undemanded_catalog_runtimes(paths, &mut database, catalog, &supervisor, &BTreeSet::new())
+        .await
+}
+
+async fn clean_up_track(
+    paths: &PvPaths,
+    database: &mut Database,
+    catalog: &ManagedResourceRuntimeCatalog,
+    supervisor: &ProcessSupervisor,
+    fallback_shutdown: Option<&watch::Receiver<bool>>,
+    resource: &state::ProjectManagedResourceInput,
+    cleanups: &[PendingCleanupRecord],
+) -> Result<(), DaemonError> {
+    // Uninstalling a track with --prune deletes its data directory, and every object with it.
+    if !state::fs::path_entry_exists(
+        &paths.resource_data_dir(&resource.resource_name, &resource.track),
+    )? {
+        for cleanup in cleanups {
+            database.complete_cleanup(cleanup)?;
+        }
+        return Ok(());
+    }
+    if !matches!(
+        installed_track(database, &resource.resource_name, &resource.track),
+        Ok(Some(_))
+    ) {
+        return Err(DaemonError::CleanupTrackNotInstalled {
+            resource: resource.resource_name.clone(),
+            track: resource.track.clone(),
+        });
+    }
+    let Some(adapter) = catalog.adapter(&resource.resource_name) else {
+        return Err(resources::ResourcesError::UnsupportedResourceAllocation {
+            resource: resource.resource_name.clone(),
+        }
+        .into());
+    };
+    let progress = DaemonDownloadProgress::disabled();
+    let mut prefetched_installs = BTreeMap::new();
+    let mut reconciliation = ResourceTrackReconciliationContext {
+        catalog,
+        supervisor,
+        progress: &progress,
+        prefetched_installs: &mut prefetched_installs,
+        artifact_install: ArtifactInstall::Forbidden,
+        fallback_shutdown,
+    };
+    reconcile_resource_track(paths, database, &mut reconciliation, resource, &[]).await?;
+    let context = persisted_resource_runtime_context(paths, database, adapter, resource)?;
+
+    for cleanup in cleanups {
+        match adapter
+            .delete_allocation(&context, &context.env, &cleanup.generated_name)
+            .await
+        {
+            Ok(()) => database.complete_cleanup(cleanup)?,
+            Err(error) => database.record_cleanup_failure(cleanup, &error.to_string())?,
+        }
+    }
+
     Ok(())
 }
 

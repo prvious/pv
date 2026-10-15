@@ -26,6 +26,7 @@ const RETIRED_RESOURCE_ALLOCATIONS_SQL: &str =
 const DISCOVERED_WORKTREES_SQL: &str = include_str!("sql/014_discovered_worktrees.sql");
 const PROJECT_FIRST_RECONCILED_AT_SQL: &str =
     include_str!("sql/015_project_first_reconciled_at.sql");
+const PENDING_CLEANUPS_SQL: &str = include_str!("sql/016_pending_cleanups.sql");
 
 pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
     Migration::new(1, "core_state_schema", CORE_SCHEMA_SQL),
@@ -71,6 +72,7 @@ pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
         "project_first_reconciled_at",
         PROJECT_FIRST_RECONCILED_AT_SQL,
     ),
+    Migration::new(16, "pending_cleanups", PENDING_CLEANUPS_SQL),
 ];
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
