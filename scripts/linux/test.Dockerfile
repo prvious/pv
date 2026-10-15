@@ -15,8 +15,6 @@ RUN if command -v apt-get >/dev/null; then \
         dnf install -y ca-certificates curl dbus-daemon iproute NetworkManager \
             nss-tools procps-ng python3 sudo systemd systemd-pam systemd-resolved \
         && dnf clean all; \
-    elif command -v apk >/dev/null; then \
-        apk add --no-cache bash ca-certificates curl python3; \
     else \
         exit 1; \
     fi

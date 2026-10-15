@@ -66,6 +66,7 @@ class ContainerCommands(unittest.TestCase):
         command = self.calls()[-1]
         self.assertEqual(command[-4:], ["pv-linux-fixture", "printf", "one two", "--literal"])
         self.assertEqual(command[1:3], ["--user", "dev"])
+        self.assertIn("HOME=/home/dev", command)
 
     def test_down_stops_then_removes_the_owned_container(self):
         result = self.run_script("down", "fixture")
