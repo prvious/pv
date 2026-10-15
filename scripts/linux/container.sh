@@ -28,10 +28,11 @@ case "$action" in
   up)
     [[ $# -le 1 ]] || usage
     image=${1:-pv-linux-test:$name}
+    mount_source=${worktree//\"/\"\"}
     docker run --detach --name "$container" --label "$owner_label=$worktree" \
       --privileged --cgroupns=private --env container=docker \
       --tmpfs /run --tmpfs /run/lock --tmpfs /tmp:exec \
-      --mount "type=bind,src=$worktree,dst=/src,readonly" "$image" /sbin/init
+      --mount "type=bind,\"src=$mount_source\",dst=/src,readonly" "$image" /sbin/init
     for attempt in {1..30}; do
       if docker exec "$container" test -S /run/dbus/system_bus_socket; then
         break
@@ -44,7 +45,16 @@ case "$action" in
     done
     docker exec "$container" loginctl enable-linger dev
     docker exec "$container" systemctl start user@1000.service
-    docker exec "$container" sh -c 'printf "nameserver 127.0.0.53\n" > /etc/resolv.conf'
+    docker exec "$container" sh -ec '
+      mkdir -p /etc/systemd/resolved.conf.d
+      {
+        printf "[Resolve]\n"
+        awk '\''$1 == "nameserver" { print "DNS=" $2 }
+          $1 == "search" || $1 == "domain" { $1 = "Domains="; print }'\'' /etc/resolv.conf
+      } > /etc/systemd/resolved.conf.d/pv-container.conf
+      systemctl restart systemd-resolved.service
+      printf "nameserver 127.0.0.53\n" > /etc/resolv.conf
+    '
     ;;
   exec)
     [[ $# -gt 0 ]] || usage
