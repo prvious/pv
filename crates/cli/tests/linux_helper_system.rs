@@ -38,6 +38,10 @@ const ENABLED_LINKS: [&str; 2] = [
     "/etc/systemd/system/sockets.target.wants/pv-helper.socket",
     "/run/systemd/system/sockets.target.wants/pv-helper.socket",
 ];
+const UNIT_ROLLBACK_PATHS: [&str; 2] = [
+    "/etc/systemd/system/pv-helper.socket.rollback",
+    "/etc/systemd/system/pv-helper.service.rollback",
+];
 const INSTALLATION_PATHS: [&str; 6] = [
     EXECUTABLE_DIRECTORY,
     WORK_DIRECTORY,
@@ -67,6 +71,7 @@ fi
 # Empty-path and native-unit preflight proved that these belong only to this fixture.
 rm -rf -- /usr/local/libexec/pv /var/lib/pv /etc/systemd/system/pv-helper.service.d
 rm -f -- /etc/systemd/system/pv-helper.socket /etc/systemd/system/pv-helper.service \
+    /etc/systemd/system/pv-helper.socket.rollback /etc/systemd/system/pv-helper.service.rollback \
     /run/pv-helper.sock /var/log/pv-helper.err.log \
     /etc/systemd/system/sockets.target.wants/pv-helper.socket \
     /run/systemd/system/sockets.target.wants/pv-helper.socket
@@ -93,6 +98,7 @@ fn systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes() -> R
     for path in INSTALLATION_PATHS
         .into_iter()
         .chain(ENABLED_LINKS)
+        .chain(UNIT_ROLLBACK_PATHS)
         .chain([LOG, CONTROL_DIRECTORY])
     {
         ensure!(
@@ -181,6 +187,35 @@ impl HelperFixture {
         let replacement_sha256 = checksum(&replacement)?;
         ensure!(original_sha256 != replacement_sha256);
         self.arm_cleanup()?;
+
+        root(&["/usr/bin/install", "-d", "-m", "0755", DROP_IN_DIRECTORY])?;
+        self.root_file(
+            "first-install-failure.sh",
+            "printf 'started\\n' > /run/pv-helper-system-test/first-install-started\nexec /usr/bin/sleep 150\n",
+            &format!("{CONTROL_DIRECTORY}/first-install-failure.sh"),
+            "0700",
+        )?;
+        self.root_file(
+            "first-install-failure.conf",
+            "[Service]\nExecStartPre=/bin/sh /run/pv-helper-system-test/first-install-failure.sh\n",
+            &format!("{DROP_IN_DIRECTORY}/10-pv-system-test.conf"),
+            "0644",
+        )?;
+        let failure = self
+            .install(&original, &original_sha256)
+            .err()
+            .context("initial activation must fail")?;
+        assert_eq!(
+            root_text(&[
+                "/usr/bin/cat",
+                &format!("{CONTROL_DIRECTORY}/first-install-started")
+            ])?,
+            "started\n"
+        );
+        self.remove_condition()?;
+        self.require_removed()
+            .with_context(|| format!("initial installation failed: {failure:#}"))?;
+        platform::remove_privileged_helper()?;
 
         self.install(&original, &original_sha256)?;
         let first = self.capture_process()?;
@@ -298,7 +333,111 @@ impl HelperFixture {
         );
         self.remove_condition()?;
 
-        platform::remove_privileged_helper()?;
+        root(&["/usr/bin/install", "-d", "-m", "0755", DROP_IN_DIRECTORY])?;
+        self.root_file(
+            "cleanup-warning.conf",
+            "[Service]\nExecStartPre=/usr/bin/chmod 0644 /usr/local/libexec/pv/pv-helper.rollback\n",
+            &format!("{DROP_IN_DIRECTORY}/10-pv-system-test.conf"),
+            "0644",
+        )?;
+        let outcome = platform::install_privileged_helper(
+            &original,
+            self.scratch.path(),
+            &original_sha256,
+            PRIVILEGED_HELPER_VERSION,
+            HELPER_PROTOCOL_VERSION,
+        )?;
+        ensure!(outcome.cleanup_warning().is_some(), "{outcome:?}");
+        self.capture_process()?;
+        assert_eq!(
+            checksum(Utf8Path::new(HELPER_EXECUTABLE_PATH))?,
+            original_sha256
+        );
+        assert_eq!(
+            checksum(Utf8Path::new(&format!("{HELPER_EXECUTABLE_PATH}.rollback")))?,
+            replacement_sha256
+        );
+        self.remove_condition()?;
+        for path in [
+            HELPER_EXECUTABLE_PATH,
+            HELPER_METADATA_PATH,
+            SOCKET_UNIT,
+            SERVICE_UNIT,
+        ] {
+            root(&["/usr/bin/rm", "--", &format!("{path}.rollback")])?;
+        }
+
+        root(&[
+            "/usr/bin/install",
+            "-o",
+            "root",
+            "-g",
+            "root",
+            "-m",
+            "0755",
+            HELPER_EXECUTABLE_PATH,
+            CANDIDATE,
+        ])?;
+        let owner_uid = self.owner_uid.to_string();
+        let removal_arguments = [
+            CANDIDATE,
+            "helper-lifecycle",
+            "remove",
+            "--owner-uid",
+            &owner_uid,
+            "--sha256",
+            &original_sha256,
+            "--helper-version",
+            "1.0.0",
+            "--protocol-version",
+            "2",
+        ];
+        let mut mismatched_metadata = metadata.clone();
+        mismatched_metadata["helper_version"] = json!("1.0.0");
+        self.root_file(
+            "mismatched-metadata.json",
+            &serde_json::to_string_pretty(&mismatched_metadata)?,
+            HELPER_METADATA_PATH,
+            "0600",
+        )?;
+        let before = root_text(&[
+            "/usr/bin/sha256sum",
+            HELPER_EXECUTABLE_PATH,
+            HELPER_METADATA_PATH,
+            SOCKET_UNIT,
+            SERVICE_UNIT,
+        ])?;
+        let live = self.capture_process()?;
+        let refused = SystemTestCommand::new("sudo")
+            .arg("-n")
+            .args(removal_arguments)
+            .output()?;
+        ensure!(
+            !refused.status.success(),
+            "mismatched installed identity was removed"
+        );
+        assert_eq!(
+            root_text(&[
+                "/usr/bin/sha256sum",
+                HELPER_EXECUTABLE_PATH,
+                HELPER_METADATA_PATH,
+                SOCKET_UNIT,
+                SERVICE_UNIT
+            ])?,
+            before
+        );
+        assert_eq!(self.capture_process()?, live);
+        self.root_file(
+            "restored-metadata.json",
+            &serde_json::to_string_pretty(&metadata)?,
+            HELPER_METADATA_PATH,
+            "0600",
+        )?;
+        let response = root(&removal_arguments)?;
+        assert_eq!(
+            serde_json::from_slice::<Option<String>>(&response.stdout)?,
+            None
+        );
         self.require_removed()?;
         platform::remove_privileged_helper()?;
         assert_eq!(
@@ -459,7 +598,11 @@ impl HelperFixture {
     }
 
     fn require_removed(&self) -> Result<()> {
-        for path in INSTALLATION_PATHS.into_iter().chain(ENABLED_LINKS) {
+        for path in INSTALLATION_PATHS
+            .into_iter()
+            .chain(ENABLED_LINKS)
+            .chain(UNIT_ROLLBACK_PATHS)
+        {
             ensure!(
                 !fs::path_entry_exists(Utf8Path::new(path))?,
                 "helper path remains: {path}"

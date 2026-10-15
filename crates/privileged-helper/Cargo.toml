@@ -17,3 +17,4 @@ platform = { path = "../platform" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 clap = { workspace = true }
+serde_json = { workspace = true }
