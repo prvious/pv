@@ -1,0 +1,24 @@
+---
+source: crates/cli/tests/linux_dns.rs
+expression: "(install, uninstall)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "",
+        stderr: "error: PV privileged-helper lifecycle is active; the OS lock is held on \"<tempdir>/home/.pv-helper-lifecycle.lock\"\n",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "",
+        stderr: "error: PV privileged-helper lifecycle is active; the OS lock is held on \"<tempdir>/home/.pv-helper-lifecycle.lock\"\n",
+    },
+)
