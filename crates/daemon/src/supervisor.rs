@@ -1595,8 +1595,8 @@ mod tests {
             .block_on(supervisor.start(spec))
             .context("start recorded process")?;
         let leader_pid = process.pid();
-        runtime.block_on(wait_for_test_path(&descendant_pid_path));
-        runtime.block_on(wait_for_test_path(&listener_ready_path));
+        runtime.block_on(wait_for_test_path(&descendant_pid_path))?;
+        runtime.block_on(wait_for_test_path(&listener_ready_path))?;
         let descendant_pid = state::fs::read_to_string(&descendant_pid_path)
             .context("read descendant pid")?
             .trim()
@@ -1664,14 +1664,16 @@ mod tests {
         ]
     }
 
-    async fn wait_for_test_path(path: &Utf8Path) {
+    async fn wait_for_test_path(path: &Utf8Path) -> Result<()> {
         for _attempt in 0..50 {
             if path.exists() {
-                return;
+                return Ok(());
             }
 
             sleep(Duration::from_millis(20)).await;
         }
+
+        bail!("{path} did not appear")
     }
 
     async fn wait_for_test_process_exit(pid: u32) -> Result<bool> {
