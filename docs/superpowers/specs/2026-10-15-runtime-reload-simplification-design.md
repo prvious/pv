@@ -4,11 +4,11 @@ Status: proposed 2026-10-15. The owner decided D1–D5 on 2026-10-15.
 
 ## Summary
 
-PV reloads the Caddy Gateway and FrankenPHP workers through a transaction that tries to undo a config Caddy has already accepted when a readiness check fails afterwards. Real Caddy can't get into that state, and the tests reach it only through a pv-fake mode that real Caddy doesn't have. This design removes that rollback. Once Caddy accepts a config, PV keeps it.
+PV reloads the Caddy Gateway and FrankenPHP workers through a transaction that tries to undo a config Caddy has already accepted when a readiness check fails afterwards. Real Caddy can't get into that state, and the tests reach it only through a pv-fake mode that real Caddy doesn't have. This design removes that rollback. Once a running Gateway or worker accepts a config through `/load`, PV keeps it.
 
 The design also makes four related changes:
 - It splits the 60-second readiness budget into a start budget and a short after-reload budget.
-- It stops capping admin requests with the readiness budget.
+- It stops capping `/load` with the readiness budget.
 - It checks runtime ownership once per change instead of before every admin request.
 - It gives workers a Caddy-level health route, like the Gateway's.
 
@@ -37,18 +37,18 @@ This replaces the earlier test-only plan to raise the short budgets to 1 s.
 
 ## Goals
 
-- Once Caddy accepts a config, PV keeps it. The only rollback is the one Caddy does itself.
+- Once a running Gateway or worker accepts a config through `/load`, PV keeps it. The only rollback after an accepted reload is the one Caddy does itself. Fresh starts are unchanged (see Non-Goals).
 - A readiness failure after an accepted reload replaces the runtime on the next pass, the same as an unknown `/load` outcome. Exception: the Gateway while pf is `drifted` or `unknown`.
 - Starting a runtime gets 60 s; a reload gets 5 s.
-- Admin requests keep their own timeouts, whatever readiness budget a test passes.
-- Ownership is checked when a change starts and before it is recorded as applied, not before every admin request.
+- `/load` keeps the admin client's own timeouts, whatever readiness budget a test passes. Readiness polling stays within its budget.
+- Ownership is checked at the transaction's boundaries and while waiting for readiness, not inside each admin request. The checks happen when a change starts, right after `/load`, before each readiness probe, and before the change is recorded as applied.
 - Every worker answers a PV-owned health route served by Caddy. Every worker readiness probe uses it.
 - Delete the tests and pv-fake controls that only exist for the removed behavior.
 
 ## Non-Goals
 
 - Changing the pf readiness policy. `PreserveRuntime` for the Gateway in `drifted`/`unknown` stays as it is. It came from a real outage (#304, #305), and it keeps pf trouble alone from stopping or restarting the Gateway.
-- Changing fresh starts. A new process that never becomes ready is still stopped, and the previous files are restored.
+- Changing fresh starts. A new process that never becomes ready is still stopped, and the previous files are restored. One exception, also unchanged: a worker that still holds a moving Project's routes (`preserve_staged_config`) keeps its promoted files and staged fingerprint, so the retry can prove them.
 - Changing rejected loads. Caddy keeps the old config, and PV restores the previous files and records the previous fingerprint.
 - Detecting PHP that is stopped behind a running Caddy. That needs a route that runs PHP; the owner chose a Caddy-level route (D3).
 - The ownership checks inside readiness polling (`wait_for_owned_readiness`). They let PV stop waiting as soon as a runtime exits.
@@ -105,19 +105,23 @@ The staged fingerprint still matters for worker moves. A Project moving from wor
   - The `PreserveRuntime` cap of 2 s (`PF_PUBLIC_READINESS_TIMEOUT`).
   - The fast-path probe and the targeted skip probe, at `min(budget, 1 s)`.
   - The foreign-listener probe, at 100 ms.
-- The `#[doc(hidden)]` test entry points keep one `readiness_timeout` argument, which overrides both budgets.
+- The `#[doc(hidden)]` test entry points keep one `readiness_timeout` argument. It replaces the start budget; the reload budget is the smaller of it and 5 s.
 
 ### Admin requests keep their own timeouts
 
 - Admin clients no longer call `.with_timeout(readiness.timeout)`.
 - `POST /load` uses the client defaults: connect 2 s, write 5 s, read 10 s, 15 s overall.
-- Readiness polling still bounds each `GET /config/` by the time left in its readiness budget (`wait_until_ready_with`).
+- Readiness polling still bounds each `GET /config/` by the time left in its readiness budget (`wait_until_ready`).
 - A test can therefore shorten readiness without cutting `/load` short. That removes the flake class above.
 - Tests that need an unknown `/load` outcome trigger it with `load_response_body: ["not json"]`. A 200 whose body PV can't parse is `RequestOutcomeUnknown` (`caddy_admin.rs` `successful_load_response_error`), so the result doesn't depend on timing.
 
 ### Ownership once per change
 
-- PV checks ownership when a change starts (`begin_runtime_transaction`). It checks again when it records the config as applied, because `record_applied_config` refuses a runtime that is no longer owned.
+- PV checks ownership at the transaction's boundaries and while waiting for readiness:
+  - when a change starts (`begin_runtime_transaction`);
+  - right after `/load` returns;
+  - before each readiness probe (`wait_for_owned_readiness`), so it stops waiting as soon as a runtime dies;
+  - when it records the config as applied, because `record_applied_config` refuses a runtime that is no longer owned.
 - Removed:
   - The per-request verifier: `CaddyAdminVerifier`, `runtime_ownership_verifier`, `verify_before_request` and the `load_caddyfile_with`/`wait_until_ready_with` verifier arguments.
   - The Unix-socket peer process-group check (`verify_peer_process_group`).
@@ -151,7 +155,7 @@ Four commits on one branch and PR, in this order (the owner chose one PR over a 
    - Remove `.with_timeout(readiness.timeout)` from admin clients.
    - Add the 60 s start and 5 s reload budgets.
    - Switch the three unknown-outcome tests (`gateway_runtime_move_retains_source_until_gateway_commit` ×2, `gateway_reconciliation_replaces_runtime_before_newer_desired_state`) to `load_response_body`.
-   - Delete pv-fake's `late_accept`, `late_apply_delay_ms`, `apply_after` and their contract test (`late_accepted_load_applies_after_its_client_disconnects`).
+   - Delete pv-fake's `late_accept` and `late_apply_delay_ms`, and the late branch of `apply_after`. `load_delay_ms` stays, with its delay inlined in `finish_load`. The late-accept contract test becomes `load_applies_after_its_client_disconnects`, because Caddy does that too.
    - Update DESIGN.md line 263 with the Gateway/worker exception.
 2. **Keep accepted configs.**
    - Remove the rollback machinery listed above, and route post-load readiness failures to `PreservePending`.
@@ -204,7 +208,7 @@ For the branch:
 
 ## Acceptance Criteria
 
-- No admin request is limited by a readiness budget.
+- No `/load` is limited by a readiness budget; only readiness polling is.
 - No code path sends a previous config back to Caddy after Caddy accepted a new one.
 - pv-fake no longer has `late_accept`, `late_apply_delay_ms` or `admin_statuses`, and `retain_previous_listeners` is gone or has a documented use.
 - No throttled stress failure on the remaining short-budget tests comes from a `/load` or a restore sharing a readiness budget.
