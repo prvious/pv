@@ -210,7 +210,7 @@ jobs:
           [record]
           enabled = true
           EOF
-          cargo nextest run --profile ci --user-config-file "$RUNNER_TEMP/nextest-user.toml" --all-features --locked --jobs 1 -p state -p config -p protocol -p resources -p self-update -p platform -p daemon -E 'package(state) | package(config) | package(protocol) | package(resources) | package(self-update) | (package(platform) & test(unsupported)) | binary(platform_preflight)'
+          cargo nextest run --profile ci --user-config-file "$RUNNER_TEMP/nextest-user.toml" --all-features --locked --jobs 1 -p state -p config -p protocol -p resources -p self-update -p platform -p daemon -E 'package(state) | package(config) | package(protocol) | package(resources) | package(self-update) | package(platform) | binary(platform_preflight) | test(runtime_stop::tests::)'
 
       - name: Export test recording
         if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
