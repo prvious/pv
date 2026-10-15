@@ -1341,6 +1341,23 @@ impl Database {
         rows.map(|row| Ok(row?)).collect()
     }
 
+    /// Forgets cleanups whose names a linked Project owns again, so cleanup never deletes that
+    /// Project's object. Only a previous PV version, which ignores the list, hands one out.
+    pub fn forget_reclaimed_cleanups(&mut self) -> Result<(), StateError> {
+        self.connection.execute(
+            "DELETE FROM pending_cleanups
+            WHERE EXISTS (
+                SELECT 1 FROM resource_allocations
+                WHERE resource_allocations.resource_name = pending_cleanups.resource_name
+                    AND resource_allocations.track = pending_cleanups.track
+                    AND resource_allocations.generated_name = pending_cleanups.generated_name
+            )",
+            [],
+        )?;
+
+        Ok(())
+    }
+
     /// Forgets a cleanup whose object is deleted, which also frees its names.
     pub fn complete_cleanup(&mut self, cleanup: &PendingCleanupRecord) -> Result<(), StateError> {
         self.connection.execute(

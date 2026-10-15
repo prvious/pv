@@ -979,6 +979,7 @@ pub(crate) async fn clean_up_removed_allocations(
     fallback_shutdown: Option<&watch::Receiver<bool>>,
 ) -> Result<(), DaemonError> {
     let mut database = Database::open(paths)?;
+    database.forget_reclaimed_cleanups()?;
     let mut cleanups_by_track = BTreeMap::<(String, String), Vec<PendingCleanupRecord>>::new();
     for cleanup in database.pending_cleanups()? {
         cleanups_by_track
@@ -1045,14 +1046,15 @@ async fn clean_up_track(
         }
         return Ok(());
     }
-    if !matches!(
-        installed_track(database, &resource.resource_name, &resource.track),
-        Ok(Some(_))
-    ) {
-        return Err(DaemonError::CleanupTrackNotInstalled {
-            resource: resource.resource_name.clone(),
-            track: resource.track.clone(),
-        });
+    match installed_track(database, &resource.resource_name, &resource.track) {
+        Ok(Some(_)) => {}
+        Ok(None) | Err(DaemonError::ManagedResourceTrackRemoved { .. }) => {
+            return Err(DaemonError::CleanupTrackNotInstalled {
+                resource: resource.resource_name.clone(),
+                track: resource.track.clone(),
+            });
+        }
+        Err(error) => return Err(error),
     }
     let Some(adapter) = catalog.adapter(&resource.resource_name) else {
         return Err(resources::ResourcesError::UnsupportedResourceAllocation {
@@ -1071,6 +1073,10 @@ async fn clean_up_track(
         fallback_shutdown,
     };
     reconcile_resource_track(paths, database, &mut reconciliation, resource, &[]).await?;
+    // Shutdown can stop reconciliation before the runtime is ready. The rows stay for next time.
+    if fallback_shutdown_requested(fallback_shutdown) {
+        return Ok(());
+    }
     let context = persisted_resource_runtime_context(paths, database, adapter, resource)?;
 
     for cleanup in cleanups {

@@ -327,7 +327,7 @@ pub enum DaemonError {
     ManagedResourceTrackRemoved { resource: String, track: String },
 
     #[error(
-        "`{resource}` track `{track}` isn't installed, so PV can't delete this object; reinstall the track, or uninstall it with --prune to delete its data"
+        "`{resource}` track `{track}` isn't installed, so PV can't delete this object; run `pv {resource}:install {track}` and PV deletes it"
     )]
     CleanupTrackNotInstalled { resource: String, track: String },
 

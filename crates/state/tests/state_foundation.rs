@@ -2633,6 +2633,56 @@ fn removing_a_discovered_worktree_lists_its_objects_and_keeps_their_names() -> R
 }
 
 #[test]
+fn cleanup_forgets_a_name_a_linked_project_owns_again() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let source = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+    let feat = database.link_discovered_project(discovered_input(
+        &source,
+        tempdir.path(),
+        "w1",
+        "feat",
+        ProjectMode::Served,
+    ))?;
+    let app_db = [ResourceAllocationInput {
+        allocation_name: "app".to_string(),
+        generated_name: "acme_feat_app".to_string(),
+    }];
+    database.replace_project_resource_allocations(&feat.id, "mysql", "8.0", &app_db)?;
+    database.replace_project_resource_allocations(&feat.id, "mysql", "8.4", &app_db)?;
+    database.remove_discovered_project(&feat.id)?;
+    // A previous PV version ignores the list, so after a rollback it can hand a listed name to a
+    // new Project.
+    let connection = Connection::open(paths.db())?;
+    connection.execute_batch(
+        "CREATE TEMP TABLE hidden AS SELECT * FROM pending_cleanups;
+        DELETE FROM pending_cleanups;",
+    )?;
+    let other = link_test_project(&mut database, tempdir.path(), "other", "other.test")?;
+    database.replace_project_resource_allocations(&other.id, "mysql", "8.4", &app_db)?;
+    connection.execute_batch("INSERT INTO pending_cleanups SELECT * FROM hidden;")?;
+
+    database.forget_reclaimed_cleanups()?;
+    let remaining = database
+        .pending_cleanups()?
+        .into_iter()
+        .map(|cleanup| (cleanup.resource_name, cleanup.track, cleanup.generated_name))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        remaining,
+        [(
+            "mysql".to_string(),
+            "8.0".to_string(),
+            "acme_feat_app".to_string()
+        )]
+    );
+
+    Ok(())
+}
+
+#[test]
 fn unlinking_discovered_projects_opts_out_and_unlinking_a_source_unlinks_them() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
