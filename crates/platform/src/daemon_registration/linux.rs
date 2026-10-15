@@ -151,6 +151,12 @@ async fn inspect(
         Err(error) => return Err(error.into()),
     };
     let unit = native_proxy(manager.connection(), path.clone(), UNIT_INTERFACE).await?;
+    let drop_ins: Vec<String> = unit.get_property("DropInPaths").await?;
+    if let Some(path) = drop_ins.first() {
+        return Err(PlatformError::DaemonRegistrationConflict {
+            path: path.as_str().into(),
+        });
+    }
     let service = native_proxy(manager.connection(), path, SERVICE_INTERFACE).await?;
     let load_state: String = unit.get_property("LoadState").await?;
     let fragment_path = unit.get_property::<String>("FragmentPath").await?;
@@ -260,6 +266,20 @@ fn run_job(
         if operation == "StopUnit" && previous.is_none() {
             return Ok(());
         }
+        if let Some(status) = &previous
+            && matches!(
+                inspect_daemon_registration_file(&status.fragment_path, None),
+                DaemonRegistrationFileState::Stale { .. }
+            )
+        {
+            super::write_daemon_registration_file(
+                &status.fragment_path,
+                &DaemonRegistrationConfig,
+            )?;
+        }
+        // Reload before stopping: a repaired file can still have a cached KillMode=control-group.
+        manager.call::<_, _, ()>("Reload", &()).await?;
+        let previous = require_owned_unit(&manager).await?;
         manager.call::<_, _, ()>("Subscribe", &()).await?;
         let mut removed = manager.receive_signal("JobRemoved").await?;
         let job: OwnedObjectPath = manager

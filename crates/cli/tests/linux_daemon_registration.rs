@@ -19,6 +19,7 @@ struct TestEnvironment {
     operations: RefCell<Vec<&'static str>>,
     fail_next_enable: Cell<bool>,
     registration_status: Option<DaemonRegistrationStatus>,
+    registration_conflict: Option<Utf8PathBuf>,
 }
 
 impl TestEnvironment {
@@ -28,6 +29,7 @@ impl TestEnvironment {
             operations: RefCell::new(Vec::new()),
             fail_next_enable: Cell::new(false),
             registration_status: None,
+            registration_conflict: None,
         }
     }
 
@@ -108,6 +110,9 @@ impl Environment for TestEnvironment {
     fn inspect_daemon_registration(
         &self,
     ) -> Result<Option<DaemonRegistrationStatus>, PlatformError> {
+        if let Some(path) = &self.registration_conflict {
+            return Err(PlatformError::DaemonRegistrationConflict { path: path.clone() });
+        }
         self.registration_status
             .clone()
             .map(Some)
@@ -175,6 +180,27 @@ fn linux_disable_stops_then_removes_the_registration_through_the_environment() -
 }
 
 #[test]
+fn linux_restart_restores_persistent_enablement_before_starting_the_daemon() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let environment = TestEnvironment::new(&tempdir.path().join("home"));
+    environment.write_unit()?;
+    environment.fail_next_enable.set(true);
+
+    let first = run_pv(&["daemon:restart"], &environment)?;
+    let retry = run_pv(&["daemon:restart"], &environment)?;
+    assert_eq!(first.exit_code, ExitCode::FAILURE);
+    assert_eq!(retry.exit_code, ExitCode::FAILURE);
+    assert_debug_snapshot!(environment.operations.borrow().clone(), @r#"
+    [
+        "enable",
+        "enable",
+        "restart",
+    ]
+    "#);
+    Ok(())
+}
+
+#[test]
 fn linux_status_and_doctor_report_an_unavailable_manager_and_keep_other_checks()
 -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -236,6 +262,58 @@ fn linux_status_and_doctor_show_native_properties_and_reject_a_foreign_loaded_un
     }
     snapshot_settings(tempdir.path()).bind(|| {
         assert_debug_snapshot!(observed);
+    });
+    Ok(())
+}
+
+#[test]
+fn linux_doctor_rejects_an_owned_daemon_that_is_not_loaded_and_running() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let mut environment = TestEnvironment::new(&tempdir.path().join("home"));
+    environment.write_unit()?;
+    let mut observed = Vec::new();
+    for (load_state, active_state, sub_state, main_pid) in [
+        ("loaded", "inactive", "dead", 0),
+        ("loaded", "failed", "failed", 0),
+        ("loaded", "deactivating", "stop-sigterm", 42),
+        ("loaded", "active", "running", 0),
+        ("error", "active", "running", 42),
+    ] {
+        environment.registration_status = Some(DaemonRegistrationStatus {
+            load_state: load_state.to_owned(),
+            active_state: active_state.to_owned(),
+            sub_state: sub_state.to_owned(),
+            main_pid,
+            fragment_path: environment.unit_path(),
+        });
+        let output = run_pv(&["doctor", "--json"], &environment)?;
+        let report: Value = serde_json::from_str(&output.stdout)?;
+        let check = manager_check(&report)?;
+        assert_eq!(check["status"], "fail");
+        observed.push(check.clone());
+    }
+    snapshot_settings(tempdir.path()).bind(|| {
+        assert_debug_snapshot!(observed);
+    });
+    Ok(())
+}
+
+#[test]
+fn linux_doctor_reports_configuration_repair_for_a_foreign_drop_in() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let mut environment = TestEnvironment::new(&tempdir.path().join("home"));
+    environment.write_unit()?;
+    environment.registration_conflict = Some(
+        environment
+            .unit_path()
+            .with_extension("service.d")
+            .join("override.conf"),
+    );
+    let output = run_pv(&["doctor", "--json"], &environment)?;
+    let report: Value = serde_json::from_str(&output.stdout)?;
+    let check = manager_check(&report)?;
+    snapshot_settings(tempdir.path()).bind(|| {
+        assert_debug_snapshot!(check);
     });
     Ok(())
 }
