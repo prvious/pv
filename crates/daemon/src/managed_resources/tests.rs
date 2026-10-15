@@ -573,7 +573,7 @@ async fn cleanup_starts_a_stopped_track_to_drop_listed_databases_then_stops_it()
     let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
     let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
     seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
-    reserve_postgres_port(&paths, 19_072)?;
+    reserve_postgres_port(&paths)?;
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
     // The fake keeps one file per database, so it survives the stop below as a real one would.
     let database_file = paths
