@@ -100,26 +100,12 @@ fn systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes() -> R
             "refusing existing system path {path}"
         );
     }
-    for operation in ["list-unit-files", "list-units"] {
-        let output = checked(
-            "/usr/bin/systemctl",
-            &[
-                operation,
-                "--all",
-                "--no-legend",
-                "--no-pager",
-                "--plain",
-                "pv-helper.socket",
-                "pv-helper.service",
-                "pv-helper-system-cleanup.timer",
-                "pv-helper-system-cleanup.service",
-            ],
-        )?;
-        ensure!(
-            text(output)?.trim().is_empty(),
-            "refusing existing native units"
-        );
-    }
+    require_units_absent(&[
+        "pv-helper.socket",
+        "pv-helper.service",
+        "pv-helper-system-cleanup.timer",
+        "pv-helper-system-cleanup.service",
+    ])?;
     root(&["/usr/bin/true"])?;
     let mut fixture = HelperFixture {
         scratch: tempdir()?,
@@ -559,6 +545,28 @@ fn root_text(arguments: &[&str]) -> Result<String> {
 
 fn checked(program: &str, arguments: &[&str]) -> Result<Output> {
     checked_output(SystemTestCommand::new(program).args(arguments))
+}
+
+fn require_units_absent(units: &[&str]) -> Result<()> {
+    for operation in ["list-unit-files", "list-units"] {
+        let mut command = SystemTestCommand::new("/usr/bin/systemctl");
+        command
+            .args([operation, "--all", "--no-legend", "--no-pager", "--plain"])
+            .args(units);
+        let output = command.output()?;
+        // Systemd 249 returns ENOENT for an empty unit-file listing.
+        ensure!(
+            (output.status.success()
+                || (operation == "list-unit-files" && output.status.code() == Some(1)))
+                && String::from_utf8_lossy(&output.stdout).trim().is_empty()
+                && output.stderr.is_empty(),
+            "cannot establish absent units with {command:?}: {}: {}{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    Ok(())
 }
 
 fn checked_output(command: &mut SystemTestCommand) -> Result<Output> {
