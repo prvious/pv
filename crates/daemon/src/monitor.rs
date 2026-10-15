@@ -188,6 +188,9 @@ pub enum MonitorPause {
     AfterPermission,
     /// In the gate, after permission and before exec.
     GateAfterPermission,
+    /// On Linux, after EOF with no held status and either known pre-runtime name still visible.
+    #[cfg(target_os = "linux")]
+    AfterGateEof,
     /// During a log rotation, before the copy.
     RotationCopy,
 }
@@ -200,6 +203,8 @@ impl MonitorPause {
             Self::BeforePermission => "before_permission",
             Self::AfterPermission => "after_permission",
             Self::GateAfterPermission => "gate_after_permission",
+            #[cfg(target_os = "linux")]
+            Self::AfterGateEof => "after_gate_eof",
             Self::RotationCopy => "rotation_copy",
         }
     }
