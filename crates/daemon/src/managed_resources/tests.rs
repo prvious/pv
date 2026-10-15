@@ -567,6 +567,84 @@ async fn postgres_reconciliation_creates_database_allocation_and_renders_env() -
 }
 
 #[tokio::test]
+async fn cleanup_starts_a_stopped_track_to_drop_listed_databases_then_stops_it() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
+    let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
+    seed_postgres_fixture_artifact(&paths, POSTGRES_TRACK)?;
+    reserve_postgres_port(&paths, 19_072)?;
+    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
+    // The fake keeps one file per database, so it survives the stop below as a real one would.
+    let database_file = paths
+        .resource_data_dir("postgres", POSTGRES_TRACK)
+        .join("databases/project_app_db");
+    let created = state::fs::path_entry_exists(&database_file)?;
+
+    // Git dropped the worktree, and the run stopped the Postgres no Project uses anymore.
+    Database::open(&paths)?.remove_discovered_project(&project.id)?;
+    super::stop_undemanded_system_resource_runtimes(&paths, None).await?;
+    super::clean_up_removed_allocations(&paths, None, None).await?;
+    let database = Database::open(&paths)?;
+    let postgres_status = database
+        .runtime_observed_states()?
+        .into_iter()
+        .find(|state| {
+            state.subject
+                == RuntimeSubject::Resource {
+                    name: "postgres".to_owned(),
+                    track: POSTGRES_TRACK.to_owned(),
+                }
+        })
+        .map(|state| state.status);
+
+    assert!(created);
+    assert!(!state::fs::path_entry_exists(&database_file)?);
+    assert_eq!(database.pending_cleanups()?, []);
+    assert_eq!(postgres_status, Some(RuntimeObservedStatus::Stopped));
+    runtimes.cleanup().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn cleanup_waits_for_an_uninstalled_track_unless_its_data_is_gone() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    // Postgres 17 was never installed here, as after `pv postgres:uninstall`.
+    let project = link_project_with_postgres_track(
+        &paths,
+        &tempdir.path().join("project"),
+        "acme.test",
+        "17",
+    )?;
+    let mut database = Database::open(&paths)?;
+    database.replace_project_resource_allocations(
+        &project.id,
+        "postgres",
+        "17",
+        &[ResourceAllocationInput {
+            allocation_name: "app-db".to_owned(),
+            generated_name: "project_app_db".to_owned(),
+        }],
+    )?;
+    database.remove_discovered_project(&project.id)?;
+    let data_dir = paths.resource_data_dir("postgres", "17");
+    state::fs::ensure_user_dir(&data_dir)?;
+
+    super::clean_up_removed_allocations(&paths, None, None).await?;
+    let waiting = Database::open(&paths)?.pending_cleanups()?;
+    // `--prune` deletes the data directory, and the database with it.
+    state::fs::delete_dir_all(&data_dir)?;
+    super::clean_up_removed_allocations(&paths, None, None).await?;
+
+    assert_debug_snapshot!(waiting);
+    assert_eq!(Database::open(&paths)?.pending_cleanups()?, []);
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn postgres_project_demand_installs_missing_fixture_track_before_start() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

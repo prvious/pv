@@ -326,6 +326,11 @@ pub enum DaemonError {
     #[error("Managed Resource runtime `{resource}` track `{track}` is marked removed")]
     ManagedResourceTrackRemoved { resource: String, track: String },
 
+    #[error(
+        "`{resource}` track `{track}` isn't installed, so PV can't delete this object; run `pv {resource}:install {track}` and PV deletes it"
+    )]
+    CleanupTrackNotInstalled { resource: String, track: String },
+
     #[error("Managed Resource runtime `{resource}` track `{track}` is missing port `{port}`")]
     ManagedResourcePortMissing {
         resource: String,

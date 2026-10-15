@@ -22,6 +22,12 @@ PROJECTS
 ⚠  acme.test  env warning
    APP_URL already exists outside the PV block
 
+WORKTREE CLEANUP
+⚠  mysql 8.0  acme_feat_app
+   `mysql` track `8.0` isn't installed, so PV can't delete this object; reinstall the track, or
+   uninstall it with --prune to delete its data
+○  redis 8.8  acme-feat.cache.
+
 RECENT ERRORS
 ○  none
 

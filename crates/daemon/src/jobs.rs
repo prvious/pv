@@ -2711,6 +2711,18 @@ async fn complete_system_reconciliation_with_progress(
             .await
             .map(ReconciliationOutcome::Completed),
     };
+    // The Gateway now runs without removed worktrees' routes, so their data can go. Cleanup keeps
+    // its failures on the cleanup list instead of failing this job.
+    if matches!(gateway_result, Ok(ReconciliationOutcome::Completed(_)))
+        && let Err(error) = crate::managed_resources::clean_up_removed_allocations(
+            paths,
+            runtime_catalog,
+            fallback_shutdown,
+        )
+        .await
+    {
+        structured_log::worktree_cleanup_failed(paths, &error.to_string());
+    }
     let (project_report, gateway_summary) = match (
         resources_result,
         project_result,

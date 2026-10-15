@@ -1427,6 +1427,11 @@ fn migrated_project_resource_state_round_trips_through_public_apis() -> Result<(
             "retired_resource_allocations",
             include_str!("../src/sql/013_retired_resource_allocations.sql"),
         ),
+        Migration::new(
+            16,
+            "pending_cleanups",
+            include_str!("../src/sql/016_pending_cleanups.sql"),
+        ),
     ];
     let mut database = state::testing::open_with_migrations(&paths, &upgraded_migrations)?;
     let before = (
@@ -2557,6 +2562,129 @@ fn held_worktrees_demand_no_php_worker_until_their_first_reconciliation() -> Res
     assert_eq!(held, ([worktree.id].into_iter().collect(), false));
     // Ordinary Projects are never held.
     assert_eq!(released, (Default::default(), true));
+
+    Ok(())
+}
+
+#[test]
+fn removing_a_discovered_worktree_lists_its_objects_and_keeps_their_names() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let source = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+    let feat = database.link_discovered_project(discovered_input(
+        &source,
+        tempdir.path(),
+        "w1",
+        "feat",
+        ProjectMode::Served,
+    ))?;
+    let app_db = [ResourceAllocationInput {
+        allocation_name: "app".to_string(),
+        generated_name: "acme_feat_app".to_string(),
+    }];
+    let cache = [ResourceAllocationInput {
+        allocation_name: "cache".to_string(),
+        generated_name: "acme-feat.cache.".to_string(),
+    }];
+    // An old-track database, a current one, and an allocation removed from config.
+    database.replace_project_resource_allocations(&feat.id, "mysql", "8.0", &app_db)?;
+    database.replace_project_resource_allocations(&feat.id, "mysql", "8.4", &app_db)?;
+    database.replace_project_resource_allocations(&feat.id, "redis", "8.8", &cache)?;
+    database.replace_project_resource_allocations(&feat.id, "redis", "8.8", &[])?;
+    // Unlinking by hand keeps the data, so it lists nothing.
+    let unlinked_by_hand = database.link_discovered_project(discovered_input(
+        &source,
+        tempdir.path(),
+        "w2",
+        "kept",
+        ProjectMode::Served,
+    ))?;
+    database.unlink_project(&unlinked_by_hand.id)?;
+
+    database.remove_discovered_project(&feat.id)?;
+    let listed = database.pending_cleanups()?;
+    let recreated = database.link_discovered_project(discovered_input(
+        &source,
+        tempdir.path(),
+        "w3",
+        "feat",
+        ProjectMode::Served,
+    ))?;
+    let other = link_test_project(&mut database, tempdir.path(), "other", "other.test")?;
+    let reserved_name =
+        database.replace_project_resource_allocations(&other.id, "mysql", "8.4", &app_db);
+    database.record_cleanup_failure(&listed[0], "mysql 8.0 isn't installed")?;
+    database.complete_cleanup(&listed[1])?;
+    let after_progress = database.pending_cleanups()?;
+
+    assert_debug_snapshot!(listed);
+    assert_eq!(recreated.slug, "acme-feat-1");
+    assert!(matches!(
+        reserved_name,
+        Err(StateError::ResourceAllocationGeneratedNameCollision { track, .. }) if track == "8.4"
+    ));
+    assert_debug_snapshot!(
+        "removing_a_discovered_worktree_after_progress",
+        after_progress
+    );
+
+    Ok(())
+}
+
+#[test]
+fn cleanup_forgets_a_name_a_linked_project_owns_again() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let source = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
+    let feat = database.link_discovered_project(discovered_input(
+        &source,
+        tempdir.path(),
+        "w1",
+        "feat",
+        ProjectMode::Served,
+    ))?;
+    let app_db = [ResourceAllocationInput {
+        allocation_name: "app".to_string(),
+        generated_name: "acme_feat_app".to_string(),
+    }];
+    let cache = [ResourceAllocationInput {
+        allocation_name: "cache".to_string(),
+        generated_name: "acme-feat.cache.".to_string(),
+    }];
+    database.replace_project_resource_allocations(&feat.id, "mysql", "8.0", &app_db)?;
+    database.replace_project_resource_allocations(&feat.id, "mysql", "8.4", &app_db)?;
+    database.replace_project_resource_allocations(&feat.id, "redis", "8.8", &cache)?;
+    database.remove_discovered_project(&feat.id)?;
+    // A previous PV version ignores the list, so after a rollback it can hand a listed name to a
+    // new Project. That Project still owns its object after moving it to another track.
+    let connection = Connection::open(paths.db())?;
+    connection.execute_batch(
+        "CREATE TEMP TABLE hidden AS SELECT * FROM pending_cleanups;
+        DELETE FROM pending_cleanups;",
+    )?;
+    let other = link_test_project(&mut database, tempdir.path(), "other", "other.test")?;
+    database.replace_project_resource_allocations(&other.id, "redis", "8.8", &cache)?;
+    database.replace_project_resource_allocations(&other.id, "mysql", "8.4", &app_db)?;
+    database.replace_project_resource_allocations(&other.id, "mysql", "9.0", &app_db)?;
+    connection.execute_batch("INSERT INTO pending_cleanups SELECT * FROM hidden;")?;
+
+    database.forget_reclaimed_cleanups()?;
+    let remaining = database
+        .pending_cleanups()?
+        .into_iter()
+        .map(|cleanup| (cleanup.resource_name, cleanup.track, cleanup.generated_name))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        remaining,
+        [(
+            "mysql".to_string(),
+            "8.0".to_string(),
+            "acme_feat_app".to_string()
+        )]
+    );
 
     Ok(())
 }
