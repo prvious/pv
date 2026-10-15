@@ -14,7 +14,10 @@ use std::os::unix::process::CommandExt;
 mod implementation;
 
 pub use implementation::ProcessExitWatch;
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+#[path = "process/linux.rs"]
+mod implementation;
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 #[path = "process/unsupported.rs"]
 mod implementation;
 
@@ -32,13 +35,16 @@ pub struct ProcessIdentity {
     pub start_identity: ProcessStartIdentity,
 }
 
+/// A process birth token, meaningful only together with its [`BootSessionId`].
+/// Linux measures it since boot; it is not a portable wall-clock timestamp.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProcessStartIdentity {
     pub seconds: u64,
     pub microseconds: u64,
 }
 
-/// What a watched process did since [`ProcessExitWatch::try_events`] last collected its events.
+/// Events observed by [`ProcessExitWatch::try_events`]. Linux observes exits only;
+/// exec confirmation belongs to the monitor's gate protocol.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ProcessEvents {
     /// The process replaced its program with `exec`. Its pid and birth identity are unchanged.
@@ -95,8 +101,8 @@ pub fn inspect_process_start_identity(
     implementation::inspect_process_start_identity(pid)
 }
 
-/// Whether `pid` has exited and is waiting for its parent to reap it. `false` for a running
-/// process, one still exiting, or none at all.
+/// Whether `pid` is a zombie waiting to be reaped, or in Linux's dead state.
+/// Returns `false` for a live or absent process.
 pub fn process_is_zombie(pid: u32) -> Result<bool, crate::PlatformError> {
     implementation::process_is_zombie(pid)
 }
