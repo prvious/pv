@@ -14,7 +14,8 @@ use state::{Database, PortOwner, PvPaths, fs};
 use tokio::runtime::{Builder, Runtime};
 
 use super::{
-    HelperFixture, checked, checksum, root, root_text, service_property, text, with_helper_fixture,
+    HelperFixture, checked, checksum, require_units_absent, root, root_text, service_property,
+    text, with_helper_fixture,
 };
 
 const CONTROL: &str = "/run/pv-dns-system-test";
@@ -149,26 +150,11 @@ fn preflight() -> Result<()> {
             "start NetworkManager before running the Fedora DNS test"
         );
     }
-    for operation in ["list-unit-files", "list-units"] {
-        ensure!(
-            text(checked(
-                "/usr/bin/systemctl",
-                &[
-                    operation,
-                    "--all",
-                    "--no-legend",
-                    "--no-pager",
-                    "--plain",
-                    "pv-dns.service",
-                    "pv-dns-system-cleanup.timer",
-                    "pv-dns-system-cleanup.service"
-                ]
-            )?)?
-            .trim()
-            .is_empty(),
-            "refusing existing native DNS units"
-        );
-    }
+    require_units_absent(&[
+        "pv-dns.service",
+        "pv-dns-system-cleanup.timer",
+        "pv-dns-system-cleanup.service",
+    ])?;
     Ok(())
 }
 
