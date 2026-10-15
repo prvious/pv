@@ -579,14 +579,22 @@ async fn reload(manager: &Proxy<'_>) -> Result<(), PlatformError> {
     bounded_call(manager, "Reload", &()).await
 }
 async fn enable(manager: &Proxy<'_>, runtime: bool) -> Result<(), PlatformError> {
-    let _: (bool, Vec<(String, String, String)>) =
-        bounded_call(manager, "EnableUnitFiles", &([SOCKET_UNIT], runtime, false)).await?;
+    let _: (bool, Vec<(String, String, String)>) = bounded_call(
+        manager,
+        "EnableUnitFiles",
+        &([SOCKET_UNIT].as_slice(), runtime, false),
+    )
+    .await?;
     Ok(())
 }
 async fn disable(manager: &Proxy<'_>) -> Result<(), PlatformError> {
     for runtime in [false, true] {
-        let _: Vec<(String, String, String)> =
-            bounded_call(manager, "DisableUnitFiles", &([SOCKET_UNIT], runtime)).await?;
+        let _: Vec<(String, String, String)> = bounded_call(
+            manager,
+            "DisableUnitFiles",
+            &([SOCKET_UNIT].as_slice(), runtime),
+        )
+        .await?;
     }
     Ok(())
 }
