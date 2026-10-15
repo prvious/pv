@@ -1,13 +1,95 @@
 use std::future::Future;
+#[cfg(test)]
+use std::io::{self, Read};
 use std::pin::pin;
 use std::time::Duration;
 
 use async_io::Timer;
+use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::StreamExt;
 use futures_util::future::{Either, select};
+#[cfg(test)]
+use rustix::fs::{Mode, OFlags, open};
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedObjectPath;
 use zbus::{Connection, Proxy, proxy};
+
+use crate::PlatformError;
+use crate::helper::linux as root_files;
+
+const PV_MARKER: &str = "# Managed by PV";
+
+#[cfg(test)]
+#[expect(
+    clippy::disallowed_types,
+    reason = "system unit inspection owns a native NOFOLLOW/NONBLOCK-validated descriptor"
+)]
+type UnitFile = std::fs::File;
+
+#[cfg(test)]
+pub(crate) fn read_unit(path: &Utf8Path) -> io::Result<Option<String>> {
+    let descriptor = match open(
+        path.as_std_path(),
+        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+        Mode::empty(),
+    ) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::NOENT) => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    let mut file = UnitFile::from(descriptor);
+    if !file.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "system unit is not a regular file",
+        ));
+    }
+    let mut content = String::new();
+    file.read_to_string(&mut content)?;
+    Ok(Some(content))
+}
+
+pub(crate) fn read_owned_unit(path: &Utf8Path) -> Result<Option<Vec<u8>>, PlatformError> {
+    let content = root_files::read_root_file(path, 0o644)?;
+    if let Some(content) = &content
+        && !std::str::from_utf8(content)
+            .ok()
+            .is_some_and(|content| content.lines().any(|line| line.trim() == PV_MARKER))
+    {
+        return Err(PlatformError::SystemIntegration(format!(
+            "systemd unit is not PV-owned: {path}; inspect it with an administrator before retrying"
+        )));
+    }
+    Ok(content)
+}
+
+pub(crate) fn require_no_candidate(path: &Utf8Path) -> Result<(), PlatformError> {
+    let candidate = Utf8PathBuf::from(format!("{path}.candidate"));
+    if root_files::read_root_file(&candidate, 0o644)?.is_some() {
+        return Err(PlatformError::SystemIntegration(format!(
+            "retained unit candidate requires administrator inspection before retrying: {candidate}"
+        )));
+    }
+    Ok(())
+}
+
+pub(crate) fn write_owned_unit(path: &Utf8Path, content: &str) -> Result<(), PlatformError> {
+    let parent = path.parent().ok_or_else(|| {
+        PlatformError::SystemIntegration(format!("systemd unit has no parent directory: {path}"))
+    })?;
+    root_files::validate_directory_chain(parent, false)?;
+    read_owned_unit(path)?;
+    require_no_candidate(path)?;
+    let candidate = Utf8PathBuf::from(format!("{path}.candidate"));
+    root_files::write_root_file(&candidate, content.as_bytes(), 0o644)?;
+    root_files::rename(&candidate, path)?;
+    if read_owned_unit(path)?.as_deref() != Some(content.as_bytes()) {
+        return Err(PlatformError::SystemIntegration(format!(
+            "systemd unit bytes did not match after write: {path}"
+        )));
+    }
+    Ok(())
+}
 
 pub(crate) async fn native_proxy(
     connection: &Connection,
