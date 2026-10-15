@@ -218,7 +218,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::collections::BTreeSet;
     use std::ffi::OsString;
-    use std::io;
+    use std::io::{self, Write};
     use std::path::PathBuf;
     use std::process::ExitCode;
     use std::slice;
@@ -226,21 +226,23 @@ mod tests {
     use anyhow::{Context, Result};
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
-    use insta::assert_snapshot;
+    use insta::{Settings, assert_debug_snapshot, assert_snapshot};
     use platform::{
         ActivePfRedirectInspection, LowPortInspection, LowPortState, PfRedirectConfig,
         PlatformError, PlatformTarget, PortOwner as ListenerOwner, render_socket_proxy_units,
+        socket_proxy_unit_names,
     };
     use serde_json::Value;
     use state::{
-        Database, GatewayPort, PortOwner, PortRequest, PvPaths, RuntimeObservedStatus,
-        RuntimeSubject, StateError, fs,
+        Database, GatewayPort, HelperLifecycleLock, PortOwner, PortRequest, PvPaths,
+        RuntimeObservedStatus, RuntimeSubject, StateError, fs,
     };
 
     use crate::args::PortsStatusArgs;
     use crate::environment::Environment;
     use crate::error::ExecuteError;
     use crate::output::{Presentation, Streams};
+    use crate::run_with_environment;
 
     struct TestEnvironment {
         home: Utf8PathBuf,
@@ -445,6 +447,125 @@ mod tests {
         assert_eq!(environment.removals.get(), 0);
         assert_eq!(environment.reconciliation_requests.get(), 0);
         Ok((exit, value))
+    }
+
+    struct OverlappingMutations<'a> {
+        environment: &'a TestEnvironment,
+        preparation_complete: bool,
+        attempts: Vec<(&'static str, ExitCode, String)>,
+    }
+
+    impl Write for OverlappingMutations<'_> {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            if self.attempts.is_empty() {
+                let paths = self.environment.paths();
+                let Some(database) = Database::open_read_only(&paths).map_err(io::Error::other)?
+                else {
+                    return Ok(buffer.len());
+                };
+                self.preparation_complete =
+                    database.assigned_ports().map_err(io::Error::other)?.len() == 2;
+                for name in socket_proxy_unit_names() {
+                    self.preparation_complete &=
+                        fs::path_entry_exists(&paths.ports_config().join(name))
+                            .map_err(io::Error::other)?;
+                }
+                if !self.preparation_complete {
+                    return Ok(buffer.len());
+                }
+                assert!(matches!(
+                    HelperLifecycleLock::acquire(&paths),
+                    Err(StateError::HelperLifecycleLockHeld { .. })
+                ));
+                for command in ["ports:uninstall", "ports:install"] {
+                    let mut stdout = Vec::new();
+                    let mut stderr = Vec::new();
+                    let outcome = run_with_environment(
+                        ["pv", command],
+                        self.environment,
+                        &mut stdout,
+                        &mut stderr,
+                    )
+                    .map_err(io::Error::other)?;
+                    self.attempts.push((
+                        command,
+                        outcome,
+                        String::from_utf8(stderr).map_err(io::Error::other)?,
+                    ));
+                }
+            }
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn overlapping_port_mutations_are_rejected_until_preparation_failure_releases_cli_lock()
+    -> Result<()> {
+        let directory = tempdir()?;
+        let first = TestEnvironment::new(directory.path());
+        let second = TestEnvironment::new(directory.path());
+        let config = seed_gateway_ports(&first)?;
+        let paths = first.paths();
+        let assignments = Database::open_read_only(&paths)?
+            .context("missing seeded database")?
+            .assigned_ports()?;
+        let mut probe = OverlappingMutations {
+            environment: &second,
+            preparation_complete: false,
+            attempts: Vec::new(),
+        };
+        let mut stderr = Vec::new();
+        let failed =
+            run_with_environment(["pv", "ports:install"], &first, &mut probe, &mut stderr)?;
+        assert_eq!(failed, ExitCode::FAILURE);
+        assert!(
+            probe.preparation_complete,
+            "{}",
+            String::from_utf8_lossy(&stderr)
+        );
+        assert_eq!(probe.attempts.len(), 2);
+        for (command, outcome, stderr) in &probe.attempts {
+            assert_eq!(*outcome, ExitCode::FAILURE, "{command}: {stderr}");
+        }
+        assert!(first.applications.borrow().is_empty());
+        assert!(second.applications.borrow().is_empty());
+        assert_eq!(second.removals.get(), 0);
+        assert_eq!(Database::open(&paths)?.assigned_ports()?, assignments);
+        assert_prepared(&paths, &config)?;
+        let mut settings = Settings::clone_current();
+        settings.add_filter(directory.path().as_str(), "<tempdir>");
+        settings.bind(|| assert_debug_snapshot!(probe.attempts));
+
+        let mut stdout = Vec::new();
+        stderr.clear();
+        let retry =
+            run_with_environment(["pv", "ports:install"], &second, &mut stdout, &mut stderr)?;
+        assert_eq!(retry, ExitCode::SUCCESS);
+        assert!(stderr.is_empty());
+        assert_eq!(
+            second.applications.borrow().as_slice(),
+            slice::from_ref(&config)
+        );
+        let assignments = Database::open(&paths)?.assigned_ports()?;
+        assert_eq!(assignments.len(), 2);
+        for (kind, port) in [
+            (GatewayPort::Http, config.http_port),
+            (GatewayPort::Https, config.https_port),
+        ] {
+            assert_eq!(
+                assignments
+                    .iter()
+                    .find(|assignment| assignment.owner == PortOwner::Gateway(kind))
+                    .map(|assignment| assignment.port),
+                Some(port)
+            );
+        }
+        assert_prepared(&paths, &config)?;
+        Ok(())
     }
 
     #[test]
