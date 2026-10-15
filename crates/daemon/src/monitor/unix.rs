@@ -1,8 +1,11 @@
 use std::fmt::Write as _;
 use std::io::{self, BufRead as _, BufReader, Write as _};
+#[cfg(target_os = "linux")]
+use std::net::Shutdown;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
+use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
@@ -562,9 +565,9 @@ async fn start_runtime(
         .transpose()?;
     fs::ensure_user_dir(&paths.monitor_dir(subject))?;
     let (gate, gate_end) = StdUnixStream::pair()?;
-    let pid = spawn_gate(start, &log, gate_end)?;
+    let (pid, gate_program) = spawn_gate(start, &log, gate_end)?;
 
-    match supervise_gate(paths, hooks, request, pid, gate, &socket).await {
+    match supervise_gate(paths, hooks, request, pid, gate, &socket, &gate_program).await {
         Ok((watch, exit, record, listener)) => Ok(Monitor {
             paths: paths.clone(),
             record,
@@ -603,6 +606,7 @@ async fn supervise_gate(
     pid: u32,
     gate: StdUnixStream,
     socket: &Utf8Path,
+    gate_program: &Path,
 ) -> Result<SupervisedGate, DaemonError> {
     let start = &request.start;
     let subject = &start.subject;
@@ -640,7 +644,7 @@ async fn supervise_gate(
     pause(hooks, MonitorPause::AfterPermission).await;
     let events = timeout(
         EXEC_TIMEOUT,
-        confirm_exec(&mut watch, &mut gate, subject, pid),
+        confirm_exec(&mut watch, &mut gate, subject, pid, hooks, gate_program),
     )
     .await
     .map_err(|_elapsed| startup_failed(subject, "the runtime did not start in time"))??;
@@ -662,6 +666,8 @@ async fn confirm_exec(
     gate: &mut DaemonTransport<UnixStream>,
     subject: &str,
     _pid: u32,
+    _hooks: &MonitorHooks,
+    _gate_program: &Path,
 ) -> Result<ProcessEvents, DaemonError> {
     let mut gate_open = true;
 
@@ -698,36 +704,48 @@ async fn confirm_exec(
     gate: &mut DaemonTransport<UnixStream>,
     subject: &str,
     pid: u32,
+    hooks: &MonitorHooks,
+    gate_program: &Path,
 ) -> Result<ProcessEvents, DaemonError> {
     if let Some(line) = gate.next().await {
         let line = line.map_err(ProtocolError::from)?;
         return Err(startup_failed(subject, failure_message(&line)));
     }
-    // Exec closes both copies of the gate socket. If the gate died instead, its
-    // held status and kernel command name distinguish it from an exited runtime.
-    let exit = watch.get_mut().try_exit_status()?;
-    if let Some(status) = exit {
+    let monitor_pid = std::process::id();
+    let monitor_name = platform::inspect_process_comm(monitor_pid)?.ok_or_else(|| {
+        DaemonError::MissingProcessIdentity {
+            name: "monitor".to_owned(),
+            pid: monitor_pid,
+        }
+    })?;
+    let gate_name = gate_program
+        .file_name()
+        .ok_or_else(|| startup_failed(subject, "the gate executable has no file name"))?
+        .as_encoded_bytes();
+    let gate_name = String::from_utf8_lossy(&gate_name[..gate_name.len().min(15)]);
+    // EOF can precede waitable exit. Keep checking status then name within the
+    // caller's timeout; either known pre-runtime name remains inconclusive.
+    // ponytail: same-name runtimes fail closed; kernel exec events would remove this limit.
+    loop {
+        let exit = watch.get_mut().try_exit_status()?;
         let runtime_name = platform::inspect_process_comm(pid)?.ok_or_else(|| {
             DaemonError::MissingProcessIdentity {
                 name: "runtime gate".to_owned(),
                 pid,
             }
         })?;
-        let monitor_pid = std::process::id();
-        let monitor_name = platform::inspect_process_comm(monitor_pid)?.ok_or_else(|| {
-            DaemonError::MissingProcessIdentity {
-                name: "monitor".to_owned(),
-                pid: monitor_pid,
-            }
-        })?;
-        if runtime_name == monitor_name {
+        if runtime_name != monitor_name && runtime_name != gate_name {
+            return Ok(ProcessEvents { exec: true, exit });
+        }
+        if let Some(status) = exit {
             return Err(startup_failed(
                 subject,
                 format!("the gate exited before the runtime started ({status})"),
             ));
         }
+        pause(hooks, MonitorPause::AfterGateEof).await;
+        sleep(POLL_INTERVAL).await;
     }
-    Ok(ProcessEvents { exec: true, exit })
 }
 
 #[cfg(target_os = "macos")]
@@ -775,8 +793,9 @@ fn spawn_gate(
     start: &MonitorStart,
     log: &std::fs::File,
     gate_end: StdUnixStream,
-) -> Result<u32, DaemonError> {
-    let mut command = std::process::Command::new(std::env::current_exe()?);
+) -> Result<(u32, PathBuf), DaemonError> {
+    let gate_program = std::env::current_exe()?;
+    let mut command = std::process::Command::new(&gate_program);
     command
         .arg(MONITOR_GATE_COMMAND)
         .process_group(0)
@@ -789,7 +808,7 @@ fn spawn_gate(
     command.envs(&start.private_environment);
 
     // Dropping the std child neither waits for nor kills it.
-    Ok(command.spawn()?.id())
+    Ok((command.spawn()?.id(), gate_program))
 }
 
 /// Starts the runtime: `pv monitor:gate`. Its stdin is the monitor's gate socket. It waits for
@@ -808,6 +827,10 @@ pub fn run_monitor_gate(hooks: &MonitorHooks) -> Result<(), DaemonError> {
         .into());
     }
     let permission: GatePermission = serde_json::from_str(&line)?;
+    #[cfg(target_os = "linux")]
+    if pause_files(hooks, MonitorPause::GateAfterPermission).is_some() {
+        socket.shutdown(Shutdown::Write)?;
+    }
     pause_blocking(hooks, MonitorPause::GateAfterPermission);
 
     let error = runtime_command(&permission).exec();

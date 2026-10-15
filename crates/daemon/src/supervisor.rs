@@ -27,6 +27,9 @@ const READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const MONITOR_STOP_MARGIN: Duration = Duration::from_secs(5);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
+#[cfg(target_os = "linux")]
+const POSTGRES_RECOVERY: &str = "Restart your computer, then run this command again.";
+#[cfg(not(target_os = "linux"))]
 const POSTGRES_RECOVERY: &str = "Restart your Mac, then run this command again.";
 pub(crate) const RUNTIME_READINESS_CONCURRENCY_LIMIT: usize = 4;
 
