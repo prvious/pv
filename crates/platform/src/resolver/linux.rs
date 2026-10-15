@@ -568,7 +568,7 @@ pub(crate) fn apply_resolver_config_privileged(
         manager
             .call::<_, _, (bool, Vec<(String, String, String)>)>(
                 "EnableUnitFiles",
-                &([UNIT_NAME], false, false),
+                &([UNIT_NAME].as_slice(), false, false),
             )
             .await
             .map_err(bus_error)?;
@@ -604,7 +604,7 @@ pub(crate) fn remove_resolver_config_privileged() -> Result<(), PlatformError> {
             match manager
                 .call::<_, _, Vec<(String, String, String)>>(
                     "DisableUnitFiles",
-                    &([UNIT_NAME], runtime),
+                    &([UNIT_NAME].as_slice(), runtime),
                 )
                 .await
             {
