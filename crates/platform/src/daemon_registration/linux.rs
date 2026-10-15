@@ -217,7 +217,7 @@ pub(super) fn enable(path: &Utf8Path, session_address: &str) -> Result<(), Platf
         manager
             .call::<_, _, (bool, Vec<(String, String, String)>)>(
                 "EnableUnitFiles",
-                &([DAEMON_REGISTRATION_LABEL], false, false),
+                &([DAEMON_REGISTRATION_LABEL].as_slice(), false, false),
             )
             .await?;
         Ok(())
@@ -232,7 +232,7 @@ pub(super) fn remove(path: &Utf8Path, session_address: &str) -> Result<(), Platf
         manager
             .call::<_, _, Vec<(String, String, String)>>(
                 "DisableUnitFiles",
-                &([DAEMON_REGISTRATION_LABEL], false),
+                &([DAEMON_REGISTRATION_LABEL].as_slice(), false),
             )
             .await?;
         delete_registration_file(path)?;
