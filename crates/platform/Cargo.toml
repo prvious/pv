@@ -34,9 +34,11 @@ security-framework = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 async-io = "2.6.0"
+futures-lite = "2.6.1"
 futures-util = { workspace = true }
+listenfd = "1.0.2"
 procfs = { version = "0.18.0", default-features = false }
-rustix = { workspace = true }
+rustix = { workspace = true, features = ["net", "thread"] }
 zbus = "5.19.0"
 
 [dev-dependencies]

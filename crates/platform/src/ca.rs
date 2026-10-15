@@ -442,6 +442,7 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         PlatformError::UserManagerSessionEnvironment
         | PlatformError::UserManagerUnavailable(_)
         | PlatformError::DaemonRegistrationBus(_)
+        | PlatformError::PrivilegedHelperBus(_)
         | PlatformError::DaemonRegistrationState { .. } => CaRepairReason::InvalidCaShape,
     }
 }

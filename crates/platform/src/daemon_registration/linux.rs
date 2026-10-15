@@ -2,23 +2,20 @@ use std::ffi::OsStr;
 use std::future::Future;
 use std::io;
 use std::path::Path;
-use std::pin::pin;
 use std::time::{Duration, Instant};
 
-use async_io::Timer;
 use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::StreamExt;
-use futures_util::future::{Either, select};
 use serde::Serialize;
 use zbus::address::transport::{Unix, UnixSocket};
-use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedObjectPath;
-use zbus::{Connection, Proxy, connection, proxy};
+use zbus::{Proxy, connection};
 
 use super::{
     DaemonRegistrationFileState, delete_registration_file, inspect_daemon_registration_file,
 };
 use crate::PlatformError;
+use crate::systemd::{native_proxy, within};
 
 pub const DAEMON_REGISTRATION_LABEL: &str = "pv-daemon.service";
 pub const DAEMON_REGISTRATION_FILE_NAME: &str = DAEMON_REGISTRATION_LABEL;
@@ -71,7 +68,6 @@ pub struct DaemonRegistrationStatus {
     pub fragment_path: Utf8PathBuf,
 }
 
-const SERVICE: &str = "org.freedesktop.systemd1";
 const MANAGER_PATH: &str = "/org/freedesktop/systemd1";
 const MANAGER_INTERFACE: &str = "org.freedesktop.systemd1.Manager";
 const UNIT_INTERFACE: &str = "org.freedesktop.systemd1.Unit";
@@ -114,20 +110,6 @@ fn manager(session_address: &str) -> Result<Proxy<'static>, PlatformError> {
         ))
     })?
     .map_err(|source| PlatformError::UserManagerUnavailable(Box::new(source)))
-}
-
-async fn native_proxy(
-    connection: &Connection,
-    path: OwnedObjectPath,
-    interface: &'static str,
-) -> zbus::Result<Proxy<'static>> {
-    proxy::Builder::new(connection)
-        .destination(SERVICE)?
-        .path(path)?
-        .interface(interface)?
-        .cache_properties(CacheProperties::No)
-        .build()
-        .await
 }
 
 /// Reads runtime and enablement evidence, retaining live units whose files are missing.
@@ -410,13 +392,6 @@ fn run_operation<T>(
             ),
         }
     })?
-}
-
-async fn within<T>(timeout: Duration, future: impl Future<Output = T>) -> Option<T> {
-    match select(pin!(future), Timer::after(timeout)).await {
-        Either::Left((result, _)) => Some(result),
-        Either::Right(_) => None,
-    }
 }
 
 fn is_method_error(error: &zbus::Error, expected: &str) -> bool {
