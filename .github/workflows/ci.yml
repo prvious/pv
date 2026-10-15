@@ -199,11 +199,27 @@ jobs:
           python3 scripts/linux/test_container.py
 
       - name: Run portable suites and explicit unsupported boundaries
-        run: >-
-          cargo nextest run --profile ci --all-features --locked --jobs 1
-          -p state -p config -p protocol -p resources -p self-update -p platform -p daemon
-          -E 'package(state) | package(config) | package(protocol) | package(resources) |
-          package(self-update) | (package(platform) & test(unsupported)) | binary(platform_preflight)'
+        id: tests
+        run: |
+          cat > "$RUNNER_TEMP/nextest-user.toml" <<'EOF'
+          [experimental]
+          record = true
+
+          [record]
+          enabled = true
+          EOF
+          cargo nextest run --profile ci --user-config-file "$RUNNER_TEMP/nextest-user.toml" --all-features --locked --jobs 1 -p state -p config -p protocol -p resources -p self-update -p platform -p daemon -E 'package(state) | package(config) | package(protocol) | package(resources) | package(self-update) | (package(platform) & test(unsupported)) | binary(platform_preflight)'
+
+      - name: Export test recording
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        run: cargo nextest store export latest --archive-file "$RUNNER_TEMP/nextest-run.zip"
+
+      - name: Upload test recording
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nextest-run-${{ matrix.runner }}
+          path: ${{ runner.temp }}/nextest-run.zip
 
   runtime-portability:
     name: Runtime (${{ matrix.target }})
