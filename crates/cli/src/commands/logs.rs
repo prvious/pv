@@ -473,7 +473,8 @@ fn follow_sources_until(
                 continue;
             }
             for line in log.read_new_lines()? {
-                writeln!(stdout, "{}{line}", log.prefix)?;
+                stdout.write_all(log.prefix.as_bytes())?;
+                stdout.write_all(&line)?;
                 stdout.flush()?;
                 emitted_lines += 1;
                 if max_lines.is_some_and(|max_lines| emitted_lines >= max_lines) {
@@ -521,9 +522,10 @@ impl FollowedLog {
         })
     }
 
-    /// The complete lines appended since the last read. A log created later is read from its
-    /// start, and so is one that shrank, as a monitor's rotation truncates the log in place.
-    fn read_new_lines(&mut self) -> Result<Vec<String>, ExecuteError> {
+    /// The complete lines appended since the last read, each with its newline, as stored. A log
+    /// created later is read from its start, and so is one that shrank, as a monitor's rotation
+    /// truncates the log in place.
+    fn read_new_lines(&mut self) -> Result<Vec<Vec<u8>>, ExecuteError> {
         let file = state::fs::open_read_file(&self.path)?;
         let length = match &file {
             Some(file) => file.metadata()?.len(),
@@ -544,9 +546,9 @@ impl FollowedLog {
         };
         let complete = self.partial.drain(..=end).collect::<Vec<_>>();
 
-        Ok(String::from_utf8_lossy(&complete)
-            .lines()
-            .map(ToOwned::to_owned)
+        Ok(complete
+            .split_inclusive(|byte| *byte == b'\n')
+            .map(<[u8]>::to_vec)
             .collect())
     }
 }
@@ -712,6 +714,34 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn follow_sources_writes_stored_bytes_unchanged() -> anyhow::Result<()> {
+        let tempdir = tempdir()?;
+        let mysql_log = tempdir.path().join("mysql.log");
+        write_test_file(&mysql_log, "")?;
+        let sources = vec![LogSource {
+            label: "mysql:8.4".to_string(),
+            active_path: mysql_log.clone(),
+        }];
+        let mut stdout = Vec::new();
+
+        std::thread::scope(|scope| {
+            let writer = scope.spawn(|| {
+                std::thread::sleep(Duration::from_millis(250));
+                // Not UTF-8, and a Windows line ending.
+                append_test_file(&mysql_log, b"caf\xe9\r\n")
+            });
+            follow_sources_until(&sources, false, &mut stdout, Some(1))?;
+            writer
+                .join()
+                .map_err(|_panic| anyhow::anyhow!("log writer panicked"))?
+        })?;
+
+        assert_eq!(stdout, b"caf\xe9\r\n");
+
+        Ok(())
+    }
+
     #[expect(
         clippy::disallowed_types,
         reason = "logs tests truncate fixture logs as rotation does"
@@ -736,9 +766,9 @@ mod tests {
         clippy::disallowed_types,
         reason = "logs tests append fixture log lines"
     )]
-    fn append_test_file(path: &Utf8Path, contents: &str) -> anyhow::Result<()> {
+    fn append_test_file(path: &Utf8Path, contents: impl AsRef<[u8]>) -> anyhow::Result<()> {
         let mut file = std::fs::OpenOptions::new().append(true).open(path)?;
-        file.write_all(contents.as_bytes())?;
+        file.write_all(contents.as_ref())?;
 
         Ok(())
     }
