@@ -49,7 +49,7 @@ case "$action" in
   exec)
     [[ $# -gt 0 ]] || usage
     require_owned_container
-    docker exec --user dev --env XDG_RUNTIME_DIR=/run/user/1000 \
+    docker exec --user dev --env HOME=/home/dev --env XDG_RUNTIME_DIR=/run/user/1000 \
       --env DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus "$container" "$@"
     ;;
   down)
