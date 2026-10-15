@@ -183,6 +183,7 @@ These were recorded with PV's Gateway config shape and a real test CA.
 | `POST /load` onto a busy port | `200` with the warnings array followed by `{"error":"loading config: loading new config: http app module: start: listening on 127.0.0.1:<port>: listen tcp 127.0.0.1:<port>: bind: address already in use"}`; the previous config and ports keep serving | same |
 | Rejected `POST /load` | the previous config keeps serving | same |
 | Worker reload with an unchanged root config | imports are read on every load, so a fragment whose site moved to a new port moves the listener: the old port closes, the new one serves | same |
+| Worker `/__pv/health` (FrankenPHP 1.12.4, 2026-10-15) | `200 text/plain`, `Content-Length` set, body from the root's `http://pv-worker.localhost:<port>` site for that `Host`; a Project's `Host` on the same path reaches the Project; a reload onto a new port closes the old one | opens the root site's port and answers from its `respond` line for any `Host` |
 | `admin off` | HTTP and HTTPS serve; no admin socket or admin TCP listener | same |
 | SIGTERM | graceful shutdown in milliseconds, exit 0 | same |
 
@@ -194,17 +195,16 @@ The persona issues leaves from the configured certificate, which must be a CA. E
 
 `fake-admin-control.json`, next to the runtime config, injects the failures tests need. With no controls, the persona behaves as recorded. A list is used up one entry per request, and a single value applies to every request:
 
-- `GET /config/`: `admin_statuses`, and `admin_response_gate`, which holds the response until a path exists.
+- `GET /config/`: `admin_response_gate`, which holds the response until a path exists.
 - `POST /load`:
   - `load_statuses`: anything but 2xx rejects without applying.
-  - `apply_load`: `false` accepts without applying.
-  - `retain_previous_listeners`: applies the config but keeps the old ports, so changed ports never open.
+  - `apply_load`: `false` accepts without applying, so changed ports never open.
   - `load_response_gate`: holds the load, after recording it, until a path exists.
-  - `load_delay_ms`, plus `late_accept` with `late_apply_delay_ms`, which applies the load that long after it arrived. Loads finish in their own task, so a late accept still applies after PV hangs up.
+  - `load_delay_ms`: an accepted load applies that long after it arrived, just before the response. Loads finish in their own task, so, as with Caddy, a load still applies after PV hangs up.
   - `load_response_body`, `load_accepted_marker`, and `exit_after_load`.
 - `stop_service`: closes the HTTP listener on its next connection and keeps the process running.
 
-Settings that only matter for an accepted load (`apply_load`, `retain_previous_listeners`, `load_accepted_marker`, `exit_after_load`) are used up only by accepted loads. A load the persona can't read is rejected with `400`, whatever `load_statuses` says.
+Settings that only matter for an accepted load (`apply_load`, `load_accepted_marker`, `exit_after_load`) are used up only by accepted loads. A load the persona can't read is rejected with `400`, whatever `load_statuses` says.
 
 The persona records every request in `fake-admin-requests.jsonl` before holding it, and every load body in `fake-admin-load-NNN.bin`, numbered from 0 in each process. It writes the served config to `fake-admin-current.bin` at startup and after each applied load.
 

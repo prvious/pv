@@ -1,5 +1,4 @@
 use std::fmt;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
@@ -13,8 +12,6 @@ use hyper::header::HOST;
 use hyper::{Method, Request};
 #[cfg(unix)]
 use hyper_util::rt::TokioIo;
-#[cfg(unix)]
-use rustix::process::{Pid, getpgid};
 use serde_json::{Deserializer, Value};
 use thiserror::Error;
 #[cfg(unix)]
@@ -99,15 +96,6 @@ pub enum CaddyAdminError {
         reason: Box<Self>,
     },
 
-    #[error(
-        "Caddy admin endpoint {endpoint} belongs to process group {actual_process_group}, expected managed process group {expected_process_group}"
-    )]
-    PeerProcessGroupMismatch {
-        endpoint: CaddyAdminEndpoint,
-        expected_process_group: i32,
-        actual_process_group: i32,
-    },
-
     #[error("Caddy admin load at {endpoint} was rejected with HTTP {status}: {detail}")]
     LoadRejected {
         endpoint: CaddyAdminEndpoint,
@@ -134,12 +122,10 @@ pub enum CaddyAdminError {
     #[error("runtime `{runtime}` ownership changed before Caddy admin load")]
     RuntimeOwnershipChanged { runtime: String },
 
-    #[error(
-        "Caddy admin rollback failed after `{original_error}`, and restored-config reload also failed: {restored_error}"
-    )]
-    RestoredConfigReloadFailed {
+    #[error("{original_error}; rolling back the runtime config also failed: {rollback_error}")]
+    RollbackFailed {
         original_error: Box<Self>,
-        restored_error: Box<Self>,
+        rollback_error: Box<Self>,
     },
 
     #[error("Caddy admin {operation} task failed: {reason}")]
@@ -155,10 +141,6 @@ pub enum CaddyAdminError {
     },
 }
 
-/// Verifies runtime ownership and returns its root process id when peer validation is required.
-pub type CaddyAdminVerifier =
-    Arc<dyn Fn(CaddyAdminOperation) -> Result<Option<u32>, CaddyAdminError> + Send + Sync>;
-
 impl CaddyAdminError {
     pub fn runtime_ownership_changed(runtime: impl Into<String>) -> Self {
         Self::RuntimeOwnershipChanged {
@@ -166,10 +148,10 @@ impl CaddyAdminError {
         }
     }
 
-    pub fn restored_config_reload_failed(original_error: Self, restored_error: Self) -> Self {
-        Self::RestoredConfigReloadFailed {
+    pub fn rollback_failed(original_error: Self, rollback_error: Self) -> Self {
+        Self::RollbackFailed {
             original_error: Box::new(original_error),
-            restored_error: Box::new(restored_error),
+            rollback_error: Box::new(rollback_error),
         }
     }
 }
@@ -247,16 +229,6 @@ impl CaddyAdminClient {
         endpoint: &CaddyAdminEndpoint,
         bytes: impl AsRef<[u8]>,
     ) -> Result<(), CaddyAdminError> {
-        self.load_caddyfile_with(endpoint, bytes, no_op_verifier())
-            .await
-    }
-
-    pub async fn load_caddyfile_with(
-        self,
-        endpoint: &CaddyAdminEndpoint,
-        bytes: impl AsRef<[u8]>,
-        verifier: CaddyAdminVerifier,
-    ) -> Result<(), CaddyAdminError> {
         let request = Request::builder()
             .method(Method::POST)
             .uri("/load")
@@ -268,7 +240,7 @@ impl CaddyAdminClient {
                 reason: error.to_string(),
             })?;
         let response = self
-            .send(endpoint, CaddyAdminOperation::Load, request, verifier, true)
+            .send(endpoint, CaddyAdminOperation::Load, request, true)
             .await?;
 
         if !is_success(response.status) {
@@ -299,16 +271,6 @@ impl CaddyAdminClient {
         endpoint: &CaddyAdminEndpoint,
         readiness_timeout: Duration,
     ) -> Result<(), CaddyAdminError> {
-        self.wait_until_ready_with(endpoint, readiness_timeout, no_op_verifier())
-            .await
-    }
-
-    pub async fn wait_until_ready_with(
-        self,
-        endpoint: &CaddyAdminEndpoint,
-        readiness_timeout: Duration,
-        verifier: CaddyAdminVerifier,
-    ) -> Result<(), CaddyAdminError> {
         let started_at = Instant::now();
         let mut last_error = None;
 
@@ -323,12 +285,8 @@ impl CaddyAdminClient {
             }
 
             let remaining = readiness_timeout.saturating_sub(elapsed);
-            match self
-                .get_config(endpoint, remaining, Arc::clone(&verifier))
-                .await
-            {
+            match self.get_config(endpoint, remaining).await {
                 Ok(()) => return Ok(()),
-                Err(error) if is_verifier_failure(&error) => return Err(error),
                 Err(error) => last_error = Some(readiness_error_detail(&error)),
             }
 
@@ -353,7 +311,6 @@ impl CaddyAdminClient {
         self,
         endpoint: &CaddyAdminEndpoint,
         timeout: Duration,
-        verifier: CaddyAdminVerifier,
     ) -> Result<(), CaddyAdminError> {
         let request = Request::builder()
             .method(Method::GET)
@@ -366,13 +323,7 @@ impl CaddyAdminClient {
             })?;
         let response = self
             .with_timeout(timeout)
-            .send(
-                endpoint,
-                CaddyAdminOperation::Readiness,
-                request,
-                verifier,
-                false,
-            )
+            .send(endpoint, CaddyAdminOperation::Readiness, request, false)
             .await?;
 
         if is_success(response.status) {
@@ -391,7 +342,6 @@ impl CaddyAdminClient {
         endpoint: &CaddyAdminEndpoint,
         operation: CaddyAdminOperation,
         request: Request<Full<Bytes>>,
-        verifier: CaddyAdminVerifier,
         include_response_detail: bool,
     ) -> Result<AdminResponse, CaddyAdminError> {
         let started_at = Instant::now();
@@ -426,11 +376,6 @@ impl CaddyAdminClient {
             }
         };
 
-        let expected_pid = verify_before_request(&verifier, endpoint, operation)?;
-        if let Some(expected_pid) = expected_pid {
-            verify_peer_process_group(&stream, endpoint, operation, expected_pid)?;
-        }
-
         let overall_remaining = self.timeouts.overall.saturating_sub(started_at.elapsed());
         let exchange_timeout =
             overall_remaining.min(self.timeouts.write.saturating_add(self.timeouts.read));
@@ -460,7 +405,6 @@ impl CaddyAdminClient {
         endpoint: &CaddyAdminEndpoint,
         operation: CaddyAdminOperation,
         _request: Request<Full<Bytes>>,
-        _verifier: CaddyAdminVerifier,
         _include_response_detail: bool,
     ) -> Result<AdminResponse, CaddyAdminError> {
         Err(request_not_sent(
@@ -644,125 +588,6 @@ fn successful_load_response_error(response: &AdminResponse) -> Result<Option<Str
 
 fn caddy_api_error(value: &Value) -> Option<&str> {
     value.get("error").and_then(Value::as_str)
-}
-
-#[cfg(unix)]
-fn verify_peer_process_group(
-    stream: &UnixStream,
-    endpoint: &CaddyAdminEndpoint,
-    operation: CaddyAdminOperation,
-    expected_pid: u32,
-) -> Result<(), CaddyAdminError> {
-    let peer_pid = stream
-        .peer_cred()
-        .map_err(|error| {
-            request_not_sent(
-                endpoint,
-                operation,
-                CaddyAdminError::EndpointUnavailable {
-                    endpoint: endpoint.clone(),
-                    reason: format!("failed to inspect peer credentials: {error}"),
-                },
-            )
-        })?
-        .pid()
-        .ok_or_else(|| {
-            request_not_sent(
-                endpoint,
-                operation,
-                CaddyAdminError::EndpointUnavailable {
-                    endpoint: endpoint.clone(),
-                    reason: "peer process id is unavailable".to_owned(),
-                },
-            )
-        })?;
-    let expected_pid = process_pid(expected_pid).map_err(|reason| {
-        request_not_sent(
-            endpoint,
-            operation,
-            CaddyAdminError::EndpointUnavailable {
-                endpoint: endpoint.clone(),
-                reason,
-            },
-        )
-    })?;
-    let peer_pid = Pid::from_raw(peer_pid).ok_or_else(|| {
-        request_not_sent(
-            endpoint,
-            operation,
-            CaddyAdminError::EndpointUnavailable {
-                endpoint: endpoint.clone(),
-                reason: "peer process id must be positive".to_owned(),
-            },
-        )
-    })?;
-    let expected_process_group = getpgid(Some(expected_pid)).map_err(|error| {
-        request_not_sent(
-            endpoint,
-            operation,
-            CaddyAdminError::EndpointUnavailable {
-                endpoint: endpoint.clone(),
-                reason: format!("failed to inspect managed process group: {error}"),
-            },
-        )
-    })?;
-    let actual_process_group = getpgid(Some(peer_pid)).map_err(|error| {
-        request_not_sent(
-            endpoint,
-            operation,
-            CaddyAdminError::EndpointUnavailable {
-                endpoint: endpoint.clone(),
-                reason: format!("failed to inspect peer process group: {error}"),
-            },
-        )
-    })?;
-
-    if actual_process_group != expected_process_group {
-        return Err(request_not_sent(
-            endpoint,
-            operation,
-            CaddyAdminError::PeerProcessGroupMismatch {
-                endpoint: endpoint.clone(),
-                expected_process_group: expected_process_group.as_raw_pid(),
-                actual_process_group: actual_process_group.as_raw_pid(),
-            },
-        ));
-    }
-
-    Ok(())
-}
-
-#[cfg(unix)]
-fn process_pid(pid: u32) -> Result<Pid, String> {
-    let raw_pid = i32::try_from(pid).map_err(|error| error.to_string())?;
-
-    Pid::from_raw(raw_pid).ok_or_else(|| "process id must be positive".to_owned())
-}
-
-fn no_op_verifier() -> CaddyAdminVerifier {
-    Arc::new(|_operation| Ok(None))
-}
-
-#[cfg(unix)]
-fn verify_before_request(
-    verifier: &CaddyAdminVerifier,
-    endpoint: &CaddyAdminEndpoint,
-    operation: CaddyAdminOperation,
-) -> Result<Option<u32>, CaddyAdminError> {
-    verifier(operation).map_err(|reason| request_not_sent(endpoint, operation, reason))
-}
-
-fn is_verifier_failure(error: &CaddyAdminError) -> bool {
-    matches!(
-        error,
-        CaddyAdminError::RequestNotSent { reason, .. }
-            if matches!(
-                reason.as_ref(),
-                CaddyAdminError::RuntimeOwnershipChanged { .. }
-                    | CaddyAdminError::PeerProcessGroupMismatch { .. }
-                    | CaddyAdminError::TaskFailed { .. }
-            )
-    )
 }
 
 #[cfg(unix)]

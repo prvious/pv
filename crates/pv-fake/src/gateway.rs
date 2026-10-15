@@ -130,7 +130,7 @@ async fn serve(config_path: &Utf8Path, settings: &FakeSettings, events: &EventLo
     });
 
     runtime
-        .apply(config, &plan, &source, false)
+        .apply(config, &plan, &source)
         .await
         .map_err(|error| anyhow!("loading initial config: {error}"))?;
     // HTTP and HTTPS serve while paused; the admin socket isn't open yet.
@@ -163,6 +163,9 @@ struct GatewayConfig {
     ca_certificate: Option<Utf8PathBuf>,
     ca_private_key: Option<Utf8PathBuf>,
     health_body: Option<String>,
+    /// The port of the first `http://host:port` site in the root config, like a worker's health
+    /// site.
+    site_port: Option<u16>,
     import_glob: Option<Utf8PathBuf>,
 }
 
@@ -189,6 +192,11 @@ impl GatewayConfig {
                 config.health_body = Some(body.to_owned());
             } else if let Some(glob) = quoted_after(line, "import \"") {
                 config.import_glob = Some(Utf8PathBuf::from(glob));
+            } else if line.starts_with("http://")
+                && config.site_port.is_none()
+                && let Some(port) = first_http_site_port(line)
+            {
+                config.site_port = Some(port);
             }
         }
 
@@ -199,7 +207,7 @@ impl GatewayConfig {
     /// reads them on every load, so a worker whose root config is unchanged still moves to a
     /// fragment's new port.
     fn listener_plan(&self) -> Result<ListenerPlan> {
-        let http = match self.http_port {
+        let http = match self.http_port.or(self.site_port) {
             Some(port) => Some(port),
             None => self.first_imported_site_port()?,
         };
@@ -334,10 +342,9 @@ impl Runtime {
         config: GatewayConfig,
         plan: &ListenerPlan,
         source: &str,
-        retain_listeners: bool,
     ) -> Result<(), String> {
         let mut listeners = self.listeners.lock().await;
-        let (http, https) = if retain_listeners || !self.serves_tcp {
+        let (http, https) = if !self.serves_tcp {
             (Slot::Unchanged, Slot::Unchanged)
         } else {
             let http = match (plan.http, &listeners.http) {
@@ -505,15 +512,13 @@ impl Runtime {
 
     async fn admin_config(&self) -> Result<Response<Full<Bytes>>> {
         let control = self.records.take_control(AdminControl::take)?;
-        let status = StatusCode::from_u16(control.status)?;
-        self.records
-            .request(&Method::GET, "/config/", control.status, 0)?;
+        self.records.request(&Method::GET, "/config/", 200, 0)?;
         self.hold_readiness().await;
         if let Some(gate) = &control.gate {
             wait_for_path(gate).await?;
         }
 
-        Ok(response(status, "application/json", "{}\n"))
+        Ok(response(StatusCode::OK, "application/json", "{}\n"))
     }
 
     fn health(&self) -> Result<Response<Full<Bytes>>> {
@@ -533,7 +538,7 @@ impl Runtime {
     }
 
     /// Records the load, then finishes it in its own task: hyper drops a request's handler when
-    /// the client disconnects, and a late accept must still apply after PV has stopped waiting.
+    /// the client disconnects, and Caddy still applies a load after its client stops waiting.
     async fn load(self: Arc<Self>, body: Bytes) -> Result<Response<Full<Bytes>>> {
         let source = String::from_utf8_lossy(&body).into_owned();
         // Caddy adapts the config, reading its imports, as soon as it arrives.
@@ -563,19 +568,11 @@ impl Runtime {
         if let Some(gate) = &control.gate {
             wait_for_path(gate).await?;
         }
+        tokio::time::sleep(control.delay).await;
         let (applied, adapt_error) = match adapted {
-            Ok((config, plan)) if control.apply => (
-                self.apply_after(&control, config, &plan, source).await,
-                None,
-            ),
-            Ok(_adapted) => {
-                tokio::time::sleep(control.delay).await;
-                (Ok(()), None)
-            }
-            Err(error) => {
-                tokio::time::sleep(control.delay).await;
-                (Ok(()), Some(error))
-            }
+            Ok((config, plan)) if control.apply => (self.apply(config, &plan, source).await, None),
+            Ok(_adapted) => (Ok(()), None),
+            Err(error) => (Ok(()), Some(error)),
         };
         let body = match (&control.response_body, adapt_error, applied) {
             (Some(body), _, _) => body.clone(),
@@ -609,29 +606,6 @@ impl Runtime {
             "application/json",
             body,
         ))
-    }
-
-    /// Applies a load just before responding, `load_delay_ms` after it arrived; a late accept
-    /// applies `late_apply_delay_ms` after it arrived instead.
-    async fn apply_after(
-        self: &Arc<Self>,
-        control: &LoadControl,
-        config: GatewayConfig,
-        plan: &ListenerPlan,
-        source: &str,
-    ) -> Result<(), String> {
-        let apply_delay = if control.late_accept {
-            control.late_apply_delay
-        } else {
-            control.delay
-        };
-        tokio::time::sleep(apply_delay).await;
-        let applied = self
-            .apply(config, plan, source, control.retain_listeners)
-            .await;
-        tokio::time::sleep(control.delay.saturating_sub(apply_delay)).await;
-
-        applied
     }
 
     /// Test controls next to the runtime config: `.readiness-fail` makes the runtime exit during

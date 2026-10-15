@@ -7,4 +7,9 @@ expression: rendered
     persist_config off
 }
 
+http://pv-worker.localhost:45001 {
+    bind 127.0.0.1
+    respond /__pv/health "pv-worker-health-v1:45001" 200
+}
+
 import "/Users/alice/.pv/config/workers/php-8.4/projects/*.Caddyfile"

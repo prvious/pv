@@ -170,6 +170,14 @@ pub enum ReadinessCheck {
         expected_body: String,
         ca_certificate_path: Utf8PathBuf,
     },
+    /// A plain HTTP request with its own `Host`, answered by an exact body.
+    WorkerIdentity {
+        host: String,
+        port: u16,
+        server_name: String,
+        path: String,
+        expected_body: String,
+    },
     RedisPing {
         host: String,
         port: u16,
@@ -403,14 +411,6 @@ impl ProcessSupervisor {
             Some(staged_config_fingerprint),
             Some(staged_config_fingerprint),
         )
-    }
-
-    pub(crate) fn mark_restoration_required(
-        &self,
-        spec: &ProcessSpec,
-        staged_config_fingerprint: &str,
-    ) -> Result<bool, DaemonError> {
-        self.set_config_application_state(spec, true, None, Some(staged_config_fingerprint), None)
     }
 
     pub fn clear_replacement_required(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
@@ -824,6 +824,13 @@ impl ReadinessCheck {
                     "gateway-identity:https:{server_name}:{https_host}:{https_port}{path};http:{http_host}:{http_port}{path}"
                 )
             }
+            Self::WorkerIdentity {
+                host,
+                port,
+                server_name,
+                path,
+                ..
+            } => format!("worker-identity:http:{server_name}:{host}:{port}{path}"),
             Self::RedisPing { host, port } => format!("redis-ping:{host}:{port}"),
             Self::Http { host, port, path } => format!("http:{host}:{port}{path}"),
         }
@@ -855,7 +862,7 @@ async fn check_once(check: &ReadinessCheck) -> Result<(), DaemonError> {
             ca_certificate_path,
         } => {
             let http_stream = TcpStream::connect((http_host.as_str(), *http_port)).await?;
-            check_gateway_identity_response(http_stream, server_name, path, expected_body).await?;
+            check_identity_response(http_stream, server_name, path, expected_body).await?;
             let tcp_stream = TcpStream::connect((https_host.as_str(), *https_port)).await?;
             let connector = TlsConnector::from(tls_client_config(ca_certificate_path)?);
             let server_name_text = server_name.to_owned();
@@ -868,7 +875,17 @@ async fn check_once(check: &ReadinessCheck) -> Result<(), DaemonError> {
                 })?;
             let tls_stream = connector.connect(tls_server_name, tcp_stream).await?;
 
-            check_gateway_identity_response(tls_stream, server_name, path, expected_body).await
+            check_identity_response(tls_stream, server_name, path, expected_body).await
+        }
+        ReadinessCheck::WorkerIdentity {
+            host,
+            port,
+            server_name,
+            path,
+            expected_body,
+        } => {
+            let stream = TcpStream::connect((host.as_str(), *port)).await?;
+            check_identity_response(stream, server_name, path, expected_body).await
         }
         ReadinessCheck::RedisPing { host, port } => {
             let url = format!("redis://{host}:{port}/");
@@ -900,7 +917,7 @@ async fn check_once(check: &ReadinessCheck) -> Result<(), DaemonError> {
     }
 }
 
-async fn check_gateway_identity_response<Stream>(
+async fn check_identity_response<Stream>(
     mut stream: Stream,
     server_name: &str,
     path: &str,
@@ -919,7 +936,7 @@ where
         return Ok(());
     }
 
-    Err(io::Error::other("Gateway identity readiness returned an unexpected response").into())
+    Err(io::Error::other("identity readiness returned an unexpected response").into())
 }
 
 fn http_response_has_success_body(response: &[u8], expected_body: &[u8]) -> bool {

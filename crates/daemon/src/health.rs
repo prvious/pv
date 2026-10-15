@@ -13,7 +13,7 @@ use state::{
 use tokio::time::{Instant, timeout};
 
 use crate::DaemonError;
-use crate::gateway::persisted_gateway_is_ready;
+use crate::gateway::{persisted_gateway_is_ready, worker_readiness_check};
 use crate::managed_resources::{ManagedResourceReadiness, ManagedResourceRuntimeCatalog};
 use crate::project_env::{project_tls_artifact_exists, project_tls_files_are_current};
 use crate::reconciliation::ReconciliationScope;
@@ -411,12 +411,8 @@ fn collect_runtime_health_probes(
             scopes,
             current,
             error,
-            readiness: port.map(|port| {
-                RuntimeReadinessProbe::Worker(Box::new(ReadinessCheck::Tcp {
-                    host: "127.0.0.1".to_owned(),
-                    port,
-                }))
-            }),
+            readiness: port
+                .map(|port| RuntimeReadinessProbe::Worker(Box::new(worker_readiness_check(port)))),
         });
     }
 
@@ -682,6 +678,8 @@ mod tests {
         ProjectManagedResourceInput,
     };
     use state::{PvPaths, RuntimeSubject};
+    #[cfg(target_os = "macos")]
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use tokio::time::{Duration, Instant, advance, sleep};
 
     use super::{
@@ -693,6 +691,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::{RUNTIME_RECOVERY_EXHAUSTED, RUNTIME_RECOVERY_RESTORED, scan_runtime_health};
     use crate::ReconciliationScope;
+    #[cfg(target_os = "macos")]
+    use crate::gateway_config::worker_health_response;
     use crate::managed_resources::ManagedResourceReadiness;
     #[cfg(target_os = "macos")]
     use crate::managed_resources::ManagedResourceRuntimeCatalog;
@@ -1567,18 +1567,34 @@ mod tests {
         StdTcpListener::bind(("127.0.0.1", port)).is_ok()
     }
 
+    /// Holds the assigned PHP worker port and answers its health route, as a running worker does.
     #[cfg(target_os = "macos")]
     fn assign_php_worker_listener(
         database: &mut Database,
         php_track: &str,
-    ) -> anyhow::Result<StdTcpListener> {
+    ) -> anyhow::Result<tokio::task::JoinHandle<()>> {
         let mut listener = None;
         database.assign_php_worker_port(php_track, |port| {
             listener = StdTcpListener::bind(("127.0.0.1", port)).ok();
             listener.is_some()
         })?;
+        let listener =
+            listener.ok_or_else(|| anyhow!("assigned PHP worker port was not reserved"))?;
+        let body = worker_health_response(listener.local_addr()?.port());
+        listener.set_nonblocking(true)?;
+        let listener = tokio::net::TcpListener::from_std(listener)?;
 
-        listener.ok_or_else(|| anyhow!("assigned PHP worker port was not reserved"))
+        Ok(tokio::spawn(async move {
+            while let Ok((mut stream, _address)) = listener.accept().await {
+                let mut request = [0_u8; 1024];
+                let _read = stream.read(&mut request).await;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                );
+                let _write = stream.write_all(response.as_bytes()).await;
+            }
+        }))
     }
 
     #[cfg(target_os = "macos")]

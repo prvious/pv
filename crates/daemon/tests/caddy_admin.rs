@@ -1,7 +1,5 @@
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::os::unix::process::CommandExt as _;
-use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -26,17 +24,16 @@ fn transaction_errors_preserve_ownership_and_both_rollback_failures() -> Result<
         timeout_ms: 15_000,
         last_error: Some("HTTP status 503".to_owned()),
     };
-    let restored_error = CaddyAdminError::LoadRejected {
+    let rollback_error = CaddyAdminError::LoadRejected {
         endpoint: CaddyAdminEndpoint::new("/tmp/pv-caddy-admin.sock"),
         status: 422,
         detail: "restored config rejected".to_owned(),
     };
-    let rollback_error =
-        CaddyAdminError::restored_config_reload_failed(original_error, restored_error);
+    let rollback_error = CaddyAdminError::rollback_failed(original_error, rollback_error);
 
-    let CaddyAdminError::RestoredConfigReloadFailed {
+    let CaddyAdminError::RollbackFailed {
         original_error,
-        restored_error,
+        rollback_error,
     } = rollback_error
     else {
         bail!("expected a compound restored-config reload error");
@@ -46,7 +43,7 @@ fn transaction_errors_preserve_ownership_and_both_rollback_failures() -> Result<
         CaddyAdminError::AdminReadinessTimedOut { .. }
     ));
     assert!(matches!(
-        restored_error.as_ref(),
+        rollback_error.as_ref(),
         CaddyAdminError::LoadRejected { .. }
     ));
 
@@ -259,116 +256,6 @@ async fn load_caddyfile_distinguishes_connection_failure() -> Result<()> {
         reason.as_ref(),
         CaddyAdminError::EndpointUnavailable { endpoint: actual, .. } if *actual == endpoint
     ));
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn verifier_failure_sends_no_http_request_bytes() -> Result<()> {
-    let temp_dir = tempdir()?;
-    let listener = UnixListener::bind(temp_dir.path().join("admin.sock"))?;
-    let endpoint = CaddyAdminEndpoint::new(temp_dir.path().join("admin.sock"));
-    let verifier = Arc::new(|operation| {
-        Err(CaddyAdminError::runtime_ownership_changed(format!(
-            "{operation} verifier"
-        )))
-    });
-
-    let result = test_client()
-        .load_caddyfile_with(&endpoint, b"candidate\n", verifier)
-        .await;
-
-    let Err(CaddyAdminError::RequestNotSent {
-        endpoint: actual,
-        operation: daemon::CaddyAdminOperation::Load,
-        reason,
-    }) = result
-    else {
-        bail!("expected a verifier rejection before contact, got {result:?}");
-    };
-    assert_eq!(actual, endpoint);
-    assert!(matches!(
-        reason.as_ref(),
-        CaddyAdminError::RuntimeOwnershipChanged { runtime }
-            if runtime == "load verifier"
-    ));
-    let (mut stream, _) = listener.accept()?;
-    let mut bytes = Vec::new();
-    stream.read_to_end(&mut bytes)?;
-    assert!(bytes.is_empty());
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn readiness_verifier_failure_is_not_masked_by_poll_timeout() -> Result<()> {
-    let temp_dir = tempdir()?;
-    let listener = UnixListener::bind(temp_dir.path().join("admin.sock"))?;
-    let endpoint = CaddyAdminEndpoint::new(temp_dir.path().join("admin.sock"));
-    let verifier = Arc::new(|operation| {
-        Err(CaddyAdminError::runtime_ownership_changed(format!(
-            "{operation} verifier"
-        )))
-    });
-
-    let result = test_client()
-        .wait_until_ready_with(&endpoint, Duration::from_millis(500), verifier)
-        .await;
-
-    assert!(matches!(
-        result,
-        Err(CaddyAdminError::RequestNotSent {
-            operation: daemon::CaddyAdminOperation::Readiness,
-            reason,
-            ..
-        }) if matches!(reason.as_ref(), CaddyAdminError::RuntimeOwnershipChanged { .. })
-    ));
-    let (mut stream, _) = listener.accept()?;
-    let mut bytes = Vec::new();
-    stream.read_to_end(&mut bytes)?;
-    assert!(bytes.is_empty());
-
-    Ok(())
-}
-
-#[tokio::test]
-#[expect(
-    clippy::disallowed_types,
-    reason = "peer-credential fixture needs an unrelated process group"
-)]
-async fn mismatched_peer_process_group_receives_no_http_request_bytes() -> Result<()> {
-    let temp_dir = tempdir()?;
-    let socket_path = temp_dir.path().join("admin.sock");
-    let listener = UnixListener::bind(&socket_path)?;
-    let endpoint = CaddyAdminEndpoint::new(socket_path);
-    let server = tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
-        let _temp_dir = temp_dir;
-        let (mut stream, _) = listener.accept()?;
-        let mut bytes = Vec::new();
-        stream.read_to_end(&mut bytes)?;
-
-        Ok(bytes)
-    });
-    let mut foreign_process = std::process::Command::new("sleep")
-        .arg("5")
-        .process_group(0)
-        .spawn()?;
-    let foreign_pid = foreign_process.id();
-    let verifier = Arc::new(move |_operation| Ok(Some(foreign_pid)));
-
-    let result = test_client()
-        .load_caddyfile_with(&endpoint, b"candidate\n", verifier)
-        .await;
-    let _kill_result = foreign_process.kill();
-    let _wait_result = foreign_process.wait();
-    let received = server.await??;
-
-    assert!(matches!(
-        result,
-        Err(CaddyAdminError::RequestNotSent { reason, .. })
-            if matches!(reason.as_ref(), CaddyAdminError::PeerProcessGroupMismatch { .. })
-    ));
-    assert!(received.is_empty());
 
     Ok(())
 }
