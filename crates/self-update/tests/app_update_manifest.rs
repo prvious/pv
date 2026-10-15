@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use insta::assert_debug_snapshot;
 use self_update::{AppUpdateManifest, AppUpdateManifestError, AppUpdatePlatform, AppUpdateVersion};
 
@@ -81,6 +81,59 @@ fn app_update_manifest_parses_stable_release_and_selects_platform() -> Result<()
     assert_eq!(selected.helper().protocol_version(), 1);
 
     assert_debug_snapshot!(manifest);
+
+    Ok(())
+}
+
+#[test]
+fn app_update_manifest_selects_matching_linux_app_and_helper_assets() -> Result<()> {
+    let mut raw: serde_json::Value = serde_json::from_str(VALID_MANIFEST)?;
+    let assets = raw["assets"]
+        .as_array_mut()
+        .context("fixture must contain assets")?;
+    let template = assets[0].clone();
+    for platform in ["linux-amd64", "linux-arm64"] {
+        let mut asset = template.clone();
+        asset["platform"] = platform.into();
+        asset["url"] = format!("https://downloads.example.test/pv/0.2.0/pv-{platform}").into();
+        asset["helper"]["url"] =
+            format!("https://downloads.example.test/pv/0.2.0/pv-helper-1.0.0-{platform}").into();
+        assets.push(asset);
+    }
+    let manifest = AppUpdateManifest::parse(&raw.to_string())?;
+
+    for platform in ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"] {
+        let selected = manifest.select_platform(AppUpdatePlatform::parse(platform)?)?;
+        assert_eq!(selected.platform().as_str(), platform);
+        assert_eq!(
+            selected.url(),
+            format!("https://downloads.example.test/pv/0.2.0/pv-{platform}")
+        );
+        assert_eq!(
+            selected.helper().url(),
+            format!("https://downloads.example.test/pv/0.2.0/pv-helper-1.0.0-{platform}")
+        );
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn app_update_manifest_selects_current_linux_app_and_helper() -> Result<()> {
+    let manifest = AppUpdateManifest::parse(&VALID_MANIFEST.replace("darwin", "linux"))?;
+    let expected = if cfg!(target_arch = "aarch64") {
+        AppUpdatePlatform::LinuxArm64
+    } else {
+        AppUpdatePlatform::LinuxAmd64
+    };
+    let selected = manifest.select_current_platform()?;
+
+    assert_eq!(selected.platform(), expected);
+    assert_eq!(
+        selected.helper().url(),
+        format!("https://downloads.example.test/pv/0.2.0/pv-helper-1.0.0-{expected}")
+    );
 
     Ok(())
 }

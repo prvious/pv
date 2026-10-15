@@ -436,7 +436,12 @@ impl ManifestTrack {
     }
 
     fn validate_unique_published_at_slots(&self, resource: &str) -> Result<()> {
-        for target in [TargetPlatform::DarwinArm64, TargetPlatform::DarwinAmd64] {
+        for target in [
+            TargetPlatform::DarwinArm64,
+            TargetPlatform::DarwinAmd64,
+            TargetPlatform::LinuxAmd64,
+            TargetPlatform::LinuxArm64,
+        ] {
             let mut seen = BTreeSet::new();
             for artifact in self.platform_selected_candidates(target) {
                 if !seen.insert(artifact.published_at.clone()) {

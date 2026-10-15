@@ -15,7 +15,7 @@ const SPEC: super::artifact_resource::ArtifactResourceCommandSpec =
     super::artifact_resource::ArtifactResourceCommandSpec {
         resource_name: "mailpit",
         display_name: "Mailpit",
-        adapter: resources::mailpit_adapter,
+        adapter: |_| resources::mailpit_adapter(),
     };
 
 pub(crate) fn install(

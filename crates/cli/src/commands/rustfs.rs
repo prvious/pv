@@ -78,7 +78,7 @@ fn spec() -> ArtifactResourceCommandSpec {
     ArtifactResourceCommandSpec {
         resource_name: "rustfs",
         display_name: "RustFS",
-        adapter: resources::rustfs_adapter,
+        adapter: |_| resources::rustfs_adapter(),
     }
 }
 
