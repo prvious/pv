@@ -3,19 +3,19 @@
 //! A monitor is a small `pv monitor:run` process that owns one runtime for the runtime's whole
 //! life, whether or not the daemon is running. It starts the runtime through `pv monitor:gate`,
 //! which execs the runtime only once the monitor has recorded it, so the runtime keeps the gate's
-//! pid and birth identity. The monitor learns how the runtime exited from a kqueue watch without
-//! reaping it, so the exited leader keeps its process group pinned until the group's cleanup is
+//! pid and birth identity. The monitor observes runtime exits through a native watch without
+//! reaping the leader, which keeps its process group pinned until the group's cleanup is
 //! proven. Controllers talk to the monitor over a private socket, and the monitor's reservation
 //! lock proves when it has exited.
 
-#[cfg(target_os = "macos")]
-mod macos;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 mod rotation;
+#[cfg(unix)]
+mod unix;
 
 use std::collections::BTreeMap;
 use std::fmt;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::time::Duration;
 
 use camino::Utf8PathBuf;
@@ -24,13 +24,13 @@ use serde::{Deserialize, Serialize};
 use crate::StopSignal;
 use crate::supervisor::PrivateEnvironmentDebug;
 
-#[cfg(target_os = "macos")]
-pub use macos::{
+#[cfg(unix)]
+pub use unix::{
     live_runtime, monitor_from_earlier_boot, monitor_state, recorded_monitor_instance,
     recorded_monitor_subjects, recover_monitor, release_monitor, run_monitor_blocking,
     run_monitor_gate, start_monitor, stop_monitor,
 };
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(unix))]
 pub use unsupported::{
     live_runtime, monitor_from_earlier_boot, monitor_state, recorded_monitor_instance,
     recorded_monitor_subjects, recover_monitor, release_monitor, run_monitor_blocking,
@@ -93,7 +93,7 @@ pub struct MonitorStop {
     pub grace_ms: u64,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 impl MonitorStop {
     fn grace(self) -> Duration {
         Duration::from_millis(self.grace_ms)
@@ -184,27 +184,30 @@ pub enum MonitorPause {
     BeforePublication,
     /// After the record, before the gate may exec the runtime.
     BeforePermission,
+    /// After gate permission, before the monitor confirms the runtime's exec.
+    AfterPermission,
     /// In the gate, after permission and before exec.
     GateAfterPermission,
     /// During a log rotation, before the copy.
     RotationCopy,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 impl MonitorPause {
     const fn name(self) -> &'static str {
         match self {
             Self::BeforePublication => "before_publication",
             Self::BeforePermission => "before_permission",
+            Self::AfterPermission => "after_permission",
             Self::GateAfterPermission => "gate_after_permission",
             Self::RotationCopy => "rotation_copy",
         }
     }
 }
 
-/// Monitors need process containment, which only macOS supports yet. Every entry point fails
+/// Monitors need Unix process containment. Every entry point fails
 /// before any side effect.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(unix))]
 mod unsupported {
     use camino::Utf8Path;
     use platform::PlatformCapability;

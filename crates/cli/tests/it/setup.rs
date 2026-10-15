@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Write};

@@ -21,6 +21,7 @@ use anyhow::Result;
 use assert_cmd::Command;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
+use command::run_pv_in;
 #[cfg(target_os = "macos")]
 use config::ProjectConfigFile;
 #[cfg(target_os = "macos")]
@@ -42,6 +43,8 @@ use state::{
 };
 use support::{create_dir, create_laravel_init_fixture, run_pv_in, write_file};
 
+#[path = "support/command.rs"]
+mod command;
 mod support;
 
 #[derive(Debug)]
