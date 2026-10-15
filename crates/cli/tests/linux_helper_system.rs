@@ -1,5 +1,8 @@
 #![cfg(target_os = "linux")]
 
+#[path = "support/dns_system.rs"]
+mod dns_system;
+
 use std::io::{self, Write as _};
 use std::process::Output;
 use std::thread;
@@ -91,6 +94,10 @@ fi
 #[test]
 #[ignore = "requires PV_LINUX_SYSTEM_TESTS=1, PV_LINUX_SYSTEM_HELPER and the dedicated disposable systemd test service"]
 fn systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes() -> Result<()> {
+    with_helper_fixture(HelperFixture::exercise)
+}
+
+fn with_helper_fixture(exercise: fn(&mut HelperFixture, &Utf8Path) -> Result<()>) -> Result<()> {
     let environment = ProcessEnvironment;
     if environment.var_os("PV_LINUX_SYSTEM_TESTS").as_deref() != Some("1".as_ref()) {
         return Ok(());
@@ -130,7 +137,7 @@ fn systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes() -> R
         cleaned: false,
         processes: Vec::new(),
     };
-    let result = fixture.exercise(&helper);
+    let result = exercise(&mut fixture, &helper);
     let cleanup = fixture.cleanup();
     match (result, cleanup) {
         (Err(error), Err(cleanup)) => {

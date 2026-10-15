@@ -140,6 +140,10 @@ If `/etc/resolver/test` already exists and is not PV-owned, `pv dns:install` and
 
 PV marks `/etc/resolver/test` with a clear ownership comment such as `# Managed by PV`. PV only repairs or removes the resolver file when the ownership marker is present.
 
+On Linux, PV configures a root-owned `pv-dns.service` and a dummy link named `pv0`, marked with the alias `Managed by PV`. The unit applies per-link systemd-resolved settings for `~test`, pointing only at PV's high loopback DNS port with default DNS routing, DNSSEC, DNS-over-TLS, LLMNR and multicast DNS disabled on that link. PV checks the unit's ownership, loaded fragment and overrides, the dummy link's identity, and competing `~test` routes before changing them. Conflicts require manual administrator repair.
+
+A Linux DNS helper request may remain queued or in progress after its client loses the response. PV keeps the selected DNS port reserved after an uncertain or partial apply failure, so accepted helper work cannot later point at a released port. Retrying uses that same reservation. Linux DNS removal waits for the helper's verified removal before releasing the port, including when an initial read-only inspection reports missing configuration.
+
 The internal DNS resolver supports both UDP and TCP DNS on the chosen DNS port.
 
 The resolver answers all `.test` hostnames with the IPv4 loopback record `127.0.0.1`. AAAA queries return NODATA. The Gateway decides whether a hostname maps to a linked Project.

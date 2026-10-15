@@ -99,6 +99,28 @@ pub enum PlatformError {
     PrivilegedHelperBus(#[source] Box<zbus::Error>),
 
     #[cfg(target_os = "linux")]
+    #[error("resolver D-Bus operation failed: {0}")]
+    ResolverBus(#[source] Box<zbus::Error>),
+
+    #[cfg(target_os = "linux")]
+    #[error("resolver netlink operation failed: {0}")]
+    ResolverNetlink(#[source] Box<rtnetlink::Error>),
+
+    #[cfg(target_os = "linux")]
+    #[error("resolver I/O failed: {0}")]
+    ResolverIo(#[source] io::Error),
+
+    #[cfg(target_os = "linux")]
+    #[error(
+        "resolver {operation} failed: {source}; DNS state may be partial and a queued or in-flight request may still complete; inspect pv-dns.service, pv-dns.service.candidate and pv0 with an administrator before retrying `pv dns:install` or `pv dns:uninstall`"
+    )]
+    ResolverMutation {
+        operation: &'static str,
+        #[source]
+        source: Box<PlatformError>,
+    },
+
+    #[cfg(target_os = "linux")]
     #[error("daemon registration {operation} failed: {message}")]
     DaemonRegistrationState {
         operation: &'static str,

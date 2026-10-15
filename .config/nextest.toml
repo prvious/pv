@@ -1,9 +1,13 @@
-[test-groups.project-hooks]
-max-threads = 2
+[test-groups]
+project-hooks = { max-threads = 2 }
+linux-helper-system = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = 'binary(project_hooks) | test(project_link_during_daemon_prepare) | test(project_link_skip_hooks_still)'
 test-group = 'project-hooks'
+[[profile.default.overrides]]
+filter = 'binary(linux_helper_system)'
+test-group = 'linux-helper-system'
 
 [profile.ci]
 fail-fast = false

@@ -279,6 +279,26 @@ inspection. These live checks are ignored by the ordinary suite. The two ignored
 `platform` helper checks for root file handling and temporary credential changes
 need only an ordinary disposable root container; they do not require systemd.
 
+The DNS system test uses that same bounded `pv-helper-system-test` service and
+helper build. It additionally requires active systemd-resolved, only
+`nameserver 127.0.0.53` in `/etc/resolv.conf`, no existing PV DNS unit or `pv0`,
+and active NetworkManager on Fedora. Select it in the command above with:
+
+```shell
+-E 'test(=dns_system::systemd_dns_routes_test_reapplies_after_restart_changes_port_and_refuses_conflicts)'
+```
+
+It runs the real daemon's DNS resolver from a temporary PV home, verifies
+`getaddrinfo` through resolved after installation, resolved restart and a DNS
+port change, and checks that foreign units, links and `~test` routes survive
+rejected mutations. It temporarily sets global DNSSEC to `allow-downgrade`.
+Its independent 140-second root timer stops the test and helper/DNS services,
+removes only preflight-absent fixture paths and links, and restores resolved.
+Explicit cleanup cancels that timer only after verifying removal. Failed cleanup
+keeps `/run/pv-dns-system-test` and any scheduled timer for inspection.
+Nextest serializes both helper-system tests within a run because they use the
+same fixed installation paths. Run only one such invocation per disposable machine.
+
 ## Crate structure
 
 Rust does not allow circular dependencies between crates. To visualize the crate hierarchy, install

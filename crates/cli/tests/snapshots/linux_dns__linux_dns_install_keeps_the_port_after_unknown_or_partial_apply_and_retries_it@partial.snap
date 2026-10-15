@@ -1,0 +1,24 @@
+---
+source: crates/cli/tests/linux_dns.rs
+expression: "(first, retry)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/partial/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nPV daemon is running.\n",
+        stderr: "error: system integration operation failed: fixture native apply failed after writing the unit\n",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/partial/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nPV daemon is running.\nInstalled system resolver config: /etc/systemd/system/pv-dns.service\n",
+        stderr: "",
+    },
+)

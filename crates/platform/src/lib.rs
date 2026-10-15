@@ -70,6 +70,8 @@ pub use resolver::{
     ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH, inspect_resolver_file,
     install_resolver_config, remove_resolver_config,
 };
+#[cfg(target_os = "linux")]
+pub use resolver::{start_resolver_link, stop_resolver_link};
 pub use target::PlatformTarget;
 pub use trust::{
     KeychainCertificate, KeychainTrustResult, NativeSystemTrustInspector, SystemTrustInspector,
@@ -152,6 +154,13 @@ mod tests {
         assert!(
             require_capability_for(PlatformTarget::Linux, PlatformCapability::PrivilegedHelper)
                 .is_ok()
+        );
+        assert!(
+            require_capability_for(
+                PlatformTarget::Linux,
+                PlatformCapability::ResolverIntegration
+            )
+            .is_ok()
         );
     }
 }
