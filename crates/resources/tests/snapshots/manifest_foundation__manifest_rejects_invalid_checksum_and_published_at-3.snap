@@ -3,5 +3,5 @@ source: crates/resources/tests/manifest_foundation.rs
 expression: parse_manifest_error(&platform_manifest)?
 ---
 UnsupportedPlatform {
-    platform: "linux-amd64",
+    platform: "windows-amd64",
 }

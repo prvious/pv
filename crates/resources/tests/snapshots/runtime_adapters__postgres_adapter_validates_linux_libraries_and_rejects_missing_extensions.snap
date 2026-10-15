@@ -1,0 +1,36 @@
+---
+source: crates/resources/tests/runtime_adapters.rs
+expression: outcomes
+---
+[
+    (
+        LinuxAmd64,
+        Err(
+            InvalidArtifactLayout {
+                resource: "postgres",
+                reason: "missing required file `lib/libcrypto.so.3`",
+            },
+        ),
+        Err(
+            InvalidArtifactLayout {
+                resource: "postgres",
+                reason: "missing required file `lib/postgresql/sslinfo.so`",
+            },
+        ),
+    ),
+    (
+        LinuxArm64,
+        Err(
+            InvalidArtifactLayout {
+                resource: "postgres",
+                reason: "missing required file `lib/libcrypto.so.3`",
+            },
+        ),
+        Err(
+            InvalidArtifactLayout {
+                resource: "postgres",
+                reason: "missing required file `lib/postgresql/sslinfo.so`",
+            },
+        ),
+    ),
+]

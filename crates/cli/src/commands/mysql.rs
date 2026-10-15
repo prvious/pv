@@ -49,6 +49,6 @@ fn spec() -> ArtifactResourceCommandSpec {
     ArtifactResourceCommandSpec {
         resource_name: "mysql",
         display_name: "MySQL",
-        adapter: resources::mysql_adapter,
+        adapter: |_| resources::mysql_adapter(),
     }
 }
