@@ -1,0 +1,5 @@
+---
+source: crates/daemon/tests/monitor.rs
+expression: message
+---
+the gate exited before the runtime started (signal: 9 (SIGKILL))

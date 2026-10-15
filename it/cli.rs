@@ -6,6 +6,7 @@ use anyhow::Result;
 use assert_cmd::Command;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
+use command::run_pv_in;
 #[cfg(target_os = "macos")]
 use daemon::{MonitorCleanup, MonitorExit, MonitorStart, MonitorStop, StopSignal};
 use insta::{assert_debug_snapshot, assert_snapshot};
@@ -14,8 +15,10 @@ use state::MonitorReservation;
 use state::{
     Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths, UpdateLock,
 };
-use support::{create_dir, create_laravel_init_fixture, run_pv_in, write_file};
+use support::{create_dir, create_laravel_init_fixture, write_file};
 
+#[path = "support/command.rs"]
+mod command;
 mod support;
 
 #[derive(Debug)]
