@@ -1547,7 +1547,12 @@ pv_recipe_ad_hoc_sign_macho_tree "$PV_TEST_ARTIFACT_ROOT"
         "signing helper failed: {}",
         command_output_debug(&output)
     );
-    assert_debug_snapshot!(read_file(&sign_log)?.replace(tempdir.path().as_str(), "<tmp>"));
+    let mut signed_files = read_file(&sign_log)?
+        .lines()
+        .map(|line| line.replace(tempdir.path().as_str(), "<tmp>"))
+        .collect::<Vec<_>>();
+    signed_files.sort();
+    assert_debug_snapshot!(signed_files);
 
     Ok(())
 }
