@@ -17,9 +17,11 @@ use platform::{DaemonRegistrationConfig, DaemonRegistrationStatus, PlatformError
 use pv_fake::{FakeSettings, Persona, Scenario};
 use serde_json::Value;
 use state::{
-    Database, JobStatus, LinkProjectInput, MonitorReservation, PortRequest, ProjectMode, PvPaths,
-    fs,
+    Database, GatewayPort, JobStatus, LinkProjectInput, MonitorReservation, PortRequest,
+    ProjectMode, PvPaths, fs,
 };
+
+const REDIS_SUBJECT: &str = "resources/redis/7.2";
 
 #[test]
 #[ignore = "requires PV_LINUX_SYSTEM_TESTS=1, PV_LINUX_SYSTEM_PV and a disposable user's systemd manager"]
@@ -71,7 +73,7 @@ fn systemd_user_registration_preserves_monitors_and_refuses_foreign_units() -> R
 fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -> Result<()> {
     let environment = ProcessEnvironment;
     fs::ensure_layout(&fixture.paths)?;
-    seed_redis(&fixture.paths)?;
+    seed_resources(&fixture.paths)?;
     fs::copy_file_atomically(binary, &fixture.paths.active_pv_binary())?;
     pv_fake::seed_dns_port(&fixture.paths)?;
     let config = DaemonRegistrationConfig::for_paths(&fixture.paths);
@@ -153,32 +155,59 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
     );
     ensure!(!fs::path_entry_exists(&fixture.unit)?);
     ensure!(!fs::path_entry_exists(&enabled_link)?);
-    ensure!(daemon::live_runtime(&fixture.paths, "redis-7.2")?.is_none());
+    ensure!(daemon::live_runtime(&fixture.paths, REDIS_SUBJECT)?.is_none());
     ensure!(!fs::path_entry_exists(
-        &fixture.paths.monitor_dir("redis-7.2")
+        &fixture.paths.monitor_dir(REDIS_SUBJECT)
     )?);
 
-    drop(MonitorReservation::acquire(&fixture.paths, "redis-7.2")?);
+    drop(MonitorReservation::acquire(&fixture.paths, REDIS_SUBJECT)?);
     require_recorded_processes_exited(&monitor)?;
     Ok(())
 }
 
-fn seed_redis(paths: &PvPaths) -> Result<()> {
-    let release = paths.resources().join("redis/7.2/releases/7.2.5-pv1");
-    pv_fake::install_with(
-        &pv_fake::binary()?,
-        &release.join("bin/redis-server"),
-        &Scenario {
-            persona: Persona::RedisServer,
-            lifeline_fd: None,
-            settings: FakeSettings::default(),
-        },
-    )?;
+fn seed_resources(paths: &PvPaths) -> Result<()> {
+    let mut database = Database::open(paths)?;
+    for (resource, track, version, binary, persona) in [
+        (
+            "redis",
+            "7.2",
+            "7.2.5-pv1",
+            "redis-server",
+            Persona::RedisServer,
+        ),
+        ("caddy", "2", "2.11.4-pv1", "caddy", Persona::Caddy),
+    ] {
+        let track_path = paths.resources().join(resource).join(track);
+        let release = track_path.join("releases").join(version);
+        pv_fake::install_with(
+            &pv_fake::binary()?,
+            &release.join("bin").join(binary),
+            &Scenario {
+                persona,
+                lifeline_fd: None,
+                settings: FakeSettings::default(),
+            },
+        )?;
+        fs::symlink_file(
+            Utf8Path::new(&format!("releases/{version}")),
+            &track_path.join("current"),
+        )?;
+        database.record_managed_resource_track_installed(resource, track, version, &release)?;
+    }
+    let ca = platform::generate_local_ca()?;
+    fs::write_sensitive_file(&paths.ca_certificate(), &ca.certificate_pem)?;
+    fs::write_sensitive_file(&paths.ca_private_key(), &ca.private_key_pem)?;
+    for (gateway_port, port) in [GatewayPort::Http, GatewayPort::Https]
+        .into_iter()
+        .zip(pv_fake::ports::<2>()?)
+    {
+        database.assign_port(PortRequest::gateway(gateway_port, port, port, port), |_| {
+            true
+        })?;
+    }
     let project = paths.root().join("system-test-project");
     let config = project.join("pv.yml");
     fs::write_sensitive_file(&config, "serve: false\nredis:\n  version: \"7.2\"\n")?;
-    let mut database = Database::open(paths)?;
-    database.record_managed_resource_track_installed("redis", "7.2", "7.2.5-pv1", &release)?;
     database.link_project_with_mode(
         LinkProjectInput {
             path: project.clone(),
@@ -216,9 +245,9 @@ fn wait_for_redis_monitor(paths: &PvPaths, previous_job: Option<&str>) -> Result
                 job.error
             );
             if job.status == JobStatus::Succeeded
-                && daemon::live_runtime(paths, "redis-7.2")?.is_some()
+                && daemon::live_runtime(paths, REDIS_SUBJECT)?.is_some()
             {
-                let path = paths.monitor_dir("redis-7.2").join("monitor.json");
+                let path = paths.monitor_dir(REDIS_SUBJECT).join("monitor.json");
                 return Ok((
                     job.id.clone(),
                     serde_json::from_str(&fs::read_to_string(&path)?)?,
