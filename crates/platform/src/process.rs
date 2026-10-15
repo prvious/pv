@@ -159,3 +159,6 @@ pub fn exec_replace_with_env(
         None => Ok(ExitCode::FAILURE),
     }
 }
+
+#[cfg(target_os = "linux")]
+pub(crate) use implementation::inspect_process_command_line;

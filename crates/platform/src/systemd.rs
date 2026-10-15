@@ -1,5 +1,4 @@
 use std::future::Future;
-#[cfg(test)]
 use std::io::{self, Read};
 use std::pin::pin;
 use std::time::Duration;
@@ -8,7 +7,6 @@ use async_io::Timer;
 use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::StreamExt;
 use futures_util::future::{Either, select};
-#[cfg(test)]
 use rustix::fs::{Mode, OFlags, open};
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedObjectPath;
@@ -19,14 +17,12 @@ use crate::helper::linux as root_files;
 
 const PV_MARKER: &str = "# Managed by PV";
 
-#[cfg(test)]
 #[expect(
     clippy::disallowed_types,
     reason = "system unit inspection owns a native NOFOLLOW/NONBLOCK-validated descriptor"
 )]
 type UnitFile = std::fs::File;
 
-#[cfg(test)]
 pub(crate) fn read_unit(path: &Utf8Path) -> io::Result<Option<String>> {
     let descriptor = match open(
         path.as_std_path(),

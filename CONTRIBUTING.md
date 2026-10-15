@@ -296,8 +296,23 @@ Its independent 140-second root timer stops the test and helper/DNS services,
 removes only preflight-absent fixture paths and links, and restores resolved.
 Explicit cleanup cancels that timer only after verifying removal. Failed cleanup
 keeps `/run/pv-dns-system-test` and any scheduled timer for inspection.
-Nextest serializes both helper-system tests within a run because they use the
+Nextest serializes helper-system tests within a run because they use the
 same fixed installation paths. Run only one such invocation per disposable machine.
+
+The socket-proxy system test uses the same bounded service and requires free
+loopback ports 80 and 443. Build the daemon examples with
+`cargo build --locked -p daemon --examples`, then select:
+
+```shell
+-E 'test(=ports_system::systemd_socket_proxies_route_gateway_identity_repair_and_refuse_foreign_units)'
+```
+
+It runs a monitored native fake Caddy with a real test CA, verifies HTTP and HTTPS
+Gateway identity through the proxies, and checks repair, foreign ownership,
+repeated removal, and the limits of loaded socket and command metadata after
+reload. Its independent 140-second timer stops accepted helper work before
+removing only preflight-absent fixture units and files. Nextest serializes all
+tests in this helper-system binary; separate invocations must also remain serial.
 
 ## Crate structure
 

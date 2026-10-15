@@ -198,6 +198,14 @@ pub enum CliError {
 
 #[derive(Debug, Error)]
 pub(crate) enum ExecuteError {
+    #[cfg(target_os = "linux")]
+    #[error("{original}; could not release newly selected Gateway ports: {cleanup}")]
+    PortPreparationCleanup {
+        #[source]
+        original: Box<Self>,
+        cleanup: Box<Self>,
+    },
+
     #[error(transparent)]
     User(#[from] CliError),
 

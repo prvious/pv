@@ -47,6 +47,4 @@ zbus = "5.19.0"
 anyhow = { workspace = true }
 camino-tempfile = { workspace = true }
 insta = { workspace = true }
-
-[target.'cfg(target_os = "macos")'.dev-dependencies]
 pv-fake = { path = "../pv-fake" }
