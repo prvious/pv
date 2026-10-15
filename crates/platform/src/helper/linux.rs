@@ -4,7 +4,6 @@ use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as 
 use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use futures_util::StreamExt as _;
 use rustix::fs::{AtFlags, CWD, FlockOperation, Mode, OFlags, flock, open, unlinkat};
 use rustix::process::{Uid, geteuid, getuid};
 use rustix::thread::set_thread_res_uid;
@@ -24,7 +23,7 @@ use super::{
 };
 use crate::PlatformError;
 use crate::clock::{self, Limit};
-use crate::systemd::{self, native_proxy, within};
+use crate::systemd::{self, native_proxy, unit_job, within};
 
 const HELPER_SYSTEMD_TIMEOUT: Limit =
     Limit::new("helper systemd operation", Duration::from_secs(10));
@@ -34,7 +33,7 @@ const HELPER_READINESS_TIMEOUT: Limit = Limit::new("Linux helper readiness", HEL
 const EXECUTABLE_DIRECTORY: &str = "/usr/local/libexec/pv";
 const WORK_DIRECTORY: &str = "/var/lib/pv";
 const CANDIDATE_PATH: &str = "/usr/local/libexec/pv/pv-helper.candidate";
-const LOCK_PATH: &str = "/usr/local/libexec/.pv-helper-lifecycle.lock";
+pub(crate) const LOCK_PATH: &str = "/usr/local/libexec/.pv-helper-lifecycle.lock";
 const SOCKET_UNIT: &str = "pv-helper.socket";
 const SERVICE_UNIT: &str = "pv-helper.service";
 const SOCKET_UNIT_PATH: &str = "/etc/systemd/system/pv-helper.socket";
@@ -666,40 +665,13 @@ async fn disable(manager: &Proxy<'_>) -> Result<(), PlatformError> {
 }
 
 async fn job(manager: &Proxy<'_>, operation: &str, unit: &str) -> Result<(), PlatformError> {
-    within(&HELPER_JOB_TIMEOUT, async {
-        let mut removed = manager
-            .receive_signal("JobRemoved")
-            .await
-            .map_err(bus_error)?;
-        let job: OwnedObjectPath = match manager.call(operation, &(unit, "replace")).await {
-            Ok(job) => job,
-            Err(zbus::Error::MethodError(name, _, _))
-                if operation == "StopUnit"
-                    && name.as_str() == "org.freedesktop.systemd1.NoSuchUnit" =>
-            {
-                return Ok(());
-            }
-            Err(error) => return Err(bus_error(error)),
-        };
-        while let Some(message) = removed.next().await {
-            let (_, completed, _, result): (u32, OwnedObjectPath, String, String) =
-                message.body().deserialize().map_err(bus_error)?;
-            if completed == job {
-                return if result == "done" {
-                    Ok(())
-                } else {
-                    Err(installation_error(format!(
-                        "systemd {operation} {unit} finished with {result}"
-                    )))
-                };
-            }
-        }
-        Err(installation_error(
-            "systemd disconnected before helper job completion",
-        ))
-    })
-    .await
-    .ok_or_else(|| installation_error(format!("systemd {operation} {unit} timed out")))?
+    let result = within(&HELPER_JOB_TIMEOUT, unit_job(manager, operation, unit))
+        .await
+        .ok_or_else(|| installation_error(format!("systemd {operation} {unit} timed out")))?
+        .map_err(bus_error)?;
+    if result == "done" { Ok(()) } else {
+        Err(installation_error(format!("systemd {operation} {unit} finished with {result}")))
+    }
 }
 
 pub(super) async fn wait_for_ready(
@@ -826,7 +798,7 @@ fn restore_file(path: &Utf8Path, mode: u32, checksum: Option<&str>) -> Result<()
     )))
 }
 
-fn read_root_file(path: &Utf8Path, mode: u32) -> Result<Option<Vec<u8>>, PlatformError> {
+pub(crate) fn read_root_file(path: &Utf8Path, mode: u32) -> Result<Option<Vec<u8>>, PlatformError> {
     let descriptor = match open(
         path.as_std_path(),
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
@@ -858,7 +830,7 @@ fn read_root_file(path: &Utf8Path, mode: u32) -> Result<Option<Vec<u8>>, Platfor
     clippy::disallowed_methods,
     reason = "root helper validates fixed destination directory ancestry"
 )]
-fn validate_directory_chain(path: &Utf8Path, create: bool) -> Result<(), PlatformError> {
+pub(crate) fn validate_directory_chain(path: &Utf8Path, create: bool) -> Result<(), PlatformError> {
     for directory in path.ancestors().collect::<Vec<_>>().into_iter().rev() {
         let metadata = match std::fs::symlink_metadata(directory) {
             Ok(metadata) => metadata,
@@ -895,7 +867,7 @@ fn ensure_root_directory(path: &Utf8Path, mode: u32) -> Result<(), PlatformError
         .map_err(PlatformError::PrivilegedHelperIo)
 }
 
-fn acquire_lock(path: &Utf8Path) -> Result<RootFile, PlatformError> {
+pub(crate) fn acquire_lock(path: &Utf8Path) -> Result<RootFile, PlatformError> {
     let descriptor = open(
         path.as_std_path(),
         OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW,
@@ -922,9 +894,13 @@ fn acquire_lock(path: &Utf8Path) -> Result<RootFile, PlatformError> {
     Ok(file)
 }
 
-fn write_root_file(path: &Utf8Path, content: &[u8], mode: u32) -> Result<(), PlatformError> {
-    // Units are stopped and originals are already in rollback files. Create exclusively from
-    // the pinned bytes: another foreground caller can replace the shared staging candidate.
+pub(crate) fn write_root_file(
+    path: &Utf8Path,
+    content: &[u8],
+    mode: u32,
+) -> Result<(), PlatformError> {
+    // Create exclusively from pinned bytes instead of promoting a shared staging candidate,
+    // which another foreground caller may replace.
     let descriptor = open(
         path.as_std_path(),
         OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
@@ -939,7 +915,7 @@ fn write_root_file(path: &Utf8Path, content: &[u8], mode: u32) -> Result<(), Pla
     Ok(())
 }
 
-fn rename(source: &Utf8Path, destination: &Utf8Path) -> Result<(), PlatformError> {
+pub(crate) fn rename(source: &Utf8Path, destination: &Utf8Path) -> Result<(), PlatformError> {
     state::fs::rename(source, destination).map_err(|error| installation_error(error.to_string()))
 }
 fn remove_file(path: &Utf8Path) -> Result<(), PlatformError> {

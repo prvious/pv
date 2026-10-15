@@ -528,12 +528,22 @@ fn dns_check(environment: &impl Environment, paths: &PvPaths) -> Result<DoctorCh
             .with_detail(format!("path: {path}"))
         }
         (ResolverFileState::Current { .. }, ResolverFileState::Conflict { path }) => {
-            DoctorCheck::fail(
+            let check = DoctorCheck::fail(
                 "DNS config",
-                "system resolver config is not PV-owned",
+                if cfg!(target_os = "linux") {
+                    "system DNS routing conflicts with existing configuration"
+                } else {
+                    "system resolver config is not PV-owned"
+                },
                 "pv dns:install",
-            )
-            .with_detail(format!("path: {path}"))
+            );
+            #[cfg(target_os = "linux")]
+            return Ok(check.with_detail(format!(
+                "path: {path}; {}",
+                super::dns::RESOLVER_CONFLICT_GUIDANCE
+            )));
+            #[cfg(not(target_os = "linux"))]
+            check.with_detail(format!("path: {path}"))
         }
         (ResolverFileState::Current { .. }, ResolverFileState::Unreadable { path, message }) => {
             DoctorCheck::fail(

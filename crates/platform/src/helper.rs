@@ -1,5 +1,5 @@
 #[cfg(target_os = "linux")]
-mod linux;
+pub(crate) mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::{PrivilegedHelperLifecycleAction, run_privileged_helper_lifecycle};
 
@@ -1221,13 +1221,38 @@ fn call_helper(
     operation: HelperOperation,
 ) -> Result<HelperPayload, PlatformError> {
     let mut stream = connect_helper(socket_path)?;
+    #[cfg(target_os = "linux")]
+    stream
+        .set_read_timeout(Some(match &operation {
+            HelperOperation::DnsApply { .. } | HelperOperation::DnsRemove => {
+                crate::resolver::DNS_MUTATION_TIMEOUT + HELPER_IO_TIMEOUT
+            }
+            HelperOperation::DnsInspect { .. } => {
+                crate::resolver::DNS_INSPECTION_TIMEOUT + HELPER_IO_TIMEOUT
+            }
+            _ => HELPER_IO_TIMEOUT,
+        }))
+        .map_err(PlatformError::PrivilegedHelperIo)?;
 
     let request = HelperRequest {
         protocol_version: HELPER_PROTOCOL_VERSION,
         operation,
     };
     write_message(&mut stream, &request)?;
-    let response: HelperResponse = read_message(&mut stream)?;
+    let response: Result<HelperResponse, PlatformError> = read_message(&mut stream);
+    #[cfg(target_os = "linux")]
+    let response = response.map_err(|source| {
+        let operation = match request.operation {
+            HelperOperation::DnsApply { .. } => "apply",
+            HelperOperation::DnsRemove => "remove",
+            _ => return source,
+        };
+        PlatformError::ResolverMutation {
+            operation,
+            source: Box::new(source),
+        }
+    });
+    let response = response?;
 
     if response.protocol_version != HELPER_PROTOCOL_VERSION {
         return Err(PlatformError::PrivilegedHelperProtocolMismatch {
@@ -1624,7 +1649,6 @@ fn dispatch_request(
             protocol_version: HELPER_PROTOCOL_VERSION,
             owner_uid: metadata.owner_uid,
         })),
-        #[cfg(target_os = "macos")]
         HelperOperation::DnsInspect { expected_port } => {
             let expected = expected_port.map(ResolverConfig::new);
             Ok(HelperPayload::ResolverState(crate::inspect_resolver_file(
@@ -1632,13 +1656,11 @@ fn dispatch_request(
                 expected.as_ref(),
             )))
         }
-        #[cfg(target_os = "macos")]
         HelperOperation::DnsApply { port } => {
             validate_high_port("DNS", port)?;
             crate::resolver::apply_resolver_config_privileged(&ResolverConfig::new(port))?;
             Ok(HelperPayload::Empty)
         }
-        #[cfg(target_os = "macos")]
         HelperOperation::DnsRemove => {
             crate::resolver::remove_resolver_config_privileged()?;
             Ok(HelperPayload::Empty)
@@ -1735,12 +1757,6 @@ fn dispatch_request(
             crate::trust::untrust_system_ca_privileged(&fingerprint)?;
             Ok(HelperPayload::Empty)
         }
-        #[cfg(target_os = "linux")]
-        HelperOperation::DnsInspect { .. }
-        | HelperOperation::DnsApply { .. }
-        | HelperOperation::DnsRemove => Err(crate::capability::unsupported(
-            crate::PlatformCapability::ResolverIntegration,
-        )?),
         #[cfg(target_os = "linux")]
         HelperOperation::LowPortInspect
         | HelperOperation::PfInspect
@@ -1934,8 +1950,8 @@ pub(crate) fn write_root_work_file(
     validate_root_owned_regular_file(path, 0o600)
 }
 
-#[cfg(any(target_os = "macos", test))]
-fn validate_high_port(label: &str, port: u16) -> Result<(), PlatformError> {
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+pub(crate) fn validate_high_port(label: &str, port: u16) -> Result<(), PlatformError> {
     if port >= 1024 {
         return Ok(());
     }
@@ -1970,6 +1986,8 @@ fn helper_error_code(error: &PlatformError) -> HelperErrorCode {
         PlatformError::PrivilegedHelperAuthentication(_) => HelperErrorCode::AuthenticationFailed,
         PlatformError::PrivilegedHelperProtocolMismatch { .. } => HelperErrorCode::ProtocolMismatch,
         PlatformError::PrivilegedHelperRejected { .. } => HelperErrorCode::InvalidRequest,
+        #[cfg(target_os = "linux")]
+        PlatformError::ResolverMutation { .. } => HelperErrorCode::SystemIntegrationFailed,
         PlatformError::SystemIntegration(_)
         | PlatformError::Unsupported { .. }
         | PlatformError::SystemIntegrationCommand { .. }
@@ -1997,6 +2015,8 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use anyhow::anyhow;
     use camino_tempfile::tempdir;
+    #[cfg(target_os = "linux")]
+    use insta::assert_snapshot;
     #[cfg(target_os = "macos")]
     use insta::{Settings, assert_debug_snapshot};
     #[cfg(target_os = "macos")]
