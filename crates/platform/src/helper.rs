@@ -1047,8 +1047,16 @@ fn render_launch_daemon_plist(owner_uid: u32, owner_gid: u32) -> Result<String, 
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+const SUDO_EXECUTABLE: &str = "/usr/bin/sudo";
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run_sudo(args: &[&str]) -> Result<(), PlatformError> {
-    crate::command::run_system_command("/usr/bin/sudo", args)
+    crate::command::run_system_command(SUDO_EXECUTABLE, args)
+}
+
+#[cfg(target_os = "linux")]
+fn run_sudo_output(args: &[&str]) -> Result<String, PlatformError> {
+    crate::command::run_system_command_output(SUDO_EXECUTABLE, args)
 }
 
 #[cfg(target_os = "macos")]

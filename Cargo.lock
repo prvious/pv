@@ -3375,6 +3375,7 @@ dependencies = [
  "anyhow",
  "clap",
  "platform",
+ "serde_json",
 ]
 
 [[package]]
