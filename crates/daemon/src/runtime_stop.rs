@@ -140,7 +140,9 @@ fn verify_daemon_process(
 ) -> Result<platform::ProcessIdentity, DaemonError> {
     let identity = platform::inspect_process_identity(pid)?
         .ok_or(DaemonError::RuntimeProcessIdentityChanged { pid })?;
-    if identity.arguments != ["daemon:run"] || !identity.executable.starts_with(paths.bin()) {
+    let executable = fs::canonicalize(&identity.executable)?;
+    let binaries = fs::canonicalize(paths.bin())?;
+    if identity.arguments != ["daemon:run"] || !executable.starts_with(binaries) {
         return Err(DaemonError::RuntimeProcessIdentityChanged { pid });
     }
     Ok(identity)
@@ -252,4 +254,51 @@ fn require_directory(path: &Utf8Path) -> Result<(), DaemonError> {
         });
     }
     Ok(())
+}
+
+#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+mod tests {
+    use std::process::Child;
+
+    use anyhow::Result;
+    use camino_tempfile::tempdir;
+    use pv_fake::{Persona, install};
+    use state::{PvPaths, fs};
+
+    use super::verify_daemon_process;
+
+    #[expect(
+        clippy::disallowed_types,
+        reason = "native identity test starts a controlled fake daemon"
+    )]
+    type TestCommand = std::process::Command;
+
+    struct ChildGuard(Child);
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _kill_result = self.0.kill();
+            let _wait_result = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn daemon_identity_accepts_an_executable_under_a_symlinked_home() -> Result<()> {
+        let directory = tempdir()?;
+        let home = directory.path().join("actual-home");
+        let linked_home = directory.path().join("linked-home");
+        fs::ensure_user_dir(&home)?;
+        fs::symlink_file(&home, &linked_home)?;
+        let paths = PvPaths::for_home(&linked_home);
+        let fake = install(&paths.bin().join("fake-daemon"), Persona::LongRunning)?;
+        let child = ChildGuard(
+            TestCommand::new(fake.executable())
+                .arg("daemon:run")
+                .spawn()?,
+        );
+
+        let identity = verify_daemon_process(&paths, child.0.id())?;
+        assert_eq!(identity.arguments, ["daemon:run"]);
+        Ok(())
+    }
 }

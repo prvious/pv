@@ -21,7 +21,7 @@ fn boot_session_identity_validates_and_normalizes_recorded_evidence() -> anyhow:
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn native_boot_session_identity_is_stable_across_reads() -> anyhow::Result<()> {
     assert_eq!(
@@ -31,7 +31,7 @@ fn native_boot_session_identity_is_stable_across_reads() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 #[test]
 fn unsupported_boot_session_identity_fails_without_inventing_evidence() -> anyhow::Result<()> {
     assert!(matches!(
