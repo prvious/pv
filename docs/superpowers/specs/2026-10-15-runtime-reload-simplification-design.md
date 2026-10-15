@@ -94,7 +94,7 @@ Kept:
 
 The staged fingerprint still matters for worker moves. A Project moving from worker 8.4 to 8.5 keeps its fragment on 8.4 until the Gateway commits. If 8.4's reload has an unknown outcome, the staged proof lets the retry find that fragment again (`verified_recorded_runtime_config`). Without it, the move never finishes.
 
-`CaddyAdminError::RestoredConfigReloadFailed` stays, because disk-rollback failures still produce it (`runtime_config_rollback_failed_error`, `gateway_config.rs` `rollback_failed_error`). It is renamed to describe a rollback failure, since PV no longer reloads a restored config.
+`CaddyAdminError::RestoredConfigReloadFailed` stays, because disk-rollback failures still produce it (`runtime_config_rollback_failed_error`, `gateway_config.rs` `rollback_failed_error`). It is renamed `RollbackFailed`, since PV no longer reloads a restored config.
 
 ### Readiness budgets
 

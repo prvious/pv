@@ -186,63 +186,49 @@ fn gateway_controls_are_used_up_per_request_and_single_values_persist() -> Resul
     let [port] = available_ports()?;
     let gateway = GatewayFake::start(tempdir.path(), port)?;
     gateway.control(json!({
-        "admin_statuses": [503],
         "load_statuses": [422, 200, 200],
         "apply_load": [false],
     }))?;
     let loads = ["rejected", "accepted", "applied"].map(|health| gateway.config(port, health));
 
-    let admin = [
-        gateway.admin("GET", "/config/", "")?,
-        gateway.admin("GET", "/config/", "")?,
-    ];
     let responses = loads
         .iter()
         .map(|load| gateway.admin("POST", "/load", load))
         .collect::<Result<Vec<_>>>()?;
     let health = http_get(port, "/__pv/health")?;
     let used_up = gateway.record("fake-admin-control.json")?;
-    gateway.control(json!({"admin_statuses": 503}))?;
+    gateway.control(json!({"load_statuses": 422}))?;
     let persisting = [
-        gateway.admin("GET", "/config/", "")?,
-        gateway.admin("GET", "/config/", "")?,
+        gateway.admin("POST", "/load", &loads[1])?,
+        gateway.admin("POST", "/load", &loads[1])?,
     ];
 
-    assert_eq!(admin, [(503, "{}\n".to_owned()), (200, "{}\n".to_owned())]);
+    let rejected = (
+        422,
+        "{\"error\":\"pv-fake: fake-admin-control.json rejected this load with status 422\"}\n"
+            .to_owned(),
+    );
     assert_eq!(
         responses,
         [
-            (
-                422,
-                "{\"error\":\"pv-fake: fake-admin-control.json rejected this load with status \
-                 422\"}\n"
-                    .to_owned()
-            ),
+            rejected.clone(),
             // Accepted without applying: `apply_load` is used up by accepted loads only.
             (200, UNFORMATTED_WARNING.to_owned()),
             (200, UNFORMATTED_WARNING.to_owned()),
         ]
     );
     assert_eq!(health, (200, "applied".to_owned()));
-    assert_eq!(
-        used_up,
-        r#"{"admin_statuses":[],"apply_load":[],"load_statuses":[]}"#
-    );
-    assert_eq!(
-        persisting,
-        [(503, "{}\n".to_owned()), (503, "{}\n".to_owned())]
-    );
+    assert_eq!(used_up, r#"{"apply_load":[],"load_statuses":[]}"#);
+    assert_eq!(persisting, [rejected.clone(), rejected]);
     assert_eq!(
         gateway.requests()?,
         [
-            ("GET", "/config/", 503),
-            ("GET", "/config/", 200),
             ("POST", "/load", 422),
             ("POST", "/load", 200),
             ("POST", "/load", 200),
             ("GET", "/__pv/health", 200),
-            ("GET", "/config/", 503),
-            ("GET", "/config/", 503),
+            ("POST", "/load", 422),
+            ("POST", "/load", 422),
         ]
         .map(|(method, path, status)| (method.to_owned(), path.to_owned(), status))
     );
@@ -364,24 +350,6 @@ fn held_load_is_recorded_and_leaves_the_admin_api_responsive() -> Result<()> {
     recorded?;
     assert_eq!(admin?, (200, "{}\n".to_owned()));
     assert_eq!(released?, (200, UNFORMATTED_WARNING.to_owned()));
-    assert_eq!(gateway.record("fake-admin-current.bin")?, load);
-
-    Ok(())
-}
-
-#[test]
-fn retained_listeners_serve_an_applied_load_on_the_previous_port() -> Result<()> {
-    let tempdir = tempdir()?;
-    let [port, moved_port] = available_ports()?;
-    let gateway = GatewayFake::start(tempdir.path(), port)?;
-    gateway.control(json!({"retain_previous_listeners": [true]}))?;
-    let load = gateway.config(moved_port, "moved");
-
-    let response = gateway.admin("POST", "/load", &load)?;
-
-    assert_eq!(response, (200, UNFORMATTED_WARNING.to_owned()));
-    assert_eq!(http_get(port, "/__pv/health")?, (200, "moved".to_owned()));
-    assert!(TcpStream::connect(("127.0.0.1", moved_port)).is_err());
     assert_eq!(gateway.record("fake-admin-current.bin")?, load);
 
     Ok(())

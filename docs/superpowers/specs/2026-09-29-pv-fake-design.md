@@ -194,17 +194,16 @@ The persona issues leaves from the configured certificate, which must be a CA. E
 
 `fake-admin-control.json`, next to the runtime config, injects the failures tests need. With no controls, the persona behaves as recorded. A list is used up one entry per request, and a single value applies to every request:
 
-- `GET /config/`: `admin_statuses`, and `admin_response_gate`, which holds the response until a path exists.
+- `GET /config/`: `admin_response_gate`, which holds the response until a path exists.
 - `POST /load`:
   - `load_statuses`: anything but 2xx rejects without applying.
-  - `apply_load`: `false` accepts without applying.
-  - `retain_previous_listeners`: applies the config but keeps the old ports, so changed ports never open.
+  - `apply_load`: `false` accepts without applying, so changed ports never open.
   - `load_response_gate`: holds the load, after recording it, until a path exists.
   - `load_delay_ms`: an accepted load applies that long after it arrived, just before the response. Loads finish in their own task, so, as with Caddy, a load still applies after PV hangs up.
   - `load_response_body`, `load_accepted_marker`, and `exit_after_load`.
 - `stop_service`: closes the HTTP listener on its next connection and keeps the process running.
 
-Settings that only matter for an accepted load (`apply_load`, `retain_previous_listeners`, `load_accepted_marker`, `exit_after_load`) are used up only by accepted loads. A load the persona can't read is rejected with `400`, whatever `load_statuses` says.
+Settings that only matter for an accepted load (`apply_load`, `load_accepted_marker`, `exit_after_load`) are used up only by accepted loads. A load the persona can't read is rejected with `400`, whatever `load_statuses` says.
 
 The persona records every request in `fake-admin-requests.jsonl` before holding it, and every load body in `fake-admin-load-NNN.bin`, numbered from 0 in each process. It writes the served config to `fake-admin-current.bin` at startup and after each applied load.
 

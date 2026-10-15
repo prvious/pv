@@ -26,17 +26,16 @@ fn transaction_errors_preserve_ownership_and_both_rollback_failures() -> Result<
         timeout_ms: 15_000,
         last_error: Some("HTTP status 503".to_owned()),
     };
-    let restored_error = CaddyAdminError::LoadRejected {
+    let rollback_error = CaddyAdminError::LoadRejected {
         endpoint: CaddyAdminEndpoint::new("/tmp/pv-caddy-admin.sock"),
         status: 422,
         detail: "restored config rejected".to_owned(),
     };
-    let rollback_error =
-        CaddyAdminError::restored_config_reload_failed(original_error, restored_error);
+    let rollback_error = CaddyAdminError::rollback_failed(original_error, rollback_error);
 
-    let CaddyAdminError::RestoredConfigReloadFailed {
+    let CaddyAdminError::RollbackFailed {
         original_error,
-        restored_error,
+        rollback_error,
     } = rollback_error
     else {
         bail!("expected a compound restored-config reload error");
@@ -46,7 +45,7 @@ fn transaction_errors_preserve_ownership_and_both_rollback_failures() -> Result<
         CaddyAdminError::AdminReadinessTimedOut { .. }
     ));
     assert!(matches!(
-        restored_error.as_ref(),
+        rollback_error.as_ref(),
         CaddyAdminError::LoadRejected { .. }
     ));
 

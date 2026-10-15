@@ -405,14 +405,6 @@ impl ProcessSupervisor {
         )
     }
 
-    pub(crate) fn mark_restoration_required(
-        &self,
-        spec: &ProcessSpec,
-        staged_config_fingerprint: &str,
-    ) -> Result<bool, DaemonError> {
-        self.set_config_application_state(spec, true, None, Some(staged_config_fingerprint), None)
-    }
-
     pub fn clear_replacement_required(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
         self.set_config_application_state(spec, false, None, None, None)
     }

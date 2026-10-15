@@ -130,7 +130,7 @@ async fn serve(config_path: &Utf8Path, settings: &FakeSettings, events: &EventLo
     });
 
     runtime
-        .apply(config, &plan, &source, false)
+        .apply(config, &plan, &source)
         .await
         .map_err(|error| anyhow!("loading initial config: {error}"))?;
     // HTTP and HTTPS serve while paused; the admin socket isn't open yet.
@@ -334,10 +334,9 @@ impl Runtime {
         config: GatewayConfig,
         plan: &ListenerPlan,
         source: &str,
-        retain_listeners: bool,
     ) -> Result<(), String> {
         let mut listeners = self.listeners.lock().await;
-        let (http, https) = if retain_listeners || !self.serves_tcp {
+        let (http, https) = if !self.serves_tcp {
             (Slot::Unchanged, Slot::Unchanged)
         } else {
             let http = match (plan.http, &listeners.http) {
@@ -505,15 +504,13 @@ impl Runtime {
 
     async fn admin_config(&self) -> Result<Response<Full<Bytes>>> {
         let control = self.records.take_control(AdminControl::take)?;
-        let status = StatusCode::from_u16(control.status)?;
-        self.records
-            .request(&Method::GET, "/config/", control.status, 0)?;
+        self.records.request(&Method::GET, "/config/", 200, 0)?;
         self.hold_readiness().await;
         if let Some(gate) = &control.gate {
             wait_for_path(gate).await?;
         }
 
-        Ok(response(status, "application/json", "{}\n"))
+        Ok(response(StatusCode::OK, "application/json", "{}\n"))
     }
 
     fn health(&self) -> Result<Response<Full<Bytes>>> {
@@ -565,11 +562,7 @@ impl Runtime {
         }
         tokio::time::sleep(control.delay).await;
         let (applied, adapt_error) = match adapted {
-            Ok((config, plan)) if control.apply => (
-                self.apply(config, &plan, source, control.retain_listeners)
-                    .await,
-                None,
-            ),
+            Ok((config, plan)) if control.apply => (self.apply(config, &plan, source).await, None),
             Ok(_adapted) => (Ok(()), None),
             Err(error) => (Ok(()), Some(error)),
         };

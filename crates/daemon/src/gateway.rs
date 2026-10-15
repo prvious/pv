@@ -1233,7 +1233,7 @@ async fn reconcile_gateway_config(
         .await?;
         match runtime {
             ReconciliationOutcome::Completed(runtime) => {
-                match finish_promoted_runtime(runtime.wait(shutdown).await).await? {
+                match finish_promoted_runtime(runtime.wait(shutdown).await)? {
                     ReconciliationOutcome::Completed(outcome) => outcome,
                     ReconciliationOutcome::Cancelled => {
                         return Ok(ReconciliationOutcome::Cancelled);
@@ -1400,7 +1400,7 @@ async fn finish_planned_worker(
 ) -> Result<ReconciliationOutcome<()>, DaemonError> {
     let subject = completed.subject.clone();
     if matches!(
-        finish_promoted_runtime(completed).await?,
+        finish_promoted_runtime(completed)?,
         ReconciliationOutcome::Cancelled
     ) {
         return Ok(ReconciliationOutcome::Cancelled);
@@ -1509,110 +1509,6 @@ struct RuntimeReadinessPlan {
     preserve_staged_config: bool,
 }
 
-fn previous_runtime_readiness(
-    promoted_config: &PromotedConfigTree,
-    readiness: &RuntimeReadinessPlan,
-) -> Result<RuntimeReadinessPlan, DaemonError> {
-    let Some(previous_root_content) = promoted_config.previous_root_content() else {
-        return Ok(readiness.clone());
-    };
-    previous_runtime_readiness_from_parts(
-        previous_root_content,
-        promoted_config.previous_fragment_contents(),
-        readiness,
-    )
-}
-
-fn previous_runtime_readiness_from_parts(
-    previous_root_content: &str,
-    previous_fragment_contents: &[String],
-    readiness: &RuntimeReadinessPlan,
-) -> Result<RuntimeReadinessPlan, DaemonError> {
-    let http_port = match optional_config_port(previous_root_content, "http_port ")? {
-        Some(port) => Some(port),
-        None => previous_fragment_contents
-            .iter()
-            .find_map(|fragment| fragment_port(fragment))
-            .transpose()?,
-    };
-    let https_port = optional_config_port(previous_root_content, "https_port ")?;
-    let check = previous_readiness_check(&readiness.check, http_port, https_port)?;
-
-    Ok(RuntimeReadinessPlan {
-        check,
-        ..readiness.clone()
-    })
-}
-
-fn previous_readiness_check(
-    check: &ReadinessCheck,
-    http_port: Option<u16>,
-    https_port: Option<u16>,
-) -> Result<ReadinessCheck, DaemonError> {
-    match check {
-        ReadinessCheck::Tcp { host, .. } => Ok(ReadinessCheck::Tcp {
-            host: host.clone(),
-            port: http_port.ok_or_else(missing_previous_service_port)?,
-        }),
-        ReadinessCheck::GatewayHttps {
-            http_host,
-            https_host,
-            server_name,
-            ca_certificate_path,
-            ..
-        } => {
-            let Some(https_port) = https_port else {
-                return Err(DaemonError::UnexpectedProtocolResponse {
-                    reason: "previous gateway config is missing https_port".to_owned(),
-                });
-            };
-            let Some(http_port) = http_port else {
-                return Err(missing_previous_service_port());
-            };
-
-            Ok(ReadinessCheck::GatewayHttps {
-                http_host: http_host.clone(),
-                http_port,
-                https_host: https_host.clone(),
-                https_port,
-                server_name: server_name.clone(),
-                ca_certificate_path: ca_certificate_path.clone(),
-            })
-        }
-        ReadinessCheck::GatewayIdentity {
-            http_host,
-            http_port: probe_http_port,
-            https_host,
-            https_port: probe_https_port,
-            server_name,
-            path,
-            ca_certificate_path,
-            ..
-        } => {
-            let Some(https_port) = https_port else {
-                return Err(DaemonError::UnexpectedProtocolResponse {
-                    reason: "previous gateway config is missing https_port".to_owned(),
-                });
-            };
-            let Some(http_port) = http_port else {
-                return Err(missing_previous_service_port());
-            };
-
-            Ok(ReadinessCheck::GatewayIdentity {
-                http_host: http_host.clone(),
-                http_port: *probe_http_port,
-                https_host: https_host.clone(),
-                https_port: *probe_https_port,
-                server_name: server_name.clone(),
-                path: path.clone(),
-                expected_body: gateway_health_response(http_port, https_port),
-                ca_certificate_path: ca_certificate_path.clone(),
-            })
-        }
-        _ => Ok(check.clone()),
-    }
-}
-
 fn optional_config_port(config: &str, prefix: &str) -> Result<Option<u16>, DaemonError> {
     let Some(port) = config
         .lines()
@@ -1626,20 +1522,6 @@ fn optional_config_port(config: &str, prefix: &str) -> Result<Option<u16>, Daemo
         .map_err(|error| DaemonError::UnexpectedProtocolResponse {
             reason: format!("previous runtime config has invalid port `{port}`: {error}"),
         })
-}
-
-fn fragment_port(fragment: &str) -> Option<Result<u16, DaemonError>> {
-    fragment.split_whitespace().find_map(|token| {
-        let token = token.trim_end_matches(',');
-        let token = token.strip_prefix("http://")?;
-        let (_host, port) = token.rsplit_once(':')?;
-        Some(
-            port.parse()
-                .map_err(|error| DaemonError::UnexpectedProtocolResponse {
-                    reason: format!("previous worker fragment has invalid port `{port}`: {error}"),
-                }),
-        )
-    })
 }
 
 fn missing_previous_service_port() -> DaemonError {
@@ -3900,7 +3782,6 @@ struct PendingPromotedRuntime {
     desired_fingerprint: String,
     subject: RuntimeSubject,
     origin: PromotedRuntimeOrigin,
-    restoration_readiness: RuntimeReadinessPlan,
     started: StartedRuntimeTransaction,
 }
 
@@ -3917,7 +3798,6 @@ struct CompletedPromotedRuntime {
     spec: ProcessSpec,
     subject: RuntimeSubject,
     origin: PromotedRuntimeOrigin,
-    restoration_readiness: RuntimeReadinessPlan,
     result: Result<ReconciliationOutcome<RuntimeReadinessOutcome>, RuntimeTransactionError>,
 }
 
@@ -3927,7 +3807,6 @@ struct PromotedRuntimeRecovery {
     spec: ProcessSpec,
     subject: RuntimeSubject,
     previous_fingerprint: Option<String>,
-    restoration_readiness: RuntimeReadinessPlan,
 }
 
 impl PendingPromotedRuntime {
@@ -3940,7 +3819,6 @@ impl PendingPromotedRuntime {
             desired_fingerprint,
             subject,
             origin,
-            restoration_readiness,
             started,
         } = self;
         let supervisor = ProcessSupervisor::new(paths.clone());
@@ -3961,7 +3839,6 @@ impl PendingPromotedRuntime {
             spec,
             subject,
             origin,
-            restoration_readiness,
             result,
         }
     }
@@ -4003,28 +3880,6 @@ async fn prepare_promoted_runtime(
             }
         });
     let matching_runtime = matching_runtime.is_some();
-    let previous_readiness = if matching_runtime {
-        match previous_runtime_readiness(&promoted_config, &readiness) {
-            Ok(readiness) => Some(readiness),
-            Err(error) => {
-                let error = match promoted_config.rollback() {
-                    Ok(()) => error,
-                    Err(rollback_error) => {
-                        runtime_config_rollback_failed_error(error, rollback_error)
-                    }
-                };
-
-                return Err(record_primary_error(paths, subject.clone(), error));
-            }
-        }
-    } else {
-        None
-    };
-    let restoration_readiness = if let Some(previous_readiness) = &previous_readiness {
-        previous_readiness.clone()
-    } else {
-        readiness.clone()
-    };
     let started = match begin_runtime_transaction(
         paths,
         &supervisor,
@@ -4057,11 +3912,9 @@ async fn prepare_promoted_runtime(
                     spec,
                     subject,
                     previous_fingerprint,
-                    restoration_readiness,
                 },
                 error,
-            )
-            .await);
+            ));
         }
     };
     let pending = PendingPromotedRuntime {
@@ -4072,13 +3925,12 @@ async fn prepare_promoted_runtime(
         desired_fingerprint: desired_fingerprint.to_owned(),
         subject,
         origin,
-        restoration_readiness,
         started,
     };
     Ok(ReconciliationOutcome::Completed(pending))
 }
 
-async fn finish_promoted_runtime(
+fn finish_promoted_runtime(
     completed: CompletedPromotedRuntime,
 ) -> Result<ReconciliationOutcome<RuntimeReadinessOutcome>, DaemonError> {
     let CompletedPromotedRuntime {
@@ -4087,7 +3939,6 @@ async fn finish_promoted_runtime(
         spec,
         subject,
         origin,
-        restoration_readiness,
         result,
     } = completed;
     match result {
@@ -4120,11 +3971,9 @@ async fn finish_promoted_runtime(
                     spec,
                     subject,
                     previous_fingerprint,
-                    restoration_readiness,
                 },
                 error,
-            )
-            .await)
+            ))
         }
     }
 }
@@ -4153,7 +4002,7 @@ fn cancel_promoted_runtime(
     }
 }
 
-async fn recover_promoted_runtime(
+fn recover_promoted_runtime(
     recovery: PromotedRuntimeRecovery,
     transaction: RuntimeTransactionError,
 ) -> DaemonError {
@@ -4163,7 +4012,6 @@ async fn recover_promoted_runtime(
         spec,
         subject,
         previous_fingerprint,
-        restoration_readiness,
     } = recovery;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let RuntimeTransactionError { error, recovery } = transaction;
@@ -4173,59 +4021,24 @@ async fn recover_promoted_runtime(
             Ok(()) => error,
             Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
         },
-        RuntimeRecovery::RollbackPending => {
-            let verified_previous_fingerprint = previous_fingerprint
-                .as_deref()
-                .map(|fingerprint| {
-                    verified_previous_config_fingerprint(&promoted_config, Some(fingerprint))
-                })
-                .transpose();
-            match promoted_config.rollback() {
-                Ok(()) => {
-                    let recording = verified_previous_fingerprint.and_then(|fingerprint| {
-                        if let Some(fingerprint) = fingerprint {
-                            supervisor.record_restored_config(&spec, &fingerprint)
-                        } else {
-                            supervisor.clear_replacement_required(&spec)
-                        }
-                    });
-                    match recording {
-                        Ok(true) => error,
-                        Ok(false) => compound_runtime_restore_error(
-                            error,
-                            CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
-                        ),
-                        Err(recording) => compound_runtime_restore_error(error, recording),
-                    }
+        // Caddy keeps its previous config when a load is rejected or never arrives.
+        RuntimeRecovery::RollbackPending => match promoted_config.rollback() {
+            Ok(()) => {
+                let recording = match previous_fingerprint.as_deref() {
+                    Some(fingerprint) => supervisor.record_restored_config(&spec, fingerprint),
+                    None => supervisor.clear_replacement_required(&spec),
+                };
+                match recording {
+                    Ok(true) => error,
+                    Ok(false) => runtime_config_rollback_failed_error(
+                        error,
+                        CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
+                    ),
+                    Err(recording) => runtime_config_rollback_failed_error(error, recording),
                 }
-                Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
             }
-        }
-        RuntimeRecovery::RollbackAndRestore => {
-            let verified_previous_fingerprint = verified_previous_config_fingerprint(
-                &promoted_config,
-                previous_fingerprint.as_deref(),
-            );
-            match promoted_config.rollback() {
-                Ok(()) => match verified_previous_fingerprint {
-                    Ok(previous_fingerprint) => {
-                        restore_runtime_after_failed_load(
-                            &paths,
-                            &supervisor,
-                            &spec,
-                            &restoration_readiness,
-                            &previous_fingerprint,
-                            error,
-                        )
-                        .await
-                    }
-                    Err(verification_error) => {
-                        compound_runtime_restore_error(error, verification_error)
-                    }
-                },
-                Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
-            }
-        }
+            Err(rollback_error) => runtime_config_rollback_failed_error(error, rollback_error),
+        },
         RuntimeRecovery::PreservePending => {
             // Keep the desired promoted tree when runtime state is uncertain. The branch that
             // selected this disposition owns the specific recovery rationale.
@@ -4246,36 +4059,6 @@ fn runtime_config_uses_admin_endpoint(config: &str, endpoint: &CaddyAdminEndpoin
     let expected = format!("admin \"unix/{}|0600\"", endpoint.path());
 
     config.lines().any(|line| line.trim() == expected)
-}
-
-fn verified_previous_config_fingerprint(
-    promoted_config: &PromotedConfigTree,
-    recorded_fingerprint: Option<&str>,
-) -> Result<String, DaemonError> {
-    let recorded_fingerprint =
-        recorded_fingerprint.ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
-            reason: "cannot restore runtime config without a recorded applied fingerprint"
-                .to_owned(),
-        })?;
-    let (root, fragments) = promoted_config.previous_tree_contents()?.ok_or_else(|| {
-        DaemonError::UnexpectedProtocolResponse {
-            reason: "cannot restore runtime config without a complete backup tree".to_owned(),
-        }
-    })?;
-    let backup_fingerprint = runtime_config_fingerprint(
-        &root,
-        fragments
-            .iter()
-            .map(|(file_name, content)| (file_name.as_str(), content.as_str())),
-    );
-    if backup_fingerprint != recorded_fingerprint {
-        return Err(DaemonError::UnexpectedProtocolResponse {
-            reason: "refusing to load a runtime config backup that does not match the recorded applied fingerprint"
-                .to_owned(),
-        });
-    }
-
-    Ok(recorded_fingerprint.to_owned())
 }
 
 async fn load_runtime_config(
@@ -4308,14 +4091,8 @@ fn mark_runtime_config_pending(
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
     staged_config_fingerprint: &str,
-    restoring_previous: bool,
 ) -> Result<(), RuntimeTransactionError> {
-    let marking_result = if restoring_previous {
-        supervisor.mark_restoration_required(spec, staged_config_fingerprint)
-    } else {
-        supervisor.mark_replacement_required(spec, staged_config_fingerprint)
-    };
-    match marking_result {
+    match supervisor.mark_replacement_required(spec, staged_config_fingerprint) {
         Ok(true) => {}
         Ok(false) => {
             return Err(RuntimeTransactionError::new(
@@ -4354,7 +4131,7 @@ async fn begin_runtime_transaction(
 
         let active_content = read_config_bytes(&spec.config_path)?;
         let client = CaddyAdminClient::new();
-        mark_runtime_config_pending(supervisor, spec, desired_fingerprint, false)?;
+        mark_runtime_config_pending(supervisor, spec, desired_fingerprint)?;
         let load_result = wait_for_transaction_step(
             Box::pin(load_runtime_config(
                 paths,
@@ -4501,7 +4278,9 @@ async fn finish_runtime_transaction(
                 }
             }
 
-            return Err(RuntimeTransactionError::pending_requiring_restore(error));
+            // Caddy accepted the config, so keep it. The marker stays set, and the next
+            // reconciliation replaces this runtime instead of loading it again.
+            return Err(RuntimeTransactionError::pending_preserve(error));
         }
         verify_runtime_ownership(supervisor, spec)
             .map_err(RuntimeTransactionError::pending_preserve)?;
@@ -4803,7 +4582,6 @@ struct RuntimeTransactionError {
 enum RuntimeRecovery {
     Rollback,
     RollbackPending,
-    RollbackAndRestore,
     PreservePending,
 }
 
@@ -4822,13 +4600,6 @@ impl RuntimeTransactionError {
         }
     }
 
-    fn pending_requiring_restore(error: DaemonError) -> Self {
-        Self {
-            error: Box::new(error),
-            recovery: RuntimeRecovery::RollbackAndRestore,
-        }
-    }
-
     fn pending_preserve(error: DaemonError) -> Self {
         Self {
             error: Box::new(error),
@@ -4841,68 +4612,6 @@ impl From<DaemonError> for RuntimeTransactionError {
     fn from(error: DaemonError) -> Self {
         Self::new(error)
     }
-}
-
-async fn restore_runtime_after_failed_load(
-    paths: &PvPaths,
-    supervisor: &ProcessSupervisor,
-    spec: &ProcessSpec,
-    readiness: &RuntimeReadinessPlan,
-    previous_fingerprint: &str,
-    original_error: DaemonError,
-) -> DaemonError {
-    match restore_runtime_after_load(paths, supervisor, spec, readiness, previous_fingerprint).await
-    {
-        Ok(()) => original_error,
-        Err(error) => compound_runtime_restore_error(original_error, error),
-    }
-}
-
-async fn restore_runtime_after_load(
-    paths: &PvPaths,
-    supervisor: &ProcessSupervisor,
-    spec: &ProcessSpec,
-    readiness: &RuntimeReadinessPlan,
-    previous_fingerprint: &str,
-) -> Result<(), DaemonError> {
-    verify_runtime_ownership(supervisor, spec)?;
-
-    let restored_content = read_config_bytes(&spec.config_path)?;
-    let client = CaddyAdminClient::new();
-    let reload_timeout = readiness.timeout.min(RUNTIME_RELOAD_READINESS_TIMEOUT);
-    mark_runtime_config_pending(supervisor, spec, previous_fingerprint, true)
-        .map_err(|error| *error.error)?;
-    load_runtime_config(
-        paths,
-        spec,
-        client,
-        &readiness.admin_endpoint,
-        restored_content,
-    )
-    .await
-    .map_err(|error| *error.error)?;
-    verify_runtime_ownership(supervisor, spec)?;
-    client
-        .wait_until_ready_with(
-            &readiness.admin_endpoint,
-            reload_timeout,
-            runtime_ownership_verifier(paths, spec),
-        )
-        .await
-        .map_err(DaemonError::from)?;
-    wait_for_owned_readiness(readiness.check.clone(), reload_timeout, || {
-        verify_runtime_ownership(supervisor, spec)
-    })
-    .await?;
-    match supervisor.record_restored_config(spec, previous_fingerprint) {
-        Ok(true) => {}
-        Ok(false) => {
-            return Err(CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into());
-        }
-        Err(error) => return Err(error),
-    }
-
-    Ok(())
 }
 
 fn verify_runtime_ownership(
@@ -4939,13 +4648,6 @@ fn runtime_ownership_verifier(paths: &PvPaths, spec: &ProcessSpec) -> CaddyAdmin
         let supervisor = ProcessSupervisor::new(paths.clone());
         verify_runtime_ownership_for_admin(&supervisor, &spec, operation)
     })
-}
-
-fn compound_runtime_restore_error(original: DaemonError, restored: DaemonError) -> DaemonError {
-    DaemonError::CaddyAdmin(CaddyAdminError::restored_config_reload_failed(
-        daemon_error_as_caddy_admin(original),
-        daemon_error_as_caddy_admin_for_operation(restored, CaddyAdminOperation::Rollback),
-    ))
 }
 
 fn daemon_error_as_caddy_admin(error: DaemonError) -> CaddyAdminError {
@@ -5500,7 +5202,7 @@ fn runtime_config_rollback_failed_error(
     original: DaemonError,
     rollback: DaemonError,
 ) -> DaemonError {
-    DaemonError::CaddyAdmin(CaddyAdminError::restored_config_reload_failed(
+    DaemonError::CaddyAdmin(CaddyAdminError::rollback_failed(
         daemon_error_as_caddy_admin(original),
         daemon_error_as_caddy_admin_for_operation(rollback, CaddyAdminOperation::Rollback),
     ))
@@ -5765,9 +5467,8 @@ mod tests {
         combined_runtime_reconciliation_error, desired_worker_config, enforce_project_bind_policy,
         gateway_project_config_fragments, gateway_public_readiness_check,
         gateway_readiness_check_for_ports, gateway_readiness_hostname, gateway_readiness_plan,
-        gateway_readiness_ports, previous_runtime_readiness_from_parts, project_config_file_name,
-        run_validation_command, runtime_config_fingerprint, spawn_gateway_pf_inspection,
-        verified_previous_config_fingerprint, wait_for_transaction_step,
+        gateway_readiness_ports, project_config_file_name, run_validation_command,
+        spawn_gateway_pf_inspection, wait_for_transaction_step,
     };
     #[cfg(target_os = "macos")]
     use super::{
@@ -6015,36 +5716,6 @@ mod tests {
     }
 
     #[test]
-    fn previous_runtime_readiness_keeps_desired_admin_socket() -> Result<()> {
-        let plan = runtime_plan();
-        let readiness = gateway_readiness_plan(
-            &plan,
-            None,
-            GatewayPfRoutingState::Inactive,
-            Duration::from_secs(1),
-        );
-        let previous = previous_runtime_readiness_from_parts(
-            "{\n    admin 127.0.0.1:41019\n    http_port 45080\n    https_port 45443\n}\n",
-            &[],
-            &readiness,
-        )?;
-
-        assert_eq!(
-            previous.admin_endpoint,
-            super::CaddyAdminEndpoint::new("/tmp/pv-gateway-admin.sock")
-        );
-        assert_eq!(
-            previous.check,
-            ReadinessCheck::Tcp {
-                host: "127.0.0.1".to_owned(),
-                port: 45080,
-            }
-        );
-
-        Ok(())
-    }
-
-    #[test]
     fn gateway_readiness_uses_public_ports_for_active_drifted_and_unknown_pf() {
         let plan = runtime_plan();
 
@@ -6277,8 +5948,6 @@ mod tests {
             &candidate_dir.join("project.Caddyfile"),
             &fragments[0].content,
         )?;
-        let previous_fingerprint =
-            runtime_config_fingerprint("previous root\n", [("project.Caddyfile", previous)]);
         let promoted = promote_validated_config_tree_async(
             &root,
             "candidate root\n",
@@ -6287,10 +5956,6 @@ mod tests {
             || promote_config_dir(&active_dir, &candidate_dir),
         )
         .await?;
-        assert_eq!(
-            verified_previous_config_fingerprint(&promoted, Some(&previous_fingerprint))?,
-            previous_fingerprint,
-        );
         promoted.rollback()?;
         assert_eq!(state::fs::read_to_string(&root)?, "previous root\n");
         assert_eq!(

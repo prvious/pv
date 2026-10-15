@@ -24,16 +24,12 @@ const VALIDATOR_SPAWNS_FILE: &str = "fake-validator-spawns.log";
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Control {
-    /// Statuses for `GET /config/`.
-    admin_statuses: Option<Setting<u16>>,
     /// Holds `GET /config/` until this path exists.
     admin_response_gate: Option<Setting<Utf8PathBuf>>,
     /// Statuses for `POST /load`; anything but 2xx rejects the load without applying it.
     load_statuses: Option<Setting<u16>>,
     /// `false` accepts a load without applying it.
     apply_load: Option<Setting<bool>>,
-    /// `true` applies a load but keeps the previous listeners, so changed ports never open.
-    retain_previous_listeners: Option<Setting<bool>>,
     /// Holds `POST /load`, after recording it, until this path exists.
     load_response_gate: Option<Setting<Utf8PathBuf>>,
     /// Delays the `/load` response; an accepted load applies just before it.
@@ -65,14 +61,12 @@ fn next<T: Clone>(setting: &mut Option<Setting<T>>) -> Option<T> {
 
 /// What the controls say to do with one `GET /config/`.
 pub(crate) struct AdminControl {
-    pub(crate) status: u16,
     pub(crate) gate: Option<Utf8PathBuf>,
 }
 
 impl AdminControl {
     pub(crate) fn take(control: &mut Control) -> Self {
         Self {
-            status: next(&mut control.admin_statuses).unwrap_or(200),
             gate: next(&mut control.admin_response_gate),
         }
     }
@@ -85,7 +79,6 @@ pub(crate) struct LoadControl {
     /// otherwise `load_statuses`.
     pub(crate) status: u16,
     pub(crate) apply: bool,
-    pub(crate) retain_listeners: bool,
     pub(crate) gate: Option<Utf8PathBuf>,
     pub(crate) delay: Duration,
     pub(crate) response_body: Option<String>,
@@ -102,8 +95,6 @@ impl LoadControl {
         Self {
             status,
             apply: accepted && next(&mut control.apply_load).unwrap_or(true),
-            retain_listeners: accepted
-                && next(&mut control.retain_previous_listeners).unwrap_or(false),
             gate: next(&mut control.load_response_gate),
             delay: Duration::from_millis(next(&mut control.load_delay_ms).unwrap_or(0)),
             response_body: next(&mut control.load_response_body),

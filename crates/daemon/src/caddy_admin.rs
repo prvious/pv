@@ -134,12 +134,10 @@ pub enum CaddyAdminError {
     #[error("runtime `{runtime}` ownership changed before Caddy admin load")]
     RuntimeOwnershipChanged { runtime: String },
 
-    #[error(
-        "Caddy admin rollback failed after `{original_error}`, and restored-config reload also failed: {restored_error}"
-    )]
-    RestoredConfigReloadFailed {
+    #[error("{original_error}; rolling back the runtime config also failed: {rollback_error}")]
+    RollbackFailed {
         original_error: Box<Self>,
-        restored_error: Box<Self>,
+        rollback_error: Box<Self>,
     },
 
     #[error("Caddy admin {operation} task failed: {reason}")]
@@ -166,10 +164,10 @@ impl CaddyAdminError {
         }
     }
 
-    pub fn restored_config_reload_failed(original_error: Self, restored_error: Self) -> Self {
-        Self::RestoredConfigReloadFailed {
+    pub fn rollback_failed(original_error: Self, rollback_error: Self) -> Self {
+        Self::RollbackFailed {
             original_error: Box::new(original_error),
-            restored_error: Box::new(restored_error),
+            rollback_error: Box::new(rollback_error),
         }
     }
 }

@@ -263,8 +263,6 @@ pub(crate) struct PromotedConfigTree {
     previous_root_content: Option<String>,
 }
 
-pub(crate) type ConfigTreeContents = (String, Vec<(String, String)>);
-
 impl PromotedConfigTree {
     pub(crate) fn previous_root_content(&self) -> Option<&str> {
         if self.fragments.previous_contents_readable {
@@ -272,39 +270,6 @@ impl PromotedConfigTree {
         } else {
             None
         }
-    }
-
-    pub(crate) fn previous_fragment_contents(&self) -> &[String] {
-        self.fragments.previous_contents()
-    }
-
-    pub(crate) fn previous_tree_contents(&self) -> Result<Option<ConfigTreeContents>, DaemonError> {
-        if !self.root.active_existed {
-            return Ok(None);
-        }
-
-        let root = fs::read_to_string(&self.root.backup_path)?;
-        let mut fragments = if self.fragments.active_existed {
-            fs::read_dir_paths(&self.fragments.backup_dir)?
-                .into_iter()
-                .filter(|path| path.as_str().ends_with(".Caddyfile"))
-                .map(|path| {
-                    let file_name = path.file_name().ok_or_else(|| {
-                        DaemonError::UnexpectedProtocolResponse {
-                            reason: format!("config fragment path `{path}` has no file name"),
-                        }
-                    })?;
-                    let content = fs::read_to_string(&path)?;
-
-                    Ok((file_name.to_owned(), content))
-                })
-                .collect::<Result<Vec<_>, DaemonError>>()?
-        } else {
-            Vec::new()
-        };
-        fragments.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-
-        Ok(Some((root, fragments)))
     }
 
     pub(crate) fn cleanup(self) -> Result<(), ConfigBackupCleanupError> {
@@ -395,15 +360,10 @@ pub(crate) struct PromotedConfigDir {
     active_dir: Utf8PathBuf,
     backup_dir: Utf8PathBuf,
     active_existed: bool,
-    previous_contents: Vec<String>,
     previous_contents_readable: bool,
 }
 
 impl PromotedConfigDir {
-    fn previous_contents(&self) -> &[String] {
-        &self.previous_contents
-    }
-
     fn cleanup(self) -> Result<(), DaemonError> {
         if self.active_existed {
             delete_optional_dir(&self.backup_dir)?;
@@ -593,7 +553,6 @@ pub(crate) fn promote_config_dir(
 ) -> Result<PromotedConfigDir, DaemonError> {
     let backup_dir = backup_path_for(active_dir);
     let active_existed = active_dir.exists();
-    let mut previous_contents = Vec::new();
     let mut previous_contents_readable = true;
     if active_existed {
         for path in fs::read_dir_paths(active_dir)? {
@@ -601,7 +560,7 @@ pub(crate) fn promote_config_dir(
                 continue;
             }
             match fs::read_to_string(&path) {
-                Ok(content) => previous_contents.push(content),
+                Ok(_content) => {}
                 Err(StateError::Filesystem { source, .. })
                     if source.kind() == io::ErrorKind::InvalidData =>
                 {
@@ -628,7 +587,6 @@ pub(crate) fn promote_config_dir(
         active_dir: active_dir.to_path_buf(),
         backup_dir,
         active_existed,
-        previous_contents,
         previous_contents_readable,
     })
 }
@@ -678,7 +636,7 @@ fn delete_optional_dir(path: &Utf8Path) -> Result<(), DaemonError> {
 }
 
 fn rollback_failed_error(original: DaemonError, rollback: DaemonError) -> DaemonError {
-    DaemonError::CaddyAdmin(CaddyAdminError::restored_config_reload_failed(
+    DaemonError::CaddyAdmin(CaddyAdminError::rollback_failed(
         daemon_error_as_caddy_admin(original, CaddyAdminOperation::Load),
         daemon_error_as_caddy_admin(rollback, CaddyAdminOperation::Rollback),
     ))
@@ -704,44 +662,6 @@ mod tests {
     use camino_tempfile::tempdir;
 
     #[tokio::test]
-    async fn previous_fragment_snapshot_ignores_non_caddy_files()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let tempdir = tempdir()?;
-        let root_config = tempdir.path().join("Caddyfile");
-        let active_dir = tempdir.path().join("active-fragments");
-        let candidate_dir = tempdir.path().join("candidate-fragments");
-        let previous_fragment = "http://project.test:9001 {\n}\n";
-        create_dir_all(&active_dir)?;
-        create_dir_all(&candidate_dir)?;
-        state::fs::write_sensitive_file(&root_config, "previous root\n")?;
-        state::fs::write_sensitive_file(&active_dir.join("project.Caddyfile"), previous_fragment)?;
-        state::fs::write_sensitive_file(
-            &active_dir.join("notes.txt"),
-            "rollback notes: http://127.0.0.1:6553\n",
-        )?;
-        state::fs::write_sensitive_file(
-            &candidate_dir.join("project.Caddyfile"),
-            "new fragment\n",
-        )?;
-
-        let promoted = promote_validated_config_tree_async(
-            &root_config,
-            "candidate root\n",
-            "active root\n",
-            |_candidate_path| async { Ok(()) },
-            || promote_config_dir(&active_dir, &candidate_dir),
-        )
-        .await?;
-
-        assert_eq!(
-            promoted.previous_fragment_contents(),
-            &[previous_fragment.to_owned()]
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn promotion_reports_restore_failure_when_fragment_promotion_rollback_fails()
     -> Result<(), Box<dyn std::error::Error>> {
         let tempdir = tempdir()?;
@@ -765,9 +685,9 @@ mod tests {
         )
         .await;
 
-        let Err(DaemonError::CaddyAdmin(CaddyAdminError::RestoredConfigReloadFailed {
+        let Err(DaemonError::CaddyAdmin(CaddyAdminError::RollbackFailed {
             original_error,
-            restored_error,
+            rollback_error,
         })) = result
         else {
             return Err("expected a typed compound promotion rollback error".into());
@@ -778,7 +698,7 @@ mod tests {
                 if reason.contains("fragment promotion failed")
         ));
         assert!(matches!(
-            restored_error.as_ref(),
+            rollback_error.as_ref(),
             CaddyAdminError::TaskFailed {
                 operation: CaddyAdminOperation::Rollback,
                 ..
