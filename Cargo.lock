@@ -1219,6 +1219,7 @@ dependencies = [
  "hyper 1.10.1",
  "hyper-util",
  "insta",
+ "notify",
  "object_store",
  "platform",
  "protocol",

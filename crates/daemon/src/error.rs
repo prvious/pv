@@ -294,6 +294,9 @@ pub enum DaemonError {
     #[error("daemon task failed: {0}")]
     Task(#[from] JoinError),
 
+    #[error("file watcher error: {0}")]
+    Watch(#[from] notify::Error),
+
     #[error("process `{name}` started without an observable pid")]
     MissingProcessId { name: String },
 

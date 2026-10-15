@@ -3759,6 +3759,113 @@ async fn daemon_shutdown_cancels_watcher_retry_waiting_for_jobs_lock() -> Result
 }
 
 #[tokio::test]
+async fn project_config_watcher_follows_a_project_linked_after_startup() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let project_path = tempdir.path().join("project");
+    let config_path = project_path.join("pv.yml");
+    state::fs::write_sensitive_file(&config_path, "php: '8.3'\n")?;
+    pv_fake::seed_dns_port(&paths)?;
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+
+    // `pv link` commits the Project, then asks the daemon to reconcile it.
+    let mut database = Database::open(&paths)?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "INSERT INTO projects (id, project_slug, path, primary_hostname, config_path, created_at, updated_at)
+            VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                "project_1",
+                project_path.as_str(),
+                "project.test",
+                config_path.as_str(),
+                "2026-05-24T00:00:00Z",
+                "2026-05-24T00:00:00Z",
+            ],
+        )?;
+
+        Ok(())
+    })?;
+    drop(database);
+    let client_paths = paths.clone();
+    let linked = tokio::task::spawn_blocking(move || {
+        daemon::submit_job_blocking(client_paths, "reconcile", "project:project_1")
+    })
+    .await??;
+    wait_for_succeeded_job_id(&paths, &linked.id).await?;
+    state::fs::write_sensitive_file(
+        &config_path,
+        "env:\n  APP_URL: \"${url}\"\n  APP_NAME: watched\n",
+    )?;
+    let watched = wait_for_succeeded_job_count(&paths, "project:project_1", 2).await;
+
+    daemon.shutdown().await?;
+    watched?;
+    assert_eq!(
+        state::fs::read_to_string(&project_path.join(".env"))?,
+        "# >>> PV MANAGED\nAPP_NAME=watched\nAPP_URL=https://project.test\n# <<< PV MANAGED\n"
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn worktree_discovery_follows_git_worktree_events() -> Result<()> {
+    let tempdir = tempdir()?;
+    let root = state::fs::canonicalize(tempdir.path())?;
+    let paths = PvPaths::for_home(root.join("home"));
+    let main_checkout = root.join("acme");
+    state::fs::ensure_user_dir(&main_checkout.join(".git"))?;
+    state::fs::write_sensitive_file(&main_checkout.join("pv.yml"), "serve: false\n")?;
+    Database::open(&paths)?.link_project(LinkProjectInput {
+        path: main_checkout.clone(),
+        original_path: main_checkout.clone(),
+        primary_hostname: "acme.test".to_owned(),
+        config_path: main_checkout.join("pv.yml"),
+        desired_php_track: None,
+    })?;
+    pv_fake::seed_dns_port(&paths)?;
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    // Startup reconciliation can't install the Gateway without an artifact manifest, so it fails
+    // after discovery ran.
+    let startup = wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await;
+
+    // `git worktree add` checks the worktree out and registers it under `.git/worktrees/`.
+    let worktree = root.join("worktrees/feature");
+    let entry = main_checkout.join(".git/worktrees/feature");
+    state::fs::write_sensitive_file(&worktree.join("pv.yml"), "serve: false\n")?;
+    state::fs::write_sensitive_file(&worktree.join(".git"), &format!("gitdir: {entry}\n"))?;
+    state::fs::write_sensitive_file(&entry.join("gitdir"), &format!("{worktree}/.git\n"))?;
+    // The 30-second health scan would find it too, so this waits for less.
+    let discovered = timeout(Duration::from_secs(10), async {
+        loop {
+            match Database::open(&paths).and_then(|database| database.discovered_projects()) {
+                Ok(discovered) if discovered.is_empty() => {}
+                result => return result,
+            }
+            sleep(JOB_STATUS_POLL_INTERVAL).await;
+        }
+    })
+    .await;
+
+    daemon.shutdown().await?;
+    startup?;
+    let discovered =
+        discovered.map_err(|_elapsed| anyhow!("the worktree was not discovered"))??;
+    assert_eq!(
+        discovered
+            .iter()
+            .map(|project| project.path.as_str())
+            .collect::<Vec<_>>(),
+        vec![worktree.as_str()]
+    );
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn dns_resolver_answers_udp_a_and_nodata_for_aaaa() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

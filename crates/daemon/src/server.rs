@@ -19,14 +19,13 @@ use crate::jobs::{
 use crate::managed_resources::ManagedResourceRuntimeCatalog;
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use crate::structured_log;
-use crate::watcher::ProjectConfigWatcher;
+use crate::watcher::{ProjectConfigWatcher, WatchMessage};
 use protocol::{
     DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION, write_line,
 };
 
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 const PROJECT_CONFIG_DEBOUNCE: Duration = Duration::from_millis(50);
-const PROJECT_CONFIG_WATCH_INTERVAL: Duration = Duration::from_millis(100);
 const REQUEST_LINE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) async fn serve(
@@ -35,10 +34,14 @@ pub(crate) async fn serve(
     mut shutdown: oneshot::Receiver<()>,
     fallback_shutdown: watch::Receiver<bool>,
     runtime_catalog: Option<Arc<ManagedResourceRuntimeCatalog>>,
+    (project_config_watcher, watch_messages): (
+        ProjectConfigWatcher,
+        mpsc::UnboundedReceiver<WatchMessage>,
+    ),
 ) -> Result<(), DaemonError> {
     let mut connections = JoinSet::new();
     let mut background_tasks = JoinSet::new();
-    let queue = ReconciliationQueue::new();
+    let queue = ReconciliationQueue::watching_project_configs(project_config_watcher.clone());
     let startup_paths = paths.clone();
     let startup_queue = queue.clone();
     let startup_runtime_catalog = runtime_catalog.clone();
@@ -64,12 +67,8 @@ pub(crate) async fn serve(
             let _send_result = background_scope_sender.send(scope);
         },
     );
-    let watcher = ProjectConfigWatcher::new(
-        paths.clone(),
-        debouncer.clone(),
-        PROJECT_CONFIG_WATCH_INTERVAL,
-    );
-    let mut watcher_task = tokio::spawn(watcher.run());
+    let mut watcher_task =
+        tokio::spawn(project_config_watcher.run(watch_messages, debouncer.clone()));
     let mut watcher_task_finished = false;
     let mut runtime_health_task: Option<JoinHandle<Result<RuntimeHealthScan, DaemonError>>> = None;
     let mut recovery_backoff = RuntimeRecoveryBackoff::default();

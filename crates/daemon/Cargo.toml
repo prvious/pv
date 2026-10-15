@@ -19,6 +19,7 @@ hickory-proto = { workspace = true }
 http-body-util = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
+notify = { workspace = true }
 object_store = { workspace = true }
 platform = { path = "../platform" }
 protocol = { path = "../protocol" }

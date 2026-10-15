@@ -182,6 +182,11 @@ impl RunningDaemon {
         if let Err(error) = clear_startup_failure_marker(&paths) {
             return Err(cleanup_startup_endpoint(&paths, error));
         }
+        let project_config_watcher =
+            match watcher::ProjectConfigWatcher::start(paths.clone(), &database) {
+                Ok(project_config_watcher) => project_config_watcher,
+                Err(error) => return Err(cleanup_startup_endpoint(&paths, error)),
+            };
         let dns = match dns::RunningDnsResolver::start(paths.clone()).await {
             Ok(dns) => dns,
             Err(error) => {
@@ -199,6 +204,7 @@ impl RunningDaemon {
             shutdown_receiver,
             fallback_shutdown_receiver,
             runtime_catalog,
+            project_config_watcher,
         ));
 
         Ok(Self {

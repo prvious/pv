@@ -270,7 +270,9 @@ fn source_worktrees(source_path: &Utf8Path) -> Result<Option<Vec<Worktree>>, Dae
 
 /// The main checkout holding `path` and `path` relative to it. The nearest `.git` decides: a
 /// directory is a main checkout, and a file is a linked worktree or a submodule.
-fn main_checkout(path: &Utf8Path) -> Result<Option<(Utf8PathBuf, Utf8PathBuf)>, DaemonError> {
+pub(crate) fn main_checkout(
+    path: &Utf8Path,
+) -> Result<Option<(Utf8PathBuf, Utf8PathBuf)>, DaemonError> {
     for ancestor in path.ancestors() {
         let git = ancestor.join(".git");
         if state::fs::path_is_directory(&git)? {
