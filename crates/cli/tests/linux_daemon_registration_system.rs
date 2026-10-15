@@ -98,6 +98,7 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
     assert_eq!(fs::read_to_string(&fixture.unit)?, foreign);
     fs::delete_file(&fixture.unit)?;
     platform::write_daemon_registration_file(&fixture.unit, &config)?;
+
     environment.enable_daemon_registration(&fixture.unit)?;
     let enabled_link = fixture
         .unit
@@ -118,12 +119,69 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
     let (first_job, monitor) = wait_for_redis_monitor(&fixture.paths, None)?;
     fixture.monitor_record = Some(monitor.clone());
 
+    let drop_in_directory = fixture.unit.with_extension("service.d");
+    ensure!(!fs::path_entry_exists(&drop_in_directory)?);
+    let drop_in = drop_in_directory.join("override.conf");
+    let override_content = "[Service]\nExecStart=\nExecStart=/bin/true\nKillMode=control-group\n";
+    fs::write_sensitive_file(&drop_in, override_content)?;
+    let results = [
+        environment.enable_daemon_registration(&fixture.unit),
+        environment.inspect_daemon_registration().map(|_| ()),
+        environment.restart_daemon_registration(),
+        environment.stop_daemon_registration(),
+        environment.remove_daemon_registration(&fixture.unit),
+    ];
+    let preserved_drop_in = fs::read_to_string(&drop_in);
+    fs::delete_dir_all(&drop_in_directory)?;
+    assert_eq!(preserved_drop_in?, override_content);
+    for result in results {
+        assert!(
+            matches!(&result, Err(PlatformError::DaemonRegistrationConflict { path }) if path == &drop_in),
+            "{result:?}"
+        );
+    }
+    environment.enable_daemon_registration(&fixture.unit)?;
+
+    let stale = config
+        .render()?
+        .replace("KillMode=process", "KillMode=control-group");
+    fs::write_sensitive_file(&fixture.unit, &stale)?;
+    environment.enable_daemon_registration(&fixture.unit)?;
+    platform::write_daemon_registration_file(&fixture.unit, &config)?;
     environment.restart_daemon_registration()?;
     daemon::wait_until_healthy_blocking(fixture.paths.clone())?;
-    let restarted = status()?;
+    let mut restarted = status()?;
     assert_ne!(restarted.main_pid, first.main_pid);
-    let (_, adopted_monitor) = wait_for_redis_monitor(&fixture.paths, Some(&first_job))?;
+    let (mut previous_job, adopted_monitor) =
+        wait_for_redis_monitor(&fixture.paths, Some(&first_job))?;
     assert_eq!(adopted_monitor, monitor);
+
+    for content in [config.render()?, stale] {
+        fs::write_sensitive_file(&fixture.unit, &content)?;
+        environment.enable_daemon_registration(&fixture.unit)?;
+        fs::delete_file(&enabled_link)?;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run_with_environment(
+            ["pv", "daemon:restart"],
+            &environment,
+            &mut stdout,
+            &mut stderr,
+        )?;
+        ensure!(
+            code == ExitCode::SUCCESS,
+            "restart failed: {}",
+            String::from_utf8_lossy(&stderr)
+        );
+        assert_eq!(fs::read_link(&enabled_link)?, fixture.unit);
+        assert_eq!(fs::read_to_string(&fixture.unit)?, config.render()?);
+        let current = status()?;
+        assert_ne!(current.main_pid, restarted.main_pid);
+        restarted = current;
+        let (job, adopted_monitor) = wait_for_redis_monitor(&fixture.paths, Some(&previous_job))?;
+        previous_job = job;
+        assert_eq!(adopted_monitor, monitor);
+    }
 
     // Reloading a deleted fragment must retain evidence of its still-live daemon.
     fs::delete_file(&fixture.unit)?;
