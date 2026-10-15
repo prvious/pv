@@ -1,19 +1,24 @@
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::{PrivilegedHelperLifecycleAction, run_privileged_helper_lifecycle};
+
 #[cfg(target_os = "macos")]
 use std::collections::BTreeMap;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 use std::io::Read;
-#[cfg(any(target_os = "macos", all(test, unix)))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(test, unix)))]
 use std::io::Write;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::time::Duration;
 
 use camino::Utf8Path;
 #[cfg(target_os = "macos")]
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use sha2::{Digest, Sha256};
 
 #[cfg(target_os = "macos")]
@@ -25,10 +30,19 @@ use crate::{
 
 pub const HELPER_PROTOCOL_VERSION: u32 = 2;
 pub const PRIVILEGED_HELPER_VERSION: &str = "2.0.0";
+#[cfg(not(target_os = "linux"))]
 pub const HELPER_EXECUTABLE_PATH: &str = "/Library/PrivilegedHelperTools/com.prvious.pv.helper";
+#[cfg(target_os = "linux")]
+pub const HELPER_EXECUTABLE_PATH: &str = "/usr/local/libexec/pv/pv-helper";
 pub const HELPER_LAUNCH_DAEMON_PATH: &str = "/Library/LaunchDaemons/com.prvious.pv.helper.plist";
+#[cfg(not(target_os = "linux"))]
 pub const HELPER_METADATA_PATH: &str = "/Library/Application Support/PV/helper.json";
+#[cfg(target_os = "linux")]
+pub const HELPER_METADATA_PATH: &str = "/var/lib/pv/helper.json";
+#[cfg(not(target_os = "linux"))]
 pub const HELPER_SOCKET_PATH: &str = "/var/run/com.prvious.pv.helper.sock";
+#[cfg(target_os = "linux")]
+pub const HELPER_SOCKET_PATH: &str = "/run/pv-helper.sock";
 
 #[cfg(target_os = "macos")]
 const HELPER_SOCKET_NAME: &str = "Control";
@@ -62,13 +76,13 @@ const HELPER_PLIST_ROLLBACK_PATH: &str =
     "/Library/LaunchDaemons/.com.prvious.pv.helper.rollback.plist";
 #[cfg(target_os = "macos")]
 const HELPER_PLIST_MARKER: &str = "<!-- Managed by PV -->";
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 const HELPER_LIFECYCLE_PROBE: &[u8] = b"PV-HELPER-LIFECYCLE-PROBE\n";
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 const HELPER_LIFECYCLE_READY_PREFIX: &str = "PV-HELPER-LIFECYCLE-READY";
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 const MAX_MESSAGE_BYTES: usize = 16 * 1024;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 const HELPER_IO_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long PV waits for launchd to create the helper's control socket after bootstrap.
 #[cfg(target_os = "macos")]
@@ -109,7 +123,7 @@ impl PrivilegedHelperInstallOutcome {
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PrivilegedHelperMetadata {
@@ -137,7 +151,7 @@ struct MachineHelperLifecycleLock {
     _file: std::fs::File,
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct HelperRequest {
@@ -166,7 +180,7 @@ enum HelperOperation {
     CaRemove { fingerprint: String },
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 struct HelperResponse {
@@ -174,7 +188,7 @@ struct HelperResponse {
     outcome: HelperOutcome,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum HelperOutcome {
@@ -187,7 +201,7 @@ enum HelperOutcome {
     },
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum HelperErrorCode {
@@ -314,7 +328,18 @@ pub fn install_privileged_helper(
         )
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        let _ = prepared_directory;
+        linux::install(
+            candidate_path,
+            expected_sha256,
+            helper_version,
+            protocol_version,
+        )
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = (
             candidate_path,
@@ -360,7 +385,12 @@ pub fn remove_privileged_helper() -> Result<(), PlatformError> {
         run_sudo(&["/bin/rm", "-rf", HELPER_SUPPORT_DIRECTORY])
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(target_os = "linux")]
+    {
+        linux::remove()
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         Err(crate::capability::unsupported(
             crate::PlatformCapability::PrivilegedHelper,
@@ -889,7 +919,7 @@ fn require_matching_plist_owner(owner_uid: u32) -> Result<(), PlatformError> {
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn require_matching_helper_owner(
     metadata: &PrivilegedHelperMetadata,
     owner_uid: u32,
@@ -904,7 +934,7 @@ fn require_matching_helper_owner(
     )))
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn validate_helper_identity(
     helper_version: &str,
     protocol_version: u32,
@@ -1019,7 +1049,7 @@ fn render_launch_daemon_plist(owner_uid: u32, owner_gid: u32) -> Result<String, 
     ))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run_sudo(args: &[&str]) -> Result<(), PlatformError> {
     crate::command::run_system_command("/usr/bin/sudo", args)
 }
@@ -1112,7 +1142,7 @@ fn validate_helper_support_directory_for_removal() -> Result<(), PlatformError> 
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[expect(
     clippy::disallowed_methods,
     reason = "helper installer validates the candidate without following symlinks"
@@ -1132,7 +1162,7 @@ fn validate_regular_file_owned_by(path: &Utf8Path, expected_uid: u32) -> Result<
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[expect(
     clippy::disallowed_types,
     reason = "helper installer hashes the candidate before privileged installation"
@@ -1177,7 +1207,7 @@ fn unexpected_payload(operation: &str, payload: &HelperPayload) -> PlatformError
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn call_helper(
     socket_path: &Utf8Path,
     operation: HelperOperation,
@@ -1218,7 +1248,7 @@ fn call_helper(
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn connect_helper(socket_path: &Utf8Path) -> Result<std::os::unix::net::UnixStream, PlatformError> {
     let stream = std::os::unix::net::UnixStream::connect(socket_path).map_err(|source| {
         if matches!(
@@ -1244,7 +1274,7 @@ fn connect_helper(socket_path: &Utf8Path) -> Result<std::os::unix::net::UnixStre
     Ok(stream)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
 fn probe_helper_lifecycle(socket_path: &Utf8Path) -> Result<PrivilegedHelperStatus, PlatformError> {
     let mut stream = connect_helper(socket_path)?;
     stream
@@ -1254,23 +1284,30 @@ fn probe_helper_lifecycle(socket_path: &Utf8Path) -> Result<PrivilegedHelperStat
     parse_helper_lifecycle_response(&response)
 }
 
-/// Bootstrap can return before launchd has created the control socket.
-#[cfg(target_os = "macos")]
+/// Registration can finish before the native service manager creates the control socket.
+#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
 fn wait_for_helper_lifecycle(
     socket_path: &Utf8Path,
 ) -> Result<PrivilegedHelperStatus, PlatformError> {
-    let deadline = Deadline::after(&HELPER_SOCKET_WAIT);
-    loop {
-        match probe_helper_lifecycle(socket_path) {
-            Err(PlatformError::PrivilegedHelperUnavailable) if !deadline.is_expired() => {
-                clock::poll_blocking(Duration::from_millis(25));
+    #[cfg(target_os = "linux")]
+    {
+        async_io::block_on(linux::wait_for_ready(socket_path, rustix::process::getuid().as_raw()))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let deadline = Deadline::after(&HELPER_SOCKET_WAIT);
+        loop {
+            match probe_helper_lifecycle(socket_path) {
+                Err(PlatformError::PrivilegedHelperUnavailable) if !deadline.is_expired() => {
+                    clock::poll_blocking(Duration::from_millis(25));
+                }
+                result => return result,
             }
-            result => return result,
         }
     }
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn parse_helper_lifecycle_response(
     response: &[u8],
 ) -> Result<PrivilegedHelperStatus, PlatformError> {
@@ -1320,7 +1357,7 @@ fn parse_helper_lifecycle_response(
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn call_helper(
     _socket_path: &Utf8Path,
     _operation: HelperOperation,
@@ -1330,7 +1367,7 @@ fn call_helper(
     )?)
 }
 
-#[cfg(any(target_os = "macos", all(test, unix)))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(test, unix)))]
 fn write_message(writer: &mut impl Write, message: &impl Serialize) -> Result<(), PlatformError> {
     let message = serde_json::to_vec(message)?;
     if message.len() > MAX_MESSAGE_BYTES {
@@ -1345,14 +1382,14 @@ fn write_message(writer: &mut impl Write, message: &impl Serialize) -> Result<()
         .map_err(PlatformError::PrivilegedHelperIo)
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn read_message<T: for<'de> Deserialize<'de>>(reader: &mut impl Read) -> Result<T, PlatformError> {
     let bytes = read_frame(reader)?;
 
     Ok(serde_json::from_slice(&bytes)?)
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn read_frame(reader: &mut impl Read) -> Result<Vec<u8>, PlatformError> {
     let mut bytes = Vec::new();
     let mut byte = [0_u8; 1];
@@ -1430,7 +1467,7 @@ pub fn serve_privileged_helper() -> Result<(), PlatformError> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn serve_next_helper_connection(
     listener: &std::os::unix::net::UnixListener,
     metadata: &PrivilegedHelperMetadata,
@@ -1447,7 +1484,7 @@ fn serve_next_helper_connection(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn serve_helper_connection(
     stream: &mut std::os::unix::net::UnixStream,
     metadata: &PrivilegedHelperMetadata,
@@ -1469,20 +1506,49 @@ fn serve_helper_connection(
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+pub fn serve_privileged_helper() -> Result<(), PlatformError> {
+    if !rustix::process::getuid().is_root() {
+        return Err(PlatformError::PrivilegedHelperAuthentication(
+            "helper must run as root".to_owned(),
+        ));
+    }
+    let metadata = read_helper_metadata()?;
+    validate_helper_metadata(&metadata)?;
+    let mut descriptors = listenfd::ListenFd::from_env();
+    if descriptors.len() != 1 {
+        return Err(PlatformError::PrivilegedHelperInstallation(format!(
+            "systemd provided {} helper sockets, expected exactly one",
+            descriptors.len()
+        )));
+    }
+    let listener = descriptors
+        .take_unix_listener(0)
+        .map_err(PlatformError::PrivilegedHelperIo)?
+        .ok_or_else(|| {
+            PlatformError::PrivilegedHelperInstallation(
+                "systemd did not provide a listening socket".to_owned(),
+            )
+        })?;
+    loop {
+        serve_next_helper_connection(&listener, &metadata)?;
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn serve_privileged_helper() -> Result<(), PlatformError> {
     Err(crate::capability::unsupported(
         crate::PlatformCapability::PrivilegedHelper,
     )?)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 enum HelperConnectionResponse {
     Operational(HelperResponse),
     Lifecycle(String),
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn handle_connection(
     stream: &mut std::os::unix::net::UnixStream,
     metadata: &PrivilegedHelperMetadata,
@@ -1510,16 +1576,25 @@ fn handle_connection(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn authenticate_peer(
     stream: &std::os::unix::net::UnixStream,
     owner_uid: u32,
 ) -> Result<(), PlatformError> {
+    #[cfg(target_os = "macos")]
     let (peer_uid, _peer_gid) = nix::unistd::getpeereid(stream).map_err(|error| {
         PlatformError::PrivilegedHelperAuthentication(format!(
             "could not inspect Unix peer credentials: {error}"
         ))
     })?;
+    #[cfg(target_os = "linux")]
+    let peer_uid = rustix::net::sockopt::socket_peercred(stream)
+        .map_err(|error| {
+            PlatformError::PrivilegedHelperAuthentication(format!(
+                "could not inspect Unix peer credentials: {error}"
+            ))
+        })?
+        .uid;
     if peer_uid.as_raw() != owner_uid {
         return Err(PlatformError::PrivilegedHelperAuthentication(format!(
             "caller UID {} does not match installing UID {owner_uid}",
@@ -1530,7 +1605,7 @@ fn authenticate_peer(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn dispatch_request(
     request: HelperRequest,
     metadata: &PrivilegedHelperMetadata,
@@ -1548,6 +1623,7 @@ fn dispatch_request(
             protocol_version: HELPER_PROTOCOL_VERSION,
             owner_uid: metadata.owner_uid,
         })),
+        #[cfg(target_os = "macos")]
         HelperOperation::DnsInspect { expected_port } => {
             let expected = expected_port.map(ResolverConfig::new);
             Ok(HelperPayload::ResolverState(crate::inspect_resolver_file(
@@ -1555,21 +1631,26 @@ fn dispatch_request(
                 expected.as_ref(),
             )))
         }
+        #[cfg(target_os = "macos")]
         HelperOperation::DnsApply { port } => {
             validate_high_port("DNS", port)?;
             crate::resolver::apply_resolver_config_privileged(&ResolverConfig::new(port))?;
             Ok(HelperPayload::Empty)
         }
+        #[cfg(target_os = "macos")]
         HelperOperation::DnsRemove => {
             crate::resolver::remove_resolver_config_privileged()?;
             Ok(HelperPayload::Empty)
         }
+        #[cfg(target_os = "macos")]
         HelperOperation::LowPortInspect => Ok(HelperPayload::LowPorts(
             crate::low_port::inspect_loopback_ports(&[80, 443])?,
         )),
+        #[cfg(target_os = "macos")]
         HelperOperation::PfInspect => Ok(HelperPayload::PfInspection(
             crate::pf::inspect_active_pf_redirects_privileged()?,
         )),
+        #[cfg(target_os = "macos")]
         HelperOperation::PfApply {
             http_port,
             https_port,
@@ -1596,16 +1677,19 @@ fn dispatch_request(
             ))?;
             Ok(HelperPayload::Empty)
         }
+        #[cfg(target_os = "macos")]
         HelperOperation::PfRemove => {
             crate::pf::remove_pf_redirects_privileged()?;
             Ok(HelperPayload::Empty)
         }
+        #[cfg(target_os = "macos")]
         HelperOperation::CaInspect => {
             use crate::SystemTrustInspector as _;
 
             let certificates = crate::NativeSystemTrustInspector.trusted_certificates()?;
             Ok(HelperPayload::CaCertificates(certificates))
         }
+        #[cfg(target_os = "macos")]
         HelperOperation::CaApply { fingerprint } => {
             validate_fingerprint(&fingerprint)?;
             let certificate_path = owner_ca_certificate_path(metadata.owner_uid)?;
@@ -1644,11 +1728,31 @@ fn dispatch_request(
             }
             Ok(HelperPayload::Empty)
         }
+        #[cfg(target_os = "macos")]
         HelperOperation::CaRemove { fingerprint } => {
             validate_fingerprint(&fingerprint)?;
             crate::trust::untrust_system_ca_privileged(&fingerprint)?;
             Ok(HelperPayload::Empty)
         }
+        #[cfg(target_os = "linux")]
+        HelperOperation::DnsInspect { .. }
+        | HelperOperation::DnsApply { .. }
+        | HelperOperation::DnsRemove => Err(crate::capability::unsupported(
+            crate::PlatformCapability::ResolverIntegration,
+        )?),
+        #[cfg(target_os = "linux")]
+        HelperOperation::LowPortInspect
+        | HelperOperation::PfInspect
+        | HelperOperation::PfApply { .. }
+        | HelperOperation::PfRemove => Err(crate::capability::unsupported(
+            crate::PlatformCapability::LowPortFrontend,
+        )?),
+        #[cfg(target_os = "linux")]
+        HelperOperation::CaInspect
+        | HelperOperation::CaApply { .. }
+        | HelperOperation::CaRemove { .. } => Err(crate::capability::unsupported(
+            crate::PlatformCapability::TrustStore,
+        )?),
     }
 }
 
@@ -1675,16 +1779,21 @@ fn owner_ca_certificate_path(owner_uid: u32) -> Result<Utf8PathBuf, PlatformErro
     Ok(home.join(".pv/certificates/ca.pem"))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn read_helper_metadata() -> Result<PrivilegedHelperMetadata, PlatformError> {
-    validate_root_owned_regular_file(Utf8Path::new(HELPER_METADATA_PATH), 0o644)?;
+    let mode = if cfg!(target_os = "linux") {
+        0o600
+    } else {
+        0o644
+    };
+    validate_root_owned_regular_file(Utf8Path::new(HELPER_METADATA_PATH), mode)?;
     let content = state::fs::read_to_string(Utf8Path::new(HELPER_METADATA_PATH))
         .map_err(|error| PlatformError::PrivilegedHelperInstallation(error.to_string()))?;
 
     Ok(serde_json::from_str(&content)?)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn validate_helper_metadata(metadata: &PrivilegedHelperMetadata) -> Result<(), PlatformError> {
     if metadata.helper_version != PRIVILEGED_HELPER_VERSION {
         return Err(PlatformError::PrivilegedHelperInstallation(format!(
@@ -1707,7 +1816,7 @@ fn validate_helper_metadata(metadata: &PrivilegedHelperMetadata) -> Result<(), P
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[expect(
     clippy::disallowed_methods,
     reason = "privileged helper validates root-owned installation metadata before use"
@@ -1835,7 +1944,7 @@ fn validate_high_port(label: &str, port: u16) -> Result<(), PlatformError> {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn successful_response(payload: HelperPayload) -> HelperResponse {
     HelperResponse {
         protocol_version: HELPER_PROTOCOL_VERSION,
@@ -1843,7 +1952,7 @@ fn successful_response(payload: HelperPayload) -> HelperResponse {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn error_response(error: PlatformError) -> HelperResponse {
     HelperResponse {
         protocol_version: HELPER_PROTOCOL_VERSION,
@@ -1854,13 +1963,14 @@ fn error_response(error: PlatformError) -> HelperResponse {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn helper_error_code(error: &PlatformError) -> HelperErrorCode {
     match error {
         PlatformError::PrivilegedHelperAuthentication(_) => HelperErrorCode::AuthenticationFailed,
         PlatformError::PrivilegedHelperProtocolMismatch { .. } => HelperErrorCode::ProtocolMismatch,
         PlatformError::PrivilegedHelperRejected { .. } => HelperErrorCode::InvalidRequest,
         PlatformError::SystemIntegration(_)
+        | PlatformError::Unsupported { .. }
         | PlatformError::SystemIntegrationCommand { .. }
         | PlatformError::SystemIntegrationCommandStatus { .. } => {
             HelperErrorCode::SystemIntegrationFailed
@@ -1871,19 +1981,19 @@ fn helper_error_code(error: &PlatformError) -> HelperErrorCode {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     use std::io::Write as _;
     use std::io::{Cursor, ErrorKind};
     #[cfg(target_os = "macos")]
     use std::os::unix::fs::symlink;
     #[cfg(target_os = "macos")]
     use std::process::{Child, Stdio};
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     use std::thread;
     #[cfg(unix)]
     use std::time::Duration;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     use anyhow::anyhow;
     use camino_tempfile::tempdir;
     #[cfg(target_os = "macos")]
@@ -1898,11 +2008,14 @@ mod tests {
     use super::{HELPER_PROTOCOL_VERSION, HelperOperation, write_message};
     #[cfg(target_os = "macos")]
     use super::{
-        HELPER_SOCKET_NAME, HELPER_SOCKET_WAIT, HELPER_STANDARD_ERROR_PATH,
-        HelperLaunchDaemonPlist, HelperPayload, PRIVILEGED_HELPER_VERSION, call_helper,
-        dispatch_request, lock_machine_helper_lifecycle_file, probe_helper_lifecycle,
-        render_launch_daemon_plist, restore_helper_file, serve_next_helper_connection,
-        validate_root_owned_regular_file, wait_for_helper_lifecycle,
+        HELPER_SOCKET_NAME, HELPER_SOCKET_WAIT, HELPER_STANDARD_ERROR_PATH, HelperLaunchDaemonPlist, dispatch_request,
+        lock_machine_helper_lifecycle_file, render_launch_daemon_plist, restore_helper_file,
+        validate_root_owned_regular_file,
+    };
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    use super::{
+        HelperPayload, PRIVILEGED_HELPER_VERSION, call_helper, probe_helper_lifecycle,
+        serve_next_helper_connection, wait_for_helper_lifecycle,
     };
     use super::{
         HelperRequest, MAX_MESSAGE_BYTES, PrivilegedHelperMetadata, helper_artifacts_present,
@@ -2079,7 +2192,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     #[expect(
         clippy::disallowed_methods,
@@ -2119,7 +2232,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     #[expect(
         clippy::disallowed_methods,
@@ -2152,7 +2265,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn helper_bootstrap_wait_stops_when_the_socket_never_appears() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
@@ -2165,7 +2278,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     #[expect(
         clippy::disallowed_methods,
@@ -2424,7 +2537,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn connection_authenticates_before_reading_a_request() -> anyhow::Result<()> {
         use super::{

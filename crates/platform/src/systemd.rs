@@ -1,3 +1,9 @@
+use std::future::Future;
+use std::pin::pin;
+use std::time::Duration;
+
+use async_io::Timer;
+use futures_util::future::{Either, select};
 use futures_util::StreamExt;
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedObjectPath;
@@ -58,4 +64,11 @@ pub(crate) async fn unit_job(
 }
 pub(crate) fn is_method_error(error: &zbus::Error, expected: &str) -> bool {
     matches!(error, zbus::Error::MethodError(name, _, _) if name.as_str() == expected)
+}
+
+pub(crate) async fn within<T>(timeout: Duration, future: impl Future<Output = T>) -> Option<T> {
+    match select(pin!(future), Timer::after(timeout)).await {
+        Either::Left((result, _)) => Some(result),
+        Either::Right(_) => None,
+    }
 }

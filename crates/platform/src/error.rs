@@ -95,6 +95,10 @@ pub enum PlatformError {
     DaemonRegistrationBus(#[source] Box<zbus::Error>),
 
     #[cfg(target_os = "linux")]
+    #[error("privileged helper systemd operation failed: {0}")]
+    PrivilegedHelperBus(#[source] Box<zbus::Error>),
+
+    #[cfg(target_os = "linux")]
     #[error("daemon registration {operation} failed: {message}")]
     DaemonRegistrationState {
         operation: &'static str,
