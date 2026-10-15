@@ -180,7 +180,7 @@ mod tests {
     use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
 
-    use super::{BLOCK_SIZE, FIRST_PORT, LAST_PORT, Pool, open_lock_file, port};
+    use super::{BLOCK_SIZE, FIRST_PORT, LAST_PORT, Pool, is_free, open_lock_file, port};
 
     /// A private pool of two blocks outside the shared pool's ports, so these tests never probe a
     /// port another test was handed.
@@ -241,13 +241,11 @@ mod tests {
     }
 
     #[test]
-    fn a_port_with_closing_connections_is_skipped() -> Result<()> {
-        let directory = tempdir()?;
-        leave_server_closing_connection(TEST_FIRST_PORT)?;
+    fn a_port_with_closing_connections_is_not_free() -> Result<()> {
+        let port = port()?;
+        leave_server_closing_connection(port)?;
 
-        let port = test_pool(directory.path().to_owned()).port()?;
-
-        assert_ne!(port, TEST_FIRST_PORT);
+        assert!(!is_free(port)?);
 
         Ok(())
     }
