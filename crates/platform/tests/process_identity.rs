@@ -319,6 +319,74 @@ fn group_inspection_keeps_live_members_after_the_leader_exits() -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn zombie_thread_group_leader_keeps_its_live_worker_visible() -> Result<()> {
+    let mut child = ChildGuard(
+        TestCommand::new("python3")
+            .args([
+                "-c",
+                r"import ctypes, os, signal, sys, threading
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+def worker():
+    for line in sys.stdin:
+        print(line.strip(), flush=True)
+    os._exit(0)
+threading.Thread(target=worker).start()
+timer = threading.Timer(150, lambda: os._exit(1))
+timer.daemon = True
+timer.start()
+print('ready', flush=True)
+ctypes.CDLL(None).pthread_exit(None)
+",
+            ])
+            .process_group(0)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()?,
+    );
+    let pid = child.0.id();
+    let mut output = BufReader::new(
+        child
+            .0
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow!("missing worker stdout"))?,
+    );
+    let mut line = String::new();
+    output.read_line(&mut line)?;
+    assert_eq!(line, "ready\n");
+    let process = Process::new(i32::try_from(pid)?)?;
+    for _attempt in 0..500 {
+        if process.stat()?.state == 'Z' {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(process.stat()?.state, 'Z');
+    child
+        .0
+        .stdin
+        .as_mut()
+        .ok_or_else(|| anyhow!("missing worker stdin"))?
+        .write_all(b"alive\n")?;
+    line.clear();
+    output.read_line(&mut line)?;
+    assert_eq!(line, "alive\n");
+
+    let mut watch = ProcessExitWatch::new(pid)?;
+    assert!(watch.try_exit_status()?.is_none());
+    assert!(!process_is_zombie(pid)?);
+    assert!(process_group_has_live_members(pid)?);
+    child.0.kill()?;
+    let status = wait_for_exit(&mut watch)?;
+    assert_eq!(status.signal(), Some(9));
+    assert!(process_is_zombie(pid)?);
+    assert!(!process_group_has_live_members(pid)?);
+    assert_eq!(child.0.wait()?, status);
+    Ok(())
+}
+
 #[test]
 fn reaped_process_has_no_identity_or_zombie_state() -> Result<()> {
     let mut child = ChildGuard(TestCommand::new("/bin/sleep").arg("30").spawn()?);
