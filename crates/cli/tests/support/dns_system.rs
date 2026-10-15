@@ -22,6 +22,7 @@ const CONTROL: &str = "/run/pv-dns-system-test";
 const CLEANUP_UNIT: &str = "pv-dns-system-cleanup";
 const FOREIGN_LINK: &str = "pv-dns-foreign";
 const DNSSEC_FILE: &str = "/etc/systemd/resolved.conf.d/99-pv-dns-system-test.conf";
+const RESOLVED_RUNTIME_MASK: &str = "/run/systemd/system/systemd-resolved.service";
 const DNS_PATHS: [&str; 6] = [
     SYSTEM_RESOLVER_TEST_PATH,
     "/etc/systemd/system/pv-dns.service.candidate",
@@ -52,6 +53,14 @@ if [ "${1-}" = orphan ]; then
 fi
 stop_units pv-helper.socket pv-helper.service
 stop_units pv-dns.service
+failed=$(/usr/bin/systemctl list-units --all --no-legend --no-pager --plain \
+    --state=failed pv-dns.service)
+if [ -n "$failed" ]; then
+    /usr/bin/systemctl reset-failed pv-dns.service
+fi
+if [ -f /run/pv-dns-system-test/created-resolved-mask ]; then
+    /usr/bin/systemctl unmask --runtime systemd-resolved.service
+fi
 for link in pv0 pv-dns-foreign; do
     if /usr/sbin/ip link show dev "$link" >/dev/null 2>&1; then
         /usr/sbin/ip link delete dev "$link"
@@ -103,7 +112,10 @@ fn exercise_dns(helper_fixture: &mut HelperFixture, helper: &Utf8Path) -> Result
 }
 
 fn preflight() -> Result<()> {
-    for path in DNS_PATHS.into_iter().chain([CONTROL]) {
+    for path in DNS_PATHS
+        .into_iter()
+        .chain([CONTROL, RESOLVED_RUNTIME_MASK])
+    {
         ensure!(
             !fs::path_entry_exists(Utf8Path::new(path))?,
             "refusing existing DNS path {path}"
@@ -221,7 +233,52 @@ impl DnsFixture {
             root_text(&["/usr/bin/stat", "-c", "%u:%g:%a", SYSTEM_RESOLVER_TEST_PATH])?.trim(),
             "0:0:644"
         );
+        assert!(
+            service_property("systemd-resolved.service", "Wants")?
+                .split_whitespace()
+                .any(|unit| unit == "pv-dns.service")
+        );
+        root(&["/usr/bin/systemctl", "stop", "systemd-resolved.service"])?;
+        assert_eq!(
+            service_property("pv-dns.service", "ActiveState")?,
+            "inactive"
+        );
+        assert!(link("pv0")?.is_none());
+        root(&["/usr/bin/systemctl", "start", "systemd-resolved.service"])?;
+        wait_until_current(first_port)?;
         require_lookup("initial.pv-dns-system.test")?;
+
+        for runtime in [false, true] {
+            root(&["/usr/bin/systemctl", "disable", "pv-dns.service"])?;
+            if runtime {
+                root(&[
+                    "/usr/bin/systemctl",
+                    "enable",
+                    "--runtime",
+                    "pv-dns.service",
+                ])?;
+            }
+            ensure!(matches!(
+                platform::inspect_resolver_file(
+                    Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH),
+                    Some(&ResolverConfig::new(first_port))
+                ),
+                ResolverFileState::Stale { .. }
+            ));
+            PrivilegedHelperClient.apply_dns(&ResolverConfig::new(first_port))?;
+            require_current(first_port)?;
+        }
+        root(&["/usr/bin/chmod", "0664", SYSTEM_RESOLVER_TEST_PATH])?;
+        require_unsafe_unit_refused(first_port)?;
+        root(&["/usr/bin/chmod", "0644", SYSTEM_RESOLVER_TEST_PATH])?;
+        root(&["/usr/bin/chown", "1000:1000", SYSTEM_RESOLVER_TEST_PATH])?;
+        require_unsafe_unit_refused(first_port)?;
+        root(&["/usr/bin/chown", "0:0", SYSTEM_RESOLVER_TEST_PATH])?;
+        let hard_link = format!("{CONTROL}/unit-hard-link");
+        root(&["/usr/bin/ln", SYSTEM_RESOLVER_TEST_PATH, &hard_link])?;
+        require_unsafe_unit_refused(first_port)?;
+        root(&["/usr/bin/rm", "--", &hard_link])?;
+        require_current(first_port)?;
 
         root(&["/usr/bin/systemctl", "restart", "systemd-resolved.service"])?;
         wait_until_current(first_port)?;
@@ -235,6 +292,18 @@ impl DnsFixture {
         PrivilegedHelperClient.apply_dns(&ResolverConfig::new(second_port))?;
         require_current(second_port)?;
         require_lookup("changed-port.pv-dns-system.test")?;
+        // Model teardown interrupted after unlink, before its final reload.
+        root(&["/usr/bin/systemctl", "disable", "pv-dns.service"])?;
+        root(&[
+            "/usr/bin/systemctl",
+            "disable",
+            "--runtime",
+            "pv-dns.service",
+        ])?;
+        root(&["/usr/bin/systemctl", "daemon-reload"])?;
+        root(&["/usr/bin/systemctl", "stop", "pv-dns.service"])?;
+        root(&["/usr/bin/rm", "--", SYSTEM_RESOLVER_TEST_PATH])?;
+        PrivilegedHelperClient.remove_dns()?;
         PrivilegedHelperClient.remove_dns()?;
         require_missing()?;
 
@@ -263,6 +332,9 @@ impl DnsFixture {
             "type",
             "dummy",
         ])?;
+        let unmarked_link = link("pv0")?.context("unmarked pv0 missing")?;
+        require_conflict(second_port)?;
+        assert_eq!(link("pv0")?, Some(unmarked_link));
         root(&[
             "/usr/sbin/ip",
             "link",
@@ -288,17 +360,114 @@ impl DnsFixture {
         ])?;
         root(&["/usr/sbin/ip", "link", "set", "dev", FOREIGN_LINK, "up"])?;
         wait_for_resolved_link(FOREIGN_LINK)?;
-        root(&["/usr/bin/resolvectl", "domain", FOREIGN_LINK, "~test"])?;
-        let foreign_domains = text(checked("/usr/bin/resolvectl", &["domain", FOREIGN_LINK])?)?;
-        require_conflict(second_port)?;
-        assert_eq!(
-            text(checked("/usr/bin/resolvectl", &["domain", FOREIGN_LINK])?)?,
-            foreign_domains
-        );
-        root(&["/usr/bin/resolvectl", "revert", FOREIGN_LINK])?;
+        for domain in ["~test", "test", "acme.test"] {
+            let config = ResolverConfig::new(second_port);
+            PrivilegedHelperClient.apply_dns(&config)?;
+            root(&["/usr/bin/resolvectl", "domain", FOREIGN_LINK, domain])?;
+            let foreign_domains = text(checked("/usr/bin/resolvectl", &["domain", FOREIGN_LINK])?)?;
+            ensure!(matches!(
+                platform::inspect_resolver_file(
+                    Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH),
+                    Some(&config)
+                ),
+                ResolverFileState::Conflict { .. }
+            ));
+            ensure!(matches!(
+                PrivilegedHelperClient.apply_dns(&config),
+                Err(PlatformError::SystemIntegration(_))
+            ));
+            if domain == "~test" {
+                ensure!(root(&["/usr/bin/systemctl", "restart", "pv-dns.service"]).is_err());
+                assert_eq!(service_property("pv-dns.service", "ActiveState")?, "failed");
+            }
+            PrivilegedHelperClient.remove_dns()?;
+            require_owned_resources_removed()?;
+            assert_eq!(
+                text(checked("/usr/bin/resolvectl", &["domain", FOREIGN_LINK])?)?,
+                foreign_domains
+            );
+            root(&["/usr/bin/resolvectl", "revert", FOREIGN_LINK])?;
+            require_missing()?;
+        }
         root(&["/usr/sbin/ip", "link", "delete", "dev", FOREIGN_LINK])?;
+
+        PrivilegedHelperClient.apply_dns(&ResolverConfig::new(second_port))?;
+        root(&["/usr/bin/systemctl", "stop", "systemd-resolved.service"])?;
+        root(&[
+            "/usr/bin/touch",
+            &format!("{CONTROL}/created-resolved-mask"),
+        ])?;
+        root(&[
+            "/usr/bin/systemctl",
+            "mask",
+            "--runtime",
+            "systemd-resolved.service",
+        ])?;
+        assert_eq!(
+            text(checked(
+                "/usr/bin/busctl",
+                &[
+                    "--system",
+                    "call",
+                    "org.freedesktop.DBus",
+                    "/org/freedesktop/DBus",
+                    "org.freedesktop.DBus",
+                    "NameHasOwner",
+                    "s",
+                    "org.freedesktop.resolve1"
+                ]
+            )?)?
+            .trim(),
+            "b false"
+        );
+        ensure!(matches!(
+            platform::inspect_resolver_file(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH), None),
+            ResolverFileState::Unreadable { .. }
+        ));
+        root(&[
+            "/usr/sbin/ip",
+            "link",
+            "add",
+            "name",
+            "pv0",
+            "type",
+            "dummy",
+        ])?;
+        root(&[
+            "/usr/sbin/ip",
+            "link",
+            "set",
+            "dev",
+            "pv0",
+            "alias",
+            "Managed by PV",
+        ])?;
         PrivilegedHelperClient.remove_dns()?;
         PrivilegedHelperClient.remove_dns()?;
+        require_owned_resources_removed()?;
+        root(&[
+            "/usr/sbin/ip",
+            "link",
+            "add",
+            "name",
+            "pv0",
+            "type",
+            "dummy",
+        ])?;
+        let foreign_link = link("pv0")?.context("foreign pv0 missing")?;
+        ensure!(matches!(
+            PrivilegedHelperClient.remove_dns(),
+            Err(PlatformError::SystemIntegration(_))
+        ));
+        assert_eq!(link("pv0")?, Some(foreign_link));
+        root(&["/usr/sbin/ip", "link", "delete", "dev", "pv0"])?;
+        root(&[
+            "/usr/bin/systemctl",
+            "unmask",
+            "--runtime",
+            "systemd-resolved.service",
+        ])?;
+        root(&["/usr/bin/systemctl", "start", "systemd-resolved.service"])?;
         require_missing()?;
         Ok(())
     }
@@ -366,7 +535,7 @@ impl DnsFixture {
                 !links()?.iter().any(|link| link["ifname"] == FOREIGN_LINK),
                 "foreign fixture link remains"
             );
-            for path in DNS_PATHS {
+            for path in DNS_PATHS.into_iter().chain([RESOLVED_RUNTIME_MASK]) {
                 ensure!(
                     !fs::path_entry_exists(Utf8Path::new(path))?,
                     "DNS fixture path remains: {path}"
@@ -404,6 +573,31 @@ fn require_current(port: u16) -> Result<()> {
         "{state:?}"
     );
     assert_eq!(PrivilegedHelperClient.inspect_dns(Some(&expected))?, state);
+    Ok(())
+}
+
+fn require_owned_resources_removed() -> Result<()> {
+    for path in DNS_PATHS.into_iter().filter(|&path| path != DNSSEC_FILE) {
+        ensure!(
+            !fs::path_entry_exists(Utf8Path::new(path))?,
+            "PV DNS path remains: {path}"
+        );
+    }
+    assert!(link("pv0")?.is_none());
+    require_units_absent(&["pv-dns.service"])
+}
+
+fn require_unsafe_unit_refused(port: u16) -> Result<()> {
+    let expected = ResolverConfig::new(port);
+    for state in [
+        platform::inspect_resolver_file(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH), Some(&expected)),
+        PrivilegedHelperClient.inspect_dns(Some(&expected))?,
+    ] {
+        ensure!(
+            matches!(state, ResolverFileState::Unreadable { .. }),
+            "{state:?}"
+        );
+    }
     Ok(())
 }
 

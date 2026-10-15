@@ -1,5 +1,5 @@
 use std::future::Future;
-use std::io::{self, Read};
+use std::io;
 use std::thread;
 use std::time::Duration;
 
@@ -8,10 +8,10 @@ use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::TryStreamExt;
 use rtnetlink::packet_route::link::{InfoKind, LinkAttribute, LinkFlags, LinkInfo, LinkMessage};
 use rtnetlink::{Handle, LinkDummy, LinkUnspec};
-use rustix::fs::{Mode, OFlags, open};
 use rustix::net::AddressFamily;
 use rustix::process::{geteuid, getuid};
 use tokio::runtime::Builder;
+use zbus::fdo::DBusProxy;
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedObjectPath;
 use zbus::{Connection, Proxy, connection, proxy};
@@ -19,7 +19,10 @@ use zbus::{Connection, Proxy, connection, proxy};
 use super::{PV_MARKER, ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH};
 use crate::PlatformError;
 use crate::helper::{linux as root_files, validate_high_port};
-use crate::systemd::{native_proxy, system_manager_proxy, unit_job, within};
+use crate::systemd::{
+    native_proxy, read_owned_unit, require_no_candidate, system_manager_proxy, unit_job, within,
+    write_owned_unit,
+};
 
 const LINK_NAME: &str = "pv0";
 const LINK_ALIAS: &str = "Managed by PV";
@@ -42,12 +45,6 @@ ExecStop=/usr/local/libexec/pv/pv-helper dns-link down\n\
 [Install]\n\
 WantedBy=systemd-resolved.service\n";
 
-#[expect(
-    clippy::disallowed_types,
-    reason = "resolver inspection owns a native NOFOLLOW/NONBLOCK-validated descriptor"
-)]
-type UnitFile = std::fs::File;
-
 fn render_unit(config: &ResolverConfig) -> String {
     format!("{UNIT_PREFIX}{}{UNIT_SUFFIX}", config.port)
 }
@@ -65,6 +62,7 @@ fn parse_unit(content: &str) -> Option<ResolverConfig> {
 #[derive(Clone)]
 struct UnitStatus {
     active_state: String,
+    unit_file_state: String,
     fragment_path: Utf8PathBuf,
     drop_in_paths: Vec<String>,
 }
@@ -134,10 +132,9 @@ impl Observation {
             || self
                 .routing_domains
                 .iter()
-                .any(|(index, domain, route_only)| {
-                    *route_only
-                        && domain.trim_end_matches('.').eq_ignore_ascii_case("test")
-                        && Some(*index) != link_index
+                .any(|(index, domain, _route_only)| {
+                    let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+                    (domain == "test" || domain.ends_with(".test")) && Some(*index) != link_index
                 })
         {
             return ResolverFileState::Conflict { path };
@@ -150,10 +147,9 @@ impl Observation {
         let actual = self.unit_content.as_deref().and_then(parse_unit);
         if let Some(actual) = &actual
             && expected.is_none_or(|expected| expected == actual)
-            && self
-                .unit_status
-                .as_ref()
-                .is_some_and(|status| status.active_state == "active")
+            && self.unit_status.as_ref().is_some_and(|status| {
+                status.active_state == "active" && status.unit_file_state == "enabled"
+            })
             && link.is_some_and(|link| link.header.flags.contains(LinkFlags::Up))
             && self.link_settings.as_ref() == Some(&LinkSettings::for_config(actual))
         {
@@ -183,10 +179,14 @@ fn owned_link(link: &LinkMessage) -> bool {
     link.attributes
         .iter()
         .any(|attribute| matches!(attribute, LinkAttribute::IfAlias(alias) if alias == LINK_ALIAS))
-        && link.attributes.iter().any(|attribute| {
-            matches!(attribute, LinkAttribute::LinkInfo(info)
+        && dummy_link(link)
+}
+
+fn dummy_link(link: &LinkMessage) -> bool {
+    link.attributes.iter().any(|attribute| {
+        matches!(attribute, LinkAttribute::LinkInfo(info)
             if info.contains(&LinkInfo::Kind(InfoKind::Dummy)))
-        })
+    })
 }
 
 pub(super) fn inspect(expected: Option<&ResolverConfig>) -> ResolverFileState {
@@ -235,28 +235,6 @@ fn run_native<T: Send>(
     })
 }
 
-fn read_unit(path: &Utf8Path) -> io::Result<Option<String>> {
-    let descriptor = match open(
-        path.as_std_path(),
-        OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK,
-        Mode::empty(),
-    ) {
-        Ok(descriptor) => descriptor,
-        Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(error) => return Err(error.into()),
-    };
-    let mut file = UnitFile::from(descriptor);
-    if !file.metadata()?.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "resolver unit is not a regular file",
-        ));
-    }
-    let mut content = String::new();
-    file.read_to_string(&mut content)?;
-    Ok(Some(content))
-}
-
 async fn read_links() -> Result<Vec<LinkMessage>, PlatformError> {
     with_netlink(|handle| async move { query_links(&handle).await }).await
 }
@@ -290,8 +268,26 @@ async fn with_netlink<T, F: Future<Output = Result<T, PlatformError>>>(
 }
 
 async fn observe() -> Result<(Connection, Observation), PlatformError> {
-    let unit_content =
-        read_unit(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH)).map_err(PlatformError::ResolverIo)?;
+    let (connection, mut observation) = observe_owned().await?;
+    let resolved = resolved_manager(&connection).await?;
+    observation.routing_domains = resolved.get_property("Domains").await.map_err(bus_error)?;
+    observation.link_settings = if let Some(link) = pv_link(&observation.links) {
+        let index = i32::try_from(link.header.index)
+            .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
+        read_link_settings(&resolved, index).await?
+    } else {
+        None
+    };
+    Ok((connection, observation))
+}
+
+async fn observe_owned() -> Result<(Connection, Observation), PlatformError> {
+    let unit_content = root_files::read_root_file(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH), 0o644)?
+        .map(String::from_utf8)
+        .transpose()
+        .map_err(|error| {
+            PlatformError::ResolverIo(io::Error::new(io::ErrorKind::InvalidData, error))
+        })?;
     let links = read_links().await?;
     // Use the real system bus for both privileged and unprivileged callers.
     let connection = connection::Builder::address("unix:path=/run/dbus/system_bus_socket")
@@ -308,22 +304,12 @@ async fn observe() -> Result<(Connection, Observation), PlatformError> {
     )
     .await
     .map_err(bus_error)?;
-    let unit_status = read_unit_status(&systemd).await?;
-    let resolved = resolved_manager(&connection).await?;
-    let routing_domains = resolved.get_property("Domains").await.map_err(bus_error)?;
-    let link_settings = if let Some(link) = pv_link(&links) {
-        let index = i32::try_from(link.header.index)
-            .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
-        read_link_settings(&resolved, index).await?
-    } else {
-        None
-    };
+    let unit_status = read_unit_status(&systemd, unit_content.is_some()).await?;
     let observation = Observation {
         unit_content,
         unit_status,
         links,
-        routing_domains,
-        link_settings,
+        ..Observation::default()
     };
     Ok((connection, observation))
 }
@@ -340,7 +326,10 @@ async fn resolved_manager(connection: &Connection) -> Result<Proxy<'static>, Pla
     .await
 }
 
-async fn read_unit_status(manager: &Proxy<'_>) -> Result<Option<UnitStatus>, PlatformError> {
+async fn read_unit_status(
+    manager: &Proxy<'_>,
+    has_unit_file: bool,
+) -> Result<Option<UnitStatus>, PlatformError> {
     let path: OwnedObjectPath = match manager.call("LoadUnit", &(UNIT_NAME,)).await {
         Ok(path) => path,
         Err(error) if method_error(&error, "org.freedesktop.systemd1.NoSuchUnit") => {
@@ -359,6 +348,14 @@ async fn read_unit_status(manager: &Proxy<'_>) -> Result<Option<UnitStatus>, Pla
     }
     Ok(Some(UnitStatus {
         active_state,
+        unit_file_state: if has_unit_file {
+            manager
+                .call("GetUnitFileState", &(UNIT_NAME,))
+                .await
+                .map_err(bus_error)?
+        } else {
+            String::new()
+        },
         fragment_path: fragment_path.into(),
         drop_in_paths: unit.get_property("DropInPaths").await.map_err(bus_error)?,
     }))
@@ -425,11 +422,25 @@ pub fn start_resolver_link(port: u16) -> Result<(), PlatformError> {
             if owned_pv_link(&links)?.is_none() {
                 handle
                     .link()
-                    .add(
-                        LinkDummy::new(LINK_NAME)
-                            .append_extra_attribute(LinkAttribute::IfAlias(LINK_ALIAS.to_owned()))
-                            .build(),
-                    )
+                    .add(LinkDummy::new(LINK_NAME).build())
+                    .execute()
+                    .await
+                    .map_err(netlink_error)?;
+                // The kernel applies aliases through SETLINK, not link creation.
+                let created_links = query_links(&handle).await?;
+                let created = pv_link(&created_links).ok_or_else(|| {
+                    PlatformError::SystemIntegration("PV dummy link is missing after creation".to_owned())
+                })?;
+                if !dummy_link(created)
+                    || created.attributes.iter().any(|attribute| {
+                        matches!(attribute, LinkAttribute::IfAlias(alias) if !alias.is_empty())
+                    })
+                {
+                    return Err(conflict());
+                }
+                handle
+                    .link()
+                    .set(LinkUnspec::new_with_index(created.header.index).alias(LINK_ALIAS).build())
                     .execute()
                     .await
                     .map_err(netlink_error)?;
@@ -493,16 +504,16 @@ pub fn start_resolver_link(port: u16) -> Result<(), PlatformError> {
     })
 }
 
-/// Reverts resolved settings and deletes only the fixed PV-owned dummy link. Requires root.
+/// Reverts resolved settings when available and deletes only the fixed PV-owned dummy link.
+/// Requires root.
 pub fn stop_resolver_link() -> Result<(), PlatformError> {
     require_root()?;
     run_native("link down", Duration::from_secs(10), stop_link())
 }
 
 async fn stop_link() -> Result<(), PlatformError> {
-    let (connection, before) = observe().await?;
+    let (connection, before) = observe_owned().await?;
     before.require_owned()?;
-    let resolved = resolved_manager(&connection).await?;
     with_netlink(|handle| async move {
         let links = query_links(&handle).await?;
         let Some(link) = owned_pv_link(&links)? else {
@@ -511,13 +522,27 @@ async fn stop_link() -> Result<(), PlatformError> {
         let index = link.header.index;
         let resolved_index = i32::try_from(index)
             .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
-        match resolved
-            .call::<_, _, ()>("RevertLink", &(resolved_index,))
+        let bus = DBusProxy::new(&connection).await.map_err(bus_error)?;
+        if bus
+            .name_has_owner(
+                "org.freedesktop.resolve1"
+                    .try_into()
+                    .map_err(zbus::Error::from)
+                    .map_err(bus_error)?,
+            )
             .await
+            .map_err(zbus::Error::from)
+            .map_err(bus_error)?
         {
-            Ok(()) => {}
-            Err(error) if method_error(&error, "org.freedesktop.resolve1.NoSuchLink") => {}
-            Err(error) => return Err(bus_error(error)),
+            let resolved = resolved_manager(&connection).await?;
+            match resolved
+                .call::<_, _, ()>("RevertLink", &(resolved_index,))
+                .await
+            {
+                Ok(()) => {}
+                Err(error) if method_error(&error, "org.freedesktop.resolve1.NoSuchLink") => {}
+                Err(error) => return Err(bus_error(error)),
+            }
         }
         let links = query_links(&handle).await?;
         if let Some(link) = owned_pv_link(&links)? {
@@ -572,6 +597,12 @@ pub(crate) fn apply_resolver_config_privileged(
             )
             .await
             .map_err(bus_error)?;
+        manager
+            .call::<_, _, ()>("Reload", &())
+            .await
+            .map_err(bus_error)?;
+        let (_, enabled) = observe().await?;
+        enabled.require_owned()?;
         dns_unit_job(&manager, "RestartUnit").await?;
         let (_, after) = observe().await?;
         match after.state(Some(config)) {
@@ -596,10 +627,9 @@ pub(crate) fn remove_resolver_config_privileged() -> Result<(), PlatformError> {
         root_files::validate_directory_chain(Utf8Path::new("/etc/systemd/system"), false)?;
         let content = read_owned_unit(path)?;
         require_no_candidate(path)?;
-        let (connection, before) = observe().await?;
+        let (connection, before) = observe_owned().await?;
         before.require_owned()?;
         let manager = system_manager_proxy(&connection).await.map_err(bus_error)?;
-        dns_unit_job(&manager, "StopUnit").await?;
         for runtime in [false, true] {
             match manager
                 .call::<_, _, Vec<(String, String, String)>>(
@@ -615,6 +645,21 @@ pub(crate) fn remove_resolver_config_privileged() -> Result<(), PlatformError> {
                 Err(error) => return Err(bus_error(error)),
             }
         }
+        manager
+            .call::<_, _, ()>("Reload", &())
+            .await
+            .map_err(bus_error)?;
+        let (_, reloaded) = observe_owned().await?;
+        reloaded.require_owned()?;
+        dns_unit_job(&manager, "StopUnit").await?;
+        match manager
+            .call::<_, _, ()>("ResetFailedUnit", &(UNIT_NAME,))
+            .await
+        {
+            Ok(()) => {}
+            Err(error) if method_error(&error, "org.freedesktop.systemd1.NoSuchUnit") => {}
+            Err(error) => return Err(bus_error(error)),
+        }
         // Stopping an inactive or missing unit does not execute ExecStop. Clean up
         // a retained owned link through the same native path as dns-link down.
         stop_link().await?;
@@ -626,7 +671,7 @@ pub(crate) fn remove_resolver_config_privileged() -> Result<(), PlatformError> {
             .call::<_, _, ()>("Reload", &())
             .await
             .map_err(bus_error)?;
-        let (_, after) = observe().await?;
+        let (_, after) = observe_owned().await?;
         match after.state(None) {
             ResolverFileState::Missing { .. } => Ok(()),
             state => Err(PlatformError::SystemIntegration(format!(
@@ -659,45 +704,8 @@ async fn dns_unit_job(manager: &Proxy<'_>, operation: &str) -> Result<(), Platfo
     }
 }
 
-fn read_owned_unit(path: &Utf8Path) -> Result<Option<Vec<u8>>, PlatformError> {
-    let content = root_files::read_root_file(path, 0o644)?;
-    if let Some(content) = &content
-        && !std::str::from_utf8(content)
-            .ok()
-            .is_some_and(|content| content.lines().any(|line| line.trim() == PV_MARKER))
-    {
-        return Err(conflict());
-    }
-    Ok(content)
-}
-
-fn require_no_candidate(path: &Utf8Path) -> Result<(), PlatformError> {
-    let candidate = Utf8PathBuf::from(format!("{path}.candidate"));
-    if root_files::read_root_file(&candidate, 0o644)?.is_some() {
-        return Err(PlatformError::SystemIntegration(format!(
-            "retained DNS unit candidate requires administrator inspection before retrying: {candidate}"
-        )));
-    }
-    Ok(())
-}
-
 fn write_unit(path: &Utf8Path, config: &ResolverConfig) -> Result<(), PlatformError> {
-    let parent = path.parent().ok_or_else(|| {
-        PlatformError::SystemIntegration("DNS unit has no parent directory".to_owned())
-    })?;
-    root_files::validate_directory_chain(parent, false)?;
-    read_owned_unit(path)?;
-    require_no_candidate(path)?;
-    let candidate = Utf8PathBuf::from(format!("{path}.candidate"));
-    let content = render_unit(config);
-    root_files::write_root_file(&candidate, content.as_bytes(), 0o644)?;
-    root_files::rename(&candidate, path)?;
-    if read_owned_unit(path)?.as_deref() != Some(content.as_bytes()) {
-        return Err(PlatformError::SystemIntegration(
-            "DNS unit bytes did not match after write".to_owned(),
-        ));
-    }
-    Ok(())
+    write_owned_unit(path, &render_unit(config))
 }
 
 fn require_root() -> Result<(), PlatformError> {
@@ -721,7 +729,7 @@ fn owned_pv_link(links: &[LinkMessage]) -> Result<Option<&LinkMessage>, Platform
 
 fn conflict() -> PlatformError {
     PlatformError::SystemIntegration(format!(
-        "Linux DNS routing conflicts with administrator configuration; inspect {SYSTEM_RESOLVER_TEST_PATH}, its systemd overrides, pv0 ownership, and other links' ~test routing domains; remove or rename the conflicting configuration manually before retrying",
+        "Linux DNS configuration conflicts with administrator configuration; inspect {SYSTEM_RESOLVER_TEST_PATH}, its systemd overrides and pv0 ownership. Before applying routing, repair competing test search or routing domains, including subdomains. For a retained unit cache, run `sudo systemctl daemon-reload` before retrying",
     ))
 }
 
@@ -739,11 +747,12 @@ fn bus_error(error: zbus::Error) -> PlatformError {
 
 #[cfg(test)]
 mod tests {
+    use crate::systemd::read_unit;
     use anyhow::Result;
     use camino_tempfile::tempdir;
     use insta::assert_snapshot;
     use rtnetlink::LinkDummy;
-    use rustix::fs::{CWD, mkfifoat};
+    use rustix::fs::{CWD, Mode, mkfifoat};
 
     use super::*;
 
@@ -753,6 +762,7 @@ mod tests {
             unit_content: Some(render_unit(&config)),
             unit_status: Some(UnitStatus {
                 active_state: "active".to_owned(),
+                unit_file_state: "enabled".to_owned(),
                 fragment_path: SYSTEM_RESOLVER_TEST_PATH.into(),
                 drop_in_paths: Vec::new(),
             }),
@@ -846,6 +856,13 @@ mod tests {
             status.active_state = "inactive".to_owned();
         }
         stale.push(("inactive unit", inactive));
+        for unit_file_state in ["disabled", "enabled-runtime"] {
+            let mut disabled = observation.clone();
+            if let Some(status) = &mut disabled.unit_status {
+                status.unit_file_state = unit_file_state.to_owned();
+            }
+            stale.push((unit_file_state, disabled));
+        }
         let mut missing_link = observation.clone();
         missing_link.links.clear();
         missing_link.routing_domains.clear();
@@ -966,14 +983,15 @@ mod tests {
             )]));
         conflicts.push(("same alias on non-dummy", wrong_kind));
         for index in [0, 9] {
-            let mut other_route = Observation::default();
-            other_route
-                .routing_domains
-                .push((index, "TeSt.".to_owned(), true));
-            conflicts.push((
-                "foreign routing domain without PV installation",
-                other_route,
-            ));
+            for route_only in [false, true] {
+                for domain in ["TeSt.", "app.Acme.TeSt."] {
+                    let mut other_route = Observation::default();
+                    other_route
+                        .routing_domains
+                        .push((index, domain.to_owned(), route_only));
+                    conflicts.push(("foreign test domain without PV installation", other_route));
+                }
+            }
         }
         let mut concurrent_route = current();
         concurrent_route
@@ -993,16 +1011,18 @@ mod tests {
                 "{case}"
             );
         }
-        let search_only = Observation {
-            routing_domains: vec![(9, "test".to_owned(), false)],
-            ..Observation::default()
-        };
-        assert_eq!(
-            search_only.state(None),
-            ResolverFileState::Missing {
-                path: SYSTEM_RESOLVER_TEST_PATH.into()
-            }
-        );
+        for domain in ["contest", "test.example", "."] {
+            let unrelated = Observation {
+                routing_domains: vec![(9, domain.to_owned(), false)],
+                ..Observation::default()
+            };
+            assert_eq!(
+                unrelated.state(None),
+                ResolverFileState::Missing {
+                    path: SYSTEM_RESOLVER_TEST_PATH.into()
+                }
+            );
+        }
     }
 
     #[test]
