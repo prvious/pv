@@ -163,6 +163,9 @@ struct GatewayConfig {
     ca_certificate: Option<Utf8PathBuf>,
     ca_private_key: Option<Utf8PathBuf>,
     health_body: Option<String>,
+    /// The port of the first `http://host:port` site in the root config, like a worker's health
+    /// site.
+    site_port: Option<u16>,
     import_glob: Option<Utf8PathBuf>,
 }
 
@@ -189,6 +192,11 @@ impl GatewayConfig {
                 config.health_body = Some(body.to_owned());
             } else if let Some(glob) = quoted_after(line, "import \"") {
                 config.import_glob = Some(Utf8PathBuf::from(glob));
+            } else if line.starts_with("http://")
+                && config.site_port.is_none()
+                && let Some(port) = first_http_site_port(line)
+            {
+                config.site_port = Some(port);
             }
         }
 
@@ -199,7 +207,7 @@ impl GatewayConfig {
     /// reads them on every load, so a worker whose root config is unchanged still moves to a
     /// fragment's new port.
     fn listener_plan(&self) -> Result<ListenerPlan> {
-        let http = match self.http_port {
+        let http = match self.http_port.or(self.site_port) {
             Some(port) => Some(port),
             None => self.first_imported_site_port()?,
         };

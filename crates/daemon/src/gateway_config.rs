@@ -10,13 +10,18 @@ use crate::{CaddyAdminError, CaddyAdminOperation, DaemonError};
 
 static CANDIDATE_CONFIG_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub(crate) const GATEWAY_HEALTH_HOSTNAME: &str = "pv-gateway.localhost";
-pub(crate) const GATEWAY_HEALTH_PATH: &str = "/__pv/health";
+pub(crate) const WORKER_HEALTH_HOSTNAME: &str = "pv-worker.localhost";
+pub(crate) const HEALTH_PATH: &str = "/__pv/health";
 const LOG_ROLL_KEEP: u8 = 5;
 const LOG_ROLL_KEEP_FOR: &str = "720h";
 const LOG_ROLL_SIZE: &str = "10MiB";
 
 pub(crate) fn gateway_health_response(http_port: u16, https_port: u16) -> String {
     format!("pv-gateway-health-v1:{http_port}:{https_port}")
+}
+
+pub(crate) fn worker_health_response(port: u16) -> String {
+    format!("pv-worker-health-v1:{port}")
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -94,7 +99,7 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     ));
     append_file_log(&mut output, "    ", input.access_log_path.as_str())?;
     output.push_str(&format!(
-        "    respond {GATEWAY_HEALTH_PATH} \"{health_response}\" 200\n}}\n"
+        "    respond {HEALTH_PATH} \"{health_response}\" 200\n}}\n"
     ));
     output.push_str(&format!(
         "\nhttps://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1\n"
@@ -106,7 +111,7 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     output.push_str("        }\n");
     output.push_str("    }\n");
     output.push_str(&format!(
-        "    respond {GATEWAY_HEALTH_PATH} \"{health_response}\" 200\n}}\n"
+        "    respond {HEALTH_PATH} \"{health_response}\" 200\n}}\n"
     ));
 
     if input.import_project_configs {
@@ -133,6 +138,12 @@ pub fn render_php_worker_config(input: &PhpWorkerConfigInput) -> Result<String, 
     append_admin_socket(&mut output, &input.admin_socket_path)?;
     output.push_str("    persist_config off\n");
     output.push_str("}\n");
+    // Caddy answers this route itself, so readiness proves the worker serves this config's port.
+    output.push_str(&format!(
+        "\nhttp://{WORKER_HEALTH_HOSTNAME}:{} {{\n    bind 127.0.0.1\n    respond {HEALTH_PATH} \"{}\" 200\n}}\n",
+        input.port,
+        worker_health_response(input.port)
+    ));
     if !input.projects.is_empty() {
         output.push('\n');
         output.push_str(&format!(

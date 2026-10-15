@@ -182,8 +182,8 @@ async fn gateway_contract(paths: &PvPaths, executable: &Utf8Path) -> Result<()> 
 }
 
 /// PV's PHP worker lifecycle: validate the rendered worker root config with its imported project
-/// site, start it through the supervisor, wait for the admin API and the worker port, move the
-/// project to a new port by reloading the unchanged root config, and stop within the grace period.
+/// site, start it through the supervisor, wait for the admin API and the worker's health route,
+/// move the worker to a new port with a reload, and stop within the grace period.
 async fn worker_contract(paths: &PvPaths, artifact_root: &Utf8Path, php_track: &str) -> Result<()> {
     let [port, moved_port] = available_ports()?;
     let runtime_key = php_track.to_owned();
@@ -195,13 +195,16 @@ async fn worker_contract(paths: &PvPaths, artifact_root: &Utf8Path, php_track: &
         root: project_root.clone(),
     };
     let projects_dir = paths.worker_projects_config_dir(&runtime_key);
-    let config = render_php_worker_config(&PhpWorkerConfigInput {
-        php_track: php_track.to_owned(),
-        port,
-        admin_socket_path: paths.worker_admin_socket(&runtime_key),
-        projects_config_glob: projects_dir.join("*.Caddyfile"),
-        projects: vec![project.clone()],
-    })?;
+    let worker_config = |port| {
+        render_php_worker_config(&PhpWorkerConfigInput {
+            php_track: php_track.to_owned(),
+            port,
+            admin_socket_path: paths.worker_admin_socket(&runtime_key),
+            projects_config_glob: projects_dir.join("*.Caddyfile"),
+            projects: vec![project.clone()],
+        })
+    };
+    let config = worker_config(port)?;
     let config_path = paths.worker_root_config(&runtime_key);
     let fragment_path = projects_dir.join("contract.Caddyfile");
     state::fs::write_sensitive_file(&config_path, &config)?;
@@ -241,33 +244,19 @@ async fn worker_contract(paths: &PvPaths, artifact_root: &Utf8Path, php_track: &
         CaddyAdminClient::new()
             .wait_until_ready(&endpoint, READINESS_TIMEOUT)
             .await?;
-        wait_for_readiness(
-            ReadinessCheck::Tcp {
-                host: Ipv4Addr::LOCALHOST.to_string(),
-                port,
-            },
-            READINESS_TIMEOUT,
-        )
-        .await?;
+        wait_for_readiness(worker_identity(port), READINESS_TIMEOUT).await?;
 
-        // Caddy reads imported fragments on every load, so an unchanged root config still moves
-        // the project to its fragment's new port.
+        // Caddy has closed the old port and serves the new health route by the time `/load`
+        // returns.
         state::fs::write_sensitive_file(
             &fragment_path,
             &render_php_worker_project_config(&project, moved_port)?,
         )?;
         CaddyAdminClient::new()
-            .load_caddyfile(&endpoint, config.as_bytes())
+            .load_caddyfile(&endpoint, worker_config(moved_port)?.as_bytes())
             .await?;
         ensure_ports_closed(&[port])?;
-        wait_for_readiness(
-            ReadinessCheck::Tcp {
-                host: Ipv4Addr::LOCALHOST.to_string(),
-                port: moved_port,
-            },
-            RELOAD_TIMEOUT,
-        )
-        .await?;
+        wait_for_readiness(worker_identity(moved_port), RELOAD_TIMEOUT).await?;
         Ok::<(), anyhow::Error>(())
     }
     .await;
@@ -339,6 +328,16 @@ fn gateway_identity(paths: &PvPaths, http_port: u16, https_port: u16) -> Readine
         path: "/__pv/health".to_owned(),
         expected_body: format!("pv-gateway-health-v1:{http_port}:{https_port}"),
         ca_certificate_path: paths.ca_certificate(),
+    }
+}
+
+fn worker_identity(port: u16) -> ReadinessCheck {
+    ReadinessCheck::WorkerIdentity {
+        host: Ipv4Addr::LOCALHOST.to_string(),
+        port,
+        server_name: "pv-worker.localhost".to_owned(),
+        path: "/__pv/health".to_owned(),
+        expected_body: format!("pv-worker-health-v1:{port}"),
     }
 }
 

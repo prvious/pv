@@ -29,10 +29,11 @@ use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
 
 use crate::gateway_config::{
-    GATEWAY_HEALTH_HOSTNAME, GATEWAY_HEALTH_PATH, GatewayConfigInput, GatewayProjectRoute,
-    PhpWorkerConfigInput, PhpWorkerProject, PromotedConfigTree, gateway_health_response,
-    promote_config_dir, promote_validated_config_tree_async, render_gateway_config,
-    render_gateway_project_config, render_php_worker_config, render_php_worker_project_config,
+    GATEWAY_HEALTH_HOSTNAME, GatewayConfigInput, GatewayProjectRoute, HEALTH_PATH,
+    PhpWorkerConfigInput, PhpWorkerProject, PromotedConfigTree, WORKER_HEALTH_HOSTNAME,
+    gateway_health_response, promote_config_dir, promote_validated_config_tree_async,
+    render_gateway_config, render_gateway_project_config, render_php_worker_config,
+    render_php_worker_project_config, worker_health_response,
 };
 use crate::project_env::{
     ResolvedPhpRuntime, resolve_project_php_runtime, validate_project_config_for_gateway,
@@ -1312,10 +1313,7 @@ async fn prepare_planned_worker(
             }
         };
     let readiness = RuntimeReadinessPlan {
-        check: ReadinessCheck::Tcp {
-            host: "127.0.0.1".to_owned(),
-            port: worker.port,
-        },
+        check: worker_readiness_check(worker.port),
         failure_policy: ReadinessFailurePolicy::FailRuntime,
         timeout: readiness_timeout,
         admin_endpoint: CaddyAdminEndpoint::new(worker.admin_socket_path.clone()),
@@ -1764,9 +1762,21 @@ fn gateway_identity_readiness_check(
         https_host: "127.0.0.1".to_owned(),
         https_port: probe_https_port,
         server_name: GATEWAY_HEALTH_HOSTNAME.to_owned(),
-        path: GATEWAY_HEALTH_PATH.to_owned(),
+        path: HEALTH_PATH.to_owned(),
         expected_body: gateway_health_response(expected_http_port, expected_https_port),
         ca_certificate_path: ca_certificate_path.to_path_buf(),
+    }
+}
+
+/// Asks the worker on `port` for its health route, which Caddy answers from the worker's root
+/// config.
+pub(crate) fn worker_readiness_check(port: u16) -> ReadinessCheck {
+    ReadinessCheck::WorkerIdentity {
+        host: "127.0.0.1".to_owned(),
+        port,
+        server_name: WORKER_HEALTH_HOSTNAME.to_owned(),
+        path: HEALTH_PATH.to_owned(),
+        expected_body: worker_health_response(port),
     }
 }
 
@@ -4674,6 +4684,19 @@ enum RuntimeReadinessOutcome {
 }
 
 async fn foreign_listener_is_ready(readiness: &ReadinessCheck) -> bool {
+    // A foreign process wouldn't answer a worker's health route, so only ask whether its port is
+    // taken.
+    let port_check;
+    let readiness = match readiness {
+        ReadinessCheck::WorkerIdentity { host, port, .. } => {
+            port_check = ReadinessCheck::Tcp {
+                host: host.clone(),
+                port: *port,
+            };
+            &port_check
+        }
+        readiness => readiness,
+    };
     matches!(
         timeout(
             FOREIGN_LISTENER_PROBE_TIMEOUT,

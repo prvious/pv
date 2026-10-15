@@ -324,7 +324,7 @@ async fn gateway_identity_readiness_preserves_probe_error() -> Result<()> {
     assert!(matches!(
         result,
         Err(DaemonError::Io(error))
-            if error.to_string() == "Gateway identity readiness returned an unexpected response"
+            if error.to_string() == "identity readiness returned an unexpected response"
     ));
     http_server.await??;
     drop(https_listener);

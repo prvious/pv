@@ -258,7 +258,7 @@ PV writes a small JSON runtime record under `~/.pv/run/` for each runtime with i
 
 PV writes runtime records atomically by writing temporary files and renaming them into place after the monitor confirms the runtime started. If PV cannot write the record, it stops the runtime.
 
-PV uses resource-specific readiness checks after starting child processes instead of treating a running PID as ready. The Gateway follows the state-selected readiness policy in PF Health and Recovery: public identity probes for `active`, `drifted`, and `unknown`, and direct high-port probes only for verified `inactive`. Other examples include the internal DNS resolver answering a `.test` query, MySQL/Postgres accepting connections, Redis responding to ping, and Mailpit/RustFS responding on their HTTP ports.
+PV uses resource-specific readiness checks after starting child processes instead of treating a running PID as ready. The Gateway follows the state-selected readiness policy in PF Health and Recovery: public identity probes for `active`, `drifted`, and `unknown`, and direct high-port probes only for verified `inactive`. Each PHP worker's root config includes a PV-owned site, `http://pv-worker.localhost:<port>`, whose `/__pv/health` route Caddy answers with `pv-worker-health-v1:<port>`. Worker readiness, the no-op fast path, and the health tick all request that route, so readiness proves the worker serves its current config on its port. Caddy answers it without running PHP, so it doesn't detect PHP that stopped behind a running worker. Other examples include the internal DNS resolver answering a `.test` query, MySQL/Postgres accepting connections, Redis responding to ping, and Mailpit/RustFS responding on their HTTP ports.
 
 PV uses a default 15-second readiness timeout per child process, with resource-specific overrides only if a Managed Resource consistently needs longer. The Gateway and PHP workers get 60 seconds to become ready after they start, because a first launch of a newly installed binary can be slow while macOS scans it, and 5 seconds after a config reload, since `POST /load` returns only once Caddy runs the new config. Admin API requests keep their own timeouts and are never shortened to fit a readiness budget. If readiness fails, PV marks that runtime failed or degraded and includes the readiness failure in observed state and logs.
 
@@ -373,7 +373,7 @@ When proxying to Project-serving workers, the Gateway preserves the original `Ho
 
 PV generates a Gateway root config that imports per-Project generated config files. Splitting Project config keeps debugging easier and reduces config-generation blast radius.
 
-For each PHP runtime identity, PV generates a worker root config that imports per-Project generated config files for Projects on that runtime.
+For each PHP runtime identity, PV generates a worker root config that serves the worker's health route and imports per-Project generated config files for Projects on that runtime.
 
 ### Gateway and worker reload contract
 

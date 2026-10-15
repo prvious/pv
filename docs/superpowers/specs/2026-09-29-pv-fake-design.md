@@ -183,6 +183,7 @@ These were recorded with PV's Gateway config shape and a real test CA.
 | `POST /load` onto a busy port | `200` with the warnings array followed by `{"error":"loading config: loading new config: http app module: start: listening on 127.0.0.1:<port>: listen tcp 127.0.0.1:<port>: bind: address already in use"}`; the previous config and ports keep serving | same |
 | Rejected `POST /load` | the previous config keeps serving | same |
 | Worker reload with an unchanged root config | imports are read on every load, so a fragment whose site moved to a new port moves the listener: the old port closes, the new one serves | same |
+| Worker `/__pv/health` (FrankenPHP 1.12.4, 2026-10-15) | `200 text/plain`, `Content-Length` set, body from the root's `http://pv-worker.localhost:<port>` site for that `Host`; a Project's `Host` on the same path reaches the Project; a reload onto a new port closes the old one | opens the root site's port and answers from its `respond` line for any `Host` |
 | `admin off` | HTTP and HTTPS serve; no admin socket or admin TCP listener | same |
 | SIGTERM | graceful shutdown in milliseconds, exit 0 | same |
 
