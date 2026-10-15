@@ -299,6 +299,7 @@ jobs:
           test ! -e "$pv_smoke_home/.pv"
 
       - name: Smoke unsupported host capability
+        if: matrix.target == 'windows'
         shell: bash
         env:
           EXPECTED_TARGET: ${{ matrix.target }}

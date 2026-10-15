@@ -1,0 +1,19 @@
+---
+source: crates/cli/tests/linux_daemon_registration.rs
+expression: (output, environment.operations.borrow().clone())
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Daemon disabled\nsystemd user service removed: <tempdir>/home/.config/systemd/user/pv-daemon.service\n",
+        stderr: "",
+    },
+    [
+        "stop",
+        "remove",
+    ],
+)

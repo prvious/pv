@@ -120,18 +120,23 @@ fn select_sources(args: &LogsArgs, paths: &PvPaths) -> Result<LogSelection, Exec
 }
 
 fn default_sources(paths: &PvPaths) -> Vec<LogSource> {
+    let registration = if cfg!(target_os = "linux") {
+        "systemd"
+    } else {
+        "launchd"
+    };
     vec![
         LogSource {
             label: "daemon".to_string(),
             active_path: paths.daemon_log(),
         },
         LogSource {
-            label: "launchd:stdout".to_string(),
-            active_path: paths.launchd_stdout_log(),
+            label: format!("{registration}:stdout"),
+            active_path: paths.daemon_registration_stdout_log(),
         },
         LogSource {
-            label: "launchd:stderr".to_string(),
-            active_path: paths.launchd_stderr_log(),
+            label: format!("{registration}:stderr"),
+            active_path: paths.daemon_registration_stderr_log(),
         },
     ]
 }
@@ -411,7 +416,7 @@ fn log_prefix(label: &str, prefixed: bool, color_enabled: bool) -> String {
 fn source_tone(label: &str) -> Tone {
     if label.starts_with("daemon") {
         Tone::Value
-    } else if label.starts_with("launchd") {
+    } else if label.starts_with("launchd") || label.starts_with("systemd") {
         Tone::Accent
     } else if label.starts_with("gateway") {
         Tone::Strong

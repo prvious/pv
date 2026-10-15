@@ -88,13 +88,31 @@ fn logs_defaults_to_daemon_sources() -> anyhow::Result<()> {
     let paths = PvPaths::for_home(home.clone());
     let environment = TestEnvironment::new(&home);
     write_log(&paths.logs().join("daemon.log"), "daemon one\ndaemon two\n")?;
-    write_log(&paths.logs().join("launchd.out.log"), "stdout one\n")?;
-    write_log(&paths.logs().join("launchd.err.log"), "stderr one\n")?;
+    let (stdout_file, stderr_file) = if cfg!(target_os = "linux") {
+        ("systemd.out.log", "systemd.err.log")
+    } else {
+        ("launchd.out.log", "launchd.err.log")
+    };
+    write_log(&paths.logs().join(stdout_file), "stdout one\n")?;
+    write_log(&paths.logs().join(stderr_file), "stderr one\n")?;
 
     let output = run_pv(&["logs", "-n", "1"], &environment)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
+    #[cfg(target_os = "linux")]
+    assert_debug_snapshot!(output, @r#"
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "daemon | daemon two\nsystemd:stdout | stdout one\nsystemd:stderr | stderr one\n",
+        stderr: "",
+    }
+    "#);
+    #[cfg(not(target_os = "linux"))]
     assert_debug_snapshot!(output);
 
     Ok(())

@@ -33,8 +33,11 @@ rustix = { workspace = true }
 security-framework = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+async-io = "2.6.0"
+futures-util = { workspace = true }
 procfs = { version = "0.18.0", default-features = false }
 rustix = { workspace = true }
+zbus = "5.19.0"
 
 [dev-dependencies]
 anyhow = { workspace = true }

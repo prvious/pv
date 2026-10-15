@@ -235,6 +235,12 @@ PV installs the LaunchAgent plist at `~/Library/LaunchAgents/com.prvious.pv.daem
 
 The LaunchAgent plist sets `StandardOutPath` and `StandardErrorPath` to PV-owned files under `~/.pv/logs/`, such as `launchd.out.log` and `launchd.err.log`, so daemon startup failures are diagnosable before structured daemon logging starts.
 
+On Linux, the daemon registration is a systemd user service at `$XDG_CONFIG_HOME/systemd/user/pv-daemon.service`, defaulting to `~/.config/systemd/user/pv-daemon.service`. Configuration roots must be absolute. The fixed PV-owned unit runs `%h/.pv/bin/pv daemon:run`, restarts after crashes without a start limit, and uses `KillMode=process` so monitors survive daemon restarts. It starts with `default.target`; PV does not enable linger. Its stdout and stderr go to `systemd.out.log` and `systemd.err.log` under `~/.pv/logs/`, shown by `pv logs` as `systemd:stdout` and `systemd:stderr`.
+
+Linux registration uses the systemd D-Bus API on the user's session bus. The CLI reads `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR` through `Environment`; without an explicit address it uses the runtime directory's `bus` socket. Missing session context reports that the systemd user manager is unavailable. Connection and authentication have a 10-second deadline. Stop and restart subscribe before submitting their job and wait for its exact `JobRemoved` result, with a deadline covering submission and final unit inspection: 10 seconds for stop, 15 seconds for restart. Status and doctor inspect the native load state, active state, substate, main PID and fragment path; an unavailable manager does not prevent doctor from reporting its other checks.
+
+Before Linux lifecycle changes, PV resolves even an unloaded unit through `LoadUnit` and verifies ownership of the manager-selected fragment. Enable reloads metadata before that ownership check and uses `EnableUnitFiles` without force. Removal disables the unit, deletes the PV-owned file, then reloads metadata. An unmarked file is a conflict and is left unchanged.
+
 If a LaunchAgent with PV's expected label already exists but is not PV-owned, `pv daemon:enable` and `pv setup` fail safely and report the conflict instead of overwriting it.
 
 The daemon runs as the logged-in user, owns reconciliation, and manages PV child processes. macOS starts it after login and restarts it after crashes.
@@ -294,9 +300,9 @@ When a Project's PHP track or optional extension set changes, PV reconfigures on
 
 `pv setup` is the friendly first-time bootstrap path and includes daemon registration. `pv daemon:*` commands remain available as lower-level lifecycle and troubleshooting commands.
 
-`pv daemon:enable` registers the LaunchAgent, starts the daemon immediately, waits up to 15 seconds for the Unix socket and daemon health, enqueues reconciliation, and exits non-zero if the daemon does not become healthy. It does not wait for the triggered reconciliation to finish.
+`pv daemon:enable` registers the daemon for the current user, starts it immediately, waits up to 15 seconds for the Unix socket and daemon health, enqueues reconciliation, and exits non-zero if the daemon does not become healthy. It does not wait for the triggered reconciliation to finish.
 
-`pv daemon:disable` unloads the LaunchAgent and waits up to 10 seconds for the verified daemon process to exit before stopping recorded PV-managed child processes. Each Gateway or PHP worker gets up to 1 second for graceful termination; each other Managed Resource gets up to 10 seconds. PV then force-kills remaining verified PV-owned process groups when needed, reports what happened, and removes the LaunchAgent file after successful cleanup so it does not start on next login. Uninstall uses the same stop policy before removing installed state.
+`pv daemon:disable` stops the registered daemon and waits up to 10 seconds for the verified daemon process to exit before stopping recorded PV-managed child processes. Each Gateway or PHP worker gets up to 1 second for graceful termination; each other Managed Resource gets up to 10 seconds. PV then force-kills remaining verified PV-owned process groups when needed, reports what happened, and removes the registration file after successful cleanup so it does not start on next login. Uninstall uses the same stop policy before removing installed state.
 
 `pv daemon:disable` does not remove DNS resolver config, `pf` rules, or CA trust. Those integrations are managed by `pv dns:*`, `pv ports:*`, `pv ca:*`, `pv setup`, and `pv uninstall`.
 
