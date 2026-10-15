@@ -14,7 +14,7 @@ pub use database::{
     JobDiagnosticSubject, JobRecord, JobStatus, LinkDiscoveredProjectInput, LinkProjectInput,
     LinkProjectResult, LinkProjectStatus, ManagedResourceDesiredState,
     ManagedResourceTrackDesiredInput, ManagedResourceTrackInstallInput, ManagedResourceTrackRecord,
-    ManagedResourceTrackRemovalInput, PortAssignment, PortOwner, PortRequest,
+    ManagedResourceTrackRemovalInput, PendingCleanupRecord, PortAssignment, PortOwner, PortRequest,
     PostgresPreloadLibrary, ProjectConfigWatch, ProjectEnvAllocationContext,
     ProjectEnvObservedStateRecord, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput,
     ProjectEnvObservedWarningRecord, ProjectEnvResourceContext, ProjectEnvStateContext,

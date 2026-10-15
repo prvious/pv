@@ -16,11 +16,13 @@ expression: "(before, after)"
                 "005:project_resource_requirements",
                 "009:project_mode_and_slug",
                 "013:retired_resource_allocations",
+                "016:pending_cleanups",
             ],
             tables: [
                 "jobs",
                 "managed_resource_tracks",
                 "observed_states",
+                "pending_cleanups",
                 "ports",
                 "project_env_observed_warnings",
                 "project_hostnames",

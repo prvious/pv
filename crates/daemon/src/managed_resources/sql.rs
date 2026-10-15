@@ -124,8 +124,14 @@ pub(crate) async fn drop_database_if_exists(
     match engine {
         SqlEngine::Mysql => {
             let pool = MySqlPool::connect_with(mysql_options(context)).await?;
+            let mut connection = pool.acquire().await?;
+            // A client's open transaction on the database blocks the drop, and MySQL waits a year
+            // by default, which would hold up every daemon job. Fail instead; cleanup retries.
+            sqlx::query("SET SESSION lock_wait_timeout = 10")
+                .execute(&mut *connection)
+                .await?;
             sqlx::query(sqlx::AssertSqlSafe(statement))
-                .execute(&pool)
+                .execute(&mut *connection)
                 .await?;
         }
         SqlEngine::Postgres => {

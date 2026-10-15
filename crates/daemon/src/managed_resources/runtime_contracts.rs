@@ -660,6 +660,23 @@ async fn real_mysql_deletes_allocations(
                 .password(&admin.password),
         )
         .await?;
+        // A client's open transaction holds the database, so cleanup gives up rather than wait.
+        sqlx::query("CREATE TABLE pv_contract.items (id INT)")
+            .execute(&pool)
+            .await?;
+        let mut transaction = pool.begin().await?;
+        sqlx::query("SELECT * FROM pv_contract.items")
+            .fetch_all(&mut *transaction)
+            .await?;
+        let held = adapter
+            .delete_allocation(&context, &context.env, deleted)
+            .await;
+        ensure!(
+            held.as_ref()
+                .is_err_and(|error| error.to_string().contains("Lock wait timeout")),
+            "cleanup didn't give up on a held database: {held:?}"
+        );
+        transaction.rollback().await?;
         // Checked after each call: the first must finish the job, and a retried cleanup that
         // runs again after the database is gone must succeed.
         for attempt in 1..=2 {
