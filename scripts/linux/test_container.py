@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 from pathlib import Path
@@ -11,7 +12,7 @@ class ContainerCommands(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.directory = Path(self.temporary.name)
+        self.directory = Path(self.temporary.name).resolve()
         self.script = Path(__file__).with_name("container.sh").resolve()
         self.worktree = self.script.parents[2]
         self.log = self.directory / "calls.jsonl"
@@ -76,12 +77,24 @@ class ContainerCommands(unittest.TestCase):
         self.assertTrue(all(call[-1] == "pv-linux-fixture" for call in calls))
 
     def test_up_marks_ownership_and_mounts_only_the_readonly_worktree(self):
-        result = self.run_script("up", "fixture", "test-image")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        command = self.calls()[0]
-        self.assertIn(f"dev.pv.linux-worktree={self.worktree}", command)
-        self.assertIn(f"type=bind,src={self.worktree},dst=/src,readonly", command)
-        self.assertEqual(command[-2:], ["test-image", "/sbin/init"])
+        source = self.script.read_text()
+        for name in ["repository", "repository,with,commas", 'repository"with"quotes']:
+            with self.subTest(name=name):
+                self.worktree = self.directory / name
+                self.script = self.worktree / "scripts/linux/container.sh"
+                self.script.parent.mkdir(parents=True)
+                self.script.write_text(source)
+                self.log.unlink(missing_ok=True)
+                result = self.run_script("up", "fixture", "test-image")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                command = self.calls()[0]
+                self.assertIn(f"dev.pv.linux-worktree={self.worktree}", command)
+                mount = command[command.index("--mount") + 1]
+                self.assertEqual(
+                    next(csv.reader([mount])),
+                    ["type=bind", f"src={self.worktree}", "dst=/src", "readonly"],
+                )
+                self.assertEqual(command[-2:], ["test-image", "/sbin/init"])
 
     def test_invalid_names_never_reach_docker(self):
         for name in ["", "../peer", "UPPER"]:
