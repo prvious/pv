@@ -163,7 +163,7 @@ jobs:
 
           rm -rf "$candidate_record_dir" "$stage"
           mkdir -p "$candidate_record_dir"
-          find "$handoff_dir" -type f -path "*/pv/records/*/pv-darwin-*.json" | while IFS= read -r record; do
+          find "$handoff_dir" -type f -path "*/pv/records/*/pv-*.json" | while IFS= read -r record; do
             cp "$record" "$candidate_record_dir/$(basename "$record")"
           done
           if ! find "$candidate_record_dir" -type f -name '*.json' -print -quit | grep -q .; then

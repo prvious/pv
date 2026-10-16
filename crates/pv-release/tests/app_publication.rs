@@ -3,7 +3,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use data_encoding::HEXLOWER;
 use insta::{assert_debug_snapshot, assert_snapshot};
-use serde_json::json;
+use self_update::AppUpdateManifest;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::process::Output;
 
@@ -83,6 +84,103 @@ fn stage_app_publication_writes_app_layout_and_upload_plan() -> Result<()> {
     arm64_url_present=true
     amd64_url_present=true
     example_invalid_absent=true
+    "#);
+
+    Ok(())
+}
+
+#[test]
+fn stage_app_publication_preserves_linux_assets_and_installer_entries() -> Result<()> {
+    let fixture = AppPublicationFixture::new()?;
+    fixture.write_valid_inputs()?;
+    for platform in ["linux-amd64", "linux-arm64"] {
+        fixture.write_app_record(
+            platform,
+            &format!("pv/0.2.0/pv-{platform}"),
+            format!("pv {platform}").as_bytes(),
+            "987654321",
+        )?;
+    }
+
+    let output = run_stage_app_publication(&fixture)?;
+    assert_stage_app_publication_available(&output)?;
+    if !output.status.success() {
+        assert_debug_snapshot!(command_failure(&output, fixture.root()));
+        bail!("stage-app-publication failed before staging mixed-platform app assets");
+    }
+
+    let stage = fixture.stage();
+    let manifest = AppUpdateManifest::parse(&read_file(&stage.join("pv-app-manifest.json"))?)?;
+    let platforms = manifest
+        .assets()
+        .iter()
+        .map(|asset| asset.platform().as_str())
+        .collect::<Vec<_>>();
+    for platform in &platforms {
+        for object_key in [
+            format!("pv/0.2.0/pv-{platform}"),
+            format!("pv/0.2.0/pv-helper-1.0.0-{platform}"),
+        ] {
+            assert_eq!(
+                read_file(&stage.join(&object_key))?,
+                read_file(&fixture.source_binaries.join(&object_key))?
+            );
+        }
+        let record_name = format!("pv-{platform}.json");
+        assert_eq!(
+            read_file(&stage.join(format!("pv/records/0.2.0/1.0.0/{record_name}")))?,
+            read_file(&fixture.candidate_records.join(record_name))?
+        );
+    }
+    let plan: Value = serde_json::from_str(&read_file(&stage.join("publication-plan.json"))?)?;
+    let uploads = plan["immutable_uploads"]
+        .as_array()
+        .context("missing immutable app uploads")?
+        .iter()
+        .map(|upload| {
+            assert_eq!(upload["local_path"], upload["object_key"]);
+            upload["object_key"]
+                .as_str()
+                .context("missing immutable app object key")
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let installer = read_file(&stage.join("install.sh"))?;
+    let linux_entries = installer
+        .lines()
+        .filter(|line| line.starts_with("LINUX_"))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert_snapshot!(format!("platforms={platforms:?}\nuploads={uploads:#?}\n{linux_entries}"), @r#"
+    platforms=["darwin-amd64", "darwin-arm64", "linux-amd64", "linux-arm64"]
+    uploads=[
+        "pv/0.2.0/pv-darwin-amd64",
+        "pv/0.2.0/pv-helper-1.0.0-darwin-amd64",
+        "pv/records/0.2.0/1.0.0/pv-darwin-amd64.json",
+        "pv/0.2.0/pv-darwin-arm64",
+        "pv/0.2.0/pv-helper-1.0.0-darwin-arm64",
+        "pv/records/0.2.0/1.0.0/pv-darwin-arm64.json",
+        "pv/0.2.0/pv-linux-amd64",
+        "pv/0.2.0/pv-helper-1.0.0-linux-amd64",
+        "pv/records/0.2.0/1.0.0/pv-linux-amd64.json",
+        "pv/0.2.0/pv-linux-arm64",
+        "pv/0.2.0/pv-helper-1.0.0-linux-arm64",
+        "pv/records/0.2.0/1.0.0/pv-linux-arm64.json",
+        "pv/manifests/runs/987654321/pv-app-manifest.json",
+        "pv/manifests/runs/987654321/install.sh",
+    ]
+    LINUX_ARM64_URL='https://downloads.prvious.test/pv/0.2.0/pv-linux-arm64'
+    LINUX_ARM64_SHA256='343df4793acdc05d0b59592d33a860d376ec2f32ab6ad6ad341c02d7258f5a5c'
+    LINUX_ARM64_SIZE='14'
+    LINUX_ARM64_HELPER_URL='https://downloads.prvious.test/pv/0.2.0/pv-helper-1.0.0-linux-arm64'
+    LINUX_ARM64_HELPER_SHA256='5f31500732ae07fcc405db2402d66f2b7286ef3a71361e20719d2eccacaf4879'
+    LINUX_ARM64_HELPER_SIZE='9'
+    LINUX_AMD64_URL='https://downloads.prvious.test/pv/0.2.0/pv-linux-amd64'
+    LINUX_AMD64_SHA256='beb052955df4533a0e9913b4d0bed470cf723dfa5c2531065a8520b1917ad337'
+    LINUX_AMD64_SIZE='14'
+    LINUX_AMD64_HELPER_URL='https://downloads.prvious.test/pv/0.2.0/pv-helper-1.0.0-linux-amd64'
+    LINUX_AMD64_HELPER_SHA256='5f31500732ae07fcc405db2402d66f2b7286ef3a71361e20719d2eccacaf4879'
+    LINUX_AMD64_HELPER_SIZE='9'
     "#);
 
     Ok(())
