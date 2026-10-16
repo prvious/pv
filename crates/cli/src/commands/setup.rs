@@ -108,6 +108,11 @@ pub(crate) fn setup(
     install_command_shims(environment, &paths)?;
     let default_resource_plan = refresh_setup_artifact_manifest(environment, &paths, streams)?;
 
+    #[cfg(target_os = "linux")]
+    if linux {
+        environment.check_linux_setup_host()?;
+    }
+
     let helper_candidate = privileged_helper_candidate(environment, &paths)?;
     let helper_installation_required =
         privileged_helper_installation_required(environment, &helper_candidate)?;
@@ -1226,6 +1231,7 @@ fn shell_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
     use std::ffi::OsString;
     use std::io::{self, Write};
     use std::path::PathBuf;
@@ -1250,9 +1256,12 @@ mod tests {
     use crate::error::ExecuteError;
     use crate::output::{Presentation, Streams};
 
+    #[derive(Default)]
     struct SetupEnvironment {
         shell: &'static str,
         home: PathBuf,
+        manifest_available: bool,
+        operations: RefCell<Vec<&'static str>>,
     }
 
     impl Environment for SetupEnvironment {
@@ -1269,6 +1278,7 @@ mod tests {
         }
 
         fn current_exe(&self) -> io::Result<PathBuf> {
+            self.operations.borrow_mut().push("executable");
             Ok(self.home.join("pv-fixture"))
         }
 
@@ -1290,6 +1300,14 @@ mod tests {
 
         fn platform_target(&self) -> Result<PlatformTarget, PlatformError> {
             Ok(PlatformTarget::Linux)
+        }
+
+        #[cfg(target_os = "linux")]
+        fn check_linux_setup_host(&self) -> Result<(), PlatformError> {
+            self.operations.borrow_mut().push("host check");
+            Err(PlatformError::SystemIntegration(
+                "fixture Linux host prerequisite refused".to_owned(),
+            ))
         }
 
         fn daemon_registration_path(&self) -> PathBuf {
@@ -1322,6 +1340,13 @@ mod tests {
 
     impl ResourceHttpClient for SetupEnvironment {
         fn get_text(&self, url: &str) -> resources::Result<String> {
+            self.operations.borrow_mut().push("manifest");
+            if self.manifest_available {
+                return Ok(
+                    r#"{"schema_version":1,"minimum_pv_version":"0.1.0","resources":[]}"#
+                        .to_owned(),
+                );
+            }
             Err(ResourcesError::HttpRequestFailed {
                 url: url.to_owned(),
                 reason: "fixture manifest unavailable".to_owned(),
@@ -1344,6 +1369,7 @@ mod tests {
         let environment = SetupEnvironment {
             shell: "/bin/bash",
             home: directory.path().as_std_path().to_path_buf(),
+            ..Default::default()
         };
         let presentation = Presentation::detect(&["--no-color".into()], &environment);
         let mut stdout = Vec::new();
@@ -1407,6 +1433,7 @@ mod tests {
             let environment = SetupEnvironment {
                 shell,
                 home: directory.path().as_std_path().to_path_buf(),
+                ..Default::default()
             };
             let profile = paths.home().join(profile_name);
             let startup_files = [
@@ -1491,6 +1518,52 @@ mod tests {
           eval "$("$HOME/.pv/bin/pv" env --shell zsh)"
         fi
         # <<< PV ENV
+        "#);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_setup_checks_the_host_after_manifest_refresh_before_helper_inspection()
+    -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let environment = SetupEnvironment {
+            shell: "/bin/bash",
+            home: directory.path().as_std_path().to_path_buf(),
+            manifest_available: true,
+            ..Default::default()
+        };
+        let paths = PvPaths::for_home(directory.path());
+        let presentation = Presentation::detect(&["--no-color".into()], &environment);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let result = setup(
+            SetupArgs {
+                yes: true,
+                non_interactive: false,
+                no_path: true,
+            },
+            &environment,
+            &mut Streams::new(&mut stdout, &mut stderr, presentation),
+        );
+        let Err(error) = result else {
+            anyhow::bail!("fixture host prerequisite must refuse setup");
+        };
+        let ExecuteError::Platform(PlatformError::SystemIntegration(message)) = &error else {
+            anyhow::bail!("{error}; operations: {:?}", environment.operations.borrow());
+        };
+        assert!(fs::path_is_file(&paths.bin().join("php"))?);
+        assert!(fs::path_is_file(&paths.bin().join("composer"))?);
+        assert!(fs::path_is_file(
+            resources::ArtifactManifestCache::new(paths.downloads()).path()
+        )?);
+        assert!(!fs::path_entry_exists(
+            &directory.path().join("pv-helper.json")
+        )?);
+        assert!(stderr.is_empty());
+        assert_snapshot!(format!("{message}\n{:?}", environment.operations.borrow()), @r#"
+        fixture Linux host prerequisite refused
+        ["executable", "manifest", "host check"]
         "#);
         Ok(())
     }

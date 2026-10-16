@@ -1050,7 +1050,7 @@ fn render_launch_daemon_plist(owner_uid: u32, owner_gid: u32) -> Result<String, 
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-const SUDO_EXECUTABLE: &str = "/usr/bin/sudo";
+pub(crate) const SUDO_EXECUTABLE: &str = "/usr/bin/sudo";
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run_sudo(args: &[&str]) -> Result<(), PlatformError> {

@@ -112,6 +112,10 @@ fn manager(session_address: &str) -> Result<Proxy<'static>, PlatformError> {
     .map_err(|source| PlatformError::UserManagerUnavailable(Box::new(source)))
 }
 
+pub(crate) fn check_user_manager(session_address: &str) -> Result<(), PlatformError> {
+    manager(session_address).map(|_| ())
+}
+
 /// Reads runtime and enablement evidence, retaining live units whose files are missing.
 pub fn inspect_daemon_registration(
     session_address: &str,

@@ -34,6 +34,9 @@ pub use native::{
     DaemonRegistrationStatus, daemon_registration_session_address, inspect_daemon_registration,
 };
 
+#[cfg(target_os = "linux")]
+pub(crate) use native::check_user_manager;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DaemonRegistrationFileState {
     Missing {

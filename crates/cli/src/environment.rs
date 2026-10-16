@@ -179,6 +179,16 @@ pub trait Environment {
     }
 
     #[cfg(target_os = "linux")]
+    fn check_linux_setup_host(&self) -> Result<(), platform::PlatformError> {
+        let address = daemon_registration_session_address(self).map_err(|error| {
+            platform::PlatformError::SystemIntegration(format!(
+                "{error}; run `pv setup` from a logged-in systemd user session"
+            ))
+        })?;
+        platform::check_linux_setup_host(&address)
+    }
+
+    #[cfg(target_os = "linux")]
     fn socket_proxy_directory(&self) -> PathBuf {
         PathBuf::from(platform::SYSTEM_SOCKET_PROXY_DIRECTORY)
     }
