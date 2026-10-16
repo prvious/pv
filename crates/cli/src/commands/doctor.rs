@@ -80,7 +80,7 @@ impl DoctorReport {
                 checks: vec![
                     daemon_registration_check(&registration),
                     #[cfg(target_os = "linux")]
-                    daemon_registration_manager_check(environment),
+                    daemon_registration_manager_check(environment, &registration),
                     daemon_socket_check(&paths, &registration),
                     recent_jobs_check(database.as_ref())?,
                     runtime_states_check(database.as_ref())?,
@@ -402,7 +402,10 @@ fn daemon_registration_check(state: &DaemonRegistrationFileState) -> DoctorCheck
 }
 
 #[cfg(target_os = "linux")]
-fn daemon_registration_manager_check(environment: &impl Environment) -> DoctorCheck {
+fn daemon_registration_manager_check(
+    environment: &impl Environment,
+    registration: &DaemonRegistrationFileState,
+) -> DoctorCheck {
     let name = "Systemd user manager";
     match environment.inspect_daemon_registration() {
         Ok(Some(status)) => {
@@ -437,6 +440,15 @@ fn daemon_registration_manager_check(environment: &impl Environment) -> DoctorCh
                 _ => DoctorCheck::fail(name, "loaded service is not PV-owned", "pv daemon:enable")
                     .with_detail(detail),
             }
+        }
+        Ok(None)
+            if matches!(
+                registration,
+                DaemonRegistrationFileState::Current { .. }
+                    | DaemonRegistrationFileState::Stale { .. }
+            ) =>
+        {
+            DoctorCheck::fail(name, "daemon service is not loaded", "pv daemon:enable")
         }
         Ok(None) => DoctorCheck::pass(name, "reachable; daemon unit is not loaded"),
         Err(error @ platform::PlatformError::DaemonRegistrationConflict { .. }) => {

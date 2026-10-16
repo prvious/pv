@@ -10,7 +10,10 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::{Settings, assert_debug_snapshot, assert_snapshot};
-use platform::{DaemonRegistrationConfig, DaemonRegistrationStatus, PlatformError};
+use platform::{
+    DaemonRegistrationConfig, DaemonRegistrationFileState, DaemonRegistrationStatus, PlatformError,
+    inspect_daemon_registration_file,
+};
 use serde_json::{Value, json};
 use state::{PvPaths, fs};
 
@@ -20,6 +23,7 @@ struct TestEnvironment {
     fail_next_enable: Cell<bool>,
     registration_status: Option<DaemonRegistrationStatus>,
     registration_conflict: Option<Utf8PathBuf>,
+    registration_unloaded: bool,
 }
 
 impl TestEnvironment {
@@ -30,6 +34,7 @@ impl TestEnvironment {
             fail_next_enable: Cell::new(false),
             registration_status: None,
             registration_conflict: None,
+            registration_unloaded: false,
         }
     }
 
@@ -112,6 +117,9 @@ impl Environment for TestEnvironment {
     ) -> Result<Option<DaemonRegistrationStatus>, PlatformError> {
         if let Some(path) = &self.registration_conflict {
             return Err(PlatformError::DaemonRegistrationConflict { path: path.clone() });
+        }
+        if self.registration_unloaded {
+            return Ok(None);
         }
         self.registration_status
             .clone()
@@ -291,6 +299,39 @@ fn linux_doctor_rejects_an_owned_daemon_that_is_not_loaded_and_running() -> anyh
         let check = manager_check(&report)?;
         assert_eq!(check["status"], "fail");
         observed.push(check.clone());
+    }
+    snapshot_settings(tempdir.path()).bind(|| {
+        assert_debug_snapshot!(observed);
+    });
+    Ok(())
+}
+
+#[test]
+fn linux_doctor_rejects_a_configured_service_that_is_not_loaded() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let mut observed = Vec::new();
+    for (state, expected_status) in [("missing", "pass"), ("current", "fail"), ("stale", "fail")] {
+        let mut environment = TestEnvironment::new(&tempdir.path().join(state));
+        environment.registration_unloaded = true;
+        if state != "missing" {
+            environment.write_unit()?;
+        }
+        if state == "stale" {
+            let unit = fs::read_to_string(&environment.unit_path())?;
+            fs::write_sensitive_file(
+                &environment.unit_path(),
+                &unit.replace("RestartSec=1", "RestartSec=2"),
+            )?;
+            assert!(matches!(
+                inspect_daemon_registration_file(&environment.unit_path(), None),
+                DaemonRegistrationFileState::Stale { .. }
+            ));
+        }
+        let output = run_pv(&["doctor", "--json"], &environment)?;
+        let report: Value = serde_json::from_str(&output.stdout)?;
+        let check = manager_check(&report)?;
+        assert_eq!(check["status"], expected_status);
+        observed.push((state, check.clone()));
     }
     snapshot_settings(tempdir.path()).bind(|| {
         assert_debug_snapshot!(observed);
