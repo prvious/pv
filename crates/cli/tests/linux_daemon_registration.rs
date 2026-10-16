@@ -11,8 +11,8 @@ use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::{Settings, assert_debug_snapshot, assert_snapshot};
 use platform::{
-    DaemonRegistrationConfig, DaemonRegistrationFileState, DaemonRegistrationStatus, PlatformError,
-    inspect_daemon_registration_file,
+    ActivePfRedirectInspection, DaemonRegistrationConfig, DaemonRegistrationFileState,
+    DaemonRegistrationStatus, PlatformError, inspect_daemon_registration_file,
 };
 use serde_json::{Value, json};
 use state::{PvPaths, fs};
@@ -141,7 +141,17 @@ impl Environment for TestEnvironment {
         self.home.join("etc/pf.conf").into_std_path_buf()
     }
 
+    fn socket_proxy_directory(&self) -> PathBuf {
+        self.home.join("etc/systemd/system").into_std_path_buf()
+    }
+
     fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, PlatformError> {
+        Err(PlatformError::PrivilegedHelperUnavailable)
+    }
+
+    fn inspect_active_pf_redirects_unprivileged(
+        &self,
+    ) -> Result<ActivePfRedirectInspection, PlatformError> {
         Err(PlatformError::PrivilegedHelperUnavailable)
     }
 
