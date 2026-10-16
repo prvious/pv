@@ -31,6 +31,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UdpSocket, UnixListener, UnixStream};
+#[cfg(target_os = "linux")]
+use tokio::task::spawn_blocking;
 use tokio::time::{Instant as TokioInstant, sleep, timeout, timeout_at};
 
 const EXPECTED_DNS_TTL_SECONDS: u32 = 5;
@@ -3497,6 +3499,90 @@ async fn fallback_shutdown_drains_idle_client_without_waiting_for_request_timeou
     assert!(response.is_empty());
     assert!(!paths.daemon_socket().exists());
 
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn daemon_process_identity_is_scoped_to_the_current_boot() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
+    let pid = std::process::id();
+    let start_identity = platform::inspect_process_start_identity(pid)?
+        .ok_or_else(|| anyhow!("test process has no start identity"))?;
+    let current_boot = platform::current_boot_session_id()?;
+    let previous_boot =
+        platform::BootSessionId::try_from("00000000-0000-0000-0000-000000000001".to_owned())?;
+    assert_ne!(current_boot, previous_boot);
+
+    for (boot_session_id, previous_boot) in [(current_boot, false), (previous_boot, true)] {
+        let value = json!({
+            "pid": pid,
+            "start_identity": start_identity,
+            "boot_session_id": boot_session_id,
+        });
+        let record = serde_json::to_string(&value)?;
+        state::fs::write_sensitive_file(&paths.daemon_process_record(), &record)?;
+        let process: daemon::DaemonProcess = serde_json::from_value(value)?;
+
+        let capture_paths = paths.clone();
+        let captured =
+            spawn_blocking(move || daemon::daemon_process_for_stop(&capture_paths)).await?;
+        let capture_absent = match captured {
+            Ok(None) => true,
+            Err(daemon::DaemonError::RuntimeProcessIdentityChanged { pid: recorded_pid })
+                if recorded_pid == pid =>
+            {
+                false
+            }
+            Err(error) => return Err(error.into()),
+            Ok(Some(_)) => bail!("captured the foreign test process as the daemon"),
+        };
+        let wait_complete = match process.wait_for_exit(Duration::ZERO) {
+            Ok(()) => true,
+            Err(daemon::DaemonError::RuntimeCleanupUnproven {
+                pid: recorded_pid, ..
+            }) if recorded_pid == pid => false,
+            Err(error) => return Err(error.into()),
+        };
+        let admitted =
+            match daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone())
+                .await
+            {
+                Ok(daemon) => {
+                    daemon.shutdown().await?;
+                    true
+                }
+                Err(daemon::DaemonError::RuntimeCleanupUnproven {
+                    pid: recorded_pid, ..
+                }) if recorded_pid == pid => false,
+                Err(error) => return Err(error.into()),
+            };
+
+        assert_eq!(
+            state::fs::read_to_string(&paths.daemon_process_record())?,
+            record
+        );
+        assert_eq!(
+            platform::inspect_process_start_identity(pid)?,
+            Some(start_identity)
+        );
+        assert!(!platform::process_is_zombie(pid)?);
+        assert_eq!(
+            admitted, previous_boot,
+            "startup with previous boot={previous_boot}"
+        );
+        assert_eq!(
+            wait_complete, previous_boot,
+            "wait with previous boot={previous_boot}"
+        );
+        assert_eq!(
+            capture_absent, previous_boot,
+            "capture with previous boot={previous_boot}"
+        );
+    }
     Ok(())
 }
 
