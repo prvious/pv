@@ -473,13 +473,7 @@ impl HelperFixture {
             ])?,
             expected_installation
         );
-        for socket_active in [true, false] {
-            self.root_file(
-                "empty-condition.log",
-                "",
-                &format!("{CONTROL_DIRECTORY}/condition.log"),
-                "0600",
-            )?;
+        for (socket_active, service_active) in [(true, true), (false, true), (true, false)] {
             let prior_process = self.capture_process()?;
             if !socket_active {
                 root(&["/usr/bin/systemctl", "stop", "pv-helper.socket"])?;
@@ -490,6 +484,29 @@ impl HelperFixture {
                 ensure!(!fs::path_entry_exists(Utf8Path::new(HELPER_SOCKET_PATH))?);
                 assert_eq!(self.capture_service_process()?, prior_process);
             }
+            if !service_active {
+                root(&["/usr/bin/systemctl", "stop", "pv-helper.service"])?;
+                require_exited(prior_process)?;
+                assert_eq!(
+                    service_property("pv-helper.socket", "ActiveState")?,
+                    "active"
+                );
+                assert_eq!(
+                    service_property("pv-helper.service", "LoadState")?,
+                    "loaded"
+                );
+                assert_eq!(
+                    service_property("pv-helper.service", "ActiveState")?,
+                    "inactive"
+                );
+                assert_eq!(service_property("pv-helper.service", "MainPID")?, "0");
+            }
+            self.root_file(
+                "empty-condition.log",
+                "",
+                &format!("{CONTROL_DIRECTORY}/condition.log"),
+                "0600",
+            )?;
             root(&["/usr/bin/journalctl", "--sync"])?;
             let last_entry: Value = serde_json::from_str(&root_text(&[
                 "/usr/bin/journalctl",
@@ -530,10 +547,25 @@ impl HelperFixture {
                 "/usr/bin/cat",
                 &format!("{CONTROL_DIRECTORY}/condition.log"),
             ])?;
-            let restored = self.capture_service_process().with_context(|| {
-                format!("helper did not recover after rejected replacement: {failure:#}")
-            })?;
-            assert_ne!(restored, prior_process);
+            let restored = if service_active {
+                let restored = self.capture_service_process().with_context(|| {
+                    format!("helper did not recover after rejected replacement: {failure:#}")
+                })?;
+                assert_ne!(restored, prior_process);
+                Some(restored)
+            } else {
+                assert_eq!(
+                    service_property("pv-helper.service", "LoadState")?,
+                    "loaded"
+                );
+                assert_eq!(
+                    service_property("pv-helper.service", "ActiveState")?,
+                    "inactive",
+                    "rollback must restore the idle helper service"
+                );
+                assert_eq!(service_property("pv-helper.service", "MainPID")?, "0");
+                None
+            };
             require_exited(prior_process)?;
             assert_eq!(
                 service_property("pv-helper.socket", "ActiveState")?,
@@ -572,7 +604,9 @@ impl HelperFixture {
                     "helper unit rollback remains after recovery: {path}"
                 );
             }
-            if !socket_active {
+            if let Some(restored) = restored
+                && !socket_active
+            {
                 root(&["/usr/bin/systemctl", "stop", "pv-helper.service"])?;
                 require_exited(restored)?;
                 root(&["/usr/bin/systemctl", "start", "pv-helper.socket"])?;
