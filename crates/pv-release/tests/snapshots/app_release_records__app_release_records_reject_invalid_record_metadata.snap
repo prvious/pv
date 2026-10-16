@@ -15,7 +15,7 @@ expression: failures
         status: Some(
             1,
         ),
-        stderr: "Error: invalid app release record `<tempdir>/records/invalid-platform.json`: unsupported PV app update platform `linux-amd64`\n",
+        stderr: "Error: invalid app release record `<tempdir>/records/invalid-platform.json`: unsupported PV app update platform `windows-amd64`\n",
     },
     InvalidAppReleaseRecordSnapshot {
         name: "invalid_checksum",
