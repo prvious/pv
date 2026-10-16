@@ -4,6 +4,10 @@
 //! fakes can't drift from what PV actually depends on.
 #![cfg(unix)]
 
+#[path = "it/real_artifact_client.rs"]
+mod real_artifact_client;
+
+use std::io::{Error, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::process::Output;
 use std::time::{Duration, Instant};
@@ -25,8 +29,8 @@ use daemon::{
 };
 use pv_fake::Persona;
 use resources::{
-    ManagedResourceCommands, TargetPlatform, TrackSelector, caddy_adapter, frankenphp_adapter,
-    php_adapter,
+    ManagedResourceCommands, ResourceHttpClient, ResourcesError, TargetPlatform, TrackSelector,
+    caddy_adapter, frankenphp_adapter, php_adapter,
 };
 use state::PvPaths;
 
@@ -42,6 +46,60 @@ const RELOAD_TIMEOUT: Duration = Duration::from_secs(5);
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 const GATEWAY_SERVER_NAME: &str = "pv-gateway.localhost";
 const WORKER_PHP_TRACK: &str = "8.4";
+
+#[test]
+fn local_artifact_client_serves_files_and_preserves_input_and_writer_errors() -> Result<()> {
+    let directory = tempdir()?;
+    let manifest = "{\"local\":true}";
+    let archive = "artifact bytes".repeat(2048);
+    state::fs::write_sensitive_file(&directory.path().join("manifest.json"), manifest)?;
+    state::fs::write_sensitive_file(&directory.path().join("archive.tar.gz"), &archive)?;
+    let client = real_artifact_client::RealArtifactClient::new(Some(directory.path().to_owned()))?;
+    assert_eq!(
+        client.get_text("https://artifacts.pv-linux.invalid/manifest.json")?,
+        manifest
+    );
+    let archive_url = "https://artifacts.pv-linux.invalid/resources/archive.tar.gz?local=1#bytes";
+    let mut downloaded = Vec::new();
+    client.download(archive_url, &mut downloaded)?;
+    assert_eq!(downloaded, archive.as_bytes());
+    assert!(matches!(
+        client.get_text("https://artifacts.pv-linux.invalid/missing.json"),
+        Err(ResourcesError::Filesystem { .. })
+    ));
+    assert!(matches!(
+        client.download(
+            "https://artifacts.pv-linux.invalid/missing.tar.gz",
+            &mut Vec::new()
+        ),
+        Err(ResourcesError::Filesystem { .. })
+    ));
+    assert!(matches!(
+        client.download("https://artifacts.pv-linux.invalid/..", &mut Vec::new()),
+        Err(ResourcesError::InvalidArtifactUrl { .. })
+    ));
+    assert!(matches!(
+        client.download(archive_url, &mut RejectingArtifactWriter),
+        Err(ResourcesError::DownloadWriteFailed { .. })
+    ));
+    assert!(
+        real_artifact_client::RealArtifactClient::new(Some(directory.path().join("missing")))
+            .is_err()
+    );
+    Ok(())
+}
+
+struct RejectingArtifactWriter;
+
+impl Write for RejectingArtifactWriter {
+    fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+        Err(Error::other("fixture destination is full"))
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 #[tokio::test]
 async fn fake_caddy_satisfies_the_gateway_contract() -> Result<()> {
@@ -61,7 +119,7 @@ async fn real_caddy_satisfies_the_gateway_contract() -> Result<()> {
     let (_tempdir, paths) = contract_paths()?;
     let commands =
         ManagedResourceCommands::new(paths.clone(), manifest_url, TargetPlatform::current()?);
-    let client = resources::UreqResourceHttpClient::new();
+    let client = real_artifact_client::RealArtifactClient::from_env()?;
     let caddy = commands.install(&caddy_adapter()?, TrackSelector::Latest, &client)?;
     let executable = caddy_adapter()?.executable_path(caddy.current_artifact_path());
 
@@ -86,7 +144,7 @@ async fn real_frankenphp_satisfies_the_worker_contract() -> Result<()> {
     let (_tempdir, paths) = contract_paths()?;
     let commands =
         ManagedResourceCommands::new(paths.clone(), manifest_url, TargetPlatform::current()?);
-    let client = resources::UreqResourceHttpClient::new();
+    let client = real_artifact_client::RealArtifactClient::from_env()?;
     let php = commands.install(&php_adapter()?, TrackSelector::Latest, &client)?;
     let frankenphp = commands.install(
         &frankenphp_adapter()?,

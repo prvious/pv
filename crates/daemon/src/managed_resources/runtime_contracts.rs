@@ -4,6 +4,9 @@
 //! the grace period. Each contract runs against a `pv-fake` persona, and against the real artifact
 //! when `PV_E2E_REAL_ARTIFACTS=1`, so the fakes can't drift from what PV depends on.
 
+#[path = "../../tests/it/real_artifact_client.rs"]
+mod real_artifact_client;
+
 use std::collections::BTreeMap;
 use std::future;
 use std::net::Ipv4Addr;
@@ -161,8 +164,11 @@ async fn real_postgres_satisfies_the_runtime_contract() -> Result<()> {
         return Ok(());
     };
     let (_tempdir, paths) = contract_paths()?;
-    let postgres =
-        install_real_artifact(&paths, manifest_url, &postgres_adapter(target_platform())?)?;
+    let postgres = install_real_artifact(
+        &paths,
+        manifest_url,
+        &postgres_adapter(TargetPlatform::current()?)?,
+    )?;
 
     postgres_contract(
         &paths,
@@ -179,11 +185,14 @@ async fn real_postgres_forced_exit_keeps_recovery_records() -> Result<()> {
         return Ok(());
     };
     let (_tempdir, paths) = contract_paths()?;
-    let postgres =
-        install_real_artifact(&paths, manifest_url, &postgres_adapter(target_platform())?)?;
+    let postgres = install_real_artifact(
+        &paths,
+        manifest_url,
+        &postgres_adapter(TargetPlatform::current()?)?,
+    )?;
     let track = postgres.track().as_str();
     let [port] = pv_fake::ports()?;
-    let adapter = super::postgres::PostgresRuntimeAdapter::new(target_platform());
+    let adapter = super::postgres::PostgresRuntimeAdapter::new(TargetPlatform::current()?);
     let mut context = runtime_context(
         &paths,
         "postgres",
@@ -521,7 +530,7 @@ async fn rustfs_serves_allocations(env: EnvContextValues) -> Result<()> {
 /// the grace period while a client is still connected (#391).
 async fn postgres_contract(paths: &PvPaths, artifact_path: &Utf8Path, track: &str) -> Result<()> {
     let [port] = pv_fake::ports()?;
-    let adapter = super::postgres::PostgresRuntimeAdapter::new(target_platform());
+    let adapter = super::postgres::PostgresRuntimeAdapter::new(TargetPlatform::current()?);
     let mut context = runtime_context(
         paths,
         "postgres",
@@ -857,12 +866,13 @@ fn install_real_artifact(
     manifest_url: String,
     adapter: &impl ResourceAdapter,
 ) -> Result<ManagedResourceInstall> {
-    let commands = ManagedResourceCommands::new(paths.clone(), manifest_url, target_platform());
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), manifest_url, TargetPlatform::current()?);
 
     Ok(commands.install(
         adapter,
         TrackSelector::Latest,
-        &resources::UreqResourceHttpClient::new(),
+        &real_artifact_client::RealArtifactClient::from_env()?,
     )?)
 }
 
@@ -878,14 +888,6 @@ fn contract_paths() -> Result<(Utf8TempDir, PvPaths)> {
 fn runtime_log(path: &Utf8Path) -> String {
     let log = state::fs::read_to_string(path).unwrap_or_default();
     format!("runtime log {path}:\n{log}")
-}
-
-fn target_platform() -> TargetPlatform {
-    if cfg!(target_arch = "aarch64") {
-        TargetPlatform::DarwinArm64
-    } else {
-        TargetPlatform::DarwinAmd64
-    }
 }
 
 #[expect(
