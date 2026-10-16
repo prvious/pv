@@ -79,7 +79,7 @@ pub fn daemon_registration_session_address(
     address: Option<&OsStr>,
     runtime_directory: Option<&Path>,
 ) -> Result<String, PlatformError> {
-    if let Some(address) = address {
+    if let Some(address) = address.filter(|address| !address.is_empty()) {
         return address
             .to_str()
             .map(str::to_owned)
