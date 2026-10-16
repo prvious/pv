@@ -1,3 +1,6 @@
+#[path = "it/real_artifact_client.rs"]
+mod real_artifact_client;
+
 use std::future::Future;
 use std::time::Duration;
 
@@ -58,7 +61,7 @@ const SETUP_DEFAULTS: &[SetupDefault] = &[
     SetupDefault {
         resource: "postgres",
         track: "18",
-        adapter: || postgres_adapter(target_platform()),
+        adapter: || postgres_adapter(TargetPlatform::current()?),
         darwin_amd64_required: true,
     },
     SetupDefault {
@@ -90,11 +93,11 @@ async fn real_artifact_manifest_contains_setup_defaults_for_current_platform() -
     };
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let client = resources::UreqResourceHttpClient::new();
+    let client = real_artifact_client::RealArtifactClient::from_env()?;
     let manifest = ArtifactManifestCache::new(paths.downloads())
         .refresh_latest(&manifest_url, &client)?
         .into_manifest();
-    let target = target_platform();
+    let target = TargetPlatform::current()?;
 
     for default in SETUP_DEFAULTS {
         if skip_unstable_darwin_amd64_default(default, target) {
@@ -126,12 +129,13 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     pv_fake::install_monitor(&paths)?;
-    let client = resources::UreqResourceHttpClient::new();
-    let commands = ManagedResourceCommands::new(paths.clone(), manifest_url, target_platform());
+    let client = real_artifact_client::RealArtifactClient::from_env()?;
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), manifest_url, TargetPlatform::current()?);
 
     let mysql = commands.install(&mysql_adapter()?, setup_track_selector("mysql")?, &client)?;
     let postgres = commands.install(
-        &postgres_adapter(target_platform())?,
+        &postgres_adapter(TargetPlatform::current()?)?,
         setup_track_selector("postgres")?,
         &client,
     )?;
@@ -142,7 +146,7 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
         &client,
     )?;
     let rustfs = commands.install(&rustfs_adapter()?, setup_track_selector("rustfs")?, &client)?;
-    let composer = if target_platform() == TargetPlatform::DarwinArm64 {
+    let composer = if TargetPlatform::current()? != TargetPlatform::DarwinAmd64 {
         Some(commands.install_composer_with_php_pair(setup_track_selector("php")?, &client)?)
     } else {
         None
@@ -329,14 +333,6 @@ fn seed_local_ca(paths: &PvPaths) -> Result<()> {
     state::fs::write_sensitive_file(&paths.ca_private_key(), &local_ca.private_key_pem)?;
 
     Ok(())
-}
-
-fn target_platform() -> TargetPlatform {
-    if cfg!(target_arch = "aarch64") {
-        TargetPlatform::DarwinArm64
-    } else {
-        TargetPlatform::DarwinAmd64
-    }
 }
 
 fn skip_unstable_darwin_amd64_default(default: &SetupDefault, target: TargetPlatform) -> bool {
