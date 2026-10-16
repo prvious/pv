@@ -19,11 +19,12 @@ use self::linux as native;
 use self::macos as native;
 
 use native::PV_MARKER;
-pub const DAEMON_REGISTRATION_NAME: &str = if cfg!(target_os = "linux") {
-    "systemd user service"
-} else {
-    "LaunchAgent"
-};
+pub fn daemon_registration_name(target: PlatformTarget) -> &'static str {
+    match target {
+        PlatformTarget::Linux => "systemd user service",
+        _ => "LaunchAgent",
+    }
+}
 
 pub use native::{
     DAEMON_REGISTRATION_FILE_NAME, DAEMON_REGISTRATION_LABEL, DaemonRegistrationConfig,
