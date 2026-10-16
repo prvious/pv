@@ -735,9 +735,13 @@ fn real_artifact_e2e_runs_gateway_and_resource_matrix_for_manifest_input() -> Re
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let workflow = read_file(&workspace_root.join(REAL_ARTIFACT_E2E_WORKFLOW_PATH))?;
     let summary = format!(
-        "workflow_name={}\nmanifest_url_required={}\napp_update_manifest_input={}\ninstaller_url_input={}\nprivileged_rc_input={}\nreal_artifact_env_count={}\nmanifest_url_env_count={}\ngateway_command={}\nresource_matrix_command={}\nruntime_contracts_command={}\nresource_runtime_contracts_command={}\nrun_ignored_count={}\nprivileged_job_uses_rc_workflow={}\nprivileged_job_is_optional={}\nprivileged_job_passes_manifest_inputs={}\nprivileged_job_passes_installer_input={}\nunpinned_uses={:?}",
+        "workflow_name={}\nmanifest_url_required={}\nplatform_default={}\nplatform_optional={}\nplatform_choices={}\nnative_runner_mapping={}\napp_update_manifest_input={}\ninstaller_url_input={}\nprivileged_rc_input={}\nreal_artifact_env_count={}\nmanifest_url_env_count={}\ngateway_command={}\nresource_matrix_command={}\nruntime_contracts_command={}\nresource_runtime_contracts_command={}\nrun_ignored_count={}\nlater_suites_continue_after_failure={}\nprivileged_job_uses_rc_workflow={}\nprivileged_job_is_optional={}\nprivileged_job_follows_resource_tests={}\nprivileged_job_passes_manifest_inputs={}\nprivileged_job_passes_installer_input={}\nunpinned_uses={:?}",
         workflow_name(&workflow).unwrap_or(""),
         workflow.contains("manifest_url:") && workflow.contains("required: true"),
+        input_default(&workflow, "platform").unwrap_or(""),
+        workflow.contains("      platform:\n        description: Native platform for resource tests\n        required: false\n"),
+        workflow.contains("        options:\n          - darwin-arm64\n          - darwin-amd64\n          - linux-amd64\n          - linux-arm64\n"),
+        workflow.contains("runs-on: ${{ fromJSON('{\"darwin-arm64\":\"macos-14\",\"darwin-amd64\":\"macos-15-intel\",\"linux-amd64\":\"ubuntu-24.04\",\"linux-arm64\":\"ubuntu-24.04-arm\"}')[inputs.platform] }}"),
         workflow.contains("app_update_manifest_url:") && workflow.contains("required: false"),
         workflow.contains("installer_url:") && workflow.contains("required: false"),
         workflow.contains("privileged_rc:")
@@ -748,20 +752,22 @@ fn real_artifact_e2e_runs_gateway_and_resource_matrix_for_manifest_input() -> Re
             .matches("PV_E2E_ARTIFACT_MANIFEST_URL: ${{ inputs.manifest_url }}")
             .count(),
         workflow.contains(
-            "cargo nextest run -p daemon --locked --run-ignored ignored-only -E 'test(real_artifact_gateway_e2e_serves_tiny_php_project)'"
+            "cargo nextest run -p daemon --locked --run-ignored only -E 'test(=real_artifact_gateway_e2e_serves_tiny_php_project)'"
         ),
         workflow.contains(
-            "cargo nextest run -p daemon --locked --run-ignored ignored-only --test real_artifact_resource_matrix"
+            "cargo nextest run -p daemon --locked --run-ignored only -E 'binary(=real_artifact_resource_matrix)'"
         ),
         workflow.contains(
-            "cargo nextest run -p daemon --locked --run-ignored ignored-only --test gateway_runtime_contracts"
+            "cargo nextest run -p daemon --locked --run-ignored only -E 'binary(=gateway_runtime_contracts)'"
         ),
         workflow.contains(
-            "cargo nextest run -p daemon --locked --lib --run-ignored ignored-only -E 'test(/runtime_contracts::/)'"
+            "cargo nextest run -p daemon --locked --run-ignored only -E 'binary(=daemon) and test(/runtime_contracts::/)'"
         ),
-        workflow.matches("--run-ignored ignored-only").count(),
+        workflow.matches("--run-ignored only").count(),
+        workflow.matches("if: ${{ !cancelled() }}").count() == 3,
         workflow.contains("uses: ./.github/workflows/privileged-macos-rc.yml"),
         workflow.contains("if: ${{ inputs.privileged_rc }}"),
+        workflow.contains("needs: real-artifact-e2e"),
         workflow.contains("artifact_manifest_url: ${{ inputs.manifest_url }}")
             && workflow.contains("app_update_manifest_url: ${{ inputs.app_update_manifest_url }}"),
         workflow.contains("installer_url: ${{ inputs.installer_url }}"),
@@ -771,6 +777,10 @@ fn real_artifact_e2e_runs_gateway_and_resource_matrix_for_manifest_input() -> Re
     assert_snapshot!(summary, @"
     workflow_name=Real Artifact E2E
     manifest_url_required=true
+    platform_default=darwin-arm64
+    platform_optional=true
+    platform_choices=true
+    native_runner_mapping=true
     app_update_manifest_input=true
     installer_url_input=true
     privileged_rc_input=true
@@ -781,8 +791,10 @@ fn real_artifact_e2e_runs_gateway_and_resource_matrix_for_manifest_input() -> Re
     runtime_contracts_command=true
     resource_runtime_contracts_command=true
     run_ignored_count=4
+    later_suites_continue_after_failure=true
     privileged_job_uses_rc_workflow=true
     privileged_job_is_optional=true
+    privileged_job_follows_resource_tests=true
     privileged_job_passes_manifest_inputs=true
     privileged_job_passes_installer_input=true
     unpinned_uses=[]
