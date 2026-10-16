@@ -939,7 +939,9 @@ fn rename(source: &Utf8Path, destination: &Utf8Path) -> Result<(), PlatformError
         .map_err(|error| installation_error(error.to_string()))
 }
 fn remove_file(path: &Utf8Path) -> Result<(), PlatformError> {
-    state::fs::remove_file_if_exists(path).map_err(|error| installation_error(error.to_string()))
+    state::fs::remove_file_if_exists(path)
+        .and_then(|()| state::fs::sync_parent_directory(path))
+        .map_err(|error| installation_error(error.to_string()))
 }
 fn clear_transaction_files() -> Result<(), PlatformError> {
     for artifact in ARTIFACTS {
