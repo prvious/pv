@@ -183,30 +183,7 @@ copy_install_tree() {
       for library in pg_trgm pgcrypto sslinfo; do
         [ -f "$root_dir/lib/postgresql/$library.so" ] || die "Postgres artifact missing lib/postgresql/$library.so"
       done
-      artifact_files=$(find "$root_dir" -type f) || die "failed to list Postgres artifact files"
-      while IFS= read -r binary; do
-        description=$(file -E -b -- "$binary") || die "failed to inspect Postgres file $binary"
-        case "$description" in ELF\ *) ;; *) continue ;; esac
-        dynamic=$(readelf --wide --dynamic -- "$binary") || die "failed to inspect Postgres ELF $binary"
-        soname=$(printf '%s\n' "$dynamic" | awk '$2 == "(SONAME)" { sub(/^.*\[/, ""); sub(/\].*$/, ""); print }') || die "failed to parse Postgres ELF SONAME for $binary"
-        [ -n "$soname" ] || continue
-        case "$soname" in */* | . | ..) die "invalid Postgres ELF SONAME for $binary: $soname" ;; esac
-        [ "${binary##*/}" != "$soname" ] || continue
-        soname_file="${binary%/*}/$soname"
-        cmp -s "$binary" "$soname_file" || die "Postgres ELF alias does not match its SONAME file: $binary -> $soname_file"
-        rm "$binary"
-      done <<EOF
-$artifact_files
-EOF
-      artifact_files=$(find "$root_dir" -type f) || die "failed to list normalized Postgres artifact files"
-      while IFS= read -r binary; do
-        description=$(file -E -b -- "$binary") || die "failed to inspect Postgres file $binary"
-        case "$description" in ELF\ *) ;; *) continue ;; esac
-        runpath=$(pv_recipe_library_loader_prefix "$root_dir" "$binary" "\$ORIGIN")
-        patchelf --set-rpath "$runpath" "$binary"
-      done <<EOF
-$artifact_files
-EOF
+      pv_recipe_normalize_elf_tree "$root_dir"
       pv_recipe_validate_elf_tree "$root_dir" "$PLATFORM"
       ;;
   esac
