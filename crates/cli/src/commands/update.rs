@@ -683,7 +683,6 @@ fn run_app_update_phase(
         return Err(error.into());
     }
 
-    let mut helper_install_cleanup_warning = None;
     if helper_update_required {
         super::write_administrator_step(
             stderr,
@@ -761,7 +760,7 @@ fn run_app_update_phase(
                 return Err(error.into());
             }
         };
-        helper_install_cleanup_warning = install_outcome.cleanup_warning().map(str::to_string);
+        let _ = write_privileged_helper_cleanup_warning(stderr, install_outcome.cleanup_warning());
         if let Some(download) = &helper_only_download {
             let promotion_result = layout
                 .install_release_helper(target_release_version, download)
@@ -851,10 +850,6 @@ fn run_app_update_phase(
                 asset.helper().protocol_version()
             ),
         )?;
-        let _ = write_privileged_helper_cleanup_warning(
-            stderr,
-            helper_install_cleanup_warning.as_deref(),
-        );
         if manifest.version() < &current_version {
             output.flow_step(
                 Mark::Done,
@@ -913,10 +908,6 @@ fn run_app_update_phase(
                 asset.helper().protocol_version()
             ),
         )?;
-        let _ = write_privileged_helper_cleanup_warning(
-            stderr,
-            helper_install_cleanup_warning.as_deref(),
-        );
     } else if let InstalledHelperState::Ready(status) = &installed_helper {
         output.flow_step(
             Mark::Done,

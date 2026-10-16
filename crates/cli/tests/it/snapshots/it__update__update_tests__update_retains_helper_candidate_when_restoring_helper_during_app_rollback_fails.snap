@@ -9,5 +9,5 @@ RunOutput {
         ),
     ),
     stdout: "PV update\nPV application: update failed; rollback failed\n",
-    stderr: "error: PV application update failed (daemon did not become healthy after update); rollback failed: privileged helper: PV privileged helper installation failed: restoring the registered helper failed; retained helper rollback candidate at <pv-home>/downloads/pv-helper-rollback-<id>.tmp\n",
+    stderr: "warning: forward helper cleanup failed\nerror: PV application update failed (daemon did not become healthy after update); rollback failed: privileged helper: PV privileged helper installation failed: restoring the registered helper failed; retained helper rollback candidate at <pv-home>/downloads/pv-helper-rollback-<id>.tmp\n",
 }
