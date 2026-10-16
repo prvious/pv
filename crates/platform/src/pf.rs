@@ -19,6 +19,9 @@ use crate::command::run_system_command_output;
 use crate::command::run_system_command_output_with_timeout;
 
 #[cfg(target_os = "linux")]
+use crate::systemd::read_owned_unit;
+
+#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 pub(crate) use linux::{
@@ -59,6 +62,7 @@ pub fn inspect_socket_proxy_unit(path: &Utf8Path, expected: Option<&str>) -> PfF
 
 /// Checks the four exact unit definitions in both directories.
 ///
+/// Installed units must be root:root regular files with one link and mode 0644.
 /// Current files alone do not prove that the loaded proxies route traffic.
 #[cfg(target_os = "linux")]
 pub fn socket_proxy_files_current(
@@ -69,14 +73,11 @@ pub fn socket_proxy_files_current(
     render_socket_proxy_units(config)
         .into_iter()
         .all(|(name, expected)| {
-            [prepared_directory, installed_directory]
-                .into_iter()
-                .all(|directory| {
-                    matches!(
-                        inspect_socket_proxy_unit(&directory.join(&name), Some(&expected)),
-                        PfFileState::Current { .. }
-                    )
-                })
+            matches!(
+                inspect_socket_proxy_unit(&prepared_directory.join(&name), Some(&expected)),
+                PfFileState::Current { .. }
+            ) && read_owned_unit(&installed_directory.join(name))
+                .is_ok_and(|content| content.as_deref() == Some(expected.as_bytes()))
         })
 }
 
