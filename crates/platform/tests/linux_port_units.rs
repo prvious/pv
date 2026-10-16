@@ -1,11 +1,13 @@
 #![cfg(target_os = "linux")]
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use camino_tempfile::tempdir;
 use platform::{
     PfFileState, PfRedirectConfig, inspect_socket_proxy_unit, render_socket_proxy_units,
     socket_proxy_files_current,
 };
+use rustix::fs::{Mode, chmod};
+use rustix::process::{geteuid, getuid};
 use state::fs;
 
 #[test]
@@ -52,14 +54,18 @@ fn prepared_socket_proxy_files_require_exact_owned_regular_files() -> Result<()>
 }
 
 #[test]
-fn socket_proxy_currency_requires_every_prepared_and_installed_file() -> Result<()> {
+#[ignore = "run as root in an ordinary disposable Linux container; validates only temporary unit files"]
+fn root_socket_proxy_currency_requires_every_prepared_and_installed_file() -> Result<()> {
+    ensure!(getuid().is_root() && geteuid().is_root(), "requires root");
     let directory = tempdir()?;
     let prepared = directory.path().join("prepared");
     let installed = directory.path().join("installed");
     let config = PfRedirectConfig::new(48080, 48443);
     for directory in [&prepared, &installed] {
         for (name, content) in render_socket_proxy_units(&config) {
-            fs::write_sensitive_file(&directory.join(name), &content)?;
+            let path = directory.join(name);
+            fs::write_sensitive_file(&path, &content)?;
+            chmod(path.as_std_path(), Mode::from_bits_truncate(0o644))?;
         }
     }
     assert!(socket_proxy_files_current(&config, &prepared, &installed));
@@ -79,6 +85,7 @@ fn socket_proxy_currency_requires_every_prepared_and_installed_file() -> Result<
                 "[Unit]\nDescription=Administrator service\n".to_owned(),
             ] {
                 fs::write_sensitive_file(&path, &content)?;
+                chmod(path.as_std_path(), Mode::from_bits_truncate(0o644))?;
                 assert!(!socket_proxy_files_current(&config, &prepared, &installed));
             }
             fs::delete_file(&path)?;
@@ -86,6 +93,7 @@ fn socket_proxy_currency_requires_every_prepared_and_installed_file() -> Result<
             assert!(!socket_proxy_files_current(&config, &prepared, &installed));
             fs::delete_dir_all(&path)?;
             fs::write_sensitive_file(&path, &expected)?;
+            chmod(path.as_std_path(), Mode::from_bits_truncate(0o644))?;
             assert!(socket_proxy_files_current(&config, &prepared, &installed));
         }
     }

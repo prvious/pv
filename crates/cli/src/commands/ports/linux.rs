@@ -252,6 +252,7 @@ mod tests {
         applications: RefCell<Vec<PfRedirectConfig>>,
         low_ports: RefCell<LowPortInspection>,
         repairable_ports: BTreeSet<u16>,
+        unit_files_current: Cell<bool>,
         gateway_probe_succeeds: Cell<bool>,
         gateway_probes: Cell<u32>,
         active_inspection: RefCell<Option<ActivePfRedirectInspection>>,
@@ -278,6 +279,7 @@ mod tests {
                         .collect(),
                 }),
                 repairable_ports: BTreeSet::new(),
+                unit_files_current: Cell::new(false),
                 gateway_probe_succeeds: Cell::new(false),
                 gateway_probes: Cell::new(0),
                 active_inspection: RefCell::new(None),
@@ -315,6 +317,14 @@ mod tests {
         }
         fn socket_proxy_directory(&self) -> PathBuf {
             self.system.clone().into_std_path_buf()
+        }
+        fn socket_proxy_files_current(
+            &self,
+            _config: &PfRedirectConfig,
+            _prepared_directory: &Utf8Path,
+            _installed_directory: &Utf8Path,
+        ) -> bool {
+            self.unit_files_current.get()
         }
         fn inspect_low_ports(&self) -> Result<LowPortInspection, PlatformError> {
             Ok(self.low_ports.borrow().clone())
@@ -573,10 +583,7 @@ mod tests {
         let directory = tempdir()?;
         let environment = TestEnvironment::new(directory.path());
         let config = seed_gateway_ports(&environment)?;
-        for (name, content) in render_socket_proxy_units(&config) {
-            fs::write_sensitive_file(&environment.paths().ports_config().join(&name), &content)?;
-            fs::write_sensitive_file(&environment.system.join(name), &content)?;
-        }
+        environment.unit_files_current.set(true);
         *environment.active_inspection.borrow_mut() = Some(ActivePfRedirectInspection {
             pf_enabled: true,
             pv_config: Some(config.clone()),
@@ -654,16 +661,7 @@ mod tests {
             ("unavailable and inconclusive", None, true, false),
             ("unavailable and stale", None, false, true),
         ] {
-            for (name, content) in render_socket_proxy_units(&config) {
-                fs::write_sensitive_file(
-                    &environment.paths().ports_config().join(&name),
-                    &content,
-                )?;
-                fs::write_sensitive_file(&environment.system.join(name), &content)?;
-            }
-            if !current {
-                fs::delete_file(&environment.paths().ports_config().join("pv-https.service"))?;
-            }
+            environment.unit_files_current.set(current);
             *environment.active_inspection.borrow_mut() = native;
             environment.gateway_probe_succeeds.set(probe);
             let (exit, value) = status_json(&environment, &config)?;

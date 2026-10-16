@@ -305,6 +305,59 @@ impl PortsFixture {
         self.start_gateway(&config)?;
         self.command("ports:install")?;
         self.require_active(&config)?;
+        let unit = "/etc/systemd/system/pv-http.service";
+        let expected = fs::read_to_string(Utf8Path::new(unit))?;
+        let proxy_pid = service_property("pv-http.service", "MainPID")?;
+        let owner_uid = helper_fixture.owner_uid.to_string();
+        // Hard links must share the installed unit's filesystem.
+        let hard_link = format!("{SYSTEM_SOCKET_PROXY_DIRECTORY}/{FOREIGN_SERVICE}");
+        let metadata_changes: [(&[&str], &[&str]); 3] = [
+            (
+                &["/usr/bin/chown", &owner_uid, unit],
+                &["/usr/bin/chown", "0:0", unit],
+            ),
+            (
+                &["/usr/bin/chmod", "0664", unit],
+                &["/usr/bin/chmod", "0644", unit],
+            ),
+            (
+                &["/usr/bin/ln", unit, &hard_link],
+                &["/usr/bin/rm", "--", &hard_link],
+            ),
+        ];
+        for (mutation_arguments, restoration_arguments) in metadata_changes {
+            root(mutation_arguments)?;
+            let current = platform::socket_proxy_files_current(
+                &config,
+                &self.paths.ports_config(),
+                Utf8Path::new(SYSTEM_SOCKET_PROXY_DIRECTORY),
+            );
+            let content = fs::read_to_string(Utf8Path::new(unit));
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let status = run_with_environment(
+                ["pv", "ports:status", "--json"],
+                &PortEnvironment(&self.paths),
+                &mut stdout,
+                &mut stderr,
+            );
+            let refused = PrivilegedHelperClient.apply_pf(&config);
+            root(restoration_arguments)?;
+            let code = status?;
+            assert_eq!(content?, expected);
+            assert!(!current, "untrusted installed metadata counted as current");
+            ensure!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
+            let observed: Value = serde_json::from_slice(&stdout)?;
+            assert_eq!(observed["state"], "drifted");
+            assert_eq!(observed["evidence"], "systemd");
+            assert_eq!(code, ExitCode::FAILURE);
+            assert!(matches!(
+                refused,
+                Err(PlatformError::PrivilegedHelperRejected { .. })
+            ));
+            self.require_active(&config)?;
+            assert_eq!(service_property("pv-http.service", "MainPID")?, proxy_pid);
+        }
         assert_snapshot!(socket_target_dependencies()?, @r"
         pv-http.socket
         pv-https.socket
