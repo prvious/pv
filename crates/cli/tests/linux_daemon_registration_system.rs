@@ -245,10 +245,13 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
 
     let drop_in_directory = fixture.unit.with_extension("service.d");
     ensure!(!fs::path_entry_exists(&drop_in_directory)?);
+    let daemon_identity = platform::inspect_process_start_identity(first.main_pid)?
+        .context("missing live daemon identity")?;
     let drop_in = drop_in_directory.join("override.conf");
     let override_content = "[Service]\nExecStart=\nExecStart=/bin/true\nKillMode=control-group\n";
     fs::write_sensitive_file(&drop_in, override_content)?;
     let results = [
+        environment.remove_daemon_registration(&fixture.unit),
         environment.enable_daemon_registration(&fixture.unit),
         environment.reload_daemon_registration(),
         environment.inspect_daemon_registration().map(|_| ()),
@@ -257,15 +260,35 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
         environment.remove_daemon_registration(&fixture.unit),
     ];
     let preserved_drop_in = fs::read_to_string(&drop_in);
+    let preserved_unit = fs::read_to_string(&fixture.unit);
+    let preserved_link = fs::read_link(&enabled_link);
+    let preserved_identity = platform::inspect_process_start_identity(first.main_pid);
+    let preserved_health = daemon::health_blocking(fixture.paths.clone());
     fs::delete_dir_all(&drop_in_directory)?;
     assert_eq!(preserved_drop_in?, override_content);
+    assert_eq!(preserved_unit?, config.render()?);
+    assert_eq!(preserved_link?, fixture.unit);
+    assert_eq!(preserved_identity?, Some(daemon_identity));
+    preserved_health?;
     for result in results {
         assert!(
             matches!(&result, Err(PlatformError::DaemonRegistrationConflict { path }) if path == &drop_in),
             "{result:?}"
         );
     }
-    environment.enable_daemon_registration(&fixture.unit)?;
+    environment.stop_daemon_registration()?;
+    let stopped = status()?;
+    assert_eq!(stopped.active_state, "inactive");
+    assert_eq!(stopped.main_pid, 0);
+    let (_, preserved_monitor) = wait_for_redis_monitor(&fixture.paths, None)?;
+    assert_eq!(preserved_monitor, monitor);
+    environment.restart_daemon_registration()?;
+    daemon::wait_until_healthy_blocking(fixture.paths.clone())?;
+    let previous_daemon_pid = first.main_pid;
+    let first = status()?;
+    assert_ne!(first.main_pid, previous_daemon_pid);
+    let (first_job, preserved_monitor) = wait_for_redis_monitor(&fixture.paths, Some(&first_job))?;
+    assert_eq!(preserved_monitor, monitor);
 
     let stale = config
         .render()?
