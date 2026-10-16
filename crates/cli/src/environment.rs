@@ -135,6 +135,10 @@ pub trait Environment {
         PathBuf::from(platform::SYSTEM_RESOLVER_TEST_PATH)
     }
 
+    fn os_release_path(&self) -> PathBuf {
+        PathBuf::from("/etc/os-release")
+    }
+
     fn inspect_resolver_file(
         &self,
         path: &Utf8Path,

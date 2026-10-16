@@ -2,7 +2,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, Write as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -27,6 +27,7 @@ struct TestEnvironment {
     registration_unloaded: bool,
     platform_target: PlatformTarget,
     helper_authentication_error: bool,
+    terminal_width: Option<usize>,
 }
 
 impl TestEnvironment {
@@ -40,6 +41,7 @@ impl TestEnvironment {
             registration_unloaded: false,
             platform_target: PlatformTarget::Linux,
             helper_authentication_error: false,
+            terminal_width: None,
         }
     }
 
@@ -75,6 +77,14 @@ impl Environment for TestEnvironment {
 
     fn stdin_is_terminal(&self) -> bool {
         false
+    }
+
+    fn stdout_is_terminal(&self) -> bool {
+        self.terminal_width.is_some()
+    }
+
+    fn terminal_width(&self) -> Option<usize> {
+        self.terminal_width
     }
 
     fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -134,6 +144,10 @@ impl Environment for TestEnvironment {
 
     fn resolver_test_path(&self) -> PathBuf {
         self.home.join("etc/resolver/test").into_std_path_buf()
+    }
+
+    fn os_release_path(&self) -> PathBuf {
+        self.home.join("etc/os-release").into_std_path_buf()
     }
 
     fn pf_anchor_path(&self) -> PathBuf {
@@ -284,6 +298,123 @@ fn linux_doctor_registration_uses_the_injected_platform() -> anyhow::Result<()> 
         assert_debug_snapshot!(checks);
     });
     Ok(())
+}
+
+#[test]
+fn linux_doctor_distribution_is_informational() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let mut environment = TestEnvironment::new(&tempdir.path().join("home"));
+    fs::ensure_layout(&PvPaths::for_home(&environment.home))?;
+    let path = environment.home.join("etc/os-release");
+    let baseline = run_pv(&["doctor", "--json"], &environment)?;
+    let baseline_report: Value = serde_json::from_str(&baseline.stdout)?;
+    let baseline_sections = doctor_sections_without_timestamp(&baseline_report)?;
+    let mut observed = Vec::new();
+    for (case, content) in [
+        (
+            "double quoted",
+            Some(r#"PRETTY_NAME="Étoile \"LTS\" $HOME $(printf expanded) `printf expanded`""#),
+        ),
+        ("single quoted", Some("PRETTY_NAME='Debian \"Linux\" 13'")),
+        (
+            "last assignment",
+            Some("PRETTY_NAME=Earlier\nPRETTY_NAME=Last"),
+        ),
+        (
+            "malformed last",
+            Some("PRETTY_NAME=Earlier\nPRETTY_NAME=\"broken"),
+        ),
+        ("empty last", Some("PRETTY_NAME=Earlier\nPRETTY_NAME=\"\"")),
+        (
+            "unset",
+            Some(
+                "NAME=Linux\n# PRETTY_NAME=Ignored\nOTHER_PRETTY_NAME=Ignored\nPRETTY_NAME_SUFFIX=Ignored",
+            ),
+        ),
+        ("multiple words", Some("PRETTY_NAME=Two Words")),
+        ("control character", Some("PRETTY_NAME='Unsafe\u{1b}[31m'")),
+        ("missing", None),
+        ("directory", None),
+        ("invalid UTF-8", None),
+        ("symlink", Some("PRETTY_NAME='Ubuntu 22.04.5 LTS'")),
+    ] {
+        if case == "directory" {
+            fs::ensure_user_dir(&path)?;
+        } else if case == "invalid UTF-8" {
+            fs::create_new_file(&path)?.write_all(b"PRETTY_NAME=\xff\n")?;
+        } else if let Some(content) = content {
+            if case == "symlink" {
+                let target = environment.home.join("os-release-target");
+                fs::write_sensitive_file(&target, content)?;
+                fs::symlink_file(&target, &path)?;
+            } else {
+                fs::write_sensitive_file(&path, content)?;
+            }
+        }
+        let output = run_pv(&["doctor", "--json"], &environment)?;
+        let report: Value = serde_json::from_str(&output.stdout)?;
+        assert_eq!(output.exit_code, baseline.exit_code, "{case}");
+        assert!(output.stderr.is_empty(), "{case}");
+        assert!(environment.operations.borrow().is_empty(), "{case}");
+        assert_eq!(
+            doctor_sections_without_timestamp(&report)?,
+            baseline_sections,
+            "{case}"
+        );
+        observed.push(json!({"case": case, "distribution": report["linux_distribution"]}));
+        if case == "directory" {
+            fs::delete_dir_all(&path)?;
+        } else if case != "missing" {
+            fs::delete_file(&path)?;
+        }
+    }
+    assert_snapshot!(serde_json::to_string_pretty(&observed)?);
+
+    environment.platform_target = PlatformTarget::Macos;
+    fs::write_sensitive_file(&path, "PRETTY_NAME=LinuxFixture")?;
+    let output = run_pv(&["doctor", "--json"], &environment)?;
+    let report: Value = serde_json::from_str(&output.stdout)?;
+    assert!(report.get("linux_distribution").is_none());
+    assert_eq!(output.exit_code, baseline.exit_code);
+    assert!(output.stderr.is_empty());
+    assert!(environment.operations.borrow().is_empty());
+    Ok(())
+}
+
+#[test]
+fn linux_doctor_distribution_follows_the_plain_and_decorated_headings() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let mut environment = TestEnvironment::new(&tempdir.path().join("home"));
+    fs::ensure_layout(&PvPaths::for_home(&environment.home))?;
+    fs::write_sensitive_file(
+        &environment.home.join("etc/os-release"),
+        "PRETTY_NAME=\"Ubuntu 22.04.5 LTS\"\n",
+    )?;
+    let mut observed = Vec::new();
+    for (width, lines) in [(None, 2), (Some(72), 3)] {
+        environment.terminal_width = width;
+        let output = run_pv(&["--no-color", "doctor"], &environment)?;
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert!(output.stderr.is_empty());
+        assert!(environment.operations.borrow().is_empty());
+        observed.push(
+            output
+                .stdout
+                .lines()
+                .take(lines)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
+    assert_debug_snapshot!(observed);
+    Ok(())
+}
+
+fn doctor_sections_without_timestamp(report: &Value) -> anyhow::Result<String> {
+    let timestamp = doctor_check(report, "Port redirect config")?["routing"]["observed_at"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing routing observation time"))?;
+    Ok(serde_json::to_string(&report["sections"])?.replace(timestamp, "<timestamp>"))
 }
 
 #[test]
