@@ -1499,6 +1499,92 @@ fn rustfs_build_recipe_rejects_newer_macho_minimum_os() -> Result<()> {
 }
 
 #[test]
+fn common_recipe_helpers_select_gnu_and_bsd_tools() -> Result<()> {
+    let tempdir = tempdir()?;
+    let common =
+        Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/common.sh");
+    let harness = tempdir.path().join("tools-harness.sh");
+    write_executable(
+        &harness,
+        r#"#!/bin/sh
+set -eu
+
+# shellcheck source=/dev/null
+. "$PV_TEST_COMMON_SH"
+checksum=$(sha256_file 'input with spaces')
+jobs=$(cpu_count)
+printf 'checksum=%s\njobs=%s\n' "$checksum" "$jobs"
+"#,
+    )?;
+
+    let mut results = Vec::new();
+    for toolset in ["gnu", "bsd"] {
+        let fake_bin = tempdir.path().join(toolset);
+        create_dir_all(&fake_bin)?;
+        if toolset == "gnu" {
+            write_executable(
+                &fake_bin.join("sha256sum"),
+                "#!/bin/sh\n[ \"$#\" -eq 1 ] && [ \"$1\" = 'input with spaces' ] || exit 78\nprintf '%s  %s\\n' abc123 \"$1\"\n",
+            )?;
+            write_executable(&fake_bin.join("shasum"), "#!/bin/sh\nexit 99\n")?;
+            write_executable(
+                &fake_bin.join("nproc"),
+                "#!/bin/sh\n[ \"$#\" -eq 0 ] || exit 78\nprintf '%s\\n' 3\n",
+            )?;
+            write_executable(&fake_bin.join("sysctl"), "#!/bin/sh\nexit 99\n")?;
+        } else {
+            write_executable(
+                &fake_bin.join("shasum"),
+                "#!/bin/sh\n[ \"$#\" -eq 3 ] && [ \"$1\" = -a ] && [ \"$2\" = 256 ] && [ \"$3\" = 'input with spaces' ] || exit 78\nprintf '%s  %s\\n' abc123 \"$3\"\n",
+            )?;
+            write_executable(
+                &fake_bin.join("sysctl"),
+                "#!/bin/sh\n[ \"$#\" -eq 2 ] && [ \"$1\" = -n ] && [ \"$2\" = hw.ncpu ] || exit 78\nprintf '%s\\n' 4\n",
+            )?;
+        }
+
+        let output = StdCommand::new(&harness)
+            .env("PATH", &fake_bin)
+            .env("PV_TEST_COMMON_SH", &common)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "{toolset} helpers failed: {}",
+            command_output_debug(&output)
+        );
+        results.push(format!("{toolset}:\n{}", String::from_utf8(output.stdout)?));
+    }
+    assert_debug_snapshot!(results);
+    Ok(())
+}
+
+#[test]
+fn common_recipe_helper_maps_native_architectures() -> Result<()> {
+    let common =
+        Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/common.sh");
+    let output = StdCommand::new("/bin/sh")
+        .args([
+            "-ec",
+            r#". "$PV_TEST_COMMON_SH"
+for platform in darwin-arm64 darwin-amd64 linux-amd64 linux-arm64; do
+    architecture=$(expected_arch_for_platform "$platform")
+    printf '%s=%s\n' "$platform" "$architecture"
+done
+if (expected_arch_for_platform any) 2>/dev/null; then exit 99; fi
+"#,
+        ])
+        .env("PV_TEST_COMMON_SH", &common)
+        .output()?;
+    assert!(
+        output.status.success(),
+        "architecture helper failed: {}",
+        command_output_debug(&output)
+    );
+    assert_snapshot!(String::from_utf8(output.stdout)?);
+    Ok(())
+}
+
+#[test]
 fn common_recipe_helper_ad_hoc_signs_macho_files() -> Result<()> {
     let tempdir = tempdir()?;
     let fake_bin = tempdir.path().join("bin");
@@ -3375,7 +3461,7 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
     write_fake_macho_file(&fake_bin.join("file"))?;
     write_fake_make(&fake_bin.join("make"))?;
     write_fake_codesign(&fake_bin.join("codesign"))?;
-    write_fake_sysctl(&fake_bin.join("sysctl"))?;
+    write_fake_cpu_tools(&fake_bin)?;
     write_fake_uname(&fake_bin.join("uname"))?;
     write_file(&curl_log, "")?;
     write_file(&validate_log, "")?;
@@ -3493,6 +3579,10 @@ fn run_postgres_build_recipe_smoke_with_options(
     write_fake_postgres_make(&fake_bin.join("make"))?;
     write_fake_openssl_perl(&fake_bin.join("perl"))?;
     write_fake_postgres_shasum(&fake_bin.join("shasum"))?;
+    write_executable(
+        &fake_bin.join("sha256sum"),
+        "#!/bin/sh\nexec \"${0%/*}/shasum\" -a 256 \"$@\"\n",
+    )?;
     write_fake_compiler(&compiler)?;
     write_fake_uname(&fake_bin.join("uname"))?;
     write_fake_xcrun(&fake_bin.join("xcrun"))?;
@@ -3786,7 +3876,7 @@ fn run_mysql_build_recipe_smoke_with_options(
     write_fake_codesign(&fake_bin.join("codesign"))?;
     write_fake_mysql_make(&fake_bin.join("make"))?;
     write_fake_openssl_perl(&fake_bin.join("perl"))?;
-    write_fake_sysctl(&fake_bin.join("sysctl"))?;
+    write_fake_cpu_tools(&fake_bin)?;
     write_file(&curl_log, "")?;
     write_file(&cmake_log, "")?;
     write_file(&openssl_build_log, "")?;
@@ -4052,7 +4142,7 @@ fn run_backing_build_recipe_signing_smoke(
     write_fake_make(&fake_bin.join("make"))?;
     write_fake_otool(&fake_bin.join("otool"))?;
     write_fake_macho_file(&fake_bin.join("file"))?;
-    write_fake_sysctl(&fake_bin.join("sysctl"))?;
+    write_fake_cpu_tools(&fake_bin)?;
     write_fake_uname(&fake_bin.join("uname"))?;
     write_fake_unzip(&fake_bin.join("unzip"))?;
     write_file(&curl_log, "")?;
@@ -6003,9 +6093,13 @@ esac
     )
 }
 
-fn write_fake_sysctl(path: &Utf8Path) -> Result<()> {
+fn write_fake_cpu_tools(directory: &Utf8Path) -> Result<()> {
     write_executable(
-        path,
+        &directory.join("nproc"),
+        "#!/bin/sh\n[ \"$#\" -eq 0 ] || exit 78\nprintf '%s\\n' 1\n",
+    )?;
+    write_executable(
+        &directory.join("sysctl"),
         r#"#!/bin/sh
 set -eu
 

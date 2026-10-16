@@ -11,11 +11,25 @@ need() {
 }
 
 sha256_file() (
-  checksum_output=$(shasum -a 256 "$1") || die "failed to calculate SHA-256 for $1"
+  checksum_output=$(
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum "$1"
+    else
+      shasum -a 256 "$1"
+    fi
+  ) || die "failed to calculate SHA-256 for $1"
   checksum=${checksum_output%% *}
   [ -n "$checksum" ] || die "SHA-256 output was empty for $1"
   printf '%s\n' "$checksum"
 )
+
+cpu_count() {
+  if command -v nproc >/dev/null 2>&1; then
+    nproc
+  else
+    sysctl -n hw.ncpu
+  fi
+}
 
 require_sha256() {
   file=$1
@@ -230,7 +244,8 @@ pv_recipe_ad_hoc_sign_macho_tree() {
 expected_arch_for_platform() {
   case "$1" in
     darwin-arm64) printf '%s\n' arm64 ;;
-    darwin-amd64) printf '%s\n' x86_64 ;;
+    darwin-amd64 | linux-amd64) printf '%s\n' x86_64 ;;
+    linux-arm64) printf '%s\n' aarch64 ;;
     *) die "unsupported native artifact platform: $1" ;;
   esac
 }
