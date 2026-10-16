@@ -530,7 +530,9 @@ async fn project_tls_reconciliation_replaces_overlong_leaf_once() -> Result<()> 
         served_project_hostname(&project)?,
         &local_ca.certificate_pem
     ));
-    run_project_reconciliation(&paths, &project).await?;
+    run_project_reconciliation(&paths, &project)
+        .await
+        .context("first TLS reconciliation")?;
     let (certificate_after_reconciliation, private_key_after_reconciliation) =
         read_project_tls_files(&paths, &project)?;
     let dotenv_after_reconciliation = read_dotenv(&project)?;
@@ -573,7 +575,9 @@ async fn project_tls_reconciliation_replaces_overlong_leaf_once() -> Result<()> 
         )
     );
 
-    run_project_reconciliation(&paths, &project).await?;
+    run_project_reconciliation(&paths, &project)
+        .await
+        .context("second TLS reconciliation")?;
     let (certificate_after_second_reconciliation, private_key_after_second_reconciliation) =
         read_project_tls_files(&paths, &project)?;
     let dotenv_after_second_reconciliation = read_dotenv(&project)?;
@@ -1940,21 +1944,40 @@ async fn run_project_reconciliation(
     let finished_system_jobs = finished_system_job_count(paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
-    wait_for_new_finished_system_job(paths, finished_system_jobs).await?;
-    let lines = request_lines(
-        paths,
-        json!({
-            "protocol_version": daemon::PROTOCOL_VERSION,
-            "command": "run_job",
-            "kind": "reconcile",
-            "scope": format!("project:{}", project.id),
-        }),
-    )
-    .await?;
-
-    daemon.shutdown().await?;
-
-    Ok(lines)
+    let result = async {
+        wait_for_new_finished_system_job(paths, finished_system_jobs).await?;
+        request_lines(
+            paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "reconcile",
+                "scope": format!("project:{}", project.id),
+            }),
+        )
+        .await
+    }
+    .await;
+    let cleanup = daemon.shutdown().await;
+    let result = match (result, cleanup) {
+        (Err(error), Err(cleanup)) => {
+            Err(error.context(format!("daemon shutdown also failed: {cleanup:#}")))
+        }
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error.into()),
+        (Ok(lines), Ok(())) => Ok(lines),
+    };
+    result.map_err(|error| {
+        let recent_log = match state::fs::read_to_string(&paths.daemon_log()) {
+            Ok(content) => {
+                let mut tail = content.chars().rev().take(8_192).collect::<Vec<_>>();
+                tail.reverse();
+                tail.into_iter().collect::<String>()
+            }
+            Err(log_error) => format!("unavailable: {log_error}"),
+        };
+        error.context(format!("daemon log tail:\n{recent_log}"))
+    })
 }
 
 async fn wait_for_succeeded_project_job(paths: &PvPaths, project_id: &str) -> Result<JobRecord> {
