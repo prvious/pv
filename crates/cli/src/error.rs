@@ -36,9 +36,9 @@ pub enum CliError {
     InitRequiresTerminal,
 
     #[error(
-        "pv setup --non-interactive requires macOS authentication to install or replace the privileged helper.\nRun `pv setup` interactively, then rerun with `--non-interactive`."
+        "pv setup --non-interactive requires {authentication} authentication to install or replace the privileged helper.\nRun `pv setup` interactively, then rerun with `--non-interactive`."
     )]
-    SetupHelperRequiresAuthentication,
+    SetupHelperRequiresAuthentication { authentication: &'static str },
 
     #[error("Privileged helper installation requires confirmation; rerun with --yes.")]
     HelperConfirmationRequired,

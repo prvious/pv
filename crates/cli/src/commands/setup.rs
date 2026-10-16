@@ -89,10 +89,18 @@ pub(crate) fn setup(
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
+    let linux = environment.platform_target()? == PlatformTarget::Linux;
+    let authentication = if linux { "sudo" } else { "macOS" };
 
-    streams
-        .out
-        .flow_start("setup", "PV setup", Some("macOS integration"))?;
+    streams.out.flow_start(
+        "setup",
+        "PV setup",
+        Some(if linux {
+            "Linux integration"
+        } else {
+            "macOS integration"
+        }),
+    )?;
     streams.out.flow_step(
         Mark::Done,
         Line::field("Ensured PV state layout: ", paths.root()),
@@ -104,7 +112,7 @@ pub(crate) fn setup(
     let helper_installation_required =
         privileged_helper_installation_required(environment, &helper_candidate)?;
     if args.non_interactive && helper_installation_required {
-        return Err(CliError::SetupHelperRequiresAuthentication.into());
+        return Err(CliError::SetupHelperRequiresAuthentication { authentication }.into());
     }
     if helper_installation_required
         && !args.yes
@@ -112,7 +120,9 @@ pub(crate) fn setup(
             environment,
             streams,
             CliError::HelperConfirmationRequired,
-            "Allow PV to configure local HTTPS and .test domains?\nInstalls PV's administrator helper. macOS will ask for your password.",
+            &format!(
+                "Allow PV to configure local HTTPS and .test domains?\nInstalls PV's administrator helper. {authentication} will ask for your password."
+            ),
             true,
         )?
     {
@@ -139,7 +149,11 @@ pub(crate) fn setup(
         return Ok(ExitCode::FAILURE);
     }
     if !run_required_step(
-        "port redirect setup",
+        if linux {
+            "socket proxy setup"
+        } else {
+            "port redirect setup"
+        },
         streams,
         &mut replay_error,
         |streams| ports::install(environment, streams),
@@ -171,7 +185,11 @@ pub(crate) fn setup(
             Mark::Success,
             "Local HTTPS, .test domains and startup configured",
         )?;
-        output.detail("DNS resolver · port redirect · CA trust · daemon registration")?;
+        output.detail(if linux {
+            "DNS resolver · socket proxy · CA trust · daemon registration"
+        } else {
+            "DNS resolver · port redirect · CA trust · daemon registration"
+        })?;
     }
 
     let summary = Line::from("System reconciliation completed: ")
@@ -374,8 +392,11 @@ pub(crate) fn uninstall(
 
     let _runtime_lifecycle_lock = state::RuntimeLifecycleLock::acquire_exclusive(&paths)
         .map_err(super::coordination_lock_error)?;
+    let linux = environment.platform_target()? == PlatformTarget::Linux;
     let subtitle = if args.prune {
         "--prune"
+    } else if linux {
+        "Linux integration"
     } else {
         "macOS integration"
     };
@@ -399,7 +420,11 @@ pub(crate) fn uninstall(
         return Ok(ExitCode::FAILURE);
     }
     if !run_required_step(
-        "port redirect removal",
+        if linux {
+            "socket proxy removal"
+        } else {
+            "port redirect removal"
+        },
         streams,
         &mut replay_error,
         |streams| ports::uninstall(environment, streams),
@@ -459,7 +484,7 @@ fn run_required_step(
     command: impl FnOnce(&mut Streams<'_>) -> Result<ExitCode, ExecuteError>,
 ) -> Result<bool, ExecuteError> {
     let active_label = match label {
-        "port redirect setup" => "Configuring local HTTP and HTTPS",
+        "port redirect setup" | "socket proxy setup" => "Configuring local HTTP and HTTPS",
         "CA trust setup" => "Trust local HTTPS certificates",
         "daemon registration" => "Start PV at login",
         _ => label,
@@ -491,7 +516,7 @@ fn run_required_step(
     let displayed_label = if succeeded {
         match label {
             "DNS resolver setup" => ".test domains configured",
-            "port redirect setup" => "Local HTTP and HTTPS configured",
+            "port redirect setup" | "socket proxy setup" => "Local HTTP and HTTPS configured",
             "CA trust setup" => "Local HTTPS certificates trusted",
             "daemon registration" => "PV starts at login",
             _ => label,
@@ -1211,26 +1236,35 @@ mod tests {
 
     use anyhow::Context;
     use camino_tempfile::tempdir;
+    use daemon::{DaemonError, DaemonProcess};
     use insta::assert_snapshot;
     use platform::{LowPortInspection, PlatformError, PlatformTarget};
+    use resources::{ResourceHttpClient, ResourcesError};
     use state::{PvPaths, fs};
 
     use super::{configure_shell_integration, remove_shell_integration, run_required_step};
+    #[cfg(unix)]
+    use super::{setup, uninstall};
     use crate::args::SetupArgs;
+    #[cfg(unix)]
+    use crate::args::UninstallArgs;
     use crate::environment::Environment;
+    #[cfg(unix)]
+    use crate::error::ExecuteError;
     use crate::output::{Presentation, Streams};
 
-    struct ShellEnvironment {
+    struct SetupEnvironment {
         shell: &'static str,
+        home: PathBuf,
     }
 
-    impl Environment for ShellEnvironment {
+    impl Environment for SetupEnvironment {
         fn var_os(&self, key: &str) -> Option<OsString> {
             (key == "SHELL").then(|| self.shell.into())
         }
 
         fn home_dir(&self) -> Option<PathBuf> {
-            None
+            Some(self.home.clone())
         }
 
         fn current_dir(&self) -> io::Result<PathBuf> {
@@ -1238,11 +1272,19 @@ mod tests {
         }
 
         fn current_exe(&self) -> io::Result<PathBuf> {
-            Err(io::Error::other("unexpected executable query"))
+            Ok(self.home.join("pv-fixture"))
         }
 
         fn stdin_is_terminal(&self) -> bool {
             false
+        }
+
+        fn stdout_is_terminal(&self) -> bool {
+            true
+        }
+
+        fn terminal_width(&self) -> Option<usize> {
+            Some(200)
         }
 
         fn open_url(&self, _url: &str) -> io::Result<()> {
@@ -1253,11 +1295,110 @@ mod tests {
             Ok(PlatformTarget::Linux)
         }
 
+        fn daemon_registration_path(&self) -> PathBuf {
+            self.home.join("pv-daemon.service")
+        }
+
+        fn daemon_process_for_stop(
+            &self,
+            _paths: &PvPaths,
+        ) -> Result<Option<DaemonProcess>, DaemonError> {
+            Err(DaemonError::Io(io::Error::other(
+                "fixture daemon stop refused",
+            )))
+        }
+
+        fn artifact_manifest_url(&self) -> Option<String> {
+            Some("https://artifacts.example.test/manifest.json".to_owned())
+        }
+
+        fn resource_http_client(&self) -> Option<&dyn ResourceHttpClient> {
+            Some(self)
+        }
+
         fn inspect_low_ports(&self) -> Result<LowPortInspection, PlatformError> {
             Err(PlatformError::SystemIntegration(
                 "unexpected low-port inspection".to_owned(),
             ))
         }
+    }
+
+    impl ResourceHttpClient for SetupEnvironment {
+        fn get_text(&self, url: &str) -> resources::Result<String> {
+            Err(ResourcesError::HttpRequestFailed {
+                url: url.to_owned(),
+                reason: "fixture manifest unavailable".to_owned(),
+            })
+        }
+
+        fn download(&self, url: &str, _writer: &mut dyn Write) -> resources::Result<()> {
+            Err(ResourcesError::HttpRequestFailed {
+                url: url.to_owned(),
+                reason: "unexpected archive download".to_owned(),
+            })
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn linux_setup_and_uninstall_use_the_injected_platform_for_flow_headers() -> anyhow::Result<()>
+    {
+        let directory = tempdir()?;
+        let environment = SetupEnvironment {
+            shell: "/bin/bash",
+            home: directory.path().as_std_path().to_path_buf(),
+        };
+        let presentation = Presentation::detect(&["--no-color".into()], &environment);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut streams = Streams::new(&mut stdout, &mut stderr, presentation);
+        assert!(matches!(
+            setup(
+                SetupArgs {
+                    yes: true,
+                    non_interactive: false,
+                    no_path: true
+                },
+                &environment,
+                &mut streams,
+            ),
+            Err(ExecuteError::Resources(
+                ResourcesError::ManifestUnavailable { .. }
+            ))
+        ));
+        let setup_output = String::from_utf8(stdout)?;
+        let mut stdout = Vec::new();
+        let mut streams = Streams::new(&mut stdout, &mut stderr, presentation);
+        assert!(matches!(
+            uninstall(
+                UninstallArgs { prune: false, force: false },
+                &environment,
+                &mut streams,
+            ),
+            Err(ExecuteError::Daemon(DaemonError::Io(source)))
+                if source.to_string() == "fixture daemon stop refused"
+        ));
+        let uninstall_output = String::from_utf8(stdout)?;
+        let observed = format!("setup:\n{setup_output}\nuninstall:\n{uninstall_output}")
+            .replace(directory.path().as_str(), "<home>");
+        assert_snapshot!(observed, @r#"
+        setup:
+        [pv] setup
+
+        ┌  PV setup  ·  Linux integration
+        │
+        ◇  Ensured PV state layout: <home>/.pv
+
+        uninstall:
+        [pv] uninstall
+
+        ┌  PV uninstall  ·  Linux integration
+        │
+        ✗  daemon removal
+        │
+        └  ✗ PV stopped during daemon removal.
+        "#);
+        Ok(())
     }
 
     #[test]
@@ -1266,7 +1407,10 @@ mod tests {
         for (shell, profile_name) in [("/bin/bash", ".bashrc"), ("/bin/zsh", ".zshrc")] {
             let directory = tempdir()?;
             let paths = PvPaths::for_home(directory.path());
-            let environment = ShellEnvironment { shell };
+            let environment = SetupEnvironment {
+                shell,
+                home: directory.path().as_std_path().to_path_buf(),
+            };
             let profile = paths.home().join(profile_name);
             let startup_files = [
                 ".bashrc",
