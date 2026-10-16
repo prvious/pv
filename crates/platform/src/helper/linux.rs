@@ -1,5 +1,6 @@
+use std::fs::DirBuilder;
 use std::io::{self, Read as _, Write as _};
-use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
@@ -874,7 +875,12 @@ fn validate_directory_chain(path: &Utf8Path, create: bool) -> Result<(), Platfor
             Ok(metadata) => metadata,
             Err(error) if error.kind() == io::ErrorKind::NotFound && !create => continue,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                std::fs::create_dir(directory).map_err(PlatformError::PrivilegedHelperIo)?;
+                DirBuilder::new()
+                    .mode(0o755)
+                    .create(directory)
+                    .map_err(PlatformError::PrivilegedHelperIo)?;
+                state::fs::sync_parent_directory(directory)
+                    .map_err(|error| installation_error(error.to_string()))?;
                 std::fs::symlink_metadata(directory).map_err(PlatformError::PrivilegedHelperIo)?
             }
             Err(error) => return Err(PlatformError::PrivilegedHelperIo(error)),
@@ -1051,6 +1057,10 @@ mod tests {
     fn root_files_preserve_modes_lock_identity_and_verified_rollback() -> anyhow::Result<()> {
         ensure!(getuid().is_root() && geteuid().is_root(), "requires root");
         let directory = camino_tempfile::tempdir_in("/run")?;
+        chmod(
+            directory.path().as_std_path(),
+            Mode::from_bits_truncate(0o700),
+        )?;
         ensure_root_directory(directory.path(), 0o700)?;
         let path = directory.path().join("helper");
         let backup = sibling(path.as_str(), "rollback");
