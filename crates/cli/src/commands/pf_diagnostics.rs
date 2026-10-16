@@ -149,7 +149,7 @@ fn files_current(
             return Ok(false);
         };
         let installed_directory = utf8_path(environment.socket_proxy_directory())?;
-        return Ok(platform::socket_proxy_files_current(
+        return Ok(environment.socket_proxy_files_current(
             expected,
             &paths.ports_config(),
             &installed_directory,

@@ -184,6 +184,16 @@ pub trait Environment {
     }
 
     #[cfg(target_os = "linux")]
+    fn socket_proxy_files_current(
+        &self,
+        config: &platform::PfRedirectConfig,
+        prepared_directory: &Utf8Path,
+        installed_directory: &Utf8Path,
+    ) -> bool {
+        platform::socket_proxy_files_current(config, prepared_directory, installed_directory)
+    }
+
+    #[cfg(target_os = "linux")]
     fn repairable_socket_proxy_ports(&self) -> Result<BTreeSet<u16>, platform::PlatformError> {
         platform::repairable_socket_proxy_ports()
     }
