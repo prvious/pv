@@ -13,6 +13,15 @@ mod resolved;
 
 pub(crate) const CERTUTIL_EXECUTABLE: &str = "/usr/bin/certutil";
 
+/// Verifies a fresh `.test` lookup through the configured stub after reconciliation.
+pub fn check_linux_setup_dns() -> Result<(), PlatformError> {
+    resolved::check_test().map_err(|error| {
+        PlatformError::SystemIntegration(format!(
+            ".test DNS verification failed after reconciliation: {error}; check `pv status` and `pv dns:status`, then repair with `pv dns:install` before retrying `pv setup`"
+        ))
+    })
+}
+
 /// Checks the native host and required executables before Linux setup.
 pub fn check_linux_setup_host(session_address: &str) -> Result<(), PlatformError> {
     let init = Process::new(1)
@@ -126,7 +135,8 @@ mod tests {
     use state::fs;
 
     use super::{
-        check_linux_setup_host, require_executable, validate_glibc_version, validate_host,
+        check_linux_setup_dns, check_linux_setup_host, require_executable, validate_glibc_version,
+        validate_host,
     };
     use crate::PlatformError;
 
@@ -295,6 +305,13 @@ mod tests {
     #[ignore = "run as dev (UID 1000) in a disposable Linux systemd test container"]
     fn linux_setup_reads_native_host_prerequisites() -> anyhow::Result<()> {
         check_linux_setup_host("unix:path=/run/user/1000/bus")?;
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "run as dev (UID 1000) with the configured stub in a disposable Linux systemd test container"]
+    fn linux_setup_verifies_native_test_dns() -> anyhow::Result<()> {
+        check_linux_setup_dns()?;
         Ok(())
     }
 }
