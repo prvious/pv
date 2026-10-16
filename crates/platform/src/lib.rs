@@ -2,7 +2,7 @@ mod browser;
 mod ca;
 mod capability;
 pub mod clock;
-#[cfg(any(target_os = "macos", target_os = "linux", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", all(test, unix)))]
 mod command;
 mod daemon_registration;
 
