@@ -1,6 +1,7 @@
 use std::process::ExitCode;
 
 use ::daemon::MonitorHooks;
+use daemon::DaemonError;
 use camino::Utf8PathBuf;
 use platform::{DAEMON_REGISTRATION_NAME, DaemonRegistrationConfig, DaemonRegistrationFileState};
 use state::{PvPaths, StateError};
@@ -137,6 +138,7 @@ pub(crate) fn unload_and_wait_for_daemon(
     environment: &impl Environment,
     paths: &PvPaths,
 ) -> Result<(), ExecuteError> {
+    let target = environment.platform_target()?;
     let daemon = environment.daemon_process_for_stop(paths)?;
     stop_daemon_registration_if_loaded(environment)?;
     // Startup can publish the daemon identity while the registration is stopping.
@@ -145,7 +147,17 @@ pub(crate) fn unload_and_wait_for_daemon(
         None => environment.daemon_process_for_stop(paths)?,
     };
     if let Some(daemon) = daemon {
-        daemon.wait_for_exit()?;
+        daemon.wait_for_exit().map_err(|error| match error {
+            DaemonError::RuntimeCleanupUnproven { pid, .. } => DaemonError::RuntimeCleanupUnproven {
+                pid,
+                reason: match target {
+                    PlatformTarget::Macos => "daemon is still running after LaunchAgent unload",
+                    PlatformTarget::Linux => "daemon is still running after stopping the systemd user service",
+                    PlatformTarget::Windows => "daemon is still running after stopping daemon registration",
+                }.to_owned(),
+            },
+            error => error,
+        })?;
     }
     Ok(())
 }
