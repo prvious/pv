@@ -249,6 +249,7 @@ fn linux_status_and_doctor_show_native_properties_and_reject_a_foreign_loaded_un
         }
         environment.registration_status = Some(DaemonRegistrationStatus {
             load_state: "loaded".to_owned(),
+            unit_file_state: Some("enabled".to_owned()),
             active_state: "active".to_owned(),
             sub_state: "running".to_owned(),
             main_pid: 42,
@@ -280,15 +281,18 @@ fn linux_doctor_rejects_an_owned_daemon_that_is_not_loaded_and_running() -> anyh
     let mut environment = TestEnvironment::new(&tempdir.path().join("home"));
     environment.write_unit()?;
     let mut observed = Vec::new();
-    for (load_state, active_state, sub_state, main_pid) in [
-        ("loaded", "inactive", "dead", 0),
-        ("loaded", "failed", "failed", 0),
-        ("loaded", "deactivating", "stop-sigterm", 42),
-        ("loaded", "active", "running", 0),
-        ("error", "active", "running", 42),
+    for (load_state, unit_file_state, active_state, sub_state, main_pid) in [
+        ("loaded", "enabled", "inactive", "dead", 0),
+        ("loaded", "enabled", "failed", "failed", 0),
+        ("loaded", "enabled", "deactivating", "stop-sigterm", 42),
+        ("loaded", "enabled", "active", "running", 0),
+        ("error", "enabled", "active", "running", 42),
+        ("loaded", "disabled", "active", "running", 42),
+        ("loaded", "enabled-runtime", "active", "running", 42),
     ] {
         environment.registration_status = Some(DaemonRegistrationStatus {
             load_state: load_state.to_owned(),
+            unit_file_state: Some(unit_file_state.to_owned()),
             active_state: active_state.to_owned(),
             sub_state: sub_state.to_owned(),
             main_pid,
