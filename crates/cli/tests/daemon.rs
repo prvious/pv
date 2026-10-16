@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use anyhow::ensure;
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
@@ -403,16 +404,25 @@ fn daemon_disable_stops_live_runtimes_without_a_plist_or_database() -> anyhow::R
             "monitor {monitor} was not released"
         );
     }
-    // The descendant belongs to the fake, not to this test process. Native
-    // observation must still report its exact successful status after it exits.
-    assert!(
-        watch
-            .try_exit_status()?
-            .is_some_and(|status| status.success())
-    );
-    for fixture in &mut fixtures {
+    for fixture in &fixtures {
         assert!(!platform::process_group_has_live_members(fixture.pid()?)?);
         assert!(fixture.records_absent()?);
+    }
+    // The descendant belongs to the fake, not to this test process. Native
+    // observation must still report its exact successful status after it exits.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        if let Some(status) = watch.try_exit_status()? {
+            break status;
+        }
+        ensure!(
+            Instant::now() < deadline,
+            "descendant exit event never arrived"
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert!(status.success(), "descendant exited with {status:?}");
+    for fixture in &mut fixtures {
         fixture.cleanup()?;
     }
     assert_eq!(state::fs::read_to_string(paths.db())?, "invalid database");
