@@ -183,29 +183,32 @@ fn normalize_daemon_registration(
 ) -> Result<Utf8PathBuf, ExecuteError> {
     let expected = DaemonRegistrationConfig::for_paths(paths);
     let path = daemon_registration_path(environment)?;
-    match platform::inspect_daemon_registration_file(&path, Some(&expected)) {
-        DaemonRegistrationFileState::Current { path, .. } => Ok(path),
+    let path = match platform::inspect_daemon_registration_file(&path, Some(&expected)) {
+        DaemonRegistrationFileState::Current { path, .. } => path,
         DaemonRegistrationFileState::Stale { .. } => {
             platform::write_daemon_registration_file(&path, &expected)?;
 
-            Ok(path)
+            path
         }
         DaemonRegistrationFileState::Missing { path } => {
-            Err(CliError::AppUpdateDaemonRegistrationMissing {
+            return Err(CliError::AppUpdateDaemonRegistrationMissing {
                 path: path.to_string(),
             }
-            .into())
+            .into());
         }
         DaemonRegistrationFileState::Conflict { path } => {
-            Err(CliError::AppUpdateDaemonRegistrationConflict {
+            return Err(CliError::AppUpdateDaemonRegistrationConflict {
                 path: path.to_string(),
             }
-            .into())
+            .into());
         }
         DaemonRegistrationFileState::Unreadable { message, .. } => {
-            Err(CliError::AppUpdateDaemonRegistrationUnreadable { message }.into())
+            return Err(CliError::AppUpdateDaemonRegistrationUnreadable { message }.into());
         }
-    }
+    };
+    #[cfg(target_os = "linux")]
+    environment.reload_daemon_registration()?;
+    Ok(path)
 }
 
 fn daemon_registration_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {

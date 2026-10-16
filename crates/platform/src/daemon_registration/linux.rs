@@ -230,6 +230,16 @@ pub(super) fn enable(path: &Utf8Path, session_address: &str) -> Result<(), Platf
     })
 }
 
+pub(super) fn reload(session_address: &str) -> Result<(), PlatformError> {
+    let manager = manager(session_address)?;
+    run_operation("reload", Duration::from_secs(10), async {
+        require_owned_unit(&manager).await?;
+        manager.call::<_, _, ()>("Reload", &()).await?;
+        require_owned_unit(&manager).await?;
+        Ok(())
+    })
+}
+
 pub(super) fn remove(path: &Utf8Path, session_address: &str) -> Result<(), PlatformError> {
     require_owned_file(path)?;
     let manager = manager(session_address)?;

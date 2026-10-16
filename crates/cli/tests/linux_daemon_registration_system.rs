@@ -1,11 +1,14 @@
 #![cfg(target_os = "linux")]
 
+use std::cell::Cell;
+use std::ffi::OsString;
 use std::io::{self, Write as _};
 #[expect(
     clippy::disallowed_types,
     reason = "the opt-in system test arms and cancels its independent native cleanup timer"
 )]
 type SystemTestCommand = std::process::Command;
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,12 +16,15 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use cli::{Environment, ProcessEnvironment, run_with_environment};
-use platform::{DaemonRegistrationConfig, DaemonRegistrationStatus, PlatformError};
+use insta::assert_debug_snapshot;
+use platform::{
+    DaemonRegistrationConfig, DaemonRegistrationStatus, LowPortInspection, PlatformError,
+};
 use pv_fake::{FakeSettings, Persona, Scenario};
 use serde_json::Value;
 use state::{
-    Database, GatewayPort, JobStatus, LinkProjectInput, MonitorReservation, PortRequest,
-    ProjectMode, PvPaths, fs,
+    AppReleaseLayout, Database, GatewayPort, JobStatus, LinkProjectInput, MonitorReservation,
+    PortRequest, ProjectMode, PvPaths, fs,
 };
 
 const REDIS_SUBJECT: &str = "resources/redis/7.2";
@@ -74,7 +80,9 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
     let environment = ProcessEnvironment;
     fs::ensure_layout(&fixture.paths)?;
     seed_resources(&fixture.paths)?;
-    fs::copy_file_atomically(binary, &fixture.paths.active_pv_binary())?;
+    let layout = AppReleaseLayout::new(fixture.paths.clone());
+    layout.install_release_binary(env!("CARGO_PKG_VERSION"), binary)?;
+    layout.activate_release(env!("CARGO_PKG_VERSION"))?;
     pv_fake::seed_dns_port(&fixture.paths)?;
     let config = DaemonRegistrationConfig::for_paths(&fixture.paths);
     fixture.arm_cleanup_timer()?;
@@ -85,6 +93,7 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
         environment.restart_daemon_registration(),
         environment.stop_daemon_registration(),
         environment.enable_daemon_registration(&fixture.unit),
+        environment.reload_daemon_registration(),
         environment.remove_daemon_registration(&fixture.unit),
     ] {
         assert!(
@@ -126,6 +135,7 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
     fs::write_sensitive_file(&drop_in, override_content)?;
     let results = [
         environment.enable_daemon_registration(&fixture.unit),
+        environment.reload_daemon_registration(),
         environment.inspect_daemon_registration().map(|_| ()),
         environment.restart_daemon_registration(),
         environment.stop_daemon_registration(),
@@ -145,9 +155,59 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
     let stale = config
         .render()?
         .replace("KillMode=process", "KillMode=control-group");
-    fs::write_sensitive_file(&fixture.unit, &stale)?;
-    environment.enable_daemon_registration(&fixture.unit)?;
-    platform::write_daemon_registration_file(&fixture.unit, &config)?;
+    let mut repair_observations = Vec::new();
+    for file_already_current in [false, true] {
+        fs::write_sensitive_file(&fixture.unit, &stale)?;
+        environment.enable_daemon_registration(&fixture.unit)?;
+        if file_already_current {
+            // An interrupted repair can leave a current file with a stale loaded unit.
+            platform::write_daemon_registration_file(&fixture.unit, &config)?;
+        }
+        fs::delete_file(&enabled_link)?;
+        let before = loaded_kill_mode()?;
+        let update_environment = RejectedManifestEnvironment::default();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run_with_environment(
+            ["pv", "update"],
+            &update_environment,
+            &mut stdout,
+            &mut stderr,
+        )?;
+        let failure = String::from_utf8(stderr)?;
+        ensure!(
+            code == ExitCode::FAILURE,
+            "fixture manifest request must fail"
+        );
+        ensure!(update_environment.manifest_requested.get(), "{failure}");
+        assert_eq!(fs::read_to_string(&fixture.unit)?, config.render()?);
+        ensure!(!fs::path_entry_exists(&enabled_link)?);
+        repair_observations.push((
+            file_already_current,
+            before,
+            loaded_kill_mode()?,
+            failure.trim().to_owned(),
+        ));
+        assert_eq!(status()?.main_pid, first.main_pid);
+        let (_, preserved_monitor) = wait_for_redis_monitor(&fixture.paths, None)?;
+        assert_eq!(preserved_monitor, monitor);
+    }
+    assert_debug_snapshot!(repair_observations, @r#"
+    [
+        (
+            false,
+            "control-group",
+            "process",
+            "error: HTTP request failed for `pv-system-test://manifest`: bad uri: unknown scheme: pv-system-test",
+        ),
+        (
+            true,
+            "control-group",
+            "process",
+            "error: HTTP request failed for `pv-system-test://manifest`: bad uri: unknown scheme: pv-system-test",
+        ),
+    ]
+    "#);
     environment.restart_daemon_registration()?;
     daemon::wait_until_healthy_blocking(fixture.paths.clone())?;
     let mut restarted = status()?;
@@ -288,6 +348,66 @@ fn status() -> Result<DaemonRegistrationStatus> {
     ProcessEnvironment
         .inspect_daemon_registration()?
         .context("PV unit was not reported")
+}
+
+fn loaded_kill_mode() -> Result<String> {
+    let output = SystemTestCommand::new("/usr/bin/systemctl")
+        .args([
+            "--user",
+            "show",
+            "pv-daemon.service",
+            "--property=KillMode",
+            "--value",
+        ])
+        .output()?;
+    ensure!(
+        output.status.success() && output.stderr.is_empty(),
+        "cannot inspect daemon KillMode: {}: {}{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
+}
+
+#[derive(Default)]
+struct RejectedManifestEnvironment {
+    manifest_requested: Cell<bool>,
+}
+
+impl Environment for RejectedManifestEnvironment {
+    fn inspect_low_ports(&self) -> Result<LowPortInspection, PlatformError> {
+        ProcessEnvironment.inspect_low_ports()
+    }
+
+    fn var_os(&self, key: &str) -> Option<OsString> {
+        ProcessEnvironment.var_os(key)
+    }
+
+    fn home_dir(&self) -> Option<PathBuf> {
+        ProcessEnvironment.home_dir()
+    }
+
+    fn current_dir(&self) -> io::Result<PathBuf> {
+        ProcessEnvironment.current_dir()
+    }
+
+    fn current_exe(&self) -> io::Result<PathBuf> {
+        ProcessEnvironment.current_exe()
+    }
+
+    fn stdin_is_terminal(&self) -> bool {
+        false
+    }
+
+    fn open_url(&self, _url: &str) -> io::Result<()> {
+        Err(io::Error::other("no browser in the system fixture"))
+    }
+
+    fn app_update_manifest_url(&self) -> Option<String> {
+        self.manifest_requested.set(true);
+        Some("pv-system-test://manifest".to_owned())
+    }
 }
 
 fn wait_for_redis_monitor(paths: &PvPaths, previous_job: Option<&str>) -> Result<(String, Value)> {

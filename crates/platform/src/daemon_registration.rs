@@ -186,6 +186,11 @@ fn registration_file_error(error: state::StateError) -> PlatformError {
     PlatformError::LaunchAgent(error.to_string())
 }
 
+#[cfg(target_os = "linux")]
+pub fn reload_daemon_registration(session_address: &str) -> Result<(), PlatformError> {
+    native::reload(session_address)
+}
+
 pub fn enable_daemon_registration(
     path: &Utf8Path,
     #[cfg(target_os = "linux")] session_address: &str,
