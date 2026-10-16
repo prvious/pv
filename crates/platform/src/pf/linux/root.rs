@@ -5,7 +5,7 @@ use rustix::process::{geteuid, getuid};
 use zbus::{Proxy, connection};
 
 use super::{
-    HTTP, HTTPS, SYSTEM_DIRECTORY, UnitStatus, bus_error, observe, read_loaded_unit, unit_names,
+    HTTP, HTTPS, SYSTEM_DIRECTORY, UnitStatus, bus_error, observe, query_unit, unit_names,
 };
 use crate::helper::linux::{self as root_files, RootFile};
 use crate::helper::validate_high_port;
@@ -136,7 +136,11 @@ pub(in crate::pf) fn remove() -> Result<(), PlatformError> {
             reload(&manager).await?;
             for name in unit_names() {
                 if read_owned_unit(&path(&name))?.is_some()
-                    || read_loaded_unit(&manager, &name).await?.0.status.is_some()
+                    || query_unit(&manager, &name, "LoadUnit")
+                        .await?
+                        .0
+                        .status
+                        .is_some()
                 {
                     return Err(PlatformError::SystemIntegration(format!(
                         "socket proxy unit remains after removal: {name}"
@@ -170,7 +174,7 @@ async fn preflight() -> Result<(Proxy<'static>, Vec<PreviousUnit>), PlatformErro
         let manager = system_manager_proxy(&connection).await.map_err(bus_error)?;
         let mut previous = capture_files(Utf8Path::new(SYSTEM_DIRECTORY))?;
         for unit in &mut previous {
-            let status = read_loaded_unit(&manager, &unit.name).await?.0.status;
+            let status = query_unit(&manager, &unit.name, "LoadUnit").await?.0.status;
             require_owned_status(&unit.name, unit.checksum.is_some(), status.as_ref())?;
             unit.active = status.as_ref().is_some_and(|status| {
                 matches!(
@@ -225,7 +229,7 @@ async fn require_owned_units(
                 unit.name
             )));
         }
-        let status = read_loaded_unit(manager, &unit.name).await?.0.status;
+        let status = query_unit(manager, &unit.name, "LoadUnit").await?.0.status;
         require_owned_status(&unit.name, has_file, status.as_ref())?;
     }
     Ok(())
@@ -331,7 +335,7 @@ async fn rollback(
             }
         }
         for unit in previous {
-            let status = read_loaded_unit(manager, &unit.name).await?.0.status;
+            let status = query_unit(manager, &unit.name, "LoadUnit").await?.0.status;
             require_owned_status(&unit.name, unit.checksum.is_some(), status.as_ref())?;
             if (unit.active
                 && !status
