@@ -12,6 +12,8 @@ pub use daemon_registration::{
 mod error;
 mod helper;
 pub mod hooks;
+#[cfg(target_os = "linux")]
+mod linux_host;
 mod low_port;
 mod pf;
 mod port;
@@ -54,6 +56,8 @@ pub use helper::{
     PrivilegedHelperInstallOutcome, PrivilegedHelperStatus, install_privileged_helper,
     remove_privileged_helper, serve_privileged_helper,
 };
+#[cfg(target_os = "linux")]
+pub use linux_host::check_linux_setup_host;
 pub use low_port::{LowPortInspection, LowPortState, PortOwner};
 pub use pf::{
     ActivePfRedirectInspection, PfConfReference, PfFileState, PfRedirectConfig,
