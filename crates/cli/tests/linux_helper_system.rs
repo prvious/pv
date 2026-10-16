@@ -515,10 +515,18 @@ impl HelperFixture {
             HELPER_METADATA_PATH,
             "0600",
         )?;
+        ensure!(
+            fs::path_entry_exists(Utf8Path::new(LOG))?,
+            "installed helper service did not create its error log"
+        );
         let response = root(&removal_arguments)?;
         assert_eq!(
             serde_json::from_slice::<Option<String>>(&response.stdout)?,
             None
+        );
+        ensure!(
+            !fs::path_entry_exists(Utf8Path::new(LOG))?,
+            "helper error log remains after successful removal"
         );
         self.require_removed()?;
         platform::remove_privileged_helper()?;
