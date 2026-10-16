@@ -1,0 +1,27 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: results
+---
+[
+    (
+        false,
+        "archive=postgres-17.10-pv2-<native-platform>.tar.gz record=postgres-17.10-pv2-<native-platform>.json smoke=smoke.sh\n",
+        [
+            "postgres-17.10-pv2-<native-platform>/lib/libcrypto.so.3",
+            "postgres-17.10-pv2-<native-platform>/lib/libpgcommon.a",
+            "postgres-17.10-pv2-<native-platform>/lib/libpq.so.5",
+            "postgres-17.10-pv2-<native-platform>/lib/libssl.so.3",
+            "postgres-17.10-pv2-<native-platform>/lib/postgresql/pg_trgm.so",
+            "postgres-17.10-pv2-<native-platform>/lib/postgresql/pgcrypto.so",
+            "postgres-17.10-pv2-<native-platform>/lib/postgresql/pgxs/src/test/regress/pg_regress",
+            "postgres-17.10-pv2-<native-platform>/lib/postgresql/sslinfo.so",
+        ],
+        "",
+    ),
+    (
+        true,
+        "",
+        [],
+        "error: <out>/work/postgres-17-postgres-17.10-pv2-<native-platform>/postgres-17.10-pv2-<native-platform>/lib/postgresql/pg_trgm.so ELF symbol version GLIBC_2.36 is newer than GLIBC_2.35\n",
+    ),
+]
