@@ -9,7 +9,7 @@ use anyhow::{Context, Result, anyhow, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::{Utf8TempDir, tempdir};
 use cli::{Environment, ProcessEnvironment};
-use insta::{Settings, assert_snapshot};
+use insta::{Settings, allow_duplicates, assert_snapshot};
 use platform::{
     HELPER_EXECUTABLE_PATH, HELPER_METADATA_PATH, HELPER_PROTOCOL_VERSION, HELPER_SOCKET_PATH,
     PRIVILEGED_HELPER_VERSION, PrivilegedHelperClient, ProcessStartIdentity,
@@ -376,67 +376,112 @@ impl HelperFixture {
             &format!("{DROP_IN_DIRECTORY}/10-pv-system-test.conf"),
             "0644",
         )?;
-        root(&["/usr/bin/journalctl", "--sync"])?;
-        let last_entry: Value = serde_json::from_str(&root_text(&[
-            "/usr/bin/journalctl",
-            "--boot",
-            "--lines=1",
-            "--output=json",
-            "--quiet",
-            "--no-pager",
-        ])?)?;
-        let cursor = last_entry["__CURSOR"]
-            .as_str()
-            .context("journal must expose a cursor before the rejected replacement")?;
-        let failure = self
-            .install(&original, &original_sha256)
-            .err()
-            .context("replacement condition must reject the changed helper")?;
-        root(&["/usr/bin/journalctl", "--sync"])?;
-        let journal = root_text(&[
-            "/usr/bin/journalctl",
-            "--boot",
-            "--after-cursor",
-            cursor,
-            "--unit=pv-helper.socket",
-            "--output=json",
-            "--quiet",
-            "--no-pager",
-        ])?;
-        let entries = Deserializer::from_str(&journal)
-            .into_iter::<Value>()
-            .collect::<Result<Vec<_>, _>>()?;
-        ensure!(
-            entries
-                .iter()
-                .any(|entry| entry["UNIT_RESULT"] == "service-start-limit-hit"),
-            "replacement must hit the service start limit: {journal}"
-        );
-        let condition = root_text(&[
-            "/usr/bin/cat",
-            &format!("{CONTROL_DIRECTORY}/condition.log"),
-        ])?;
-        self.capture_process().with_context(|| {
-            format!("helper did not recover after rejected replacement: {failure:#}")
-        })?;
-        let mut condition_lines = condition.lines().collect::<Vec<_>>();
-        condition_lines.dedup();
-        assert_snapshot!(condition_lines.join("\n"), @r"
-        /usr/local/libexec/pv/pv-helper: FAILED
-        /usr/local/libexec/pv/pv-helper: OK
-        ");
-        assert_eq!(
-            checksum(Utf8Path::new(HELPER_EXECUTABLE_PATH))?,
-            replacement_sha256
-        );
-        assert_eq!(
-            serde_json::from_str::<Value>(&root_text(&["/usr/bin/cat", HELPER_METADATA_PATH])?)?,
-            metadata
-        );
-        assert_eq!(
-            fs::read_link(Utf8Path::new(ENABLED_LINKS[0]))?,
-            Utf8Path::new(SOCKET_UNIT)
-        );
+        for socket_active in [true, false] {
+            self.root_file(
+                "empty-condition.log",
+                "",
+                &format!("{CONTROL_DIRECTORY}/condition.log"),
+                "0600",
+            )?;
+            let prior_process = self.capture_process()?;
+            if !socket_active {
+                root(&["/usr/bin/systemctl", "stop", "pv-helper.socket"])?;
+                assert_eq!(
+                    service_property("pv-helper.socket", "ActiveState")?,
+                    "inactive"
+                );
+                ensure!(!fs::path_entry_exists(Utf8Path::new(HELPER_SOCKET_PATH))?);
+                assert_eq!(self.capture_service_process()?, prior_process);
+            }
+            root(&["/usr/bin/journalctl", "--sync"])?;
+            let last_entry: Value = serde_json::from_str(&root_text(&[
+                "/usr/bin/journalctl",
+                "--boot",
+                "--lines=1",
+                "--output=json",
+                "--quiet",
+                "--no-pager",
+            ])?)?;
+            let cursor = last_entry["__CURSOR"]
+                .as_str()
+                .context("journal must expose a cursor before the rejected replacement")?;
+            let failure = self
+                .install(&original, &original_sha256)
+                .err()
+                .context("replacement condition must reject the changed helper")?;
+            root(&["/usr/bin/journalctl", "--sync"])?;
+            let journal = root_text(&[
+                "/usr/bin/journalctl",
+                "--boot",
+                "--after-cursor",
+                cursor,
+                "--unit=pv-helper.socket",
+                "--output=json",
+                "--quiet",
+                "--no-pager",
+            ])?;
+            let entries = Deserializer::from_str(&journal)
+                .into_iter::<Value>()
+                .collect::<Result<Vec<_>, _>>()?;
+            ensure!(
+                entries
+                    .iter()
+                    .any(|entry| entry["UNIT_RESULT"] == "service-start-limit-hit"),
+                "replacement must hit the service start limit: {journal}"
+            );
+            let condition = root_text(&[
+                "/usr/bin/cat",
+                &format!("{CONTROL_DIRECTORY}/condition.log"),
+            ])?;
+            let restored = self.capture_service_process().with_context(|| {
+                format!("helper did not recover after rejected replacement: {failure:#}")
+            })?;
+            assert_ne!(restored, prior_process);
+            require_exited(prior_process)?;
+            assert_eq!(
+                service_property("pv-helper.socket", "ActiveState")?,
+                if socket_active { "active" } else { "inactive" }
+            );
+            assert_eq!(
+                fs::path_entry_exists(Utf8Path::new(HELPER_SOCKET_PATH))?,
+                socket_active
+            );
+            let mut condition_lines = condition.lines().collect::<Vec<_>>();
+            condition_lines.dedup();
+            allow_duplicates! {
+                assert_snapshot!(condition_lines.join("\n"), @r"
+                /usr/local/libexec/pv/pv-helper: FAILED
+                /usr/local/libexec/pv/pv-helper: OK
+                ");
+            }
+            assert_eq!(
+                checksum(Utf8Path::new(HELPER_EXECUTABLE_PATH))?,
+                replacement_sha256
+            );
+            assert_eq!(
+                serde_json::from_str::<Value>(&root_text(&[
+                    "/usr/bin/cat",
+                    HELPER_METADATA_PATH
+                ])?)?,
+                metadata
+            );
+            assert_eq!(
+                fs::read_link(Utf8Path::new(ENABLED_LINKS[0]))?,
+                Utf8Path::new(SOCKET_UNIT)
+            );
+            for path in UNIT_ROLLBACK_PATHS {
+                ensure!(
+                    !fs::path_entry_exists(Utf8Path::new(path))?,
+                    "helper unit rollback remains after recovery: {path}"
+                );
+            }
+            if !socket_active {
+                root(&["/usr/bin/systemctl", "stop", "pv-helper.service"])?;
+                require_exited(restored)?;
+                root(&["/usr/bin/systemctl", "start", "pv-helper.socket"])?;
+            }
+            self.capture_process()?;
+        }
         self.remove_condition()?;
 
         root(&["/usr/bin/install", "-d", "-m", "0755", DROP_IN_DIRECTORY])?;
@@ -712,6 +757,10 @@ impl HelperFixture {
             service_property("pv-helper.socket", "ActiveState")?,
             "active"
         );
+        self.capture_service_process()
+    }
+
+    fn capture_service_process(&mut self) -> Result<(u32, ProcessStartIdentity)> {
         assert_eq!(
             service_property("pv-helper.service", "ActiveState")?,
             "active"
