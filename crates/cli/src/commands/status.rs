@@ -17,6 +17,7 @@ use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Line, Mark, Output, Streams, Table, Tone};
 
+use super::linux_distribution::LinuxDistribution;
 use super::pf_diagnostics::{PfRoutingDiagnostic, PfRoutingState};
 
 pub(crate) fn run(
@@ -47,6 +48,8 @@ struct StatusSnapshot {
     #[serde(skip)]
     target: PlatformTarget,
     overall: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    linux_distribution: Option<LinuxDistribution>,
     #[serde(skip)]
     system_failure: bool,
     daemon: DaemonStatus,
@@ -122,10 +125,13 @@ impl StatusSnapshot {
         let has_failure =
             system_failure || projects.iter().any(|project| project.mark == Mark::Failure);
         let overall = if has_failure { "failed" } else { "ok" };
+        let target = environment.platform_target()?;
 
         Ok(Self {
-            target: environment.platform_target()?,
+            target,
             overall,
+            linux_distribution: (target == PlatformTarget::Linux)
+                .then(|| LinuxDistribution::read(environment)),
             system_failure,
             daemon,
             integrations,
@@ -148,6 +154,9 @@ impl StatusSnapshot {
         }
         let registration_name = daemon_registration_name(self.target);
         output.line("PV status")?;
+        if let Some(distribution) = &self.linux_distribution {
+            distribution.write(output)?;
+        }
         output.line(&format!("Overall: {}", self.overall))?;
         output.line(&format!("Daemon: {}", self.daemon.state))?;
         output.line(&format!(
@@ -258,6 +267,9 @@ impl StatusSnapshot {
     fn write_decorated(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
         let registration_name = daemon_registration_name(self.target);
         output.report_heading("status", None)?;
+        if let Some(distribution) = &self.linux_distribution {
+            distribution.write(output)?;
+        }
         output.line("")?;
         let project_attention = self
             .projects
@@ -989,6 +1001,7 @@ mod tests {
         let mut snapshot = StatusSnapshot {
             target: PlatformTarget::Macos,
             overall: "ok",
+            linux_distribution: None,
             system_failure: false,
             daemon: DaemonStatus {
                 state: "running",
