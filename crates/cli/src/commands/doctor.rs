@@ -1,13 +1,13 @@
 use std::process::ExitCode;
 
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8PathBuf;
 use platform::{
     CaFileState, DaemonRegistrationFileState, LocalCaMetadata, PlatformTarget, ResolverConfig,
     ResolverFileState, TrustDomainState, daemon_registration_name,
 };
 use self_update::AppUpdateVersion;
 use serde::Serialize;
-use state::{Database, JobDiagnosticSubject, PvPaths, RuntimeObservedStatus, StateError, fs};
+use state::{Database, JobDiagnosticSubject, PvPaths, RuntimeObservedStatus, StateError};
 
 use crate::args::DoctorArgs;
 use crate::environment::Environment;
@@ -16,6 +16,7 @@ use crate::error::ExecuteError;
 use crate::helper_release::HelperReleaseMetadata;
 use crate::output::{Line, Mark, Output, Streams, Tone};
 
+use super::linux_distribution::LinuxDistribution;
 use super::pf_diagnostics::{PfRoutingDiagnostic, PfRoutingState};
 
 pub(crate) fn run(
@@ -45,35 +46,6 @@ struct DoctorReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     linux_distribution: Option<LinuxDistribution>,
     sections: [DoctorSection; 3],
-}
-
-#[derive(Serialize)]
-struct LinuxDistribution {
-    pretty_name: String,
-    support: &'static str,
-}
-
-impl LinuxDistribution {
-    fn read(environment: &impl Environment) -> Self {
-        let path = environment.os_release_path();
-        let pretty_name = Utf8Path::from_path(&path)
-            .and_then(|path| fs::read_to_string(path).ok())
-            .and_then(|content| {
-                let value = content
-                    .lines()
-                    .filter_map(|line| line.strip_prefix("PRETTY_NAME="))
-                    .next_back()?;
-                let mut words = shell_words::split(value).ok()?.into_iter();
-                let name = words.next()?;
-                (!name.is_empty() && !name.chars().any(char::is_control) && words.next().is_none())
-                    .then_some(name)
-            })
-            .unwrap_or_else(|| "Linux".to_owned());
-        Self {
-            pretty_name,
-            support: "untested",
-        }
-    }
 }
 
 #[derive(Serialize)]
@@ -151,10 +123,7 @@ impl DoctorReport {
             .unwrap_or(0);
         output.report_heading("doctor", Some("PV doctor"))?;
         if let Some(distribution) = &self.linux_distribution {
-            output.line(&format!(
-                "Linux distribution: {} ({})",
-                distribution.pretty_name, distribution.support
-            ))?;
+            distribution.write(output)?;
         }
         for section in &self.sections {
             if decorated {

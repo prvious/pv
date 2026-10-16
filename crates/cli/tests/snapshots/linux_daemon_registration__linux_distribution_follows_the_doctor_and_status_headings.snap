@@ -5,4 +5,6 @@ expression: observed
 [
     "PV doctor\nLinux distribution: Ubuntu 22.04.5 LTS (untested)",
     "[pv] doctor                                                       v0.2.8\n────────────────────────────────────────────────────────────────────────\nLinux distribution: Ubuntu 22.04.5 LTS (untested)",
+    "PV status\nLinux distribution: Ubuntu 22.04.5 LTS (untested)",
+    "[pv] status                                                       v0.2.8\n────────────────────────────────────────────────────────────────────────\nLinux distribution: Ubuntu 22.04.5 LTS (untested)",
 ]

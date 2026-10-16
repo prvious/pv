@@ -301,14 +301,17 @@ fn linux_doctor_registration_uses_the_injected_platform() -> anyhow::Result<()> 
 }
 
 #[test]
-fn linux_doctor_distribution_is_informational() -> anyhow::Result<()> {
+fn linux_distribution_is_informational_in_doctor_and_status() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let mut environment = TestEnvironment::new(&tempdir.path().join("home"));
     fs::ensure_layout(&PvPaths::for_home(&environment.home))?;
     let path = environment.home.join("etc/os-release");
     let baseline = run_pv(&["doctor", "--json"], &environment)?;
     let baseline_report: Value = serde_json::from_str(&baseline.stdout)?;
-    let baseline_sections = doctor_sections_without_timestamp(&baseline_report)?;
+    let baseline_doctor_state = diagnostics_without_distribution(&baseline_report)?;
+    let baseline_status = run_pv(&["status", "--json"], &environment)?;
+    let baseline_status_report: Value = serde_json::from_str(&baseline_status.stdout)?;
+    let baseline_status_state = diagnostics_without_distribution(&baseline_status_report)?;
     let mut observed = Vec::new();
     for (case, content) in [
         (
@@ -353,12 +356,25 @@ fn linux_doctor_distribution_is_informational() -> anyhow::Result<()> {
         }
         let output = run_pv(&["doctor", "--json"], &environment)?;
         let report: Value = serde_json::from_str(&output.stdout)?;
+        let status = run_pv(&["status", "--json"], &environment)?;
+        let status_report: Value = serde_json::from_str(&status.stdout)?;
         assert_eq!(output.exit_code, baseline.exit_code, "{case}");
+        assert_eq!(status.exit_code, baseline_status.exit_code, "{case}");
         assert!(output.stderr.is_empty(), "{case}");
+        assert!(status.stderr.is_empty(), "{case}");
         assert!(environment.operations.borrow().is_empty(), "{case}");
         assert_eq!(
-            doctor_sections_without_timestamp(&report)?,
-            baseline_sections,
+            diagnostics_without_distribution(&report)?,
+            baseline_doctor_state,
+            "{case}"
+        );
+        assert_eq!(
+            diagnostics_without_distribution(&status_report)?,
+            baseline_status_state,
+            "{case}"
+        );
+        assert_eq!(
+            status_report["linux_distribution"], report["linux_distribution"],
             "{case}"
         );
         observed.push(json!({"case": case, "distribution": report["linux_distribution"]}));
@@ -372,17 +388,22 @@ fn linux_doctor_distribution_is_informational() -> anyhow::Result<()> {
 
     environment.platform_target = PlatformTarget::Macos;
     fs::write_sensitive_file(&path, "PRETTY_NAME=LinuxFixture")?;
-    let output = run_pv(&["doctor", "--json"], &environment)?;
-    let report: Value = serde_json::from_str(&output.stdout)?;
-    assert!(report.get("linux_distribution").is_none());
-    assert_eq!(output.exit_code, baseline.exit_code);
-    assert!(output.stderr.is_empty());
-    assert!(environment.operations.borrow().is_empty());
+    for (command, exit_code) in [
+        ("doctor", baseline.exit_code),
+        ("status", baseline_status.exit_code),
+    ] {
+        let output = run_pv(&[command, "--json"], &environment)?;
+        let report: Value = serde_json::from_str(&output.stdout)?;
+        assert!(report.get("linux_distribution").is_none(), "{command}");
+        assert_eq!(output.exit_code, exit_code, "{command}");
+        assert!(output.stderr.is_empty(), "{command}");
+        assert!(environment.operations.borrow().is_empty(), "{command}");
+    }
     Ok(())
 }
 
 #[test]
-fn linux_doctor_distribution_follows_the_plain_and_decorated_headings() -> anyhow::Result<()> {
+fn linux_distribution_follows_the_doctor_and_status_headings() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let mut environment = TestEnvironment::new(&tempdir.path().join("home"));
     fs::ensure_layout(&PvPaths::for_home(&environment.home))?;
@@ -391,30 +412,42 @@ fn linux_doctor_distribution_follows_the_plain_and_decorated_headings() -> anyho
         "PRETTY_NAME=\"Ubuntu 22.04.5 LTS\"\n",
     )?;
     let mut observed = Vec::new();
-    for (width, lines) in [(None, 2), (Some(72), 3)] {
-        environment.terminal_width = width;
-        let output = run_pv(&["--no-color", "doctor"], &environment)?;
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert!(output.stderr.is_empty());
-        assert!(environment.operations.borrow().is_empty());
-        observed.push(
-            output
-                .stdout
-                .lines()
-                .take(lines)
-                .collect::<Vec<_>>()
-                .join("\n"),
-        );
+    for command in ["doctor", "status"] {
+        let baseline = run_pv(&[command, "--json"], &environment)?;
+        for (width, lines) in [(None, 2), (Some(72), 3)] {
+            environment.terminal_width = width;
+            let output = run_pv(&["--no-color", command], &environment)?;
+            assert_eq!(output.exit_code, baseline.exit_code);
+            assert!(output.stderr.is_empty());
+            assert!(environment.operations.borrow().is_empty());
+            observed.push(
+                output
+                    .stdout
+                    .lines()
+                    .take(lines)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
     }
     assert_debug_snapshot!(observed);
     Ok(())
 }
 
-fn doctor_sections_without_timestamp(report: &Value) -> anyhow::Result<String> {
-    let timestamp = doctor_check(report, "Port redirect config")?["routing"]["observed_at"]
-        .as_str()
-        .ok_or_else(|| anyhow::anyhow!("missing routing observation time"))?;
-    Ok(serde_json::to_string(&report["sections"])?.replace(timestamp, "<timestamp>"))
+fn diagnostics_without_distribution(report: &Value) -> anyhow::Result<String> {
+    let timestamp = if report.get("sections").is_some() {
+        &doctor_check(report, "Port redirect config")?["routing"]["observed_at"]
+    } else {
+        &report["integrations"]["ports"]["observed_at"]
+    }
+    .as_str()
+    .ok_or_else(|| anyhow::anyhow!("missing routing observation time"))?;
+    let mut state = report.clone();
+    state
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("diagnostic report is not an object"))?
+        .remove("linux_distribution");
+    Ok(serde_json::to_string(&state)?.replace(timestamp, "<timestamp>"))
 }
 
 #[test]
