@@ -410,6 +410,111 @@ pv_recipe_validate_macho_binary() {
   validate_macho_binary "$@"
 }
 
+pv_recipe_validate_elf_tree() (
+  root_dir=$1
+  platform=$2
+  export LC_ALL=C
+
+  case "$platform" in
+    linux-amd64 | linux-arm64) ;;
+    *) die "unsupported ELF artifact platform: $platform" ;;
+  esac
+  expected_arch=$(expected_arch_for_platform "$platform")
+  need find
+  need file
+  need readelf
+  need awk
+  [ -d "$root_dir" ] || die "ELF artifact directory not found: $root_dir"
+  artifact_files=$(find "$root_dir" -type f) || die "failed to list ELF artifact files under $root_dir"
+  [ -n "$artifact_files" ] || return 0
+
+  while IFS= read -r binary; do
+    description=$(file -E -b -- "$binary") || die "failed to inspect file type for $binary"
+    case "$description" in
+      ELF\ *) ;;
+      *) continue ;;
+    esac
+    headers=$(readelf --wide --file-header -- "$binary") || die "failed to inspect ELF header for $binary"
+    machine=$(awk '$1 == "Machine:" { sub(/^.*Machine:[[:space:]]*/, ""); print }' <<EOF
+$headers
+EOF
+    ) || die "failed to parse ELF architecture for $binary"
+    case "$machine" in
+      "Advanced Micro Devices X86-64") actual_arch=x86_64 ;;
+      AArch64) actual_arch=aarch64 ;;
+      *) actual_arch=$machine ;;
+    esac
+    [ "$actual_arch" = "$expected_arch" ] || die "$binary ELF architecture $actual_arch does not match expected $expected_arch for $platform"
+
+    versions=$(readelf --wide --version-info -- "$binary") || die "failed to inspect ELF symbol versions for $binary"
+    glibc_versions=$(awk '{ for (field_index = 1; field_index <= NF; field_index++) if ($field_index ~ /^GLIBC_[0-9]+(\.[0-9]+)*$/ || $field_index == "GLIBC_ABI_DT_RELR") print $field_index }' <<EOF
+$versions
+EOF
+    ) || die "failed to parse ELF symbol versions for $binary"
+    if [ -n "$glibc_versions" ]; then
+      while IFS= read -r glibc_version; do
+        [ "$glibc_version" != GLIBC_ABI_DT_RELR ] || die "$binary ELF symbol version $glibc_version requires glibc 2.36"
+        version_lte "${glibc_version#GLIBC_}" 2.35 || die "$binary ELF symbol version $glibc_version is newer than GLIBC_2.35"
+      done <<EOF
+$glibc_versions
+EOF
+    fi
+
+    dynamic=$(readelf --wide --dynamic -- "$binary") || die "failed to inspect ELF dynamic section for $binary"
+    dynamic_entries=$(awk '
+      $2 == "(NEEDED)" || $2 == "(SONAME)" || $2 == "(RPATH)" || $2 == "(RUNPATH)" {
+        value = substr($0, index($0, "[") + 1)
+        sub(/\]$/, "", value)
+        print $2 ":" value
+      }
+    ' <<EOF
+$dynamic
+EOF
+    ) || die "failed to parse ELF dynamic section for $binary"
+    [ -n "$dynamic_entries" ] || continue
+    while IFS= read -r dynamic_entry; do
+      value=${dynamic_entry#*:}
+      case "$dynamic_entry" in
+        '(NEEDED):'*)
+          case "$value" in
+            libc.so.6 | libm.so.6 | libpthread.so.0 | libdl.so.2 | librt.so.1 | libresolv.so.2 | ld-linux-x86-64.so.2 | ld-linux-aarch64.so.1 | libgcc_s.so.1 | libstdc++.so.6) continue ;;
+          esac
+          bundled=false
+          while IFS= read -r artifact_file; do
+            if [ "${artifact_file##*/}" = "$value" ]; then
+              bundled=true
+              break
+            fi
+          done <<EOF
+$artifact_files
+EOF
+          [ "$bundled" = true ] || die "$binary ELF dependency is not a system library or bundled file: $value"
+          ;;
+        '(SONAME):'*)
+          [ "${binary##*/}" = "$value" ] || die "$binary ELF filename does not match SONAME $value"
+          ;;
+        '(RPATH):'* | '(RUNPATH):'*)
+          while :; do
+            search_path=${value%%:*}
+            case "$search_path" in
+              "\$ORIGIN" | "\$ORIGIN/"* | "\${ORIGIN}" | "\${ORIGIN}/"*) ;;
+              *) die "$binary ELF library search path is not ORIGIN-relative: $search_path" ;;
+            esac
+            case "$value" in
+              *:*) value=${value#*:} ;;
+              *) break ;;
+            esac
+          done
+          ;;
+      esac
+    done <<EOF
+$dynamic_entries
+EOF
+  done <<EOF
+$artifact_files
+EOF
+)
+
 artifact_basename() {
   resource=$1
   artifact_version=$2
