@@ -185,6 +185,64 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
     let (_, preserved_monitor) = wait_for_redis_monitor(&fixture.paths, None)?;
     assert_eq!(preserved_monitor, monitor);
 
+    let mut enablement_observations = Vec::new();
+    for enabled in [false, true] {
+        if enabled {
+            environment.enable_daemon_registration(&fixture.unit)?;
+        } else {
+            fs::delete_file(&enabled_link)?;
+        }
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let _exit_code = run_with_environment(
+            ["pv", "doctor", "--json"],
+            &SystemTestEnvironment::default(),
+            &mut stdout,
+            &mut stderr,
+        )?;
+        ensure!(stderr.is_empty(), "unexpected doctor errors: {stderr:?}");
+        let report: Value = serde_json::from_slice(&stdout)?;
+        let manager = report["sections"]
+            .as_array()
+            .context("missing doctor sections")?
+            .iter()
+            .filter_map(|section| section["checks"].as_array())
+            .flatten()
+            .find(|check| check["name"] == "Systemd user manager")
+            .context("missing user manager check")?;
+        assert_eq!(manager["status"], if enabled { "pass" } else { "fail" });
+        assert_eq!(
+            manager["repair"],
+            if enabled {
+                Value::Null
+            } else {
+                Value::String("pv daemon:enable".to_owned())
+            }
+        );
+        enablement_observations.push((
+            enabled,
+            manager["status"].clone(),
+            manager["repair"].clone(),
+        ));
+        assert_eq!(status()?.main_pid, first.main_pid);
+        let (_, preserved_monitor) = wait_for_redis_monitor(&fixture.paths, None)?;
+        assert_eq!(preserved_monitor, monitor);
+    }
+    assert_debug_snapshot!(enablement_observations, @r#"
+    [
+        (
+            false,
+            String("fail"),
+            String("pv daemon:enable"),
+        ),
+        (
+            true,
+            String("pass"),
+            Null,
+        ),
+    ]
+    "#);
+
     let drop_in_directory = fixture.unit.with_extension("service.d");
     ensure!(!fs::path_entry_exists(&drop_in_directory)?);
     let drop_in = drop_in_directory.join("override.conf");
@@ -307,6 +365,7 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
         Err(PlatformError::DaemonRegistrationConflict { .. })
     ));
     let deleted = status()?;
+    assert_eq!(deleted.unit_file_state, None);
     assert_eq!(deleted.main_pid, restarted.main_pid);
     assert_eq!(deleted.active_state, "active");
     assert!(matches!(

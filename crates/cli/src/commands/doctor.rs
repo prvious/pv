@@ -410,14 +410,26 @@ fn daemon_registration_manager_check(
     match environment.inspect_daemon_registration() {
         Ok(Some(status)) => {
             let detail = format!(
-                "load={} state={}/{} pid={} fragment={}",
+                "load={} enablement={} state={}/{} pid={} fragment={}",
                 status.load_state,
+                status.unit_file_state.as_deref().unwrap_or("unavailable"),
                 status.active_state,
                 status.sub_state,
                 status.main_pid,
                 status.fragment_path,
             );
             match platform::inspect_daemon_registration_file(&status.fragment_path, None) {
+                DaemonRegistrationFileState::Current { .. }
+                | DaemonRegistrationFileState::Stale { .. }
+                    if status.unit_file_state.as_deref() != Some("enabled") =>
+                {
+                    DoctorCheck::fail(
+                        name,
+                        "daemon service is not persistently enabled",
+                        "pv daemon:enable",
+                    )
+                    .with_detail(detail)
+                }
                 DaemonRegistrationFileState::Current { .. }
                 | DaemonRegistrationFileState::Stale { .. }
                     if status.load_state == "loaded"
