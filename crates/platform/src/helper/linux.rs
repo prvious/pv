@@ -342,6 +342,12 @@ async fn transact(
     job(manager, "StopUnit", SERVICE_UNIT).await?;
     if action == PrivilegedHelperLifecycleAction::Remove {
         disable(manager).await?;
+        for (unit, path) in [
+            (SOCKET_UNIT, SOCKET_UNIT_PATH),
+            (SERVICE_UNIT, SERVICE_UNIT_PATH),
+        ] {
+            reset_stopped_unit(manager, unit, path).await?;
+        }
     }
     for (artifact, checksum) in ARTIFACTS.into_iter().zip(&previous.checksums) {
         if checksum.is_some() {
@@ -412,24 +418,7 @@ async fn rollback(
             if checksum.is_some() {
                 continue;
             }
-            if let Err(error) = async {
-                if unit_active(manager, unit, path).await? {
-                    return Err(installation_error(format!(
-                        "helper unit {unit} is still active during rollback"
-                    )));
-                }
-                match bounded_call::<()>(manager, "ResetFailedUnit", &(unit,)).await {
-                    Err(PlatformError::PrivilegedHelperBus(source))
-                        if matches!(source.as_ref(), zbus::Error::MethodError(name, _, _)
-                            if name.as_str() == "org.freedesktop.systemd1.NoSuchUnit") =>
-                    {
-                        Ok(())
-                    }
-                    result => result,
-                }
-            }
-            .await
-            {
+            if let Err(error) = reset_stopped_unit(manager, unit, path).await {
                 errors.push(error.to_string());
             }
         }
@@ -499,6 +488,27 @@ async fn rollback(
             "{original}; rollback also failed: {}; retained transaction files for administrator recovery",
             errors.join("; ")
         ))
+    }
+}
+
+async fn reset_stopped_unit(
+    manager: &Proxy<'_>,
+    unit: &str,
+    path: &str,
+) -> Result<(), PlatformError> {
+    if unit_active(manager, unit, path).await? {
+        return Err(installation_error(format!(
+            "helper unit {unit} is still active during cleanup"
+        )));
+    }
+    match bounded_call::<()>(manager, "ResetFailedUnit", &(unit,)).await {
+        Err(PlatformError::PrivilegedHelperBus(source))
+            if matches!(source.as_ref(), zbus::Error::MethodError(name, _, _)
+                if name.as_str() == "org.freedesktop.systemd1.NoSuchUnit") =>
+        {
+            Ok(())
+        }
+        result => result,
     }
 }
 
