@@ -1203,7 +1203,7 @@ impl Database {
                 target: input.source_project_id.clone(),
             })?;
         let project_id = generate_project_id(&transaction)?;
-        let base = discovered_project_slug_base(&source.slug, &input.worktree_name);
+        let base = discovered_project_slug_base(&source, &input.worktree_name);
         let project_slug = generate_project_slug(&transaction, &base, true)?;
         let primary_hostname = match input.mode {
             ProjectMode::Served => {
@@ -4415,9 +4415,16 @@ fn project_slug_base(project_path: &Utf8Path) -> Result<String, StateError> {
     Ok(slug)
 }
 
-/// `<source-slug>-<worktree-name>`, shortened to one DNS label. A worktree name with no usable
-/// characters becomes `worktree`.
-fn discovered_project_slug_base(source_slug: &str, worktree_name: &str) -> String {
+/// `<source-slug>-<worktree-name>`, shortened to one DNS label. A source linked before slugs
+/// existed has its Project ID as slug, so it uses its directory name instead. A worktree name with
+/// no usable characters becomes `worktree`.
+fn discovered_project_slug_base(source: &ProjectRecord, worktree_name: &str) -> String {
+    let source_slug = match source.path.file_name().map(slugify) {
+        Some(directory_name) if source.slug == source.id && !directory_name.is_empty() => {
+            directory_name
+        }
+        _ => source.slug.clone(),
+    };
     let name = match slugify(worktree_name) {
         name if name.is_empty() => "worktree".to_string(),
         name => name,
