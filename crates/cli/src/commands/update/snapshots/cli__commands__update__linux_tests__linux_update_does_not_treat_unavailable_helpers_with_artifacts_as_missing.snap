@@ -1,0 +1,79 @@
+---
+source: crates/cli/src/commands/update/linux_tests.rs
+expression: "serde_json::to_string_pretty(&rows)?"
+---
+[
+  {
+    "artifacts": "present",
+    "check_helper": {
+      "current_protocol_version": null,
+      "current_version": null,
+      "latest_protocol_version": 2,
+      "latest_version": "2.1.0",
+      "reason": "PV privileged helper is unavailable; run `pv setup`",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "size": 1,
+      "status": "unavailable",
+      "url": "https://downloads.example.test/pv/pv-helper-linux-arm64"
+    },
+    "check_operations": [
+      "fetch manifest",
+      "inspect helper artifacts"
+    ],
+    "update_error": "PV privileged helper is unavailable; run `pv setup`",
+    "update_operations": [
+      "reload registration",
+      "fetch manifest",
+      "inspect helper artifacts"
+    ]
+  },
+  {
+    "artifacts": "unreadable",
+    "check_helper": {
+      "current_protocol_version": null,
+      "current_version": null,
+      "latest_protocol_version": 2,
+      "latest_version": "2.1.0",
+      "reason": "PV privileged helper I/O failed: fixture artifact inspection refused",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "size": 1,
+      "status": "unavailable",
+      "url": "https://downloads.example.test/pv/pv-helper-linux-arm64"
+    },
+    "check_operations": [
+      "fetch manifest",
+      "inspect helper artifacts"
+    ],
+    "update_error": "PV privileged helper I/O failed: fixture artifact inspection refused",
+    "update_operations": [
+      "reload registration",
+      "fetch manifest",
+      "inspect helper artifacts"
+    ]
+  },
+  {
+    "artifacts": "absent",
+    "check_helper": {
+      "current_protocol_version": null,
+      "current_version": null,
+      "latest_protocol_version": 2,
+      "latest_version": "2.1.0",
+      "reason": null,
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "size": 1,
+      "status": "update_available",
+      "url": "https://downloads.example.test/pv/pv-helper-linux-arm64"
+    },
+    "check_operations": [
+      "fetch manifest",
+      "inspect helper artifacts"
+    ],
+    "update_error": "HTTP request failed for `https://downloads.example.test/pv/pv-helper-linux-arm64`: fixture archive refused",
+    "update_operations": [
+      "reload registration",
+      "fetch manifest",
+      "inspect helper artifacts",
+      "download archive"
+    ]
+  }
+]

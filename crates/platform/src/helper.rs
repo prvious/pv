@@ -1,7 +1,10 @@
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::{PrivilegedHelperLifecycleAction, run_privileged_helper_lifecycle};
+pub use linux::{
+    PrivilegedHelperLifecycleAction, installed_helper_artifacts_present,
+    run_privileged_helper_lifecycle,
+};
 
 #[cfg(target_os = "macos")]
 use std::collections::BTreeMap;
