@@ -21,7 +21,7 @@ use state::{Database, GatewayPort, MonitorReservation, PortRequest, PvPaths, fs}
 use tokio::runtime::{Builder, Runtime};
 
 use super::{
-    HelperFixture, checksum, require_units_absent, root, root_text, service_property,
+    HelperFixture, checked, checksum, require_units_absent, root, root_text, service_property,
     with_helper_fixture,
 };
 
@@ -102,6 +102,28 @@ fn require_absent() -> Result<()> {
     }
     let names = unit_names();
     require_units_absent(&names.iter().map(String::as_str).collect::<Vec<_>>())
+}
+
+fn require_proxy_units_unloaded() -> Result<()> {
+    let names = socket_proxy_unit_names();
+    let arguments = [
+        "list-units",
+        "--all",
+        "--no-legend",
+        "--no-pager",
+        "--plain",
+    ]
+    .into_iter()
+    .chain(names.iter().map(String::as_str))
+    .collect::<Vec<_>>();
+    let output = checked("/usr/bin/systemctl", &arguments)?;
+    ensure!(
+        output.stdout.is_empty() && output.stderr.is_empty(),
+        "socket proxy units remain loaded: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    Ok(())
 }
 
 fn exercise_ports(helper_fixture: &mut HelperFixture, helper: &Utf8Path) -> Result<()> {
@@ -214,6 +236,30 @@ impl PortsFixture {
         }
         root(&["/usr/bin/systemctl", "daemon-reload"])?;
         require_absent()?;
+
+        for (name, content) in render_socket_proxy_units(&config) {
+            helper_fixture.root_file(
+                &name,
+                &content,
+                &format!("{SYSTEM_SOCKET_PROXY_DIRECTORY}/{name}"),
+                "0644",
+            )?;
+        }
+        require_proxy_units_unloaded()?;
+        let inspection = platform::inspect_active_pf_redirects_unprivileged()?;
+        assert_snapshot!(serde_json::to_string_pretty(&inspection)?, @r#"
+        {
+          "pf_enabled": false,
+          "pv_config": null,
+          "pv_anchor_has_unparsed_rules": false,
+          "resolved_target_ports": [],
+          "has_unresolved_redirect_targets": false
+        }
+        "#);
+        assert_eq!(PrivilegedHelperClient.inspect_pf()?, inspection);
+        self.require_status("inactive", "systemd")?;
+        ensure!(platform::repairable_socket_proxy_ports()?.is_empty());
+        require_proxy_units_unloaded()?;
 
         self.start_gateway(&config)?;
         self.command("ports:install")?;
