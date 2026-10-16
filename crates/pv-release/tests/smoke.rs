@@ -1585,6 +1585,133 @@ if (expected_arch_for_platform any) 2>/dev/null; then exit 99; fi
 }
 
 #[test]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+fn common_recipe_helper_validates_real_elf_portability() -> Result<()> {
+    let tempdir = tempdir()?;
+    let common =
+        Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/common.sh");
+    let build = tempdir.path().join("build.sh");
+    write_executable(
+        &build,
+        r#"#!/bin/sh
+set -eu
+cd "$PV_TEST_ROOT"
+printf '%s\n' 'int fixture(void) { return 0; }' > library.c
+printf '%s\n' '#include <stdio.h>' 'int fixture(void);' 'int main(void) { puts("fixture"); return fixture(); }' > main.c
+printf '%s\n' 'GLIBC_2.35 { global: fixture; local: *; };' > baseline.map
+printf '%s\n' 'GLIBC_2.36 { global: fixture; local: *; };' > newer.map
+printf '%s\n' 'GLIBC_ABI_DT_RELR { global: fixture; local: *; };' > newer-abi.map
+mkdir -p valid/bin valid/lib
+cc -shared -fPIC library.c -Wl,-soname,libfixture.so.1 -Wl,--version-script=baseline.map -o valid/lib/libfixture.so.1
+cc main.c -Lvalid/lib -l:libfixture.so.1 '-Wl,-rpath,$ORIGIN/../lib:${ORIGIN}/../lib' -o valid/bin/tool
+printf '%s\n' 'ordinary non-ELF content' > valid/README
+
+for scenario in legacy-rpath absolute-rpath relative-rpath empty-entry empty-rpath missing-library directory-library soname; do
+    cp -R valid "$scenario"
+done
+patchelf --force-rpath --set-rpath '$ORIGIN/../lib' legacy-rpath/bin/tool
+patchelf --set-rpath /tmp/build/lib absolute-rpath/bin/tool
+patchelf --set-rpath ../lib relative-rpath/bin/tool
+patchelf --set-rpath '$ORIGIN/../lib:' empty-entry/bin/tool
+patchelf --set-rpath '' empty-rpath/bin/tool
+rm missing-library/lib/libfixture.so.1 directory-library/lib/libfixture.so.1 soname/bin/tool
+mkdir directory-library/lib/libfixture.so.1
+mv soname/lib/libfixture.so.1 soname/lib/librenamed.so.1
+
+mkdir -p newer-definition/share/nested newer-requirement/bin newer-requirement/lib static/bin
+cc -shared -fPIC library.c -Wl,-soname,libfixture.so.1 -Wl,--version-script=newer.map -o newer-definition/share/nested/libfixture.so.1
+cc main.c -Lnewer-definition/share/nested -l:libfixture.so.1 '-Wl,-rpath,$ORIGIN/../lib' -o newer-requirement/bin/tool
+cc -shared -fPIC library.c -Wl,-soname,libfixture.so.1 -o newer-requirement/lib/libfixture.so.1
+mkdir -p abi-link newer-abi/bin newer-abi/lib
+cc -shared -fPIC library.c -Wl,-soname,libfixture.so.1 -Wl,--version-script=newer-abi.map -o abi-link/libfixture.so.1
+cc main.c -Labi-link -l:libfixture.so.1 '-Wl,-rpath,$ORIGIN/../lib' -o newer-abi/bin/tool
+cp newer-requirement/lib/libfixture.so.1 newer-abi/lib/
+printf '%s\n' 'int main(void) { return 0; }' > static.c
+cc -static static.c -o static/bin/tool
+mkdir failing-tools
+printf '#!/bin/sh\nexit 42\n' > failing-tools/file
+chmod +x failing-tools/file
+"#,
+    )?;
+    let output = StdCommand::new(&build)
+        .env("PV_TEST_ROOT", tempdir.path())
+        .output()?;
+    assert!(
+        output.status.success(),
+        "ELF fixture compilation failed: {}",
+        command_output_debug(&output)
+    );
+
+    let (native_platform, other_platform, native_arch, other_arch) =
+        if cfg!(target_arch = "aarch64") {
+            ("linux-arm64", "linux-amd64", "aarch64", "x86_64")
+        } else {
+            ("linux-amd64", "linux-arm64", "x86_64", "aarch64")
+        };
+    let mut results = Vec::new();
+    for (scenario, platform, expected_success) in [
+        ("valid", native_platform, true),
+        ("legacy-rpath", native_platform, true),
+        ("static", native_platform, true),
+        ("static", other_platform, false),
+        ("absolute-rpath", native_platform, false),
+        ("relative-rpath", native_platform, false),
+        ("empty-entry", native_platform, false),
+        ("empty-rpath", native_platform, false),
+        ("missing-library", native_platform, false),
+        ("directory-library", native_platform, false),
+        ("soname", native_platform, false),
+        ("newer-definition", native_platform, false),
+        ("newer-requirement", native_platform, false),
+        ("newer-abi", native_platform, false),
+        ("inspection-error", native_platform, false),
+    ] {
+        let root = tempdir.path().join(if scenario == "inspection-error" {
+            "static"
+        } else {
+            scenario
+        });
+        let mut command = StdCommand::new("/bin/sh");
+        command
+            .args([
+                "-ec",
+                r#". "$PV_TEST_COMMON_SH"
+pv_recipe_validate_elf_tree "$PV_TEST_ARTIFACT_ROOT" "$PV_TEST_PLATFORM"
+"#,
+            ])
+            .env("PV_TEST_COMMON_SH", &common)
+            .env("PV_TEST_ARTIFACT_ROOT", &root)
+            .env("PV_TEST_PLATFORM", platform);
+        if scenario == "inspection-error" {
+            command.env(
+                "PATH",
+                format!("{}/failing-tools:/usr/bin:/bin", tempdir.path()),
+            );
+        }
+        let output = command.output()?;
+        assert_eq!(
+            output.status.success(),
+            expected_success,
+            "{scenario} ({platform}): {}",
+            command_output_debug(&output)
+        );
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8(output.stderr)?
+            .replace(tempdir.path().as_str(), "<tmp>")
+            .replace(native_platform, "<native-platform>")
+            .replace(other_platform, "<other-platform>")
+            .replace(native_arch, "<native-arch>")
+            .replace(other_arch, "<other-arch>");
+        results.push((scenario, expected_success, error));
+    }
+    assert_debug_snapshot!(results);
+    Ok(())
+}
+
+#[test]
 fn common_recipe_helper_ad_hoc_signs_macho_files() -> Result<()> {
     let tempdir = tempdir()?;
     let fake_bin = tempdir.path().join("bin");
