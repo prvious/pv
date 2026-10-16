@@ -1,0 +1,8 @@
+---
+source: crates/cli/tests/linux_daemon_registration.rs
+expression: observed
+---
+[
+    "PV doctor\nLinux distribution: Ubuntu 22.04.5 LTS (untested)",
+    "[pv] doctor                                                       v0.2.8\n────────────────────────────────────────────────────────────────────────\nLinux distribution: Ubuntu 22.04.5 LTS (untested)",
+]
