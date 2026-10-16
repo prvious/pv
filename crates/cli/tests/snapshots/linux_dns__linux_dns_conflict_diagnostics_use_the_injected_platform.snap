@@ -1,0 +1,30 @@
+---
+source: crates/cli/tests/linux_dns.rs
+expression: observed
+---
+[
+    Object {
+        "dns": String("DNS resolver status\nPrepared resolver config: current\n  path: <tempdir>/home/.pv/config/resolver/test\n  port: <dns-port>\nSystem resolver config: not PV-owned\n  path: /etc/systemd/system/pv-dns.service\n"),
+        "doctor": Object {
+            "detail": String("path: /etc/systemd/system/pv-dns.service"),
+            "message": String("system resolver config is not PV-owned"),
+            "name": String("DNS config"),
+            "repair": String("pv dns:install"),
+            "status": String("fail"),
+        },
+        "install": String("Prepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nSystem resolver config is not PV-owned: /etc/systemd/system/pv-dns.service\n  Leaving it in place.\n"),
+        "target": String("Macos"),
+    },
+    Object {
+        "dns": String("DNS resolver status\nPrepared resolver config: current\n  path: <tempdir>/home/.pv/config/resolver/test\n  port: <dns-port>\nSystem resolver config: conflict\n  path: /etc/systemd/system/pv-dns.service\n"),
+        "doctor": Object {
+            "detail": String("path: /etc/systemd/system/pv-dns.service; Ask an administrator to inspect pv-dns.service and its overrides, pv0 ownership, and competing test search or routing domains, including subdomains. Repair conflicts before retrying `pv dns:install`; `pv dns:uninstall` removes only PV-owned configuration. For a retained unit cache, run `sudo systemctl daemon-reload` before retrying."),
+            "message": String("system DNS routing conflicts with existing configuration"),
+            "name": String("DNS config"),
+            "repair": String("pv dns:install"),
+            "status": String("fail"),
+        },
+        "install": String("Prepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nSystem DNS routing conflicts with existing configuration: /etc/systemd/system/pv-dns.service\n  Leaving it in place.\n  Ask an administrator to inspect pv-dns.service and its overrides, pv0 ownership, and competing test search or routing domains, including subdomains. Repair conflicts before retrying `pv dns:install`; `pv dns:uninstall` removes only PV-owned configuration. For a retained unit cache, run `sudo systemctl daemon-reload` before retrying.\n"),
+        "target": String("Linux"),
+    },
+]
