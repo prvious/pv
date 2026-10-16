@@ -71,7 +71,7 @@ impl DoctorReport {
             DoctorSection {
                 title: "Routing",
                 checks: vec![
-                    dns_check(environment, &paths)?,
+                    dns_check(environment, &paths, target)?,
                     ports_check(environment, &paths, database.as_ref())?,
                     ca_check(environment, &paths, target),
                 ],
@@ -539,7 +539,11 @@ fn daemon_socket_check(paths: &PvPaths, registration: &DaemonRegistrationFileSta
     }
 }
 
-fn dns_check(environment: &impl Environment, paths: &PvPaths) -> Result<DoctorCheck, ExecuteError> {
+fn dns_check(
+    environment: &impl Environment,
+    paths: &PvPaths,
+    target: PlatformTarget,
+) -> Result<DoctorCheck, ExecuteError> {
     let prepared = platform::inspect_resolver_file(&paths.resolver_config(), None);
     let expected = resolver_config_from_state(&prepared);
     let system_path = resolver_test_path(environment)?;
@@ -568,20 +572,20 @@ fn dns_check(environment: &impl Environment, paths: &PvPaths) -> Result<DoctorCh
         (ResolverFileState::Current { .. }, ResolverFileState::Conflict { path }) => {
             let check = DoctorCheck::fail(
                 "DNS config",
-                if cfg!(target_os = "linux") {
+                if target == PlatformTarget::Linux {
                     "system DNS routing conflicts with existing configuration"
                 } else {
                     "system resolver config is not PV-owned"
                 },
                 "pv dns:install",
             );
-            #[cfg(target_os = "linux")]
-            return Ok(check.with_detail(format!(
-                "path: {path}; {}",
-                super::dns::RESOLVER_CONFLICT_GUIDANCE
-            )));
-            #[cfg(not(target_os = "linux"))]
-            check.with_detail(format!("path: {path}"))
+            let detail = match target {
+                PlatformTarget::Linux => {
+                    format!("path: {path}; {}", super::dns::RESOLVER_CONFLICT_GUIDANCE)
+                }
+                _ => format!("path: {path}"),
+            };
+            check.with_detail(detail)
         }
         (ResolverFileState::Current { .. }, ResolverFileState::Unreadable { path, message }) => {
             DoctorCheck::fail(
