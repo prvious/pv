@@ -3209,6 +3209,7 @@ dependencies = [
  "futures-lite",
  "futures-util",
  "getrandom 0.4.2",
+ "hickory-proto",
  "insta",
  "libc",
  "listenfd",

@@ -204,6 +204,8 @@ A friendly browser page for unknown Project hostnames is useful, but is post-v1 
 
 ## Setup
 
+Linux host prerequisites run before helper inspection. The resolved check observes the loaded active service without activating it, requires `/etc/resolv.conf` to select only `127.0.0.53`, and validates a fresh A query for a nonce name under `.localhost` through that endpoint. It uses UDP unless `options use-vc` selects TCP, with one total exchange deadline. After reconciliation, Linux setup must also validate a fresh `.test` A query before reporting success. These checks establish working DNS responses at observation time; they do not authenticate the answering process or prove the request traversed `pv0`.
+
 `pv setup` performs PV's required macOS bootstrap steps:
 
 - Create `/etc/resolver/test` so macOS sends `.test` lookups to PV's internal DNS resolver.
