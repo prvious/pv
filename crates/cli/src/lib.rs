@@ -14,8 +14,8 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use args::Cli;
+use clap::FromArgMatches;
 use clap::error::ErrorKind;
-use clap::{CommandFactory, FromArgMatches};
 pub use environment::{Environment, ProcessEnvironment};
 pub use error::CliError;
 use error::ExecuteError;
@@ -46,7 +46,7 @@ where
 {
     let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
     let presentation = Presentation::detect(&args, environment);
-    let mut clap_command = Cli::command();
+    let mut clap_command = Cli::command_for(environment.platform_target()?);
     let matches = match clap_command.try_get_matches_from_mut(&args) {
         Ok(matches) => matches,
         Err(error) => {
