@@ -291,7 +291,7 @@ case "$PLATFORM" in
   linux-amd64 | linux-arm64)
     curses_library=$(cc -print-file-name=libtinfo.a) || die "failed to locate builder libtinfo.a"
     [ -f "$curses_library" ] || die "builder libtinfo.a not found: $curses_library"
-    set -- "$@" -DWITH_NUMA=OFF -DINSTALL_PRIV_LIBDIR=lib -DCURSES_LIBRARY="$curses_library"
+    set -- "$@" -DWITH_NUMA=OFF -DINSTALL_PRIV_LIBDIR=lib -DCURSES_LIBRARY="$curses_library" -DWITH_TIRPC=bundled
     ;;
 esac
 if [ "$PV_TRACK" = "8.0" ]; then
