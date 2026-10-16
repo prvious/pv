@@ -5441,7 +5441,7 @@ async fn gateway_reconciliation_preserves_accepted_config_for_pf_state(
 
     reconcile_gateway_runtimes_with_pf_state_for_test(
         &paths,
-        Duration::from_millis(150),
+        Duration::from_secs(2),
         pf_routing_state,
     )
     .await?;
@@ -5453,7 +5453,7 @@ async fn gateway_reconciliation_preserves_accepted_config_for_pf_state(
 
     reconcile_gateway_runtimes_with_pf_state_for_test(
         &paths,
-        Duration::from_millis(150),
+        Duration::from_secs(2),
         pf_routing_state,
     )
     .await?;
