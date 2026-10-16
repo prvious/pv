@@ -531,6 +531,7 @@ mod tests {
                 "unix:path=/session/bus",
             ),
             (None, Some("/runtime"), "unix:path=/runtime/bus"),
+            (Some(""), Some("/runtime"), "unix:path=/runtime/bus"),
             (None, Some("/runtime user"), "unix:path=/runtime%20user/bus"),
         ] {
             let mut environment = TestEnvironment::default();
