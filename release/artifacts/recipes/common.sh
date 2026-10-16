@@ -166,17 +166,18 @@ pv_recipe_build_openssl_dependency() (
   pv_recipe_validate_openssl_prefix "$openssl_prefix" "$platform" "$deployment_target"
 )
 
-pv_recipe_macho_loader_prefix() {
+pv_recipe_library_loader_prefix() {
   root_dir=$1
-  macho=$2
+  binary=$2
+  loader_origin=$3
 
-  case "$macho" in
+  case "$binary" in
     "$root_dir"/lib/*)
-      relative=${macho#"$root_dir"/lib/}
+      relative=${binary#"$root_dir"/lib/}
       case "$relative" in
         */*)
           directory=${relative%/*}
-          loader_prefix="@loader_path"
+          loader_prefix=$loader_origin
           # Nested lib modules need enough ".." hops to resolve back to the artifact lib root.
           while :; do
             loader_prefix="$loader_prefix/.."
@@ -187,10 +188,10 @@ pv_recipe_macho_loader_prefix() {
           done
           printf '%s\n' "$loader_prefix"
           ;;
-        *) printf '%s\n' "@loader_path" ;;
+        *) printf '%s\n' "$loader_origin" ;;
       esac
       ;;
-    *) printf '%s\n' "@loader_path/../lib" ;;
+    *) printf '%s\n' "$loader_origin/../lib" ;;
   esac
 }
 
@@ -249,7 +250,7 @@ $1"
     [ -d "$macho_dir" ] || continue
     find "$macho_dir" -type f | while IFS= read -r macho; do
       pv_recipe_is_macho "$macho" || continue
-      loader_prefix=$(pv_recipe_macho_loader_prefix "$root_dir" "$macho")
+      loader_prefix=$(pv_recipe_library_loader_prefix "$root_dir" "$macho" @loader_path)
       otool -L "$macho" | while read -r linked _; do
         for install_root in "$@"; do
           case "$linked" in
