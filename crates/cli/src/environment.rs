@@ -88,6 +88,11 @@ pub trait Environment {
         )
     }
 
+    #[cfg(target_os = "linux")]
+    fn reload_daemon_registration(&self) -> Result<(), platform::PlatformError> {
+        platform::reload_daemon_registration(&daemon_registration_session_address(self)?)
+    }
+
     fn stop_daemon_registration(&self) -> Result<(), platform::PlatformError> {
         platform::stop_daemon_registration(
             #[cfg(target_os = "linux")]

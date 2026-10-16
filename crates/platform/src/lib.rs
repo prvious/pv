@@ -22,6 +22,9 @@ mod trust;
 #[cfg(target_os = "linux")]
 pub use process::inspect_process_comm;
 
+#[cfg(target_os = "linux")]
+pub use daemon_registration::reload_daemon_registration;
+
 pub use browser::open_url;
 pub use ca::{
     CaFileState, CaRepairReason, GeneratedLocalCa, GeneratedProjectCertificate, LocalCaMetadata,
