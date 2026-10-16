@@ -39,6 +39,45 @@ fn manifest_cache_fetches_latest_and_falls_back_to_cached_manifest() -> Result<(
 }
 
 #[test]
+#[ignore = "requires a real DNS lookup for the Linux acceptance .invalid manifest host"]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the ignored DNS check refuses proxy environments that would bypass direct resolution"
+)]
+fn invalid_manifest_host_uses_transport_error_and_cached_manifest() -> Result<()> {
+    for variable in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
+        if std::env::var_os(variable).is_some_and(|value| !value.is_empty()) {
+            bail!("unset {variable} before running the direct DNS check");
+        }
+    }
+    let manifest_url = "https://artifacts.pv-linux.invalid/manifest.json";
+    let tempdir = tempdir()?;
+    let cache = ArtifactManifestCache::new(tempdir.path().join("downloads"));
+    cache.refresh(
+        manifest_url,
+        &ScriptedClient::new().with_text(VALID_MANIFEST),
+    )?;
+
+    let client = UreqResourceHttpClient::new();
+    let result = client.get_text(manifest_url);
+    assert!(
+        matches!(result, Err(ResourcesError::HttpRequestFailed { .. })),
+        "expected a DNS transport failure, got {result:?}"
+    );
+    let cached = cache.refresh(manifest_url, &client)?;
+    assert!(cached.is_from_cache());
+    assert_eq!(cached.manifest().schema_version(), 1);
+    Ok(())
+}
+
+#[test]
 fn manifest_cache_refresh_latest_does_not_fall_back_to_cached_manifest() -> Result<()> {
     let tempdir = tempdir()?;
     let cache = ArtifactManifestCache::new(tempdir.path().join("downloads"));
