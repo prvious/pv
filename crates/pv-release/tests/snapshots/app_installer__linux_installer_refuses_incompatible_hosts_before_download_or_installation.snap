@@ -1,0 +1,44 @@
+---
+source: crates/pv-release/tests/app_installer.rs
+expression: "summaries.join(\"\\n\\n\")"
+---
+missing glibc:
+code=Some(1)
+stdout=
+stderr=pv installer: PV needs a glibc-based Linux distribution
+
+
+musl:
+code=Some(1)
+stdout=
+stderr=pv installer: PV needs a glibc-based Linux distribution
+
+
+old glibc:
+code=Some(1)
+stdout=
+stderr=pv installer: PV needs glibc 2.35 or newer; found glibc 2.34
+
+
+single-digit minor:
+code=Some(1)
+stdout=
+stderr=pv installer: PV needs glibc 2.35 or newer; found glibc 2.9
+
+
+no systemd:
+code=Some(1)
+stdout=
+stderr=pv installer: PV needs systemd running
+
+
+unsupported CPU:
+code=Some(1)
+stdout=
+stderr=pv installer: unsupported Linux architecture: riscv64
+
+
+unsupported OS:
+code=Some(1)
+stdout=
+stderr=pv installer: macOS or Linux is required; found FreeBSD
