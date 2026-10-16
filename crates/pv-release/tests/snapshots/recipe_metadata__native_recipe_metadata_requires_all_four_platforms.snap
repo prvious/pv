@@ -1,0 +1,44 @@
+---
+source: crates/pv-release/tests/recipe_metadata.rs
+expression: "(php.platforms(), backing.platforms(), refusals)"
+---
+(
+    [
+        DarwinArm64,
+        DarwinAmd64,
+        LinuxAmd64,
+        LinuxArm64,
+    ],
+    [
+        DarwinArm64,
+        DarwinAmd64,
+        LinuxAmd64,
+        LinuxArm64,
+    ],
+    [
+        Err(
+            InvalidRecipeMetadata {
+                path: "php-macos-only.toml",
+                reason: "PHP recipe platforms must be exactly `darwin-amd64`, `darwin-arm64`, `linux-amd64`, `linux-arm64`",
+            },
+        ),
+        Err(
+            InvalidRecipeMetadata {
+                path: "php-missing-linux-arm64.toml",
+                reason: "PHP recipe platforms must be exactly `darwin-amd64`, `darwin-arm64`, `linux-amd64`, `linux-arm64`",
+            },
+        ),
+        Err(
+            InvalidRecipeMetadata {
+                path: "redis-macos-only.toml",
+                reason: "Redis recipe platforms must be exactly `darwin-amd64`, `darwin-arm64`, `linux-amd64`, `linux-arm64`",
+            },
+        ),
+        Err(
+            InvalidRecipeMetadata {
+                path: "redis-missing-linux-arm64.toml",
+                reason: "Redis recipe platforms must be exactly `darwin-amd64`, `darwin-arm64`, `linux-amd64`, `linux-arm64`",
+            },
+        ),
+    ],
+)

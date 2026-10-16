@@ -46,6 +46,40 @@ expression: manifest_json
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
               }
+            },
+            {
+              "artifact_version": "2.11.4-pv1",
+              "upstream_version": "2.11.4",
+              "pv_build_revision": "pv1",
+              "platform": "linux-amd64",
+              "url": "https://artifacts.example.test/resources/caddy/2/2.11.4-pv1/linux-amd64/caddy-2.11.4-pv1-linux-amd64.tar.gz",
+              "sha256": "906a9758c05b61807127b269ed6aee2ec8040eebbd8979e2b1ca17c93cb74f02",
+              "size": 203,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_amd64.tar.gz",
+                "source_sha256": "527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9",
+                "recipe": "release/artifacts/recipes/caddy/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "2.11.4-pv1",
+              "upstream_version": "2.11.4",
+              "pv_build_revision": "pv1",
+              "platform": "linux-arm64",
+              "url": "https://artifacts.example.test/resources/caddy/2/2.11.4-pv1/linux-arm64/caddy-2.11.4-pv1-linux-arm64.tar.gz",
+              "sha256": "e46e5207b0ea7cd300374f2ae50fc2a213682c3509dd86c0b37553e5bdf168d7",
+              "size": 205,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_arm64.tar.gz",
+                "source_sha256": "52d42ae12b3462097e9868da6dfed3c9648ae12edd3b3638102312af84cb6904",
+                "recipe": "release/artifacts/recipes/caddy/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
             }
           ]
         }
@@ -143,6 +177,64 @@ expression: manifest_json
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
               }
+            },
+            {
+              "artifact_version": "8.3.31-frankenphp1.12.4-pv7",
+              "upstream_version": "8.3.31-frankenphp1.12.4",
+              "pv_build_revision": "pv7",
+              "platform": "linux-amd64",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.3/8.3.31-frankenphp1.12.4-pv7/linux-amd64/frankenphp-8.3.31-frankenphp1.12.4-pv7-linux-amd64.tar.gz",
+              "sha256": "dfbf278bbe7719e74d9d22eddb66fd80f8154a1bed09b5ac69fa6951c1dccdce",
+              "size": 216,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz",
+                "source_sha256": "c8af6ff0608f322d564e80c0c37fb7b766adf067c5f0e9bc7b1ed9e0315d8ba1",
+                "source_inputs": [
+                  {
+                    "name": "frankenphp",
+                    "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz",
+                    "source_sha256": "c8af6ff0608f322d564e80c0c37fb7b766adf067c5f0e9bc7b1ed9e0315d8ba1"
+                  },
+                  {
+                    "name": "php",
+                    "source_url": "https://www.php.net/distributions/php-8.3.31.tar.gz",
+                    "source_sha256": "4e7baaf0a690e954a20e7ced3dd633ce8cb8094e2b6b612a55e703ecbbdcbf4f"
+                  }
+                ],
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.3.31-frankenphp1.12.4-pv7",
+              "upstream_version": "8.3.31-frankenphp1.12.4",
+              "pv_build_revision": "pv7",
+              "platform": "linux-arm64",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.3/8.3.31-frankenphp1.12.4-pv7/linux-arm64/frankenphp-8.3.31-frankenphp1.12.4-pv7-linux-arm64.tar.gz",
+              "sha256": "7f15fb7b38d7d6800134257eecc2ebc2408044ebf9283f779552b206d13f4cb3",
+              "size": 217,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz",
+                "source_sha256": "c8af6ff0608f322d564e80c0c37fb7b766adf067c5f0e9bc7b1ed9e0315d8ba1",
+                "source_inputs": [
+                  {
+                    "name": "frankenphp",
+                    "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz",
+                    "source_sha256": "c8af6ff0608f322d564e80c0c37fb7b766adf067c5f0e9bc7b1ed9e0315d8ba1"
+                  },
+                  {
+                    "name": "php",
+                    "source_url": "https://www.php.net/distributions/php-8.3.31.tar.gz",
+                    "source_sha256": "4e7baaf0a690e954a20e7ced3dd633ce8cb8094e2b6b612a55e703ecbbdcbf4f"
+                  }
+                ],
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
             }
           ]
         },
@@ -186,6 +278,64 @@ expression: manifest_json
               "url": "https://artifacts.example.test/resources/frankenphp/8.4/8.4.22-frankenphp1.12.4-pv7/darwin-arm64/frankenphp-8.4.22-frankenphp1.12.4-pv7-darwin-arm64.tar.gz",
               "sha256": "94f3ee5c57dc9556e3fb9e1d9cde9a2d7daa0bda56a2479bfdc4eb1dba09aef7",
               "size": 219,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz",
+                "source_sha256": "c8af6ff0608f322d564e80c0c37fb7b766adf067c5f0e9bc7b1ed9e0315d8ba1",
+                "source_inputs": [
+                  {
+                    "name": "frankenphp",
+                    "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz",
+                    "source_sha256": "c8af6ff0608f322d564e80c0c37fb7b766adf067c5f0e9bc7b1ed9e0315d8ba1"
+                  },
+                  {
+                    "name": "php",
+                    "source_url": "https://www.php.net/distributions/php-8.4.22.tar.gz",
+                    "source_sha256": "a012c2c9724baf214a70b41b40a7e130906b8855e54268afa5bc4ae17bc9d823"
+                  }
+                ],
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.4.22-frankenphp1.12.4-pv7",
+              "upstream_version": "8.4.22-frankenphp1.12.4",
+              "pv_build_revision": "pv7",
+              "platform": "linux-amd64",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.4/8.4.22-frankenphp1.12.4-pv7/linux-amd64/frankenphp-8.4.22-frankenphp1.12.4-pv7-linux-amd64.tar.gz",
+              "sha256": "5ad5d516d08bec96c07911b4b04a15dbab30b05e662722d0cdc9441f086c1d77",
+              "size": 218,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz",
+                "source_sha256": "c8af6ff0608f322d564e80c0c37fb7b766adf067c5f0e9bc7b1ed9e0315d8ba1",
+                "source_inputs": [
+                  {
+                    "name": "frankenphp",
+                    "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz",
+                    "source_sha256": "c8af6ff0608f322d564e80c0c37fb7b766adf067c5f0e9bc7b1ed9e0315d8ba1"
+                  },
+                  {
+                    "name": "php",
+                    "source_url": "https://www.php.net/distributions/php-8.4.22.tar.gz",
+                    "source_sha256": "a012c2c9724baf214a70b41b40a7e130906b8855e54268afa5bc4ae17bc9d823"
+                  }
+                ],
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.4.22-frankenphp1.12.4-pv7",
+              "upstream_version": "8.4.22-frankenphp1.12.4",
+              "pv_build_revision": "pv7",
+              "platform": "linux-arm64",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.4/8.4.22-frankenphp1.12.4-pv7/linux-arm64/frankenphp-8.4.22-frankenphp1.12.4-pv7-linux-arm64.tar.gz",
+              "sha256": "c39b6a07ba4257a3a594d413662970e3a3afae3bbba9a2597450c0e7a5387af3",
+              "size": 217,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz",
@@ -269,6 +419,64 @@ expression: manifest_json
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
               }
+            },
+            {
+              "artifact_version": "8.5.7-frankenphp1.12.4-pv7",
+              "upstream_version": "8.5.7-frankenphp1.12.4",
+              "pv_build_revision": "pv7",
+              "platform": "linux-amd64",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.5/8.5.7-frankenphp1.12.4-pv7/linux-amd64/frankenphp-8.5.7-frankenphp1.12.4-pv7-linux-amd64.tar.gz",
+              "sha256": "c6f3a0fc7a0ec4f317dc04d55fb13e9ae1a1fadead61cf699d8dcf99285493aa",
+              "size": 215,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz",
+                "source_sha256": "c8af6ff0608f322d564e80c0c37fb7b766adf067c5f0e9bc7b1ed9e0315d8ba1",
+                "source_inputs": [
+                  {
+                    "name": "frankenphp",
+                    "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz",
+                    "source_sha256": "c8af6ff0608f322d564e80c0c37fb7b766adf067c5f0e9bc7b1ed9e0315d8ba1"
+                  },
+                  {
+                    "name": "php",
+                    "source_url": "https://www.php.net/distributions/php-8.5.7.tar.gz",
+                    "source_sha256": "e5eba93fd6dd3241d0e61e932eb99a3783b40568553fb0e511b660ecd863a049"
+                  }
+                ],
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.5.7-frankenphp1.12.4-pv7",
+              "upstream_version": "8.5.7-frankenphp1.12.4",
+              "pv_build_revision": "pv7",
+              "platform": "linux-arm64",
+              "url": "https://artifacts.example.test/resources/frankenphp/8.5/8.5.7-frankenphp1.12.4-pv7/linux-arm64/frankenphp-8.5.7-frankenphp1.12.4-pv7-linux-arm64.tar.gz",
+              "sha256": "a2b1ed15777d855c2d6887f7658b4a355e36866bbc62829d419ba607ce4129fe",
+              "size": 216,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz",
+                "source_sha256": "c8af6ff0608f322d564e80c0c37fb7b766adf067c5f0e9bc7b1ed9e0315d8ba1",
+                "source_inputs": [
+                  {
+                    "name": "frankenphp",
+                    "source_url": "https://github.com/php/frankenphp/archive/refs/tags/v1.12.4.tar.gz",
+                    "source_sha256": "c8af6ff0608f322d564e80c0c37fb7b766adf067c5f0e9bc7b1ed9e0315d8ba1"
+                  },
+                  {
+                    "name": "php",
+                    "source_url": "https://www.php.net/distributions/php-8.5.7.tar.gz",
+                    "source_sha256": "e5eba93fd6dd3241d0e61e932eb99a3783b40568553fb0e511b660ecd863a049"
+                  }
+                ],
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
             }
           ]
         }
@@ -310,6 +518,40 @@ expression: manifest_json
               "provenance": {
                 "source_url": "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-darwin-arm64.tar.gz",
                 "source_sha256": "1cce392a19a6093fcc859aeb87d9999671fed9a0a7a1c227a7f7df6307741be2",
+                "recipe": "release/artifacts/recipes/mailpit/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "1.30.1-pv1",
+              "upstream_version": "1.30.1",
+              "pv_build_revision": "pv1",
+              "platform": "linux-amd64",
+              "url": "https://artifacts.example.test/resources/mailpit/1/1.30.1-pv1/linux-amd64/mailpit-1.30.1-pv1-linux-amd64.tar.gz",
+              "sha256": "2bd77b8f73c183ef0e7bad75e97cbdbb1ad9fd5654aff061fd4497aa8634df1a",
+              "size": 206,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-linux-amd64.tar.gz",
+                "source_sha256": "0c7f96daad083977ee49a41ada6376799b998c82f98840ef8962b95fb2230955",
+                "recipe": "release/artifacts/recipes/mailpit/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "1.30.1-pv1",
+              "upstream_version": "1.30.1",
+              "pv_build_revision": "pv1",
+              "platform": "linux-arm64",
+              "url": "https://artifacts.example.test/resources/mailpit/1/1.30.1-pv1/linux-arm64/mailpit-1.30.1-pv1-linux-arm64.tar.gz",
+              "sha256": "1a062362d398a0134f1c18e00a0635b6bc311c05760ab421288a6c57da22a10d",
+              "size": 205,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-linux-arm64.tar.gz",
+                "source_sha256": "fdc4b97a9047f4eed875e8b1902db0074916d66d51a27856655c1f9f7f40f150",
                 "recipe": "release/artifacts/recipes/mailpit/recipe.toml",
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
@@ -359,6 +601,40 @@ expression: manifest_json
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
               }
+            },
+            {
+              "artifact_version": "8.0.46-pv1",
+              "upstream_version": "8.0.46",
+              "pv_build_revision": "pv1",
+              "platform": "linux-amd64",
+              "url": "https://artifacts.example.test/resources/mysql/8.0/8.0.46-pv1/linux-amd64/mysql-8.0.46-pv1-linux-amd64.tar.gz",
+              "sha256": "85e2d7d6077094217023253ecfc6c44b261bb38af57c1dcd70220f7cb301cd75",
+              "size": 240,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://cdn.mysql.com/Downloads/MySQL-8.0/mysql-8.0.46.tar.gz",
+                "source_sha256": "e0d1a98ae5188c6a4efed74c74ff28115d4b791bc9d591a78e14d20aded67344",
+                "recipe": "release/artifacts/recipes/mysql/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.0.46-pv1",
+              "upstream_version": "8.0.46",
+              "pv_build_revision": "pv1",
+              "platform": "linux-arm64",
+              "url": "https://artifacts.example.test/resources/mysql/8.0/8.0.46-pv1/linux-arm64/mysql-8.0.46-pv1-linux-arm64.tar.gz",
+              "sha256": "b44dacb9034afc5fc12cea65e4c15389eec543170e465512fa1567ec9ba296b1",
+              "size": 239,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://cdn.mysql.com/Downloads/MySQL-8.0/mysql-8.0.46.tar.gz",
+                "source_sha256": "e0d1a98ae5188c6a4efed74c74ff28115d4b791bc9d591a78e14d20aded67344",
+                "recipe": "release/artifacts/recipes/mysql/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
             }
           ]
         },
@@ -398,6 +674,40 @@ expression: manifest_json
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
               }
+            },
+            {
+              "artifact_version": "8.4.9-pv1",
+              "upstream_version": "8.4.9",
+              "pv_build_revision": "pv1",
+              "platform": "linux-amd64",
+              "url": "https://artifacts.example.test/resources/mysql/8.4/8.4.9-pv1/linux-amd64/mysql-8.4.9-pv1-linux-amd64.tar.gz",
+              "sha256": "7f29003e98cc730b8802609bde3c21b7e315ca3e31765ddf322b775adbcc0627",
+              "size": 241,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.9.tar.gz",
+                "source_sha256": "e4aa8b39e42d1fe078f33bbd73695fac2b54dbc7bb137f0bdbe63f7be1a02d6b",
+                "recipe": "release/artifacts/recipes/mysql/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.4.9-pv1",
+              "upstream_version": "8.4.9",
+              "pv_build_revision": "pv1",
+              "platform": "linux-arm64",
+              "url": "https://artifacts.example.test/resources/mysql/8.4/8.4.9-pv1/linux-arm64/mysql-8.4.9-pv1-linux-arm64.tar.gz",
+              "sha256": "ccc490741873dcaf9b049a2b09a9dcdba8f5be2f2d8fe42095322881f8fd38b0",
+              "size": 240,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://cdn.mysql.com/Downloads/MySQL-8.4/mysql-8.4.9.tar.gz",
+                "source_sha256": "e4aa8b39e42d1fe078f33bbd73695fac2b54dbc7bb137f0bdbe63f7be1a02d6b",
+                "recipe": "release/artifacts/recipes/mysql/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
             }
           ]
         },
@@ -429,6 +739,40 @@ expression: manifest_json
               "url": "https://artifacts.example.test/resources/mysql/9.7/9.7.0-pv1/darwin-arm64/mysql-9.7.0-pv1-darwin-arm64.tar.gz",
               "sha256": "d918838e5a70d646911f286413f34151fe7bf287047244b70994b55d14249352",
               "size": 243,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://cdn.mysql.com/Downloads/MySQL-9.7/mysql-9.7.0.tar.gz",
+                "source_sha256": "74b574babc56b0ecb632abd359d213c6794ecf442ae44928bfc581fb3d62306d",
+                "recipe": "release/artifacts/recipes/mysql/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "9.7.0-pv1",
+              "upstream_version": "9.7.0",
+              "pv_build_revision": "pv1",
+              "platform": "linux-amd64",
+              "url": "https://artifacts.example.test/resources/mysql/9.7/9.7.0-pv1/linux-amd64/mysql-9.7.0-pv1-linux-amd64.tar.gz",
+              "sha256": "2c252b2da301cbf2bff805e687b5185978e426f854481770c116b1034d90100c",
+              "size": 239,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://cdn.mysql.com/Downloads/MySQL-9.7/mysql-9.7.0.tar.gz",
+                "source_sha256": "74b574babc56b0ecb632abd359d213c6794ecf442ae44928bfc581fb3d62306d",
+                "recipe": "release/artifacts/recipes/mysql/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "9.7.0-pv1",
+              "upstream_version": "9.7.0",
+              "pv_build_revision": "pv1",
+              "platform": "linux-arm64",
+              "url": "https://artifacts.example.test/resources/mysql/9.7/9.7.0-pv1/linux-arm64/mysql-9.7.0-pv1-linux-arm64.tar.gz",
+              "sha256": "1b2d42d015767a561db25d5cc96a20652ae87750a1334d7500b73d4a83e5b84a",
+              "size": 240,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://cdn.mysql.com/Downloads/MySQL-9.7/mysql-9.7.0.tar.gz",
@@ -482,6 +826,40 @@ expression: manifest_json
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
               }
+            },
+            {
+              "artifact_version": "8.3.31-pv7",
+              "upstream_version": "8.3.31",
+              "pv_build_revision": "pv7",
+              "platform": "linux-amd64",
+              "url": "https://artifacts.example.test/resources/php/8.3/8.3.31-pv7/linux-amd64/php-8.3.31-pv7-linux-amd64.tar.gz",
+              "sha256": "ac87ec26a0e84721cd74a09211a533ace926de4d600849c7b93edbbc9e45fbf7",
+              "size": 203,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://www.php.net/distributions/php-8.3.31.tar.gz",
+                "source_sha256": "4e7baaf0a690e954a20e7ced3dd633ce8cb8094e2b6b612a55e703ecbbdcbf4f",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.3.31-pv7",
+              "upstream_version": "8.3.31",
+              "pv_build_revision": "pv7",
+              "platform": "linux-arm64",
+              "url": "https://artifacts.example.test/resources/php/8.3/8.3.31-pv7/linux-arm64/php-8.3.31-pv7-linux-arm64.tar.gz",
+              "sha256": "793c3c7015bd3e3da98dbb78270e426b2de918759b5fdddb0e37168ee1d01eb0",
+              "size": 202,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://www.php.net/distributions/php-8.3.31.tar.gz",
+                "source_sha256": "4e7baaf0a690e954a20e7ced3dd633ce8cb8094e2b6b612a55e703ecbbdcbf4f",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
             }
           ]
         },
@@ -521,6 +899,40 @@ expression: manifest_json
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
               }
+            },
+            {
+              "artifact_version": "8.4.22-pv7",
+              "upstream_version": "8.4.22",
+              "pv_build_revision": "pv7",
+              "platform": "linux-amd64",
+              "url": "https://artifacts.example.test/resources/php/8.4/8.4.22-pv7/linux-amd64/php-8.4.22-pv7-linux-amd64.tar.gz",
+              "sha256": "f704343f8124beca128ceefd67e6ffdc9f26ebe71983b54659b9db20f64500c7",
+              "size": 202,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://www.php.net/distributions/php-8.4.22.tar.gz",
+                "source_sha256": "a012c2c9724baf214a70b41b40a7e130906b8855e54268afa5bc4ae17bc9d823",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.4.22-pv7",
+              "upstream_version": "8.4.22",
+              "pv_build_revision": "pv7",
+              "platform": "linux-arm64",
+              "url": "https://artifacts.example.test/resources/php/8.4/8.4.22-pv7/linux-arm64/php-8.4.22-pv7-linux-arm64.tar.gz",
+              "sha256": "374d1e3c5680b0fb058b9070adab9572041a3aa0c4eb6c90246d75a95b3d10bc",
+              "size": 202,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://www.php.net/distributions/php-8.4.22.tar.gz",
+                "source_sha256": "a012c2c9724baf214a70b41b40a7e130906b8855e54268afa5bc4ae17bc9d823",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
             }
           ]
         },
@@ -552,6 +964,40 @@ expression: manifest_json
               "url": "https://artifacts.example.test/resources/php/8.5/8.5.7-pv7/darwin-arm64/php-8.5.7-pv7-darwin-arm64.tar.gz",
               "sha256": "d9aa6cadbc8a089fe25a66af3ec3656eea73a2b2872813a0cf04a27874bba141",
               "size": 203,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://www.php.net/distributions/php-8.5.7.tar.gz",
+                "source_sha256": "e5eba93fd6dd3241d0e61e932eb99a3783b40568553fb0e511b660ecd863a049",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.5.7-pv7",
+              "upstream_version": "8.5.7",
+              "pv_build_revision": "pv7",
+              "platform": "linux-amd64",
+              "url": "https://artifacts.example.test/resources/php/8.5/8.5.7-pv7/linux-amd64/php-8.5.7-pv7-linux-amd64.tar.gz",
+              "sha256": "dd3b8cf36c0cdf3c196b77a868b4f257f6b0951655ea424d1bbe2b5bde6dba02",
+              "size": 202,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://www.php.net/distributions/php-8.5.7.tar.gz",
+                "source_sha256": "e5eba93fd6dd3241d0e61e932eb99a3783b40568553fb0e511b660ecd863a049",
+                "recipe": "release/artifacts/recipes/php/tracks.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.5.7-pv7",
+              "upstream_version": "8.5.7",
+              "pv_build_revision": "pv7",
+              "platform": "linux-arm64",
+              "url": "https://artifacts.example.test/resources/php/8.5/8.5.7-pv7/linux-arm64/php-8.5.7-pv7-linux-arm64.tar.gz",
+              "sha256": "40553652eeb8cba9e333e68ea7c34f092571b848ccab8a4bc62af9b7c8200feb",
+              "size": 202,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://www.php.net/distributions/php-8.5.7.tar.gz",
@@ -605,6 +1051,40 @@ expression: manifest_json
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
               }
+            },
+            {
+              "artifact_version": "17.10-pv2",
+              "upstream_version": "17.10",
+              "pv_build_revision": "pv2",
+              "platform": "linux-amd64",
+              "url": "https://artifacts.example.test/resources/postgres/17/17.10-pv2/linux-amd64/postgres-17.10-pv2-linux-amd64.tar.gz",
+              "sha256": "32509b950ffae1c54125788b7d9582c2e10b662178bcd7d955e4af029a9696ad",
+              "size": 505,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.gz",
+                "source_sha256": "e4b43025f32ea3d271be64365d284c8462cffd41d80db0c3df6fc62417a2d9dc",
+                "recipe": "release/artifacts/recipes/postgres/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "17.10-pv2",
+              "upstream_version": "17.10",
+              "pv_build_revision": "pv2",
+              "platform": "linux-arm64",
+              "url": "https://artifacts.example.test/resources/postgres/17/17.10-pv2/linux-arm64/postgres-17.10-pv2-linux-arm64.tar.gz",
+              "sha256": "0f2280d1d98d12e2be160f7fc4bc5f2c8495d09fbb9d26c9f342ec1132dc3e10",
+              "size": 506,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://ftp.postgresql.org/pub/source/v17.10/postgresql-17.10.tar.gz",
+                "source_sha256": "e4b43025f32ea3d271be64365d284c8462cffd41d80db0c3df6fc62417a2d9dc",
+                "recipe": "release/artifacts/recipes/postgres/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
             }
           ]
         },
@@ -636,6 +1116,40 @@ expression: manifest_json
               "url": "https://artifacts.example.test/resources/postgres/18/18.4-pv2/darwin-arm64/postgres-18.4-pv2-darwin-arm64.tar.gz",
               "sha256": "649c2b67e65c451f5ce295e0275148118866f6bb08fe151baea04228dc8e6831",
               "size": 510,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://ftp.postgresql.org/pub/source/v18.4/postgresql-18.4.tar.gz",
+                "source_sha256": "450aa8f2da06c46f8221916e82ae06b04fb1040f8f00643dbf8b7d663caac0b9",
+                "recipe": "release/artifacts/recipes/postgres/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "18.4-pv2",
+              "upstream_version": "18.4",
+              "pv_build_revision": "pv2",
+              "platform": "linux-amd64",
+              "url": "https://artifacts.example.test/resources/postgres/18/18.4-pv2/linux-amd64/postgres-18.4-pv2-linux-amd64.tar.gz",
+              "sha256": "30a4bd7e866ae425f06c0fa2971cd2e45f220ba43ae336ca5cdfc41c1e68111a",
+              "size": 505,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://ftp.postgresql.org/pub/source/v18.4/postgresql-18.4.tar.gz",
+                "source_sha256": "450aa8f2da06c46f8221916e82ae06b04fb1040f8f00643dbf8b7d663caac0b9",
+                "recipe": "release/artifacts/recipes/postgres/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "18.4-pv2",
+              "upstream_version": "18.4",
+              "pv_build_revision": "pv2",
+              "platform": "linux-arm64",
+              "url": "https://artifacts.example.test/resources/postgres/18/18.4-pv2/linux-arm64/postgres-18.4-pv2-linux-arm64.tar.gz",
+              "sha256": "718c92b9210dc72102b872e26e9b2248031da9107ca4a9ceb3f1a85fee3d5745",
+              "size": 504,
               "published_at": "2026-01-01T00:00:00Z",
               "provenance": {
                 "source_url": "https://ftp.postgresql.org/pub/source/v18.4/postgresql-18.4.tar.gz",
@@ -689,6 +1203,40 @@ expression: manifest_json
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
               }
+            },
+            {
+              "artifact_version": "8.8.0-pv1",
+              "upstream_version": "8.8.0",
+              "pv_build_revision": "pv1",
+              "platform": "linux-amd64",
+              "url": "https://artifacts.example.test/resources/redis/8.8/8.8.0-pv1/linux-amd64/redis-8.8.0-pv1-linux-amd64.tar.gz",
+              "sha256": "ea72b46de179dfc30a809351e5a55b598b7488698d0aadb4fbce084721807887",
+              "size": 257,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://download.redis.io/releases/redis-8.8.0.tar.gz",
+                "source_sha256": "88422181efb0c9c0abba332e3e391d409e1e13714b838931669235e5796f704b",
+                "recipe": "release/artifacts/recipes/redis/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "8.8.0-pv1",
+              "upstream_version": "8.8.0",
+              "pv_build_revision": "pv1",
+              "platform": "linux-arm64",
+              "url": "https://artifacts.example.test/resources/redis/8.8/8.8.0-pv1/linux-arm64/redis-8.8.0-pv1-linux-arm64.tar.gz",
+              "sha256": "9a27b52add3bbfc9cac8bc6a0479c32fedf7c14a124848af0cd049458741f301",
+              "size": 257,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://download.redis.io/releases/redis-8.8.0.tar.gz",
+                "source_sha256": "88422181efb0c9c0abba332e3e391d409e1e13714b838931669235e5796f704b",
+                "recipe": "release/artifacts/recipes/redis/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
             }
           ]
         }
@@ -730,6 +1278,40 @@ expression: manifest_json
               "provenance": {
                 "source_url": "https://github.com/rustfs/rustfs/releases/download/1.0.0-beta.7/rustfs-macos-aarch64-v1.0.0-beta.7.zip",
                 "source_sha256": "8ff8db2068db450b22c4dbaa86b7abcf35110307f8e036aa83db387f540a2b53",
+                "recipe": "release/artifacts/recipes/rustfs/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "1.0.0-beta.7-pv1",
+              "upstream_version": "1.0.0-beta.7",
+              "pv_build_revision": "pv1",
+              "platform": "linux-amd64",
+              "url": "https://artifacts.example.test/resources/rustfs/1/1.0.0-beta.7-pv1/linux-amd64/rustfs-1.0.0-beta.7-pv1-linux-amd64.tar.gz",
+              "sha256": "ec297278f9a5cd43f8e33af47f08058886e40822d1f33a5855593d4d964ab714",
+              "size": 208,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/rustfs/rustfs/releases/download/1.0.0-beta.7/rustfs-linux-x86_64-musl-v1.0.0-beta.7.zip",
+                "source_sha256": "f13bc89efa7881a199bf286390a89c7320ee2e52d90c341affd41bc5e7ba2677",
+                "recipe": "release/artifacts/recipes/rustfs/recipe.toml",
+                "pv_commit": "0123456789abcdef0123456789abcdef01234567",
+                "build_run_id": "local-test"
+              }
+            },
+            {
+              "artifact_version": "1.0.0-beta.7-pv1",
+              "upstream_version": "1.0.0-beta.7",
+              "pv_build_revision": "pv1",
+              "platform": "linux-arm64",
+              "url": "https://artifacts.example.test/resources/rustfs/1/1.0.0-beta.7-pv1/linux-arm64/rustfs-1.0.0-beta.7-pv1-linux-arm64.tar.gz",
+              "sha256": "5944ff0056451d9c701241fb5d0865f91b1241ea2bb98d9614bdab3e61fc0755",
+              "size": 207,
+              "published_at": "2026-01-01T00:00:00Z",
+              "provenance": {
+                "source_url": "https://github.com/rustfs/rustfs/releases/download/1.0.0-beta.7/rustfs-linux-aarch64-musl-v1.0.0-beta.7.zip",
+                "source_sha256": "989552479bfb2cc8e1ffa3af9c95da072d082a2e7124f54a1af1b1dcb68264ce",
                 "recipe": "release/artifacts/recipes/rustfs/recipe.toml",
                 "pv_commit": "0123456789abcdef0123456789abcdef01234567",
                 "build_run_id": "local-test"
