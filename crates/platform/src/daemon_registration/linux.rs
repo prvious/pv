@@ -63,6 +63,8 @@ impl DaemonRegistrationConfig {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct DaemonRegistrationStatus {
     pub load_state: String,
+    /// Native enablement state, absent for a missing unit file or unqueried lifecycle inspection.
+    pub unit_file_state: Option<String>,
     pub active_state: String,
     pub sub_state: String,
     pub main_pid: u32,
@@ -128,15 +130,29 @@ async fn native_proxy(
         .await
 }
 
+/// Reads runtime and enablement evidence, retaining live units whose files are missing.
 pub fn inspect_daemon_registration(
     session_address: &str,
 ) -> Result<Option<DaemonRegistrationStatus>, PlatformError> {
     let manager = manager(session_address)?;
-    run_operation(
-        "inspect",
-        Duration::from_secs(10),
-        inspect(&manager, "GetUnit"),
-    )
+    run_operation("inspect", Duration::from_secs(10), async {
+        let mut status = inspect(&manager, "GetUnit").await?;
+        if let Some(status) = &mut status {
+            status.unit_file_state = match manager
+                .call("GetUnitFileState", &(DAEMON_REGISTRATION_LABEL,))
+                .await
+            {
+                Ok(state) => Some(state),
+                Err(error)
+                    if is_method_error(&error, "org.freedesktop.DBus.Error.FileNotFound") =>
+                {
+                    None
+                }
+                Err(error) => return Err(error.into()),
+            };
+        }
+        Ok(status)
+    })
 }
 
 async fn inspect(
@@ -162,6 +178,7 @@ async fn inspect(
     let fragment_path = unit.get_property::<String>("FragmentPath").await?;
     let status = DaemonRegistrationStatus {
         load_state,
+        unit_file_state: None,
         active_state: unit.get_property("ActiveState").await?,
         sub_state: unit.get_property("SubState").await?,
         main_pid: service.get_property("MainPID").await?,

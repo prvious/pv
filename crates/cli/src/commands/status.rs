@@ -531,8 +531,9 @@ impl DaemonStatus {
         }
         self.registration_runtime.as_ref().map(|status| {
             format!(
-                "systemd: load={} state={}/{} pid={} fragment={}",
+                "systemd: load={} enablement={} state={}/{} pid={} fragment={}",
                 status.load_state,
+                status.unit_file_state.as_deref().unwrap_or("unavailable"),
                 status.active_state,
                 status.sub_state,
                 status.main_pid,
