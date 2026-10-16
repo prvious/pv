@@ -1,0 +1,42 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: summaries
+---
+[
+    (
+        "mailpit",
+        false,
+        "archive=mailpit-1.30.1-pv1-<native-platform>.tar.gz record=mailpit-1.30.1-pv1-<native-platform>.json smoke=smoke.sh\n",
+        "",
+    ),
+    (
+        "mailpit",
+        true,
+        "",
+        "error: <out>/work/mailpit-1.30.1-pv1-<native-platform>/mailpit-1.30.1-pv1-<native-platform>/bin/mailpit ELF library search path is not ORIGIN-relative: /tmp/build/lib\n",
+    ),
+    (
+        "caddy",
+        false,
+        "archive=caddy-2.11.4-pv1-<native-platform>.tar.gz record=caddy-2.11.4-pv1-<native-platform>.json smoke=smoke.sh\n",
+        "",
+    ),
+    (
+        "caddy",
+        true,
+        "",
+        "error: <out>/work/caddy-2.11.4-pv1-<native-platform>/caddy-2.11.4-pv1-<native-platform>/bin/caddy ELF library search path is not ORIGIN-relative: /tmp/build/lib\n",
+    ),
+    (
+        "rustfs",
+        false,
+        "archive=rustfs-1.0.0-beta.7-pv1-<native-platform>.tar.gz record=rustfs-1.0.0-beta.7-pv1-<native-platform>.json smoke=smoke.sh\n",
+        "",
+    ),
+    (
+        "rustfs",
+        true,
+        "",
+        "error: <out>/work/rustfs-1.0.0-beta.7-pv1-<native-platform>/rustfs-1.0.0-beta.7-pv1-<native-platform>/bin/rustfs ELF library search path is not ORIGIN-relative: /tmp/build/lib\n",
+    ),
+]
