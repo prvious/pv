@@ -346,12 +346,12 @@ async fn transact(
     job(manager, "StopUnit", SERVICE_UNIT).await?;
     if action == PrivilegedHelperLifecycleAction::Remove {
         disable(manager).await?;
-        for (unit, path) in [
-            (SOCKET_UNIT, SOCKET_UNIT_PATH),
-            (SERVICE_UNIT, SERVICE_UNIT_PATH),
-        ] {
-            reset_stopped_unit(manager, unit, path).await?;
-        }
+    }
+    for (unit, path) in [
+        (SOCKET_UNIT, SOCKET_UNIT_PATH),
+        (SERVICE_UNIT, SERVICE_UNIT_PATH),
+    ] {
+        reset_stopped_unit(manager, unit, path).await?;
     }
     for (artifact, checksum) in ARTIFACTS.into_iter().zip(&previous.checksums) {
         if checksum.is_some() {
