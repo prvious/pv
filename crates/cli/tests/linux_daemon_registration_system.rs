@@ -128,6 +128,63 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
     let (first_job, monitor) = wait_for_redis_monitor(&fixture.paths, None)?;
     fixture.monitor_record = Some(monitor.clone());
 
+    let mut status_observations = Vec::new();
+    for load_state in ["loaded", "error", "bad-setting"] {
+        let status_environment = SystemTestEnvironment {
+            registration_load_state: Some(load_state),
+            ..Default::default()
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let _exit_code = run_with_environment(
+            ["pv", "status", "--json"],
+            &status_environment,
+            &mut stdout,
+            &mut stderr,
+        )?;
+        ensure!(stderr.is_empty(), "unexpected status errors: {stderr:?}");
+        let report: Value = serde_json::from_slice(&stdout)?;
+        assert_eq!(report["daemon"]["socket"], "healthy");
+        let state = report["daemon"]["state"]
+            .as_str()
+            .context("missing daemon state")?;
+        let failure = report["daemon"]["failure"]
+            .as_bool()
+            .context("missing daemon failure")?;
+        assert_eq!(
+            state,
+            if load_state == "loaded" {
+                "running"
+            } else {
+                "down"
+            }
+        );
+        assert_eq!(failure, load_state != "loaded");
+        status_observations.push((load_state, state.to_owned(), failure));
+    }
+    assert_debug_snapshot!(status_observations, @r#"
+    [
+        (
+            "loaded",
+            "running",
+            false,
+        ),
+        (
+            "error",
+            "down",
+            true,
+        ),
+        (
+            "bad-setting",
+            "down",
+            true,
+        ),
+    ]
+    "#);
+    assert_eq!(status()?.main_pid, first.main_pid);
+    let (_, preserved_monitor) = wait_for_redis_monitor(&fixture.paths, None)?;
+    assert_eq!(preserved_monitor, monitor);
+
     let drop_in_directory = fixture.unit.with_extension("service.d");
     ensure!(!fs::path_entry_exists(&drop_in_directory)?);
     let drop_in = drop_in_directory.join("override.conf");
@@ -165,7 +222,7 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
         }
         fs::delete_file(&enabled_link)?;
         let before = loaded_kill_mode()?;
-        let update_environment = RejectedManifestEnvironment::default();
+        let update_environment = SystemTestEnvironment::default();
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
         let code = run_with_environment(
@@ -371,11 +428,24 @@ fn loaded_kill_mode() -> Result<String> {
 }
 
 #[derive(Default)]
-struct RejectedManifestEnvironment {
+struct SystemTestEnvironment {
     manifest_requested: Cell<bool>,
+    registration_load_state: Option<&'static str>,
 }
 
-impl Environment for RejectedManifestEnvironment {
+impl Environment for SystemTestEnvironment {
+    fn inspect_daemon_registration(
+        &self,
+    ) -> Result<Option<DaemonRegistrationStatus>, PlatformError> {
+        let mut status = ProcessEnvironment.inspect_daemon_registration()?;
+        if let Some(status) = &mut status
+            && let Some(load_state) = self.registration_load_state
+        {
+            status.load_state = load_state.to_owned();
+        }
+        Ok(status)
+    }
+
     fn inspect_low_ports(&self) -> Result<LowPortInspection, PlatformError> {
         ProcessEnvironment.inspect_low_ports()
     }
