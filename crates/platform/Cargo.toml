@@ -32,6 +32,10 @@ raunch = { workspace = true }
 rustix = { workspace = true }
 security-framework = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+procfs = { version = "0.18.0", default-features = false }
+rustix = { workspace = true }
+
 [dev-dependencies]
 anyhow = { workspace = true }
 camino-tempfile = { workspace = true }
@@ -39,3 +43,6 @@ insta = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 pv-fake = { path = "../pv-fake" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+tokio = { workspace = true }
