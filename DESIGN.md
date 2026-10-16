@@ -338,7 +338,7 @@ PV's local CA files are user-specific and live under `~/.pv/certificates/`. Trus
 
 `pv ports:install` enables `pf` if needed and installs only PV-owned anchor/rules. `pv ports:uninstall` removes PV-owned rules but does not disable `pf` globally because other software may rely on it.
 
-Privileged repair happens only from foreground commands such as `pv setup`, `pv dns:install`, and `pv ports:install`. PV mutates stored port choices in `pv.db` only after the corresponding privileged system configuration repair succeeds. The daemon may report drift but does not ask the helper to mutate system state.
+Privileged repair happens only from foreground commands such as `pv setup`, `pv dns:install`, and `pv ports:install`. Port reservations and their failure handling follow the DNS and low-port routing rules above. The daemon may report drift but does not ask the helper to mutate system state.
 
 PV uses a separate minimal `pv-helper` executable registered as the system launchd job `com.prvious.pv.helper`. Launchd creates the restricted `/var/run/com.prvious.pv.helper.sock` and activates the helper on demand. Once activated, the helper serves sequential connections until launchd stops it, avoiding launchd restart throttling between related operations. Its LaunchDaemon writes startup and uncaptured child-process diagnostics to `/var/log/com.prvious.pv.helper.err.log`. The daemon, Gateway, DNS resolver, and all Managed Resources remain unprivileged. The helper supports one installing macOS account per machine. Helper removal is restricted to the original installing UID, so that account must remove it before setup by a replacement account; an unavailable owner requires manual administrator recovery.
 
