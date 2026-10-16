@@ -1,10 +1,13 @@
 #[cfg(unix)]
 use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::io;
 #[cfg(unix)]
 use std::io::{BufRead, BufReader, Read, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixListener;
-use std::process::ExitStatus;
+use std::path::PathBuf;
+use std::process::{ExitCode, ExitStatus};
 #[cfg(unix)]
 use std::process::{Child, Stdio};
 #[cfg(unix)]
@@ -17,16 +20,18 @@ use std::thread::{self, JoinHandle};
 #[cfg(unix)]
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Result, ensure};
 use assert_cmd::Command;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
+use cli::{Environment, ProcessEnvironment, run_with_environment};
 use command::run_pv_in;
 #[cfg(unix)]
 use config::ProjectConfigFile;
 #[cfg(unix)]
 use daemon::{MonitorCleanup, MonitorExit, MonitorStart, MonitorStop, StopSignal};
 use insta::{assert_debug_snapshot, assert_snapshot};
+use platform::{PlatformError, PlatformTarget};
 #[cfg(unix)]
 use serde_json::{Value, json};
 #[cfg(unix)]
@@ -52,6 +57,71 @@ struct CommandOutput {
     code: Option<i32>,
     stdout: String,
     stderr: String,
+}
+
+struct DocumentationEnvironment(PlatformTarget);
+
+impl Environment for DocumentationEnvironment {
+    fn var_os(&self, _key: &str) -> Option<OsString> {
+        None
+    }
+
+    fn home_dir(&self) -> Option<PathBuf> {
+        ProcessEnvironment.home_dir()
+    }
+
+    fn current_dir(&self) -> io::Result<PathBuf> {
+        ProcessEnvironment.current_dir()
+    }
+
+    fn current_exe(&self) -> io::Result<PathBuf> {
+        ProcessEnvironment.current_exe()
+    }
+
+    fn stdin_is_terminal(&self) -> bool {
+        false
+    }
+
+    fn platform_target(&self) -> Result<PlatformTarget, PlatformError> {
+        Ok(self.0)
+    }
+
+    fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, PlatformError> {
+        Err(PlatformError::SystemIntegration(
+            "help and completions must not inspect low ports".to_owned(),
+        ))
+    }
+
+    fn open_url(&self, _url: &str) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "help and completions must not open a browser",
+        ))
+    }
+}
+
+fn run_pv_for_target(args: &[&str], target: PlatformTarget) -> Result<CommandOutput> {
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    let exit_code = run_with_environment(
+        std::iter::once("pv").chain(args.iter().copied()),
+        &DocumentationEnvironment(target),
+        &mut stdout,
+        &mut stderr,
+    )?;
+    let stdout = String::from_utf8(stdout)?;
+    let stderr = String::from_utf8(stderr)?;
+    ensure!(exit_code == ExitCode::SUCCESS, "{exit_code:?}: {stderr}");
+    ensure!(
+        stderr.is_empty(),
+        "unexpected documentation stderr: {stderr}"
+    );
+
+    Ok(CommandOutput {
+        code: Some(0),
+        stdout,
+        stderr,
+    })
 }
 
 fn run_pv(args: &[&str]) -> Result<CommandOutput> {
@@ -249,10 +319,45 @@ fn postgres_commands_are_documented() -> Result<()> {
 
 #[test]
 fn daemon_run_is_hidden_from_top_level_help() -> Result<()> {
-    let output = run_pv(&["--help"])?;
+    let output = run_pv_for_target(&["--help"], PlatformTarget::Macos)?;
 
     assert_debug_snapshot!(output);
 
+    Ok(())
+}
+
+#[test]
+fn linux_help_uses_the_injected_platform() -> Result<()> {
+    let output = [
+        run_pv_for_target(&["--help"], PlatformTarget::Linux)?,
+        run_pv_for_target(&["ca:trust", "--help"], PlatformTarget::Linux)?,
+        run_pv_for_target(&["ports:status", "--help"], PlatformTarget::Linux)?,
+        run_pv_for_target(&["ports:install", "--help"], PlatformTarget::Linux)?,
+        run_pv_for_target(&["ports:uninstall", "--help"], PlatformTarget::Linux)?,
+    ];
+
+    assert_debug_snapshot!(output);
+    Ok(())
+}
+
+#[test]
+fn documentation_binary_matches_the_native_platform() -> Result<()> {
+    let target = PlatformTarget::current()?;
+    for args in [
+        &["--help"][..],
+        &["ca:trust", "--help"][..],
+        &["ports:status", "--help"][..],
+        &["ports:install", "--help"][..],
+        &["ports:uninstall", "--help"][..],
+        &["completions", "zsh"][..],
+        &["completions", "fish"][..],
+    ] {
+        let binary = run_pv(args)?;
+        let library = run_pv_for_target(args, target)?;
+        assert_eq!(binary.code, library.code, "{args:?}");
+        assert_eq!(binary.stdout, library.stdout, "{args:?}");
+        assert_eq!(binary.stderr, library.stderr, "{args:?}");
+    }
     Ok(())
 }
 
@@ -355,15 +460,15 @@ fn core_workflow_command_help_is_documented() -> Result<()> {
 #[test]
 fn system_integration_command_help_is_documented() -> Result<()> {
     let output = [
-        run_pv(&["ca:status", "--help"])?,
-        run_pv(&["ca:trust", "--help"])?,
-        run_pv(&["ca:untrust", "--help"])?,
-        run_pv(&["dns:status", "--help"])?,
-        run_pv(&["dns:install", "--help"])?,
-        run_pv(&["dns:uninstall", "--help"])?,
-        run_pv(&["ports:status", "--help"])?,
-        run_pv(&["ports:install", "--help"])?,
-        run_pv(&["ports:uninstall", "--help"])?,
+        run_pv_for_target(&["ca:status", "--help"], PlatformTarget::Macos)?,
+        run_pv_for_target(&["ca:trust", "--help"], PlatformTarget::Macos)?,
+        run_pv_for_target(&["ca:untrust", "--help"], PlatformTarget::Macos)?,
+        run_pv_for_target(&["dns:status", "--help"], PlatformTarget::Macos)?,
+        run_pv_for_target(&["dns:install", "--help"], PlatformTarget::Macos)?,
+        run_pv_for_target(&["dns:uninstall", "--help"], PlatformTarget::Macos)?,
+        run_pv_for_target(&["ports:status", "--help"], PlatformTarget::Macos)?,
+        run_pv_for_target(&["ports:install", "--help"], PlatformTarget::Macos)?,
+        run_pv_for_target(&["ports:uninstall", "--help"], PlatformTarget::Macos)?,
     ];
 
     assert_debug_snapshot!(output);
@@ -465,8 +570,16 @@ fn env_rejects_unsupported_shells() -> Result<()> {
 }
 
 #[test]
+fn linux_completions_generate_zsh_script() -> Result<()> {
+    let output = run_pv_for_target(&["completions", "zsh"], PlatformTarget::Linux)?;
+
+    assert_snapshot!(output.stdout);
+    Ok(())
+}
+
+#[test]
 fn completions_generate_zsh_script() -> Result<()> {
-    let output = run_pv(&["completions", "zsh"])?;
+    let output = run_pv_for_target(&["completions", "zsh"], PlatformTarget::Macos)?;
 
     assert_snapshot!(output.stdout);
     assert_debug_snapshot!((output.code, output.stderr));
@@ -485,8 +598,16 @@ fn completions_generate_bash_script() -> Result<()> {
 }
 
 #[test]
+fn linux_completions_generate_fish_script() -> Result<()> {
+    let output = run_pv_for_target(&["completions", "fish"], PlatformTarget::Linux)?;
+
+    assert_snapshot!(output.stdout);
+    Ok(())
+}
+
+#[test]
 fn completions_generate_fish_script() -> Result<()> {
-    let output = run_pv(&["completions", "fish"])?;
+    let output = run_pv_for_target(&["completions", "fish"], PlatformTarget::Macos)?;
 
     assert_snapshot!(output.stdout);
     assert_debug_snapshot!((output.code, output.stderr));

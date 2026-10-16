@@ -3456,6 +3456,7 @@ dependencies = [
  "config",
  "daemon",
  "insta",
+ "platform",
  "portable-pty",
  "pv-fake",
  "serde_json",
