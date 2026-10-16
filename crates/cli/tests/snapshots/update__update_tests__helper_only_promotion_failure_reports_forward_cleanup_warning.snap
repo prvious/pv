@@ -1,0 +1,5 @@
+---
+source: crates/cli/tests/update.rs
+expression: snapshot
+---
+"warning: forward helper cleanup failed\nerror: privileged-helper update could not be promoted into the active release (filesystem error at \"<pv-home>/bin/releases/0.2.7/pv-helper.json\": Is a directory (os error 21)); restored the previous helper\n"
