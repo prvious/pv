@@ -3207,6 +3207,7 @@ dependencies = [
  "data-encoding",
  "futures-util",
  "getrandom 0.4.2",
+ "hickory-proto",
  "insta",
  "libc",
  "listenfd",

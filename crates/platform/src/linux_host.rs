@@ -9,6 +9,8 @@ use crate::PlatformError;
 use crate::daemon_registration::check_user_manager;
 use crate::helper::SUDO_EXECUTABLE;
 
+mod resolved;
+
 pub(crate) const CERTUTIL_EXECUTABLE: &str = "/usr/bin/certutil";
 
 /// Checks the native host and required executables before Linux setup.
@@ -41,7 +43,8 @@ pub fn check_linux_setup_host(session_address: &str) -> Result<(), PlatformError
         PlatformError::SystemIntegration(format!(
             "{error}; run `pv setup` from a logged-in systemd user session"
         ))
-    })
+    })?;
+    resolved::check_stub()
 }
 
 fn runtime_glibc_version() -> Result<&'static str, PlatformError> {

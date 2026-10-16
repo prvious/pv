@@ -41,6 +41,7 @@ rustix = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 futures-util = { workspace = true }
+hickory-proto = { workspace = true }
 libc = { workspace = true }
 listenfd = "1.0.2"
 nix = { workspace = true }
