@@ -12,7 +12,8 @@ use cli::{Environment, run_with_environment};
 use insta::{Settings, assert_debug_snapshot, assert_snapshot};
 use platform::{
     ActivePfRedirectInspection, DaemonRegistrationConfig, DaemonRegistrationFileState,
-    DaemonRegistrationStatus, PlatformError, inspect_daemon_registration_file,
+    DaemonRegistrationStatus, HELPER_PROTOCOL_VERSION, PRIVILEGED_HELPER_VERSION, PlatformError,
+    PlatformTarget, inspect_daemon_registration_file,
 };
 use serde_json::{Value, json};
 use state::{PvPaths, fs};
@@ -24,6 +25,8 @@ struct TestEnvironment {
     registration_status: Option<DaemonRegistrationStatus>,
     registration_conflict: Option<Utf8PathBuf>,
     registration_unloaded: bool,
+    platform_target: PlatformTarget,
+    helper_authentication_error: bool,
 }
 
 impl TestEnvironment {
@@ -35,6 +38,8 @@ impl TestEnvironment {
             registration_status: None,
             registration_conflict: None,
             registration_unloaded: false,
+            platform_target: PlatformTarget::Linux,
+            helper_authentication_error: false,
         }
     }
 
@@ -156,7 +161,16 @@ impl Environment for TestEnvironment {
     }
 
     fn privileged_helper_status(&self) -> Result<platform::PrivilegedHelperStatus, PlatformError> {
+        if self.helper_authentication_error {
+            return Err(PlatformError::PrivilegedHelperAuthentication(
+                "fixture helper belongs to another account".to_owned(),
+            ));
+        }
         Err(PlatformError::PrivilegedHelperUnavailable)
+    }
+
+    fn platform_target(&self) -> Result<PlatformTarget, PlatformError> {
+        Ok(self.platform_target)
     }
 
     fn trusted_ca_certificates(&self) -> Result<Vec<platform::KeychainCertificate>, PlatformError> {
@@ -235,7 +249,7 @@ fn linux_status_and_doctor_report_an_unavailable_manager_and_keep_other_checks()
     let doctor: Value = serde_json::from_str(&doctor.stdout)?;
     let observed = json!({
         "daemon": status["daemon"],
-        "manager": manager_check(&doctor)?,
+        "manager": doctor_check(&doctor, "Systemd user manager")?,
         "sections": doctor["sections"].as_array().map(|sections| sections.iter().map(|section| section["title"].clone()).collect::<Vec<_>>()),
     });
     assert_snapshot!(serde_json::to_string_pretty(&observed)?);
@@ -275,7 +289,7 @@ fn linux_status_and_doctor_show_native_properties_and_reject_a_foreign_loaded_un
         let doctor: Value = serde_json::from_str(&doctor.stdout)?;
         observed.push(json!({
             "daemon": status["daemon"],
-            "manager": manager_check(&doctor)?,
+            "manager": doctor_check(&doctor, "Systemd user manager")?,
             "plain_status": plain_status.stdout,
         }));
     }
@@ -310,7 +324,7 @@ fn linux_doctor_rejects_an_owned_daemon_that_is_not_loaded_and_running() -> anyh
         });
         let output = run_pv(&["doctor", "--json"], &environment)?;
         let report: Value = serde_json::from_str(&output.stdout)?;
-        let check = manager_check(&report)?;
+        let check = doctor_check(&report, "Systemd user manager")?;
         assert_eq!(check["status"], "fail");
         observed.push(check.clone());
     }
@@ -343,7 +357,7 @@ fn linux_doctor_rejects_a_configured_service_that_is_not_loaded() -> anyhow::Res
         }
         let output = run_pv(&["doctor", "--json"], &environment)?;
         let report: Value = serde_json::from_str(&output.stdout)?;
-        let check = manager_check(&report)?;
+        let check = doctor_check(&report, "Systemd user manager")?;
         assert_eq!(check["status"], expected_status);
         observed.push((state, check.clone()));
     }
@@ -366,21 +380,54 @@ fn linux_doctor_reports_configuration_repair_for_a_foreign_drop_in() -> anyhow::
     );
     let output = run_pv(&["doctor", "--json"], &environment)?;
     let report: Value = serde_json::from_str(&output.stdout)?;
-    let check = manager_check(&report)?;
+    let check = doctor_check(&report, "Systemd user manager")?;
     snapshot_settings(tempdir.path()).bind(|| {
         assert_debug_snapshot!(check);
     });
     Ok(())
 }
 
-fn manager_check(report: &Value) -> anyhow::Result<&Value> {
+#[test]
+fn linux_doctor_uses_the_injected_platform_for_cross_account_helper_recovery() -> anyhow::Result<()>
+{
+    let tempdir = tempdir()?;
+    let mut environment = TestEnvironment::new(&tempdir.path().join("home"));
+    environment.helper_authentication_error = true;
+    let paths = PvPaths::for_home(&environment.home);
+    fs::write_sensitive_file(
+        &paths
+            .app_release_helper(env!("CARGO_PKG_VERSION"))
+            .with_file_name("pv-helper.json"),
+        &serde_json::to_string(&json!({
+            "version": PRIVILEGED_HELPER_VERSION,
+            "protocol_version": HELPER_PROTOCOL_VERSION,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        }))?,
+    )?;
+    let mut observed = Vec::new();
+    for target in [PlatformTarget::Macos, PlatformTarget::Linux] {
+        environment.platform_target = target;
+        let output = run_pv(&["doctor", "--json"], &environment)?;
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert!(output.stderr.is_empty());
+        let report: Value = serde_json::from_str(&output.stdout)?;
+        let check = doctor_check(&report, "Privileged helper")?;
+        assert_eq!(check["status"], "fail");
+        observed.push(json!({ "target": target.as_str(), "check": check }));
+    }
+    assert!(environment.operations.borrow().is_empty());
+    assert_snapshot!(serde_json::to_string_pretty(&observed)?);
+    Ok(())
+}
+
+fn doctor_check<'a>(report: &'a Value, name: &str) -> anyhow::Result<&'a Value> {
     report["sections"]
         .as_array()
         .into_iter()
         .flatten()
         .flat_map(|section| section["checks"].as_array().into_iter().flatten())
-        .find(|check| check["name"] == "Systemd user manager")
-        .ok_or_else(|| anyhow::anyhow!("missing systemd manager diagnostic"))
+        .find(|check| check["name"] == name)
+        .ok_or_else(|| anyhow::anyhow!("missing {name} diagnostic"))
 }
 
 fn snapshot_settings(tempdir: &Utf8Path) -> Settings {

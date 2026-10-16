@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use camino::Utf8PathBuf;
 use platform::{
     CaFileState, DAEMON_REGISTRATION_NAME, DaemonRegistrationFileState, LocalCaMetadata,
-    ResolverConfig, ResolverFileState, TrustDomainState,
+    PlatformTarget, ResolverConfig, ResolverFileState, TrustDomainState,
 };
 use self_update::AppUpdateVersion;
 use serde::Serialize;
@@ -64,7 +64,7 @@ impl DoctorReport {
                 checks: vec![
                     layout_check(&paths),
                     database_check(&paths, database.as_ref()),
-                    privileged_helper_check(environment, &paths),
+                    privileged_helper_check(environment, &paths, environment.platform_target()?),
                 ],
             },
             DoctorSection {
@@ -176,7 +176,11 @@ impl DoctorReport {
     }
 }
 
-fn privileged_helper_check(environment: &impl Environment, paths: &PvPaths) -> DoctorCheck {
+fn privileged_helper_check(
+    environment: &impl Environment,
+    paths: &PvPaths,
+    target: PlatformTarget,
+) -> DoctorCheck {
     let version = match AppUpdateVersion::current() {
         Ok(version) => version,
         Err(error) => {
@@ -223,7 +227,11 @@ fn privileged_helper_check(environment: &impl Environment, paths: &PvPaths) -> D
         Err(platform::PlatformError::PrivilegedHelperAuthentication(message)) => {
             DoctorCheck::fail(
                 "Privileged helper",
-                "helper belongs to a different macOS account",
+                if target == PlatformTarget::Linux {
+                    "helper belongs to a different Linux account"
+                } else {
+                    "helper belongs to a different macOS account"
+                },
                 "use the original installing account to run pv uninstall; otherwise perform manual administrator recovery",
             )
             .with_detail(message)
