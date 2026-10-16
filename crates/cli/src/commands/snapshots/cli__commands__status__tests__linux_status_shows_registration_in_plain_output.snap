@@ -1,0 +1,26 @@
+---
+source: crates/cli/src/commands/status.rs
+expression: "String::from_utf8(bytes)?"
+---
+PV status
+Overall: ok
+Daemon: running
+  systemd user service: current
+  Socket: healthy
+Integrations:
+  DNS: active
+  Ports: active
+    HTTP 80 -> 48080, HTTPS 443 -> 48443
+  CA: trusted
+Logs: /home/acme/.pv/logs
+Managed Resources:
+  none
+Runtimes:
+  gateway running -
+Projects:
+  acme.test env=warning APP_URL already exists outside the PV block
+Worktree cleanup:
+  mysql 8.0 acme_feat_app `mysql` track `8.0` isn't installed, so PV can't delete this object; reinstall the track, or uninstall it with --prune to delete its data
+  redis 8.8 acme-feat.cache. pending
+Recent errors:
+  none

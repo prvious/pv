@@ -1,0 +1,22 @@
+---
+source: crates/cli/src/error.rs
+expression: errors
+---
+[
+    (
+        Macos,
+        [
+            "PV application update requires the PV LaunchAgent at /fixture/registration; run `pv setup` or `pv daemon:enable`",
+            "PV LaunchAgent file is not PV-owned; leaving it unchanged at /fixture/registration",
+            "PV LaunchAgent file is unreadable; leaving it unchanged: fixture read failure",
+        ],
+    ),
+    (
+        Linux,
+        [
+            "PV application update requires the PV systemd user service at /fixture/registration; run `pv setup` or `pv daemon:enable`",
+            "PV systemd user service file is not PV-owned; leaving it unchanged at /fixture/registration",
+            "PV systemd user service file is unreadable; leaving it unchanged: fixture read failure",
+        ],
+    ),
+]

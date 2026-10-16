@@ -1,0 +1,116 @@
+---
+source: crates/cli/tests/linux_daemon_registration.rs
+expression: checks
+---
+[
+    (
+        Macos,
+        "missing",
+        Object {
+            "detail": String("path: <tempdir>/Macos-missing/.config/systemd/user/pv-daemon.service"),
+            "message": String("LaunchAgent is missing"),
+            "name": String("Daemon LaunchAgent"),
+            "repair": String("pv daemon:enable"),
+            "status": String("fail"),
+        },
+    ),
+    (
+        Macos,
+        "current",
+        Object {
+            "detail": String("path: <tempdir>/Macos-current/.config/systemd/user/pv-daemon.service"),
+            "message": String("PV-owned LaunchAgent is installed"),
+            "name": String("Daemon LaunchAgent"),
+            "repair": Null,
+            "status": String("pass"),
+        },
+    ),
+    (
+        Macos,
+        "stale",
+        Object {
+            "detail": String("path: <tempdir>/Macos-stale/.config/systemd/user/pv-daemon.service"),
+            "message": String("LaunchAgent is PV-owned but stale"),
+            "name": String("Daemon LaunchAgent"),
+            "repair": String("pv daemon:restart"),
+            "status": String("fail"),
+        },
+    ),
+    (
+        Macos,
+        "conflict",
+        Object {
+            "detail": String("path: <tempdir>/Macos-conflict/.config/systemd/user/pv-daemon.service"),
+            "message": String("LaunchAgent file is not PV-owned"),
+            "name": String("Daemon LaunchAgent"),
+            "repair": String("pv daemon:enable"),
+            "status": String("fail"),
+        },
+    ),
+    (
+        Macos,
+        "unreadable",
+        Object {
+            "detail": String("<tempdir>/Macos-unreadable/.config/systemd/user/pv-daemon.service: filesystem error at \"<tempdir>/Macos-unreadable/.config/systemd/user/pv-daemon.service\": Is a directory (os error 21)"),
+            "message": String("LaunchAgent file could not be inspected"),
+            "name": String("Daemon LaunchAgent"),
+            "repair": String("pv daemon:enable"),
+            "status": String("fail"),
+        },
+    ),
+    (
+        Linux,
+        "missing",
+        Object {
+            "detail": String("path: <tempdir>/Linux-missing/.config/systemd/user/pv-daemon.service"),
+            "message": String("systemd user service is missing"),
+            "name": String("Daemon service"),
+            "repair": String("pv daemon:enable"),
+            "status": String("fail"),
+        },
+    ),
+    (
+        Linux,
+        "current",
+        Object {
+            "detail": String("path: <tempdir>/Linux-current/.config/systemd/user/pv-daemon.service"),
+            "message": String("PV-owned systemd user service is installed"),
+            "name": String("Daemon service"),
+            "repair": Null,
+            "status": String("pass"),
+        },
+    ),
+    (
+        Linux,
+        "stale",
+        Object {
+            "detail": String("path: <tempdir>/Linux-stale/.config/systemd/user/pv-daemon.service"),
+            "message": String("systemd user service is PV-owned but stale"),
+            "name": String("Daemon service"),
+            "repair": String("pv daemon:restart"),
+            "status": String("fail"),
+        },
+    ),
+    (
+        Linux,
+        "conflict",
+        Object {
+            "detail": String("path: <tempdir>/Linux-conflict/.config/systemd/user/pv-daemon.service"),
+            "message": String("systemd user service file is not PV-owned"),
+            "name": String("Daemon service"),
+            "repair": String("pv daemon:enable"),
+            "status": String("fail"),
+        },
+    ),
+    (
+        Linux,
+        "unreadable",
+        Object {
+            "detail": String("<tempdir>/Linux-unreadable/.config/systemd/user/pv-daemon.service: filesystem error at \"<tempdir>/Linux-unreadable/.config/systemd/user/pv-daemon.service\": Is a directory (os error 21)"),
+            "message": String("systemd user service file could not be inspected"),
+            "name": String("Daemon service"),
+            "repair": String("pv daemon:enable"),
+            "status": String("fail"),
+        },
+    ),
+]

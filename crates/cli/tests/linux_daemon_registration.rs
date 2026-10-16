@@ -212,6 +212,81 @@ fn linux_disable_stops_then_removes_the_registration_through_the_environment() -
 }
 
 #[test]
+fn linux_disable_uses_the_injected_registration_name() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let mut outputs = Vec::new();
+    for target in [PlatformTarget::Macos, PlatformTarget::Linux] {
+        let home = tempdir.path().join(format!("{target:?}"));
+        let mut environment = TestEnvironment::new(&home);
+        environment.platform_target = target;
+        fs::ensure_layout(&PvPaths::for_home(&home))?;
+        let output = run_pv(&["daemon:disable"], &environment)?;
+        assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert!(output.stderr.is_empty());
+        assert_eq!(*environment.operations.borrow(), ["stop"]);
+        assert!(!environment.unit_path().exists());
+        outputs.push((target, output));
+    }
+    assert_debug_snapshot!(outputs);
+    Ok(())
+}
+
+#[test]
+fn linux_doctor_registration_uses_the_injected_platform() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let mut checks = Vec::new();
+    for target in [PlatformTarget::Macos, PlatformTarget::Linux] {
+        for case in ["missing", "current", "stale", "conflict", "unreadable"] {
+            let home = tempdir.path().join(format!("{target:?}-{case}"));
+            let mut environment = TestEnvironment::new(&home);
+            environment.platform_target = target;
+            fs::ensure_layout(&PvPaths::for_home(&home))?;
+            let path = environment.unit_path();
+            match case {
+                "current" => environment.write_unit()?,
+                "stale" => {
+                    environment.write_unit()?;
+                    let content =
+                        fs::read_to_string(&path)?.replace("ExecStart=", "InvalidExecStart=");
+                    fs::write_sensitive_file(&path, &content)?;
+                }
+                "conflict" => fs::write_sensitive_file(&path, "foreign unit\n")?,
+                "unreadable" => fs::ensure_user_dir(&path)?,
+                _ => {}
+            }
+            let actual_case = match inspect_daemon_registration_file(&path, None) {
+                DaemonRegistrationFileState::Missing { .. } => "missing",
+                DaemonRegistrationFileState::Current { .. } => "current",
+                DaemonRegistrationFileState::Stale { .. } => "stale",
+                DaemonRegistrationFileState::Conflict { .. } => "conflict",
+                DaemonRegistrationFileState::Unreadable { .. } => "unreadable",
+            };
+            assert_eq!(actual_case, case);
+            let output = run_pv(&["doctor", "--json"], &environment)?;
+            assert_eq!(output.exit_code, ExitCode::FAILURE);
+            assert!(output.stderr.is_empty());
+            assert!(environment.operations.borrow().is_empty());
+            let report: Value = serde_json::from_str(&output.stdout)?;
+            let check = report["sections"]
+                .as_array()
+                .and_then(|sections| {
+                    sections
+                        .iter()
+                        .find(|section| section["title"] == "Daemon & jobs")
+                })
+                .and_then(|section| section["checks"].as_array())
+                .and_then(|checks| checks.first())
+                .ok_or_else(|| anyhow::anyhow!("missing daemon registration diagnostic"))?;
+            checks.push((target, case, check.clone()));
+        }
+    }
+    snapshot_settings(tempdir.path()).bind(|| {
+        assert_debug_snapshot!(checks);
+    });
+    Ok(())
+}
+
+#[test]
 fn linux_restart_restores_persistent_enablement_before_starting_the_daemon() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let environment = TestEnvironment::new(&tempdir.path().join("home"));
