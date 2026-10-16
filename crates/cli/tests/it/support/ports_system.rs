@@ -10,6 +10,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use cli::{Environment, ProcessEnvironment, run_with_environment};
 use daemon::gateway_config::{GatewayConfigInput, render_gateway_config};
 use daemon::{MonitorStart, MonitorStop, ReadinessCheck, StopSignal, wait_for_readiness};
+use insta::assert_snapshot;
 use platform::{
     LowPortInspection, PfRedirectConfig, PlatformError, PrivilegedHelperClient,
     SYSTEM_SOCKET_PROXY_DIRECTORY, render_socket_proxy_units, socket_proxy_unit_names,
@@ -226,6 +227,96 @@ impl PortsFixture {
         self.stop_gateway()?;
         self.require_status("unknown", "systemd")?;
         self.start_gateway(&config)?;
+        self.require_active(&config)?;
+
+        // The restored HTTPS socket's start job waits for an HTTP request, so socket
+        // activation has completed before rollback checks the previously idle service.
+        root(&[
+            "/usr/bin/systemctl",
+            "stop",
+            "pv-https.service",
+            "pv-https.socket",
+        ])?;
+        let mut previous_units = render_socket_proxy_units(&config);
+        previous_units[2].1 = previous_units[2]
+            .1
+            .replace("127.0.0.1:443", &format!("127.0.0.1:{changed_port}"))
+            .replace(
+                "[Socket]\n",
+                "[Socket]\nExecStartPost=/usr/bin/curl --fail --silent --show-error --max-time 2 --output /dev/null --header Host:pv-gateway.localhost http://127.0.0.1/__pv/health\n",
+            );
+        helper_fixture.root_file(
+            "rollback-activation.socket",
+            &previous_units[2].1,
+            "/etc/systemd/system/pv-https.socket",
+            "0644",
+        )?;
+        helper_fixture.root_file(
+            "rollback-conflict.socket",
+            "[Socket]\nListenStream=127.0.0.1:443\n",
+            &format!("{SYSTEM_SOCKET_PROXY_DIRECTORY}/{FOREIGN_SOCKET}"),
+            "0644",
+        )?;
+        helper_fixture.root_file(
+            "rollback-conflict.service",
+            "[Service]\nExecStart=/usr/bin/true\n",
+            &format!("{SYSTEM_SOCKET_PROXY_DIRECTORY}/{FOREIGN_SERVICE}"),
+            "0644",
+        )?;
+        root(&["/usr/bin/systemctl", "daemon-reload"])?;
+        root(&[
+            "/usr/bin/systemctl",
+            "start",
+            "pv-https.socket",
+            FOREIGN_SOCKET,
+        ])?;
+        root(&["/usr/bin/systemctl", "stop", "pv-http.service"])?;
+        assert_eq!(service_property("pv-http.socket", "ActiveState")?, "active");
+        assert_eq!(
+            service_property("pv-http.service", "ActiveState")?,
+            "inactive"
+        );
+        let conflict = PrivilegedHelperClient
+            .inspect_low_ports()?
+            .ports
+            .into_iter()
+            .find(|port| port.port == 443 && !port.available)
+            .context("foreign HTTPS listener is missing")?
+            .conflict_message();
+        let failure = PrivilegedHelperClient
+            .apply_pf(&config)
+            .err()
+            .context("conflicting socket proxy apply unexpectedly succeeded")?;
+        assert_snapshot!(failure.to_string().replace(&conflict, "<foreign HTTPS conflict>"), @"system integration operation failed: socket proxy apply failed: system integration operation failed: system integration operation failed: <foreign HTTPS conflict>; restored the previous PV unit files, enablement and activity; port routing may be partial and a queued or in-flight request may still complete; inspect pv-http and pv-https units, their .candidate and .rollback files with an administrator before retrying `pv ports:install` or `pv ports:uninstall`");
+        for (name, content) in previous_units {
+            assert_eq!(
+                fs::read_to_string(&Utf8Path::new(SYSTEM_SOCKET_PROXY_DIRECTORY).join(name))?,
+                content
+            );
+        }
+        for name in ["pv-http.socket", "pv-https.socket"] {
+            assert_eq!(service_property(name, "ActiveState")?, "active");
+            assert_eq!(
+                root_text(&["/usr/bin/systemctl", "is-enabled", name])?.trim(),
+                "enabled"
+            );
+        }
+        assert_eq!(
+            service_property("pv-http.service", "ActiveState")?,
+            "active"
+        );
+        assert_eq!(service_property(FOREIGN_SOCKET, "ActiveState")?, "active");
+        self.require_forwarding(&config, 80, changed_port)?;
+        root(&["/usr/bin/systemctl", "stop", FOREIGN_SOCKET])?;
+        for name in [FOREIGN_SOCKET, FOREIGN_SERVICE] {
+            root(&[
+                "/usr/bin/rm",
+                "--",
+                &format!("{SYSTEM_SOCKET_PROXY_DIRECTORY}/{name}"),
+            ])?;
+        }
+        root(&["/usr/bin/systemctl", "daemon-reload"])?;
+        self.command("ports:install")?;
         self.require_active(&config)?;
 
         // A reload can report port 80 while the held socket still listens elsewhere.
