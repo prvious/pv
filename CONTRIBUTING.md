@@ -212,6 +212,17 @@ already run their own init.
 Linux CI and this command omit debug symbols and incremental build caches to
 keep the full workspace build within runner disk space; debug assertions stay enabled.
 
+Before seeding unpublished artifacts for Linux acceptance, run this check inside
+the builder. It verifies that the reserved `.invalid` manifest host produces a
+transport error and PV uses its cached manifest. It refuses proxy environments
+so a proxy connection failure cannot stand in for direct DNS resolution.
+
+```shell
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
+  cargo nextest run --profile ci --locked -p resources --all-features --run-ignored only \
+  -E 'test(=invalid_manifest_host_uses_transport_error_and_cached_manifest)'
+```
+
 System integration needs a separate disposable container with systemd as PID 1:
 
 ```shell
