@@ -21,7 +21,6 @@ need curl
 need git
 need lipo
 need otool
-need shasum
 need unzip
 need tar
 
