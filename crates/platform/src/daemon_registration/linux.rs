@@ -231,12 +231,18 @@ async fn require_owned_unit(
     Ok(status)
 }
 
+async fn reload_owned_unit(
+    manager: &Proxy<'_>,
+) -> Result<Option<DaemonRegistrationStatus>, PlatformError> {
+    manager.call::<_, _, ()>("Reload", &()).await?;
+    require_owned_unit(manager).await
+}
+
 pub(super) fn enable(path: &Utf8Path, session_address: &str) -> Result<(), PlatformError> {
     require_owned_file(path)?;
     let manager = manager(session_address)?;
     run_operation("enable", Duration::from_secs(15), async {
-        manager.call::<_, _, ()>("Reload", &()).await?;
-        require_owned_unit(&manager).await?;
+        reload_owned_unit(&manager).await?;
         manager
             .call::<_, _, (bool, Vec<(String, String, String)>)>(
                 "EnableUnitFiles",
@@ -250,9 +256,7 @@ pub(super) fn enable(path: &Utf8Path, session_address: &str) -> Result<(), Platf
 pub(super) fn reload(session_address: &str) -> Result<(), PlatformError> {
     let manager = manager(session_address)?;
     run_operation("reload", Duration::from_secs(10), async {
-        require_owned_unit(&manager).await?;
-        manager.call::<_, _, ()>("Reload", &()).await?;
-        require_owned_unit(&manager).await?;
+        reload_owned_unit(&manager).await?;
         Ok(())
     })
 }
@@ -263,7 +267,7 @@ pub(super) fn remove(path: &Utf8Path, session_address: &str) -> Result<(), Platf
     let started = Instant::now();
     let timeout = Duration::from_secs(10);
     run_operation("remove", timeout, async {
-        require_owned_unit(&manager).await?;
+        reload_owned_unit(&manager).await?;
         manager
             .call::<_, _, Vec<(String, String, String)>>(
                 "DisableUnitFiles",
@@ -327,7 +331,7 @@ fn run_job(
 ) -> Result<(), PlatformError> {
     let manager = manager(session_address)?;
     run_operation(operation, timeout, async {
-        let previous = require_owned_unit(&manager).await?;
+        let previous = reload_owned_unit(&manager).await?;
         if operation == "StopUnit" && previous.is_none() {
             return Ok(());
         }
@@ -343,8 +347,7 @@ fn run_job(
             )?;
         }
         // Reload before stopping: a repaired file can still have a cached KillMode=control-group.
-        manager.call::<_, _, ()>("Reload", &()).await?;
-        let previous = require_owned_unit(&manager).await?;
+        let previous = reload_owned_unit(&manager).await?;
         manager.call::<_, _, ()>("Subscribe", &()).await?;
         let mut removed = manager.receive_signal("JobRemoved").await?;
         let job: OwnedObjectPath = manager
