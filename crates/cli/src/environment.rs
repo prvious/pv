@@ -193,6 +193,11 @@ pub trait Environment {
     }
 
     #[cfg(target_os = "linux")]
+    fn check_linux_setup_dns(&self) -> Result<(), platform::PlatformError> {
+        platform::check_linux_setup_dns()
+    }
+
+    #[cfg(target_os = "linux")]
     fn socket_proxy_directory(&self) -> PathBuf {
         PathBuf::from(platform::SYSTEM_SOCKET_PROXY_DIRECTORY)
     }
