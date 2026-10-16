@@ -417,7 +417,6 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::Unsupported { .. }
         | PlatformError::UnsupportedTarget { .. }
         | PlatformError::BrowserOpen(_)
-        | PlatformError::BrowserOpenStatus { .. }
         | PlatformError::Keychain(_)
         | PlatformError::LaunchAgent(_)
         | PlatformError::LaunchAgentCommand { .. }

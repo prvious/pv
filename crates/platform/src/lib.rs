@@ -93,17 +93,6 @@ mod tests {
     use crate::{PlatformCapability, PlatformTarget};
 
     #[test]
-    fn browser_open_helper_reports_failed_status() {
-        let result = crate::browser::open_url_with_launcher("https://example.test", |_| Ok(false));
-
-        assert!(matches!(
-            result,
-            Err(PlatformError::BrowserOpenStatus { status })
-                if status == "exit status: unsuccessful"
-        ));
-    }
-
-    #[test]
     fn unsupported_error_names_capability_and_target() {
         let error = PlatformError::Unsupported {
             capability: PlatformCapability::DaemonRegistration,
@@ -134,6 +123,17 @@ mod tests {
             error,
             Err(PlatformError::Unsupported {
                 capability: PlatformCapability::TrustStore,
+                target: PlatformTarget::Windows,
+            })
+        ));
+        assert!(
+            require_capability_for(PlatformTarget::Linux, PlatformCapability::BrowserHandoff)
+                .is_ok()
+        );
+        assert!(matches!(
+            require_capability_for(PlatformTarget::Windows, PlatformCapability::BrowserHandoff),
+            Err(PlatformError::Unsupported {
+                capability: PlatformCapability::BrowserHandoff,
                 target: PlatformTarget::Windows,
             })
         ));

@@ -6,26 +6,27 @@ use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use cli::{Answer, Prompt};
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
 use state::{Database, ProjectMode, PvPaths};
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[path = "support/prompts.rs"]
 mod prompts;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use prompts::{ScriptedPrompts, Step};
 
 #[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
     current_dir: RefCell<PathBuf>,
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     prompts: ScriptedPrompts,
     opened_urls: RefCell<Vec<String>>,
+    browser_error: bool,
     stdin_terminal: bool,
 }
 
@@ -34,14 +35,15 @@ impl TestEnvironment {
         Self {
             home: home.as_std_path().to_path_buf(),
             current_dir: RefCell::new(current_dir.as_std_path().to_path_buf()),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             prompts: ScriptedPrompts::default(),
             opened_urls: RefCell::new(Vec::new()),
+            browser_error: false,
             stdin_terminal: false,
         }
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn interactive(mut self, steps: impl IntoIterator<Item = Step>) -> Self {
         self.stdin_terminal = true;
         self.prompts = ScriptedPrompts::new(steps);
@@ -49,12 +51,12 @@ impl TestEnvironment {
         self
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn set_current_dir(&self, current_dir: &Utf8Path) {
         *self.current_dir.borrow_mut() = current_dir.as_std_path().to_path_buf();
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn opened_urls(&self) -> Vec<String> {
         self.opened_urls.borrow().clone()
     }
@@ -89,19 +91,22 @@ impl Environment for TestEnvironment {
         self.stdin_terminal
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     fn prompt(&self, prompt: &Prompt<'_>) -> io::Result<Answer> {
         self.prompts.ask(prompt)
     }
 
     fn open_url(&self, url: &str) -> io::Result<()> {
         self.opened_urls.borrow_mut().push(url.to_string());
+        if self.browser_error {
+            return Err(io::Error::other("browser is unavailable"));
+        }
 
         Ok(())
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn open_primary_hostname_argument_normalizes_and_opens_project() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -129,6 +134,39 @@ fn open_primary_hostname_argument_normalizes_and_opens_project() -> anyhow::Resu
         assert_debug_snapshot!((link, open, opened_urls));
     });
 
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[test]
+fn open_reports_browser_failure_without_success_output() -> anyhow::Result<()> {
+    let directory = tempdir()?;
+    let home = directory.path().join("home");
+    let project = directory.path().join("acme");
+    create_dir(&project)?;
+    let mut environment = TestEnvironment::new(&home, &project);
+    environment.browser_error = true;
+    assert_eq!(
+        run_pv(&["link"], &environment)?.exit_code,
+        ExitCode::SUCCESS
+    );
+
+    let output = run_pv(&["open", "acme"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(output.stdout.is_empty());
+    assert_eq!(environment.opened_urls(), ["https://acme.test"]);
+    assert_debug_snapshot!(output, @r#"
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "",
+        stderr: "error: browser is unavailable\n",
+    }
+    "#);
     Ok(())
 }
 
@@ -232,7 +270,7 @@ postgres:
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn open_subdomain_argument_does_not_resolve_parent_project() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -262,7 +300,7 @@ fn open_subdomain_argument_does_not_resolve_parent_project() -> anyhow::Result<(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn open_without_hostname_uses_current_project_primary_hostname() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -293,7 +331,7 @@ fn open_without_hostname_uses_current_project_primary_hostname() -> anyhow::Resu
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn open_uses_project_picker_when_outside_a_linked_project() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -324,7 +362,7 @@ fn open_uses_project_picker_when_outside_a_linked_project() -> anyhow::Result<()
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn open_rejects_resource_only_target_and_excludes_it_from_picker() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -340,6 +378,7 @@ fn open_rejects_resource_only_target_and_excludes_it_from_picker() -> anyhow::Re
 
     let link_resource_only = run_pv(&["link"], &environment)?;
     let explicit_open = run_pv(&["open", "resources"], &environment)?;
+    environment.set_current_dir(&outside);
     let current_open = run_pv(&["open"], &environment)?;
     environment.set_current_dir(&served);
     let link_served = run_pv(&["link"], &environment)?;
@@ -371,7 +410,7 @@ fn open_rejects_resource_only_target_and_excludes_it_from_picker() -> anyhow::Re
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn open_project_picker_sorts_projects_by_primary_hostname() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -415,7 +454,7 @@ fn open_project_picker_sorts_projects_by_primary_hostname() -> anyhow::Result<()
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn open_without_current_project_fails_when_non_interactive() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -446,7 +485,7 @@ fn open_without_current_project_fails_when_non_interactive() -> anyhow::Result<(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[test]
 fn open_picker_cancel_exits_130_without_opening() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -477,13 +516,6 @@ fn open_picker_cancel_exits_130_without_opening() -> anyhow::Result<()> {
 struct RunOutput {
     exit_code: ExitCode,
     stdout: String,
-    #[cfg_attr(
-        target_os = "linux",
-        expect(
-            dead_code,
-            reason = "Linux snapshots read this field through derived Debug"
-        )
-    )]
     stderr: String,
 }
 
