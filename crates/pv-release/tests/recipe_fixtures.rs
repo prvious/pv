@@ -8,7 +8,7 @@ use insta::{assert_debug_snapshot, assert_snapshot};
 use pv_release::archive::validate_archive;
 use pv_release::fixture::generate_recipe_fixtures_with_backing;
 use pv_release::manifest::generate_manifest_file_with_defaults;
-use pv_release::recipe::{BackingRecipe, BackingRecipeKind};
+use pv_release::recipe::BackingRecipeKind;
 use pv_release::record::{ReleaseRecord, load_release_records};
 use resources::ArtifactManifest;
 use tar::Archive;
@@ -59,11 +59,6 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
     let rustfs = workspace_root.join("release/artifacts/recipes/rustfs/recipe.toml");
     let defaults = workspace_root.join("release/artifacts/default-tracks.toml");
 
-    let redis_recipe = BackingRecipe::load(&redis, BackingRecipeKind::Redis)?;
-    let Some(redis_track) = redis_recipe.tracks().first() else {
-        bail!("committed Redis recipe should define a track");
-    };
-    let redis_upstream_version = redis_track.upstream_version().to_string();
     let fixture_output = run_pv_release(&[
         "generate-recipe-fixtures",
         "--php",
@@ -93,162 +88,7 @@ fn recipe_fixture_generation_validates_archives_records_and_manifest() -> Result
     ])?;
     assert_command_success(&fixture_output, "generate-recipe-fixtures")?;
     let archive_roots = generated_archive_roots(&archives, &records)?;
-    assert_eq!(
-        archive_roots,
-        vec![
-            ArchiveRoot::new(
-                "caddy",
-                "2",
-                "darwin-amd64",
-                "caddy-2.11.4-pv1-darwin-amd64",
-            ),
-            ArchiveRoot::new(
-                "caddy",
-                "2",
-                "darwin-arm64",
-                "caddy-2.11.4-pv1-darwin-arm64",
-            ),
-            ArchiveRoot::new("composer", "2", "any", "composer-2.10.1-pv1-any"),
-            ArchiveRoot::new(
-                "frankenphp",
-                "8.3",
-                "darwin-amd64",
-                "frankenphp-8.3.31-frankenphp1.12.4-pv7-darwin-amd64",
-            ),
-            ArchiveRoot::new(
-                "frankenphp",
-                "8.3",
-                "darwin-arm64",
-                "frankenphp-8.3.31-frankenphp1.12.4-pv7-darwin-arm64",
-            ),
-            ArchiveRoot::new(
-                "frankenphp",
-                "8.4",
-                "darwin-amd64",
-                "frankenphp-8.4.22-frankenphp1.12.4-pv7-darwin-amd64",
-            ),
-            ArchiveRoot::new(
-                "frankenphp",
-                "8.4",
-                "darwin-arm64",
-                "frankenphp-8.4.22-frankenphp1.12.4-pv7-darwin-arm64",
-            ),
-            ArchiveRoot::new(
-                "frankenphp",
-                "8.5",
-                "darwin-amd64",
-                "frankenphp-8.5.7-frankenphp1.12.4-pv7-darwin-amd64",
-            ),
-            ArchiveRoot::new(
-                "frankenphp",
-                "8.5",
-                "darwin-arm64",
-                "frankenphp-8.5.7-frankenphp1.12.4-pv7-darwin-arm64",
-            ),
-            ArchiveRoot::new(
-                "mailpit",
-                "1",
-                "darwin-amd64",
-                "mailpit-1.30.1-pv1-darwin-amd64",
-            ),
-            ArchiveRoot::new(
-                "mailpit",
-                "1",
-                "darwin-arm64",
-                "mailpit-1.30.1-pv1-darwin-arm64",
-            ),
-            ArchiveRoot::new(
-                "mysql",
-                "8.0",
-                "darwin-amd64",
-                "mysql-8.0.46-pv1-darwin-amd64"
-            ),
-            ArchiveRoot::new(
-                "mysql",
-                "8.0",
-                "darwin-arm64",
-                "mysql-8.0.46-pv1-darwin-arm64"
-            ),
-            ArchiveRoot::new(
-                "mysql",
-                "8.4",
-                "darwin-amd64",
-                "mysql-8.4.9-pv1-darwin-amd64"
-            ),
-            ArchiveRoot::new(
-                "mysql",
-                "8.4",
-                "darwin-arm64",
-                "mysql-8.4.9-pv1-darwin-arm64"
-            ),
-            ArchiveRoot::new(
-                "mysql",
-                "9.7",
-                "darwin-amd64",
-                "mysql-9.7.0-pv1-darwin-amd64"
-            ),
-            ArchiveRoot::new(
-                "mysql",
-                "9.7",
-                "darwin-arm64",
-                "mysql-9.7.0-pv1-darwin-arm64"
-            ),
-            ArchiveRoot::new("php", "8.3", "darwin-amd64", "php-8.3.31-pv7-darwin-amd64"),
-            ArchiveRoot::new("php", "8.3", "darwin-arm64", "php-8.3.31-pv7-darwin-arm64"),
-            ArchiveRoot::new("php", "8.4", "darwin-amd64", "php-8.4.22-pv7-darwin-amd64"),
-            ArchiveRoot::new("php", "8.4", "darwin-arm64", "php-8.4.22-pv7-darwin-arm64"),
-            ArchiveRoot::new("php", "8.5", "darwin-amd64", "php-8.5.7-pv7-darwin-amd64"),
-            ArchiveRoot::new("php", "8.5", "darwin-arm64", "php-8.5.7-pv7-darwin-arm64"),
-            ArchiveRoot::new(
-                "postgres",
-                "17",
-                "darwin-amd64",
-                "postgres-17.10-pv2-darwin-amd64",
-            ),
-            ArchiveRoot::new(
-                "postgres",
-                "17",
-                "darwin-arm64",
-                "postgres-17.10-pv2-darwin-arm64",
-            ),
-            ArchiveRoot::new(
-                "postgres",
-                "18",
-                "darwin-amd64",
-                "postgres-18.4-pv2-darwin-amd64",
-            ),
-            ArchiveRoot::new(
-                "postgres",
-                "18",
-                "darwin-arm64",
-                "postgres-18.4-pv2-darwin-arm64",
-            ),
-            ArchiveRoot::new(
-                "redis",
-                "8.8",
-                "darwin-amd64",
-                &format!("redis-{redis_upstream_version}-pv1-darwin-amd64"),
-            ),
-            ArchiveRoot::new(
-                "redis",
-                "8.8",
-                "darwin-arm64",
-                &format!("redis-{redis_upstream_version}-pv1-darwin-arm64"),
-            ),
-            ArchiveRoot::new(
-                "rustfs",
-                "1",
-                "darwin-amd64",
-                "rustfs-1.0.0-beta.7-pv1-darwin-amd64",
-            ),
-            ArchiveRoot::new(
-                "rustfs",
-                "1",
-                "darwin-arm64",
-                "rustfs-1.0.0-beta.7-pv1-darwin-arm64",
-            ),
-        ],
-    );
+    assert_debug_snapshot!("generated_archive_roots", archive_roots);
     let manifest_output = run_pv_release(&[
         "generate-manifest",
         "--records",
@@ -380,17 +220,6 @@ fn recipe_fixture_generation_validates_committed_mailpit_and_rustfs_recipes() ->
     ArtifactManifest::parse(&manifest_json)?;
 
     Ok(())
-}
-
-impl ArchiveRoot {
-    fn new(resource: &str, track: &str, platform: &str, root: &str) -> Self {
-        Self {
-            resource: resource.to_owned(),
-            track: track.to_owned(),
-            platform: platform.to_owned(),
-            root: root.to_owned(),
-        }
-    }
 }
 
 fn generated_archive_roots(archives: &Utf8Path, records: &Utf8Path) -> Result<Vec<ArchiveRoot>> {
@@ -535,7 +364,7 @@ const VALID_REDIS_TOML: &str = r#"
 [recipe]
 resources = ["redis"]
 default_track = "8.8"
-platforms = ["darwin-arm64", "darwin-amd64"]
+platforms = ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"]
 minimum_pv_version = "0.1.0"
 pv_build_revision = "pv1"
 license_files = ["LICENSE"]

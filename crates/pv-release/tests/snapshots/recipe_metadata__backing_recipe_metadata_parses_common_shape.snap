@@ -1,6 +1,6 @@
 ---
 source: crates/pv-release/tests/recipe_metadata.rs
-expression: "(recipe.kind(), recipe.resource().as_str(), recipe.default_track().as_str(),\nrecipe.platforms().iter().map(|platform|\nplatform.as_str()).collect::<Vec<_>>(),\nrecipe.tracks().iter().map(|track|\n(track.name().as_str(), track.upstream_version(), track.source_url(),\ntrack.source_sha256().as_str(),)).collect::<Vec<_>>(),\nrecipe.payload_paths(),)"
+expression: "(recipe.kind(), recipe.resource().as_str(), recipe.default_track().as_str(),\nrecipe.platforms().iter().map(|platform|\nplatform.as_str()).collect::<Vec<_>>(), track_sources,\nrecipe.payload_paths(),)"
 ---
 (
     Redis,
@@ -9,6 +9,8 @@ expression: "(recipe.kind(), recipe.resource().as_str(), recipe.default_track().
     [
         "darwin-arm64",
         "darwin-amd64",
+        "linux-amd64",
+        "linux-arm64",
     ],
     [
         (
