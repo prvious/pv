@@ -7,6 +7,7 @@ use flate2::write::GzEncoder;
 use insta::{assert_debug_snapshot, assert_snapshot};
 use pv_release::ReleaseError;
 use pv_release::smoke::{run_smoke_hook, run_smoke_hook_with_timeout};
+use resources::TargetPlatform;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -2475,76 +2476,13 @@ fn postgres_linux_dependency_contract_uses_native_toolchain() -> Result<()> {
 
 #[test]
 fn postgres_smoke_uses_pv_auth_and_validates_supplied_extensions() -> Result<()> {
-    let tempdir = tempdir()?;
-    let artifact_root = tempdir.path().join("artifact");
-    let artifact_bin = artifact_root.join("bin");
-    let artifact_postgresql = artifact_root.join("lib/postgresql");
-    let command_bin = tempdir.path().join("commands");
-    let codesign_log = tempdir.path().join("codesign.log");
-    let initdb_log = tempdir.path().join("initdb.log");
-    let pg_ctl_log = tempdir.path().join("pg-ctl.log");
-    let psql_log = tempdir.path().join("psql.log");
-    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let extension_catalog =
-        workspace_root.join("release/artifacts/recipes/postgres/catalogs/17.txt");
+    let (initdb_log, pg_ctl_log, psql_log, _) = run_postgres_smoke_fixture("darwin-arm64", false)?;
+    let extension_catalog = Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../release/artifacts/recipes/postgres/catalogs/17.txt");
     let expected_extension_creates = read_file(&extension_catalog)?
         .lines()
         .filter(|extension| !extension.is_empty() && *extension != "plpgsql")
         .count();
-
-    create_dir_all(&artifact_bin)?;
-    create_dir_all(&artifact_postgresql)?;
-    create_dir_all(&command_bin)?;
-    write_executable(&artifact_bin.join("postgres"), "#!/bin/sh\nexit 0\n")?;
-    write_fake_postgres_initdb(&artifact_bin.join("initdb"))?;
-    write_fake_postgres_pg_ctl(&artifact_bin.join("pg_ctl"))?;
-    write_fake_postgres_psql(&artifact_bin.join("psql"))?;
-    for relative_path in [
-        "lib/libcrypto.3.dylib",
-        "lib/libssl.3.dylib",
-        "lib/postgresql/pg_trgm.dylib",
-        "lib/postgresql/pgcrypto.dylib",
-        "lib/postgresql/sslinfo.dylib",
-    ] {
-        write_file(&artifact_root.join(relative_path), "mach-o fixture\n")?;
-    }
-    write_fake_codesign(&command_bin.join("codesign"))?;
-    write_fake_macho_file(&command_bin.join("file"))?;
-    write_fake_lipo(&command_bin.join("lipo"))?;
-    write_fake_otool(&command_bin.join("otool"))?;
-    write_executable(&command_bin.join("sleep"), "#!/bin/sh\nexit 0\n")?;
-    write_file(&codesign_log, "")?;
-    write_file(&initdb_log, "")?;
-    write_file(&pg_ctl_log, "")?;
-    write_file(&psql_log, "")?;
-
-    let output = StdCommand::new(postgres_smoke_hook())
-        .arg(&artifact_root)
-        .env(
-            "PATH",
-            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
-        )
-        .env("PV_POSTGRES_EXTENSION_CATALOG", &extension_catalog)
-        .env("PV_POSTGRES_PLATFORM", "darwin-arm64")
-        .env("PV_POSTGRES_DEPLOYMENT_TARGET", "13.0")
-        .env("PV_TEST_CODESIGN_LOG", &codesign_log)
-        .env("PV_TEST_LIPO_ARCHS", "arm64")
-        .env("PV_TEST_MACHO_LIBRARIES", "")
-        .env("PV_TEST_MACHO_MINOS", "13.0")
-        .env("PV_TEST_MACHO_RPATHS", "@loader_path/../lib")
-        .env("PV_TEST_POSTGRES_INITDB_LOG", &initdb_log)
-        .env("PV_TEST_POSTGRES_PG_CTL_LOG", &pg_ctl_log)
-        .env("PV_TEST_POSTGRES_PSQL_LOG", &psql_log)
-        .output()?;
-
-    assert!(
-        output.status.success(),
-        "Postgres supplied-extension smoke failed: {}",
-        command_output_debug(&output)
-    );
-    let initdb_log = read_file(&initdb_log)?;
-    let pg_ctl_log = read_file(&pg_ctl_log)?;
-    let psql_log = read_file(&psql_log)?;
     let extension_creates = psql_log
         .lines()
         .filter(|line| line.starts_with("CREATE EXTENSION"))
@@ -2569,6 +2507,37 @@ fn postgres_smoke_uses_pv_auth_and_validates_supplied_extensions() -> Result<()>
     );
     assert_debug_snapshot!(bootstrap_summary);
 
+    Ok(())
+}
+
+#[test]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+fn postgres_linux_smoke_validates_elf_before_initializing_database() -> Result<()> {
+    let platform = if cfg!(target_arch = "aarch64") {
+        "linux-arm64"
+    } else {
+        "linux-amd64"
+    };
+    let mut results = Vec::new();
+    for invalid_elf in [false, true] {
+        let (initdb, pg_ctl, psql, error) = run_postgres_smoke_fixture(platform, invalid_elf)?;
+        assert_eq!(initdb.is_empty(), invalid_elf);
+        assert_eq!(pg_ctl.is_empty(), invalid_elf);
+        assert_eq!(psql.is_empty(), invalid_elf);
+        results.push((
+            invalid_elf,
+            pg_ctl.matches("action=start").count(),
+            pg_ctl.matches("action=stop").count(),
+            psql.lines()
+                .filter(|line| line.starts_with("CREATE EXTENSION"))
+                .count(),
+            error,
+        ));
+    }
+    assert_debug_snapshot!(results);
     Ok(())
 }
 
@@ -3942,6 +3911,124 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
 
 fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
     run_mysql_build_recipe_smoke_with_options(MysqlBuildRecipeOptions::default())
+}
+
+fn run_postgres_smoke_fixture(
+    platform: &str,
+    invalid_elf: bool,
+) -> Result<(String, String, String, String)> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let artifact_postgresql = artifact_root.join("lib/postgresql");
+    let command_bin = tempdir.path().join("commands");
+    let codesign_log = tempdir.path().join("codesign.log");
+    let initdb_log = tempdir.path().join("initdb.log");
+    let pg_ctl_log = tempdir.path().join("pg-ctl.log");
+    let psql_log = tempdir.path().join("psql.log");
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let extension_catalog =
+        workspace_root.join("release/artifacts/recipes/postgres/catalogs/17.txt");
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&artifact_postgresql)?;
+    create_dir_all(&command_bin)?;
+    write_executable(&artifact_bin.join("postgres"), "#!/bin/sh\nexit 0\n")?;
+    write_fake_postgres_initdb(&artifact_bin.join("initdb"))?;
+    write_fake_postgres_pg_ctl(&artifact_bin.join("pg_ctl"))?;
+    write_fake_postgres_psql(&artifact_bin.join("psql"))?;
+    let target = TargetPlatform::new(platform)?;
+    for library in target.openssl_library_names() {
+        write_file(
+            &artifact_root.join("lib").join(library),
+            "library fixture\n",
+        )?;
+    }
+    for module in ["pg_trgm", "pgcrypto", "sslinfo"] {
+        write_file(
+            &artifact_postgresql.join(format!("{module}{}", target.shared_library_suffix())),
+            "module fixture\n",
+        )?;
+    }
+    if platform.starts_with("linux-") {
+        let source = tempdir.path().join("module.c");
+        write_file(&source, "int fixture(void) { return 1; }\n")?;
+        let output = StdCommand::new("cc")
+            .args(["-shared", "-fPIC"])
+            .arg(&source)
+            .arg(if invalid_elf {
+                "-Wl,-rpath,/tmp/pv/build/lib"
+            } else {
+                "-Wl,-rpath,$ORIGIN/.."
+            })
+            .arg("-o")
+            .arg(artifact_postgresql.join("pg_trgm.so"))
+            .output()?;
+        assert!(
+            output.status.success(),
+            "smoke ELF compilation failed: {}",
+            command_output_debug(&output)
+        );
+    } else {
+        write_fake_codesign(&command_bin.join("codesign"))?;
+        write_fake_macho_file(&command_bin.join("file"))?;
+        write_fake_lipo(&command_bin.join("lipo"))?;
+        write_fake_otool(&command_bin.join("otool"))?;
+    }
+    write_executable(&command_bin.join("sleep"), "#!/bin/sh\nexit 0\n")?;
+    write_file(&codesign_log, "")?;
+    write_file(&initdb_log, "")?;
+    write_file(&pg_ctl_log, "")?;
+    write_file(&psql_log, "")?;
+
+    let output = StdCommand::new(postgres_smoke_hook())
+        .arg(&artifact_root)
+        .env(
+            "PATH",
+            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
+        )
+        .env("TMPDIR", tempdir.path())
+        .env("PV_POSTGRES_EXTENSION_CATALOG", &extension_catalog)
+        .env("PV_POSTGRES_PLATFORM", platform)
+        .env(
+            "PV_POSTGRES_DEPLOYMENT_TARGET",
+            if platform.starts_with("linux-") {
+                ""
+            } else {
+                "13.0"
+            },
+        )
+        .env("PV_TEST_CODESIGN_LOG", &codesign_log)
+        .env("PV_TEST_LIPO_ARCHS", "arm64")
+        .env("PV_TEST_MACHO_LIBRARIES", "")
+        .env("PV_TEST_MACHO_MINOS", "13.0")
+        .env("PV_TEST_MACHO_RPATHS", "@loader_path/../lib")
+        .env("PV_TEST_POSTGRES_INITDB_LOG", &initdb_log)
+        .env("PV_TEST_POSTGRES_PG_CTL_LOG", &pg_ctl_log)
+        .env("PV_TEST_POSTGRES_PSQL_LOG", &psql_log)
+        .output()?;
+
+    assert_eq!(
+        output.status.success(),
+        !invalid_elf,
+        "Postgres smoke failed for {platform}, invalid_elf={invalid_elf}: {}",
+        command_output_debug(&output)
+    );
+    let error = String::from_utf8(output.stderr)?;
+    let error = if let Some(path) = error
+        .lines()
+        .find_map(|line| line.strip_prefix("Postgres smoke files retained at "))
+    {
+        error.replace(path, "<retained-smoke-files>")
+    } else {
+        error
+    };
+    Ok((
+        read_file(&initdb_log)?,
+        read_file(&pg_ctl_log)?,
+        read_file(&psql_log)?,
+        error.replace(artifact_root.as_str(), "<artifact>"),
+    ))
 }
 
 fn run_postgres_build_recipe_smoke(
