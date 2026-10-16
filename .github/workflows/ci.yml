@@ -270,7 +270,7 @@ jobs:
           set -euo pipefail
           cargo build --locked --all-features -p pv-privileged-helper
           cargo nextest list --locked --all-features -p cli --run-ignored only \
-            -E 'binary(=linux_helper_system) and test(=systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes)'
+            -E 'binary(=linux_helper_system) and (test(=systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes) or test(=dns_system::systemd_dns_inspection_does_not_activate_stopped_resolved))'
           nextest_state_directory=$(mktemp -d "$RUNNER_TEMP/nextest-helper-state.XXXXXX")
           printf 'NEXTEST_STATE_DIR=%s\n' "$nextest_state_directory" >> "$GITHUB_ENV"
 
@@ -294,7 +294,7 @@ jobs:
             "$(command -v cargo)" nextest run --profile ci \
             --user-config-file "$RUNNER_TEMP/nextest-user.toml" \
             --run-ignored only -p cli --all-features --locked \
-            -E 'binary(=linux_helper_system) and test(=systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes)'
+            -E 'binary(=linux_helper_system) and (test(=systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes) or test(=dns_system::systemd_dns_inspection_does_not_activate_stopped_resolved))'
 
       - name: Export Linux helper test recording
         id: export_linux_helper_recording
