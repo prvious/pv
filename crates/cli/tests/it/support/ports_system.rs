@@ -126,6 +126,16 @@ fn require_proxy_units_unloaded() -> Result<()> {
     Ok(())
 }
 
+fn socket_target_dependencies() -> Result<String> {
+    let dependencies = service_property("sockets.target", "Wants")?;
+    let mut sockets = dependencies
+        .split_whitespace()
+        .filter(|name| matches!(*name, "pv-http.socket" | "pv-https.socket"))
+        .collect::<Vec<_>>();
+    sockets.sort_unstable();
+    Ok(sockets.join("\n"))
+}
+
 fn exercise_ports(helper_fixture: &mut HelperFixture, helper: &Utf8Path) -> Result<()> {
     require_absent()?;
     ensure!(!fs::path_entry_exists(Utf8Path::new(CONTROL))?);
@@ -264,6 +274,10 @@ impl PortsFixture {
         self.start_gateway(&config)?;
         self.command("ports:install")?;
         self.require_active(&config)?;
+        assert_snapshot!(socket_target_dependencies()?, @r"
+        pv-http.socket
+        pv-https.socket
+        ");
         self.command("ports:install")?;
         self.require_active(&config)?;
         root(&["/usr/bin/systemctl", "disable", "pv-http.socket"])?;
@@ -353,6 +367,10 @@ impl PortsFixture {
         );
         assert_eq!(service_property(FOREIGN_SOCKET, "ActiveState")?, "active");
         self.require_forwarding(&config, 80, changed_port)?;
+        assert_snapshot!(socket_target_dependencies()?, @r"
+        pv-http.socket
+        pv-https.socket
+        ");
 
         // A failed restoration must stop before another unit can reactivate routing.
         let rejection_flag = format!("{CONTROL}/reject-restore");

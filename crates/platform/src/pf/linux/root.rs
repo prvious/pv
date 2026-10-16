@@ -77,6 +77,8 @@ pub(in crate::pf) fn apply(config: &PfRedirectConfig) -> Result<(), PlatformErro
             for unit in &previous {
                 enable(&manager, &unit.name, false).await?;
             }
+            reload(&manager).await?;
+            require_owned_units(&manager, &previous, true).await?;
             for unit in &previous {
                 job(&manager, "RestartUnit", &unit.name).await?;
             }
@@ -329,6 +331,8 @@ async fn rollback(
         }
     }
     if errors.is_empty() {
+        reload(manager).await?;
+        require_owned_units(manager, previous, false).await?;
         for unit in previous {
             if unit.active {
                 job(manager, "RestartUnit", &unit.name).await?;
