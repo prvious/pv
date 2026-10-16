@@ -77,7 +77,8 @@ impl PfRoutingDiagnostic {
                     #[cfg(target_os = "linux")]
                     let state = if environment.platform_target()? == platform::PlatformTarget::Linux
                         && expected.is_none()
-                        && inspection.has_unresolved_redirect_targets
+                        && (inspection.has_unresolved_redirect_targets
+                            || !inspection.resolved_target_ports.is_empty())
                     {
                         PfRoutingState::Drifted
                     } else {
@@ -85,6 +86,17 @@ impl PfRoutingDiagnostic {
                     };
                     (state, evidence, http_port, https_port)
                 }
+                #[cfg(target_os = "linux")]
+                Err(_) if environment.platform_target()? == platform::PlatformTarget::Linux => (
+                    if files_current {
+                        PfRoutingState::Unknown
+                    } else {
+                        PfRoutingState::Drifted
+                    },
+                    PfRoutingEvidence::Unavailable,
+                    None,
+                    None,
+                ),
                 Err(_) => classify_probe(environment, paths, expected.as_ref(), files_current),
             };
 

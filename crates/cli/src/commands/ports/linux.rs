@@ -664,15 +664,10 @@ mod tests {
             if !current {
                 fs::delete_file(&environment.paths().ports_config().join("pv-https.service"))?;
             }
-            let should_probe = native.is_none();
             *environment.active_inspection.borrow_mut() = native;
             environment.gateway_probe_succeeds.set(probe);
-            let before = environment.gateway_probes.get();
             let (exit, value) = status_json(&environment, &config)?;
-            assert_eq!(
-                environment.gateway_probes.get() - before,
-                u32::from(should_probe)
-            );
+            assert_eq!(environment.gateway_probes.get(), 0);
             assert_eq!(exit == ExitCode::SUCCESS, value["state"] == "active");
             results.push(format!(
                 "{case}: {} ({})",
@@ -684,40 +679,68 @@ mod tests {
         exact with stale files: "drifted" ("systemd")
         partial: "drifted" ("systemd")
         unresolved: "drifted" ("systemd")
-        unavailable and verified: "active" ("probe")
+        unavailable and verified: "unknown" ("unavailable")
         unavailable and inconclusive: "unknown" ("unavailable")
-        unavailable and stale: "drifted" ("probe")
+        unavailable and stale: "drifted" ("unavailable")
         "#);
         Ok(())
     }
 
     #[test]
-    fn routing_keeps_unresolved_native_targets_drifted_without_gateway_assignments() -> Result<()> {
+    fn routing_keeps_retained_native_targets_drifted_without_gateway_assignments() -> Result<()> {
         let directory = tempdir()?;
         let environment = TestEnvironment::new(directory.path());
         let config = PfRedirectConfig::new(pv_fake::port()?, pv_fake::port()?);
         let database = Database::open(&environment.paths())?;
         assert!(database.assigned_ports()?.is_empty());
-        *environment.active_inspection.borrow_mut() = Some(ActivePfRedirectInspection {
-            pf_enabled: false,
-            pv_config: None,
-            pv_anchor_has_unparsed_rules: false,
-            resolved_target_ports: BTreeSet::new(),
-            has_unresolved_redirect_targets: true,
-        });
-        let (exit, value) = status_json(&environment, &config)?;
-        assert_eq!(exit, ExitCode::FAILURE);
-        assert_eq!(environment.gateway_probes.get(), 0);
-        assert_snapshot!(serde_json::to_string_pretty(&value)?, @r#"
-        {
-          "active_http_port": null,
-          "active_https_port": null,
-          "evidence": "systemd",
-          "expected_http_port": null,
-          "expected_https_port": null,
-          "observed_at": "<time>",
-          "state": "drifted"
+        let mut results = Vec::new();
+        for (resolved_target_ports, has_unresolved_redirect_targets) in [
+            (BTreeSet::new(), false),
+            (BTreeSet::new(), true),
+            (BTreeSet::from([config.http_port]), false),
+        ] {
+            *environment.active_inspection.borrow_mut() = Some(ActivePfRedirectInspection {
+                pf_enabled: false,
+                pv_config: None,
+                pv_anchor_has_unparsed_rules: false,
+                resolved_target_ports,
+                has_unresolved_redirect_targets,
+            });
+            let (exit, value) = status_json(&environment, &config)?;
+            assert_eq!(exit, ExitCode::FAILURE);
+            assert_eq!(environment.gateway_probes.get(), 0);
+            results.push(value);
         }
+        assert_snapshot!(serde_json::to_string_pretty(&results)?, @r#"
+        [
+          {
+            "active_http_port": null,
+            "active_https_port": null,
+            "evidence": "systemd",
+            "expected_http_port": null,
+            "expected_https_port": null,
+            "observed_at": "<time>",
+            "state": "inactive"
+          },
+          {
+            "active_http_port": null,
+            "active_https_port": null,
+            "evidence": "systemd",
+            "expected_http_port": null,
+            "expected_https_port": null,
+            "observed_at": "<time>",
+            "state": "drifted"
+          },
+          {
+            "active_http_port": null,
+            "active_https_port": null,
+            "evidence": "systemd",
+            "expected_http_port": null,
+            "expected_https_port": null,
+            "observed_at": "<time>",
+            "state": "drifted"
+          }
+        ]
         "#);
         Ok(())
     }
