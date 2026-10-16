@@ -68,6 +68,10 @@ if [ "$stopped" != true ]; then
     printf '%s\n' 'fixture cgroups did not stop; retaining recovery files' >&2
     exit 1
 fi
+for name in pv-helper.socket pv-helper.service; do
+    failed=$(/usr/bin/systemctl list-units --all --no-legend --no-pager --plain --state=failed "$name")
+    if [ -n "$failed" ]; then /usr/bin/systemctl reset-failed "$name"; fi
+done
 # Empty-path and native-unit preflight proved that these belong only to this fixture.
 rm -rf -- /usr/local/libexec/pv /var/lib/pv /etc/systemd/system/pv-helper.service.d
 rm -f -- /etc/systemd/system/pv-helper.socket /etc/systemd/system/pv-helper.service \
@@ -76,6 +80,11 @@ rm -f -- /etc/systemd/system/pv-helper.socket /etc/systemd/system/pv-helper.serv
     /etc/systemd/system/sockets.target.wants/pv-helper.socket \
     /run/systemd/system/sockets.target.wants/pv-helper.socket
 /usr/bin/systemctl daemon-reload
+remaining=$(/usr/bin/systemctl list-units --all --no-legend --no-pager --plain pv-helper.socket pv-helper.service)
+if [ -n "$remaining" ]; then
+    printf '%s\n' 'fixture helper units remain loaded after cleanup' >&2
+    exit 1
+fi
 # Keep the root-owned control directory and journal for post-mortem inspection.
 "#;
 
@@ -217,7 +226,72 @@ impl HelperFixture {
             .with_context(|| format!("initial installation failed: {failure:#}"))?;
         platform::remove_privileged_helper()?;
 
-        self.install(&original, &original_sha256)?;
+        root(&[
+            "/usr/bin/install",
+            "-D",
+            "-o",
+            "root",
+            "-g",
+            "root",
+            "-m",
+            "0755",
+            original.as_str(),
+            HELPER_EXECUTABLE_PATH,
+        ])?;
+        root(&["/usr/bin/install", "-d", "-m", "0700", WORK_DIRECTORY])?;
+        let partial_metadata = serde_json::to_string_pretty(&json!({
+            "owner_uid": self.owner_uid,
+            "helper_version": PRIVILEGED_HELPER_VERSION,
+            "protocol_version": HELPER_PROTOCOL_VERSION,
+        }))?;
+        self.root_file(
+            "partial-metadata.json",
+            &partial_metadata,
+            HELPER_METADATA_PATH,
+            "0600",
+        )?;
+        root(&["/usr/bin/install", "-d", "-m", "0755", DROP_IN_DIRECTORY])?;
+        self.root_file(
+            "partial-install-failure.sh",
+            "printf 'partial\\n' > /run/pv-helper-system-test/first-install-started\nexit 1\n",
+            &format!("{CONTROL_DIRECTORY}/first-install-failure.sh"),
+            "0700",
+        )?;
+        self.root_file(
+            "partial-install-failure.conf",
+            "[Service]\nExecStartPre=/bin/sh /run/pv-helper-system-test/first-install-failure.sh\n",
+            &format!("{DROP_IN_DIRECTORY}/10-pv-system-test.conf"),
+            "0644",
+        )?;
+        let partial_failure = self
+            .install(&replacement, &replacement_sha256)
+            .err()
+            .context("partial installation activation must fail")?;
+        assert_eq!(
+            root_text(&[
+                "/usr/bin/cat",
+                &format!("{CONTROL_DIRECTORY}/first-install-started")
+            ])?,
+            "partial\n"
+        );
+        self.remove_condition()?;
+        assert_eq!(
+            checksum(Utf8Path::new(HELPER_EXECUTABLE_PATH))?,
+            original_sha256
+        );
+        assert_eq!(
+            root_text(&["/usr/bin/cat", HELPER_METADATA_PATH])?,
+            partial_metadata
+        );
+        for path in [SOCKET_UNIT, SERVICE_UNIT] {
+            ensure!(
+                !fs::path_entry_exists(Utf8Path::new(path))?,
+                "introduced unit remains after partial rollback: {path}"
+            );
+        }
+        self.install(&original, &original_sha256).with_context(|| {
+            format!("retry after partial installation failed: {partial_failure:#}")
+        })?;
         let first = self.capture_process()?;
         assert_eq!(
             PrivilegedHelperClient.status()?,
@@ -611,7 +685,7 @@ impl HelperFixture {
         for process in &self.processes {
             require_exited(*process)?;
         }
-        Ok(())
+        require_units_absent(&["pv-helper.socket", "pv-helper.service"])
     }
 
     fn cleanup(&mut self) -> Result<()> {
