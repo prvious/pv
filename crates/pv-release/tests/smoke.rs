@@ -2374,6 +2374,100 @@ fn postgres_dependency_cache_contract_is_exact_and_track_independent() -> Result
 }
 
 #[test]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+fn postgres_linux_dependency_contract_uses_native_toolchain() -> Result<()> {
+    let tempdir = tempdir()?;
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dependencies = workspace_root.join("release/artifacts/recipes/postgres/dependencies.sh");
+    let (platform, other_platform, architecture) = if cfg!(target_arch = "aarch64") {
+        ("linux-arm64", "linux-amd64", "aarch64")
+    } else {
+        ("linux-amd64", "linux-arm64", "x86_64")
+    };
+    let describe = |track: &str, target: &str, cflags: &str, directory: &str| {
+        StdCommand::new(&dependencies)
+            .arg("describe")
+            .env("CC", "cc")
+            .env("CFLAGS", cflags)
+            .env_remove("CPPFLAGS")
+            .env_remove("LDFLAGS")
+            .env_remove("SDKROOT")
+            .env_remove("MACOSX_DEPLOYMENT_TARGET")
+            .env("PV_RECIPE_PLATFORM", target)
+            .env("PV_RECIPE_TRACK", track)
+            .env("PV_BUILD_JOBS", "2")
+            .env(
+                "PV_POSTGRES_DEPENDENCY_WORK_DIR",
+                tempdir.path().join(directory),
+            )
+            .output()
+    };
+    let first = describe("17", platform, "", "first")?;
+    assert!(
+        first.status.success(),
+        "native dependency description failed: {}",
+        command_output_debug(&first)
+    );
+    let next_track = describe("18", platform, "", "next-track")?;
+    assert!(next_track.status.success());
+    assert_eq!(first.stdout, next_track.stdout);
+    let changed_flags = describe("17", platform, "-O2", "changed-flags")?;
+    assert!(changed_flags.status.success());
+    assert_ne!(first.stdout, changed_flags.stdout);
+    let wrong_cpu = describe("17", other_platform, "", "wrong-cpu")?;
+    assert!(!wrong_cpu.status.success());
+    assert!(!path_exists(
+        &tempdir.path().join("wrong-cpu/openssl-contract.txt")
+    ));
+
+    let contract_path = tempdir.path().join("first/openssl-contract.txt");
+    let contract = read_file(&contract_path)?;
+    let description = String::from_utf8(first.stdout)?;
+    let expected_cache_key = format!(
+        "cache_key=postgres-openssl-v1-{platform}-{}",
+        file_sha256(&contract_path)?
+    );
+    assert_eq!(
+        description.lines().next(),
+        Some(expected_cache_key.as_str())
+    );
+    let mut normalized = Vec::new();
+    for line in contract.lines() {
+        if let Some((key, value)) = line.split_once('=')
+            && matches!(key, "compiler_path" | "compiler_version" | "libc_version")
+        {
+            assert!(!value.is_empty(), "missing native toolchain value: {key}");
+            normalized.push(format!("{key}=<{key}>"));
+        } else if line.starts_with("common_script_sha256=") {
+            assert_eq!(
+                line,
+                format!(
+                    "common_script_sha256={}",
+                    file_sha256(&workspace_root.join("release/artifacts/recipes/common.sh"))?
+                )
+            );
+            normalized.push("common_script_sha256=<common-script>".to_string());
+        } else if line.starts_with("dependencies_script_sha256=") {
+            assert_eq!(
+                line,
+                format!("dependencies_script_sha256={}", file_sha256(&dependencies)?)
+            );
+            normalized.push("dependencies_script_sha256=<dependencies-script>".to_string());
+        } else {
+            normalized.push(
+                line.replace(platform, "<native-platform>")
+                    .replace(architecture, "<native-arch>"),
+            );
+        }
+    }
+    assert_snapshot!(normalized.join("\n"));
+    Ok(())
+}
+
+#[test]
 fn postgres_smoke_uses_pv_auth_and_validates_supplied_extensions() -> Result<()> {
     let tempdir = tempdir()?;
     let artifact_root = tempdir.path().join("artifact");
