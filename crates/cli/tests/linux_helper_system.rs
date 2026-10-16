@@ -473,6 +473,49 @@ impl HelperFixture {
             root(&["/usr/bin/rm", "--", &format!("{path}.rollback")])?;
         }
 
+        for directory in [WORK_DIRECTORY, EXECUTABLE_DIRECTORY] {
+            let live = self.capture_process()?;
+            let unrelated = format!("{directory}/unrelated-system-test-file");
+            let content = "unrelated root-owned content\n";
+            self.root_file("unrelated", content, &unrelated, "0600")?;
+            let failure = platform::remove_privileged_helper()
+                .err()
+                .context("removal must preserve unrelated directory contents")?;
+            assert_eq!(
+                root_text(&["/usr/bin/cat", &unrelated])?,
+                content,
+                "unrelated content changed after removal failed: {failure:#}"
+            );
+            for path in [
+                HELPER_EXECUTABLE_PATH,
+                HELPER_METADATA_PATH,
+                SOCKET_UNIT,
+                SERVICE_UNIT,
+                HELPER_SOCKET_PATH,
+                LOG,
+            ]
+            .into_iter()
+            .chain(ENABLED_LINKS)
+            .chain(UNIT_ROLLBACK_PATHS)
+            {
+                root(&["/usr/bin/test", "!", "-e", path])
+                    .with_context(|| format!("helper cleanup did not reach {path}: {failure:#}"))?;
+            }
+            require_units_absent(&["pv-helper.socket", "pv-helper.service"])
+                .with_context(|| format!("helper cleanup did not finish: {failure:#}"))?;
+            require_exited(live)?;
+
+            // Administrator recovery belongs to the fixture, not the removal retry contract.
+            root(&["/usr/bin/rm", "--", &unrelated])?;
+            for directory in [WORK_DIRECTORY, EXECUTABLE_DIRECTORY] {
+                if fs::path_entry_exists(Utf8Path::new(directory))? {
+                    root(&["/usr/bin/rmdir", "--", directory])?;
+                }
+            }
+            self.require_removed()?;
+            self.install(&original, &original_sha256)?;
+        }
+
         root(&[
             "/usr/bin/install",
             "-o",

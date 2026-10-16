@@ -320,8 +320,8 @@ pub fn run_privileged_helper_lifecycle(
         if action == PrivilegedHelperLifecycleAction::Remove {
             remove_file(Utf8Path::new("/var/log/pv-helper.err.log"))?;
             clear_transaction_files()?;
-            remove_owned_directory(Utf8Path::new(WORK_DIRECTORY))?;
-            remove_owned_directory(Utf8Path::new(EXECUTABLE_DIRECTORY))?;
+            remove_empty_root_directory(Utf8Path::new(WORK_DIRECTORY))?;
+            remove_empty_root_directory(Utf8Path::new(EXECUTABLE_DIRECTORY))?;
             return Ok(None);
         }
         Ok(clear_transaction_files().err().map(|error| format!(
@@ -954,11 +954,6 @@ fn clear_transaction_files() -> Result<(), PlatformError> {
     }
     Ok(())
 }
-fn remove_owned_directory(path: &Utf8Path) -> Result<(), PlatformError> {
-    validate_directory_chain(path, false)?;
-    state::fs::delete_dir_all(path).map_err(|error| installation_error(error.to_string()))
-}
-
 fn remove_empty_root_directory(path: &Utf8Path) -> Result<(), PlatformError> {
     validate_directory_chain(path, false)?;
     unlinkat(CWD, path.as_std_path(), AtFlags::REMOVEDIR).map_err(|error| {
