@@ -7,7 +7,7 @@ ENV CARGO_HOME=/opt/cargo \
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        bison build-essential ca-certificates cmake curl git libaio-dev \
+        bison build-essential ca-certificates cmake curl file git libaio-dev \
         patchelf pkg-config python3 unzip xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
