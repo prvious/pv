@@ -138,6 +138,7 @@ pub(crate) fn unload_and_wait_for_daemon(
     environment: &impl Environment,
     paths: &PvPaths,
 ) -> Result<(), ExecuteError> {
+    let target = environment.platform_target()?;
     let daemon = environment.daemon_process_for_stop(paths)?;
     stop_daemon_registration_if_loaded(environment)?;
     // Startup can publish the daemon identity while the registration is stopping.
@@ -146,7 +147,7 @@ pub(crate) fn unload_and_wait_for_daemon(
         None => environment.daemon_process_for_stop(paths)?,
     };
     if let Some(daemon) = daemon {
-        daemon.wait_for_exit(Duration::from_secs(10))?;
+        daemon.wait_for_exit(Duration::from_secs(10), target)?;
     }
     Ok(())
 }
