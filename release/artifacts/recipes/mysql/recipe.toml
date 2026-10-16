@@ -1,7 +1,7 @@
 [recipe]
 resources = ["mysql"]
 default_track = "8.4"
-platforms = ["darwin-arm64", "darwin-amd64"]
+platforms = ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"]
 minimum_pv_version = "0.1.0"
 pv_build_revision = "pv1"
 license_files = ["LICENSE"]

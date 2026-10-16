@@ -26,6 +26,81 @@ fn recipe_metadata_parses_php_tracks_and_composer() -> Result<()> {
 }
 
 #[test]
+fn native_recipe_metadata_requires_all_four_platforms() -> Result<()> {
+    let legacy = r#"platforms = ["darwin-arm64", "darwin-amd64"]"#;
+    let native = r#"platforms = ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"]"#;
+    let missing_arm = r#"platforms = ["darwin-arm64", "darwin-amd64", "linux-amd64"]"#;
+    let php = PhpRecipe::from_toml(Utf8Path::new("php.toml"), VALID_PHP_TOML)?;
+    let backing = BackingRecipe::from_toml(
+        Utf8Path::new("redis.toml"),
+        BackingRecipeKind::Redis,
+        VALID_REDIS_TOML,
+    )?;
+    let refusals = [
+        PhpRecipe::from_toml(
+            Utf8Path::new("php-macos-only.toml"),
+            &VALID_PHP_TOML.replace(native, legacy),
+        )
+        .map(|_| ()),
+        PhpRecipe::from_toml(
+            Utf8Path::new("php-missing-linux-arm64.toml"),
+            &VALID_PHP_TOML.replace(native, missing_arm),
+        )
+        .map(|_| ()),
+        BackingRecipe::from_toml(
+            Utf8Path::new("redis-macos-only.toml"),
+            BackingRecipeKind::Redis,
+            &VALID_REDIS_TOML.replace(native, legacy),
+        )
+        .map(|_| ()),
+        BackingRecipe::from_toml(
+            Utf8Path::new("redis-missing-linux-arm64.toml"),
+            BackingRecipeKind::Redis,
+            &VALID_REDIS_TOML.replace(native, missing_arm),
+        )
+        .map(|_| ()),
+    ];
+    for result in &refusals {
+        assert!(matches!(
+            result,
+            Err(ReleaseError::InvalidRecipeMetadata { .. })
+        ));
+    }
+    assert_debug_snapshot!((php.platforms(), backing.platforms(), refusals));
+    Ok(())
+}
+
+#[test]
+fn committed_native_recipes_select_linux_release_sources() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut sources = Vec::new();
+    for kind in [
+        BackingRecipeKind::Caddy,
+        BackingRecipeKind::Mailpit,
+        BackingRecipeKind::Rustfs,
+    ] {
+        let path = workspace_root
+            .join("release/artifacts/recipes")
+            .join(kind.resource_name())
+            .join("recipe.toml");
+        let recipe = BackingRecipe::load(&path, kind)?;
+        for platform in [ArtifactPlatform::LinuxAmd64, ArtifactPlatform::LinuxArm64] {
+            for track in recipe.tracks() {
+                let source = track.source_for_platform(&path, platform)?;
+                sources.push((
+                    recipe.resource().as_str().to_string(),
+                    platform.as_str(),
+                    source.source_url().to_string(),
+                    source.source_sha256().as_str().to_string(),
+                ));
+            }
+        }
+    }
+    assert_debug_snapshot!(sources);
+    Ok(())
+}
+
+#[test]
 fn backing_recipe_metadata_parses_common_shape() -> Result<()> {
     let recipe = BackingRecipe::from_toml(
         Utf8Path::new("redis/recipe.toml"),
@@ -393,7 +468,7 @@ fn backing_recipe_metadata_rejects_invalid_shapes() -> Result<()> {
     let wrong_resource =
         VALID_REDIS_TOML.replace("resources = [\"redis\"]", "resources = [\"mysql\"]");
     let missing_platform = VALID_REDIS_TOML.replace(
-        "platforms = [\"darwin-arm64\", \"darwin-amd64\"]",
+        "platforms = [\"darwin-arm64\", \"darwin-amd64\", \"linux-amd64\", \"linux-arm64\"]",
         "platforms = [\"darwin-arm64\"]",
     );
     let missing_default_track =
@@ -955,7 +1030,7 @@ const VALID_PHP_TOML: &str = r#"
 [recipe]
 resources = ["php", "frankenphp"]
 default_track = "8.4"
-platforms = ["darwin-arm64", "darwin-amd64"]
+platforms = ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"]
 minimum_pv_version = "0.1.0"
 pv_build_revision = "pv2"
 license_files = ["LICENSE"]
@@ -1009,7 +1084,7 @@ const VALID_REDIS_TOML: &str = r#"
 [recipe]
 resources = ["redis"]
 default_track = "8.2"
-platforms = ["darwin-arm64", "darwin-amd64"]
+platforms = ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"]
 minimum_pv_version = "0.1.0"
 pv_build_revision = "pv1"
 license_files = ["LICENSE"]
@@ -1029,7 +1104,7 @@ const VALID_MAILPIT_TOML: &str = r#"
 [recipe]
 resources = ["mailpit"]
 default_track = "1"
-platforms = ["darwin-arm64", "darwin-amd64"]
+platforms = ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"]
 minimum_pv_version = "0.1.0"
 pv_build_revision = "pv1"
 license_files = ["LICENSE"]
@@ -1051,13 +1126,23 @@ source_sha256 = "1cce392a19a6093fcc859aeb87d9999671fed9a0a7a1c227a7f7df6307741be
 platform = "darwin-amd64"
 source_url = "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-darwin-amd64.tar.gz"
 source_sha256 = "a2d7df1b34967e51604b42136260789b75a45233a03c9dc773b98024e1390974"
+
+[[tracks.sources]]
+platform = "linux-amd64"
+source_url = "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-linux-amd64.tar.gz"
+source_sha256 = "0c7f96daad083977ee49a41ada6376799b998c82f98840ef8962b95fb2230955"
+
+[[tracks.sources]]
+platform = "linux-arm64"
+source_url = "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-linux-arm64.tar.gz"
+source_sha256 = "fdc4b97a9047f4eed875e8b1902db0074916d66d51a27856655c1f9f7f40f150"
 "#;
 
 const VALID_MYSQL_TOML: &str = r#"
 [recipe]
 resources = ["mysql"]
 default_track = "8.4"
-platforms = ["darwin-arm64", "darwin-amd64"]
+platforms = ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"]
 minimum_pv_version = "0.1.0"
 pv_build_revision = "pv1"
 license_files = ["LICENSE"]
@@ -1077,7 +1162,7 @@ const VALID_POSTGRES_TOML: &str = r#"
 [recipe]
 resources = ["postgres"]
 default_track = "18"
-platforms = ["darwin-arm64", "darwin-amd64"]
+platforms = ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"]
 minimum_pv_version = "0.1.0"
 pv_build_revision = "pv2"
 license_files = ["LICENSE", "OPENSSL-LICENSE"]
