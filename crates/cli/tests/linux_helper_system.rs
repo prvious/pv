@@ -14,7 +14,7 @@ use platform::{
     HELPER_EXECUTABLE_PATH, HELPER_METADATA_PATH, HELPER_PROTOCOL_VERSION, HELPER_SOCKET_PATH,
     PRIVILEGED_HELPER_VERSION, PrivilegedHelperClient, ProcessStartIdentity,
 };
-use serde_json::{Value, json};
+use serde_json::{Deserializer, Value, json};
 use state::fs;
 
 #[expect(
@@ -376,22 +376,46 @@ impl HelperFixture {
             &format!("{DROP_IN_DIRECTORY}/10-pv-system-test.conf"),
             "0644",
         )?;
+        root(&["/usr/bin/journalctl", "--sync"])?;
+        let last_entry: Value = serde_json::from_str(&root_text(&[
+            "/usr/bin/journalctl",
+            "--boot",
+            "--lines=1",
+            "--output=json",
+            "--quiet",
+            "--no-pager",
+        ])?)?;
+        let cursor = last_entry["__CURSOR"]
+            .as_str()
+            .context("journal must expose a cursor before the rejected replacement")?;
         let failure = self
             .install(&original, &original_sha256)
             .err()
             .context("replacement condition must reject the changed helper")?;
+        root(&["/usr/bin/journalctl", "--sync"])?;
+        let journal = root_text(&[
+            "/usr/bin/journalctl",
+            "--boot",
+            "--after-cursor",
+            cursor,
+            "--unit=pv-helper.socket",
+            "--output=json",
+            "--quiet",
+            "--no-pager",
+        ])?;
+        let entries = Deserializer::from_str(&journal)
+            .into_iter::<Value>()
+            .collect::<Result<Vec<_>, _>>()?;
+        ensure!(
+            entries
+                .iter()
+                .any(|entry| entry["UNIT_RESULT"] == "service-start-limit-hit"),
+            "replacement must hit the service start limit: {journal}"
+        );
         let condition = root_text(&[
             "/usr/bin/cat",
             &format!("{CONTROL_DIRECTORY}/condition.log"),
         ])?;
-        ensure!(
-            condition
-                .lines()
-                .filter(|line| line.ends_with(": FAILED"))
-                .count()
-                > 1,
-            "replacement must fail repeatedly: {condition}"
-        );
         self.capture_process().with_context(|| {
             format!("helper did not recover after rejected replacement: {failure:#}")
         })?;
