@@ -405,19 +405,13 @@ async fn rollback(
     if enablement_attempted && let Err(error) = disable(manager).await {
         errors.push(error.to_string());
     }
-    // Failed units survive file removal and Reload. Clear only newly introduced
-    // stopped units, while their marked files and selected fragments still prove ownership.
+    // Failed units survive file removal and Reload. Clear stopped units while
+    // their marked files and selected fragments still prove ownership.
     if enablement_attempted && errors.is_empty() {
-        for ((unit, path), checksum) in [
+        for (unit, path) in [
             (SOCKET_UNIT, SOCKET_UNIT_PATH),
             (SERVICE_UNIT, SERVICE_UNIT_PATH),
-        ]
-        .into_iter()
-        .zip(&previous.checksums[2..])
-        {
-            if checksum.is_some() {
-                continue;
-            }
+        ] {
             if let Err(error) = reset_stopped_unit(manager, unit, path).await {
                 errors.push(error.to_string());
             }
