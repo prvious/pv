@@ -982,7 +982,11 @@ License and notice validation happens in the artifact release pipeline, not in P
 
 Managed Resource artifacts must run from PV's installed resource layout before publishing. Any shebang, rpath, install-name, or embedded path fixes happen in the release pipeline before final signing and checksum generation. User machines do not patch Managed Resource binaries during install.
 
-PV does not rely on whole-archive binary or string scanning as a v1 publication gate. Artifact recipes prove portability through archive layout validation, adapter-required file checks, and target-platform smoke tests. Resource-specific static checks may be added later if a resource's packaging risk justifies them.
+Native recipe metadata requires `darwin-arm64`, `darwin-amd64`, `linux-amd64` and `linux-arm64`. Composer remains platform-independent with `any`. Source archives shared across platforms stay common inputs; recipes that wrap upstream binaries pin a source URL and SHA-256 for each platform.
+
+Linux artifacts are built separately for each CPU architecture in the digest-pinned Ubuntu 22.04 builder from `scripts/linux/builder.Dockerfile`. Its glibc 2.35 baseline is the portability ceiling. Recipe validation inspects every ELF file with `readelf`: its machine must match the target, numeric `GLIBC` symbol versions may not exceed 2.35, and `GLIBC_ABI_DT_RELR` is rejected because it requires the 2.36 loader. Each `DT_NEEDED` library must be a bundled regular file or one of `libc.so.6`, `libm.so.6`, `libpthread.so.0`, `libdl.so.2`, `librt.so.1`, `libresolv.so.2`, `ld-linux-x86-64.so.2`, `ld-linux-aarch64.so.1`, `libgcc_s.so.1` or `libstdc++.so.6`. Library search paths contain only `$ORIGIN`-relative entries; shared libraries with a SONAME are regular files named by it. Archive validation rejects links. Linux binaries are not signed.
+
+Artifact recipes prove portability through archive layout validation, adapter-required file checks, the platform-specific Mach-O or ELF checks, and target-platform smoke tests. Binary or string scans are not a substitute for these checks.
 
 For v1, PV ad-hoc signs Managed Resource Mach-O binaries in the release pipeline after any binary path fixes. Paid Developer ID signing and notarization for Managed Resource artifacts are deferred unless macOS Gatekeeper or quarantine behavior requires them for a reliable v1 install experience. Checksums are computed only after final signing and packaging. No correctness path may depend on the signing identity of PV or of any ancestor process.
 
