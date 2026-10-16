@@ -261,6 +261,11 @@ pub trait Environment {
         platform::remove_privileged_helper()
     }
 
+    #[cfg(target_os = "linux")]
+    fn installed_helper_artifacts_present(&self) -> Result<bool, platform::PlatformError> {
+        platform::installed_helper_artifacts_present()
+    }
+
     fn trust_system_ca(&self, certificate_path: &Utf8Path) -> Result<(), platform::PlatformError> {
         platform::trust_system_ca(certificate_path)
     }

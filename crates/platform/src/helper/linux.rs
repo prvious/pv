@@ -152,9 +152,8 @@ pub(super) fn install(
     Ok(outcome)
 }
 
-pub(super) fn remove() -> Result<(), PlatformError> {
-    let owner_uid = non_root_caller()?;
-    let mut present = false;
+/// Reports whether any of the fixed Linux helper installation paths remains.
+pub fn installed_helper_artifacts_present() -> Result<bool, PlatformError> {
     for path in [
         EXECUTABLE_DIRECTORY,
         WORK_DIRECTORY,
@@ -165,11 +164,15 @@ pub(super) fn remove() -> Result<(), PlatformError> {
         if state::fs::path_entry_exists(Utf8Path::new(path))
             .map_err(|error| installation_error(error.to_string()))?
         {
-            present = true;
-            break;
+            return Ok(true);
         }
     }
-    if !present {
+    Ok(false)
+}
+
+pub(super) fn remove() -> Result<(), PlatformError> {
+    let owner_uid = non_root_caller()?;
+    if !installed_helper_artifacts_present()? {
         return Ok(());
     }
     let executable = Utf8Path::new(HELPER_EXECUTABLE_PATH);
