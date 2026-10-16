@@ -58,8 +58,12 @@ pub(in crate::pf) fn apply(config: &PfRedirectConfig) -> Result<(), PlatformErro
     require_root()?;
     validate_ports(config)?;
     let _lock = mutation_lock()?;
+    let (manager, previous) = futures_lite::future::block_on(preflight()).map_err(|error| {
+        PlatformError::PrivilegedHelperRejected {
+            message: error.to_string(),
+        }
+    })?;
     futures_lite::future::block_on(async {
-        let (manager, previous) = preflight().await?;
         let mut enablement_attempted = false;
         let result = within(APPLY_TIMEOUT, async {
             stop_units(&manager).await?;
