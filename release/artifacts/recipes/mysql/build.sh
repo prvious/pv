@@ -187,6 +187,7 @@ copy_install_tree() {
       cp "$OPENSSL_PREFIX/LICENSE.txt" "$root_dir/OPENSSL-LICENSE"
       cp /usr/share/doc/libaio1/copyright "$root_dir/LIBAIO-NOTICE"
       cp /usr/share/common-licenses/LGPL-2.1 "$root_dir/LIBAIO-LICENSE"
+      cp /usr/share/doc/libtinfo6/copyright "$root_dir/NCURSES-LICENSE"
       pv_recipe_normalize_elf_tree "$root_dir"
       pv_recipe_validate_elf_tree "$root_dir" "$PLATFORM"
       ;;
@@ -227,7 +228,7 @@ write_mysql_record() {
   set -- "$record" mysql "$PV_TRACK" "$PV_UPSTREAM_VERSION" "$PV_PV_BUILD_REVISION" "$PV_PLATFORM" "$object_key" "$archive" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256" release/artifacts/recipes/mysql/build.sh "$PV_COMMIT" "$BUILD_RUN_ID" "$PV_MINIMUM_PV_VERSION"
   case "$PLATFORM" in
     linux-amd64 | linux-arm64)
-      set -- "$@" --license-file LICENSE --license-file OPENSSL-LICENSE --license-file LIBAIO-LICENSE --notice-file NOTICE --notice-file LIBAIO-NOTICE
+      set -- "$@" --license-file LICENSE --license-file OPENSSL-LICENSE --license-file LIBAIO-LICENSE --license-file NCURSES-LICENSE --notice-file NOTICE --notice-file LIBAIO-NOTICE
       ;;
   esac
   if [ "$record_openssl_source_input" = true ]; then
@@ -287,7 +288,11 @@ case "$PLATFORM" in
     export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
     set -- "$@" -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
     ;;
-  linux-amd64 | linux-arm64) set -- "$@" -DWITH_NUMA=OFF -DINSTALL_PRIV_LIBDIR=lib ;;
+  linux-amd64 | linux-arm64)
+    curses_library=$(cc -print-file-name=libtinfo.a) || die "failed to locate builder libtinfo.a"
+    [ -f "$curses_library" ] || die "builder libtinfo.a not found: $curses_library"
+    set -- "$@" -DWITH_NUMA=OFF -DINSTALL_PRIV_LIBDIR=lib -DCURSES_LIBRARY="$curses_library"
+    ;;
 esac
 if [ "$PV_TRACK" = "8.0" ]; then
   set -- "$@" -DDOWNLOAD_BOOST=0 -DWITH_BOOST="$BOOST_PREFIX"
