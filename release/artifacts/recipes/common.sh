@@ -195,6 +195,35 @@ pv_recipe_library_loader_prefix() {
   esac
 }
 
+pv_recipe_normalize_elf_tree() (
+  root_dir=$1
+
+  artifact_files=$(find "$root_dir" -type f) || die "failed to list artifact files"
+  while IFS= read -r binary; do
+    description=$(file -E -b -- "$binary") || die "failed to inspect artifact file $binary"
+    case "$description" in ELF\ *) ;; *) continue ;; esac
+    dynamic=$(readelf --wide --dynamic -- "$binary") || die "failed to inspect artifact ELF $binary"
+    soname=$(printf '%s\n' "$dynamic" | awk '$2 == "(SONAME)" { sub(/^.*\[/, ""); sub(/\].*$/, ""); print }') || die "failed to parse artifact ELF SONAME for $binary"
+    [ -n "$soname" ] || continue
+    case "$soname" in */* | . | ..) die "invalid artifact ELF SONAME for $binary: $soname" ;; esac
+    [ "${binary##*/}" != "$soname" ] || continue
+    soname_file="${binary%/*}/$soname"
+    cmp -s "$binary" "$soname_file" || die "artifact ELF alias does not match its SONAME file: $binary -> $soname_file"
+    rm "$binary"
+  done <<EOF
+$artifact_files
+EOF
+  artifact_files=$(find "$root_dir" -type f) || die "failed to list normalized artifact files"
+  while IFS= read -r binary; do
+    description=$(file -E -b -- "$binary") || die "failed to inspect artifact file $binary"
+    case "$description" in ELF\ *) ;; *) continue ;; esac
+    runpath=$(pv_recipe_library_loader_prefix "$root_dir" "$binary" "\$ORIGIN")
+    patchelf --set-rpath "$runpath" "$binary"
+  done <<EOF
+$artifact_files
+EOF
+)
+
 pv_recipe_is_macho() (
   file_description=$(file -b "$1") || die "failed to inspect file type for $1"
   case "$file_description" in
