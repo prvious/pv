@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Write as _};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::os::unix::process::CommandExt as _;
+use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
@@ -408,8 +408,9 @@ fn daemon_disable_stops_live_runtimes_without_a_plist_or_database() -> anyhow::R
         assert!(!platform::process_group_has_live_members(fixture.pid()?)?);
         assert!(fixture.records_absent()?);
     }
-    // The descendant belongs to the fake, not to this test process. Native
-    // observation must still report its exact successful status after it exits.
+    // The descendant belongs to the fake, not to this test process. Its signal
+    // handler exits 0, while parent-pipe cleanup can instead kill it with SIGKILL.
+    // Native observation must report one of those two fixture outcomes.
     let deadline = Instant::now() + Duration::from_secs(5);
     let status = loop {
         if let Some(status) = watch.try_exit_status()? {
@@ -421,7 +422,10 @@ fn daemon_disable_stops_live_runtimes_without_a_plist_or_database() -> anyhow::R
         );
         thread::sleep(Duration::from_millis(10));
     };
-    assert!(status.success(), "descendant exited with {status:?}");
+    assert!(
+        status.success() || status.signal() == Some(9),
+        "descendant exited with {status:?}"
+    );
     for fixture in &mut fixtures {
         fixture.cleanup()?;
     }
