@@ -307,6 +307,47 @@ impl PortsFixture {
         );
         assert_eq!(service_property(FOREIGN_SOCKET, "ActiveState")?, "active");
         self.require_forwarding(&config, 80, changed_port)?;
+
+        // A failed restoration must stop before another unit can reactivate routing.
+        let rejection_flag = format!("{CONTROL}/reject-restore");
+        let rejecting_socket =
+            fs::read_to_string(Utf8Path::new("/etc/systemd/system/pv-http.socket"))?.replace(
+                "[Socket]\n",
+                &format!("[Socket]\nExecStartPost=/usr/bin/test ! -e {rejection_flag}\n"),
+            );
+        helper_fixture.root_file(
+            "rejecting-restore.socket",
+            &rejecting_socket,
+            "/etc/systemd/system/pv-http.socket",
+            "0644",
+        )?;
+        root(&["/usr/bin/systemctl", "daemon-reload"])?;
+        root(&["/usr/bin/systemctl", "restart", "pv-http.socket"])?;
+        root(&["/usr/bin/systemctl", "stop", "pv-http.service"])?;
+        helper_fixture.root_file("reject-restore", "reject\n", &rejection_flag, "0600")?;
+        root(&["/usr/bin/test", "-f", &rejection_flag])?;
+        for name in ["pv-http.socket", "pv-https.socket"] {
+            assert_eq!(service_property(name, "ActiveState")?, "active");
+        }
+        let failure = PrivilegedHelperClient
+            .apply_pf(&config)
+            .err()
+            .context("conflicting socket proxy apply unexpectedly succeeded")?;
+        assert_eq!(
+            service_property("pv-http.socket", "ActiveState")?,
+            "failed",
+            "{failure:#}"
+        );
+        for name in ["pv-https.socket", "pv-https.service"] {
+            assert_eq!(
+                service_property(name, "ActiveState")?,
+                "inactive",
+                "{failure:#}"
+            );
+        }
+        assert_eq!(service_property(FOREIGN_SOCKET, "ActiveState")?, "active");
+        root(&["/usr/bin/rm", "--", &rejection_flag])?;
+        root(&["/usr/bin/systemctl", "reset-failed", "pv-http.socket"])?;
         root(&["/usr/bin/systemctl", "stop", FOREIGN_SOCKET])?;
         for name in [FOREIGN_SOCKET, FOREIGN_SERVICE] {
             root(&[

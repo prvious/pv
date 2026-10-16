@@ -323,13 +323,13 @@ async fn rollback(
         {
             errors.push(error.to_string());
         }
-        if unit.active
-            && let Err(error) = job(manager, "RestartUnit", &unit.name).await
-        {
-            errors.push(error.to_string());
-        }
     }
     if errors.is_empty() {
+        for unit in previous {
+            if unit.active {
+                job(manager, "RestartUnit", &unit.name).await?;
+            }
+        }
         for unit in previous {
             let status = read_loaded_unit(manager, &unit.name).await?.0.status;
             require_owned_status(&unit.name, unit.checksum.is_some(), status.as_ref())?;
