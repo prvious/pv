@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use platform::CaFileState;
+use platform::{CaFileState, PlatformTarget};
 use resources::{
     ArtifactManifest, ArtifactManifestCache, ArtifactManifestSource, ResourceHttpClient,
     ResourceName, TargetPlatform, TrackName, TrackSelector, UreqResourceHttpClient,
@@ -707,7 +707,7 @@ fn configure_shell_integration(
         return Ok(ExitCode::SUCCESS);
     };
 
-    let profile_path = shell_profile_path(paths.home(), shell);
+    let profile_path = shell_profile_path(paths.home(), shell, environment.platform_target()?);
     let block = shell_profile_block(shell);
     let existing = read_user_file(&profile_path)?;
     let (next_content, action) = match existing.as_deref() {
@@ -825,7 +825,7 @@ fn remove_shell_integration(
         return Ok(ExitCode::SUCCESS);
     };
 
-    let profile_path = shell_profile_path(paths.home(), shell);
+    let profile_path = shell_profile_path(paths.home(), shell, environment.platform_target()?);
     let Some(content) = read_user_file(&profile_path)? else {
         output.flow_step(
             Mark::Idle,
@@ -963,8 +963,10 @@ fn delete_optional_dir(path: &Utf8Path) -> Result<bool, ExecuteError> {
     }
 }
 
-fn shell_profile_path(home: &Utf8Path, shell: Shell) -> Utf8PathBuf {
+fn shell_profile_path(home: &Utf8Path, shell: Shell, target: PlatformTarget) -> Utf8PathBuf {
     match shell {
+        Shell::Bash if target == PlatformTarget::Linux => home.join(".bashrc"),
+        Shell::Zsh if target == PlatformTarget::Linux => home.join(".zshrc"),
         Shell::Bash => home.join(".bash_profile"),
         Shell::Fish => home.join(".config/fish/config.fish"),
         Shell::Zsh => home.join(".zprofile"),
@@ -1199,10 +1201,155 @@ fn shell_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsString;
     use std::io::{self, Write};
+    use std::path::PathBuf;
+    use std::process::ExitCode;
 
-    use super::run_required_step;
+    use anyhow::Context;
+    use camino_tempfile::tempdir;
+    use insta::assert_snapshot;
+    use platform::{LowPortInspection, PlatformError, PlatformTarget};
+    use state::{PvPaths, fs};
+
+    use super::{configure_shell_integration, remove_shell_integration, run_required_step};
+    use crate::args::SetupArgs;
+    use crate::environment::Environment;
     use crate::output::{Presentation, Streams};
+
+    struct ShellEnvironment {
+        shell: &'static str,
+    }
+
+    impl Environment for ShellEnvironment {
+        fn var_os(&self, key: &str) -> Option<OsString> {
+            (key == "SHELL").then(|| self.shell.into())
+        }
+
+        fn home_dir(&self) -> Option<PathBuf> {
+            None
+        }
+
+        fn current_dir(&self) -> io::Result<PathBuf> {
+            Err(io::Error::other("unexpected current directory query"))
+        }
+
+        fn current_exe(&self) -> io::Result<PathBuf> {
+            Err(io::Error::other("unexpected executable query"))
+        }
+
+        fn stdin_is_terminal(&self) -> bool {
+            false
+        }
+
+        fn open_url(&self, _url: &str) -> io::Result<()> {
+            Err(io::Error::other("unexpected browser handoff"))
+        }
+
+        fn platform_target(&self) -> Result<PlatformTarget, PlatformError> {
+            Ok(PlatformTarget::Linux)
+        }
+
+        fn inspect_low_ports(&self) -> Result<LowPortInspection, PlatformError> {
+            Err(PlatformError::SystemIntegration(
+                "unexpected low-port inspection".to_owned(),
+            ))
+        }
+    }
+
+    #[test]
+    fn linux_shell_profiles_round_trip_without_editing_other_startup_files() -> anyhow::Result<()> {
+        let mut observations = Vec::new();
+        for (shell, profile_name) in [("/bin/bash", ".bashrc"), ("/bin/zsh", ".zshrc")] {
+            let directory = tempdir()?;
+            let paths = PvPaths::for_home(directory.path());
+            let environment = ShellEnvironment { shell };
+            let profile = paths.home().join(profile_name);
+            let startup_files = [
+                ".bashrc",
+                ".zshrc",
+                ".bash_profile",
+                ".zprofile",
+                ".profile",
+            ];
+            for name in startup_files {
+                fs::write_sensitive_file(
+                    &paths.home().join(name),
+                    &format!("# {name} before PV\n\n"),
+                )?;
+            }
+            let original = fs::read_to_string(&profile)?;
+            let args = SetupArgs {
+                yes: true,
+                non_interactive: false,
+                no_path: false,
+            };
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let mut streams = Streams::new(&mut stdout, &mut stderr, Presentation::plain());
+            assert_eq!(
+                configure_shell_integration(&args, &environment, &paths, &mut streams)?,
+                ExitCode::SUCCESS
+            );
+            let current = fs::read_to_string(&profile)?;
+            for name in startup_files
+                .into_iter()
+                .filter(|name| *name != profile_name)
+            {
+                assert_eq!(
+                    fs::read_to_string(&paths.home().join(name))?,
+                    format!("# {name} before PV\n\n")
+                );
+            }
+            let prefix = format!("{profile_name}.");
+            let backups = fs::read_dir_paths(paths.home())?
+                .into_iter()
+                .filter(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".pv.bak"))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(backups.len(), 1);
+            let backup = backups.first().context("profile backup is missing")?;
+            assert_eq!(fs::read_to_string(backup)?, original);
+            let retry = SetupArgs {
+                non_interactive: true,
+                ..args
+            };
+            assert_eq!(
+                configure_shell_integration(&retry, &environment, &paths, &mut streams)?,
+                ExitCode::SUCCESS
+            );
+            assert_eq!(fs::read_to_string(&profile)?, current);
+            assert_eq!(fs::read_to_string(backup)?, original);
+            assert_eq!(
+                remove_shell_integration(&environment, &paths, &mut streams)?,
+                ExitCode::SUCCESS
+            );
+            assert_eq!(fs::read_to_string(&profile)?, original);
+            observations.push(format!("{profile_name}:\n{current}"));
+        }
+        assert_snapshot!(observations.join("\n"), @r#"
+        .bashrc:
+        # .bashrc before PV
+
+        # >>> PV ENV
+        if [ -x "$HOME/.pv/bin/pv" ]; then
+          eval "$("$HOME/.pv/bin/pv" env --shell bash)"
+        fi
+        # <<< PV ENV
+
+        .zshrc:
+        # .zshrc before PV
+
+        # >>> PV ENV
+        if [ -x "$HOME/.pv/bin/pv" ]; then
+          eval "$("$HOME/.pv/bin/pv" env --shell zsh)"
+        fi
+        # <<< PV ENV
+        "#);
+        Ok(())
+    }
 
     #[test]
     fn plain_required_step_reports_stop_before_returning_error() -> anyhow::Result<()> {
