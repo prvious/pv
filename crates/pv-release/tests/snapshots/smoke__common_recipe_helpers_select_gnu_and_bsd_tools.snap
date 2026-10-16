@@ -1,0 +1,8 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: results
+---
+[
+    "gnu:\nchecksum=abc123\njobs=3\n",
+    "bsd:\nchecksum=abc123\njobs=4\n",
+]
