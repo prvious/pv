@@ -317,14 +317,14 @@ pub fn run_privileged_helper_lifecycle(
         if let Err(error) = result {
             return Err(rollback(&manager, &previous, enablement_attempted, error).await);
         }
-        let cleanup = clear_transaction_files();
         if action == PrivilegedHelperLifecycleAction::Remove {
-            cleanup?;
+            remove_file(Utf8Path::new("/var/log/pv-helper.err.log"))?;
+            clear_transaction_files()?;
             remove_owned_directory(Utf8Path::new(WORK_DIRECTORY))?;
             remove_owned_directory(Utf8Path::new(EXECUTABLE_DIRECTORY))?;
             return Ok(None);
         }
-        Ok(cleanup.err().map(|error| format!(
+        Ok(clear_transaction_files().err().map(|error| format!(
             "helper lifecycle completed, but transaction cleanup failed: {error}; administrator recovery is required"
         )))
     })
