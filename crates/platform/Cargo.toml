@@ -37,6 +37,7 @@ security-framework = { workspace = true }
 async-io = "2.6.0"
 futures-lite = "2.6.1"
 futures-util = { workspace = true }
+libc = { workspace = true }
 listenfd = "1.0.2"
 procfs = { version = "0.18.0", default-features = false }
 rtnetlink = "0.23.0"

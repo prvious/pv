@@ -1,3 +1,6 @@
+#[cfg(target_env = "gnu")]
+use std::ffi::CStr;
+
 use procfs::KernelVersion;
 use procfs::process::Process;
 use rustix::fs::{Access, FileType, access, stat};
@@ -6,7 +9,9 @@ use crate::PlatformError;
 use crate::daemon_registration::check_user_manager;
 use crate::helper::SUDO_EXECUTABLE;
 
-/// Checks PID 1, the kernel, sudo and user-manager requirements for Linux setup.
+pub(crate) const CERTUTIL_EXECUTABLE: &str = "/usr/bin/certutil";
+
+/// Checks the native host and required executables before Linux setup.
 pub fn check_linux_setup_host(session_address: &str) -> Result<(), PlatformError> {
     let init = Process::new(1)
         .and_then(|process| process.stat())
@@ -21,9 +26,15 @@ pub fn check_linux_setup_host(session_address: &str) -> Result<(), PlatformError
         ))
     })?;
     validate_host(&init.comm, kernel)?;
+    validate_glibc_version(runtime_glibc_version()?)?;
     require_executable(SUDO_EXECUTABLE).map_err(|error| {
         PlatformError::SystemIntegration(format!(
             "{error}; install the sudo package before running `pv setup`"
+        ))
+    })?;
+    require_executable(CERTUTIL_EXECUTABLE).map_err(|error| {
+        PlatformError::SystemIntegration(format!(
+            "{error}; install libnss3-tools (Debian/Ubuntu) or nss-tools (Fedora) before running `pv setup`"
         ))
     })?;
     check_user_manager(session_address).map_err(|error| {
@@ -31,6 +42,47 @@ pub fn check_linux_setup_host(session_address: &str) -> Result<(), PlatformError
             "{error}; run `pv setup` from a logged-in systemd user session"
         ))
     })
+}
+
+fn runtime_glibc_version() -> Result<&'static str, PlatformError> {
+    #[cfg(target_env = "gnu")]
+    {
+        // SAFETY: GNU libc returns a non-null pointer to its immutable, static,
+        // NUL-terminated version array, which remains valid for this process.
+        unsafe { CStr::from_ptr(libc::gnu_get_libc_version()) }
+            .to_str()
+            .map_err(|error| {
+                PlatformError::SystemIntegration(format!(
+                    "could not read the runtime glibc version: {error}; use GNU glibc 2.35 or newer"
+                ))
+            })
+    }
+    #[cfg(not(target_env = "gnu"))]
+    {
+        Err(PlatformError::SystemIntegration(
+            "PV requires GNU glibc 2.35 or newer on Linux; use a glibc-based distribution"
+                .to_owned(),
+        ))
+    }
+}
+
+fn validate_glibc_version(version: &str) -> Result<(), PlatformError> {
+    let mut components = version.split('.').map(|component| {
+        component
+            .parse::<u32>()
+            .ok()
+            .filter(|_| component.bytes().all(|byte| byte.is_ascii_digit()))
+    });
+    if matches!(
+        (components.next(), components.next()),
+        (Some(Some(major)), Some(Some(minor))) if (major, minor) >= (2, 35)
+    ) && components.all(|component| component.is_some())
+    {
+        return Ok(());
+    }
+    Err(PlatformError::SystemIntegration(format!(
+        "PV requires glibc 2.35 or newer, found {version:?}; upgrade glibc before running `pv setup`"
+    )))
 }
 
 fn validate_host(init: &str, kernel: KernelVersion) -> Result<(), PlatformError> {
@@ -70,7 +122,9 @@ mod tests {
     use rustix::fs::{Mode, chmod};
     use state::fs;
 
-    use super::{check_linux_setup_host, require_executable, validate_host};
+    use super::{
+        check_linux_setup_host, require_executable, validate_glibc_version, validate_host,
+    };
     use crate::PlatformError;
 
     #[test]
@@ -118,6 +172,87 @@ mod tests {
             (
                 "newer kernel",
                 "accepted",
+            ),
+        ]
+        "#);
+        Ok(())
+    }
+
+    #[test]
+    fn linux_setup_requires_glibc_2_35_or_newer() -> anyhow::Result<()> {
+        let mut rows = Vec::new();
+        for (version, accepted) in [
+            ("2.34", false),
+            ("2.9", false),
+            ("2.35", true),
+            ("2.35.1", true),
+            ("2.100", true),
+            ("3.0", true),
+            ("+2.35", false),
+            ("2.35.junk", false),
+            ("2.35.", false),
+            ("2.35.4294967296", false),
+            ("2", false),
+            ("", false),
+        ] {
+            let result = validate_glibc_version(version);
+            assert_eq!(result.is_ok(), accepted, "{version:?}");
+            let outcome = match result {
+                Ok(()) => "accepted".to_owned(),
+                Err(PlatformError::SystemIntegration(message)) => message,
+                Err(error) => anyhow::bail!("unexpected glibc validation error: {error}"),
+            };
+            rows.push((version, outcome));
+        }
+        assert_debug_snapshot!(rows, @r#"
+        [
+            (
+                "2.34",
+                "PV requires glibc 2.35 or newer, found \"2.34\"; upgrade glibc before running `pv setup`",
+            ),
+            (
+                "2.9",
+                "PV requires glibc 2.35 or newer, found \"2.9\"; upgrade glibc before running `pv setup`",
+            ),
+            (
+                "2.35",
+                "accepted",
+            ),
+            (
+                "2.35.1",
+                "accepted",
+            ),
+            (
+                "2.100",
+                "accepted",
+            ),
+            (
+                "3.0",
+                "accepted",
+            ),
+            (
+                "+2.35",
+                "PV requires glibc 2.35 or newer, found \"+2.35\"; upgrade glibc before running `pv setup`",
+            ),
+            (
+                "2.35.junk",
+                "PV requires glibc 2.35 or newer, found \"2.35.junk\"; upgrade glibc before running `pv setup`",
+            ),
+            (
+                "2.35.",
+                "PV requires glibc 2.35 or newer, found \"2.35.\"; upgrade glibc before running `pv setup`",
+            ),
+            (
+                "2.35.4294967296",
+                "PV requires glibc 2.35 or newer, found \"2.35.4294967296\"; upgrade glibc before running `pv setup`",
+            ),
+            (
+                "2",
+                "PV requires glibc 2.35 or newer, found \"2\"; upgrade glibc before running `pv setup`",
+            ),
+            (
+                "",
+                "PV requires glibc 2.35 or newer, found \"\"; upgrade glibc before running `pv setup`",
             ),
         ]
         "#);
