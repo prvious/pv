@@ -376,6 +376,79 @@ impl HelperFixture {
             &format!("{DROP_IN_DIRECTORY}/10-pv-system-test.conf"),
             "0644",
         )?;
+        let expected_installation = root_text(&[
+            "/usr/bin/sha256sum",
+            HELPER_EXECUTABLE_PATH,
+            HELPER_METADATA_PATH,
+            SOCKET_UNIT,
+            SERVICE_UNIT,
+        ])?;
+        root(&[
+            "/usr/bin/systemctl",
+            "stop",
+            "pv-helper.socket",
+            "pv-helper.service",
+        ])?;
+        require_exited(replaced)?;
+        let limit_window = Instant::now();
+        root(&[
+            "/usr/bin/systemctl",
+            "reset-failed",
+            "pv-helper.socket",
+            "pv-helper.service",
+        ])?;
+        self.root_file(
+            "expected.sha256",
+            &format!("{original_sha256}  {HELPER_EXECUTABLE_PATH}\n"),
+            &format!("{CONTROL_DIRECTORY}/expected.sha256"),
+            "0600",
+        )?;
+        root(&["/usr/bin/systemctl", "daemon-reload"])?;
+        root(&["/usr/bin/systemctl", "start", "pv-helper.socket"])?;
+        for _attempt in 0..11 {
+            let failure = SystemTestCommand::new("sudo")
+                .args(["-n", "/usr/bin/systemctl", "start", "pv-helper.service"])
+                .output()?;
+            ensure!(
+                !failure.status.success() && failure.status.code().is_some(),
+                "installed helper must fail its checksum condition: {failure:?}"
+            );
+        }
+        assert_eq!(
+            service_property("pv-helper.service", "ActiveState")?,
+            "failed"
+        );
+        assert_eq!(
+            service_property("pv-helper.socket", "ActiveState")?,
+            "failed"
+        );
+        assert_eq!(
+            service_property("pv-helper.socket", "Result")?,
+            "service-start-limit-hit"
+        );
+        self.root_file(
+            "expected.sha256",
+            &format!("{replacement_sha256}  {HELPER_EXECUTABLE_PATH}\n"),
+            &format!("{CONTROL_DIRECTORY}/expected.sha256"),
+            "0600",
+        )?;
+        self.install(&replacement, &replacement_sha256)
+            .context("first valid replacement must repair the retained start limit")?;
+        ensure!(
+            limit_window.elapsed() < Duration::from_secs(60),
+            "repair must finish before the start-limit interval expires"
+        );
+        assert_ne!(self.capture_process()?, replaced);
+        assert_eq!(
+            root_text(&[
+                "/usr/bin/sha256sum",
+                HELPER_EXECUTABLE_PATH,
+                HELPER_METADATA_PATH,
+                SOCKET_UNIT,
+                SERVICE_UNIT,
+            ])?,
+            expected_installation
+        );
         for socket_active in [true, false] {
             self.root_file(
                 "empty-condition.log",
