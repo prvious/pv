@@ -1,0 +1,36 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: results
+---
+[
+    (
+        "valid",
+        true,
+        "",
+    ),
+    (
+        "missing-library",
+        false,
+        "error: OpenSSL shared library libssl.so.3 not found under <tmp>/missing-library\n",
+    ),
+    (
+        "invalid-rpath",
+        false,
+        "error: <tmp>/invalid-rpath/lib/libssl.so.3 ELF library search path is not ORIGIN-relative: /tmp/build/lib\n",
+    ),
+    (
+        "plain-text-library",
+        false,
+        "error: OpenSSL shared library is not ELF: <tmp>/plain-text-library/lib/libssl.so.3\n",
+    ),
+    (
+        "symlink-library",
+        false,
+        "error: OpenSSL SONAME library is a symlink: <tmp>/symlink-library/lib/libssl.so.3\n",
+    ),
+    (
+        "symlink-directory",
+        false,
+        "error: OpenSSL library directory is a symlink: <tmp>/symlink-directory/lib\n",
+    ),
+]
