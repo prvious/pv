@@ -3286,6 +3286,60 @@ archive=frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64.tar.gz record=franke
 }
 
 #[test]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+fn php_linux_pair_exports_symbols_for_relocated_modules_and_rejects_newer_glibc() -> Result<()> {
+    let platform = if cfg!(target_arch = "aarch64") {
+        "linux-arm64"
+    } else {
+        "linux-amd64"
+    };
+    let mut results = Vec::new();
+    for invalid_elf in [false, true] {
+        let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
+            platform,
+            invalid_elf,
+            ..default_build_recipe_options()
+        })?;
+        assert_eq!(
+            run.output.status.success(),
+            !invalid_elf,
+            "invalid_elf={invalid_elf}: {}",
+            command_output_debug(&run.output)
+        );
+        assert_eq!(run.php_archive_exists, !invalid_elf);
+        assert_eq!(run.frankenphp_archive_exists, !invalid_elf);
+        assert_eq!(run.php_record_json.is_some(), !invalid_elf);
+        assert_eq!(run.frankenphp_record_json.is_some(), !invalid_elf);
+        assert_eq!(run.validate_log.is_empty(), invalid_elf);
+        assert!(run.deleted_rpath_log.is_empty());
+        let mut modules = Vec::new();
+        for record in [&run.php_record_json, &run.frankenphp_record_json]
+            .into_iter()
+            .flatten()
+        {
+            let record: Value = serde_json::from_str(record)?;
+            modules.push(record["php_extensions"].clone());
+        }
+        results.push((
+            invalid_elf,
+            modules,
+            run.spc_log
+                .replace(&run.out_dir, "<out>")
+                .replace(platform, "<native-platform>"),
+            run.validate_log.replace(platform, "<native-platform>"),
+            String::from_utf8(run.output.stderr)?
+                .replace(&run.out_dir, "<out>")
+                .replace(platform, "<native-platform>"),
+        ));
+    }
+    assert_debug_snapshot!(results);
+    Ok(())
+}
+
+#[test]
 fn php_pair_build_smoke_rejects_frankenphp_archive_validation_without_final_outputs() -> Result<()>
 {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
@@ -3706,6 +3760,8 @@ struct BackingBuildRecipeRun {
 }
 
 struct BuildRecipeOptions<'a> {
+    platform: &'a str,
+    invalid_elf: bool,
     recipe_track: &'a str,
     php_version: &'a str,
     frankenphp_version: &'a str,
@@ -4956,6 +5012,8 @@ fn run_backing_build_recipe_payload_smoke(
 
 fn default_build_recipe_options() -> BuildRecipeOptions<'static> {
     BuildRecipeOptions {
+        platform: "darwin-arm64",
+        invalid_elf: false,
         recipe_track: "8.4",
         php_version: "8.4.20",
         frankenphp_version: "1.12.3",
@@ -5000,11 +5058,13 @@ fn run_php_build_recipe_smoke_with_options(
     write_rar_source_archive(&rar_source_archive)?;
     write_fake_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
-    write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
-    write_fake_lipo(&fake_bin.join("lipo"))?;
-    write_fake_otool(&fake_bin.join("otool"))?;
-    write_fake_macho_file(&fake_bin.join("file"))?;
-    write_fake_pkg_config(&fake_bin.join("pkg-config"))?;
+    if !options.platform.starts_with("linux-") {
+        write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
+        write_fake_lipo(&fake_bin.join("lipo"))?;
+        write_fake_otool(&fake_bin.join("otool"))?;
+        write_fake_macho_file(&fake_bin.join("file"))?;
+        write_fake_pkg_config(&fake_bin.join("pkg-config"))?;
+    }
     write_fake_spc(&fake_bin.join("spc"))?;
     write_file(&curl_log, "")?;
     write_file(&deleted_rpath_log, "")?;
@@ -5022,7 +5082,12 @@ fn run_php_build_recipe_smoke_with_options(
         .env("PV_ARTIFACT_RECORD_DIR", &record_dir)
         .env("PV_BUILD_RUN_ID", "local-test")
         .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
-        .env("PV_RECIPE_PLATFORM", "darwin-arm64")
+        .env("PV_RECIPE_PLATFORM", options.platform)
+        .env(
+            "PV_TEST_PHP_INVALID_ELF",
+            if options.invalid_elf { "1" } else { "" },
+        )
+        .env("PV_BUILD_JOBS", "2")
         .env("PV_RECIPE_TRACK", options.recipe_track)
         .env("PV_TEST_FRANKENPHP_VERSION", options.frankenphp_version)
         .env(
@@ -5049,7 +5114,10 @@ fn run_php_build_recipe_smoke_with_options(
             "PV_TEST_STATICPHP_BUILDROOT_LIB",
             out_dir
                 .join("work")
-                .join(format!("php-pair-{}-darwin-arm64", options.recipe_track))
+                .join(format!(
+                    "php-pair-{}-{}",
+                    options.recipe_track, options.platform
+                ))
                 .join("staticphp")
                 .join("buildroot")
                 .join("lib"),
@@ -5093,46 +5161,103 @@ fn run_php_build_recipe_smoke_with_options(
         )
         .env("PV_TEST_VALIDATE_LOG", &validate_log)
         .env("PV_TEST_SPC_LOG", &spc_log);
+    if options.platform.starts_with("linux-") {
+        command
+            .env("SPC_LIBC", "musl")
+            .env("SPC_TARGET", "native-native-musl");
+    }
     let output = command.output()?;
 
     let php_artifact_version = format!("{}-pv1", options.php_version);
-    let php_artifact_basename = format!("php-{php_artifact_version}-darwin-arm64");
+    let php_artifact_basename = format!("php-{php_artifact_version}-{}", options.platform);
     let php_archive = out_dir.join(format!("{php_artifact_basename}.tar.gz"));
     let php_record = record_dir
         .join("php")
         .join(options.recipe_track)
         .join(&php_artifact_version)
-        .join("darwin-arm64")
+        .join(options.platform)
         .join(format!("{php_artifact_basename}.json"));
     let php_notice = out_dir
         .join("work")
-        .join(format!("php-pair-{}-darwin-arm64", options.recipe_track))
-        .join(php_artifact_basename)
+        .join(format!(
+            "php-pair-{}-{}",
+            options.recipe_track, options.platform
+        ))
+        .join(&php_artifact_basename)
         .join("NOTICE");
 
     let frankenphp_artifact_version = format!(
         "{}-frankenphp{}-pv1",
         options.php_version, options.frankenphp_version
     );
-    let frankenphp_artifact_basename =
-        format!("frankenphp-{frankenphp_artifact_version}-darwin-arm64");
+    let frankenphp_artifact_basename = format!(
+        "frankenphp-{frankenphp_artifact_version}-{}",
+        options.platform
+    );
     let frankenphp_archive = out_dir.join(format!("{frankenphp_artifact_basename}.tar.gz"));
     let frankenphp_record = record_dir
         .join("frankenphp")
         .join(options.recipe_track)
         .join(&frankenphp_artifact_version)
-        .join("darwin-arm64")
+        .join(options.platform)
         .join(format!("{frankenphp_artifact_basename}.json"));
     let frankenphp_notice = out_dir
         .join("work")
-        .join(format!("php-pair-{}-darwin-arm64", options.recipe_track))
-        .join(frankenphp_artifact_basename)
+        .join(format!(
+            "php-pair-{}-{}",
+            options.recipe_track, options.platform
+        ))
+        .join(&frankenphp_artifact_basename)
         .join("NOTICE");
 
     let php_record_json = read_optional_file(&php_record)?;
     let frankenphp_record_json = read_optional_file(&frankenphp_record)?;
     let php_notice = read_optional_file(&php_notice)?;
     let frankenphp_notice = read_optional_file(&frankenphp_notice)?;
+
+    if options.platform.starts_with("linux-") && output.status.success() {
+        let relocated = tempdir.path().join("relocated");
+        create_dir_all(&relocated)?;
+        for archive in [&php_archive, &frankenphp_archive] {
+            let extraction = StdCommand::new("tar")
+                .arg("-xzf")
+                .arg(archive)
+                .arg("-C")
+                .arg(&relocated)
+                .output()?;
+            assert!(
+                extraction.status.success(),
+                "{}",
+                command_output_debug(&extraction)
+            );
+        }
+        let hidden = StdCommand::new("mv")
+            .arg(out_dir.join("work"))
+            .arg(tempdir.path().join("hidden-build"))
+            .output()?;
+        assert!(hidden.status.success(), "{}", command_output_debug(&hidden));
+        for (artifact, binary) in [
+            (&php_artifact_basename, "php"),
+            (&frankenphp_artifact_basename, "frankenphp"),
+        ] {
+            let root = relocated.join(artifact);
+            for extension in ["redis", "xdebug"] {
+                let loaded = StdCommand::new(root.join("bin").join(binary))
+                    .arg(
+                        root.join("lib/php/extensions")
+                            .join(format!("{extension}.so")),
+                    )
+                    .env_remove("LD_LIBRARY_PATH")
+                    .env_remove("LD_PRELOAD")
+                    .output()?;
+                assert!(
+                    loaded.status.success(),
+                    "{binary} could not load {extension}: {}",
+                    command_output_debug(&loaded)
+                );
+            }
+        }
+    }
 
     Ok(BuildRecipeRun {
         out_dir: out_dir.to_string(),
@@ -7233,6 +7358,50 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+case "$PV_RECIPE_PLATFORM" in
+  linux-*)
+    printf 'spc-libc=%s\nspc-target=%s\nspc-concurrency=%s\n' \
+      "${SPC_LIBC:-}" "${SPC_TARGET:-}" "${SPC_CONCURRENCY:-}" >>"$PV_TEST_SPC_LOG"
+    [ "${SPC_LIBC:-}" = glibc ] || exit 91
+    [ -z "${SPC_TARGET:-}" ] || exit 92
+    [ "${SPC_CONCURRENCY:-}" = 2 ] || exit 93
+    [ -z "${MACOSX_DEPLOYMENT_TARGET:-}" ] || exit 94
+    cat >sapi.c <<'C'
+#include <dlfcn.h>
+#include <stdio.h>
+int pv_fixture_api(void) { return 42; }
+int main(int argc, char **argv) {
+    if (argc != 2) return 1;
+    void *module = dlopen(argv[1], RTLD_NOW);
+    if (!module) { fprintf(stderr, "%s\n", dlerror()); return 2; }
+    int (*entry)(void) = dlsym(module, "module_entry");
+    int result = entry && entry() == 42 ? 0 : 3;
+    dlclose(module);
+    return result;
+}
+C
+    for binary in php frankenphp; do
+      [ -f "buildroot/bin/$binary" ] || continue
+      case "$binary" in
+        php) linker_flags=$SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS ;;
+        frankenphp) linker_flags=$frankenphp_LDFLAGS ;;
+      esac
+      cc sapi.c $linker_flags -ldl -o "buildroot/bin/$binary"
+    done
+    printf '%s\n' 'extern int pv_fixture_api(void);' \
+      'int module_entry(void) { return pv_fixture_api(); }' >module.c
+    for module in buildroot/lib/php/extensions/*.so; do
+      [ -f "$module" ] || continue
+      if [ "${PV_TEST_PHP_INVALID_ELF:-}" = 1 ] && [ "${module##*/}" = redis.so ]; then
+        printf '%s\n' 'GLIBC_2.36 { global: module_entry; local: *; };' >newer.map
+        cc -shared -fPIC module.c -Wl,--version-script=newer.map -o "$module"
+      else
+        cc -shared -fPIC module.c -o "$module"
+      fi
+    done
+    ;;
+esac
 "#,
     )
 }
