@@ -261,8 +261,10 @@ pub(in crate::pf) fn repairable_ports() -> Result<BTreeSet<u16>, PlatformError> 
         let mut ports = BTreeSet::new();
         for frontend in [&HTTP, &HTTPS] {
             let mut forwarder = Forwarder {
-                socket: read_loaded_unit(&manager, &frontend.socket_name()).await?.0,
-                service: read_loaded_unit(&manager, &frontend.service_name())
+                socket: query_unit(&manager, &frontend.socket_name(), "GetUnit")
+                    .await?
+                    .0,
+                service: query_unit(&manager, &frontend.service_name(), "GetUnit")
                     .await?
                     .0,
                 ..Forwarder::default()
@@ -327,8 +329,8 @@ fn complete_inspection(
 }
 
 async fn observe(manager: &Proxy<'_>, frontend: &Frontend) -> Result<Forwarder, PlatformError> {
-    let (socket, socket_path) = read_loaded_unit(manager, &frontend.socket_name()).await?;
-    let (service, service_path) = read_loaded_unit(manager, &frontend.service_name()).await?;
+    let (socket, socket_path) = query_unit(manager, &frontend.socket_name(), "GetUnit").await?;
+    let (service, service_path) = query_unit(manager, &frontend.service_name(), "GetUnit").await?;
     let listen = if let Some(path) = socket_path {
         native_proxy(
             manager.connection(),
@@ -393,11 +395,12 @@ fn executing_command_matches(command: &ExecCommand, main_pid: u32) -> Result<boo
         .eq(std::iter::once(argument_zero.as_str()).chain(arguments.iter().map(String::as_str))))
 }
 
-async fn read_loaded_unit(
+async fn query_unit(
     manager: &Proxy<'_>,
     name: &str,
+    method: &str,
 ) -> Result<(Unit, Option<OwnedObjectPath>), PlatformError> {
-    let path: OwnedObjectPath = match manager.call("LoadUnit", &(name,)).await {
+    let path: OwnedObjectPath = match manager.call(method, &(name,)).await {
         Ok(path) => path,
         Err(zbus::Error::MethodError(error, _, _))
             if error.as_str() == "org.freedesktop.systemd1.NoSuchUnit" =>
