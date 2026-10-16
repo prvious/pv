@@ -42,6 +42,11 @@ const UNIT_ROLLBACK_PATHS: [&str; 2] = [
     "/etc/systemd/system/pv-helper.socket.rollback",
     "/etc/systemd/system/pv-helper.service.rollback",
 ];
+const UNRELATED_CANDIDATES: [(&str, &str); 3] = [
+    ("/var/lib/pv/helper.json.candidate", "0600"),
+    ("/etc/systemd/system/pv-helper.socket.candidate", "0644"),
+    ("/etc/systemd/system/pv-helper.service.candidate", "0644"),
+];
 const INSTALLATION_PATHS: [&str; 6] = [
     EXECUTABLE_DIRECTORY,
     WORK_DIRECTORY,
@@ -76,6 +81,7 @@ done
 rm -rf -- /usr/local/libexec/pv /var/lib/pv /etc/systemd/system/pv-helper.service.d
 rm -f -- /etc/systemd/system/pv-helper.socket /etc/systemd/system/pv-helper.service \
     /etc/systemd/system/pv-helper.socket.rollback /etc/systemd/system/pv-helper.service.rollback \
+    /etc/systemd/system/pv-helper.socket.candidate /etc/systemd/system/pv-helper.service.candidate \
     /run/pv-helper.sock /var/log/pv-helper.err.log \
     /etc/systemd/system/sockets.target.wants/pv-helper.socket \
     /run/systemd/system/sockets.target.wants/pv-helper.socket
@@ -108,6 +114,7 @@ fn systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes() -> R
         .into_iter()
         .chain(ENABLED_LINKS)
         .chain(UNIT_ROLLBACK_PATHS)
+        .chain(UNRELATED_CANDIDATES.map(|(path, _mode)| path))
         .chain([LOG, CONTROL_DIRECTORY])
     {
         ensure!(
@@ -349,10 +356,27 @@ impl HelperFixture {
         self.require_other_owner_refused(&original, &original_sha256)?;
         assert_eq!(self.capture_process()?, first);
 
+        let unrelated_candidate_content = "unrelated root-owned candidate\n";
+        for (path, mode) in UNRELATED_CANDIDATES {
+            self.root_file(
+                "unrelated-candidate",
+                unrelated_candidate_content,
+                path,
+                mode,
+            )?;
+        }
         self.install(&replacement, &replacement_sha256)?;
         let replaced = self.capture_process()?;
         assert_ne!(replaced, first);
         require_exited(first)?;
+        for (path, _mode) in UNRELATED_CANDIDATES {
+            assert_eq!(
+                root_text(&["/usr/bin/cat", path])
+                    .with_context(|| format!("could not read unrelated candidate {path}"))?,
+                unrelated_candidate_content
+            );
+            root(&["/usr/bin/rm", "--", path])?;
+        }
         assert_eq!(
             checksum(Utf8Path::new(HELPER_EXECUTABLE_PATH))?,
             replacement_sha256
@@ -901,6 +925,7 @@ impl HelperFixture {
             .into_iter()
             .chain(ENABLED_LINKS)
             .chain(UNIT_ROLLBACK_PATHS)
+            .chain(UNRELATED_CANDIDATES.map(|(path, _mode)| path))
         {
             ensure!(
                 !fs::path_entry_exists(Utf8Path::new(path))?,
@@ -918,6 +943,9 @@ impl HelperFixture {
             return Ok(());
         }
         self.remove_condition()?;
+        for (path, _mode) in UNRELATED_CANDIDATES {
+            root(&["/usr/bin/rm", "-f", "--", path])?;
+        }
         platform::remove_privileged_helper()?;
         self.require_removed()?;
         root(&["/usr/bin/rm", "-f", "--", LOG])?;

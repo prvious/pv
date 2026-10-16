@@ -964,12 +964,14 @@ fn remove_file(path: &Utf8Path) -> Result<(), PlatformError> {
         .map_err(|error| installation_error(error.to_string()))
 }
 fn clear_transaction_files() -> Result<(), PlatformError> {
+    let candidate = Utf8Path::new(CANDIDATE_PATH);
+    if read_root_file(candidate, 0o755)?.is_some() {
+        remove_file(candidate)?;
+    }
     for artifact in ARTIFACTS {
-        for suffix in ["candidate", "rollback"] {
-            let path = sibling(artifact.path, suffix);
-            if read_root_file(&path, artifact.mode)?.is_some() {
-                remove_file(&path)?;
-            }
+        let path = sibling(artifact.path, "rollback");
+        if read_root_file(&path, artifact.mode)?.is_some() {
+            remove_file(&path)?;
         }
     }
     Ok(())
