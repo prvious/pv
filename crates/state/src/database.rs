@@ -213,6 +213,9 @@ pub struct GatewayPortAssignments {
 pub struct ProjectConfigWatch {
     pub project_id: String,
     pub project_path: Utf8PathBuf,
+    /// Whether worktree discovery linked the Project. Discovered Projects are never discovery
+    /// sources.
+    pub discovered: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -2708,11 +2711,12 @@ impl Database {
     pub fn project_config_watches(&self) -> Result<Vec<ProjectConfigWatch>, StateError> {
         let mut statement = self
             .connection
-            .prepare("SELECT id, path FROM projects ORDER BY id")?;
+            .prepare("SELECT id, path, source_project_id IS NOT NULL FROM projects ORDER BY id")?;
         let rows = statement.query_map([], |row| {
             Ok(ProjectConfigWatch {
                 project_id: row.get(0)?,
                 project_path: Utf8PathBuf::from(row.get::<_, String>(1)?),
+                discovered: row.get(2)?,
             })
         })?;
         let mut watches = Vec::new();

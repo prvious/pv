@@ -8,6 +8,8 @@ use state::{JobsLock, PvPaths, StateError};
 use thiserror::Error;
 use tokio::sync::Notify;
 
+use crate::watcher::ProjectConfigWatcher;
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ReconciliationScope {
     System,
@@ -98,6 +100,7 @@ pub enum ReconciliationScopeParseError {
 struct QueueInner {
     state: Mutex<QueueState>,
     notify: Notify,
+    project_config_watcher: Option<ProjectConfigWatcher>,
 }
 
 type JobFinalizer = Box<dyn FnOnce(&str) + Send + 'static>;
@@ -121,10 +124,22 @@ struct DebounceInner {
 
 impl ReconciliationQueue {
     pub fn new() -> Self {
+        Self::with_project_config_watcher(None)
+    }
+
+    /// A queue that has `watcher` re-read the linked Projects whenever it admits a job and
+    /// whenever a job ends, since commands commit their changes before they request a job and
+    /// system reconciliation links and unlinks discovered worktrees.
+    pub(crate) fn watching_project_configs(watcher: ProjectConfigWatcher) -> Self {
+        Self::with_project_config_watcher(Some(watcher))
+    }
+
+    fn with_project_config_watcher(project_config_watcher: Option<ProjectConfigWatcher>) -> Self {
         Self {
             inner: Arc::new(QueueInner {
                 state: Mutex::new(QueueState::default()),
                 notify: Notify::new(),
+                project_config_watcher,
             }),
         }
     }
@@ -233,6 +248,25 @@ impl ReconciliationQueue {
     }
 
     fn enqueue_mutating_with_key<E>(
+        &self,
+        paths: &PvPaths,
+        scope: ReconciliationScope,
+        key: ReconciliationQueueKey,
+        create_job_id: impl FnOnce() -> Result<String, E>,
+        abandon_job: impl FnOnce(&str) + Send + 'static,
+    ) -> Result<EnqueueResult, E>
+    where
+        E: From<StateError>,
+    {
+        let result = self.admit_mutating(paths, scope, key, create_job_id, abandon_job);
+        if result.is_ok() {
+            reload_project_configs(&self.inner);
+        }
+
+        result
+    }
+
+    fn admit_mutating<E>(
         &self,
         paths: &PvPaths,
         scope: ReconciliationScope,
@@ -385,15 +419,13 @@ impl RunningReconciliation {
 
 impl Drop for RunningReconciliation {
     fn drop(&mut self) {
-        if self.finished {
-            return;
-        }
-
-        if release_active_job(&self.inner, &self.job)
+        if !self.finished
+            && release_active_job(&self.inner, &self.job)
             && let Some(abandon_job) = self.abandon_job.take()
         {
             abandon_job(&self.job.job_id);
         }
+        reload_project_configs(&self.inner);
     }
 }
 
@@ -618,6 +650,12 @@ fn release_active_job(inner: &QueueInner, job: &ReconciliationJob) -> bool {
     }
 
     false
+}
+
+fn reload_project_configs(inner: &QueueInner) {
+    if let Some(watcher) = &inner.project_config_watcher {
+        watcher.reload();
+    }
 }
 
 fn release_jobs_lock_if_idle(state: &mut QueueState) {

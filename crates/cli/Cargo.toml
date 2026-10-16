@@ -20,7 +20,7 @@ config = { path = "../config" }
 daemon = { path = "../daemon" }
 home = { workspace = true }
 indicatif = { workspace = true }
-linemux = { workspace = true }
+notify = { workspace = true }
 platform = { path = "../platform" }
 protocol = { path = "../protocol" }
 resources = { path = "../resources" }
@@ -32,10 +32,10 @@ state = { path = "../state" }
 textwrap = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
-tokio = { workspace = true }
 yaml_serde = { workspace = true }
 
 [dev-dependencies]
 camino-tempfile = { workspace = true }
 insta = { workspace = true }
 pv-fake = { path = "../pv-fake" }
+tokio = { workspace = true }

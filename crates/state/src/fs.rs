@@ -143,6 +143,19 @@ pub fn copy_file_atomically(source: &Utf8Path, target: &Utf8Path) -> Result<(), 
     }
 }
 
+/// Opens `path` for reading, or returns `None` when nothing exists there.
+#[expect(
+    clippy::disallowed_types,
+    reason = "PV filesystem helper owns direct file handles"
+)]
+pub fn open_read_file(path: &Utf8Path) -> Result<Option<std::fs::File>, StateError> {
+    match std::fs::File::open(path) {
+        Ok(file) => Ok(Some(file)),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(StateError::filesystem(path.to_path_buf(), source)),
+    }
+}
+
 #[expect(
     clippy::disallowed_types,
     reason = "PV filesystem helper owns direct file handles"

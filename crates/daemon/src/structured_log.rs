@@ -392,6 +392,19 @@ pub(crate) fn worktree_discovery_failed(paths: &PvPaths, subject: &str, error: &
     );
 }
 
+/// Records a path the file watcher couldn't follow. The watcher tries again whenever it re-reads
+/// the linked Projects.
+pub(crate) fn file_watch_failed(paths: &PvPaths, subject: &str, error: &str) {
+    append_best_effort(
+        paths,
+        "warn",
+        "watcher",
+        "file_watch_failed",
+        "file watcher could not follow a path",
+        &[("subject", subject), ("error", error)],
+    );
+}
+
 /// Records a cleanup run for removed worktrees that stopped early. The cleanup list keeps every
 /// object it didn't delete for the next system reconciliation.
 pub(crate) fn worktree_cleanup_failed(paths: &PvPaths, error: &str) {

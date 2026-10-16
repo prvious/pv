@@ -220,4 +220,7 @@ pub(crate) enum ExecuteError {
 
     #[error(transparent)]
     SelfUpdate(#[from] self_update::AppUpdateManifestError),
+
+    #[error("file watcher error: {0}")]
+    Watch(#[from] notify::Error),
 }
