@@ -2932,12 +2932,9 @@ fn backing_build_recipes_ad_hoc_sign_macho_payloads() -> Result<()> {
     target_os = "linux",
     any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
-fn upstream_build_recipes_validate_linux_elf_before_final_outputs() -> Result<()> {
+fn linux_build_recipes_validate_elf_before_final_outputs() -> Result<()> {
     let mut summaries = Vec::new();
-    for mut recipe in BackingBuildRecipe::all()
-        .into_iter()
-        .filter(|recipe| recipe.resource != "redis")
-    {
+    for mut recipe in BackingBuildRecipe::all() {
         recipe.platform = if cfg!(target_arch = "aarch64") {
             "linux-arm64"
         } else {
@@ -3625,6 +3622,7 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
     write_redis_source_archive_with_options(
         &source_archive,
         options.include_fast_float_legal_header,
+        false,
     )?;
     write_fake_redis_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
@@ -4310,9 +4308,9 @@ fn run_backing_build_recipe_payload_smoke(
     write_backing_source_archive(&source_archive, recipe, invalid_elf_rpath)?;
     write_fake_backing_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
-    write_fake_make(&fake_bin.join("make"))?;
     write_fake_cpu_tools(&fake_bin)?;
     if !recipe.platform.starts_with("linux-") {
+        write_fake_make(&fake_bin.join("make"))?;
         write_fake_codesign(&fake_bin.join("codesign"))?;
         write_fake_lipo(&fake_bin.join("lipo"))?;
         write_fake_otool(&fake_bin.join("otool"))?;
@@ -6789,6 +6787,9 @@ fn write_backing_source_archive(
     recipe: BackingBuildRecipe,
     invalid_elf_rpath: bool,
 ) -> Result<()> {
+    if matches!(recipe.source_kind, BackingSourceKind::Redis) {
+        return write_redis_source_archive_with_options(path, true, invalid_elf_rpath);
+    }
     if recipe.platform.starts_with("linux-") {
         let source = path.with_extension("c");
         let binary = path.with_extension("elf");
@@ -6823,12 +6824,10 @@ fn write_backing_source_archive(
         }
         return write_single_file_archive(path, recipe.resource, &read_bytes(&binary)?);
     }
-    match recipe.source_kind {
-        BackingSourceKind::Redis => write_redis_source_archive(path),
-        BackingSourceKind::TarGzBinary => {
-            write_single_file_archive(path, recipe.resource, b"binary fixture")
-        }
-        BackingSourceKind::ZipBinary => write_file(path, "zip fixture\n"),
+    if matches!(recipe.source_kind, BackingSourceKind::ZipBinary) {
+        write_file(path, "zip fixture\n")
+    } else {
+        write_single_file_archive(path, recipe.resource, b"binary fixture")
     }
 }
 
@@ -6867,10 +6866,6 @@ fn write_single_binary_source_archive(path: &Utf8Path, binary_name: &str) -> Res
     Ok(())
 }
 
-fn write_redis_source_archive(path: &Utf8Path) -> Result<()> {
-    write_redis_source_archive_with_options(path, true)
-}
-
 #[expect(
     clippy::disallowed_types,
     reason = "release tooling tests create source tarball fixtures directly"
@@ -6878,10 +6873,26 @@ fn write_redis_source_archive(path: &Utf8Path) -> Result<()> {
 fn write_redis_source_archive_with_options(
     path: &Utf8Path,
     include_fast_float_legal_header: bool,
+    invalid_elf_rpath: bool,
 ) -> Result<()> {
     let file = std::fs::File::create(path)?;
     let encoder = GzEncoder::new(file, Compression::default());
     let mut builder = Builder::new(encoder);
+
+    append_archive_file(
+        &mut builder,
+        "redis-source/src/fixture.c",
+        b"int main(void) { return 0; }\n",
+    )?;
+    let linker_flags = if invalid_elf_rpath {
+        "-Wl,-rpath,/tmp/build/lib"
+    } else {
+        ""
+    };
+    let makefile = format!(
+        "all:\n\ttest \"$(BUILD_TLS)\" = no\n\t$(CC) src/fixture.c -o src/redis-server {linker_flags}\n\t$(CC) src/fixture.c -o src/redis-cli\n"
+    );
+    append_archive_file(&mut builder, "redis-source/Makefile", makefile.as_bytes())?;
 
     append_archive_file(
         &mut builder,
