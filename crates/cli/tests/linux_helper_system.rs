@@ -368,27 +368,36 @@ impl HelperFixture {
             &format!("{CONTROL_DIRECTORY}/expected.sha256"),
             "0600",
         )?;
-        // Hold a rejected activation until rollback stops its cgroup. Immediate rejection
-        // could repeatedly retrigger the pending socket and hit systemd's start limits.
-        self.root_file(
-            "condition.sh",
-            "if /usr/bin/sha256sum --check /run/pv-helper-system-test/expected.sha256; then exit 0; fi\nexec /usr/bin/sleep 150\n",
-            &format!("{CONTROL_DIRECTORY}/condition.sh"),
-            "0700",
-        )?;
+        // Exercise helper recovery after repeated startup failures hit systemd's start limit.
         root(&["/usr/bin/install", "-d", "-m", "0755", DROP_IN_DIRECTORY])?;
         self.root_file(
             "condition.conf",
-            "[Service]\nEnvironment=LC_ALL=C\nExecCondition=/bin/sh /run/pv-helper-system-test/condition.sh\nStandardOutput=append:/run/pv-helper-system-test/condition.log\n",
+            "[Unit]\nStartLimitIntervalSec=60\nStartLimitBurst=10\n[Service]\nEnvironment=LC_ALL=C\nExecStartPre=/usr/bin/sha256sum --check /run/pv-helper-system-test/expected.sha256\nStandardOutput=append:/run/pv-helper-system-test/condition.log\n",
             &format!("{DROP_IN_DIRECTORY}/10-pv-system-test.conf"),
             "0644",
         )?;
-        let failed = self.install(&original, &original_sha256);
+        let failure = self
+            .install(&original, &original_sha256)
+            .err()
+            .context("replacement condition must reject the changed helper")?;
+        let condition = root_text(&[
+            "/usr/bin/cat",
+            &format!("{CONTROL_DIRECTORY}/condition.log"),
+        ])?;
         ensure!(
-            failed.is_err(),
-            "replacement condition must reject the changed helper"
+            condition
+                .lines()
+                .filter(|line| line.ends_with(": FAILED"))
+                .count()
+                > 1,
+            "replacement must fail repeatedly: {condition}"
         );
-        assert_snapshot!(root_text(&["/usr/bin/cat", &format!("{CONTROL_DIRECTORY}/condition.log")])?, @r"
+        self.capture_process().with_context(|| {
+            format!("helper did not recover after rejected replacement: {failure:#}")
+        })?;
+        let mut condition_lines = condition.lines().collect::<Vec<_>>();
+        condition_lines.dedup();
+        assert_snapshot!(condition_lines.join("\n"), @r"
         /usr/local/libexec/pv/pv-helper: FAILED
         /usr/local/libexec/pv/pv-helper: OK
         ");
@@ -400,7 +409,6 @@ impl HelperFixture {
             serde_json::from_str::<Value>(&root_text(&["/usr/bin/cat", HELPER_METADATA_PATH])?)?,
             metadata
         );
-        self.capture_process()?;
         assert_eq!(
             fs::read_link(Utf8Path::new(ENABLED_LINKS[0]))?,
             Utf8Path::new(SOCKET_UNIT)
