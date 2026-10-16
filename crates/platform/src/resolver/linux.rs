@@ -12,6 +12,7 @@ use rustix::net::AddressFamily;
 use rustix::process::{geteuid, getuid};
 use tokio::runtime::Builder;
 use zbus::fdo::DBusProxy;
+use zbus::names::BusName;
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedObjectPath;
 use zbus::{Connection, Proxy, connection, proxy};
@@ -191,7 +192,7 @@ fn dummy_link(link: &LinkMessage) -> bool {
 
 pub(super) fn inspect(expected: Option<&ResolverConfig>) -> ResolverFileState {
     match run_native("inspection", DNS_INSPECTION_TIMEOUT, async {
-        let (_, observation) = observe().await?;
+        let (_, observation) = observe(false).await?;
         Ok(observation)
     }) {
         Ok(observation) => observation.state(expected),
@@ -267,9 +268,11 @@ async fn with_netlink<T, F: Future<Output = Result<T, PlatformError>>>(
     }
 }
 
-async fn observe() -> Result<(Connection, Observation), PlatformError> {
+async fn observe(
+    allow_resolved_activation: bool,
+) -> Result<(Connection, Observation), PlatformError> {
     let (connection, mut observation) = observe_owned().await?;
-    let resolved = resolved_manager(&connection).await?;
+    let resolved = resolved_manager(&connection, allow_resolved_activation).await?;
     observation.routing_domains = resolved.get_property("Domains").await.map_err(bus_error)?;
     observation.link_settings = if let Some(link) = pv_link(&observation.links) {
         let index = i32::try_from(link.header.index)
@@ -314,9 +317,29 @@ async fn observe_owned() -> Result<(Connection, Observation), PlatformError> {
     Ok((connection, observation))
 }
 
-async fn resolved_manager(connection: &Connection) -> Result<Proxy<'static>, PlatformError> {
+async fn resolved_manager(
+    connection: &Connection,
+    allow_activation: bool,
+) -> Result<Proxy<'static>, PlatformError> {
+    let name = BusName::try_from("org.freedesktop.resolve1")
+        .map_err(zbus::Error::from)
+        .map_err(bus_error)?;
+    let destination = if allow_activation {
+        name
+    } else {
+        // A unique destination cannot activate a stopped service or follow a new owner.
+        DBusProxy::new(connection)
+            .await
+            .map_err(bus_error)?
+            .get_name_owner(name)
+            .await
+            .map_err(zbus::Error::from)
+            .map_err(bus_error)?
+            .into()
+    };
     resolved_proxy(
         connection,
+        destination,
         "/org/freedesktop/resolve1"
             .try_into()
             .map_err(zbus::Error::from)
@@ -363,11 +386,12 @@ async fn read_unit_status(
 
 async fn resolved_proxy(
     connection: &Connection,
+    destination: BusName<'static>,
     path: OwnedObjectPath,
     interface: &'static str,
 ) -> Result<Proxy<'static>, PlatformError> {
     proxy::Builder::new(connection)
-        .destination("org.freedesktop.resolve1")
+        .destination(destination)
         .map_err(bus_error)?
         .path(path)
         .map_err(bus_error)?
@@ -386,7 +410,13 @@ async fn read_link_settings(
     let Some(path) = resolved_link_path(manager, index).await? else {
         return Ok(None);
     };
-    let link = resolved_proxy(manager.connection(), path, "org.freedesktop.resolve1.Link").await?;
+    let link = resolved_proxy(
+        manager.connection(),
+        manager.destination().to_owned(),
+        path,
+        "org.freedesktop.resolve1.Link",
+    )
+    .await?;
     Ok(Some(LinkSettings {
         dns: link.get_property("DNSEx").await.map_err(bus_error)?,
         domains: link.get_property("Domains").await.map_err(bus_error)?,
@@ -414,9 +444,9 @@ pub fn start_resolver_link(port: u16) -> Result<(), PlatformError> {
     require_root()?;
     validate_high_port("DNS", port)?;
     run_native("link up", Duration::from_secs(10), async {
-        let (connection, before) = observe().await?;
+        let (connection, before) = observe(true).await?;
         before.require_owned()?;
-        let resolved = resolved_manager(&connection).await?;
+        let resolved = resolved_manager(&connection, true).await?;
         with_netlink(|handle| async move {
             let links = query_links(&handle).await?;
             if owned_pv_link(&links)?.is_none() {
@@ -534,7 +564,7 @@ async fn stop_link() -> Result<(), PlatformError> {
             .map_err(zbus::Error::from)
             .map_err(bus_error)?
         {
-            let resolved = resolved_manager(&connection).await?;
+            let resolved = resolved_manager(&connection, true).await?;
             match resolved
                 .call::<_, _, ()>("RevertLink", &(resolved_index,))
                 .await
@@ -578,7 +608,7 @@ pub(crate) fn apply_resolver_config_privileged(
         root_files::validate_directory_chain(Utf8Path::new("/etc/systemd/system"), false)?;
         read_owned_unit(path)?;
         require_no_candidate(path)?;
-        let (connection, before) = observe().await?;
+        let (connection, before) = observe(true).await?;
         before.require_owned()?;
         let manager = system_manager_proxy(&connection).await.map_err(bus_error)?;
         write_unit(path, config)?;
@@ -588,7 +618,7 @@ pub(crate) fn apply_resolver_config_privileged(
             .map_err(bus_error)?;
         // Reload may select a newly visible fragment or drop-in. Check the manager's
         // actual selection before enablement or execution.
-        let (_, reloaded) = observe().await?;
+        let (_, reloaded) = observe(true).await?;
         reloaded.require_owned()?;
         manager
             .call::<_, _, (bool, Vec<(String, String, String)>)>(
@@ -601,10 +631,10 @@ pub(crate) fn apply_resolver_config_privileged(
             .call::<_, _, ()>("Reload", &())
             .await
             .map_err(bus_error)?;
-        let (_, enabled) = observe().await?;
+        let (_, enabled) = observe(true).await?;
         enabled.require_owned()?;
         dns_unit_job(&manager, "RestartUnit").await?;
-        let (_, after) = observe().await?;
+        let (_, after) = observe(true).await?;
         match after.state(Some(config)) {
             ResolverFileState::Current { .. } => Ok(()),
             state => Err(PlatformError::SystemIntegration(format!(

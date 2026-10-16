@@ -83,10 +83,22 @@ fi
 #[ignore = "requires PV_LINUX_SYSTEM_TESTS=1, the built helper and a disposable bounded systemd service with resolved and dummy links"]
 fn systemd_dns_routes_test_reapplies_after_restart_changes_port_and_refuses_conflicts() -> Result<()>
 {
-    with_helper_fixture(exercise_dns)
+    with_helper_fixture(|fixture, helper| with_dns_fixture(fixture, helper, DnsFixture::exercise))
 }
 
-fn exercise_dns(helper_fixture: &mut HelperFixture, helper: &Utf8Path) -> Result<()> {
+#[test]
+#[ignore = "requires PV_LINUX_SYSTEM_TESTS=1, the built helper and a disposable bounded systemd service with resolved"]
+fn systemd_dns_inspection_does_not_activate_stopped_resolved() -> Result<()> {
+    with_helper_fixture(|fixture, helper| {
+        with_dns_fixture(fixture, helper, DnsFixture::inspect_stopped)
+    })
+}
+
+fn with_dns_fixture(
+    helper_fixture: &mut HelperFixture,
+    helper: &Utf8Path,
+    exercise: fn(&mut DnsFixture, &mut HelperFixture, &Utf8Path) -> Result<()>,
+) -> Result<()> {
     preflight()?;
     let paths = PvPaths::for_home(helper_fixture.scratch.path().join("dns-home"));
     let mut fixture = DnsFixture {
@@ -100,7 +112,7 @@ fn exercise_dns(helper_fixture: &mut HelperFixture, helper: &Utf8Path) -> Result
         timer_attempted: false,
         cleaned: false,
     };
-    let result = fixture.exercise(helper_fixture, helper);
+    let result = exercise(&mut fixture, helper_fixture, helper);
     let cleanup = fixture.cleanup();
     match (result, cleanup) {
         (Err(error), Err(cleanup)) => {
@@ -128,16 +140,16 @@ fn preflight() -> Result<()> {
             .any(|link| matches!(link["ifname"].as_str(), Some("pv0" | FOREIGN_LINK))),
         "refusing existing fixture link"
     );
+    assert_eq!(
+        service_property("systemd-resolved.service", "ActiveState")?,
+        "active"
+    );
     ensure!(
         matches!(
             platform::inspect_resolver_file(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH), None),
             ResolverFileState::Missing { .. }
         ),
         "DNS routing must initially be missing without conflicts"
-    );
-    assert_eq!(
-        service_property("systemd-resolved.service", "ActiveState")?,
-        "active"
     );
     let nameservers: Vec<_> = fs::read_to_string(Utf8Path::new("/etc/resolv.conf"))?
         .lines()
@@ -180,6 +192,63 @@ struct DnsFixture {
 }
 
 impl DnsFixture {
+    fn inspect_stopped(
+        &mut self,
+        helper_fixture: &mut HelperFixture,
+        helper: &Utf8Path,
+    ) -> Result<()> {
+        self.arm_cleanup(helper_fixture)?;
+        helper_fixture.arm_cleanup()?;
+        helper_fixture.install(helper, &checksum(helper)?)?;
+        helper_fixture.capture_process()?;
+        ensure!(matches!(
+            PrivilegedHelperClient.inspect_dns(None)?,
+            ResolverFileState::Missing { .. }
+        ));
+        let names: Value = serde_json::from_slice(
+            &checked(
+                "/usr/bin/busctl",
+                &[
+                    "--system",
+                    "--json=short",
+                    "call",
+                    "org.freedesktop.DBus",
+                    "/org/freedesktop/DBus",
+                    "org.freedesktop.DBus",
+                    "ListActivatableNames",
+                ],
+            )?
+            .stdout,
+        )?;
+        ensure!(
+            names["data"][0]
+                .as_array()
+                .context("activatable bus names missing")?
+                .iter()
+                .any(|name| name == "org.freedesktop.resolve1")
+        );
+        for helper_inspection in [false, true] {
+            root(&["/usr/bin/systemctl", "stop", "systemd-resolved.service"])?;
+            assert_eq!(
+                service_property("systemd-resolved.service", "LoadState")?,
+                "loaded"
+            );
+            require_resolved_stopped()?;
+            let state = if helper_inspection {
+                PrivilegedHelperClient.inspect_dns(None)?
+            } else {
+                platform::inspect_resolver_file(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH), None)
+            };
+            require_resolved_stopped()?;
+            ensure!(
+                matches!(state, ResolverFileState::Unreadable { .. }),
+                "{state:?}"
+            );
+            require_owned_resources_removed()?;
+        }
+        Ok(())
+    }
+
     fn exercise(&mut self, helper_fixture: &mut HelperFixture, helper: &Utf8Path) -> Result<()> {
         self.arm_cleanup(helper_fixture)?;
         helper_fixture.arm_cleanup()?;
@@ -403,23 +472,7 @@ impl DnsFixture {
             "--runtime",
             "systemd-resolved.service",
         ])?;
-        assert_eq!(
-            text(checked(
-                "/usr/bin/busctl",
-                &[
-                    "--system",
-                    "call",
-                    "org.freedesktop.DBus",
-                    "/org/freedesktop/DBus",
-                    "org.freedesktop.DBus",
-                    "NameHasOwner",
-                    "s",
-                    "org.freedesktop.resolve1"
-                ]
-            )?)?
-            .trim(),
-            "b false"
-        );
+        require_resolved_stopped()?;
         ensure!(matches!(
             platform::inspect_resolver_file(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH), None),
             ResolverFileState::Unreadable { .. }
@@ -562,6 +615,33 @@ impl Drop for DnsFixture {
             );
         }
     }
+}
+
+fn require_resolved_stopped() -> Result<()> {
+    assert_eq!(
+        service_property("systemd-resolved.service", "ActiveState")?,
+        "inactive"
+    );
+    assert_eq!(service_property("systemd-resolved.service", "Job")?, "");
+    assert_eq!(
+        text(checked(
+            "/usr/bin/busctl",
+            &[
+                "--system",
+                "call",
+                "org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                "NameHasOwner",
+                "s",
+                "org.freedesktop.resolve1",
+            ]
+        )?)?
+        .trim(),
+        "b false"
+    );
+    assert!(link("pv0")?.is_none());
+    Ok(())
 }
 
 fn require_current(port: u16) -> Result<()> {
