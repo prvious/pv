@@ -7377,6 +7377,7 @@ if(NOT MYSQL_DATADIR STREQUAL "${CMAKE_INSTALL_PREFIX}/data")
 endif()
 file(WRITE "$ENV{PV_TEST_CMAKE_LOG}" "bison=${BISON_EXECUTABLE}\nnuma=${WITH_NUMA}\n")
 find_library(aio_library NAMES aio REQUIRED)
+find_library(CURSES_LIBRARY NAMES tinfo REQUIRED)
 if(NOT INSTALL_PRIV_LIBDIR)
   set(INSTALL_PRIV_LIBDIR "lib/private")
 endif()
@@ -7390,7 +7391,7 @@ target_link_libraries(mysqlclient PRIVATE private_fixture "${WITH_SSL}/lib/libss
 install(TARGETS mysqlclient LIBRARY DESTINATION lib)
 foreach(binary mysqld mysql mysqladmin nested-probe)
   add_executable(${binary} main.c)
-  target_link_libraries(${binary} PRIVATE mysqlclient "${WITH_SSL}/lib/libssl.so.3" "${WITH_SSL}/lib/libcrypto.so.3" "${aio_library}")
+  target_link_libraries(${binary} PRIVATE mysqlclient "${WITH_SSL}/lib/libssl.so.3" "${WITH_SSL}/lib/libcrypto.so.3" "${aio_library}" "${CURSES_LIBRARY}")
   set_target_properties(${binary} PROPERTIES INSTALL_RPATH "/tmp/pv/build/lib")
   if(binary STREQUAL "nested-probe")
     install(TARGETS ${binary} RUNTIME DESTINATION lib/plugin)
@@ -7418,7 +7419,7 @@ install(TARGETS fixture_module LIBRARY DESTINATION lib/plugin)
     append_archive_file(
         &mut builder,
         "mysql-source/main.c",
-        b"int mysql_fixture(void); int main(void) { return mysql_fixture() != 2; }\n",
+        b"#include <curses.h>\n#include <term.h>\nint mysql_fixture(void); int emit_fixture(int value) { return value; } int main(void) { tputs(\"\", 1, emit_fixture); return mysql_fixture() != 2; }\n",
     )?;
     append_archive_file(
         &mut builder,
