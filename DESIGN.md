@@ -1522,6 +1522,8 @@ Only a missing entry directory counts as removal. A missing source directory, an
 
 `pv open [hostname]` opens a served Project hostname in the user's browser from desired state. It does not require observed state to confirm that the Project is currently reachable.
 
+Foreground CLI commands use the `webbrowser` crate for browser handoff on macOS and Linux. Errors returned by the handoff propagate to the command's error output.
+
 With a hostname argument, `pv open <hostname>` opens that Project directly. With no argument, it opens the current Project or falls back to the picker.
 
 PV opens the Project's primary hostname.

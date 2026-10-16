@@ -50,7 +50,8 @@ pub(crate) fn require_capability_for(
         PlatformTarget::Linux
             if matches!(
                 capability,
-                PlatformCapability::ProcessInspection
+                PlatformCapability::BrowserHandoff
+                    | PlatformCapability::ProcessInspection
                     | PlatformCapability::ProcessContainment
                     | PlatformCapability::DaemonIpc
                     | PlatformCapability::DaemonRegistration
