@@ -7399,7 +7399,15 @@ foreach(binary mysqld mysql mysqladmin nested-probe)
     install(TARGETS ${binary} RUNTIME DESTINATION bin)
   endif()
 endforeach()
+if(WITH_TIRPC STREQUAL "bundled")
+  add_library(rpc_fixture STATIC rpc.c)
+else()
+  add_library(rpc_fixture SHARED rpc.c)
+  set_target_properties(rpc_fixture PROPERTIES OUTPUT_NAME tirpc SOVERSION 3)
+endif()
+set_target_properties(rpc_fixture PROPERTIES POSITION_INDEPENDENT_CODE ON)
 add_library(fixture_module MODULE module.c)
+target_link_libraries(fixture_module PRIVATE rpc_fixture)
 if(NOT "$ENV{PV_TEST_MYSQL_INVALID_ELF}" STREQUAL "")
   target_link_options(fixture_module PRIVATE "-Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/newer.map")
 endif()
@@ -7424,7 +7432,12 @@ install(TARGETS fixture_module LIBRARY DESTINATION lib/plugin)
     append_archive_file(
         &mut builder,
         "mysql-source/module.c",
-        b"int module_fixture(void) { return 1; }\n",
+        b"int rpc_fixture(void); int module_fixture(void) { return rpc_fixture(); }\n",
+    )?;
+    append_archive_file(
+        &mut builder,
+        "mysql-source/rpc.c",
+        b"int rpc_fixture(void) { return 1; }\n",
     )?;
     append_archive_file(
         &mut builder,
