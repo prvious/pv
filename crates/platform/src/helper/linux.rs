@@ -466,6 +466,12 @@ async fn rollback(
             errors.push(error.to_string());
         }
     }
+    if previous.socket_active
+        && !previous.service_active
+        && let Err(error) = job(manager, "StopUnit", SERVICE_UNIT).await
+    {
+        errors.push(error.to_string());
+    }
     if previous.service_active
         && !previous.socket_active
         && let Err(error) = job(manager, "StopUnit", SOCKET_UNIT).await
