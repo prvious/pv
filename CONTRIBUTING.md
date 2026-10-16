@@ -223,6 +223,22 @@ env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u al
   -E 'test(=invalid_manifest_host_uses_transport_error_and_cached_manifest)'
 ```
 
+Ignored daemon artifact contracts can use unpublished local inputs. Put the
+generated `manifest.json` and archives in one directory, named by the filenames
+in their URLs, then set `PV_E2E_ARTIFACT_DIR` for the test process:
+
+```shell
+PV_E2E_REAL_ARTIFACTS=1 PV_E2E_ARTIFACT_DIR=/path/to/local-artifacts \
+  PV_E2E_ARTIFACT_MANIFEST_URL=https://artifacts.pv-linux.invalid/manifest.json \
+  cargo nextest run --profile ci --locked -p daemon --all-features --run-ignored only \
+  -E 'test(=real_caddy_satisfies_the_gateway_contract)'
+```
+
+The test transport reads those files locally. Missing inputs fail without a
+network fallback; the normal downloader still checks archive SHA-256 hashes.
+Without `PV_E2E_ARTIFACT_DIR`, the contracts use their existing HTTP client.
+This environment variable is test-only and does not configure the installed app.
+
 System integration needs a separate disposable container with systemd as PID 1:
 
 ```shell
