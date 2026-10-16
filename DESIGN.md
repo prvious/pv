@@ -104,7 +104,7 @@ Setup detects the user's shell from `$SHELL`. If `$SHELL` is missing or unsuppor
 
 Shell profile backups created by setup append a timestamp and `.pv.bak`, such as `~/.zprofile.20260522-143012.pv.bak`.
 
-Setup edits only the detected shell's profile file for PATH setup: `~/.zprofile` for zsh, `~/.bash_profile` for bash, and `~/.config/fish/config.fish` for fish. It does not edit multiple shell profile files at once.
+Setup edits only the detected shell's profile file for PATH setup. macOS uses `~/.zprofile` for zsh and `~/.bash_profile` for bash; Linux uses the interactive `~/.zshrc` and `~/.bashrc` files. Both use `~/.config/fish/config.fish` for fish. Setup and uninstall select the file from the platform reported through the CLI environment. They do not edit multiple shell profile files at once.
 
 If the detected shell profile file does not exist, setup may create it with only the `PV ENV` block after confirmation. No backup is needed when creating a new file, but the action is reported.
 
