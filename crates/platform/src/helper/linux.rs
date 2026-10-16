@@ -434,7 +434,8 @@ async fn rollback(
     {
         errors.push(error.to_string());
     }
-    if previous.socket_active
+    // The restored service needs a listening descriptor even if its socket was stopped.
+    if (previous.socket_active || previous.service_active)
         && let Err(error) = job(manager, "StartUnit", SOCKET_UNIT).await
     {
         errors.push(error.to_string());
@@ -460,6 +461,12 @@ async fn rollback(
         if let Err(error) = result {
             errors.push(error.to_string());
         }
+    }
+    if previous.service_active
+        && !previous.socket_active
+        && let Err(error) = job(manager, "StopUnit", SOCKET_UNIT).await
+    {
+        errors.push(error.to_string());
     }
     if errors.is_empty()
         && let Err(error) = clear_transaction_files()
