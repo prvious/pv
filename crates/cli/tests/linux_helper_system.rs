@@ -586,6 +586,26 @@ impl HelperFixture {
             fs::path_entry_exists(Utf8Path::new(LOG))?,
             "installed helper service did not create its error log"
         );
+        root(&[
+            "/usr/bin/systemctl",
+            "kill",
+            "--kill-who=main",
+            "--signal=KILL",
+            "pv-helper.service",
+        ])?;
+        require_exited(live)?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let active_state = service_property("pv-helper.service", "ActiveState")?;
+            if active_state == "failed" {
+                break;
+            }
+            ensure!(
+                Instant::now() < deadline,
+                "killed helper did not reach failed state: {active_state}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
         let response = root(&removal_arguments)?;
         assert_eq!(
             serde_json::from_slice::<Option<String>>(&response.stdout)?,
