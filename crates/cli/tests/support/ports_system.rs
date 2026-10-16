@@ -193,6 +193,37 @@ impl PortsFixture {
         let ca = platform::generate_local_ca()?;
         fs::write_sensitive_file(&self.paths.ca_certificate(), &ca.certificate_pem)?;
         fs::write_sensitive_file(&self.paths.ca_private_key(), &ca.private_key_pem)?;
+        let retained = "/etc/systemd/system/pv-http.socket.rollback";
+        let retained_bytes = "retained administrator recovery bytes\n";
+        helper_fixture.root_file("retained.socket", retained_bytes, retained, "0644")?;
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run_with_environment(
+            ["pv", "ports:install"],
+            &PortEnvironment(&self.paths),
+            &mut stdout,
+            &mut stderr,
+        )?;
+        ensure!(code == ExitCode::FAILURE);
+        for name in socket_proxy_unit_names() {
+            ensure!(fs::path_entry_exists(
+                &self.paths.ports_config().join(name)
+            )?);
+        }
+        assert_eq!(
+            Database::open(&self.paths)?.assigned_ports()?,
+            [],
+            "{}",
+            String::from_utf8_lossy(&stderr)
+        );
+        assert_eq!(fs::read_to_string(Utf8Path::new(retained))?, retained_bytes);
+        assert_snapshot!(String::from_utf8(stderr)?, @"error: PV privileged helper rejected the request: PV privileged helper rejected the request: system integration operation failed: retained unit rollback requires administrator inspection before retrying: /etc/systemd/system/pv-http.socket.rollback\n");
+        root(&["/usr/bin/rm", "--", retained])?;
+        for name in socket_proxy_unit_names() {
+            fs::delete_file(&self.paths.ports_config().join(name))?;
+        }
+        require_absent()?;
+
         let [http_port, https_port, changed_port] = pv_fake::ports::<3>()?;
         let config = PfRedirectConfig::new(http_port, https_port);
         let mut database = Database::open(&self.paths)?;
