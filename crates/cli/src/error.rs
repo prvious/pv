@@ -1,5 +1,6 @@
 use std::io;
 
+use platform::{PlatformTarget, daemon_registration_name};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -160,21 +161,30 @@ pub enum CliError {
 
     #[error(
         "PV application update requires the PV {} at {path}; run `pv setup` or `pv daemon:enable`",
-        platform::DAEMON_REGISTRATION_NAME
+        daemon_registration_name(*.target)
     )]
-    AppUpdateDaemonRegistrationMissing { path: String },
+    AppUpdateDaemonRegistrationMissing {
+        path: String,
+        target: PlatformTarget,
+    },
 
     #[error(
         "PV {} file is not PV-owned; leaving it unchanged at {path}",
-        platform::DAEMON_REGISTRATION_NAME
+        daemon_registration_name(*.target)
     )]
-    AppUpdateDaemonRegistrationConflict { path: String },
+    AppUpdateDaemonRegistrationConflict {
+        path: String,
+        target: PlatformTarget,
+    },
 
     #[error(
         "PV {} file is unreadable; leaving it unchanged: {message}",
-        platform::DAEMON_REGISTRATION_NAME
+        daemon_registration_name(*.target)
     )]
-    AppUpdateDaemonRegistrationUnreadable { message: String },
+    AppUpdateDaemonRegistrationUnreadable {
+        message: String,
+        target: PlatformTarget,
+    },
 
     #[error("PV app download size mismatch for `{url}`: expected {expected}, got {actual}")]
     AppUpdateSizeMismatch {
@@ -282,4 +292,40 @@ pub(crate) enum ExecuteError {
 
     #[error("file watcher error: {0}")]
     Watch(#[from] notify::Error),
+}
+
+#[cfg(test)]
+mod tests {
+    use insta::assert_debug_snapshot;
+    use platform::PlatformTarget;
+
+    use super::CliError;
+
+    #[test]
+    fn update_registration_errors_use_the_requested_platform() {
+        let mut errors = Vec::new();
+        for target in [PlatformTarget::Macos, PlatformTarget::Linux] {
+            errors.push((
+                target,
+                [
+                    CliError::AppUpdateDaemonRegistrationMissing {
+                        path: "/fixture/registration".to_owned(),
+                        target,
+                    }
+                    .to_string(),
+                    CliError::AppUpdateDaemonRegistrationConflict {
+                        path: "/fixture/registration".to_owned(),
+                        target,
+                    }
+                    .to_string(),
+                    CliError::AppUpdateDaemonRegistrationUnreadable {
+                        message: "fixture read failure".to_owned(),
+                        target,
+                    }
+                    .to_string(),
+                ],
+            ));
+        }
+        assert_debug_snapshot!(errors);
+    }
 }

@@ -2,8 +2,8 @@ use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
 use platform::{
-    CaFileState, DAEMON_REGISTRATION_NAME, DaemonRegistrationFileState, LocalCaMetadata,
-    PlatformTarget, ResolverConfig, ResolverFileState, TrustDomainState,
+    CaFileState, DaemonRegistrationFileState, LocalCaMetadata, PlatformTarget, ResolverConfig,
+    ResolverFileState, TrustDomainState, daemon_registration_name,
 };
 use self_update::AppUpdateVersion;
 use serde::Serialize;
@@ -65,7 +65,7 @@ impl DoctorReport {
                 checks: vec![
                     layout_check(&paths),
                     database_check(&paths, database.as_ref()),
-                    privileged_helper_check(environment, &paths, environment.platform_target()?),
+                    privileged_helper_check(environment, &paths, target),
                 ],
             },
             DoctorSection {
@@ -79,7 +79,7 @@ impl DoctorReport {
             DoctorSection {
                 title: "Daemon & jobs",
                 checks: vec![
-                    daemon_registration_check(&registration),
+                    daemon_registration_check(&registration, target),
                     #[cfg(target_os = "linux")]
                     daemon_registration_manager_check(environment, &registration),
                     daemon_socket_check(&paths, &registration),
@@ -398,39 +398,41 @@ fn database_check(paths: &PvPaths, database: Option<&Database>) -> DoctorCheck {
     }
 }
 
-fn daemon_registration_check(state: &DaemonRegistrationFileState) -> DoctorCheck {
-    let name = if cfg!(target_os = "linux") {
-        "Daemon service"
-    } else {
-        "Daemon LaunchAgent"
+fn daemon_registration_check(
+    state: &DaemonRegistrationFileState,
+    target: PlatformTarget,
+) -> DoctorCheck {
+    let registration_name = daemon_registration_name(target);
+    let name = match target {
+        PlatformTarget::Linux => "Daemon service",
+        _ => "Daemon LaunchAgent",
     };
     match state {
-        DaemonRegistrationFileState::Current { path, .. } => DoctorCheck::pass(
-            name,
-            format!("PV-owned {DAEMON_REGISTRATION_NAME} is installed"),
-        )
-        .with_detail(format!("path: {path}")),
+        DaemonRegistrationFileState::Current { path, .. } => {
+            DoctorCheck::pass(name, format!("PV-owned {registration_name} is installed"))
+                .with_detail(format!("path: {path}"))
+        }
         DaemonRegistrationFileState::Missing { path } => DoctorCheck::fail(
             name,
-            format!("{DAEMON_REGISTRATION_NAME} is missing"),
+            format!("{registration_name} is missing"),
             "pv daemon:enable",
         )
         .with_detail(format!("path: {path}")),
         DaemonRegistrationFileState::Stale { path, .. } => DoctorCheck::fail(
             name,
-            format!("{DAEMON_REGISTRATION_NAME} is PV-owned but stale"),
+            format!("{registration_name} is PV-owned but stale"),
             "pv daemon:restart",
         )
         .with_detail(format!("path: {path}")),
         DaemonRegistrationFileState::Conflict { path } => DoctorCheck::fail(
             name,
-            format!("{DAEMON_REGISTRATION_NAME} file is not PV-owned"),
+            format!("{registration_name} file is not PV-owned"),
             "pv daemon:enable",
         )
         .with_detail(format!("path: {path}")),
         DaemonRegistrationFileState::Unreadable { path, message } => DoctorCheck::fail(
             name,
-            format!("{DAEMON_REGISTRATION_NAME} file could not be inspected"),
+            format!("{registration_name} file could not be inspected"),
             "pv daemon:enable",
         )
         .with_detail(format!("{path}: {message}")),

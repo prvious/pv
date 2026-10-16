@@ -38,8 +38,8 @@ pub use ca::{
 };
 pub use capability::{PlatformCapability, require_capability};
 pub use daemon_registration::{
-    DAEMON_REGISTRATION_FILE_NAME, DAEMON_REGISTRATION_LABEL, DAEMON_REGISTRATION_NAME,
-    DaemonRegistrationConfig, DaemonRegistrationFileState, daemon_registration_path,
+    DAEMON_REGISTRATION_FILE_NAME, DAEMON_REGISTRATION_LABEL, DaemonRegistrationConfig,
+    DaemonRegistrationFileState, daemon_registration_name, daemon_registration_path,
     enable_daemon_registration, inspect_daemon_registration_file, remove_daemon_registration,
     restart_daemon_registration, stop_daemon_registration, write_daemon_registration_file,
 };
