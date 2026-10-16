@@ -239,6 +239,8 @@ On Linux, the daemon registration is a systemd user service at `$XDG_CONFIG_HOME
 
 Linux registration uses the systemd D-Bus API on the user's session bus. The CLI reads `DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR` through `Environment`; without an explicit address it uses the runtime directory's `bus` socket. Missing session context reports that the systemd user manager is unavailable. Connection and authentication have a 10-second deadline. Stop and restart subscribe before submitting their job and wait for its exact `JobRemoved` result, with a deadline covering submission and final unit inspection: 10 seconds for stop, 15 seconds for restart. Status and doctor inspect the native load state, active state, substate, main PID and fragment path; an unavailable manager does not prevent doctor from reporting its other checks.
 
+Status and doctor require persistent enablement as well as a loaded, active service with a nonzero main PID before reporting a current daemon registration as healthy.
+
 Before Linux lifecycle changes, PV resolves even an unloaded unit through `LoadUnit` and verifies ownership of the manager-selected fragment. Enable reloads metadata before that ownership check and uses `EnableUnitFiles` without force. Removal disables the unit, deletes the PV-owned file, then reloads metadata. An unmarked file is a conflict and is left unchanged.
 
 If a LaunchAgent with PV's expected label already exists but is not PV-owned, `pv daemon:enable` and `pv setup` fail safely and report the conflict instead of overwriting it.
