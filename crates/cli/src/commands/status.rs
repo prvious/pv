@@ -500,9 +500,11 @@ impl DaemonStatus {
         let (state, mark) = if registration_error.is_some() {
             ("unknown", Mark::Failure)
         } else if matches!(registration, DaemonRegistrationFileState::Current { .. })
-            && !registration_runtime
-                .as_ref()
-                .is_some_and(|status| status.active_state == "active" && status.main_pid != 0)
+            && !registration_runtime.as_ref().is_some_and(|status| {
+                status.load_state == "loaded"
+                    && status.active_state == "active"
+                    && status.main_pid != 0
+            })
         {
             ("down", Mark::Failure)
         } else {
