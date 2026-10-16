@@ -1568,9 +1568,13 @@ fn common_recipe_helper_maps_native_architectures() -> Result<()> {
             r#". "$PV_TEST_COMMON_SH"
 for platform in darwin-arm64 darwin-amd64 linux-amd64 linux-arm64; do
     architecture=$(expected_arch_for_platform "$platform")
-    printf '%s=%s\n' "$platform" "$architecture"
+    configure_target=$(pv_recipe_openssl_configure_target_for_platform "$platform")
+    libraries=$(pv_recipe_openssl_library_names_for_platform "$platform")
+    printf '%s=%s target=%s libraries=%s\n' "$platform" "$architecture" "$configure_target" "$libraries"
 done
 if (expected_arch_for_platform any) 2>/dev/null; then exit 99; fi
+if (pv_recipe_openssl_configure_target_for_platform any) 2>/dev/null; then exit 99; fi
+if (pv_recipe_openssl_library_names_for_platform any) 2>/dev/null; then exit 99; fi
 "#,
         ])
         .env("PV_TEST_COMMON_SH", &common)
@@ -1581,6 +1585,93 @@ if (expected_arch_for_platform any) 2>/dev/null; then exit 99; fi
         command_output_debug(&output)
     );
     assert_snapshot!(String::from_utf8(output.stdout)?);
+    Ok(())
+}
+
+#[test]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+fn common_recipe_helper_validates_linux_openssl_prefix() -> Result<()> {
+    let tempdir = tempdir()?;
+    let common =
+        Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/common.sh");
+    let build = tempdir.path().join("build.sh");
+    write_executable(
+        &build,
+        r#"#!/bin/sh
+set -eu
+cd "$PV_TEST_ROOT"
+mkdir -p valid/include/openssl valid/lib
+printf '%s\n' 'fixture header' > valid/include/openssl/ssl.h
+printf '%s\n' 'fixture license' > valid/LICENSE.txt
+printf '%s\n' 'int crypto(void) { return 1; }' > crypto.c
+printf '%s\n' 'int crypto(void); int ssl(void) { return crypto(); }' > ssl.c
+cc -shared -fPIC crypto.c -Wl,-soname,libcrypto.so.3 -o valid/lib/libcrypto.so.3
+cc -shared -fPIC ssl.c -Lvalid/lib -l:libcrypto.so.3 -Wl,-soname,libssl.so.3 '-Wl,-rpath,$ORIGIN' -o valid/lib/libssl.so.3
+cp -R valid missing-library
+rm missing-library/lib/libssl.so.3
+cp -R valid invalid-rpath
+patchelf --set-rpath /tmp/build/lib invalid-rpath/lib/libssl.so.3
+cp -R valid plain-text-library
+printf '%s\n' 'not an ELF library' > plain-text-library/lib/libssl.so.3
+cp -R valid symlink-library
+rm symlink-library/lib/libssl.so.3
+ln -s ../../invalid-rpath/lib/libssl.so.3 symlink-library/lib/libssl.so.3
+mkdir symlink-directory
+cp -R valid/include symlink-directory/
+cp valid/LICENSE.txt symlink-directory/
+ln -s ../invalid-rpath/lib symlink-directory/lib
+"#,
+    )?;
+    let output = StdCommand::new(&build)
+        .env("PV_TEST_ROOT", tempdir.path())
+        .output()?;
+    assert!(
+        output.status.success(),
+        "OpenSSL ELF fixture compilation failed: {}",
+        command_output_debug(&output)
+    );
+    let platform = if cfg!(target_arch = "aarch64") {
+        "linux-arm64"
+    } else {
+        "linux-amd64"
+    };
+    let mut results = Vec::new();
+    for (scenario, expected_success) in [
+        ("valid", true),
+        ("missing-library", false),
+        ("invalid-rpath", false),
+        ("plain-text-library", false),
+        ("symlink-library", false),
+        ("symlink-directory", false),
+    ] {
+        let output = StdCommand::new("/bin/sh")
+            .args([
+                "-ec",
+                r#". "$PV_TEST_COMMON_SH"
+pv_recipe_validate_openssl_prefix "$PV_TEST_PREFIX" "$PV_TEST_PLATFORM" ''
+"#,
+            ])
+            .env("PV_TEST_COMMON_SH", &common)
+            .env("PV_TEST_PREFIX", tempdir.path().join(scenario))
+            .env("PV_TEST_PLATFORM", platform)
+            .output()?;
+        assert_eq!(
+            output.status.success(),
+            expected_success,
+            "{scenario}: {}",
+            command_output_debug(&output)
+        );
+        assert!(output.stdout.is_empty());
+        results.push((
+            scenario,
+            expected_success,
+            String::from_utf8(output.stderr)?.replace(tempdir.path().as_str(), "<tmp>"),
+        ));
+    }
+    assert_debug_snapshot!(results);
     Ok(())
 }
 

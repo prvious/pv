@@ -2,7 +2,7 @@
 source: crates/pv-release/tests/smoke.rs
 expression: "String::from_utf8(output.stdout)?"
 ---
-darwin-arm64=arm64
-darwin-amd64=x86_64
-linux-amd64=x86_64
-linux-arm64=aarch64
+darwin-arm64=arm64 target=darwin64-arm64-cc libraries=libssl.3.dylib libcrypto.3.dylib
+darwin-amd64=x86_64 target=darwin64-x86_64-cc libraries=libssl.3.dylib libcrypto.3.dylib
+linux-amd64=x86_64 target=linux-x86_64 libraries=libssl.so.3 libcrypto.so.3
+linux-arm64=aarch64 target=linux-aarch64 libraries=libssl.so.3 libcrypto.so.3
