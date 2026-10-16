@@ -20,6 +20,10 @@ use crate::systemd::{native_proxy, within};
 const STUB: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 53), 53));
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(2);
 
+pub(super) fn check_test() -> Result<(), PlatformError> {
+    async_io::block_on(probe("test"))
+}
+
 pub(super) fn check_stub() -> Result<(), PlatformError> {
     async_io::block_on(within(Duration::from_secs(10), async {
         let connection = Connection::system().await.map_err(resolved_error)?;

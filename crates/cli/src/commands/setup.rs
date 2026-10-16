@@ -183,6 +183,39 @@ pub(crate) fn setup(
     let completed =
         ::daemon::run_job_with_events_blocking(paths, "reconcile", "system", &mut progress)?;
     drop(progress);
+    finish_setup(
+        &completed.summary,
+        &default_resource_plan.failures,
+        environment,
+        streams,
+        replay_error,
+    )
+}
+
+fn finish_setup(
+    summary: &str,
+    resource_failures: &[String],
+    environment: &impl Environment,
+    streams: &mut Streams<'_>,
+    replay_error: Option<io::Error>,
+) -> Result<ExitCode, ExecuteError> {
+    let linux = environment.platform_target()? == PlatformTarget::Linux;
+    #[cfg(target_os = "linux")]
+    let mut replay_error = replay_error;
+    #[cfg(target_os = "linux")]
+    if linux
+        && !run_required_step(
+            ".test DNS verification",
+            streams,
+            &mut replay_error,
+            |_streams| {
+                environment.check_linux_setup_dns()?;
+                Ok(ExitCode::SUCCESS)
+            },
+        )?
+    {
+        return Ok(ExitCode::FAILURE);
+    }
     let output = &mut streams.out;
 
     if output.surface().decorated() {
@@ -198,14 +231,14 @@ pub(crate) fn setup(
     }
 
     let summary = Line::from("System reconciliation completed: ")
-        .prose_with_quoted_values(&completed.summary, Tone::Value);
+        .prose_with_quoted_values(summary, Tone::Value);
     output.flow_step(Mark::Done, summary)?;
-    if !default_resource_plan.failures.is_empty() {
+    if !resource_failures.is_empty() {
         output.flow_step(
             Mark::Failure,
             "Default Managed Resource planning failed for some defaults:",
         )?;
-        for failure in &default_resource_plan.failures {
+        for failure in resource_failures {
             output.detail(format!("- {failure}"))?;
         }
         output.follow_up("PV setup completed core integrations; rerun `pv setup` after fixing the default Managed Resource manifest.")?;
@@ -1248,6 +1281,8 @@ mod tests {
     use resources::{ResourceHttpClient, ResourcesError};
     use state::{PvPaths, fs};
 
+    #[cfg(target_os = "linux")]
+    use super::finish_setup;
     use super::{configure_shell_integration, remove_shell_integration, run_required_step};
     #[cfg(unix)]
     use super::{setup, uninstall};
@@ -1264,6 +1299,9 @@ mod tests {
         shell: &'static str,
         home: PathBuf,
         manifest_available: bool,
+        target: Option<PlatformTarget>,
+        #[cfg(target_os = "linux")]
+        final_dns_ready: bool,
         operations: RefCell<Vec<&'static str>>,
     }
 
@@ -1302,7 +1340,7 @@ mod tests {
         }
 
         fn platform_target(&self) -> Result<PlatformTarget, PlatformError> {
-            Ok(PlatformTarget::Linux)
+            Ok(self.target.unwrap_or(PlatformTarget::Linux))
         }
 
         #[cfg(target_os = "linux")]
@@ -1311,6 +1349,18 @@ mod tests {
             Err(PlatformError::SystemIntegration(
                 "fixture Linux host prerequisite refused".to_owned(),
             ))
+        }
+
+        #[cfg(target_os = "linux")]
+        fn check_linux_setup_dns(&self) -> Result<(), PlatformError> {
+            self.operations.borrow_mut().push("final DNS check");
+            if self.final_dns_ready {
+                Ok(())
+            } else {
+                Err(PlatformError::SystemIntegration(
+                    "fixture .test DNS failed".to_owned(),
+                ))
+            }
         }
 
         fn daemon_registration_path(&self) -> PathBuf {
@@ -1567,6 +1617,117 @@ mod tests {
         assert_snapshot!(format!("{message}\n{:?}", environment.operations.borrow()), @r#"
         fixture Linux host prerequisite refused
         ["executable", "manifest", "host check"]
+        "#);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_setup_completion_requires_test_dns_before_reporting_success() -> anyhow::Result<()> {
+        let mut observations = Vec::new();
+        for (surface, decorated) in [("plain", false), ("decorated", true)] {
+            for (name, target, final_dns_ready) in [
+                ("Linux failure", PlatformTarget::Linux, false),
+                ("Linux success", PlatformTarget::Linux, true),
+                ("macOS skip", PlatformTarget::Macos, false),
+            ] {
+                let environment = SetupEnvironment {
+                    target: Some(target),
+                    final_dns_ready,
+                    ..Default::default()
+                };
+                let presentation = if decorated {
+                    Presentation::detect(&["--no-color".into()], &environment)
+                } else {
+                    Presentation::plain()
+                };
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                let mut streams = Streams::new(&mut stdout, &mut stderr, presentation);
+                streams.out.flow_resume("PV setup");
+                let outcome =
+                    match finish_setup("fixture reconciled", &[], &environment, &mut streams, None)
+                    {
+                        Ok(code) if code == ExitCode::SUCCESS => {
+                            assert!(target != PlatformTarget::Linux || final_dns_ready);
+                            "success".to_owned()
+                        }
+                        Err(ExecuteError::Platform(PlatformError::SystemIntegration(message)))
+                            if target == PlatformTarget::Linux && !final_dns_ready =>
+                        {
+                            format!("failed: {message}")
+                        }
+                        result => anyhow::bail!("unexpected completion result: {result:?}"),
+                    };
+                observations.push(format!(
+                    "{surface} {name}\nresult: {outcome}\noperations: {:?}\nstdout:\n{}stderr:\n{}",
+                    environment.operations.borrow(),
+                    String::from_utf8(stdout)?,
+                    String::from_utf8(stderr)?,
+                ));
+            }
+        }
+        assert_snapshot!(observations.join("\n"), @r#"
+        plain Linux failure
+        result: failed: fixture .test DNS failed
+        operations: ["final DNS check"]
+        stdout:
+        PV stopped during .test DNS verification.
+        stderr:
+
+        plain Linux success
+        result: success
+        operations: ["final DNS check"]
+        stdout:
+        System reconciliation completed: fixture reconciled
+        PV setup complete
+        stderr:
+
+        plain macOS skip
+        result: success
+        operations: []
+        stdout:
+        System reconciliation completed: fixture reconciled
+        PV setup complete
+        stderr:
+
+        decorated Linux failure
+        result: failed: fixture .test DNS failed
+        operations: ["final DNS check"]
+        stdout:
+        │
+        ✗  .test DNS verification
+        │
+        └  ✗ PV stopped during .test DNS verification.
+        stderr:
+
+        decorated Linux success
+        result: success
+        operations: ["final DNS check"]
+        stdout:
+        │
+        ✓  .test DNS verification
+        │
+        ✓  Local HTTPS, .test domains and startup configured
+        │  DNS resolver · socket proxy · CA trust · daemon registration
+        │
+        ◇  System reconciliation completed: fixture reconciled
+        │
+        └  PV setup complete
+        stderr:
+
+        decorated macOS skip
+        result: success
+        operations: []
+        stdout:
+        │
+        ✓  Local HTTPS, .test domains and startup configured
+        │  DNS resolver · port redirect · CA trust · daemon registration
+        │
+        ◇  System reconciliation completed: fixture reconciled
+        │
+        └  PV setup complete
+        stderr:
         "#);
         Ok(())
     }
