@@ -21,6 +21,7 @@ mod doctor;
 mod env;
 mod init;
 mod jobs;
+mod linux_distribution;
 mod logs;
 mod mailpit;
 mod mysql;

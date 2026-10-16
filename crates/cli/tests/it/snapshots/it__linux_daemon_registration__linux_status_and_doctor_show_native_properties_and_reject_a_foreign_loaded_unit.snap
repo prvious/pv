@@ -25,7 +25,7 @@ expression: observed
             "repair": Null,
             "status": String("pass"),
         },
-        "plain_status": String("PV status\nOverall: failed\nDaemon: down\n  systemd user service: current\n  Socket: missing\n  systemd: load=loaded enablement=enabled state=active/running pid=42 fragment=<tempdir>/owned/.config/systemd/user/pv-daemon.service\nIntegrations:\n  DNS: missing\n  Ports: drifted\n    repair: pv ports:install\n  CA: missing\nLogs: <tempdir>/owned/.pv/logs\nManaged Resources:\n  none\nProjects:\n  none\nRecent errors:\n  none\n"),
+        "plain_status": String("PV status\nLinux distribution: Linux (untested)\nOverall: failed\nDaemon: down\n  systemd user service: current\n  Socket: missing\n  systemd: load=loaded enablement=enabled state=active/running pid=42 fragment=<tempdir>/owned/.config/systemd/user/pv-daemon.service\nIntegrations:\n  DNS: missing\n  Ports: drifted\n    repair: pv ports:install\n  CA: missing\nLogs: <tempdir>/owned/.pv/logs\nManaged Resources:\n  none\nProjects:\n  none\nRecent errors:\n  none\n"),
     },
     Object {
         "daemon": Object {
@@ -50,6 +50,6 @@ expression: observed
             "repair": String("pv daemon:enable"),
             "status": String("fail"),
         },
-        "plain_status": String("PV status\nOverall: failed\nDaemon: unknown\n  systemd user service: conflict\n  Socket: missing\n  systemd loaded a service that is not PV-owned: <tempdir>/foreign/.config/systemd/user/pv-daemon.service\nIntegrations:\n  DNS: missing\n  Ports: drifted\n    repair: pv ports:install\n  CA: missing\nLogs: <tempdir>/foreign/.pv/logs\nManaged Resources:\n  none\nProjects:\n  none\nRecent errors:\n  none\n"),
+        "plain_status": String("PV status\nLinux distribution: Linux (untested)\nOverall: failed\nDaemon: unknown\n  systemd user service: conflict\n  Socket: missing\n  systemd loaded a service that is not PV-owned: <tempdir>/foreign/.config/systemd/user/pv-daemon.service\nIntegrations:\n  DNS: missing\n  Ports: drifted\n    repair: pv ports:install\n  CA: missing\nLogs: <tempdir>/foreign/.pv/logs\nManaged Resources:\n  none\nProjects:\n  none\nRecent errors:\n  none\n"),
     },
 ]
