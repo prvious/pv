@@ -116,6 +116,7 @@ camino = { workspace = true }
 camino-tempfile = { workspace = true }
 daemon = { path = "crates/daemon" }
 insta = { workspace = true }
+platform = { path = "crates/platform" }
 portable-pty = { workspace = true }
 pv-fake = { path = "crates/pv-fake" }
 serde_json = { workspace = true }

@@ -76,7 +76,7 @@ where
 
     match cli.command {
         Command::Env(args) => env::run(args, environment, streams),
-        Command::Completions(args) => Ok(completions::run(args, streams)),
+        Command::Completions(args) => completions::run(args, environment, streams),
         Command::Setup(args) => setup::setup(args, environment, streams),
         Command::Uninstall(args) => setup::uninstall(args, environment, streams),
         Command::DaemonEnable => daemon::enable(environment, streams),
