@@ -333,10 +333,10 @@ async fn rollback(
         for unit in previous {
             let status = read_loaded_unit(manager, &unit.name).await?.0.status;
             require_owned_status(&unit.name, unit.checksum.is_some(), status.as_ref())?;
-            if status
-                .as_ref()
-                .is_some_and(|status| status.active_state == "active")
-                != unit.active
+            if (unit.active
+                && !status
+                    .as_ref()
+                    .is_some_and(|status| status.active_state == "active"))
                 || (unit.checksum.is_some()
                     && enablement(manager, &unit.name).await? != unit.enabled)
             {
