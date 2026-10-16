@@ -97,13 +97,16 @@ async fn readiness_timeout_reports_the_last_probe_failure() -> Result<()> {
     )
     .await;
 
-    assert!(matches!(
-        result,
-        Err(daemon::DaemonError::ReadinessTimedOut {
-            last_error: Some(reason),
-            ..
-        }) if reason.contains("HTTP readiness returned non-success status")
-    ));
+    assert!(
+        matches!(
+            &result,
+            Err(daemon::DaemonError::ReadinessTimedOut {
+                last_error: Some(reason),
+                ..
+            }) if reason.contains("HTTP readiness returned non-success status")
+        ),
+        "unexpected readiness result: {result:?}"
+    );
     server.abort();
 
     Ok(())
