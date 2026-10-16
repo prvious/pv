@@ -1494,8 +1494,11 @@ mod update_tests {
             ScriptedClient::new()
                 .with_text(&manifest)
                 .with_download(APP_BINARY),
-        )
-        .with_helper_rollback_cleanup_warning("helper transaction cleanup failed");
+        );
+        environment
+            .helper_install_cleanup_warnings
+            .borrow_mut()
+            .push_back(Some("helper transaction cleanup failed".to_string()));
 
         let mut stdout = Vec::new();
         let exit_code = run_with_environment(
@@ -1514,6 +1517,13 @@ mod update_tests {
                 paths.active_pv_binary().as_std_path().to_path_buf(),
                 vec!["internal:update-managed-resources".to_string()]
             )]
+        );
+
+        assert!(
+            environment
+                .helper_install_cleanup_warnings
+                .borrow()
+                .is_empty()
         );
 
         Ok(())
