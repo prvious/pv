@@ -16,31 +16,38 @@ PLATFORM=${PV_RECIPE_PLATFORM:-darwin-arm64}
 BUILD_JOBS=${PV_BUILD_JOBS:-2}
 SOURCE_CACHE_DIR=${PV_POSTGRES_SOURCE_CACHE_DIR:-"$ROOT/release/artifacts/out/source-cache"}
 WORK_DIR=${PV_POSTGRES_DEPENDENCY_WORK_DIR:-"$ROOT/release/artifacts/out/postgres-dependencies/$PLATFORM"}
-export LDFLAGS="${LDFLAGS:+$LDFLAGS }-Wl,-headerpad_max_install_names"
 
 need awk
 need basename
 need cmp
-need codesign
 need curl
 need dirname
 need file
 need find
-need install_name_tool
-need lipo
 need make
 need mktemp
 need mv
-need otool
 need perl
 need sed
 need tar
 need uname
-need xcrun
-need xcodebuild
 
 case "$PLATFORM" in
-  darwin-arm64 | darwin-amd64) ;;
+  darwin-arm64 | darwin-amd64)
+    need codesign
+    need install_name_tool
+    need lipo
+    need otool
+    need xcrun
+    need xcodebuild
+    export LDFLAGS="${LDFLAGS:+$LDFLAGS }-Wl,-headerpad_max_install_names"
+    ;;
+  linux-amd64 | linux-arm64)
+    need getconf
+    need patchelf
+    need readelf
+    [ "$(uname -s)" = Linux ] || die "Linux Postgres dependencies require a native Linux runner"
+    ;;
   *) die "unsupported Postgres dependency platform: $PLATFORM" ;;
 esac
 
@@ -53,14 +60,28 @@ expected_arch=$(expected_arch_for_platform "$PLATFORM")
 native_arch=$(uname -m)
 [ "$native_arch" = "$expected_arch" ] || die "Postgres dependency runner architecture $native_arch does not match $PLATFORM"
 
-sdk_version=$(xcrun --sdk macosx --show-sdk-version) || die "failed to identify the macOS SDK version"
-sdk_path=$(xcrun --sdk macosx --show-sdk-path) || die "failed to identify the macOS SDK path"
-sdk_root=${SDKROOT:-$sdk_path}
-
+sdk_version=
+sdk_path=
+sdk_root=
+libc_version=
+configure_flags=no-tests
 compiler=${CC:-}
-if [ -z "$compiler" ]; then
-  compiler=$(xcrun --find clang) || die "failed to locate the macOS C compiler"
-fi
+case "$PLATFORM" in
+  darwin-arm64 | darwin-amd64)
+    sdk_version=$(xcrun --sdk macosx --show-sdk-version) || die "failed to identify the macOS SDK version"
+    sdk_path=$(xcrun --sdk macosx --show-sdk-path) || die "failed to identify the macOS SDK path"
+    sdk_root=${SDKROOT:-$sdk_path}
+    if [ -z "$compiler" ]; then
+      compiler=$(xcrun --find clang) || die "failed to locate the macOS C compiler"
+    fi
+    ;;
+  linux-amd64 | linux-arm64)
+    compiler=${compiler:-cc}
+    libc_version=$(getconf GNU_LIBC_VERSION) || die "failed to identify the Linux glibc version"
+    [ -n "$libc_version" ] || die "Linux glibc version is empty"
+    configure_flags='no-tests --libdir=lib'
+    ;;
+esac
 case "$compiler" in
   */*) compiler_path=$compiler ;;
   *) compiler_path=$(command -v "$compiler") || die "failed to locate C compiler $compiler" ;;
@@ -69,10 +90,16 @@ esac
 compiler_version_output=$("$compiler_path" --version) || die "failed to identify C compiler version: $compiler_path"
 compiler_version=$(printf '%s\n' "$compiler_version_output" | sed -n '1p')
 [ -n "$compiler_version" ] || die "C compiler version is empty: $compiler_path"
-xcode_version_output=$(xcodebuild -version) || die "failed to identify the Xcode toolchain version"
-xcode_version=$(printf '%s\n' "$xcode_version_output" | sed -n '1p')
-xcode_build_version=$(printf '%s\n' "$xcode_version_output" | sed -n '2p')
-[ -n "$xcode_version" ] && [ -n "$xcode_build_version" ] || die "Xcode toolchain version is incomplete"
+xcode_version=
+xcode_build_version=
+case "$PLATFORM" in
+  darwin-arm64 | darwin-amd64)
+    xcode_version_output=$(xcodebuild -version) || die "failed to identify the Xcode toolchain version"
+    xcode_version=$(printf '%s\n' "$xcode_version_output" | sed -n '1p')
+    xcode_build_version=$(printf '%s\n' "$xcode_version_output" | sed -n '2p')
+    [ -n "$xcode_version" ] && [ -n "$xcode_build_version" ] || die "Xcode toolchain version is incomplete"
+    ;;
+esac
 
 openssl_configure_target=$(pv_recipe_openssl_configure_target_for_platform "$PLATFORM")
 source_archive_name="openssl-$PV_POSTGRES_OPENSSL_VERSION.tar.gz"
@@ -90,6 +117,8 @@ write_contract() {
     "$PV_POSTGRES_OPENSSL_SOURCE_SHA256" \
     "$PLATFORM" \
     "$native_arch" \
+    "$libc_version" \
+    "$configure_flags" \
     "$sdk_version" \
     "$sdk_path" \
     "$sdk_root" \
@@ -123,16 +152,25 @@ write_contract() {
     printf '%s\n' "source_sha256=$PV_POSTGRES_OPENSSL_SOURCE_SHA256"
     printf '%s\n' "platform=$PLATFORM"
     printf '%s\n' "architecture=$native_arch"
-    printf '%s\n' "sdk_version=$sdk_version"
-    printf '%s\n' "sdk_path=$sdk_path"
-    printf '%s\n' "sdk_root=$sdk_root"
-    printf '%s\n' "deployment_target=$PV_POSTGRES_DEPLOYMENT_TARGET"
+    case "$PLATFORM" in
+      darwin-arm64 | darwin-amd64)
+        printf '%s\n' "sdk_version=$sdk_version"
+        printf '%s\n' "sdk_path=$sdk_path"
+        printf '%s\n' "sdk_root=$sdk_root"
+        printf '%s\n' "deployment_target=$PV_POSTGRES_DEPLOYMENT_TARGET"
+        ;;
+      linux-amd64 | linux-arm64) printf '%s\n' "libc_version=$libc_version" ;;
+    esac
     printf '%s\n' "compiler_path=$compiler_path"
     printf '%s\n' "compiler_version=$compiler_version"
-    printf '%s\n' "xcode_version=$xcode_version"
-    printf '%s\n' "xcode_build_version=$xcode_build_version"
+    case "$PLATFORM" in
+      darwin-arm64 | darwin-amd64)
+        printf '%s\n' "xcode_version=$xcode_version"
+        printf '%s\n' "xcode_build_version=$xcode_build_version"
+        ;;
+    esac
     printf '%s\n' "configure_target=$openssl_configure_target"
-    printf '%s\n' 'configure_flags=no-tests'
+    printf '%s\n' "configure_flags=$configure_flags"
     printf '%s\n' "openssl_dir=$PV_POSTGRES_OPENSSL_DIR"
     printf '%s\n' "common_script_sha256=$common_script_sha256"
     printf '%s\n' "dependencies_script_sha256=$dependencies_script_sha256"
@@ -226,6 +264,13 @@ relocate_prefix() (
   build_prefix=$(sed -n '1p' "$build_prefix_file")
   [ -n "$build_prefix" ] || die "reusable OpenSSL bundle build prefix is empty"
 
+  case "$PLATFORM" in
+    linux-amd64 | linux-arm64)
+      printf '%s\n' "$openssl_prefix" >"$build_prefix_file"
+      return
+      ;;
+  esac
+
   for library in "$openssl_prefix/lib/libssl.3.dylib" "$openssl_prefix/lib/libcrypto.3.dylib"; do
     [ -f "$library" ] || die "reusable OpenSSL bundle is missing ${library##*/}"
     install_name_tool -id "$openssl_prefix/lib/${library##*/}" "$library"
@@ -257,7 +302,9 @@ build_bundle() {
   source_extract_dir="$WORK_DIR/openssl-source"
 
   export CC="$compiler_path"
-  export SDKROOT="$sdk_root"
+  case "$PLATFORM" in
+    darwin-arm64 | darwin-amd64) export SDKROOT="$sdk_root" ;;
+  esac
   pv_recipe_build_openssl_dependency \
     "$openssl_prefix" \
     "$source_archive" \
