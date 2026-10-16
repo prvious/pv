@@ -219,10 +219,31 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
                 Value::String("pv daemon:enable".to_owned())
             }
         );
+        stdout.clear();
+        stderr.clear();
+        let _exit_code = run_with_environment(
+            ["pv", "status", "--json"],
+            &SystemTestEnvironment::default(),
+            &mut stdout,
+            &mut stderr,
+        )?;
+        ensure!(stderr.is_empty(), "unexpected status errors: {stderr:?}");
+        let status_report: Value = serde_json::from_slice(&stdout)?;
+        let daemon = &status_report["daemon"];
+        assert_eq!(daemon["socket"], "healthy");
+        assert_eq!(
+            daemon["registration_runtime"]["unit_file_state"],
+            if enabled { "enabled" } else { "disabled" }
+        );
+        assert_eq!(daemon["registration_runtime"]["main_pid"], first.main_pid);
+        assert_eq!(daemon["state"], if enabled { "running" } else { "down" });
+        assert_eq!(daemon["failure"], !enabled);
         enablement_observations.push((
             enabled,
             manager["status"].clone(),
             manager["repair"].clone(),
+            daemon["state"].clone(),
+            daemon["failure"].clone(),
         ));
         assert_eq!(status()?.main_pid, first.main_pid);
         let (_, preserved_monitor) = wait_for_redis_monitor(&fixture.paths, None)?;
@@ -234,11 +255,15 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
             false,
             String("fail"),
             String("pv daemon:enable"),
+            String("down"),
+            Bool(true),
         ),
         (
             true,
             String("pass"),
             Null,
+            String("running"),
+            Bool(false),
         ),
     ]
     "#);

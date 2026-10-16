@@ -502,6 +502,7 @@ impl DaemonStatus {
         } else if matches!(registration, DaemonRegistrationFileState::Current { .. })
             && !registration_runtime.as_ref().is_some_and(|status| {
                 status.load_state == "loaded"
+                    && status.unit_file_state.as_deref() == Some("enabled")
                     && status.active_state == "active"
                     && status.main_pid != 0
             })
