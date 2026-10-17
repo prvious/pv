@@ -1,0 +1,24 @@
+---
+source: crates/cli/src/commands/ports/linux.rs
+expression: probe.attempts
+---
+[
+    (
+        "ports:uninstall",
+        ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        "error: PV privileged-helper lifecycle is active; the OS lock is held on \"<tempdir>/home/.pv-helper-lifecycle.lock\"\n",
+    ),
+    (
+        "ports:install",
+        ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        "error: PV privileged-helper lifecycle is active; the OS lock is held on \"<tempdir>/home/.pv-helper-lifecycle.lock\"\n",
+    ),
+]

@@ -166,6 +166,19 @@ fn inspect_identity(
     )))
 }
 
+pub(crate) fn inspect_process_command_line(
+    pid: u32,
+) -> Result<Option<(String, Vec<String>)>, PlatformError> {
+    let Some(process) = open_process(pid).map_err(inspection_error)? else {
+        return Ok(None);
+    };
+    match process_command_line(&process) {
+        Ok(command_line) => Ok(Some(command_line)),
+        Err(_source) if read_stat(&process).map_err(inspection_error)?.is_none() => Ok(None),
+        Err(source) => Err(inspection_error(source)),
+    }
+}
+
 fn process_command_line(process: &Process) -> ProcResult<(String, Vec<String>)> {
     // Process::cmdline drops empty arguments. Read through the same pinned proc
     // directory so empty values and argument boundaries survive inspection.

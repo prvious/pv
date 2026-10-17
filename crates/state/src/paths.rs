@@ -194,6 +194,10 @@ impl PvPaths {
         self.config().join("pf/pf.conf")
     }
 
+    pub fn ports_config(&self) -> Utf8PathBuf {
+        self.config().join("ports")
+    }
+
     pub fn gateway_root_config(&self) -> Utf8PathBuf {
         self.config().join("gateway/Caddyfile")
     }

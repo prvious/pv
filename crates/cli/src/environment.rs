@@ -1,3 +1,5 @@
+#[cfg(target_os = "linux")]
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io;
 use std::io::IsTerminal;
@@ -170,6 +172,43 @@ pub trait Environment {
 
     fn pf_conf_path(&self) -> PathBuf {
         PathBuf::from(platform::SYSTEM_PF_CONF_PATH)
+    }
+
+    fn platform_target(&self) -> Result<platform::PlatformTarget, platform::PlatformError> {
+        platform::PlatformTarget::current()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn socket_proxy_directory(&self) -> PathBuf {
+        PathBuf::from(platform::SYSTEM_SOCKET_PROXY_DIRECTORY)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn socket_proxy_files_current(
+        &self,
+        config: &platform::PfRedirectConfig,
+        prepared_directory: &Utf8Path,
+        installed_directory: &Utf8Path,
+    ) -> bool {
+        platform::socket_proxy_files_current(config, prepared_directory, installed_directory)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn repairable_socket_proxy_ports(&self) -> Result<BTreeSet<u16>, platform::PlatformError> {
+        platform::repairable_socket_proxy_ports()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_socket_proxy_units(
+        &self,
+        config: &platform::PfRedirectConfig,
+    ) -> Result<(), platform::PlatformError> {
+        platform::PrivilegedHelperClient.apply_pf(config)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn remove_socket_proxy_units(&self) -> Result<(), platform::PlatformError> {
+        platform::PrivilegedHelperClient.remove_pf()
     }
 
     fn loopback_tcp_port_available(&self, port: u16) -> bool {

@@ -3,6 +3,9 @@
 #[path = "support/dns_system.rs"]
 mod dns_system;
 
+#[path = "support/ports_system.rs"]
+mod ports_system;
+
 use std::io::{self, Write as _};
 use std::process::Output;
 use std::thread;

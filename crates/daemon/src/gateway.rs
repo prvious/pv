@@ -1676,10 +1676,14 @@ fn classify_gateway_pf_routing_state(
 
     match inspection.pv_config.as_ref() {
         Some(active) if active == expected && inspection.pf_enabled && files_current => {
-            GatewayPfRoutingState::Active
+            if cfg!(target_os = "linux") {
+                // Systemd's loaded Listen can outlive its kernel socket after a reload.
+                GatewayPfRoutingState::Unknown
+            } else {
+                GatewayPfRoutingState::Active
+            }
         }
-        Some(active) if active == expected => GatewayPfRoutingState::Drifted,
-        Some(_active) => GatewayPfRoutingState::Drifted,
+        Some(_) => GatewayPfRoutingState::Drifted,
         None if inspection.pv_anchor_has_unparsed_rules
             || inspection.has_unresolved_redirect_targets
             || inspection
@@ -1695,6 +1699,16 @@ fn classify_gateway_pf_routing_state(
     }
 }
 
+#[cfg(target_os = "linux")]
+fn pf_files_current(paths: &PvPaths, expected: &platform::PfRedirectConfig) -> bool {
+    platform::socket_proxy_files_current(
+        expected,
+        &paths.ports_config(),
+        Utf8Path::new(platform::SYSTEM_SOCKET_PROXY_DIRECTORY),
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
 fn pf_files_current(paths: &PvPaths, expected: &platform::PfRedirectConfig) -> bool {
     let prepared_anchor =
         platform::inspect_pf_anchor_file(&paths.pf_anchor_config(), Some(expected));
@@ -5754,13 +5768,17 @@ mod tests {
     }
 
     #[test]
-    fn matching_loaded_rules_are_active_only_with_current_files() {
+    fn matching_loaded_state_requires_current_files_and_linux_identity_probes() {
         let expected = PfRedirectConfig::new(45080, 45443);
         let inspection = pf_inspection(Some(expected.clone()), BTreeSet::new());
 
         assert_eq!(
             classify_gateway_pf_routing_state(&expected, Some(&inspection), true),
-            GatewayPfRoutingState::Active
+            if cfg!(target_os = "linux") {
+                GatewayPfRoutingState::Unknown
+            } else {
+                GatewayPfRoutingState::Active
+            }
         );
         assert_eq!(
             classify_gateway_pf_routing_state(&expected, Some(&inspection), false),

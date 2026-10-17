@@ -99,6 +99,28 @@ pub enum PlatformError {
     PrivilegedHelperBus(#[source] Box<zbus::Error>),
 
     #[cfg(target_os = "linux")]
+    #[error("could not inspect Linux TCP listeners: {0}")]
+    LowPortProcfs(#[source] Box<procfs::ProcError>),
+
+    #[cfg(target_os = "linux")]
+    #[error("socket proxy D-Bus operation failed: {0}")]
+    PortProxyBus(#[source] Box<zbus::Error>),
+
+    #[cfg(target_os = "linux")]
+    #[error("socket proxy unit I/O failed: {0}")]
+    PortProxyIo(#[source] io::Error),
+
+    #[cfg(target_os = "linux")]
+    #[error(
+        "socket proxy {operation} failed: {source}; port routing may be partial and a queued or in-flight request may still complete; inspect pv-http and pv-https units, their .candidate and .rollback files with an administrator before retrying `pv ports:install` or `pv ports:uninstall`"
+    )]
+    PortProxyMutation {
+        operation: &'static str,
+        #[source]
+        source: Box<PlatformError>,
+    },
+
+    #[cfg(target_os = "linux")]
     #[error("resolver D-Bus operation failed: {0}")]
     ResolverBus(#[source] Box<zbus::Error>),
 
