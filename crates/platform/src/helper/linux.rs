@@ -144,13 +144,37 @@ pub(super) fn install(
         helper_version,
         protocol_version,
     )?;
-    let status = async_io::block_on(wait_for_ready(Utf8Path::new(HELPER_SOCKET_PATH), owner_uid))?;
-    require_identity(&status, owner_uid, helper_version, protocol_version)?;
-    let mut outcome = PrivilegedHelperInstallOutcome::successful(status);
-    if let Some(warning) = cleanup_warning {
-        outcome = outcome.with_cleanup_warning(warning);
+    finish_installation(
+        async_io::block_on(wait_for_ready(Utf8Path::new(HELPER_SOCKET_PATH), owner_uid)),
+        owner_uid,
+        helper_version,
+        protocol_version,
+        cleanup_warning,
+    )
+}
+
+fn finish_installation(
+    readiness: Result<PrivilegedHelperStatus, PlatformError>,
+    owner_uid: u32,
+    helper_version: &str,
+    protocol_version: u32,
+    cleanup_warning: Option<String>,
+) -> Result<PrivilegedHelperInstallOutcome, PlatformError> {
+    let verification = readiness.and_then(|status| {
+        require_identity(&status, owner_uid, helper_version, protocol_version)?;
+        Ok(status)
+    });
+    match (verification, cleanup_warning) {
+        (Ok(status), cleanup_warning) => Ok(PrivilegedHelperInstallOutcome {
+            status,
+            cleanup_warning,
+        }),
+        (Err(source), Some(cleanup_warning)) => Err(PlatformError::PrivilegedHelperVerification {
+            source: Box::new(source),
+            cleanup_warning,
+        }),
+        (Err(error), None) => Err(error),
     }
-    Ok(outcome)
 }
 
 /// Reports whether any of the fixed Linux helper installation paths remains.
@@ -994,10 +1018,14 @@ fn remove_empty_root_directory(path: &Utf8Path) -> Result<(), PlatformError> {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error as _;
+    use std::fmt::Write as _;
+    use std::io;
     use std::os::unix::net::UnixListener;
+    use std::ptr;
     use std::time::Instant;
 
-    use anyhow::{anyhow, ensure};
+    use anyhow::{anyhow, bail, ensure};
     use async_io::{Async, Timer};
     use camino_tempfile::tempdir;
     use futures_lite::future::zip;
@@ -1008,10 +1036,110 @@ mod tests {
     use rustix::process::{Uid, geteuid, getuid};
 
     use super::{
-        HELPER_IO_TIMEOUT, HELPER_LIFECYCLE_PROBE, PlatformError, SERVICE, acquire_lock,
-        checksum_bytes, ensure_root_directory, read_root_file, remove_file, rename, restore_file,
-        sibling, socket_unit, validate_directory_chain, wait_for_ready, within, write_root_file,
+        HELPER_IO_TIMEOUT, HELPER_LIFECYCLE_PROBE, PlatformError, PrivilegedHelperInstallOutcome,
+        PrivilegedHelperStatus, SERVICE, acquire_lock, checksum_bytes, ensure_root_directory,
+        finish_installation, read_root_file, remove_file, rename, restore_file, sibling,
+        socket_unit, validate_directory_chain, wait_for_ready, within, write_root_file,
     };
+
+    #[test]
+    fn installation_verification_preserves_cleanup_warnings_and_primary_errors()
+    -> anyhow::Result<()> {
+        let expected_status = PrivilegedHelperStatus {
+            version: "2.0.0".to_owned(),
+            protocol_version: 2,
+            owner_uid: 1000,
+        };
+        let mut report = String::new();
+        for warning in [
+            None,
+            Some("retained rollback requires administrator recovery"),
+        ] {
+            for (case, readiness) in [
+                (
+                    "readiness",
+                    Err(PlatformError::PrivilegedHelperIo(
+                        io::Error::from_raw_os_error(13),
+                    )),
+                ),
+                (
+                    "identity",
+                    Ok(PrivilegedHelperStatus {
+                        version: "unexpected".to_owned(),
+                        ..expected_status.clone()
+                    }),
+                ),
+                ("success", Ok(expected_status.clone())),
+            ] {
+                let result =
+                    finish_installation(readiness, 1000, "2.0.0", 2, warning.map(str::to_owned));
+                write!(report, "{case} warning={}: ", warning.is_some())?;
+                match result {
+                    Ok(outcome) => {
+                        assert_eq!(case, "success");
+                        let mut expected =
+                            PrivilegedHelperInstallOutcome::successful(expected_status.clone());
+                        if let Some(warning) = warning {
+                            expected = expected.with_cleanup_warning(warning);
+                        }
+                        assert_eq!(outcome, expected);
+                        writeln!(report, "{outcome:?}")?;
+                    }
+                    Err(error) => {
+                        let primary = match (&error, warning) {
+                            (
+                                PlatformError::PrivilegedHelperVerification {
+                                    source,
+                                    cleanup_warning,
+                                },
+                                Some(warning),
+                            ) => {
+                                assert_eq!(cleanup_warning, warning);
+                                let chained = error
+                                    .source()
+                                    .and_then(|source| source.downcast_ref::<Box<PlatformError>>())
+                                    .ok_or_else(|| anyhow!("typed platform source was lost"))?;
+                                assert!(ptr::eq(source, chained));
+                                chained.as_ref()
+                            }
+                            (primary, None) => primary,
+                            _ => bail!("{case} lost the cleanup warning: {error}"),
+                        };
+                        match case {
+                            "readiness" => {
+                                ensure!(
+                                    matches!(primary, PlatformError::PrivilegedHelperIo(source)
+                                        if source.raw_os_error() == Some(13)
+                                            && source.kind() == io::ErrorKind::PermissionDenied),
+                                    "readiness error changed: {primary}"
+                                );
+                                let nested = primary
+                                    .source()
+                                    .and_then(|source| source.downcast_ref::<io::Error>())
+                                    .ok_or_else(|| anyhow!("typed I/O source was lost"))?;
+                                assert_eq!(nested.raw_os_error(), Some(13));
+                            }
+                            "identity" => ensure!(
+                                matches!(primary, PlatformError::PrivilegedHelperInstallation(_)),
+                                "identity error changed: {primary}"
+                            ),
+                            _ => bail!("matching status failed: {error}"),
+                        }
+                        writeln!(report, "error: {error}")?;
+                    }
+                }
+            }
+        }
+        assert_snapshot!(report, @r#"
+        readiness warning=false: error: PV privileged helper I/O failed: Permission denied (os error 13)
+        identity warning=false: error: PV privileged helper installation failed: helper lifecycle identity did not match expected 2.0.0, protocol 2, owner UID 1000: PrivilegedHelperStatus { version: "unexpected", protocol_version: 2, owner_uid: 1000 }
+        success warning=false: PrivilegedHelperInstallOutcome { status: PrivilegedHelperStatus { version: "2.0.0", protocol_version: 2, owner_uid: 1000 }, cleanup_warning: None }
+        readiness warning=true: error: PV privileged helper I/O failed: Permission denied (os error 13); cleanup warning: retained rollback requires administrator recovery
+        identity warning=true: error: PV privileged helper installation failed: helper lifecycle identity did not match expected 2.0.0, protocol 2, owner UID 1000: PrivilegedHelperStatus { version: "unexpected", protocol_version: 2, owner_uid: 1000 }; cleanup warning: retained rollback requires administrator recovery
+        success warning=true: PrivilegedHelperInstallOutcome { status: PrivilegedHelperStatus { version: "2.0.0", protocol_version: 2, owner_uid: 1000 }, cleanup_warning: Some("retained rollback requires administrator recovery") }
+        "#);
+        Ok(())
+    }
 
     #[test]
     fn helper_units_use_owned_socket_activation_and_the_installing_uid() {
