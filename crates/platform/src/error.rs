@@ -141,6 +141,14 @@ pub enum PlatformError {
     #[error("PV privileged helper installation failed: {0}")]
     PrivilegedHelperInstallation(String),
 
+    #[cfg(target_os = "linux")]
+    #[error("{source}; cleanup warning: {cleanup_warning}")]
+    PrivilegedHelperVerification {
+        #[source]
+        source: Box<PlatformError>,
+        cleanup_warning: String,
+    },
+
     #[error("PV privileged helper authentication failed: {0}")]
     PrivilegedHelperAuthentication(String),
 
