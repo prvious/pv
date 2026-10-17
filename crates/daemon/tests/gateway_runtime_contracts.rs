@@ -2,7 +2,7 @@
 //! supervisor, admin client, and readiness checks. Each contract runs against the `pv-fake` Caddy
 //! and FrankenPHP personas, and against the real artifacts when `PV_E2E_REAL_ARTIFACTS=1`, so the
 //! fakes can't drift from what PV actually depends on.
-#![cfg(target_os = "macos")]
+#![cfg(unix)]
 
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::process::Output;
@@ -59,7 +59,8 @@ async fn real_caddy_satisfies_the_gateway_contract() -> Result<()> {
         return Ok(());
     };
     let (_tempdir, paths) = contract_paths()?;
-    let commands = ManagedResourceCommands::new(paths.clone(), manifest_url, target_platform());
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), manifest_url, TargetPlatform::current()?);
     let client = resources::UreqResourceHttpClient::new();
     let caddy = commands.install(&caddy_adapter()?, TrackSelector::Latest, &client)?;
     let executable = caddy_adapter()?.executable_path(caddy.current_artifact_path());
@@ -83,7 +84,8 @@ async fn real_frankenphp_satisfies_the_worker_contract() -> Result<()> {
         return Ok(());
     };
     let (_tempdir, paths) = contract_paths()?;
-    let commands = ManagedResourceCommands::new(paths.clone(), manifest_url, target_platform());
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), manifest_url, TargetPlatform::current()?);
     let client = resources::UreqResourceHttpClient::new();
     let php = commands.install(&php_adapter()?, TrackSelector::Latest, &client)?;
     let frankenphp = commands.install(
@@ -386,14 +388,6 @@ fn run_runtime_cli(executable: &Utf8Path, arguments: &[String]) -> Result<Output
 fn runtime_log(path: &Utf8Path) -> String {
     let log = state::fs::read_to_string(path).unwrap_or_default();
     format!("runtime log {path}:\n{log}")
-}
-
-fn target_platform() -> TargetPlatform {
-    if cfg!(target_arch = "aarch64") {
-        TargetPlatform::DarwinArm64
-    } else {
-        TargetPlatform::DarwinAmd64
-    }
 }
 
 #[expect(

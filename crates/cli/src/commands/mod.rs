@@ -149,7 +149,7 @@ fn acquire_runtime_lifecycle(
 ) -> Result<Option<state::RuntimeLifecycleLock>, ExecuteError> {
     // A monitor and its runtime outlive any command, so holding admission for their whole life
     // would block `daemon:disable`; their controller holds it while starting them.
-    if !cfg!(target_os = "macos")
+    if !cfg!(unix)
         || matches!(
             command,
             Command::DaemonRun

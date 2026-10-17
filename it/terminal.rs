@@ -9,14 +9,19 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
+#[cfg(target_os = "macos")]
+use command::run_pv_in;
 use insta::assert_snapshot;
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
-use support::{create_dir, create_laravel_init_fixture, run_pv_in};
+use support::{create_dir, create_laravel_init_fixture};
 
+#[cfg(target_os = "macos")]
+#[path = "support/command.rs"]
+mod command;
 mod support;
 
 const ROWS: u16 = 120;
-const COLUMNS: u16 = 100;
+const COLUMNS: u16 = 200;
 const TIMEOUT: Duration = Duration::from_secs(15);
 const KEY_DELAY: Duration = Duration::from_millis(50);
 
@@ -177,6 +182,7 @@ fn prune_confirmation_declines_with_n_or_the_default_answer() -> Result<()> {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn open_picker_lists_served_projects_and_escape_cancels() -> Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -298,6 +304,7 @@ impl Session {
         command.cwd(current_dir.as_std_path());
         command.env("HOME", home.as_str());
         command.env("TERM", "xterm-256color");
+        command.env("LANG", "C.UTF-8");
         command.env_remove("NO_COLOR");
         let child = pair.slave.spawn_command(command)?;
         drop(pair.slave);

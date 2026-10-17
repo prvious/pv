@@ -1547,7 +1547,12 @@ pv_recipe_ad_hoc_sign_macho_tree "$PV_TEST_ARTIFACT_ROOT"
         "signing helper failed: {}",
         command_output_debug(&output)
     );
-    assert_debug_snapshot!(read_file(&sign_log)?.replace(tempdir.path().as_str(), "<tmp>"));
+    let mut signed_files = read_file(&sign_log)?
+        .lines()
+        .map(|line| line.replace(tempdir.path().as_str(), "<tmp>"))
+        .collect::<Vec<_>>();
+    signed_files.sort();
+    assert_debug_snapshot!(signed_files);
 
     Ok(())
 }
@@ -1937,6 +1942,11 @@ fn postgres_dependency_cache_contract_is_exact_and_track_independent() -> Result
     write_fake_uname(&fake_bin.join("uname"))?;
     write_fake_xcrun(&fake_bin.join("xcrun"))?;
     write_fake_xcodebuild(&fake_bin.join("xcodebuild"))?;
+    write_fake_codesign(&fake_bin.join("codesign"))?;
+    write_fake_macho_file(&fake_bin.join("file"))?;
+    write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
+    write_fake_lipo(&fake_bin.join("lipo"))?;
+    write_fake_otool(&fake_bin.join("otool"))?;
 
     let run_describe = |track: &str,
                         platform: &str,
@@ -1948,7 +1958,9 @@ fn postgres_dependency_cache_contract_is_exact_and_track_independent() -> Result
             .arg("describe")
             .env("CC", &compiler)
             .env("CFLAGS", cflags)
+            .env_remove("CPPFLAGS")
             .env_remove("LDFLAGS")
+            .env_remove("SDKROOT")
             .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
             .env("PV_BUILD_JOBS", "2")
             .env("PV_POSTGRES_DEPENDENCY_WORK_DIR", work_dir)
@@ -2093,6 +2105,7 @@ fn postgres_smoke_uses_pv_auth_and_validates_supplied_extensions() -> Result<()>
         write_file(&artifact_root.join(relative_path), "mach-o fixture\n")?;
     }
     write_fake_codesign(&command_bin.join("codesign"))?;
+    write_fake_macho_file(&command_bin.join("file"))?;
     write_fake_lipo(&command_bin.join("lipo"))?;
     write_fake_otool(&command_bin.join("otool"))?;
     write_executable(&command_bin.join("sleep"), "#!/bin/sh\nexit 0\n")?;
@@ -3727,7 +3740,8 @@ fn run_mysql_build_recipe_smoke_with_options(
     let record_dir = tempdir.path().join("records");
     let source_archive = tempdir.path().join("mysql-source.tar.gz");
     let openssl_source_archive = tempdir.path().join("openssl-source.tar.gz");
-    let boost_source_archive = tempdir.path().join("boost-source.tar.gz");
+    let boost_source_gzip = tempdir.path().join("boost-source.tar.gz");
+    let boost_source_archive = tempdir.path().join("boost-source.tar.bz2");
     let artifact_basename = format!("mysql-{}-pv1-darwin-arm64", options.upstream_version);
     let openssl_prefix = out_dir
         .join("work")
@@ -3744,7 +3758,23 @@ fn run_mysql_build_recipe_smoke_with_options(
     create_dir_all(&fake_bin)?;
     write_source_archive(&source_archive, "mysql-source")?;
     write_openssl_source_archive(&openssl_source_archive)?;
-    write_source_archive(&boost_source_archive, "boost-source")?;
+    write_source_archive(&boost_source_gzip, "boost-source")?;
+    let compressed = StdCommand::new("bash")
+        .args([
+            "-o",
+            "pipefail",
+            "-c",
+            r#"gzip -dc "$1" | bzip2 > "$2""#,
+            "boost-fixture",
+        ])
+        .arg(&boost_source_gzip)
+        .arg(&boost_source_archive)
+        .output()?;
+    assert!(
+        compressed.status.success(),
+        "Boost fixture compression failed: {}",
+        command_output_debug(&compressed)
+    );
     write_fake_backing_cargo(&fake_bin.join("cargo"))?;
     write_fake_brew(&fake_bin.join("brew"))?;
     write_fake_mysql_cmake(&fake_bin.join("cmake"))?;
@@ -3809,7 +3839,7 @@ fn run_mysql_build_recipe_smoke_with_options(
         )
         .env(
             "PV_MYSQL_BOOST_SOURCE_URL",
-            "https://sources.example.test/boost.tar.gz",
+            "https://sources.example.test/boost.tar.bz2",
         )
         .env(
             "PV_MYSQL_BOOST_SOURCE_SHA256",
@@ -4977,7 +5007,7 @@ case "$url" in
   https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz)
     cp "$PV_TEST_OPENSSL_SOURCE_ARCHIVE" "$output"
     ;;
-  https://sources.example.test/boost.tar.gz)
+  https://sources.example.test/boost.tar.bz2)
     cp "$PV_TEST_BOOST_SOURCE_ARCHIVE" "$output"
     ;;
   *)

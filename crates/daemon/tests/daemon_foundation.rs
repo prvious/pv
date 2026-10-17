@@ -10,7 +10,7 @@ use platform::loopback_tcp_port_available;
 use pv_fake::{EventKind, FakeSettings, InstalledFake, Pause, Persona};
 use rusqlite::{Connection, params};
 use rustix::io::Errno;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use rustix::process::getpgid;
 use rustix::process::{
     Pid, Signal, kill_process_group, test_kill_process, test_kill_process_group,
@@ -31,6 +31,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UdpSocket, UnixListener, UnixStream};
+#[cfg(target_os = "linux")]
+use tokio::task::spawn_blocking;
 use tokio::time::{Instant as TokioInstant, sleep, timeout, timeout_at};
 
 const EXPECTED_DNS_TTL_SECONDS: u32 = 5;
@@ -438,7 +440,9 @@ async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
                     false
                 }
                 Err(_) => {
-                    timeout(Duration::from_secs(5), shutdown).await??;
+                    timeout(Duration::from_secs(5), shutdown)
+                        .await
+                        .context("waiting for startup reconciliation during daemon shutdown")??;
                     true
                 }
             }
@@ -454,6 +458,7 @@ async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     }
     .await;
+    let result = with_daemon_log_tail(&paths, result);
     let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
     propagate_after_cleanup(result, cleanup_result)
 }
@@ -1083,12 +1088,12 @@ async fn wait_for_test_process_group_exit(process_group: Pid) -> Result<()> {
     .map_err(|_elapsed| anyhow!("process group {process_group} remained after cleanup"))?
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn captured_validation_process_group(leader: Pid) -> Result<Pid> {
     Ok(getpgid(Some(leader))?)
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(not(unix))]
 fn captured_validation_process_group(leader: Pid) -> Result<Pid> {
     Ok(leader)
 }
@@ -2638,16 +2643,30 @@ async fn cleanup_seeded_runtimes(paths: &PvPaths) -> Result<()> {
     }
 }
 
+fn with_daemon_log_tail(paths: &PvPaths, result: Result<()>) -> Result<()> {
+    result.map_err(|error| {
+        let recent_log = match state::fs::read_to_string(&paths.daemon_log()) {
+            Ok(content) => {
+                let mut tail = content.chars().rev().take(8_192).collect::<Vec<_>>();
+                tail.reverse();
+                tail.into_iter().collect::<String>()
+            }
+            Err(log_error) => format!("unavailable: {log_error}"),
+        };
+        error.context(format!("daemon log tail:\n{recent_log}"))
+    })
+}
+
 fn combine_cleanup_results(
     shutdown_result: Result<()>,
     runtime_cleanup_result: Result<()>,
 ) -> Result<()> {
     match (shutdown_result, runtime_cleanup_result) {
         (Ok(()), Ok(())) => Ok(()),
-        (Err(shutdown_error), Ok(())) => Err(anyhow!("daemon shutdown failed: {shutdown_error}")),
+        (Err(shutdown_error), Ok(())) => Err(anyhow!("daemon shutdown failed: {shutdown_error:#}")),
         (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
         (Err(shutdown_error), Err(cleanup_error)) => Err(anyhow!(
-            "daemon shutdown failed: {shutdown_error}; runtime cleanup failed: {cleanup_error}"
+            "daemon shutdown failed: {shutdown_error:#}; runtime cleanup failed: {cleanup_error:#}"
         )),
     }
 }
@@ -2661,7 +2680,7 @@ fn propagate_after_cleanup<T>(
         (Err(operation_error), Ok(())) => Err(operation_error),
         (Ok(_), Err(cleanup_error)) => Err(cleanup_error),
         (Err(operation_error), Err(cleanup_error)) => Err(anyhow!(
-            "operation failed: {operation_error}; fixture cleanup failed: {cleanup_error}"
+            "operation failed: {operation_error:#}; fixture cleanup failed: {cleanup_error:#}"
         )),
     }
 }
@@ -2676,6 +2695,22 @@ fn fixture_cleanup_preserves_operation_error_precedence() {
         propagate_after_cleanup::<&str>(
             Err(anyhow!("operation sentinel")),
             Err(anyhow!("cleanup sentinel")),
+        )
+        .map(str::to_owned),
+        propagate_after_cleanup::<&str>(
+            Err(anyhow!("operation cause").context("operation context")),
+            combine_cleanup_results(
+                Err(anyhow!("shutdown cause").context("shutdown context")),
+                Err(anyhow!("runtime cleanup cause").context("runtime cleanup context")),
+            ),
+        )
+        .map(str::to_owned),
+        propagate_after_cleanup(
+            Ok("value"),
+            combine_cleanup_results(
+                Err(anyhow!("shutdown cause").context("shutdown context")),
+                Ok(()),
+            ),
         )
         .map(str::to_owned),
     ]
@@ -3159,7 +3194,8 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
         tokio::time::resume();
         let job =
             wait_for_job_scope_status(&paths, &format!("project:{project_id}"), JobStatus::Failed)
-                .await?;
+                .await
+                .context("waiting for the failed health recovery job after advancing time")?;
 
         let recovered_worker_pid = wait_for_seeded_worker(&paths, "8.4", worker_port).await?;
 
@@ -3197,6 +3233,7 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
         Ok(())
     }
     .await;
+    let operation_result = with_daemon_log_tail(&paths, operation_result);
     let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
 
     propagate_after_cleanup(operation_result, cleanup_result)
@@ -3462,6 +3499,90 @@ async fn fallback_shutdown_drains_idle_client_without_waiting_for_request_timeou
     assert!(response.is_empty());
     assert!(!paths.daemon_socket().exists());
 
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn daemon_process_identity_is_scoped_to_the_current_boot() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
+    let pid = std::process::id();
+    let start_identity = platform::inspect_process_start_identity(pid)?
+        .ok_or_else(|| anyhow!("test process has no start identity"))?;
+    let current_boot = platform::current_boot_session_id()?;
+    let previous_boot =
+        platform::BootSessionId::try_from("00000000-0000-0000-0000-000000000001".to_owned())?;
+    assert_ne!(current_boot, previous_boot);
+
+    for (boot_session_id, previous_boot) in [(current_boot, false), (previous_boot, true)] {
+        let value = json!({
+            "pid": pid,
+            "start_identity": start_identity,
+            "boot_session_id": boot_session_id,
+        });
+        let record = serde_json::to_string(&value)?;
+        state::fs::write_sensitive_file(&paths.daemon_process_record(), &record)?;
+        let process: daemon::DaemonProcess = serde_json::from_value(value)?;
+
+        let capture_paths = paths.clone();
+        let captured =
+            spawn_blocking(move || daemon::daemon_process_for_stop(&capture_paths)).await?;
+        let capture_absent = match captured {
+            Ok(None) => true,
+            Err(daemon::DaemonError::RuntimeProcessIdentityChanged { pid: recorded_pid })
+                if recorded_pid == pid =>
+            {
+                false
+            }
+            Err(error) => return Err(error.into()),
+            Ok(Some(_)) => bail!("captured the foreign test process as the daemon"),
+        };
+        let wait_complete = match process.wait_for_exit(Duration::ZERO) {
+            Ok(()) => true,
+            Err(daemon::DaemonError::RuntimeCleanupUnproven {
+                pid: recorded_pid, ..
+            }) if recorded_pid == pid => false,
+            Err(error) => return Err(error.into()),
+        };
+        let admitted =
+            match daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone())
+                .await
+            {
+                Ok(daemon) => {
+                    daemon.shutdown().await?;
+                    true
+                }
+                Err(daemon::DaemonError::RuntimeCleanupUnproven {
+                    pid: recorded_pid, ..
+                }) if recorded_pid == pid => false,
+                Err(error) => return Err(error.into()),
+            };
+
+        assert_eq!(
+            state::fs::read_to_string(&paths.daemon_process_record())?,
+            record
+        );
+        assert_eq!(
+            platform::inspect_process_start_identity(pid)?,
+            Some(start_identity)
+        );
+        assert!(!platform::process_is_zombie(pid)?);
+        assert_eq!(
+            admitted, previous_boot,
+            "startup with previous boot={previous_boot}"
+        );
+        assert_eq!(
+            wait_complete, previous_boot,
+            "wait with previous boot={previous_boot}"
+        );
+        assert_eq!(
+            capture_absent, previous_boot,
+            "capture with previous boot={previous_boot}"
+        );
+    }
     Ok(())
 }
 

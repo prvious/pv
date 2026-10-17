@@ -5,25 +5,27 @@ use std::time::Duration;
 use std::time::Instant;
 
 use camino::{Utf8Path, Utf8PathBuf};
+#[cfg(target_os = "linux")]
+use platform::{BootSessionId, current_boot_session_id};
 use serde::{Deserialize, Serialize};
 use state::{PvPaths, fs};
 
 use crate::supervisor::monitor_subject;
 use crate::{DaemonError, ProcessSupervisor, RuntimeReconciliationFailure, monitor};
 
-/// Captured process identity to wait on after unloading the LaunchAgent.
+/// Captured process identity to wait on after stopping daemon registration.
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 pub struct DaemonProcess {
     pid: u32,
     start_identity: platform::ProcessStartIdentity,
+    #[cfg(target_os = "linux")]
+    boot_session_id: BootSessionId,
 }
 
 impl DaemonProcess {
     pub fn wait_for_exit(&self, grace: Duration) -> Result<(), DaemonError> {
         let deadline = Instant::now() + grace;
-        while platform::inspect_process_start_identity(self.pid)? == Some(self.start_identity)
-            && !platform::process_is_zombie(self.pid)?
-        {
+        while self.matches_current_process()? && !platform::process_is_zombie(self.pid)? {
             if Instant::now() >= deadline {
                 return Err(DaemonError::RuntimeCleanupUnproven {
                     pid: self.pid,
@@ -33,6 +35,14 @@ impl DaemonProcess {
             thread::sleep(Duration::from_millis(25));
         }
         Ok(())
+    }
+
+    fn matches_current_process(&self) -> Result<bool, DaemonError> {
+        #[cfg(target_os = "linux")]
+        if self.boot_session_id != current_boot_session_id()? {
+            return Ok(false);
+        }
+        Ok(platform::inspect_process_start_identity(self.pid)? == Some(self.start_identity))
     }
 }
 
@@ -50,6 +60,8 @@ pub(crate) fn record_daemon_process(paths: &PvPaths) -> Result<DaemonProcess, Da
     let record = DaemonProcess {
         pid,
         start_identity,
+        #[cfg(target_os = "linux")]
+        boot_session_id: current_boot_session_id()?,
     };
     fs::write_sensitive_file(
         &paths.daemon_process_record(),
@@ -78,7 +90,7 @@ fn read_daemon_process_record(paths: &PvPaths) -> Result<Option<DaemonProcess>, 
 
 pub(crate) fn require_previous_daemon_exited(paths: &PvPaths) -> Result<(), DaemonError> {
     if let Some(record) = read_daemon_process_record(paths)?
-        && platform::inspect_process_start_identity(record.pid)? == Some(record.start_identity)
+        && record.matches_current_process()?
         && !platform::process_is_zombie(record.pid)?
     {
         return Err(DaemonError::RuntimeCleanupUnproven {
@@ -90,18 +102,18 @@ pub(crate) fn require_previous_daemon_exited(paths: &PvPaths) -> Result<(), Daem
     Ok(())
 }
 
-/// Captures the daemon before bootout, including a daemon whose listener has closed.
+/// Captures the daemon before stopping registration, including one whose listener has closed.
 pub fn daemon_process_for_stop(paths: &PvPaths) -> Result<Option<DaemonProcess>, DaemonError> {
     platform::require_capability(platform::PlatformCapability::DaemonIpc)?;
     if let Some(record) = read_daemon_process_record(paths)?
-        && platform::inspect_process_start_identity(record.pid)? == Some(record.start_identity)
+        && record.matches_current_process()?
     {
         if verify_daemon_process(paths, record.pid)?.start_identity != record.start_identity {
             return Err(DaemonError::RuntimeProcessIdentityChanged { pid: record.pid });
         }
         return Ok(Some(record));
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     return super::build_runtime()?.block_on(async {
         match tokio::time::timeout(Duration::from_secs(3), crate::ipc::connect(paths)).await {
             Ok(Ok(stream)) => {
@@ -116,6 +128,8 @@ pub fn daemon_process_for_stop(paths: &PvPaths) -> Result<Option<DaemonProcess>,
                 Ok(Some(DaemonProcess {
                     pid: peer_pid,
                     start_identity: identity.start_identity,
+                    #[cfg(target_os = "linux")]
+                    boot_session_id: current_boot_session_id()?,
                 }))
             }
             Ok(Err(DaemonError::Io(error)))
@@ -130,7 +144,7 @@ pub fn daemon_process_for_stop(paths: &PvPaths) -> Result<Option<DaemonProcess>,
             Err(error) => Err(io::Error::new(io::ErrorKind::TimedOut, error).into()),
         }
     });
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(unix))]
     Ok(None)
 }
 
@@ -140,7 +154,11 @@ fn verify_daemon_process(
 ) -> Result<platform::ProcessIdentity, DaemonError> {
     let identity = platform::inspect_process_identity(pid)?
         .ok_or(DaemonError::RuntimeProcessIdentityChanged { pid })?;
+    #[cfg(not(target_os = "linux"))]
     let executable = fs::canonicalize(&identity.executable)?;
+    // Linux's /proc executable path is resolved even when its file was unlinked.
+    #[cfg(target_os = "linux")]
+    let executable = &identity.executable;
     let binaries = fs::canonicalize(paths.bin())?;
     if identity.arguments != ["daemon:run"] || !executable.starts_with(binaries) {
         return Err(DaemonError::RuntimeProcessIdentityChanged { pid });
@@ -265,9 +283,15 @@ mod tests {
     use anyhow::{Result, ensure};
     use camino_tempfile::tempdir;
     use pv_fake::{EventKind, Persona, install};
+    #[cfg(target_os = "linux")]
+    use serde_json::{Value, json};
     use state::{PvPaths, fs};
 
     use super::verify_daemon_process;
+    #[cfg(target_os = "linux")]
+    use super::{DaemonProcess, daemon_process_for_stop, record_daemon_process};
+    #[cfg(target_os = "linux")]
+    use crate::DaemonError;
 
     #[expect(
         clippy::disallowed_types,
@@ -282,6 +306,44 @@ mod tests {
             let _kill_result = self.0.kill();
             let _wait_result = self.0.wait();
         }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_daemon_record_publishes_and_requires_a_valid_boot_uuid() -> Result<()> {
+        let directory = tempdir()?;
+        let paths = PvPaths::for_home(directory.path());
+        fs::ensure_layout(&paths)?;
+        let record_path = paths.daemon_process_record();
+        let record = record_daemon_process(&paths)?;
+        let value: Value = serde_json::from_str(&fs::read_to_string(&record_path)?)?;
+        assert_eq!(
+            value["boot_session_id"],
+            json!(platform::current_boot_session_id()?)
+        );
+        assert_eq!(
+            serde_json::from_value::<DaemonProcess>(value.clone())?,
+            record
+        );
+
+        for invalid in [
+            json!({ "pid": value["pid"], "start_identity": value["start_identity"] }),
+            json!({
+                "pid": value["pid"],
+                "start_identity": value["start_identity"],
+                "boot_session_id": "invalid boot UUID",
+            }),
+        ] {
+            let content = serde_json::to_string(&invalid)?;
+            fs::write_sensitive_file(&record_path, &content)?;
+            let captured = daemon_process_for_stop(&paths);
+            ensure!(
+                matches!(&captured, Err(DaemonError::InvalidDaemonProcessRecord { path, .. }) if path == &record_path),
+                "expected invalid daemon record: {captured:?}"
+            );
+            assert_eq!(fs::read_to_string(&record_path)?, content);
+        }
+        Ok(())
     }
 
     #[test]
@@ -310,6 +372,11 @@ mod tests {
 
         let identity = verify_daemon_process(&paths, child.0.id())?;
         assert_eq!(identity.arguments, ["daemon:run"]);
+        #[cfg(target_os = "linux")]
+        {
+            fs::delete_file(fake.executable())?;
+            assert_eq!(verify_daemon_process(&paths, child.0.id())?, identity);
+        }
         Ok(())
     }
 }
