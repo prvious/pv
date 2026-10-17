@@ -1,0 +1,66 @@
+---
+source: crates/cli/tests/linux_dns.rs
+expression: observed
+---
+[
+    Object {
+        "case": String("current"),
+        "dns": String("DNS resolver status\nPrepared resolver config: current\n  path: <tempdir>/home/.pv/config/resolver/test\n  port: <dns-port>\nSystem resolver config: current\n  path: /etc/systemd/system/pv-dns.service\n  port: <dns-port>\n"),
+        "doctor": Object {
+            "detail": Null,
+            "message": String("system resolver uses port <dns-port>"),
+            "name": String("DNS config"),
+            "repair": Null,
+            "status": String("pass"),
+        },
+        "status": String("current"),
+    },
+    Object {
+        "case": String("missing"),
+        "dns": String("DNS resolver status\nPrepared resolver config: current\n  path: <tempdir>/home/.pv/config/resolver/test\n  port: <dns-port>\nSystem resolver config: missing\n  path: /etc/systemd/system/pv-dns.service\n"),
+        "doctor": Object {
+            "detail": String("path: /etc/systemd/system/pv-dns.service"),
+            "message": String("system resolver config is missing"),
+            "name": String("DNS config"),
+            "repair": String("pv dns:install"),
+            "status": String("fail"),
+        },
+        "status": String("prepared-only"),
+    },
+    Object {
+        "case": String("stale"),
+        "dns": String("DNS resolver status\nPrepared resolver config: current\n  path: <tempdir>/home/.pv/config/resolver/test\n  port: <dns-port>\nSystem resolver config: stale\n  path: /etc/systemd/system/pv-dns.service\n  expected port: <dns-port>\n  actual port: <other-dns-port>\n"),
+        "doctor": Object {
+            "detail": String("path: /etc/systemd/system/pv-dns.service"),
+            "message": String("system resolver config is PV-owned but stale"),
+            "name": String("DNS config"),
+            "repair": String("pv dns:install"),
+            "status": String("fail"),
+        },
+        "status": String("stale"),
+    },
+    Object {
+        "case": String("conflict"),
+        "dns": String("DNS resolver status\nPrepared resolver config: current\n  path: <tempdir>/home/.pv/config/resolver/test\n  port: <dns-port>\nSystem resolver config: conflict\n  path: /etc/systemd/system/pv-dns.service\n"),
+        "doctor": Object {
+            "detail": String("path: /etc/systemd/system/pv-dns.service; Ask an administrator to inspect pv-dns.service and its overrides, pv0 ownership, and competing test search or routing domains, including subdomains. Repair conflicts before retrying `pv dns:install`; `pv dns:uninstall` removes only PV-owned configuration. For a retained unit cache, run `sudo systemctl daemon-reload` before retrying."),
+            "message": String("system DNS routing conflicts with existing configuration"),
+            "name": String("DNS config"),
+            "repair": String("pv dns:install"),
+            "status": String("fail"),
+        },
+        "status": String("conflict"),
+    },
+    Object {
+        "case": String("unreadable"),
+        "dns": String("DNS resolver status\nPrepared resolver config: current\n  path: <tempdir>/home/.pv/config/resolver/test\n  port: <dns-port>\nSystem resolver config: unreadable\n  path: /etc/systemd/system/pv-dns.service\n  fixture resolved inspection failed\n"),
+        "doctor": Object {
+            "detail": String("/etc/systemd/system/pv-dns.service: fixture resolved inspection failed"),
+            "message": String("system resolver config could not be inspected"),
+            "name": String("DNS config"),
+            "repair": String("pv dns:install"),
+            "status": String("fail"),
+        },
+        "status": String("unreadable"),
+    },
+]

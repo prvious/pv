@@ -13,11 +13,11 @@ expression: "(output, prepared_path, prepared_config, parsed_config,\nsystem_res
         stderr: "",
     },
     "<tempdir>/home/.pv/config/resolver/test",
-    "# Managed by PV\n# Source: PV prepared resolver config for /etc/resolver/test\nnameserver 127.0.0.1\nport <dns-port>\n",
+    "# Managed by PV\n# Source: PV prepared resolver configuration\nnameserver 127.0.0.1\nport <dns-port>\n",
     ResolverConfig {
         port: <dns-port>,
     },
-    "# Managed by PV\n# Source: PV prepared resolver config for /etc/resolver/test\nnameserver 127.0.0.1\nport <dns-port>\n",
+    "# Managed by PV\n# Source: PV prepared resolver configuration\nnameserver 127.0.0.1\nport <dns-port>\n",
     [
         "install resolver <tempdir>/home/.pv/config/resolver/test -> <tempdir>/etc/resolver/test",
     ],

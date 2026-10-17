@@ -40,21 +40,34 @@ pub(crate) fn execute(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    execute_with_capability_check(cli, environment, streams, require_command_capability)
+    execute_with_capability_check(cli, environment, streams, |capability| {
+        platform::require_capability(capability).map_err(Into::into)
+    })
 }
 
 fn execute_with_capability_check<CapabilityCheck>(
     cli: Cli,
     environment: &impl Environment,
     streams: &mut Streams<'_>,
-    capability_check: CapabilityCheck,
+    mut capability_check: CapabilityCheck,
 ) -> Result<ExitCode, ExecuteError>
 where
-    CapabilityCheck: FnOnce(&Command) -> Result<(), ExecuteError>,
+    CapabilityCheck: FnMut(PlatformCapability) -> Result<(), ExecuteError>,
 {
-    capability_check(&cli.command)?;
+    for &capability in required_capabilities(&cli.command) {
+        capability_check(capability)?;
+    }
     let runtime_lifecycle_lock = acquire_runtime_lifecycle(&cli.command, environment)?;
     require_no_update_in_progress(&cli.command, environment)?;
+    #[cfg(target_os = "linux")]
+    let _helper_lifecycle_lock =
+        if matches!(cli.command, Command::DnsInstall | Command::DnsUninstall) {
+            Some(state::HelperLifecycleLock::acquire(&pv_paths(
+                environment,
+            )?)?)
+        } else {
+            None
+        };
 
     match cli.command {
         Command::Env(args) => env::run(args, environment, streams),
@@ -179,43 +192,40 @@ fn acquire_runtime_lifecycle(
     guard.map(Some).map_err(coordination_lock_error)
 }
 
-fn require_command_capability(command: &Command) -> Result<(), ExecuteError> {
-    if let Some(capability) = required_capability(command) {
-        platform::require_capability(capability)?;
-    }
-
-    Ok(())
-}
-
-fn required_capability(command: &Command) -> Option<PlatformCapability> {
+fn required_capabilities(command: &Command) -> &[PlatformCapability] {
     match command {
-        Command::Setup(_)
-        | Command::Uninstall(_)
-        | Command::DnsStatus
-        | Command::DnsInstall
-        | Command::DnsUninstall => Some(PlatformCapability::ResolverIntegration),
+        Command::Setup(_) | Command::Uninstall(_) => &[
+            PlatformCapability::ResolverIntegration,
+            PlatformCapability::PrivilegedHelper,
+            PlatformCapability::LowPortFrontend,
+            PlatformCapability::TrustStore,
+            PlatformCapability::DaemonRegistration,
+        ],
+        Command::DnsStatus | Command::DnsInstall | Command::DnsUninstall => {
+            &[PlatformCapability::ResolverIntegration]
+        }
         Command::DaemonEnable
         | Command::DaemonDisable
         | Command::DaemonRestart
         | Command::Status(_)
         | Command::Doctor(_)
         | Command::Update(_)
-        | Command::InternalUpdateManagedResources => Some(PlatformCapability::DaemonRegistration),
+        | Command::InternalUpdateManagedResources => &[PlatformCapability::DaemonRegistration],
         Command::DaemonRun | Command::Link(_) | Command::Unlink(_) => {
-            Some(PlatformCapability::DaemonIpc)
+            &[PlatformCapability::DaemonIpc]
         }
-        Command::MonitorRun | Command::MonitorGate => Some(PlatformCapability::ProcessContainment),
+        Command::MonitorRun | Command::MonitorGate => &[PlatformCapability::ProcessContainment],
         Command::PortsStatus(_) | Command::PortsInstall | Command::PortsUninstall => {
-            Some(PlatformCapability::LowPortFrontend)
+            &[PlatformCapability::LowPortFrontend]
         }
         Command::CaStatus | Command::CaTrust | Command::CaUntrust => {
-            Some(PlatformCapability::TrustStore)
+            &[PlatformCapability::TrustStore]
         }
         Command::Open(_)
         | Command::MailpitOpen
         | Command::MailOpen
         | Command::RustfsOpen
-        | Command::S3Open => Some(PlatformCapability::BrowserHandoff),
+        | Command::S3Open => &[PlatformCapability::BrowserHandoff],
         // These commands use portable CLI/state/config behavior or a lower crate's typed
         // filesystem boundary. They do not require a host-integration capability here.
         Command::Env(_)
@@ -224,10 +234,10 @@ fn required_capability(command: &Command) -> Option<PlatformCapability> {
         | Command::ProjectEnv(_)
         | Command::Logs(_)
         | Command::Jobs(_)
-        | Command::List(_) => None,
+        | Command::List(_) => &[],
         // Shims perform portable local process dispatch over already-installed state. The
         // cross-platform launcher lifecycle remains an approved follow-up boundary.
-        Command::ShimPhp(_) | Command::ShimComposer(_) => None,
+        Command::ShimPhp(_) | Command::ShimComposer(_) => &[],
         // Managed Resource handlers select a fallible artifact target before installation,
         // update, or removal. Functional non-macOS artifacts remain deliberately deferred.
         Command::PhpUse(_)
@@ -269,7 +279,7 @@ fn required_capability(command: &Command) -> Option<PlatformCapability> {
         | Command::PostgresUninstall(_)
         | Command::PgUninstall(_)
         | Command::PostgresList(_)
-        | Command::PgList(_) => None,
+        | Command::PgList(_) => &[],
     }
 }
 
@@ -593,7 +603,7 @@ mod tests {
 
     use platform::{PlatformCapability, PlatformError, PlatformTarget};
 
-    use super::{execute_with_capability_check, required_capability};
+    use super::{execute_with_capability_check, required_capabilities};
     use crate::args::{
         Cli, Command, CompletionsArgs, DoctorArgs, LinkArgs, OpenArgs, SetupArgs, StatusArgs,
         UninstallArgs, UnlinkArgs, UpdateArgs,
@@ -604,8 +614,8 @@ mod tests {
     use crate::shell::Shell;
 
     #[test]
-    fn required_capability_maps_resolver_integration_commands() {
-        assert_required_capability(
+    fn required_capabilities_maps_resolver_integration_commands() {
+        assert_required_capabilities(
             &[
                 Command::Setup(SetupArgs {
                     yes: false,
@@ -616,17 +626,28 @@ mod tests {
                     prune: false,
                     force: false,
                 }),
+            ],
+            &[
+                PlatformCapability::ResolverIntegration,
+                PlatformCapability::PrivilegedHelper,
+                PlatformCapability::LowPortFrontend,
+                PlatformCapability::TrustStore,
+                PlatformCapability::DaemonRegistration,
+            ],
+        );
+        assert_required_capabilities(
+            &[
                 Command::DnsStatus,
                 Command::DnsInstall,
                 Command::DnsUninstall,
             ],
-            Some(PlatformCapability::ResolverIntegration),
+            &[PlatformCapability::ResolverIntegration],
         );
     }
 
     #[test]
-    fn required_capability_maps_daemon_registration_commands() {
-        assert_required_capability(
+    fn required_capabilities_maps_daemon_registration_commands() {
+        assert_required_capabilities(
             &[
                 Command::DaemonEnable,
                 Command::DaemonDisable,
@@ -638,13 +659,13 @@ mod tests {
                     json: false,
                 }),
             ],
-            Some(PlatformCapability::DaemonRegistration),
+            &[PlatformCapability::DaemonRegistration],
         );
     }
 
     #[test]
-    fn required_capability_maps_daemon_ipc_command() {
-        assert_required_capability(
+    fn required_capabilities_maps_daemon_ipc_command() {
+        assert_required_capabilities(
             &[
                 Command::DaemonRun,
                 Command::Link(LinkArgs {
@@ -653,49 +674,49 @@ mod tests {
                 }),
                 Command::Unlink(UnlinkArgs { hostname: None }),
             ],
-            Some(PlatformCapability::DaemonIpc),
+            &[PlatformCapability::DaemonIpc],
         );
     }
 
     #[test]
-    fn required_capability_maps_runtime_monitor_commands() {
-        assert_required_capability(
+    fn required_capabilities_maps_runtime_monitor_commands() {
+        assert_required_capabilities(
             &[Command::MonitorRun, Command::MonitorGate],
-            Some(PlatformCapability::ProcessContainment),
+            &[PlatformCapability::ProcessContainment],
         );
     }
 
     #[test]
-    fn required_capability_maps_internal_update_like_update() {
-        assert_required_capability(
+    fn required_capabilities_maps_internal_update_like_update() {
+        assert_required_capabilities(
             &[Command::InternalUpdateManagedResources],
-            Some(PlatformCapability::DaemonRegistration),
+            &[PlatformCapability::DaemonRegistration],
         );
     }
 
     #[test]
-    fn required_capability_maps_low_port_frontend_commands() {
-        assert_required_capability(
+    fn required_capabilities_maps_low_port_frontend_commands() {
+        assert_required_capabilities(
             &[
                 Command::PortsStatus(crate::args::PortsStatusArgs { json: false }),
                 Command::PortsInstall,
                 Command::PortsUninstall,
             ],
-            Some(PlatformCapability::LowPortFrontend),
+            &[PlatformCapability::LowPortFrontend],
         );
     }
 
     #[test]
-    fn required_capability_maps_trust_store_commands() {
-        assert_required_capability(
+    fn required_capabilities_maps_trust_store_commands() {
+        assert_required_capabilities(
             &[Command::CaStatus, Command::CaTrust, Command::CaUntrust],
-            Some(PlatformCapability::TrustStore),
+            &[PlatformCapability::TrustStore],
         );
     }
 
     #[test]
-    fn required_capability_maps_browser_handoff_commands() {
-        assert_required_capability(
+    fn required_capabilities_maps_browser_handoff_commands() {
+        assert_required_capabilities(
             &[
                 Command::Open(OpenArgs { hostname: None }),
                 Command::MailpitOpen,
@@ -703,15 +724,15 @@ mod tests {
                 Command::RustfsOpen,
                 Command::S3Open,
             ],
-            Some(PlatformCapability::BrowserHandoff),
+            &[PlatformCapability::BrowserHandoff],
         );
     }
 
     #[test]
-    fn required_capability_leaves_completions_portable() {
-        assert_required_capability(
+    fn required_capabilities_leaves_completions_portable() {
+        assert_required_capabilities(
             &[Command::Completions(CompletionsArgs { shell: Shell::Bash })],
-            None,
+            &[],
         );
     }
 
@@ -732,11 +753,26 @@ mod tests {
             Command::InternalUpdateManagedResources,
             PlatformCapability::DaemonRegistration,
         );
+        assert_preflight_before_environment_access(
+            Command::Setup(SetupArgs {
+                yes: true,
+                non_interactive: true,
+                no_path: true,
+            }),
+            PlatformCapability::LowPortFrontend,
+        );
+        assert_preflight_before_environment_access(
+            Command::Uninstall(UninstallArgs {
+                prune: true,
+                force: true,
+            }),
+            PlatformCapability::TrustStore,
+        );
     }
 
-    fn assert_required_capability(commands: &[Command], expected: Option<PlatformCapability>) {
+    fn assert_required_capabilities(commands: &[Command], expected: &[PlatformCapability]) {
         for command in commands {
-            assert_eq!(required_capability(command), expected);
+            assert_eq!(required_capabilities(command), expected);
         }
     }
 
@@ -755,8 +791,8 @@ mod tests {
             },
             &environment,
             &mut streams,
-            |command| {
-                if required_capability(command) != Some(capability) {
+            |actual_capability| {
+                if actual_capability != capability {
                     return Ok(());
                 }
 

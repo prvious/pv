@@ -7,9 +7,22 @@ use crate::PlatformError;
 #[cfg(target_os = "macos")]
 use crate::command::run_system_command;
 
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub(crate) use linux::{
+    DNS_INSPECTION_TIMEOUT, DNS_MUTATION_TIMEOUT, apply_resolver_config_privileged,
+    remove_resolver_config_privileged,
+};
+#[cfg(target_os = "linux")]
+pub use linux::{start_resolver_link, stop_resolver_link};
+
+#[cfg(target_os = "linux")]
+pub const SYSTEM_RESOLVER_TEST_PATH: &str = "/etc/systemd/system/pv-dns.service";
+#[cfg(not(target_os = "linux"))]
 pub const SYSTEM_RESOLVER_TEST_PATH: &str = "/etc/resolver/test";
 const PV_MARKER: &str = "# Managed by PV";
-const PREPARED_MARKER: &str = "# Source: PV prepared resolver config for /etc/resolver/test";
+const PREPARED_MARKER: &str = "# Source: PV prepared resolver configuration";
 const LOOPBACK_NAMESERVER: &str = "nameserver 127.0.0.1";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -91,6 +104,11 @@ pub fn inspect_resolver_file(
     path: &Utf8Path,
     expected: Option<&ResolverConfig>,
 ) -> ResolverFileState {
+    #[cfg(target_os = "linux")]
+    if path == Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH) {
+        return linux::inspect(expected);
+    }
+
     let content = match state::fs::read_to_string(path) {
         Ok(content) => content,
         Err(state::StateError::Filesystem { source, .. })
