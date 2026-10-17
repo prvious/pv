@@ -134,15 +134,22 @@ pub enum CliError {
     },
 
     #[error(
-        "PV application update requires the PV LaunchAgent at {path}; run `pv setup` or `pv daemon:enable`"
+        "PV application update requires the PV {} at {path}; run `pv setup` or `pv daemon:enable`",
+        platform::DAEMON_REGISTRATION_NAME
     )]
-    AppUpdateLaunchAgentMissing { path: String },
+    AppUpdateDaemonRegistrationMissing { path: String },
 
-    #[error("PV LaunchAgent file is not PV-owned; leaving it unchanged at {path}")]
-    AppUpdateLaunchAgentConflict { path: String },
+    #[error(
+        "PV {} file is not PV-owned; leaving it unchanged at {path}",
+        platform::DAEMON_REGISTRATION_NAME
+    )]
+    AppUpdateDaemonRegistrationConflict { path: String },
 
-    #[error("PV LaunchAgent file is unreadable; leaving it unchanged: {message}")]
-    AppUpdateLaunchAgentUnreadable { message: String },
+    #[error(
+        "PV {} file is unreadable; leaving it unchanged: {message}",
+        platform::DAEMON_REGISTRATION_NAME
+    )]
+    AppUpdateDaemonRegistrationUnreadable { message: String },
 
     #[error("PV app download size mismatch for `{url}`: expected {expected}, got {actual}")]
     AppUpdateSizeMismatch {

@@ -4,7 +4,7 @@ use std::process::ExitCode;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use platform::{LaunchAgentConfig, LaunchAgentFileState};
+use platform::{DaemonRegistrationConfig, DaemonRegistrationFileState};
 use protocol::{
     ManagedResourceUpdateCheckTrack, ManagedResourceUpdateStatus as ResourceUpdateStatus,
 };
@@ -177,43 +177,42 @@ fn validate_active_release(
     Ok(active_version)
 }
 
-fn normalize_launch_agent(
+fn normalize_daemon_registration(
     environment: &impl Environment,
     paths: &PvPaths,
 ) -> Result<Utf8PathBuf, ExecuteError> {
-    let expected = launch_agent_config(paths);
-    let path = launch_agent_path(environment)?;
-    match platform::inspect_launch_agent_file(&path, Some(&expected)) {
-        LaunchAgentFileState::Current { path, .. } => Ok(path),
-        LaunchAgentFileState::Stale { .. } => {
-            platform::write_launch_agent_file(&path, &expected)?;
+    let expected = DaemonRegistrationConfig::for_paths(paths);
+    let path = daemon_registration_path(environment)?;
+    let path = match platform::inspect_daemon_registration_file(&path, Some(&expected)) {
+        DaemonRegistrationFileState::Current { path, .. } => path,
+        DaemonRegistrationFileState::Stale { .. } => {
+            platform::write_daemon_registration_file(&path, &expected)?;
 
-            Ok(path)
+            path
         }
-        LaunchAgentFileState::Missing { path } => Err(CliError::AppUpdateLaunchAgentMissing {
-            path: path.to_string(),
+        DaemonRegistrationFileState::Missing { path } => {
+            return Err(CliError::AppUpdateDaemonRegistrationMissing {
+                path: path.to_string(),
+            }
+            .into());
         }
-        .into()),
-        LaunchAgentFileState::Conflict { path } => Err(CliError::AppUpdateLaunchAgentConflict {
-            path: path.to_string(),
+        DaemonRegistrationFileState::Conflict { path } => {
+            return Err(CliError::AppUpdateDaemonRegistrationConflict {
+                path: path.to_string(),
+            }
+            .into());
         }
-        .into()),
-        LaunchAgentFileState::Unreadable { message, .. } => {
-            Err(CliError::AppUpdateLaunchAgentUnreadable { message }.into())
+        DaemonRegistrationFileState::Unreadable { message, .. } => {
+            return Err(CliError::AppUpdateDaemonRegistrationUnreadable { message }.into());
         }
-    }
+    };
+    #[cfg(target_os = "linux")]
+    environment.reload_daemon_registration()?;
+    Ok(path)
 }
 
-fn launch_agent_config(paths: &PvPaths) -> LaunchAgentConfig {
-    LaunchAgentConfig::new(
-        paths.active_pv_binary(),
-        paths.launchd_stdout_log(),
-        paths.launchd_stderr_log(),
-    )
-}
-
-fn launch_agent_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
-    utf8_path(environment.launch_agent_path())
+fn daemon_registration_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
+    utf8_path(environment.daemon_registration_path())
 }
 
 fn fetch_app_update_manifest(
@@ -339,13 +338,13 @@ fn remove_download(path: &Utf8Path) -> Result<(), ExecuteError> {
 fn restart_daemon_without_reconciliation(
     environment: &impl Environment,
     paths: &PvPaths,
-    launch_agent_path: &Utf8Path,
+    daemon_registration_path: &Utf8Path,
     health_check: DaemonHealthCheck,
 ) -> Result<(), ExecuteError> {
     super::daemon::unload_and_wait_for_daemon(environment, paths)?;
-    environment.bootstrap_launch_agent(launch_agent_path)?;
+    environment.enable_daemon_registration(daemon_registration_path)?;
     clear_daemon_startup_failure_marker(paths)?;
-    environment.kickstart_launch_agent()?;
+    environment.restart_daemon_registration()?;
     wait_until_daemon_started(paths.clone(), health_check)?;
 
     Ok(())
@@ -517,7 +516,7 @@ fn run_app_update_phase(
     let layout = state::AppReleaseLayout::new(paths.clone());
     let current_version = AppUpdateVersion::current()?;
     let previous_version = validate_active_release(&layout, &current_version)?;
-    let launch_agent_path = normalize_launch_agent(environment, &paths)?;
+    let daemon_registration_path = normalize_daemon_registration(environment, &paths)?;
 
     let manifest = fetch_app_update_manifest(environment)?;
     let platform = environment
@@ -884,7 +883,7 @@ fn run_app_update_phase(
             restart_daemon_without_reconciliation(
                 environment,
                 &paths,
-                &launch_agent_path,
+                &daemon_registration_path,
                 DaemonHealthCheck::AcceptProtocolMismatch,
             )
         });
@@ -894,7 +893,7 @@ fn run_app_update_phase(
             RollbackContext {
                 paths: &paths,
                 layout: &layout,
-                launch_agent_path: &launch_agent_path,
+                daemon_registration_path: &daemon_registration_path,
                 helper_rollback: helper_rollback.as_ref(),
             },
             RollbackVersions {
@@ -956,7 +955,7 @@ struct RollbackVersions<'a> {
 struct RollbackContext<'a> {
     paths: &'a PvPaths,
     layout: &'a state::AppReleaseLayout,
-    launch_agent_path: &'a Utf8Path,
+    daemon_registration_path: &'a Utf8Path,
     helper_rollback: Option<&'a HelperRollbackPlan>,
 }
 
@@ -1209,7 +1208,7 @@ fn rollback_app_update(
             && let Err(restart_error) = restart_daemon_without_reconciliation(
                 environment,
                 context.paths,
-                context.launch_agent_path,
+                context.daemon_registration_path,
                 DaemonHealthCheck::RequireCompatibleProtocol,
             )
         {
@@ -1249,7 +1248,7 @@ fn rollback_app_update(
     if let Err(rollback_error) = restart_daemon_without_reconciliation(
         environment,
         context.paths,
-        context.launch_agent_path,
+        context.daemon_registration_path,
         DaemonHealthCheck::RequireCompatibleProtocol,
     ) {
         let mut rollback_message = rollback_error.to_string();

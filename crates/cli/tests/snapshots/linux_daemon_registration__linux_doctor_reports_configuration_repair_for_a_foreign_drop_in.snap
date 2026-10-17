@@ -1,0 +1,11 @@
+---
+source: crates/cli/tests/linux_daemon_registration.rs
+expression: check
+---
+Object {
+    "detail": Null,
+    "message": String("daemon registration file is not PV-owned: <tempdir>/home/.config/systemd/user/pv-daemon.service.d/override.conf"),
+    "name": String("Systemd user manager"),
+    "repair": String("review the conflicting systemd unit or drop-in before retrying"),
+    "status": String("fail"),
+}

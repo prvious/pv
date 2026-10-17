@@ -422,6 +422,9 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::LaunchAgent(_)
         | PlatformError::LaunchAgentCommand { .. }
         | PlatformError::LaunchAgentCommandStatus { .. }
+        | PlatformError::DaemonRegistrationFile(_)
+        | PlatformError::DaemonRegistrationConflict { .. }
+        | PlatformError::DaemonRegistrationUnreadable { .. }
         | PlatformError::SystemIntegration(_)
         | PlatformError::SystemIntegrationCommand { .. }
         | PlatformError::SystemIntegrationCommandStatus { .. }
@@ -435,5 +438,10 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::PrivilegedHelperAuthentication(_) => CaRepairReason::InvalidCaShape,
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         PlatformError::ProcessIdentityInspection { .. } => CaRepairReason::InvalidCaShape,
+        #[cfg(target_os = "linux")]
+        PlatformError::UserManagerSessionEnvironment
+        | PlatformError::UserManagerUnavailable(_)
+        | PlatformError::DaemonRegistrationBus(_)
+        | PlatformError::DaemonRegistrationState { .. } => CaRepairReason::InvalidCaShape,
     }
 }
