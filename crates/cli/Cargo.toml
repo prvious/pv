@@ -37,6 +37,7 @@ yaml_serde = { workspace = true }
 
 [dev-dependencies]
 camino-tempfile = { workspace = true }
+hickory-proto = { workspace = true }
 insta = { workspace = true }
 pv-fake = { path = "../pv-fake" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }

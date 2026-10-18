@@ -1,12 +1,12 @@
 use std::io;
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket};
+use std::net::{SocketAddr, SocketAddrV4, UdpSocket};
 use std::time::Duration;
 
 use hickory_proto::op::{Message, ResponseCode};
 use hickory_proto::rr::rdata::{A, SOA};
 use hickory_proto::rr::{Name, RData, Record, RecordType};
 use hickory_proto::serialize::binary::BinEncodable;
-use platform::loopback_tcp_port_available;
+use platform::{DNS_LISTEN_ADDRESS, loopback_tcp_port_available};
 use state::{Database, PortOwner, PortRequest, PvPaths};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream, UdpSocket as TokioUdpSocket};
@@ -140,7 +140,7 @@ fn assigned_dns_port(paths: &PvPaths) -> Result<Option<u16>, DaemonError> {
 }
 
 async fn bind_dns_sockets(port: u16) -> Result<(TokioUdpSocket, TokioTcpListener), DaemonError> {
-    let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
+    let address = SocketAddrV4::new(DNS_LISTEN_ADDRESS, port);
     let udp_socket =
         TokioUdpSocket::bind(address)
             .await
@@ -284,7 +284,7 @@ async fn handle_tcp_connection(mut stream: TcpStream) -> Result<(), DaemonError>
 }
 
 pub fn dns_port_available(port: u16) -> bool {
-    let address = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
+    let address = SocketAddrV4::new(DNS_LISTEN_ADDRESS, port);
     let Ok(_udp_socket) = UdpSocket::bind(address) else {
         return false;
     };

@@ -67,8 +67,8 @@ pub use process::{
     inspect_process_start_identity, process_group_has_live_members, process_is_zombie,
 };
 pub use resolver::{
-    ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH, inspect_resolver_file,
-    install_resolver_config, remove_resolver_config,
+    DNS_LISTEN_ADDRESS, ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH,
+    inspect_resolver_file, install_resolver_config, remove_resolver_config,
 };
 #[cfg(target_os = "linux")]
 pub use resolver::{start_resolver_link, stop_resolver_link};
