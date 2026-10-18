@@ -85,6 +85,7 @@ if [ -f /run/pv-dns-system-test/created-resolved-directory ] && [ -d /etc/system
     rmdir -- /etc/systemd/resolved.conf.d
 fi
 /usr/bin/systemctl daemon-reload
+/usr/bin/systemctl reset-failed systemd-resolved.service
 /usr/bin/systemctl restart systemd-resolved.service
 # Retain the root-owned control directory and timer journal for failure diagnostics.
 "#;
@@ -144,7 +145,20 @@ fn with_dns_fixture(
         timer_attempted: false,
         cleaned: false,
     };
-    let result = exercise(&mut fixture, helper_fixture, helper);
+    let result = exercise(&mut fixture, helper_fixture, helper).map_err(|error| {
+        let journal = root_text(&[
+            "/usr/bin/timeout",
+            "5s",
+            "/usr/bin/journalctl",
+            "--no-pager",
+            "--lines=40",
+            "--unit=pv-dns.service",
+            "--unit=systemd-resolved.service",
+        ]);
+        error.context(format!(
+            "DNS service journal before fixture cleanup: {journal:?}"
+        ))
+    });
     let cleanup = fixture.cleanup();
     match (result, cleanup) {
         (Err(error), Err(cleanup)) => {
@@ -725,7 +739,22 @@ impl DnsFixture {
         PrivilegedHelperClient.apply_dns(&ResolverConfig::new(first_port))?;
         require_current(first_port)?;
         require_owned_endpoint()?;
-        require_lookup(&format!("first-apply.{lookup_suffix}.pv-dns-system.test"))?;
+        let first_hostname = format!("first-apply.{lookup_suffix}.pv-dns-system.test");
+        require_lookup(&first_hostname).with_context(|| {
+            let resolved = checked(
+                "/usr/bin/timeout",
+                &["5s", "/usr/bin/resolvectl", "query", "--type=A", &first_hostname],
+            )
+            .and_then(text);
+            let status = checked(
+                "/usr/bin/timeout",
+                &["5s", "/usr/bin/resolvectl", "status", "pv0"],
+            )
+            .and_then(text);
+            let nss = fs::read_to_string(Utf8Path::new("/etc/nsswitch.conf"));
+            let resolver = fs::read_to_string(Utf8Path::new("/etc/resolv.conf"));
+            format!("first libc lookup failed; resolved query={resolved:?}; link status={status:?}; nsswitch={nss:?}; resolv.conf={resolver:?}")
+        })?;
         assert_eq!(
             fs::read_link(Utf8Path::new(DNS_PATHS[3]))?,
             Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH)
@@ -786,6 +815,8 @@ impl DnsFixture {
         wait_until_current(first_port)?;
         require_lookup(&format!("restarted.{lookup_suffix}.pv-dns-system.test"))?;
 
+        // Keep the independent port-change case outside the preceding restart burst.
+        root(&["/usr/bin/systemctl", "reset-failed", "pv-dns.service"])?;
         self.stop_daemon()?;
         Database::open(&self.paths)?.release_port(PortOwner::Dns)?;
         let second_port = pv_fake::seed_dns_port(&self.paths)?;
