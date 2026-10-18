@@ -87,6 +87,63 @@ actual_version=$(actual_rustfs_version)
   exit 43
 }
 
+smoke_os=$(uname -s)
+case "$smoke_os" in
+  Linux)
+    # Keep the existing macOS smoke policy unchanged.
+    wait_for_stop() {
+      remaining=100
+      while kill -0 "$pid" 2>/dev/null; do
+        [ "$remaining" -gt 0 ] || return 1
+        sleep 0.1 || return 1
+        remaining=$((remaining - 1))
+      done
+      child_status=0
+      wait "$pid" 2>/dev/null || child_status=$?
+      pid=
+      return "$child_status"
+    }
+
+    # Invoked by the EXIT trap below.
+    # shellcheck disable=SC2329
+    cleanup() {
+      primary_status=$?
+      trap - 0
+      cleanup_status=0
+      if [ -n "$pid" ]; then
+        if kill -0 "$pid" 2>/dev/null; then
+          kill -KILL "$pid" 2>/dev/null || {
+            printf '%s\n' "RustFS cleanup failed: could not kill server" >&2
+            cleanup_status=46
+          }
+        fi
+        if wait_for_stop; then
+          :
+        else
+          stopped_status=$?
+          if [ -n "$pid" ]; then
+            printf '%s\n' "RustFS cleanup failed: server did not stop" >&2
+            cleanup_status=46
+          elif [ "$stopped_status" -eq 127 ]; then
+            printf '%s\n' "RustFS cleanup failed: child status unavailable" >&2
+            cleanup_status=46
+          fi
+        fi
+      fi
+      if [ -n "$tmp_dir" ]; then
+        rm -rf "$tmp_dir" || {
+          printf '%s\n' "RustFS cleanup failed: could not remove temporary directory" >&2
+          cleanup_status=46
+        }
+      fi
+      if [ "$primary_status" -eq 0 ]; then
+        primary_status=$cleanup_status
+      fi
+      exit "$primary_status"
+    }
+    ;;
+esac
+
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/pv-rustfs-smoke.XXXXXX")
 data_dir="$tmp_dir/data"
 log_file="$tmp_dir/rustfs.log"
