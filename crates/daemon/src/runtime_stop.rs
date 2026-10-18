@@ -156,7 +156,8 @@ fn verify_daemon_process(
         .ok_or(DaemonError::RuntimeProcessIdentityChanged { pid })?;
     #[cfg(not(target_os = "linux"))]
     let executable = fs::canonicalize(&identity.executable)?;
-    // Linux's /proc executable path is resolved even when its file was unlinked.
+    // Linux preserves the raw procfs spelling, including literal or added suffixes.
+    // Compare its components with the canonical allowed directory without normalization.
     #[cfg(target_os = "linux")]
     let executable = &identity.executable;
     let binaries = fs::canonicalize(paths.bin())?;
@@ -375,8 +376,45 @@ mod tests {
         #[cfg(target_os = "linux")]
         {
             fs::delete_file(fake.executable())?;
-            assert_eq!(verify_daemon_process(&paths, child.0.id())?, identity);
+            let mut expected_identity = identity;
+            expected_identity.executable =
+                format!("{} (deleted)", expected_identity.executable).into();
+            assert_eq!(
+                verify_daemon_process(&paths, child.0.id())?,
+                expected_identity
+            );
         }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn daemon_identity_rejects_a_literal_marker_sibling_of_the_binaries_directory() -> Result<()> {
+        let directory = tempdir()?;
+        let paths = PvPaths::for_home(directory.path());
+        fs::ensure_user_dir(paths.bin())?;
+        let executable = paths.bin().with_file_name("bin (deleted)");
+        let fake = install(&executable, Persona::LongRunning)?;
+        let child = ChildGuard(
+            TestCommand::new(fake.executable())
+                .arg("daemon:run")
+                .spawn()?,
+        );
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !fake
+            .events()?
+            .into_iter()
+            .any(|event| matches!(event.kind, EventKind::Started { .. }))
+        {
+            ensure!(Instant::now() < deadline, "fake daemon never started");
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let result = verify_daemon_process(&paths, child.0.id());
+        ensure!(
+            matches!(&result, Err(DaemonError::RuntimeProcessIdentityChanged { pid }) if *pid == child.0.id()),
+            "expected sibling executable rejection: {result:?}"
+        );
         Ok(())
     }
 }
