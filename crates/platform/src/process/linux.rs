@@ -142,8 +142,7 @@ fn inspect_identity(
             let executable = executable.into_os_string().into_string().map_err(|path| {
                 ProcError::Other(format!("process executable is not UTF-8: {path:?}"))
             })?;
-            let executable =
-                Utf8PathBuf::from(executable.strip_suffix(" (deleted)").unwrap_or(&executable));
+            let executable = Utf8PathBuf::from(executable);
             return Ok(Some(ProcessIdentity {
                 executable,
                 argument_zero,

@@ -29,6 +29,9 @@ type StdCommand = std::process::Command;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProcessIdentity {
+    /// On Linux, the unmodified UTF-8 procfs executable-link spelling. A trailing
+    /// ` (deleted)` can be literal or kernel-added; the value need not resolve to
+    /// the running image or prove the pathname used at execution.
     pub executable: Utf8PathBuf,
     pub argument_zero: String,
     pub arguments: Vec<String>,

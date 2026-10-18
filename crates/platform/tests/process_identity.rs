@@ -184,9 +184,36 @@ fn process_identity_preserves_the_path_of_a_deleted_executable() -> Result<()> {
     let mut child = ChildGuard(TestCommand::new(&executable).arg("30").spawn()?);
     let expected = fs::canonicalize(&executable)?;
     wait_for_executable(child.0.id(), &expected)?;
+    let mut expected_identity = inspect_child(&mut child)?;
+    expected_identity.executable = format!("{expected} (deleted)").into();
     fs::remove_file_if_exists(&executable)?;
 
-    assert_eq!(inspect_child(&mut child)?.executable, expected);
+    assert_eq!(inspect_child(&mut child)?, expected_identity);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn process_identity_preserves_literal_and_kernel_executable_markers() -> Result<()> {
+    let directory = tempdir()?;
+    let executable = directory.path().join("owned-runtime (deleted)");
+    fs::copy_file_atomically(Utf8Path::new("/bin/sleep"), &executable)?;
+    set_executable(&executable)?;
+    let mut child = ChildGuard(TestCommand::new(&executable).arg("30").spawn()?);
+    let expected = fs::canonicalize(&executable)?;
+    wait_for_executable(child.0.id(), &expected)?;
+    let linked = inspect_child(&mut child)?;
+    fs::remove_file_if_exists(&executable)?;
+    let unlinked = inspect_child(&mut child)?;
+    let decorated = format!("{expected} (deleted)");
+
+    assert_eq!(
+        [linked.executable.as_str(), unlinked.executable.as_str()],
+        [expected.as_str(), decorated.as_str()]
+    );
+    let mut expected_identity = linked;
+    expected_identity.executable = decorated.into();
+    assert_eq!(unlinked, expected_identity);
     Ok(())
 }
 
