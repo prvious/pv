@@ -3,6 +3,7 @@ use std::io;
 use config::ConfigError;
 use hickory_proto::ProtoError;
 use hickory_proto::serialize::binary::DecodeError;
+use platform::DNS_LISTEN_ADDRESS;
 use protocol::ProtocolError;
 use resources::{ManagedResourceCommandError, ManagedResourceUpdate, ResourcesError};
 use serde_json::Error as JsonError;
@@ -158,7 +159,7 @@ pub enum DaemonError {
     #[error("DNS response encode error: {0}")]
     DnsEncode(#[from] ProtoError),
 
-    #[error("DNS resolver failed to bind {protocol} on 127.0.0.1:{port}: {source}")]
+    #[error("DNS resolver failed to bind {protocol} on {DNS_LISTEN_ADDRESS}:{port}: {source}")]
     DnsBind {
         protocol: &'static str,
         port: u16,

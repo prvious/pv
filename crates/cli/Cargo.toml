@@ -37,6 +37,7 @@ yaml_serde = { workspace = true }
 
 [dev-dependencies]
 camino-tempfile = { workspace = true }
+hickory-proto = { workspace = true }
 insta = { workspace = true }
 platform = { path = "../platform", features = ["test-support"] }
 pv-fake = { path = "../pv-fake" }

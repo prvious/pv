@@ -6,10 +6,11 @@ use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use platform::{
     CaFileState, CaRepairReason, GeneratedLocalCa, KeychainCertificate, KeychainTrustResult,
-    LocalCaMetadata, PfConfReference, PfRedirectConfig, ResolverConfig, SystemTrustInspector,
-    TrustDomainState, generate_local_ca, generate_project_certificate, inspect_local_ca_files,
-    inspect_pf_anchor_file, inspect_pf_conf_reference, inspect_resolver_file,
-    inspect_system_ca_trust, project_certificate_matches, trusted_pv_ca_fingerprints,
+    LocalCaMetadata, PfConfReference, PfRedirectConfig, PlatformTarget, ResolverConfig,
+    SystemTrustInspector, TrustDomainState, generate_local_ca, generate_project_certificate,
+    inspect_local_ca_files, inspect_pf_anchor_file, inspect_pf_conf_reference,
+    inspect_resolver_file, inspect_system_ca_trust, project_certificate_matches,
+    trusted_pv_ca_fingerprints,
 };
 use rcgen::{
     CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose,
@@ -21,17 +22,47 @@ use time::{Duration, OffsetDateTime};
 #[test]
 fn resolver_config_renders_pv_owned_test_resolver_file() {
     let config = ResolverConfig::new(35353);
-    let rendered = config.render();
+    let rendered = config.render_for_target(PlatformTarget::Macos);
     let duplicate_port = format!("{rendered}port 35353\n");
     let duplicate_nameserver =
         rendered.replacen("port 35353\n", "nameserver 127.0.0.1\nport 35353\n", 1);
     let unexpected_active_line = format!("{rendered}search test\n");
 
     assert_debug_snapshot!(&rendered);
+    assert_eq!(
+        ResolverConfig::parse_for_target(&rendered, PlatformTarget::Macos),
+        Some(config)
+    );
+    assert_eq!(
+        ResolverConfig::parse_for_target(&duplicate_port, PlatformTarget::Macos),
+        None
+    );
+    assert_eq!(
+        ResolverConfig::parse_for_target(&duplicate_nameserver, PlatformTarget::Macos),
+        None
+    );
+    assert_eq!(
+        ResolverConfig::parse_for_target(&unexpected_active_line, PlatformTarget::Macos),
+        None
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn resolver_config_uses_linux_dns_endpoint() {
+    let config = ResolverConfig::new(35353);
+    let rendered = config.render();
+
+    assert_debug_snapshot!(&rendered);
     assert_eq!(ResolverConfig::parse(&rendered), Some(config));
-    assert_eq!(ResolverConfig::parse(&duplicate_port), None);
-    assert_eq!(ResolverConfig::parse(&duplicate_nameserver), None);
-    assert_eq!(ResolverConfig::parse(&unexpected_active_line), None);
+    assert_eq!(
+        ResolverConfig::parse(&rendered.replace("127.0.0.2", "127.0.0.1")),
+        None
+    );
+    assert_eq!(
+        ResolverConfig::parse(&format!("{rendered}nameserver 127.0.0.2\n")),
+        None
+    );
 }
 
 #[test]
