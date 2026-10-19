@@ -28,6 +28,85 @@ const REAL_ARTIFACT_E2E_WORKFLOW_PATH: &str = ".github/workflows/real-artifact-e
 
 #[cfg(unix)]
 #[test]
+fn linux_acceptance_selects_complete_inputs_instead_of_a_newer_partial_build() -> Result<()> {
+    let root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let workflow = read_file(&root.join(".github/workflows/linux-acceptance.yml"))?;
+    let step = workflow_step(&workflow, "Select recipe run").context("missing source step")?;
+    let (_, script) = step
+        .split_once("run: |\n")
+        .context("missing source script")?;
+    let script = script
+        .lines()
+        .take_while(|line| line.is_empty() || line.starts_with("          "))
+        .map(|line| line.strip_prefix("          ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut names = Vec::new();
+    for identity in [
+        "php-8.3",
+        "php-8.4",
+        "php-8.5",
+        "mysql-8.0",
+        "mysql-8.4",
+        "mysql-9.7",
+        "postgres-17",
+        "postgres-18",
+        "redis-8.8",
+        "caddy-2",
+        "mailpit-1",
+        "rustfs-1",
+    ] {
+        for cpu in ["amd64", "arm64"] {
+            names.push(format!("pv-artifact-recipes-{identity}-linux-{cpu}-1"));
+        }
+    }
+    names.push("pv-artifact-recipes-composer-2-linux-amd64-1".to_owned());
+    let backend = r#"gh() {
+    if [ "$1 $2" = "run list" ]; then
+        printf '2\n1\n'
+    elif [ "$1 $2" = "run view" ]; then
+        printf '%s\n' '{"workflowName":"Artifact Recipes","status":"completed","conclusion":"success"}'
+    elif [ "$1" = api ]; then
+        for argument in "$@"; do
+            case "$argument" in
+                */2/artifacts)
+                    printf '%s\n' pv-artifact-recipes-php-8.5-linux-amd64-2 pv-artifact-recipes-php-8.5-linux-arm64-2
+                    return ;;
+                */1/artifacts) printf '%s\n' "$COMPLETE_ARTIFACT_NAMES"; return ;;
+            esac
+        done
+        return 1
+    else
+        return 1
+    fi
+}
+"#;
+    let output = StdCommand::new("/bin/bash")
+        .args([
+            "--noprofile",
+            "--norc",
+            "-c",
+            &format!("{backend}\n{script}"),
+        ])
+        .env_clear()
+        .envs([
+            ("PATH", "/usr/bin:/bin"),
+            ("GITHUB_REPOSITORY", "prvious/pv"),
+            ("SOURCE_RUN_ID", ""),
+            ("GITHUB_OUTPUT", "/dev/stdout"),
+        ])
+        .env("COMPLETE_ARTIFACT_NAMES", names.join("\n"))
+        .output()?;
+    anyhow::ensure!(
+        output.status.success(),
+        "source selection failed: {output:?}"
+    );
+    assert_snapshot!(String::from_utf8(output.stdout)?, @"run_id=1");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn artifact_recipes_selects_requested_tracks_on_native_linux_runners() -> Result<()> {
     let root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let workflow = read_file(&root.join(".github/workflows/artifact-recipes.yml"))?;
