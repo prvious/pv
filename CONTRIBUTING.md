@@ -272,7 +272,9 @@ build or unit suite does not establish supported Linux distributions.
 For a complete Linux support run, first dispatch `artifact-recipes.yml` on the
 Linux branch with `resource=all`, `track=all`, and `platform=all-linux`. After
 that build completes, dispatch `linux-acceptance.yml` on the same stack with its
-`source_run_id`. These workflows build candidate files and upload test outputs;
+`source_run_id`. Before that new workflow reaches the default branch, dispatch
+`artifact-recipes.yml` with `acceptance_source_run_id` instead; it calls the same
+acceptance workflow and skips resource builds. These workflows upload test outputs;
 they do not publish releases or push builder images to a registry. Acceptance
 checks all resource tracks on Ubuntu 22.04/24.04/26.04, Debian 12/13 and Fedora
 43/44 for both native CPUs, plus native Ubuntu and Alpine installer refusal.

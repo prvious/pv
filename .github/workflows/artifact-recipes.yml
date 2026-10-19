@@ -3,6 +3,10 @@ name: Artifact Recipes
 on:
   workflow_dispatch:
     inputs:
+      acceptance_source_run_id:
+        description: "Skip builds and run Linux acceptance using this completed recipe run"
+        required: false
+        type: string
       resource:
         description: "Resource to build: all, php, composer, redis, mysql, postgres, mailpit, rustfs, caddy"
         required: true
@@ -40,8 +44,18 @@ permissions:
   contents: read
 
 jobs:
+  linux-acceptance:
+    if: ${{ inputs.acceptance_source_run_id != '' }}
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/linux-acceptance.yml
+    with:
+      source_run_id: ${{ inputs.acceptance_source_run_id }}
+
   validate:
     name: validate
+    if: ${{ inputs.acceptance_source_run_id == '' }}
     runs-on: macos-14
     outputs:
       linux_matrix: ${{ steps.linux-matrix.outputs.matrix }}
