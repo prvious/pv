@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use camino::Utf8PathBuf;
 use platform::PlatformCapability;
+#[cfg(target_os = "linux")]
+use platform::PlatformTarget;
 use state::{PvPaths, RuntimeObservedStatus, StateError};
 
 use crate::args::{Cli, Command};
@@ -58,6 +60,12 @@ where
 {
     for &capability in required_capabilities(&cli.command) {
         capability_check(capability)?;
+    }
+    #[cfg(target_os = "linux")]
+    if matches!(cli.command, Command::Setup(_))
+        && environment.platform_target()? == PlatformTarget::Linux
+    {
+        environment.check_linux_setup_host()?;
     }
     let runtime_lifecycle_lock = acquire_runtime_lifecycle(&cli.command, environment)?;
     require_no_update_in_progress(&cli.command, environment)?;

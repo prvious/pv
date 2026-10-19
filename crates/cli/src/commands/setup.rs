@@ -88,10 +88,6 @@ pub(crate) fn setup(
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let linux = environment.platform_target()? == PlatformTarget::Linux;
-    #[cfg(target_os = "linux")]
-    if linux {
-        environment.check_linux_setup_host()?;
-    }
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
     let authentication = if linux { "sudo" } else { "macOS" };
@@ -1292,6 +1288,8 @@ mod tests {
     #[cfg(unix)]
     use crate::error::ExecuteError;
     use crate::output::{Presentation, Streams};
+    #[cfg(target_os = "linux")]
+    use crate::run_with_environment;
 
     #[derive(Default)]
     struct SetupEnvironment {
@@ -1299,8 +1297,6 @@ mod tests {
         home: PathBuf,
         manifest_available: bool,
         target: Option<PlatformTarget>,
-        #[cfg(target_os = "linux")]
-        host_ready: bool,
         #[cfg(target_os = "linux")]
         final_dns_ready: bool,
         operations: RefCell<Vec<&'static str>>,
@@ -1347,13 +1343,9 @@ mod tests {
         #[cfg(target_os = "linux")]
         fn check_linux_setup_host(&self) -> Result<(), PlatformError> {
             self.operations.borrow_mut().push("host check");
-            if self.host_ready {
-                Ok(())
-            } else {
-                Err(PlatformError::SystemIntegration(
-                    "fixture Linux host prerequisite refused".to_owned(),
-                ))
-            }
+            Err(PlatformError::SystemIntegration(
+                "fixture Linux host prerequisite refused".to_owned(),
+            ))
         }
 
         #[cfg(target_os = "linux")]
@@ -1427,8 +1419,6 @@ mod tests {
         let environment = SetupEnvironment {
             shell: "/bin/bash",
             home: directory.path().as_std_path().to_path_buf(),
-            #[cfg(target_os = "linux")]
-            host_ready: true,
             ..Default::default()
         };
         let presentation = Presentation::detect(&["--no-color".into()], &environment);
@@ -1593,29 +1583,19 @@ mod tests {
             ..Default::default()
         };
         let paths = PvPaths::for_home(directory.path());
-        let presentation = Presentation::detect(&["--no-color".into()], &environment);
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let result = setup(
-            SetupArgs {
-                yes: true,
-                non_interactive: false,
-                no_path: true,
-            },
+        let code = run_with_environment(
+            ["pv", "setup", "--yes", "--no-path"],
             &environment,
-            &mut Streams::new(&mut stdout, &mut stderr, presentation),
-        );
-        let Err(error) = result else {
-            anyhow::bail!("fixture host prerequisite must refuse setup");
-        };
-        let ExecuteError::Platform(PlatformError::SystemIntegration(message)) = &error else {
-            anyhow::bail!("{error}; operations: {:?}", environment.operations.borrow());
-        };
+            &mut stdout,
+            &mut stderr,
+        )?;
+        assert_eq!(code, ExitCode::FAILURE);
         assert!(!fs::path_entry_exists(paths.root())?);
         assert!(stdout.is_empty());
-        assert!(stderr.is_empty());
-        assert_snapshot!(format!("{message}\n{:?}", environment.operations.borrow()), @r#"
-        fixture Linux host prerequisite refused
+        assert_snapshot!(format!("{}{:?}", String::from_utf8(stderr)?, environment.operations.borrow()), @r#"
+        error: system integration operation failed: fixture Linux host prerequisite refused
         ["host check"]
         "#);
         Ok(())
