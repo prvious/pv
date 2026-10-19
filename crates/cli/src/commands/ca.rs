@@ -1,8 +1,11 @@
+mod linux;
+
 use std::io;
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use platform::{CaFileState, GeneratedLocalCa, LocalCaMetadata, TrustDomainState};
+use platform::{CaFileState, GeneratedLocalCa, LocalCaMetadata, PlatformTarget, TrustDomainState};
+use serde::Serialize;
 use state::{PvPaths, StateError};
 
 use crate::environment::Environment;
@@ -13,6 +16,9 @@ pub(crate) fn status(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
+    if environment.platform_target()? == PlatformTarget::Linux {
+        return linux::status(environment, streams);
+    }
     let paths = pv_paths(environment)?;
     let local_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
@@ -31,6 +37,9 @@ pub(crate) fn trust(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
+    if environment.platform_target()? == PlatformTarget::Linux {
+        return linux::trust(environment, streams);
+    }
     let paths = pv_paths(environment)?;
     let initial_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
@@ -105,6 +114,9 @@ pub(crate) fn untrust(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
+    if environment.platform_target()? == PlatformTarget::Linux {
+        return linux::untrust(environment, streams);
+    }
     let paths = pv_paths(environment)?;
     let local_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
@@ -328,4 +340,44 @@ mod tests {
 
         Ok(())
     }
+}
+
+#[derive(Serialize)]
+pub(crate) struct BrowserCaReport {
+    pub database: Utf8PathBuf,
+    pub state: TrustDomainState,
+}
+
+impl BrowserCaReport {
+    pub fn current(&self) -> bool {
+        matches!(self.state, TrustDomainState::Current { .. })
+    }
+    pub fn label(&self) -> &'static str {
+        match self.state {
+            TrustDomainState::Current { .. } => "current",
+            TrustDomainState::NotTrusted { .. } => "not trusted",
+            TrustDomainState::Stale { .. } => "stale",
+            TrustDomainState::Denied { .. } => "denied",
+            TrustDomainState::Unknown { .. } => "unknown",
+            TrustDomainState::Unreadable { .. } => "unreadable",
+        }
+    }
+}
+
+pub(crate) fn browser_ca_reports(
+    environment: &impl Environment,
+    paths: &PvPaths,
+    metadata: Option<&LocalCaMetadata>,
+) -> Result<Vec<BrowserCaReport>, ExecuteError> {
+    if environment.platform_target()? != PlatformTarget::Linux {
+        return Ok(Vec::new());
+    }
+    Ok(environment
+        .browser_ca_databases(paths.home())?
+        .into_iter()
+        .map(|database| BrowserCaReport {
+            state: environment.inspect_browser_ca_trust(&database, metadata),
+            database,
+        })
+        .collect())
 }

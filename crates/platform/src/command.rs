@@ -1,18 +1,18 @@
 use std::io;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 use std::io::Read;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::ExitStatus;
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
 use std::process::Output;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 use std::process::{Child, Stdio};
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 use std::thread::{self, JoinHandle};
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 use std::time::Duration;
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 use wait_timeout::ChildExt;
 
 use crate::PlatformError;
@@ -53,7 +53,7 @@ pub(crate) fn run_system_command_output(
     system_command_output(command, output)
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) fn run_system_command_output_with_timeout(
     program: &str,
     args: &[&str],
@@ -79,7 +79,10 @@ pub(crate) fn run_system_command_output_with_timeout(
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
-fn system_command_output(command: String, output: Output) -> Result<String, PlatformError> {
+pub(crate) fn system_command_output(
+    command: String,
+    output: Output,
+) -> Result<String, PlatformError> {
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
@@ -118,8 +121,12 @@ fn command_output(program: &str, args: &[&str]) -> io::Result<Output> {
     StdCommand::new(program).args(args).output()
 }
 
-#[cfg(any(target_os = "macos", test))]
-fn command_output_with_timeout(program: &str, args: &[&str], wait: Duration) -> io::Result<Output> {
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+pub(crate) fn command_output_with_timeout(
+    program: &str,
+    args: &[&str],
+    wait: Duration,
+) -> io::Result<Output> {
     let mut child = StdCommand::new(program)
         .args(args)
         .stdout(Stdio::piped())
@@ -175,7 +182,7 @@ fn command_output_with_timeout(program: &str, args: &[&str], wait: Duration) -> 
     })
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn spawn_output_reader(
     mut output: impl Read + Send + 'static,
 ) -> io::Result<JoinHandle<io::Result<Vec<u8>>>> {
@@ -188,7 +195,7 @@ fn spawn_output_reader(
         })
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn finish_output_readers(
     stdout_reader: JoinHandle<io::Result<Vec<u8>>>,
     stderr_reader: JoinHandle<io::Result<Vec<u8>>>,
@@ -198,14 +205,14 @@ fn finish_output_readers(
     Ok((stdout?, stderr?))
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn finish_output_reader(reader: JoinHandle<io::Result<Vec<u8>>>) -> io::Result<Vec<u8>> {
     reader
         .join()
         .map_err(|_| io::Error::other("command output reader panicked"))?
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 fn terminate_and_reap(child: &mut Child) -> io::Result<()> {
     if let Err(error) = child.kill()
         && child.try_wait()?.is_none()
