@@ -160,7 +160,7 @@ jobs:
             --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/src,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/inputs,dst=/inputs,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/evidence,dst=/evidence" pv-linux-acceptance
-          docker exec pv-linux-acceptance bash -ec '
+          docker exec pv-linux-acceptance bash -exc '
             for attempt in $(seq 1 60); do
               [ -S /run/dbus/system_bus_socket ] && break
               sleep 1
@@ -191,14 +191,31 @@ jobs:
           sudo ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
           sudo loginctl enable-linger pv-acceptance
           sudo systemctl start user@2000.service
-          sudo chown pv-acceptance:pv-acceptance "$RUNNER_TEMP/evidence"
+          acceptance_root=/home/pv-acceptance/acceptance
+          sudo mkdir -p "$acceptance_root"
+          sudo cp -R "$GITHUB_WORKSPACE" "$acceptance_root/source"
+          sudo cp -R "$RUNNER_TEMP/inputs" "$acceptance_root/inputs"
+          sudo chown -R pv-acceptance:pv-acceptance "$acceptance_root"
           sudo systemd-run --wait --pipe --collect --unit=pv-linux-acceptance --uid=pv-acceptance \
             --property=KillMode=control-group --property=RuntimeMaxSec=2400 --property=TimeoutStopSec=10 \
-            --working-directory="$GITHUB_WORKSPACE" --setenv=HOME=/home/pv-acceptance --setenv=SHELL=/bin/bash \
+            --working-directory="$acceptance_root/source" --setenv=HOME=/home/pv-acceptance --setenv=SHELL=/bin/bash \
             --setenv=XDG_RUNTIME_DIR=/run/user/2000 --setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/2000/bus \
-            --setenv=PV_LINUX_ACCEPTANCE=1 --setenv="PV_ACCEPTANCE_INPUT_DIR=$RUNNER_TEMP/inputs" \
-            --setenv="PV_ACCEPTANCE_EVIDENCE_DIR=$RUNNER_TEMP/evidence" bash scripts/ci/linux-acceptance.sh \
+            --setenv=PV_LINUX_ACCEPTANCE=1 --setenv="PV_ACCEPTANCE_INPUT_DIR=$acceptance_root/inputs" \
+            --setenv="PV_ACCEPTANCE_EVIDENCE_DIR=$acceptance_root/evidence" bash scripts/ci/linux-acceptance.sh \
             2>&1 | tee "$RUNNER_TEMP/evidence/support-gate.log"
+      - name: Collect native support gate outputs
+        if: ${{ !cancelled() && matrix.distro == 'native' }}
+        run: |
+          if [ -d /home/pv-acceptance/acceptance/evidence ]; then
+            sudo cp -R /home/pv-acceptance/acceptance/evidence/. "$RUNNER_TEMP/evidence/"
+            sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/evidence"
+          fi
+      - name: Collect container failure logs
+        if: ${{ failure() && matrix.distro != 'native' }}
+        run: |
+          docker logs pv-linux-acceptance > "$RUNNER_TEMP/evidence/container.log" 2>&1 || true
+          docker exec pv-linux-acceptance journalctl -b --no-pager \
+            > "$RUNNER_TEMP/evidence/system-journal.log" 2>&1 || true
       - name: Collect support gate logs
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
