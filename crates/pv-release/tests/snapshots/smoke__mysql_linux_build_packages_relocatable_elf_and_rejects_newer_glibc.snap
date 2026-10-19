@@ -6,7 +6,7 @@ expression: results
     (
         "8.4",
         false,
-        "bison=<bison>\nnuma=OFF\n",
+        "bison=<bison>\nnuma=OFF\ncurl=\n",
         [
             "mysql-8.4.9-pv1-<native-platform>/LIBAIO-LICENSE",
             "mysql-8.4.9-pv1-<native-platform>/LIBAIO-NOTICE",
@@ -57,8 +57,9 @@ expression: results
     (
         "9.7",
         false,
-        "bison=<bison>\nnuma=OFF\n",
+        "bison=<bison>\nnuma=OFF\ncurl=bundled\n",
         [
+            "mysql-9.7.0-pv1-<native-platform>/CURL-LICENSE",
             "mysql-9.7.0-pv1-<native-platform>/LIBAIO-LICENSE",
             "mysql-9.7.0-pv1-<native-platform>/LIBAIO-NOTICE",
             "mysql-9.7.0-pv1-<native-platform>/LICENSE",
@@ -101,6 +102,10 @@ expression: results
                 "--notice-file",
                 "LIBAIO-NOTICE",
             ),
+            (
+                "--license-file",
+                "CURL-LICENSE",
+            ),
         ],
         "archive=mysql-9.7.0-pv1-<native-platform>.tar.gz record=mysql-9.7.0-pv1-<native-platform>.json smoke=smoke.sh\n",
         "",
@@ -108,7 +113,7 @@ expression: results
     (
         "8.4",
         true,
-        "bison=<bison>\nnuma=OFF\n",
+        "bison=<bison>\nnuma=OFF\ncurl=\n",
         [],
         [],
         "",

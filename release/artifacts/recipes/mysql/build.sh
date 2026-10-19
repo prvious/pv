@@ -187,6 +187,9 @@ copy_install_tree() {
       cp "$OPENSSL_PREFIX/LICENSE.txt" "$root_dir/OPENSSL-LICENSE"
       cp /usr/share/doc/libaio1/copyright "$root_dir/LIBAIO-NOTICE"
       cp /usr/share/common-licenses/LGPL-2.1 "$root_dir/LIBAIO-LICENSE"
+      if [ "$PV_TRACK" = "9.7" ]; then
+        cp "$source_dir/extra/curl/curl-8.14.1/COPYING" "$root_dir/CURL-LICENSE"
+      fi
       cp /usr/share/doc/libtinfo6/copyright "$root_dir/NCURSES-LICENSE"
       pv_recipe_normalize_elf_tree "$root_dir"
       pv_recipe_validate_elf_tree "$root_dir" "$PLATFORM"
@@ -229,6 +232,9 @@ write_mysql_record() {
   case "$PLATFORM" in
     linux-amd64 | linux-arm64)
       set -- "$@" --license-file LICENSE --license-file OPENSSL-LICENSE --license-file LIBAIO-LICENSE --license-file NCURSES-LICENSE --notice-file NOTICE --notice-file LIBAIO-NOTICE
+      if [ "$PV_TRACK" = "9.7" ]; then
+        set -- "$@" --license-file CURL-LICENSE
+      fi
       ;;
   esac
   if [ "$record_openssl_source_input" = true ]; then
@@ -292,6 +298,9 @@ case "$PLATFORM" in
     curses_library=$(cc -print-file-name=libtinfo.a) || die "failed to locate builder libtinfo.a"
     [ -f "$curses_library" ] || die "builder libtinfo.a not found: $curses_library"
     set -- "$@" -DWITH_NUMA=OFF -DINSTALL_PRIV_LIBDIR=lib -DCURSES_LIBRARY="$curses_library" -DWITH_TIRPC=bundled
+    if [ "$PV_TRACK" = "9.7" ]; then
+      set -- "$@" -DWITH_CURL=bundled
+    fi
     ;;
 esac
 if [ "$PV_TRACK" = "8.0" ]; then
