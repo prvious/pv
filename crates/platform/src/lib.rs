@@ -4,6 +4,7 @@ mod capability;
 mod command;
 mod error;
 mod helper;
+pub mod hooks;
 mod launch_agent;
 mod low_port;
 mod pf;

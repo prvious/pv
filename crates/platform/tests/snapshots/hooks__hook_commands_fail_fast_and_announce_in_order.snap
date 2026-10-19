@@ -1,0 +1,12 @@
+---
+source: crates/platform/tests/hooks.rs
+expression: "(announcements, error.to_string(),\nfs::read_to_string(&temporary.path().join(\"order\"))?)"
+---
+(
+    [
+        "Running setup: printf first > order",
+        "Running setup: printf second >> order; exit 7",
+    ],
+    "hook command `printf second >> order; exit 7` exited with exit status: 7",
+    "firstsecond",
+)

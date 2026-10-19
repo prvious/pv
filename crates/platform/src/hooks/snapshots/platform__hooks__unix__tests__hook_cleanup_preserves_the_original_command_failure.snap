@@ -1,0 +1,5 @@
+---
+source: crates/platform/src/hooks/unix.rs
+expression: error.to_string()
+---
+hook command `exit 7` exited with exit status: 7; hook process-group cleanup failed: could not stop group

@@ -1,0 +1,10 @@
+---
+source: crates/platform/src/hooks/unix.rs
+expression: values
+---
+[
+    (
+        "MULTILINE",
+        "first\nsecond=value",
+    ),
+]
