@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       source_run_id:
-        description: Successful Artifact Recipes run containing every Linux resource for both CPUs
+        description: Completed Artifact Recipes run containing Linux resource outputs
         required: true
         type: string
   schedule:
@@ -32,7 +32,7 @@ jobs:
           set -euo pipefail
           source_run_id="$SOURCE_RUN_ID"
           if [ -z "$source_run_id" ]; then
-            for candidate in $(gh run list --workflow artifact-recipes.yml --status success --limit 30 --json databaseId --jq '.[].databaseId'); do
+            for candidate in $(gh run list --workflow artifact-recipes.yml --limit 30 --json databaseId,status --jq '.[] | select(.status == "completed") | .databaseId'); do
               names=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$candidate/artifacts" --jq '.artifacts[].name')
               if [[ "$names" == *linux-amd64* && "$names" == *linux-arm64* ]]; then
                 source_run_id=$candidate
@@ -41,8 +41,8 @@ jobs:
             done
           fi
           [[ "$source_run_id" =~ ^[0-9]+$ ]] || { echo 'No Linux recipe run is available'; exit 1; }
-          gh run view "$source_run_id" --json workflowName,conclusion --jq \
-            'select(.workflowName == "Artifact Recipes" and .conclusion == "success")' | grep -q .
+          gh run view "$source_run_id" --json workflowName,status --jq \
+            'select(.workflowName == "Artifact Recipes" and .status == "completed")' | grep -q .
           printf 'run_id=%s\n' "$source_run_id" >> "$GITHUB_OUTPUT"
 
   app:
