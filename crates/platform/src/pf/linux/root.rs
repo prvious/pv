@@ -484,12 +484,20 @@ async fn enablement(manager: &Proxy<'_>, name: &str) -> Result<Option<bool>, Pla
 }
 
 async fn job(manager: &Proxy<'_>, operation: &str, name: &str) -> Result<(), PlatformError> {
-    let result = within(Duration::from_secs(15), unit_job(manager, operation, name))
-        .await
-        .ok_or_else(|| {
-            PlatformError::SystemIntegration(format!("systemd {operation} {name} timed out"))
-        })?
-        .map_err(bus_error)?;
+    let result = within(Duration::from_secs(15), async {
+        if operation == "RestartUnit" {
+            // Explicit repair and rollback must not inherit an earlier start limit.
+            manager
+                .call::<_, _, ()>("ResetFailedUnit", &(name,))
+                .await?;
+        }
+        unit_job(manager, operation, name).await
+    })
+    .await
+    .ok_or_else(|| {
+        PlatformError::SystemIntegration(format!("systemd {operation} {name} timed out"))
+    })?
+    .map_err(bus_error)?;
     if result == "done" {
         Ok(())
     } else {
