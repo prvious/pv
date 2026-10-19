@@ -497,7 +497,7 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
     release_name=PV App Release
     jobs=["prepare-release", "build-app", "generate-release"]
     app_platforms_default=darwin-arm64
-    platform_matrices=["platform: [darwin-arm64, darwin-amd64]"]
+    platform_matrices=["platform: [darwin-arm64, darwin-amd64, linux-amd64, linux-arm64]"]
     uses_native_macos_runners=true
     build_app_platform_gate=true
     generate_uses_selected_platforms=true
