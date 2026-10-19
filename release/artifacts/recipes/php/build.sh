@@ -448,6 +448,8 @@ fi
       frankenphp_LDFLAGS="-Wl,-export_dynamic"
       ;;
     linux-amd64 | linux-arm64)
+      # Cgo must find FrankenPHP's types.h before libwebp's namesake header.
+      export frankenphp_CFLAGS="-I$frankenphp_source_dir"
       SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS="-Wl,--export-dynamic"
       frankenphp_LDFLAGS="-Wl,--export-dynamic"
       ;;
