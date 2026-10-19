@@ -412,7 +412,6 @@ fn clear_backups(directory: &Utf8Path, previous: &[PreviousUnit]) -> Result<(), 
 
 fn remove_file(path: &Utf8Path) -> Result<(), PlatformError> {
     state::fs::remove_file_if_exists(path)
-        .and_then(|()| state::fs::sync_parent_directory(path))
         .map_err(|error| PlatformError::SystemIntegration(error.to_string()))
 }
 
