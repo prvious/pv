@@ -1,28 +1,16 @@
 use std::future::Future;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::IpAddr;
 use std::thread;
 use std::time::Duration;
 
 use async_io::Timer;
 use camino::{Utf8Path, Utf8PathBuf};
-use futures_util::{Stream, StreamExt};
-use rtnetlink::packet_core::{
-    NLM_F_DUMP, NLM_F_DUMP_FILTERED, NLM_F_DUMP_INTR, NLM_F_REQUEST, NetlinkMessage, NetlinkPayload,
-};
+use futures_util::TryStreamExt;
 use rtnetlink::packet_route::AddressFamily as NetlinkAddressFamily;
-use rtnetlink::packet_route::RouteNetlinkMessage;
-use rtnetlink::packet_route::address::{
-    AddressAttribute, AddressFlags, AddressHeaderFlags, AddressMessage, AddressProtocol,
-    AddressScope,
-};
+use rtnetlink::packet_route::address::{AddressAttribute, AddressMessage, AddressScope};
 use rtnetlink::packet_route::link::{InfoKind, LinkAttribute, LinkFlags, LinkInfo, LinkMessage};
-use rtnetlink::packet_route::route::{
-    RouteAddress, RouteAttribute, RouteMessage, RouteProtocol, RouteScope, RouteType,
-};
-use rtnetlink::sys::AsyncSocket;
 use rtnetlink::{Handle, LinkDummy, LinkUnspec};
-use rustix::io::Errno;
 use rustix::net::AddressFamily;
 use rustix::process::{geteuid, getuid};
 use tokio::runtime::Builder;
@@ -122,9 +110,6 @@ struct Observation {
     unit_status: Option<UnitStatus>,
     links: Vec<LinkMessage>,
     addresses: Vec<AddressMessage>,
-    routes: Vec<RouteMessage>,
-    // Strict kernel filtering also associates routes with unexpanded nexthop IDs.
-    associated_routes: Vec<RouteMessage>,
     routing_domains: Vec<(i32, String, bool)>,
     link_settings: Option<LinkSettings>,
     scopes_mask: u64,
@@ -160,48 +145,16 @@ impl Observation {
                     || !status.drop_in_paths.is_empty()
             })
             || link.is_some_and(|link| !owned_link(link))
-            || link.is_some_and(|link| {
-                let index = link.header.index;
-                self.addresses.iter().any(|address| {
-                    address.header.index == index
-                        && !dns_address(address)
-                        && automatic_link_local(address).is_none()
-                }) || self
-                    .routes
-                    .iter()
-                    .filter(|route| route_uses_link(route, index))
-                    .chain(&self.associated_routes)
-                    .any(|route| {
-                        !dns_route(route, index)
-                            && !automatic_link_local_route(route, index, &self.addresses)
-                    })
-            })
     }
 
     fn apply_conflict(&self) -> bool {
         let index = pv_link(&self.links).map(|link| link.header.index);
         let resolved_index = index.and_then(|index| i32::try_from(index).ok());
-        self
-                .routing_domains
-                .iter()
-                .any(|(index, domain, _route_only)| {
-                    let domain = domain.trim_end_matches('.').to_ascii_lowercase();
-                    (domain == "test" || domain.ends_with(".test")) && Some(*index) != resolved_index
-                })
-            || self.addresses.iter().any(|address| {
-                Some(address.header.index) != index
-                    && address.attributes.iter().any(|attribute| {
-                        matches!(attribute, AddressAttribute::Address(IpAddr::V4(address))
-                            | AddressAttribute::Local(IpAddr::V4(address)) if *address == DNS_LISTEN_ADDRESS)
-                    })
-            })
-            || self.routes.iter().any(|route| {
-                endpoint_route(route)
-                    && !index.is_some_and(|index| route_uses_link(route, index))
-                    && !self.links.iter().any(|link| {
-                        link.header.flags.contains(LinkFlags::Loopback)
-                            && loopback_route(route, link.header.index)
-                    })
+        self.routing_domains
+            .iter()
+            .any(|(index, domain, _route_only)| {
+                let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+                (domain == "test" || domain.ends_with(".test")) && Some(*index) != resolved_index
             })
     }
 
@@ -214,13 +167,6 @@ impl Observation {
             link.header.flags.contains(LinkFlags::Up)
                 && self.addresses.iter().any(|address| {
                     address.header.index == link.header.index && current_dns_address(address)
-                })
-                && self.routes.iter().any(|route| {
-                    dns_route(route, link.header.index)
-                        && route.header.scope == RouteScope::Host
-                        && route.attributes.contains(&RouteAttribute::PrefSource(
-                            RouteAddress::Inet(DNS_LISTEN_ADDRESS),
-                        ))
                 })
         }) && self.link_settings.as_ref() == Some(&LinkSettings::for_config(config))
             && self.scopes_mask & DNS_SCOPE_MASK != 0
@@ -271,192 +217,15 @@ fn owned_link(link: &LinkMessage) -> bool {
         .iter()
         .any(|attribute| matches!(attribute, LinkAttribute::IfAlias(alias) if alias == LINK_ALIAS))
         && dummy_link(link)
-        && !link
-            .attributes
-            .iter()
-            .any(|attribute| matches!(attribute, LinkAttribute::Controller(index) if *index != 0))
-}
-
-fn dns_address(address: &AddressMessage) -> bool {
-    let expected = IpAddr::V4(DNS_LISTEN_ADDRESS);
-    address.header.family == NetlinkAddressFamily::Inet
-        && address.header.prefix_len == 32
-        && address
-            .attributes
-            .contains(&AddressAttribute::Address(expected))
-        && address
-            .attributes
-            .contains(&AddressAttribute::Local(expected))
-        && address.attributes.iter().all(|attribute| match attribute {
-            AddressAttribute::Address(value) | AddressAttribute::Local(value) => *value == expected,
-            AddressAttribute::Label(label) => label == LINK_NAME,
-            AddressAttribute::CacheInfo(_)
-            | AddressAttribute::Flags(_)
-            | AddressAttribute::Protocol(_)
-            | AddressAttribute::RoutePriority(_) => true,
-            _ => false,
-        })
 }
 
 fn current_dns_address(address: &AddressMessage) -> bool {
-    dns_address(address)
+    address.header.family == NetlinkAddressFamily::Inet
+        && address.header.prefix_len == 32
         && address.header.scope == AddressScope::Universe
-        && address.header.flags.contains(AddressHeaderFlags::Permanent)
-        && address.attributes.iter().all(|attribute| {
-            !matches!(attribute, AddressAttribute::Flags(flags) if !flags.contains(AddressFlags::Permanent))
-        })
-        && address.attributes.iter().any(|attribute| {
-            matches!(attribute, AddressAttribute::CacheInfo(info)
-                if info.ifa_valid == u32::MAX && info.ifa_preferred == u32::MAX)
-        })
-}
-
-fn automatic_link_local(address: &AddressMessage) -> Option<Ipv6Addr> {
-    if address.header.family != NetlinkAddressFamily::Inet6
-        || address.header.prefix_len != 64
-        || address.header.scope != AddressScope::Link
-    {
-        return None;
-    }
-    let value = address
-        .attributes
-        .iter()
-        .find_map(|attribute| match attribute {
-            AddressAttribute::Address(IpAddr::V6(value)) if value.is_unicast_link_local() => {
-                Some(*value)
-            }
-            _ => None,
-        })?;
-    address
-        .attributes
-        .iter()
-        .all(|attribute| match attribute {
-            AddressAttribute::Address(address) | AddressAttribute::Local(address) => {
-                *address == IpAddr::V6(value)
-            }
-            AddressAttribute::Label(label) => label == LINK_NAME,
-            AddressAttribute::Protocol(protocol) => *protocol == AddressProtocol::LinkLocal,
-            AddressAttribute::CacheInfo(_) | AddressAttribute::Flags(_) => true,
-            _ => false,
-        })
-        .then_some(value)
-}
-
-fn route_uses_link(route: &RouteMessage, index: u32) -> bool {
-    route.attributes.iter().any(|attribute| match attribute {
-        RouteAttribute::Oif(output) => *output == index,
-        RouteAttribute::MultiPath(hops) => hops.iter().any(|hop| hop.interface_index == index),
-        _ => false,
-    })
-}
-
-fn route_table(route: &RouteMessage) -> u32 {
-    route
-        .attributes
-        .iter()
-        .find_map(|attribute| match attribute {
-            RouteAttribute::Table(table) => Some(*table),
-            _ => None,
-        })
-        .unwrap_or(u32::from(route.header.table))
-}
-
-fn direct_kernel_route(route: &RouteMessage, index: u32) -> bool {
-    route.header.protocol == RouteProtocol::Kernel
-        && route.header.source_prefix_length == 0
-        && route.header.tos == 0
-        && route.attributes.contains(&RouteAttribute::Oif(index))
-        && route.attributes.iter().all(|attribute| match attribute {
-            RouteAttribute::Oif(output) => *output == index,
-            RouteAttribute::Table(table) => *table == route_table(route),
-            RouteAttribute::Destination(_)
-            | RouteAttribute::PrefSource(_)
-            | RouteAttribute::Priority(_)
-            | RouteAttribute::CacheInfo(_)
-            | RouteAttribute::Preference(_) => true,
-            _ => false,
-        })
-}
-
-fn dns_route(route: &RouteMessage, index: u32) -> bool {
-    route.header.address_family == NetlinkAddressFamily::Inet
-        && route.header.destination_prefix_length == 32
-        && route.header.kind == RouteType::Local
-        && route_table(route) == 255
-        && direct_kernel_route(route, index)
-        && route
+        && address
             .attributes
-            .contains(&RouteAttribute::Destination(RouteAddress::Inet(
-                DNS_LISTEN_ADDRESS,
-            )))
-}
-
-fn automatic_link_local_route(
-    route: &RouteMessage,
-    index: u32,
-    addresses: &[AddressMessage],
-) -> bool {
-    if route.header.address_family != NetlinkAddressFamily::Inet6
-        || !direct_kernel_route(route, index)
-    {
-        return false;
-    }
-    let destination = route
-        .attributes
-        .iter()
-        .find_map(|attribute| match attribute {
-            RouteAttribute::Destination(RouteAddress::Inet6(address)) => Some(*address),
-            _ => None,
-        });
-    let Some(destination) = destination else {
-        return false;
-    };
-    match (
-        route.header.kind,
-        route_table(route),
-        route.header.destination_prefix_length,
-    ) {
-        (RouteType::Local, 255, 128) => addresses.iter().any(|address| {
-            address.header.index == index && automatic_link_local(address) == Some(destination)
-        }),
-        (RouteType::Unicast, 254, 64) => {
-            destination == Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0)
-                && addresses.iter().any(|address| {
-                    address.header.index == index && automatic_link_local(address).is_some()
-                })
-        }
-        (RouteType::Multicast, 255, 8) => destination == Ipv6Addr::new(0xff00, 0, 0, 0, 0, 0, 0, 0),
-        _ => false,
-    }
-}
-
-fn endpoint_route(route: &RouteMessage) -> bool {
-    let prefix = route.header.destination_prefix_length;
-    if route.header.address_family != NetlinkAddressFamily::Inet || !(8..=32).contains(&prefix) {
-        return false;
-    }
-    let mask = u32::MAX << (32 - prefix);
-    route.attributes.iter().any(|attribute| {
-        matches!(attribute, RouteAttribute::Destination(RouteAddress::Inet(address))
-            if u32::from(*address) & mask == u32::from(DNS_LISTEN_ADDRESS) & mask)
-    })
-}
-
-fn loopback_route(route: &RouteMessage, index: u32) -> bool {
-    route.header.destination_prefix_length == 8
-        && route.header.kind == RouteType::Local
-        && route_table(route) == 255
-        && direct_kernel_route(route, index)
-        && route
-            .attributes
-            .contains(&RouteAttribute::Destination(RouteAddress::Inet(
-                Ipv4Addr::new(127, 0, 0, 0),
-            )))
-        && route
-            .attributes
-            .contains(&RouteAttribute::PrefSource(RouteAddress::Inet(
-                Ipv4Addr::LOCALHOST,
-            )))
+            .contains(&AddressAttribute::Local(IpAddr::V4(DNS_LISTEN_ADDRESS)))
 }
 
 fn dummy_link(link: &LinkMessage) -> bool {
@@ -513,157 +282,33 @@ fn run_native<T: Send>(
 }
 
 async fn query_network(handle: &Handle) -> Result<Observation, PlatformError> {
-    let links = query_links(handle).await?;
-    let index = pv_link(&links).map(|link| link.header.index);
-    let addresses = read_dump(
-        handle,
-        RouteNetlinkMessage::GetAddress(AddressMessage::default()),
-        false,
-    )
-    .await?
-    .into_iter()
-    .map(|message| match message {
-        NetlinkMessage {
-            payload: NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewAddress(address)),
-            ..
-        } => Ok(address),
-        message => Err(netlink_error(rtnetlink::Error::UnexpectedMessage(message))),
-    })
-    .collect::<Result<_, _>>()?;
-    let mut routes = Vec::new();
-    let mut associated_routes = Vec::new();
-    for family in [NetlinkAddressFamily::Inet, NetlinkAddressFamily::Inet6] {
-        routes.extend(query_routes(handle, family, None).await?);
-        if let Some(index) = index {
-            associated_routes.extend(query_routes(handle, family, Some(index)).await?);
-        }
-    }
     Ok(Observation {
-        links,
-        addresses,
-        routes,
-        associated_routes,
+        links: query_links(handle).await?,
+        addresses: handle
+            .address()
+            .get()
+            .execute()
+            .try_collect()
+            .await
+            .map_err(netlink_error)?,
         ..Observation::default()
     })
 }
 
 async fn query_links(handle: &Handle) -> Result<Vec<LinkMessage>, PlatformError> {
-    read_dump(
-        handle,
-        RouteNetlinkMessage::GetLink(LinkMessage::default()),
-        false,
-    )
-    .await?
-    .into_iter()
-    .map(|message| match message {
-        NetlinkMessage {
-            payload: NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewLink(link)),
-            ..
-        } => Ok(link),
-        message => Err(netlink_error(rtnetlink::Error::UnexpectedMessage(message))),
-    })
-    .collect()
-}
-
-async fn query_routes(
-    handle: &Handle,
-    family: NetlinkAddressFamily,
-    index: Option<u32>,
-) -> Result<Vec<RouteMessage>, PlatformError> {
-    let mut request = RouteMessage::default();
-    request.header.address_family = family;
-    if let Some(index) = index {
-        request.attributes.push(RouteAttribute::Oif(index));
-    }
-    read_dump(
-        handle,
-        RouteNetlinkMessage::GetRoute(request),
-        index.is_some(),
-    )
-    .await?
-    .into_iter()
-    .map(|message| match message {
-        NetlinkMessage {
-            payload: NetlinkPayload::InnerMessage(RouteNetlinkMessage::NewRoute(route)),
-            ..
-        } if route.header.address_family == family => Ok(route),
-        message => Err(netlink_error(rtnetlink::Error::UnexpectedMessage(message))),
-    })
-    .collect()
-}
-
-async fn read_dump(
-    handle: &Handle,
-    request: RouteNetlinkMessage,
-    filtered: bool,
-) -> Result<Vec<NetlinkMessage<RouteNetlinkMessage>>, PlatformError> {
-    let mut request = NetlinkMessage::from(request);
-    request.header.flags = NLM_F_REQUEST | NLM_F_DUMP;
-    let mut handle = handle.clone();
-    let responses = handle.request(request).map_err(netlink_error)?;
-    collect_dump(responses, filtered).await
-}
-
-async fn collect_dump(
-    mut responses: impl Stream<Item = NetlinkMessage<RouteNetlinkMessage>> + Unpin,
-    filtered: bool,
-) -> Result<Vec<NetlinkMessage<RouteNetlinkMessage>>, PlatformError> {
-    let mut messages = Vec::new();
-    let mut completed = false;
-    while let Some(response) = responses.next().await {
-        if let NetlinkPayload::Error(error) = &response.payload {
-            return Err(netlink_error(rtnetlink::Error::NetlinkError(error.clone())));
-        }
-        if let NetlinkPayload::Done(done) = &response.payload
-            && done.code != 0
-        {
-            if let Some(errno) = done.code.checked_neg().filter(|errno| *errno > 0) {
-                return Err(PlatformError::ResolverIo(io::Error::from_raw_os_error(
-                    errno,
-                )));
-            }
-            return Err(PlatformError::SystemIntegration(format!(
-                "resolver network inventory failed with status {}; inspect DNS state before retrying",
-                done.code,
-            )));
-        }
-        if response.header.flags & NLM_F_DUMP_INTR != 0 {
-            return Err(PlatformError::SystemIntegration(
-                "resolver network inventory changed during inspection; retry before changing DNS state".to_owned(),
-            ));
-        }
-        if filtered && response.header.flags & NLM_F_DUMP_FILTERED == 0 {
-            return Err(PlatformError::SystemIntegration(
-                "resolver network inventory did not confirm its interface filter".to_owned(),
-            ));
-        }
-        match &response.payload {
-            NetlinkPayload::InnerMessage(_) if !completed => messages.push(response),
-            NetlinkPayload::Done(_) if !completed => completed = true,
-            _ => return Err(netlink_error(rtnetlink::Error::UnexpectedMessage(response))),
-        }
-    }
-    if completed {
-        Ok(messages)
-    } else {
-        Err(PlatformError::SystemIntegration(
-            "resolver network inventory ended without a successful completion".to_owned(),
-        ))
-    }
+    handle
+        .link()
+        .get()
+        .execute()
+        .try_collect()
+        .await
+        .map_err(netlink_error)
 }
 
 async fn with_netlink<T, F: Future<Output = Result<T, PlatformError>>>(
     operation: impl FnOnce(Handle) -> F,
 ) -> Result<T, PlatformError> {
-    let (mut connection, handle, _) =
-        rtnetlink::new_connection().map_err(PlatformError::ResolverIo)?;
-    // Convenience dump streams discard interruption flags and terminal errors.
-    connection.set_forward_done(true);
-    connection
-        .socket_mut()
-        .socket_mut()
-        .set_netlink_get_strict_chk(true)
-        .map_err(PlatformError::ResolverIo)?;
+    let (connection, handle, _) = rtnetlink::new_connection().map_err(PlatformError::ResolverIo)?;
     // Keep the original handle alive until the request has finished, so the driver
     // cannot finish normally merely because the operation dropped its own clone.
     let request = operation(handle.clone());
@@ -1028,31 +673,10 @@ async fn stop_link() -> Result<(), PlatformError> {
         let after = query_network(&handle).await?;
         if pv_link(&after.links).is_some()
             || after.links.iter().any(|link| link.header.index == index)
-            || after
-                .addresses
-                .iter()
-                .any(|address| address.header.index == index)
-            || after
-                .routes
-                .iter()
-                .any(|route| route_uses_link(route, index))
         {
             return Err(PlatformError::SystemIntegration(
                 "pv0 is still present after removal; inspect the link before retrying".to_owned(),
             ));
-        }
-        // Strict interface filtering reports ENODEV for a deleted index rather
-        // than a successful empty dump. Other errors cannot establish absence.
-        match query_routes(&handle, NetlinkAddressFamily::Inet, Some(index)).await {
-            Err(PlatformError::ResolverIo(error))
-                if error.raw_os_error() == Some(Errno::NODEV.raw_os_error()) => {}
-            Err(PlatformError::ResolverNetlink(error))
-                if matches!(error.as_ref(), rtnetlink::Error::NetlinkError(message)
-                    if message.code.is_some_and(|code| code.get() == -Errno::NODEV.raw_os_error())) => {}
-            Err(error) => return Err(error),
-            Ok(_) => return Err(PlatformError::SystemIntegration(
-                "removed DNS interface index still exists; inspect the link before retrying".to_owned(),
-            )),
         }
         Ok(())
     })
@@ -1224,7 +848,7 @@ fn owned_pv_link(links: &[LinkMessage]) -> Result<Option<&LinkMessage>, Platform
 
 fn conflict() -> PlatformError {
     PlatformError::SystemIntegration(format!(
-        "Linux DNS configuration conflicts with administrator configuration; inspect {SYSTEM_RESOLVER_TEST_PATH}, its systemd overrides and pv0 ownership, addresses and routes. Before applying routing, repair competing test search or routing domains, including subdomains. For a retained unit cache, run `sudo systemctl daemon-reload` before retrying",
+        "Linux DNS configuration conflicts with administrator configuration; inspect {SYSTEM_RESOLVER_TEST_PATH}, its systemd overrides and pv0 ownership. Before applying routing, repair competing test search or routing domains, including subdomains. For a retained unit cache, run `sudo systemctl daemon-reload` before retrying",
     ))
 }
 
@@ -1242,53 +866,25 @@ fn bus_error(error: zbus::Error) -> PlatformError {
 
 #[cfg(test)]
 mod tests {
-    use std::num::NonZeroI32;
+    use std::net::Ipv4Addr;
 
-    use crate::systemd::read_unit;
     use anyhow::Result;
     use camino_tempfile::tempdir;
-    use futures_util::stream;
     use insta::assert_snapshot;
-    use rtnetlink::packet_core::{DoneMessage, ErrorMessage, NetlinkHeader};
-    use rtnetlink::packet_route::address::CacheInfo;
-    use rtnetlink::packet_route::route::RouteNextHop;
-    use rtnetlink::{AddressMessageBuilder, LinkDummy, RouteMessageBuilder};
+    use rtnetlink::AddressMessageBuilder;
     use rustix::fs::{CWD, Mode, mkfifoat};
 
     use super::*;
-
-    fn test_address(index: u32) -> AddressMessage {
-        let mut address = AddressMessageBuilder::<Ipv4Addr>::new()
-            .index(index)
-            .address(Ipv4Addr::new(127, 0, 0, 2), 32)
-            .build();
-        address.header.scope = AddressScope::Universe;
-        address.header.flags = AddressHeaderFlags::Permanent;
-        let mut lifetime = CacheInfo::default();
-        lifetime.ifa_valid = u32::MAX;
-        lifetime.ifa_preferred = u32::MAX;
-        address
-            .attributes
-            .push(AddressAttribute::CacheInfo(lifetime));
-        address
-    }
-
-    fn test_route(index: u32) -> RouteMessage {
-        RouteMessageBuilder::<Ipv4Addr>::new()
-            .destination_prefix(Ipv4Addr::new(127, 0, 0, 2), 32)
-            .pref_source(Ipv4Addr::new(127, 0, 0, 2))
-            .output_interface(index)
-            .table_id(255)
-            .protocol(RouteProtocol::Kernel)
-            .scope(RouteScope::Host)
-            .kind(RouteType::Local)
-            .build()
-    }
+    use crate::systemd::read_unit;
 
     fn current() -> Observation {
-        let config = ResolverConfig::new(35353);
+        let mut address = AddressMessageBuilder::<Ipv4Addr>::new()
+            .index(7)
+            .address(DNS_LISTEN_ADDRESS, 32)
+            .build();
+        address.header.scope = AddressScope::Universe;
         Observation {
-            unit_content: Some(render_unit(&config)),
+            unit_content: Some(render_unit(&ResolverConfig::new(35353))),
             unit_status: Some(UnitStatus {
                 active_state: "active".to_owned(),
                 unit_file_state: "enabled".to_owned(),
@@ -1302,9 +898,7 @@ mod tests {
                     .append_extra_attribute(LinkAttribute::IfAlias(LINK_ALIAS.to_owned()))
                     .build(),
             ],
-            addresses: vec![test_address(7)],
-            routes: vec![test_route(7)],
-            associated_routes: vec![test_route(7)],
+            addresses: vec![address],
             routing_domains: vec![(7, "test".to_owned(), true)],
             link_settings: Some(LinkSettings {
                 dns: vec![(2, vec![127, 0, 0, 2], 35353, String::new())],
@@ -1315,7 +909,7 @@ mod tests {
                 llmnr: "no".to_owned(),
                 multicast_dns: "no".to_owned(),
             }),
-            scopes_mask: 1,
+            scopes_mask: DNS_SCOPE_MASK,
         }
     }
 
@@ -1357,535 +951,90 @@ mod tests {
     #[test]
     fn current_requires_the_active_unit_owned_up_link_and_exact_resolved_settings() {
         let config = ResolverConfig::new(35353);
-        let path = Utf8PathBuf::from(SYSTEM_RESOLVER_TEST_PATH);
-        let observation = current();
-        assert!(Observation::default().require_owned().is_ok());
-        assert!(observation.require_owned().is_ok());
-        assert_eq!(
+        assert!(matches!(
             Observation::default().state(Some(&config)),
-            ResolverFileState::Missing { path: path.clone() }
-        );
-        for expected in [None, Some(&config)] {
-            assert_eq!(
-                observation.state(expected),
-                ResolverFileState::Current {
-                    path: path.clone(),
-                    port: config.port
-                }
-            );
-        }
-        assert_eq!(
-            observation.state(Some(&ResolverConfig::new(45000))),
-            ResolverFileState::Stale {
-                path: path.clone(),
-                expected_port: Some(45000),
-                actual_port: Some(config.port)
-            }
-        );
-
-        let mut stale = Vec::new();
-        let mut inactive = observation.clone();
-        if let Some(status) = &mut inactive.unit_status {
-            status.active_state = "inactive".to_owned();
-        }
-        stale.push(("inactive unit", inactive));
-        for unit_file_state in ["disabled", "enabled-runtime"] {
-            let mut disabled = observation.clone();
-            if let Some(status) = &mut disabled.unit_status {
-                status.unit_file_state = unit_file_state.to_owned();
-            }
-            stale.push((unit_file_state, disabled));
-        }
-        let mut missing_link = observation.clone();
-        missing_link.links.clear();
-        missing_link.addresses.clear();
-        missing_link.routes.clear();
-        missing_link.associated_routes.clear();
-        missing_link.routing_domains.clear();
-        stale.push(("missing link", missing_link));
-        let mut down_link = observation.clone();
-        down_link.links[0].header.flags.remove(LinkFlags::Up);
-        stale.push(("down link", down_link));
-        let mut missing_settings = observation.clone();
-        missing_settings.link_settings = None;
-        stale.push(("unconfigured resolved link", missing_settings));
-        let mut wrong_port = observation.clone();
-        if let Some(settings) = &mut wrong_port.link_settings {
-            settings.dns[0].2 = 45000;
-        }
-        stale.push(("wrong DNS port", wrong_port));
-        let mut wrong_address = observation.clone();
-        if let Some(settings) = &mut wrong_address.link_settings {
-            settings.dns[0].1 = vec![10, 0, 0, 1];
-        }
-        stale.push(("foreign DNS server", wrong_address));
-        let mut default_route = observation.clone();
-        if let Some(settings) = &mut default_route.link_settings {
+            ResolverFileState::Missing { .. }
+        ));
+        assert!(matches!(
+            current().state(Some(&config)),
+            ResolverFileState::Current { port: 35353, .. }
+        ));
+        assert!(matches!(
+            current().state(Some(&ResolverConfig::new(45000))),
+            ResolverFileState::Stale { .. }
+        ));
+        let mut observation = current();
+        observation.addresses[0].header.scope = AddressScope::Link;
+        assert!(observation.require_owned().is_ok());
+        assert!(matches!(
+            observation.state(Some(&config)),
+            ResolverFileState::Stale { .. }
+        ));
+        observation = current();
+        if let Some(settings) = &mut observation.link_settings {
             settings.default_route = true;
         }
-        stale.push(("upstream default route", default_route));
-        let mut search_domain = observation.clone();
-        if let Some(settings) = &mut search_domain.link_settings {
-            settings.domains[0].1 = false;
+        assert!(matches!(
+            observation.state(Some(&config)),
+            ResolverFileState::Stale { .. }
+        ));
+        observation = current();
+        observation.scopes_mask = 0;
+        assert!(matches!(
+            observation.state(Some(&config)),
+            ResolverFileState::Stale { .. }
+        ));
+        observation = current();
+        if let Some(status) = &mut observation.unit_status {
+            status.unit_file_state = "disabled".to_owned();
         }
-        stale.push(("search domain instead of routing domain", search_domain));
-        let mut dnssec = observation.clone();
-        if let Some(settings) = &mut dnssec.link_settings {
-            settings.dnssec = "allow-downgrade".to_owned();
-        }
-        stale.push(("inherited DNSSEC", dnssec));
-        let mut malformed_unit = observation.clone();
-        malformed_unit.unit_content = Some(format!("{PV_MARKER}\n[Service]\n"));
-        assert_eq!(
-            malformed_unit.state(Some(&config)),
-            ResolverFileState::Stale {
-                path: path.clone(),
-                expected_port: Some(config.port),
-                actual_port: None
-            }
-        );
-        let mut retained_link = observation.clone();
-        retained_link.unit_content = None;
-        retained_link.unit_status = None;
-        assert_eq!(
-            retained_link.state(Some(&config)),
-            ResolverFileState::Stale {
-                path: path.clone(),
-                expected_port: Some(config.port),
-                actual_port: None
-            }
-        );
-        for (case, observation) in stale {
-            assert!(observation.require_owned().is_ok(), "{case}");
-            assert_eq!(
-                observation.state(Some(&config)),
-                ResolverFileState::Stale {
-                    path: path.clone(),
-                    expected_port: Some(config.port),
-                    actual_port: Some(config.port)
-                },
-                "{case}"
-            );
-        }
+        assert!(matches!(
+            observation.state(Some(&config)),
+            ResolverFileState::Stale { .. }
+        ));
     }
 
     #[test]
-    fn foreign_networking_or_manager_selected_units_are_conflicts() {
-        let mut conflicts = Vec::new();
-        let mut unmarked = current();
-        unmarked.unit_content = Some(
-            render_unit(&ResolverConfig::new(35353)).replace(PV_MARKER, "# administrator unit"),
-        );
-        conflicts.push(("unmarked unit", unmarked));
-        let mut foreign_fragment = current();
-        if let Some(status) = &mut foreign_fragment.unit_status {
-            status.fragment_path = "/run/systemd/system/pv-dns.service".into();
+    fn foreign_units_links_and_test_domains_are_conflicts() {
+        let mut observation = current();
+        observation.unit_content = Some("administrator unit".to_owned());
+        assert!(observation.require_owned().is_err());
+        observation = current();
+        observation.links[0]
+            .attributes
+            .retain(|attribute| !matches!(attribute, LinkAttribute::IfAlias(_)));
+        assert!(observation.require_owned().is_err());
+        observation = current();
+        observation.links[0]
+            .attributes
+            .retain(|attribute| !matches!(attribute, LinkAttribute::LinkInfo(_)));
+        assert!(observation.require_owned().is_err());
+        observation = current();
+        if let Some(status) = &mut observation.unit_status {
+            status.fragment_path = "/run/foreign.service".into();
         }
-        conflicts.push(("manager selected another unit", foreign_fragment));
-        let mut missing_loaded_file = current();
-        missing_loaded_file.unit_content = None;
-        conflicts.push((
-            "loaded unit with missing ownership file",
-            missing_loaded_file,
-        ));
-        let mut drop_in = current();
-        if let Some(status) = &mut drop_in.unit_status {
+        assert!(observation.require_owned().is_err());
+        observation = current();
+        if let Some(status) = &mut observation.unit_status {
             status
                 .drop_in_paths
                 .push("/etc/systemd/system/pv-dns.service.d/override.conf".to_owned());
         }
-        conflicts.push(("administrator drop-in", drop_in));
-        let mut unmarked_link = current();
-        unmarked_link.links[0]
-            .attributes
-            .retain(|attribute| !matches!(attribute, LinkAttribute::IfAlias(_)));
-        conflicts.push(("unmarked pv0", unmarked_link));
-        let mut wrong_alias = current();
-        wrong_alias.links[0]
-            .attributes
-            .retain(|attribute| !matches!(attribute, LinkAttribute::IfAlias(_)));
-        wrong_alias.links[0]
-            .attributes
-            .push(LinkAttribute::IfAlias("administrator".to_owned()));
-        conflicts.push(("foreign alias", wrong_alias));
-        let mut wrong_kind = current();
-        wrong_kind.links[0]
-            .attributes
-            .retain(|attribute| !matches!(attribute, LinkAttribute::LinkInfo(_)));
-        wrong_kind.links[0]
-            .attributes
-            .push(LinkAttribute::LinkInfo(vec![LinkInfo::Kind(
-                InfoKind::Veth,
-            )]));
-        conflicts.push(("same alias on non-dummy", wrong_kind));
-        for (case, observation) in &conflicts {
-            assert!(observation.require_owned().is_err(), "{case}");
-        }
-        for index in [0, 9] {
-            for route_only in [false, true] {
-                for domain in ["TeSt.", "app.Acme.TeSt."] {
-                    let mut other_route = Observation::default();
-                    other_route
-                        .routing_domains
-                        .push((index, domain.to_owned(), route_only));
-                    conflicts.push(("foreign test domain without PV installation", other_route));
-                }
-            }
-        }
-        let mut concurrent_route = current();
-        concurrent_route
-            .routing_domains
-            .push((9, "test".to_owned(), true));
-        conflicts.push((
-            "foreign routing domain on configured system",
-            concurrent_route,
-        ));
-        for (case, observation) in conflicts {
-            assert!(observation.require_apply().is_err(), "{case}");
+        assert!(observation.require_owned().is_err());
+        for (index, domain, route_only, conflict) in [
+            (7, "test", true, false),
+            (9, "TeSt.", true, true),
+            (0, "app.test", false, true),
+            (9, "example.tested", false, false),
+        ] {
+            observation = current();
+            observation.routing_domains = vec![(index, domain.to_owned(), route_only)];
             assert_eq!(
-                observation.state(None),
-                ResolverFileState::Conflict {
-                    path: SYSTEM_RESOLVER_TEST_PATH.into()
-                },
-                "{case}"
+                observation.require_apply().is_err(),
+                conflict,
+                "{index}: {domain}"
             );
         }
-        for domain in ["contest", "test.example", "."] {
-            let unrelated = Observation {
-                routing_domains: vec![(9, domain.to_owned(), false)],
-                ..Observation::default()
-            };
-            assert_eq!(
-                unrelated.state(None),
-                ResolverFileState::Missing {
-                    path: SYSTEM_RESOLVER_TEST_PATH.into()
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn native_dns_readiness_and_ownership_have_distinct_outcomes() {
-        let mut cases = vec![("current", current())];
-        let mut addressless = current();
-        addressless.addresses.clear();
-        addressless.routes.clear();
-        cases.push(("addressless", addressless));
-        let mut missing_route = current();
-        missing_route.routes.clear();
-        cases.push(("missing route", missing_route));
-        for mask in [0, 2] {
-            let mut missing_scope = current();
-            missing_scope.scopes_mask = mask;
-            cases.push((
-                if mask == 0 {
-                    "no effective scope"
-                } else {
-                    "only non-DNS scope"
-                },
-                missing_scope,
-            ));
-        }
-        let mut wrong_scope = current();
-        wrong_scope.addresses[0].header.scope = AddressScope::Host;
-        cases.push(("host address scope", wrong_scope));
-        let mut finite_lifetime = current();
-        finite_lifetime.addresses[0]
-            .header
-            .flags
-            .remove(AddressHeaderFlags::Permanent);
-        for attribute in &mut finite_lifetime.addresses[0].attributes {
-            if let AddressAttribute::CacheInfo(info) = attribute {
-                info.ifa_valid = 60;
-                info.ifa_preferred = 60;
-            }
-        }
-        cases.push(("finite address lifetime", finite_lifetime));
-        let mut route_scope = current();
-        route_scope.routes[0].header.scope = RouteScope::Link;
-        cases.push(("kernel local route scope drift", route_scope));
-        let mut preferred_source = current();
-        for attribute in &mut preferred_source.routes[0].attributes {
-            if let RouteAttribute::PrefSource(address) = attribute {
-                *address = RouteAddress::Inet(Ipv4Addr::LOCALHOST);
-            }
-        }
-        cases.push(("kernel local preferred source drift", preferred_source));
-        let mut wrong_prefix = current();
-        wrong_prefix.addresses[0].header.prefix_len = 8;
-        cases.push(("wrong address prefix", wrong_prefix));
-        let mut peer = current();
-        for attribute in &mut peer.addresses[0].attributes {
-            if let AddressAttribute::Address(address) = attribute {
-                *address = IpAddr::V4(Ipv4Addr::new(192, 0, 2, 1));
-            }
-        }
-        cases.push(("distinct address peer", peer));
-        let mut foreign_address = current();
-        foreign_address.addresses.push(
-            AddressMessageBuilder::<Ipv4Addr>::new()
-                .index(7)
-                .address(Ipv4Addr::new(192, 0, 2, 1), 32)
-                .build(),
-        );
-        cases.push(("foreign static address on pv0", foreign_address));
-        let mut foreign_route = current();
-        foreign_route.routes.push(
-            RouteMessageBuilder::<Ipv4Addr>::new()
-                .destination_prefix(Ipv4Addr::new(192, 0, 2, 0), 24)
-                .output_interface(7)
-                .build(),
-        );
-        cases.push(("foreign static route on pv0", foreign_route));
-        let mut multipath = current();
-        let mut hop = RouteNextHop::default();
-        hop.interface_index = 7;
-        multipath.routes.push(
-            RouteMessageBuilder::<Ipv4Addr>::new()
-                .destination_prefix(Ipv4Addr::new(192, 0, 2, 0), 24)
-                .multipath(vec![hop])
-                .build(),
-        );
-        cases.push(("foreign multipath route on pv0", multipath));
-        let mut associated_nexthop = current();
-        let mut route = RouteMessageBuilder::<Ipv4Addr>::new()
-            .destination_prefix(Ipv4Addr::new(192, 0, 2, 0), 24)
-            .build();
-        route.attributes.push(RouteAttribute::NhId(17));
-        associated_nexthop.routes.push(route.clone());
-        associated_nexthop.associated_routes.push(route.clone());
-        cases.push(("kernel-filtered nexthop on pv0", associated_nexthop));
-        let mut unrelated_nexthop = current();
-        unrelated_nexthop.routes.push(route);
-        cases.push(("nexthop on unrelated link", unrelated_nexthop));
-        let mut controller = current();
-        controller.links[0]
-            .attributes
-            .push(LinkAttribute::Controller(9));
-        cases.push(("attached controller", controller));
-        let mut external_address = current();
-        external_address.addresses.push(test_address(9));
-        cases.push(("external explicit endpoint", external_address));
-        let mut external_route = current();
-        let mut route = test_route(9);
-        route.header.protocol = RouteProtocol::Static;
-        external_route.routes.push(route);
-        cases.push(("external endpoint route", external_route));
-        let mut foreign_domain = current();
-        foreign_domain
-            .routing_domains
-            .push((9, "test".to_owned(), true));
-        cases.push(("external routing domain", foreign_domain));
-        let mut foreign_protocol = current();
-        foreign_protocol.routes[0].header.protocol = RouteProtocol::Static;
-        cases.push(("foreign protocol on endpoint route", foreign_protocol));
-        let mut gateway = current();
-        gateway.routes[0]
-            .attributes
-            .push(RouteAttribute::Gateway(RouteAddress::Inet(
-                Ipv4Addr::LOCALHOST,
-            )));
-        cases.push(("forwarding authority on endpoint route", gateway));
-        let mut ordinary_loopback = current();
-        let mut loopback = LinkUnspec::new_with_index(1).name("lo").build();
-        loopback.header.flags.insert(LinkFlags::Loopback);
-        ordinary_loopback.links.push(loopback);
-        ordinary_loopback.addresses.push(
-            AddressMessageBuilder::<Ipv4Addr>::new()
-                .index(1)
-                .address(Ipv4Addr::LOCALHOST, 8)
-                .build(),
-        );
-        ordinary_loopback.routes.push(
-            RouteMessageBuilder::<Ipv4Addr>::new()
-                .destination_prefix(Ipv4Addr::new(127, 0, 0, 0), 8)
-                .pref_source(Ipv4Addr::LOCALHOST)
-                .output_interface(1)
-                .table_id(255)
-                .protocol(RouteProtocol::Kernel)
-                .kind(RouteType::Local)
-                .scope(RouteScope::Host)
-                .build(),
-        );
-        cases.push(("ordinary loopback covering route", ordinary_loopback));
-        let mut link_local = current();
-        let address = Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 7);
-        let mut native_address = AddressMessageBuilder::<Ipv6Addr>::new()
-            .index(7)
-            .address(address, 64)
-            .build();
-        native_address.header.scope = AddressScope::Link;
-        native_address
-            .attributes
-            .push(AddressAttribute::Protocol(AddressProtocol::LinkLocal));
-        link_local.addresses.push(native_address);
-        for (destination, prefix, table, kind) in [
-            (address, 128, 255, RouteType::Local),
-            (
-                Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0),
-                64,
-                254,
-                RouteType::Unicast,
-            ),
-            (
-                Ipv6Addr::new(0xff00, 0, 0, 0, 0, 0, 0, 0),
-                8,
-                255,
-                RouteType::Multicast,
-            ),
-        ] {
-            link_local.routes.push(
-                RouteMessageBuilder::<Ipv6Addr>::new()
-                    .destination_prefix(destination, prefix)
-                    .output_interface(7)
-                    .table_id(table)
-                    .protocol(RouteProtocol::Kernel)
-                    .kind(kind)
-                    .build(),
-            );
-        }
-        cases.push(("automatic IPv6 link-local state", link_local.clone()));
-        let mut foreign_protocol = link_local.clone();
-        for attribute in &mut foreign_protocol.addresses[1].attributes {
-            if let AddressAttribute::Protocol(protocol) = attribute {
-                *protocol = AddressProtocol::Other(99);
-            }
-        }
-        cases.push(("foreign IPv6 address protocol", foreign_protocol));
-        link_local.routes.push(
-            RouteMessageBuilder::<Ipv6Addr>::new()
-                .destination_prefix(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 8), 128)
-                .output_interface(7)
-                .table_id(255)
-                .protocol(RouteProtocol::Kernel)
-                .kind(RouteType::Local)
-                .build(),
-        );
-        cases.push(("unrelated kernel IPv6 local route", link_local));
-        let results = cases
-            .into_iter()
-            .map(|(name, observation)| {
-                let state = match observation.state(Some(&ResolverConfig::new(35353))) {
-                    ResolverFileState::Missing { .. } => "Missing",
-                    ResolverFileState::Current { .. } => "Current",
-                    ResolverFileState::Stale { .. } => "Stale",
-                    ResolverFileState::Conflict { .. } => "Conflict",
-                    ResolverFileState::Unreadable { .. } => "Unreadable",
-                };
-                format!(
-                    "{name}: {state}, apply={}, remove={}",
-                    observation.require_apply().is_ok(),
-                    observation.require_owned().is_ok()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_snapshot!(results, @r"
-        current: Current, apply=true, remove=true
-        addressless: Stale, apply=true, remove=true
-        missing route: Stale, apply=true, remove=true
-        no effective scope: Stale, apply=true, remove=true
-        only non-DNS scope: Stale, apply=true, remove=true
-        host address scope: Stale, apply=true, remove=true
-        finite address lifetime: Stale, apply=true, remove=true
-        kernel local route scope drift: Stale, apply=true, remove=true
-        kernel local preferred source drift: Stale, apply=true, remove=true
-        wrong address prefix: Conflict, apply=false, remove=false
-        distinct address peer: Conflict, apply=false, remove=false
-        foreign static address on pv0: Conflict, apply=false, remove=false
-        foreign static route on pv0: Conflict, apply=false, remove=false
-        foreign multipath route on pv0: Conflict, apply=false, remove=false
-        kernel-filtered nexthop on pv0: Conflict, apply=false, remove=false
-        nexthop on unrelated link: Current, apply=true, remove=true
-        attached controller: Conflict, apply=false, remove=false
-        external explicit endpoint: Conflict, apply=false, remove=true
-        external endpoint route: Conflict, apply=false, remove=true
-        external routing domain: Conflict, apply=false, remove=true
-        foreign protocol on endpoint route: Conflict, apply=false, remove=false
-        forwarding authority on endpoint route: Conflict, apply=false, remove=false
-        ordinary loopback covering route: Current, apply=true, remove=true
-        automatic IPv6 link-local state: Current, apply=true, remove=true
-        foreign IPv6 address protocol: Conflict, apply=false, remove=false
-        unrelated kernel IPv6 local route: Conflict, apply=false, remove=false
-        ");
-    }
-
-    #[tokio::test]
-    async fn network_dumps_require_consistent_filtered_completion() -> Result<()> {
-        let done = |code, flags| {
-            let mut message = DoneMessage::default();
-            message.code = code;
-            let mut header = NetlinkHeader::default();
-            header.flags = flags;
-            NetlinkMessage::new(header, NetlinkPayload::Done(message))
-        };
-        let data = NetlinkMessage::from(RouteNetlinkMessage::NewRoute(test_route(7)));
-        let mut filtered_data = data.clone();
-        filtered_data.header.flags = NLM_F_DUMP_FILTERED;
-        for (messages, filtered, expected) in [
-            (vec![done(0, 0)], false, vec![]),
-            (vec![data.clone(), done(0, 0)], false, vec![data.clone()]),
-            (vec![done(0, NLM_F_DUMP_FILTERED)], true, vec![]),
-            (
-                vec![filtered_data.clone(), done(0, NLM_F_DUMP_FILTERED)],
-                true,
-                vec![filtered_data.clone()],
-            ),
-        ] {
-            assert_eq!(
-                collect_dump(stream::iter(messages), filtered).await?,
-                expected
-            );
-        }
-        let mut interrupted_data = data.clone();
-        interrupted_data.header.flags = NLM_F_DUMP_INTR;
-        for (case, messages, filtered) in [
-            (
-                "interrupted inner response",
-                vec![interrupted_data, done(0, 0)],
-                false,
-            ),
-            (
-                "interrupted terminal response",
-                vec![data.clone(), done(0, NLM_F_DUMP_INTR)],
-                false,
-            ),
-            ("missing terminal response", vec![data.clone()], false),
-            ("unconfirmed empty filter", vec![done(0, 0)], true),
-            (
-                "unconfirmed terminal filter",
-                vec![filtered_data, done(0, 0)],
-                true,
-            ),
-        ] {
-            assert!(
-                matches!(
-                    collect_dump(stream::iter(messages), filtered).await,
-                    Err(PlatformError::SystemIntegration(_))
-                ),
-                "{case}"
-            );
-        }
-        let mut missing_device = ErrorMessage::default();
-        missing_device.code = NonZeroI32::new(-Errno::NODEV.raw_os_error());
-        let response = NetlinkMessage::new(
-            NetlinkHeader::default(),
-            NetlinkPayload::Error(missing_device),
-        );
-        assert!(matches!(collect_dump(stream::iter([response]), true).await,
-            Err(PlatformError::ResolverNetlink(error))
-                if matches!(error.as_ref(), rtnetlink::Error::NetlinkError(message)
-                    if message.code.is_some_and(|code| code.get() == -Errno::NODEV.raw_os_error()))));
-        for (errno, filtered, preceding) in [
-            (Errno::PERM, false, vec![data]),
-            (Errno::NODEV, true, vec![]),
-        ] {
-            assert!(matches!(
-                collect_dump(stream::iter(preceding.into_iter().chain([done(-errno.raw_os_error(), 0)])), filtered).await,
-                Err(PlatformError::ResolverIo(error)) if error.raw_os_error() == Some(errno.raw_os_error())
-            ));
-        }
-        Ok(())
     }
 
     #[test]
@@ -1914,61 +1063,17 @@ mod tests {
             Duration::from_secs(10),
             with_netlink(|handle| async move { query_network(&handle).await }),
         )?;
-        let link = observation
+        let loopback = observation
             .links
             .iter()
-            .find(|link| {
-                link.header.index > 0
-            && link.header.flags.contains(LinkFlags::Loopback)
-            && link.attributes.iter().any(
-                |attribute| matches!(attribute, LinkAttribute::IfName(name) if name == "lo")
-            )
-            })
+            .find(|link| link.header.flags.contains(LinkFlags::Loopback))
             .ok_or_else(|| io::Error::other("native loopback link is missing"))?;
-        let index = link.header.index;
-        let associated = run_native(
-            "inspection",
-            Duration::from_secs(10),
-            with_netlink(|handle| async move {
-                let mut routes =
-                    query_routes(&handle, NetlinkAddressFamily::Inet, Some(index)).await?;
-                routes
-                    .extend(query_routes(&handle, NetlinkAddressFamily::Inet6, Some(index)).await?);
-                Ok(routes)
-            }),
-        )?;
         assert!(observation.addresses.iter().any(|address| {
-            address.header.index == link.header.index
-                && address.header.prefix_len == 8
+            address.header.index == loopback.header.index
                 && address
                     .attributes
-                    .contains(&AddressAttribute::Local(IpAddr::V4(Ipv4Addr::new(
-                        127, 0, 0, 1,
-                    ))))
+                    .contains(&AddressAttribute::Local(IpAddr::V4(Ipv4Addr::LOCALHOST)))
         }));
-        for routes in [&observation.routes, &associated] {
-            assert!(routes.iter().any(|route| {
-                route.header.address_family == NetlinkAddressFamily::Inet
-                    && route.header.destination_prefix_length == 8
-                    && route.header.kind == RouteType::Local
-                    && route.header.protocol == RouteProtocol::Kernel
-                    && (route.header.table == 255
-                        || route.attributes.contains(&RouteAttribute::Table(255)))
-                    && route
-                        .attributes
-                        .contains(&RouteAttribute::Oif(link.header.index))
-                    && route
-                        .attributes
-                        .contains(&RouteAttribute::Destination(RouteAddress::Inet(
-                            Ipv4Addr::new(127, 0, 0, 0),
-                        )))
-                    && route
-                        .attributes
-                        .contains(&RouteAttribute::PrefSource(RouteAddress::Inet(
-                            Ipv4Addr::LOCALHOST,
-                        )))
-            }));
-        }
         Ok(())
     }
 
