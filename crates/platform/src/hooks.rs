@@ -56,6 +56,8 @@ pub enum HookError {
         original: Box<HookError>,
         cleanup: io::Error,
     },
+    #[error("hook process-group cleanup failed: {0}")]
+    CleanupFailed(#[source] io::Error),
     #[error("Project hooks are unsupported on this platform")]
     Unsupported,
 }

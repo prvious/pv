@@ -741,6 +741,15 @@ impl Database {
     }
 
     pub fn start_job(&mut self, kind: &str, scope: &str) -> Result<JobRecord, StateError> {
+        self.start_job_with_summary(kind, scope, None)
+    }
+
+    pub fn start_job_with_summary(
+        &mut self,
+        kind: &str,
+        scope: &str,
+        summary: Option<&str>,
+    ) -> Result<JobRecord, StateError> {
         let started_at = timestamp()?;
 
         let transaction = self
@@ -748,8 +757,8 @@ impl Database {
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let id = next_job_id(&transaction)?;
         transaction.execute(
-            "INSERT INTO jobs (id, kind, scope, status, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, kind, scope, JobStatus::Running.as_str(), started_at],
+            "INSERT INTO jobs (id, kind, scope, status, started_at, summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, kind, scope, JobStatus::Running.as_str(), started_at, summary],
         )?;
 
         let job = JobRecord {
@@ -759,7 +768,7 @@ impl Database {
             status: JobStatus::Running,
             started_at,
             finished_at: None,
-            summary: None,
+            summary: summary.map(str::to_owned),
             error: None,
         };
         transaction.commit()?;
@@ -922,7 +931,9 @@ impl Database {
             if updated > 0 {
                 for (id, kind, scope) in running_jobs {
                     transaction.execute(
-                        "UPDATE jobs SET status = ?1, finished_at = ?2, error = ?3 WHERE id = ?4",
+                        "UPDATE jobs SET status = ?1, finished_at = ?2,
+                         error = CASE WHEN kind = 'hooks' AND summary IS NOT NULL
+                             THEN ?3 || '; ' || summary ELSE ?3 END WHERE id = ?4",
                         params![JobStatus::Failed.as_str(), finished_at, error, id],
                     )?;
                     let subject = JobDiagnosticSubject::from_job_identity(&kind, &scope);
@@ -1006,6 +1017,9 @@ impl Database {
             {
                 continue;
             }
+            if !self.hook_failure_is_linked(&outcome.subject)? {
+                continue;
+            }
             unresolved.push(UnresolvedJobFailure {
                 job: (*job).clone(),
                 subject: outcome.subject,
@@ -1024,10 +1038,28 @@ impl Database {
             {
                 continue;
             }
-            unresolved.push(UnresolvedJobFailure { job, subject });
+            if self.hook_failure_is_linked(&subject)? {
+                unresolved.push(UnresolvedJobFailure { job, subject });
+            }
         }
 
         Ok(unresolved)
+    }
+
+    fn hook_failure_is_linked(&self, subject: &JobDiagnosticSubject) -> Result<bool, StateError> {
+        if let JobDiagnosticSubject::Other { kind, scope } = subject
+            && kind == "hooks"
+        {
+            let components = scope.split(':').collect::<Vec<_>>();
+            let project_id = match components.as_slice() {
+                ["project", project_id] | ["worktree", project_id, _] => Some(*project_id),
+                _ => None,
+            };
+            if let Some(project_id) = project_id {
+                return Ok(self.project_by_id(project_id)?.is_some());
+            }
+        }
+        Ok(true)
     }
 
     fn job_diagnostic_outcomes(&self) -> Result<Vec<JobDiagnosticOutcome>, StateError> {
@@ -1513,10 +1545,11 @@ impl Database {
             })
     }
 
+    /// Records a full Project apply and reports whether this was its first successful apply.
     pub fn finalize_project_reconciliation(
         &mut self,
         mut input: ProjectReconciliationStateInput,
-    ) -> Result<ProjectRecord, StateError> {
+    ) -> Result<(ProjectRecord, bool), StateError> {
         input.link.desired_php_track = input
             .php_runtime
             .as_ref()
@@ -1563,12 +1596,12 @@ impl Database {
             &input.env_warnings,
         )?;
         // The first full success ends a discovered worktree's wait to be served.
-        transaction.execute(
+        let first_reconciled = transaction.execute(
             "UPDATE projects
-            SET first_reconciled_at = COALESCE(first_reconciled_at, ?1)
-            WHERE id = ?2",
+            SET first_reconciled_at = ?1
+            WHERE id = ?2 AND first_reconciled_at IS NULL",
             params![timestamp()?, project.id],
-        )?;
+        )? > 0;
         let project =
             project_by_id_in_transaction(&transaction, &project.id)?.ok_or_else(|| {
                 StateError::ProjectNotFound {
@@ -1577,7 +1610,7 @@ impl Database {
             })?;
         transaction.commit()?;
 
-        Ok(project)
+        Ok((project, first_reconciled))
     }
 
     /// Discovered worktree Projects that haven't had a full reconciliation succeed yet. They get no

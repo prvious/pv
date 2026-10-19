@@ -83,6 +83,68 @@ fn finished_foreground_jobs_are_atomic_with_their_diagnostic_outcomes() -> Resul
 }
 
 #[test]
+fn hook_failures_keep_queued_log_paths_and_ignore_unlinked_subjects() -> Result<()> {
+    let temporary = tempdir()?;
+    let paths = PvPaths::for_home(temporary.path());
+    let mut database = Database::open(&paths)?;
+    let source = link_test_project(&mut database, temporary.path(), "source", "source.test")?;
+    let project_scope = format!("project:{}", source.id);
+    let worktree_scope = format!("worktree:{}:tree", source.id);
+    let project = database.start_job_with_summary(
+        "hooks",
+        &project_scope,
+        Some("setup hooks queued (log: <project-log>)"),
+    )?;
+    let worktree = database.start_job_with_summary(
+        "hooks",
+        &worktree_scope,
+        Some("prepare hooks queued (log: <worktree-log>)"),
+    )?;
+    let absent = database.start_job("hooks", "project:absent")?;
+    database.fail_running_jobs("daemon interrupted")?;
+    assert_eq!(
+        database.job(&absent.id)?.map(|job| job.status),
+        Some(JobStatus::Failed)
+    );
+    let before = database
+        .unresolved_job_failures()?
+        .into_iter()
+        .map(|failure| (failure.job.kind, failure.job.error))
+        .collect::<Vec<_>>();
+    let success = database.start_job("hooks", &project_scope)?;
+    database.complete_job_with_coverage(
+        &success.id,
+        "hooks completed",
+        &[JobDiagnosticSubject::Other {
+            kind: "hooks".to_owned(),
+            scope: project_scope,
+        }],
+    )?;
+    assert_eq!(database.unresolved_job_failures()?.len(), 1);
+    database.unlink_project(&source.id)?;
+    assert!(database.unresolved_job_failures()?.is_empty());
+    assert!(database.job(&project.id)?.is_some());
+    assert!(database.job(&worktree.id)?.is_some());
+    assert_debug_snapshot!(before, @r#"
+    [
+        (
+            "hooks",
+            Some(
+                "daemon interrupted; prepare hooks queued (log: <worktree-log>)",
+            ),
+        ),
+        (
+            "hooks",
+            Some(
+                "daemon interrupted; setup hooks queued (log: <project-log>)",
+            ),
+        ),
+    ]
+    "#);
+    Ok(())
+}
+
+#[test]
 fn job_insertions_wait_for_a_writer_before_reading_the_next_id() -> Result<()> {
     let temporary = tempdir()?;
     let paths = PvPaths::for_home(temporary.path());
@@ -2650,21 +2712,23 @@ fn held_worktrees_demand_no_php_worker_until_their_first_reconciliation() -> Res
         database.php_runtime_is_demanded("8.4")?,
     );
 
-    for _reconciliation in 0..2 {
-        database.finalize_project_reconciliation(ProjectReconciliationStateInput {
-            project_id: worktree.id.clone(),
-            link: link.clone(),
-            mode: ProjectMode::Served,
-            php_runtime: Some(ProjectPhpRuntimeInput {
-                track: "8.4".to_string(),
-                requested_extensions: Vec::new(),
-                loaded_extensions: Vec::new(),
-                ignored_extensions: Vec::new(),
-            }),
-            env_status: ProjectEnvObservedStatus::Rendered,
-            env_message: None,
-            env_warnings: Vec::new(),
-        })?;
+    for expected_first in [true, false] {
+        let (_project, first_reconciled) =
+            database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+                project_id: worktree.id.clone(),
+                link: link.clone(),
+                mode: ProjectMode::Served,
+                php_runtime: Some(ProjectPhpRuntimeInput {
+                    track: "8.4".to_string(),
+                    requested_extensions: Vec::new(),
+                    loaded_extensions: Vec::new(),
+                    ignored_extensions: Vec::new(),
+                }),
+                env_status: ProjectEnvObservedStatus::Rendered,
+                env_message: None,
+                env_warnings: Vec::new(),
+            })?;
+        assert_eq!(first_reconciled, expected_first);
     }
     let released = (
         database.held_project_ids()?,

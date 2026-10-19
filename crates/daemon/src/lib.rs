@@ -5,6 +5,7 @@ mod error;
 pub mod gateway;
 pub mod gateway_config;
 mod health;
+mod hooks;
 mod ipc;
 mod jobs;
 mod managed_resources;

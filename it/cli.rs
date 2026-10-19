@@ -34,6 +34,8 @@ use state::{
 #[cfg(target_os = "macos")]
 use state::{JobStatus, LinkDiscoveredProjectInput, ProjectMode, RuntimeLifecycleLock};
 use support::{create_dir, create_laravel_init_fixture, run_pv_in, write_file};
+#[cfg(target_os = "macos")]
+use tokio::time::{sleep, timeout};
 
 mod support;
 
@@ -610,6 +612,148 @@ fn project_link_refuses_queued_daemon_hooks_unless_skipped() -> Result<()> {
         assert_debug_snapshot!((refused, without_hooks, skipped))
     });
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn project_link_during_daemon_prepare_stays_ordinary_after_prepare_finishes() -> Result<()> {
+    let directory = tempdir()?;
+    let root = state::fs::canonicalize(directory.path())?;
+    let home = root.join("home");
+    let paths = PvPaths::for_home(&home);
+    let source_path = root.join("source");
+    let project = root.join("feature");
+    let entry = source_path.join(".git/worktrees/feature");
+    create_dir(&entry)?;
+    create_dir(&project)?;
+    write_file(&source_path.join("pv.yml"), "serve: false\n")?;
+    let source = Database::open(&paths)?
+        .link_project_with_mode(
+            state::LinkProjectInput {
+                path: source_path.clone(),
+                original_path: source_path.clone(),
+                primary_hostname: "source.test".to_owned(),
+                config_path: source_path.join("pv.yml"),
+                desired_php_track: None,
+            },
+            state::ProjectMode::ResourceOnly,
+        )?
+        .project;
+    write_file(&entry.join("gitdir"), &format!("{project}/.git\n"))?;
+    write_file(&project.join(".git"), &format!("gitdir: {entry}\n"))?;
+    let prepare = "if [ -n \"${PV_SOURCE_PATH:-}\" ]; then touch daemon-started; attempt=0; while [ ! -f release ]; do [ \"$attempt\" -lt 1500 ] || exit 91; attempt=$((attempt + 1)); sleep 0.1; done; else printf terminal > terminal-prepare; fi";
+    write_file(
+        &project.join("pv.yml"),
+        &format!(
+            "serve: false\nhooks:\n  prepare:\n    - {}\n",
+            serde_json::to_string(prepare)?
+        ),
+    )?;
+    pv_fake::seed_dns_port(&paths)?;
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    let outcome = async {
+        timeout(Duration::from_secs(20), async {
+            while !project.join("daemon-started").exists() {
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await?;
+        // Keep the daemon prepare held while startup's unrelated reconciliation drains.
+        timeout(Duration::from_secs(20), async {
+            while Database::open(&paths)?
+                .job("job_000001")?
+                .is_some_and(|job| job.status == JobStatus::Running)
+            {
+                sleep(Duration::from_millis(25)).await;
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+        .await??;
+        let terminal_project = project.clone();
+        let terminal_home = home.clone();
+        let output = tokio::task::spawn_blocking(move || {
+            run_hook_pv(&["link"], &terminal_project, &terminal_home)
+        })
+        .await??;
+        assert_eq!(output.code, Some(0), "{output:?}");
+        assert_eq!(
+            state::fs::read_to_string(&project.join("terminal-prepare"))?,
+            "terminal"
+        );
+        let ordinary = Database::open(&paths)?
+            .project_by_path(&project)?
+            .ok_or_else(|| anyhow::anyhow!("ordinary Project missing"))?;
+        assert!(Database::open(&paths)?.discovered_projects()?.is_empty());
+        // A later config change must not let the outstanding daemon prepare run setup for an
+        // ordinary Project, even after the terminal has released the directory.
+        write_file(
+            &project.join("pv.yml"),
+            "serve: false\nhooks:\n  setup:\n    - touch unexpected-daemon-setup\n",
+        )?;
+        write_file(&project.join("release"), "")?;
+        timeout(Duration::from_secs(20), async {
+            loop {
+                let database = Database::open(&paths)?;
+                if database.recent_jobs()?.iter().any(|job| {
+                    job.kind == "hooks"
+                        && job.scope.starts_with("worktree:")
+                        && job.status == JobStatus::Succeeded
+                }) {
+                    break Ok::<(), anyhow::Error>(());
+                }
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await??;
+        for _ in 0..2 {
+            let accepted = daemon::submit_job(paths.clone(), "reconcile", "system", false).await?;
+            timeout(Duration::from_secs(20), async {
+                loop {
+                    if Database::open(&paths)?
+                        .job(&accepted.id)?
+                        .is_some_and(|job| job.status != JobStatus::Running)
+                    {
+                        break Ok::<(), anyhow::Error>(());
+                    }
+                    sleep(Duration::from_millis(25)).await;
+                }
+            })
+            .await??;
+        }
+        let database = Database::open(&paths)?;
+        assert_eq!(
+            database
+                .project_by_path(&project)?
+                .map(|project| project.id),
+            Some(ordinary.id)
+        );
+        assert!(database.discovered_projects()?.is_empty());
+        assert!(!project.join("unexpected-daemon-setup").exists());
+        assert_eq!(database.projects()?.len(), 2);
+        assert!(database.project_by_id(&source.id)?.is_some());
+        let discovered = database.discovered_projects()?;
+        let mut settings = insta::Settings::clone_current();
+        settings.add_filter(r"job_[0-9]+", "<reconciliation-job>");
+        settings.bind(|| {
+            hook_snapshot(&root, || {
+                assert_debug_snapshot!((
+                    output,
+                    discovered,
+                    project.join("unexpected-daemon-setup").exists()
+                ))
+            })
+        });
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    match (outcome, daemon.shutdown().await) {
+        (outcome, Ok(())) => outcome,
+        (Ok(()), Err(error)) => Err(error.into()),
+        (Err(original), Err(cleanup)) => Err(anyhow::anyhow!(
+            "{original:#}; daemon shutdown also failed: {cleanup}"
+        )),
+    }
 }
 
 #[cfg(target_os = "macos")]

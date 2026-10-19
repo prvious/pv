@@ -12,6 +12,7 @@ use state::{
     PvPaths, StateError,
 };
 
+use crate::hooks::DaemonHooks;
 use crate::{DaemonError, structured_log};
 
 /// The PV-owned file in a worktree's Git entry directory that holds its worktree ID.
@@ -111,22 +112,63 @@ pub(crate) fn plan_worktree_changes(database: &Database) -> Result<WorktreePlan,
     Ok(plan)
 }
 
-/// Applies discovery's changes. Runs inside system reconciliation, which holds the jobs lock. A
-/// change that fails is logged and comes back on the next scan.
+pub(crate) fn plan_worktree_changes_with_hooks(
+    database: &Database,
+    hooks: Option<&DaemonHooks>,
+) -> Result<WorktreePlan, DaemonError> {
+    let mut plan = plan_worktree_changes(database)?;
+    if let Some(hooks) = hooks {
+        plan.changes.retain(|change| {
+            !matches!(change,
+            WorktreeChange::Link { source_project_id, worktree_id: Some(worktree_id), .. }
+                if hooks.prepare_is_blocked(source_project_id, worktree_id))
+        });
+    }
+    Ok(plan)
+}
+
+#[cfg(test)]
+pub(crate) fn discover_worktrees(paths: &PvPaths) -> Result<(), DaemonError> {
+    discover_worktrees_with_hooks(paths, None)
+}
+
+/// Applies discovery's changes while system reconciliation holds the jobs lock. Commands are
+/// handed to the independent runner; a discovery change that fails is logged and retried.
 // ponytail: a change that keeps failing, such as an unwritable `.git` directory, makes every
 // health scan request system reconciliation; give failed changes a backoff if that shows up.
-pub(crate) fn discover_worktrees(paths: &PvPaths) -> Result<(), DaemonError> {
+pub(crate) fn discover_worktrees_with_hooks(
+    paths: &PvPaths,
+    hooks: Option<&DaemonHooks>,
+) -> Result<(), DaemonError> {
     let mut database = Database::open(paths)?;
+    if let Some(hooks) = hooks {
+        hooks.forget_linked_prepares(&database)?;
+    }
     // The health scan reports skipped sources every 30 seconds.
-    let plan = plan_worktree_changes(&database)?;
+    let plan = plan_worktree_changes_with_hooks(&database, hooks)?;
     for change in plan.changes {
         let subject = change_subject(&change).to_string();
-        if let Err(error) = apply_change(paths, &mut database, change) {
+        if let Err(error) = apply_change(paths, &mut database, change, hooks) {
             structured_log::worktree_discovery_failed(paths, &subject, &error.to_string());
         }
     }
 
     Ok(())
+}
+
+pub(crate) fn registered_worktree_path(
+    source: &Utf8Path,
+    path: &Utf8Path,
+    worktree_id: &str,
+) -> Result<bool, DaemonError> {
+    // An unavailable source is not evidence of removal, and discovery leaves it alone too.
+    let Some(worktrees) = source_worktrees(source)? else {
+        return Ok(true);
+    };
+    Ok(worktrees.iter().any(|worktree| {
+        worktree.worktree_id.as_deref() == Some(worktree_id)
+            || (worktree.worktree_id.is_none() && worktree.path == path)
+    }))
 }
 
 fn plan_source_changes(
@@ -320,6 +362,7 @@ fn apply_change(
     paths: &PvPaths,
     database: &mut Database,
     change: WorktreeChange,
+    hooks: Option<&DaemonHooks>,
 ) -> Result<(), DaemonError> {
     match change {
         WorktreeChange::Link {
@@ -337,19 +380,34 @@ fn apply_change(
             // If either can't be read, the worktree waits for the next scan.
             let config_file = ProjectConfigFile::read_from_root(&path)?;
             copy_source_env_file(database, &source_project_id, &path, &config_file)?;
+            if let Some(hooks) = hooks
+                && !config_file.config.hooks.prepare.is_empty()
+                && !hooks.is_prepared(&source_project_id, &worktree_id)
+            {
+                hooks.queue_prepare(
+                    &source_project_id,
+                    &worktree_id,
+                    &path,
+                    config_file.config.hooks.prepare,
+                )?;
+                return Ok(());
+            }
             let mode = if config_file.config.serve {
                 ProjectMode::Served
             } else {
                 ProjectMode::ResourceOnly
             };
             database.link_discovered_project(LinkDiscoveredProjectInput {
-                source_project_id,
-                worktree_id,
+                source_project_id: source_project_id.clone(),
+                worktree_id: worktree_id.clone(),
                 worktree_name,
                 path,
                 config_path: config_file.path,
                 mode,
             })?;
+            if let Some(hooks) = hooks {
+                hooks.forget_prepare(&source_project_id, &worktree_id);
+            }
         }
         WorktreeChange::RestoreId {
             entry_dir,
@@ -368,6 +426,17 @@ fn apply_change(
             database.move_discovered_project(&project_id, &path, &config_path)?;
         }
         WorktreeChange::Remove { project_id } => {
+            if let Some(discovered) = database
+                .discovered_projects()?
+                .into_iter()
+                .find(|project| project.project_id == project_id)
+            {
+                crate::hooks::delete_log(
+                    &paths
+                        .worktree_hook_log(&discovered.source_project_id, &discovered.worktree_id),
+                )?;
+            }
+            crate::hooks::delete_log(&paths.project_hook_log(&project_id))?;
             match state::fs::delete_dir_all(&paths.project_tls_dir(&project_id)) {
                 Ok(()) => {}
                 Err(StateError::Filesystem { source, .. })

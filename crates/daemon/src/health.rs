@@ -14,6 +14,7 @@ use tokio::time::{Instant, timeout};
 
 use crate::DaemonError;
 use crate::gateway::{persisted_gateway_is_ready, worker_readiness_check};
+use crate::hooks::DaemonHooks;
 use crate::managed_resources::{ManagedResourceReadiness, ManagedResourceRuntimeCatalog};
 use crate::project_env::{project_tls_artifact_exists, project_tls_files_are_current};
 use crate::reconciliation::ReconciliationScope;
@@ -268,6 +269,7 @@ fn runtime_retry_delay(attempts: usize) -> Duration {
 pub(crate) async fn scan_runtime_health(
     paths: PvPaths,
     runtime_catalog: Option<Arc<ManagedResourceRuntimeCatalog>>,
+    hooks: Option<DaemonHooks>,
 ) -> Result<RuntimeHealthScan, DaemonError> {
     let runtime_catalog = match runtime_catalog {
         Some(runtime_catalog) => runtime_catalog,
@@ -276,7 +278,7 @@ pub(crate) async fn scan_runtime_health(
     let collect_paths = paths.clone();
     let collect_catalog = Arc::clone(&runtime_catalog);
     let collected = tokio::task::spawn_blocking(move || {
-        collect_runtime_health_probes(&collect_paths, &collect_catalog)
+        collect_runtime_health_probes(&collect_paths, &collect_catalog, hooks.as_ref())
     })
     .await??;
     let inspected = stream::iter(collected.probes)
@@ -310,6 +312,7 @@ struct CollectedRuntimeHealth {
 fn collect_runtime_health_probes(
     paths: &PvPaths,
     runtime_catalog: &ManagedResourceRuntimeCatalog,
+    hooks: Option<&DaemonHooks>,
 ) -> Result<CollectedRuntimeHealth, DaemonError> {
     let Some(database) = Database::open_read_only(paths)? else {
         return Ok(CollectedRuntimeHealth {
@@ -466,7 +469,7 @@ fn collect_runtime_health_probes(
     };
     // System reconciliation applies worktree changes. A source whose worktrees can't be read is
     // reported here, on every scan, until it can.
-    match crate::worktrees::plan_worktree_changes(&database) {
+    match crate::worktrees::plan_worktree_changes_with_hooks(&database, hooks) {
         Ok(plan) => {
             if !plan.changes.is_empty() {
                 maintenance_scopes.push(ReconciliationScope::System);
@@ -1110,6 +1113,7 @@ mod tests {
         let scan = scan_runtime_health(
             paths,
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+            None,
         )
         .await?;
 
@@ -1146,6 +1150,7 @@ mod tests {
         let scan = scan_runtime_health(
             paths,
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+            None,
         )
         .await?;
 
@@ -1178,6 +1183,7 @@ mod tests {
         let scan = scan_runtime_health(
             paths,
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+            None,
         )
         .await?;
 
@@ -1229,6 +1235,7 @@ mod tests {
         let scan = scan_runtime_health(
             paths.clone(),
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+            None,
         )
         .await?;
 
@@ -1305,6 +1312,7 @@ mod tests {
         let scan_result = scan_runtime_health(
             paths.clone(),
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+            None,
         )
         .await;
         let cleanup_result = healthy_process.stop(Duration::from_secs(1)).await;
@@ -1351,6 +1359,7 @@ mod tests {
         let unrecorded_scan = scan_runtime_health(
             paths.clone(),
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+            None,
         )
         .await?;
         record_applied_fixture_config(&supervisor, &spec, "sha256:v1:applied").await?;
@@ -1359,12 +1368,14 @@ mod tests {
         let replacement_scan = scan_runtime_health(
             paths.clone(),
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+            None,
         )
         .await?;
         supervisor.record_restored_config(&spec, "sha256:v1:applied")?;
         let unapplied_scan = scan_runtime_health(
             paths.clone(),
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+            None,
         )
         .await?;
         record_applied_fixture_config(&supervisor, &spec, "sha256:v1:staged").await?;
@@ -1380,6 +1391,7 @@ mod tests {
         let stale_scan_result = scan_runtime_health(
             paths.clone(),
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+            None,
         )
         .await;
         let cleanup_result = process.stop(Duration::from_secs(1)).await;
@@ -1445,6 +1457,7 @@ mod tests {
         let scan_result = scan_runtime_health(
             paths.clone(),
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+            None,
         )
         .await;
         let broken_cleanup = broken_process.stop(Duration::from_secs(1)).await;
@@ -1517,7 +1530,7 @@ mod tests {
         let config_path = paths.resource_runtime_config("redis", "8.2");
         let data_dir = paths.resource_data_dir("redis", "8.2");
 
-        let scan = scan_runtime_health(paths.clone(), None).await?;
+        let scan = scan_runtime_health(paths.clone(), None, None).await?;
 
         assert!(scan.observations.iter().any(|observation| {
             observation.subject

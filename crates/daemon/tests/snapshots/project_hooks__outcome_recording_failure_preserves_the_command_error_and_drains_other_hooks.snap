@@ -1,0 +1,5 @@
+---
+source: crates/daemon/tests/project_hooks.rs
+expression: error.to_string()
+---
+"prepare: hook command `touch started; attempt=0; while [ ! -f release ]; do [ \"$attempt\" -lt 1500 ] || exit 91; attempt=$((attempt + 1)); sleep 0.1; done; exit 23` exited with exit status: 23 (log: <fixture>/home/.pv/logs/hooks/worktree-<source>-<id>.log); fix the cause and run `pv daemon:restart`; hook outcome recording failed: SQLite error: hook outcome fixture; additionally failed to clean up runtime `Project hooks` transaction: prepare: hook run interrupted (log: <fixture>/home/.pv/logs/hooks/worktree-<source>-<id>.log); fix the cause and run `pv daemon:restart`; hook outcome recording failed: SQLite error: hook outcome fixture"

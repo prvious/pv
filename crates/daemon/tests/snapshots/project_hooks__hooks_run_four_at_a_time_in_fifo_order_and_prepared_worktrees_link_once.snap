@@ -1,0 +1,34 @@
+---
+source: crates/daemon/tests/project_hooks.rs
+expression: "(discovered.len(), fixture.hook_jobs()?.len(), runs)"
+---
+(
+    6,
+    12,
+    [
+        (
+            "prepare\n",
+            "setup\n",
+        ),
+        (
+            "prepare\n",
+            "setup\n",
+        ),
+        (
+            "prepare\n",
+            "setup\n",
+        ),
+        (
+            "prepare\n",
+            "setup\n",
+        ),
+        (
+            "prepare\n",
+            "setup\n",
+        ),
+        (
+            "prepare\n",
+            "setup\n",
+        ),
+    ],
+)

@@ -314,7 +314,7 @@ fn finish_cleanup<T>(
     });
     match (result, cleanup) {
         (result, Ok(())) => result,
-        (Ok(_), Err(error)) => Err(error.into()),
+        (Ok(_), Err(error)) => Err(HookError::CleanupFailed(error)),
         (Err(original), Err(cleanup)) => Err(HookError::Cleanup {
             original: Box::new(original),
             cleanup,
@@ -454,6 +454,12 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::{HookCommand, HookProcess, group_is_running};
     use super::{HookError, finish_cleanup, parse_environment};
+
+    #[test]
+    fn cleanup_failure_after_success_remains_distinguishable() {
+        let result = finish_cleanup(Ok(()), Err(io::Error::other("could not stop group")));
+        assert!(matches!(result, Err(HookError::CleanupFailed(_))));
+    }
 
     #[test]
     fn capture_drops_shell_bookkeeping_without_changing_values() -> anyhow::Result<()> {

@@ -31,6 +31,7 @@ pub(crate) struct ProjectEnvReconciliationSummary {
     message: &'static str,
     requested_php_extensions: bool,
     recorded_tracks: BTreeSet<DemandedResourceTrack>,
+    pub(crate) first_reconciled: bool,
 }
 
 impl ProjectEnvReconciliationSummary {
@@ -796,6 +797,7 @@ async fn reconcile_loaded_project(
                 message: "project requirements recorded",
                 requested_php_extensions,
                 recorded_tracks,
+                first_reconciled: false,
             },
         ));
     }
@@ -817,7 +819,7 @@ async fn reconcile_loaded_project(
         context.as_ref(),
         runtime_warnings,
     )?;
-    finalize_project_reconciliation_state(
+    let first_reconciled = finalize_project_reconciliation_state(
         database,
         project,
         &config_file,
@@ -832,6 +834,7 @@ async fn reconcile_loaded_project(
             message: rendered.summary,
             requested_php_extensions,
             recorded_tracks: BTreeSet::new(),
+            first_reconciled,
         },
     ))
 }
@@ -1341,7 +1344,7 @@ fn finalize_project_reconciliation_state(
     env_status: ProjectEnvObservedStatus,
     env_message: &str,
     env_warnings: &[ProjectEnvObservedWarningInput],
-) -> Result<ProjectRecord, DaemonError> {
+) -> Result<bool, DaemonError> {
     let project =
         database
             .project_by_id(&project.id)?
@@ -1359,23 +1362,24 @@ fn finalize_project_reconciliation_state(
         loaded_extensions: runtime.loaded_extensions.clone(),
         ignored_extensions: runtime.ignored_extensions.clone(),
     });
-    let project = database.finalize_project_reconciliation(ProjectReconciliationStateInput {
-        project_id: project.id.clone(),
-        link: LinkProjectInput {
-            path: project.path.clone(),
-            original_path: project.original_path.clone(),
-            primary_hostname,
-            config_path: config_file.path.clone(),
-            desired_php_track: None,
-        },
-        mode,
-        php_runtime,
-        env_status,
-        env_message: Some(env_message.to_string()),
-        env_warnings: env_warnings.to_vec(),
-    })?;
+    let (_project, first_reconciled) =
+        database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+            project_id: project.id.clone(),
+            link: LinkProjectInput {
+                path: project.path.clone(),
+                original_path: project.original_path.clone(),
+                primary_hostname,
+                config_path: config_file.path.clone(),
+                desired_php_track: None,
+            },
+            mode,
+            php_runtime,
+            env_status,
+            env_message: Some(env_message.to_string()),
+            env_warnings: env_warnings.to_vec(),
+        })?;
 
-    Ok(project)
+    Ok(first_reconciled)
 }
 
 fn project_with_config_mode(project: &ProjectRecord, config: &ProjectConfig) -> ProjectRecord {

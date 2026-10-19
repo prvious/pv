@@ -3,6 +3,10 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::{Utf8TempDir, tempdir};
 use state::{Database, LinkProjectInput, ProjectRecord, PvPaths};
 
+#[cfg(target_os = "macos")]
+use crate::hooks::DaemonHooks;
+#[cfg(target_os = "macos")]
+use crate::worktrees::discover_worktrees_with_hooks;
 use crate::worktrees::{WorktreeChange, discover_worktrees, plan_worktree_changes};
 
 /// A discovered Project's worktree ID, slug, hostname, and path under the fixture root.
@@ -496,16 +500,18 @@ async fn the_health_scan_requests_system_reconciliation_for_worktree_changes() -
         crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters()?,
     );
 
-    let before = crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog.clone()))
-        .await?
-        .maintenance_scopes;
+    let before =
+        crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog.clone()), None)
+            .await?
+            .maintenance_scopes;
     discover_worktrees(&fixture.paths)?;
-    let after = crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog.clone()))
-        .await?
-        .maintenance_scopes;
+    let after =
+        crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog.clone()), None)
+            .await?
+            .maintenance_scopes;
     // An entry without `gitdir` makes the source unreadable, which every scan reports.
     state::fs::ensure_user_dir(&repo.join(".git/worktrees/new"))?;
-    let unreadable = crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog))
+    let unreadable = crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog), None)
         .await?
         .errors;
 
@@ -520,5 +526,43 @@ async fn the_health_scan_requests_system_reconciliation_for_worktree_changes() -
             .collect::<Vec<_>>()
     );
 
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn the_health_scan_leaves_pending_prepares_alone_and_ordinary_links_forget_them() -> Result<()>
+{
+    let fixture = Fixture::new()?;
+    let repo = fixture.main_checkout("repo")?;
+    let source = fixture.link("repo", "repo.test")?;
+    let entry = fixture.add_worktree(&repo, "feat", "worktrees/feat")?;
+    state::fs::write_sensitive_file(&repo.join("pv.yml"), "serve: false\n")?;
+    state::fs::write_sensitive_file(
+        &fixture.root.join("worktrees/feat/pv.yml"),
+        "serve: false\nhooks:\n  prepare:\n    - echo pending\n",
+    )?;
+    let hooks = DaemonHooks::new(fixture.paths.clone());
+    discover_worktrees_with_hooks(&fixture.paths, Some(&hooks))?;
+    let worktree = worktree_id(&entry)?;
+    assert!(hooks.prepare_is_blocked(&source.id, &worktree));
+    let scan = crate::health::scan_runtime_health(
+        fixture.paths.clone(),
+        Some(std::sync::Arc::new(
+            crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters()?,
+        )),
+        Some(hooks.clone()),
+    )
+    .await?;
+    assert!(
+        !scan
+            .maintenance_scopes
+            .contains(&crate::ReconciliationScope::System)
+    );
+    fixture.link("worktrees/feat", "ordinary.test")?;
+    discover_worktrees_with_hooks(&fixture.paths, Some(&hooks))?;
+    assert!(!hooks.prepare_is_blocked(&source.id, &worktree));
+    assert!(!hooks.is_prepared(&source.id, &worktree));
+    assert!(fixture.discovered()?.is_empty());
     Ok(())
 }

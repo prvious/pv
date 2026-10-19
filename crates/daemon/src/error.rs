@@ -72,6 +72,14 @@ impl RuntimeReconciliationFailure {
 
 #[derive(Debug, Error)]
 pub enum DaemonError {
+    #[error("cannot clean up `{scope}` before its hook process group stops: {reason}")]
+    HookCleanup { scope: String, reason: String },
+    #[error("{outcome}; hook outcome recording failed: {recording}")]
+    HookOutcomeRecording {
+        outcome: String,
+        #[source]
+        recording: Box<StateError>,
+    },
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
