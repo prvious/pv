@@ -1,0 +1,206 @@
+name: Linux Acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Successful Artifact Recipes run containing every Linux resource for both CPUs
+        required: true
+        type: string
+  schedule:
+    - cron: "0 7 * * 1"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    outputs:
+      run_id: ${{ steps.source.outputs.run_id }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      - name: Select recipe run
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          source_run_id="$SOURCE_RUN_ID"
+          if [ -z "$source_run_id" ]; then
+            for candidate in $(gh run list --workflow artifact-recipes.yml --status success --limit 30 --json databaseId --jq '.[].databaseId'); do
+              names=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$candidate/artifacts" --jq '.artifacts[].name')
+              if [[ "$names" == *linux-amd64* && "$names" == *linux-arm64* ]]; then
+                source_run_id=$candidate
+                break
+              fi
+            done
+          fi
+          [[ "$source_run_id" =~ ^[0-9]+$ ]] || { echo 'No Linux recipe run is available'; exit 1; }
+          gh run view "$source_run_id" --json workflowName,conclusion --jq \
+            'select(.workflowName == "Artifact Recipes" and .conclusion == "success")' | grep -q .
+          printf 'run_id=%s\n' "$source_run_id" >> "$GITHUB_OUTPUT"
+
+  app:
+    needs: source
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu: [amd64, arm64]
+    runs-on: ${{ matrix.cpu == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      - name: Build local baseline image
+        run: |
+          df -h /
+          docker build -f scripts/linux/builder.Dockerfile -t pv-linux-builder .
+      - name: Build app, helper and release tools
+        env:
+          PV_COMMIT: ${{ github.sha }}
+          PV_BUILD_RUN_ID: ${{ github.run_id }}
+        run: |
+          git archive --format=tar.gz --output="$RUNNER_TEMP/source.tar.gz" HEAD
+          mkdir -p "$RUNNER_TEMP/inputs"
+          docker run --rm --init --user "$(id -u):$(id -g)" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/src,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP,dst=/work" --workdir /src \
+            --env HOME=/work/home --env CARGO_HOME=/work/cargo --env CARGO_TARGET_DIR=/work/target \
+            --env CARGO_BUILD_JOBS=2 --env PV_COMMIT --env PV_BUILD_RUN_ID \
+            --env PV_DEFAULT_ARTIFACT_MANIFEST_URL=https://artifacts.pv-linux.invalid/manifest.json \
+            --env PV_APP_SOURCE_ARCHIVE=/work/source.tar.gz --env PV_APP_OUT_DIR=/work/inputs \
+            pv-linux-builder sh scripts/linux/build-app.sh
+      - name: Verify Alpine installer refusal
+        run: |
+          "$RUNNER_TEMP/inputs/app/pv-release" generate-app-installer \
+            --records "$RUNNER_TEMP/inputs/app/records" --base-url https://artifacts.pv-linux.invalid \
+            --output "$RUNNER_TEMP/inputs/install.sh"
+          docker run --rm --mount "type=bind,src=$RUNNER_TEMP/inputs,dst=/inputs,readonly" alpine:3.22 sh -ec '
+            apk add --no-cache bash >/dev/null
+            set +e
+            output=$(bash /inputs/install.sh --yes --no-setup 2>&1)
+            status=$?
+            set -e
+            [ "$status" -ne 0 ] && printf "%s\n" "$output" | grep -F "glibc-based Linux distribution"
+          '
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: pv-linux-acceptance-app-${{ matrix.cpu }}
+          path: ${{ runner.temp }}/inputs/
+          if-no-files-found: error
+
+  acceptance:
+    needs: [source, app]
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        cpu: [amd64, arm64]
+        distro: [ubuntu-22.04, ubuntu-24.04, ubuntu-26.04, debian-12, debian-13, fedora-43, fedora-44, native]
+        include:
+          - distro: ubuntu-22.04
+            base: ubuntu:22.04
+          - distro: ubuntu-24.04
+            base: ubuntu:24.04
+          - distro: ubuntu-26.04
+            base: ubuntu:26.04
+          - distro: debian-12
+            base: debian:12
+          - distro: debian-13
+            base: debian:13
+          - distro: fedora-43
+            base: fedora:43
+          - distro: fedora-44
+            base: fedora:44
+    runs-on: ${{ matrix.cpu == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      - name: Download native app inputs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: pv-linux-acceptance-app-${{ matrix.cpu }}
+          path: ${{ runner.temp }}/inputs
+      - name: Download native resource inputs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.source.outputs.run_id }}
+          pattern: pv-artifact-recipes-*-linux-${{ matrix.cpu }}-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/inputs
+      - name: Prepare test files
+        run: |
+          chmod +x "$RUNNER_TEMP/inputs/app/pv-release"
+          mkdir -p "$RUNNER_TEMP/evidence"
+      - name: Build distro system image
+        if: ${{ matrix.distro != 'native' }}
+        env:
+          BASE: ${{ matrix.base }}
+        run: |
+          df -h /
+          docker build -f scripts/linux/test.Dockerfile --build-arg BASE="$BASE" -t pv-linux-acceptance .
+      - name: Run distro support gate
+        if: ${{ matrix.distro != 'native' }}
+        run: |
+          set -euo pipefail
+          docker run -d --name pv-linux-acceptance --privileged --cgroupns=private \
+            --tmpfs /run --tmpfs /run/lock --tmpfs /tmp:exec \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/src,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/inputs,dst=/inputs,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/evidence,dst=/evidence" pv-linux-acceptance
+          docker exec pv-linux-acceptance bash -ec '
+            for attempt in $(seq 1 60); do
+              [ -S /run/dbus/system_bus_socket ] && break
+              sleep 1
+            done
+            printf "nameserver 127.0.0.53\n" > /etc/resolv.conf
+            systemctl start systemd-resolved.service
+            if [ -f /usr/lib/systemd/system/NetworkManager.service ]; then systemctl start NetworkManager; fi
+            loginctl enable-linger dev
+            systemctl start user@1000.service
+            chown dev:dev /evidence
+            systemd-run --wait --pipe --collect --unit=pv-linux-acceptance --uid=dev \
+              --property=KillMode=control-group --property=RuntimeMaxSec=2400 --property=TimeoutStopSec=10 \
+              --working-directory=/src --setenv=HOME=/home/dev --setenv=SHELL=/bin/bash \
+              --setenv=XDG_RUNTIME_DIR=/run/user/1000 --setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
+              --setenv=PV_LINUX_ACCEPTANCE=1 --setenv=PV_ACCEPTANCE_INPUT_DIR=/inputs \
+              --setenv=PV_ACCEPTANCE_EVIDENCE_DIR=/evidence bash scripts/ci/linux-acceptance.sh
+          ' 2>&1 | tee "$RUNNER_TEMP/evidence/support-gate.log"
+      - name: Run native Ubuntu support gate
+        if: ${{ matrix.distro == 'native' }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y libnss3-tools systemd-resolved
+          sudo useradd --create-home --uid 2000 --shell /bin/bash pv-acceptance
+          printf 'pv-acceptance ALL=(ALL) NOPASSWD: ALL\n' | sudo tee /etc/sudoers.d/pv-acceptance >/dev/null
+          sudo chmod 0440 /etc/sudoers.d/pv-acceptance
+          sudo systemctl start systemd-resolved.service
+          sudo ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+          sudo loginctl enable-linger pv-acceptance
+          sudo systemctl start user@2000.service
+          sudo chown pv-acceptance:pv-acceptance "$RUNNER_TEMP/evidence"
+          sudo systemd-run --wait --pipe --collect --unit=pv-linux-acceptance --uid=pv-acceptance \
+            --property=KillMode=control-group --property=RuntimeMaxSec=2400 --property=TimeoutStopSec=10 \
+            --working-directory="$GITHUB_WORKSPACE" --setenv=HOME=/home/pv-acceptance --setenv=SHELL=/bin/bash \
+            --setenv=XDG_RUNTIME_DIR=/run/user/2000 --setenv=DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/2000/bus \
+            --setenv=PV_LINUX_ACCEPTANCE=1 --setenv="PV_ACCEPTANCE_INPUT_DIR=$RUNNER_TEMP/inputs" \
+            --setenv="PV_ACCEPTANCE_EVIDENCE_DIR=$RUNNER_TEMP/evidence" bash scripts/ci/linux-acceptance.sh \
+            2>&1 | tee "$RUNNER_TEMP/evidence/support-gate.log"
+      - name: Collect support gate logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: linux-acceptance-${{ matrix.distro }}-${{ matrix.cpu }}
+          path: ${{ runner.temp }}/evidence/
+          if-no-files-found: error
+      - name: Remove disposable container
+        if: ${{ always() && matrix.distro != 'native' }}
+        run: docker rm -f pv-linux-acceptance || true

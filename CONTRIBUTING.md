@@ -265,6 +265,18 @@ To add a supported distribution/CPU pair, update the acceptance matrix and
 `release/linux-supported-distributions.txt`, then pass every resource smoke
 and the system acceptance journey on that pair before listing it in DESIGN.md.
 
+For a complete Linux support run, first dispatch `artifact-recipes.yml` on the
+Linux branch with `resource=all`, `track=all`, and `platform=all-linux`. After
+that build succeeds, dispatch `linux-acceptance.yml` on the same stack with its
+`source_run_id`. These workflows build candidate files and upload test outputs;
+they do not publish releases or push builder images to a registry. Acceptance
+checks all resource tracks on Ubuntu 22.04/24.04/26.04, Debian 12/13 and Fedora
+43/44 for both native CPUs, plus native Ubuntu and Alpine installer refusal.
+Each pair uploads its result and step logs. The acceptance script runs only as
+an ordinary user on an explicitly opted-in disposable machine, with its own
+user manager and no existing PV installation.
+
+
 The daemon-registration system test requires a disposable user's real user
 manager and refuses an existing PV home, unit file, or loaded service. Build PV
 and the daemon examples first, then run as that user with its session-bus

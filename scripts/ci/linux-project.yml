@@ -1,0 +1,44 @@
+root: public
+php:
+  version: "8.5"
+  extensions: [redis]
+mysql:
+  version: "8.4"
+  env:
+    MYSQL_HOST: "${host}"
+    MYSQL_PORT: "${port}"
+    MYSQL_USERNAME: "${username}"
+    MYSQL_PASSWORD: "${password}"
+  allocations:
+    app-db:
+      env:
+        MYSQL_DATABASE: "${database}"
+postgres:
+  version: "18"
+  env:
+    POSTGRES_HOST: "${host}"
+    POSTGRES_PORT: "${port}"
+    POSTGRES_USERNAME: "${username}"
+    POSTGRES_PASSWORD: "${password}"
+  allocations:
+    app-db:
+      env:
+        POSTGRES_DATABASE: "${database}"
+        POSTGRES_URL: "${url}"
+redis:
+  version: "8.8"
+  env:
+    REDIS_HOST: "${host}"
+    REDIS_PORT: "${port}"
+mailpit:
+  version: "1"
+  env:
+    MAILPIT_DASHBOARD: "${dashboard_url}"
+rustfs:
+  version: "1"
+  env:
+    S3_ENDPOINT: "${endpoint}"
+  allocations:
+    uploads:
+      env:
+        AWS_BUCKET: "${bucket}"
