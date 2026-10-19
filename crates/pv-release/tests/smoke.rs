@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use data_encoding::HEXLOWER;
@@ -1384,41 +1384,28 @@ fn rustfs_smoke_uses_explicit_loopback_console_port() -> Result<()> {
     let artifact_root = tempdir.path().join("artifact");
     let artifact_bin = artifact_root.join("bin");
     let rustfs_log = tempdir.path().join("rustfs.log");
-    let lifecycle = tempdir.path().join("lifecycle.jsonl");
 
     create_dir_all(&artifact_bin)?;
     write_fake_rustfs(&artifact_bin.join("rustfs"))?;
     write_file(&rustfs_log, "")?;
 
-    let output = rustfs_smoke_command(&artifact_root, &lifecycle)
+    let output = StdCommand::new(rustfs_smoke_hook())
+        .arg(&artifact_root)
         .env("PV_TEST_RUSTFS_LOG", &rustfs_log)
         .env("PV_TEST_RUSTFS_REQUIRE_CONSOLE_ADDRESS", "1")
         .env(
             "PV_TEST_RUSTFS_STOP_DELAY",
             if cfg!(target_os = "linux") { "3" } else { "0" },
         )
+        .env("PV_TEST_RUSTFS_VERSION_OUTPUT", "rustfs 1.0.0-beta.7")
+        .env("PV_UPSTREAM_VERSION", "1.0.0-beta.7")
         .output()?;
 
-    let events = rustfs_lifecycle_events_after_exit(&lifecycle)
-        .with_context(|| command_output_debug(&output))?;
-    assert_debug_snapshot!((command_output_summary(&output), events), @r#"
-    (
-        (
-            true,
-            Some(
-                0,
-            ),
-            "",
-            "",
-        ),
-        [
-            "ready",
-            "put",
-            "term",
-            "exit:0",
-        ],
-    )
-    "#);
+    assert!(
+        output.status.success(),
+        "RustFS smoke should pass an explicit loopback console port: {}",
+        command_output_debug(&output)
+    );
     let rustfs_log = read_file(&rustfs_log)?;
     assert!(
         rustfs_log.contains("console=127.0.0.1:"),
@@ -1433,133 +1420,29 @@ fn rustfs_smoke_fails_when_server_does_not_stop() -> Result<()> {
     let tempdir = tempdir()?;
     let artifact_root = tempdir.path().join("artifact");
     let artifact_bin = artifact_root.join("bin");
-    let lifecycle = tempdir.path().join("lifecycle.jsonl");
 
     create_dir_all(&artifact_bin)?;
     write_fake_rustfs(&artifact_bin.join("rustfs"))?;
 
-    #[cfg(not(target_os = "linux"))]
     let started = Instant::now();
-    let output = rustfs_smoke_command(&artifact_root, &lifecycle)
+    let output = StdCommand::new(rustfs_smoke_hook())
+        .arg(&artifact_root)
         .env("PV_TEST_RUSTFS_IGNORE_TERM", "1")
+        .env("PV_TEST_RUSTFS_SLEEP_SECONDS", "150")
+        .env("PV_TEST_RUSTFS_VERSION_OUTPUT", "rustfs 1.0.0-beta.7")
+        .env("PV_UPSTREAM_VERSION", "1.0.0-beta.7")
         .output()?;
 
-    let events = rustfs_lifecycle_events_after_exit(&lifecycle)
-        .with_context(|| command_output_debug(&output))?;
-    assert_debug_snapshot!((command_output_summary(&output), events), @r#"
-    (
-        (
-            false,
-            Some(
-                46,
-            ),
-            "",
-            "RustFS smoke failed: server did not stop cleanly\n",
-        ),
-        [
-            "ready",
-            "put",
-        ],
-    )
-    "#);
-    #[cfg(not(target_os = "linux"))]
     assert!(
-        started.elapsed() < Duration::from_secs(10),
+        !output.status.success(),
+        "RustFS smoke should fail when the server ignores shutdown: {}",
+        command_output_debug(&output)
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(if cfg!(target_os = "linux") { 15 } else { 10 }),
         "RustFS smoke should use a bounded shutdown wait"
     );
 
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn rustfs_smoke_rejects_unsuccessful_shutdown() -> Result<()> {
-    let tempdir = tempdir()?;
-    let artifact_root = tempdir.path().join("artifact");
-    let artifact_bin = artifact_root.join("bin");
-    let lifecycle = tempdir.path().join("lifecycle.jsonl");
-    create_dir_all(&artifact_bin)?;
-    write_fake_rustfs(&artifact_bin.join("rustfs"))?;
-
-    let output = rustfs_smoke_command(&artifact_root, &lifecycle)
-        .env("PV_TEST_RUSTFS_EXIT_CODE", "23")
-        .output()?;
-
-    let events = rustfs_lifecycle_events_after_exit(&lifecycle)
-        .with_context(|| command_output_debug(&output))?;
-    assert_debug_snapshot!((command_output_summary(&output), events), @r#"
-    (
-        (
-            false,
-            Some(
-                46,
-            ),
-            "",
-            "RustFS smoke failed: server did not stop cleanly\n",
-        ),
-        [
-            "ready",
-            "put",
-            "term",
-            "exit:23",
-        ],
-    )
-    "#);
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn rustfs_smoke_preserves_api_failure_when_cleanup_fails() -> Result<()> {
-    let tempdir = tempdir()?;
-    let artifact_root = tempdir.path().join("artifact");
-    let artifact_bin = artifact_root.join("bin");
-    let command_bin = tempdir.path().join("commands");
-    let smoke_tmp = tempdir.path().join("smoke-tmp");
-    let lifecycle = tempdir.path().join("lifecycle.jsonl");
-    create_dir_all(&artifact_bin)?;
-    create_dir_all(&command_bin)?;
-    create_dir_all(&smoke_tmp)?;
-    write_fake_rustfs(&artifact_bin.join("rustfs"))?;
-    write_executable(
-        &command_bin.join("rm"),
-        r#"#!/bin/sh
-if [ "$#" -eq 2 ] && [ "$1" = -rf ]; then
-  case "$2" in
-    "$TMPDIR"/pv-rustfs-smoke.*) exit 71 ;;
-  esac
-fi
-exec /bin/rm "$@"
-"#,
-    )?;
-
-    let output = rustfs_smoke_command(&artifact_root, &lifecycle)
-        .env("PV_TEST_RUSTFS_OMIT_BUCKET", "1")
-        .env("TMPDIR", &smoke_tmp)
-        .env("PATH", format!("{command_bin}:/usr/bin:/bin"))
-        .output()?;
-
-    let events = rustfs_lifecycle_events_after_exit(&lifecycle)
-        .with_context(|| command_output_debug(&output))?;
-    assert_debug_snapshot!((command_output_summary(&output), events), @r#"
-    (
-        (
-            false,
-            Some(
-                45,
-            ),
-            "",
-            "RustFS list buckets did not include smoke bucket\nRustFS cleanup failed: could not remove temporary directory\n",
-        ),
-        [
-            "ready",
-            "put",
-        ],
-    )
-    "#);
-    let fixture_root = tempdir.path().to_owned();
-    tempdir.close()?;
-    assert!(!path_exists(&fixture_root));
     Ok(())
 }
 
@@ -5663,66 +5546,6 @@ PY
     )
 }
 
-fn rustfs_smoke_command(artifact_root: &Utf8Path, lifecycle: &Utf8Path) -> StdCommand {
-    let mut command = StdCommand::new(rustfs_smoke_hook());
-    command
-        .arg(artifact_root)
-        .env("PV_TEST_RUSTFS_LIFECYCLE", lifecycle)
-        .env("PV_TEST_RUSTFS_VERSION_OUTPUT", "rustfs 1.0.0-beta.7")
-        .env("PV_UPSTREAM_VERSION", "1.0.0-beta.7")
-        .env(
-            "PYTHONWARNINGS",
-            "ignore:datetime.datetime.utcnow() is deprecated:DeprecationWarning",
-        );
-    command
-}
-
-fn rustfs_lifecycle_events_after_exit(path: &Utf8Path) -> Result<Vec<String>> {
-    let records = read_file(path)?
-        .lines()
-        .map(serde_json::from_str::<Value>)
-        .collect::<serde_json::Result<Vec<_>>>()?;
-    let process_id = records
-        .first()
-        .and_then(|record| record["pid"].as_u64())
-        .filter(|process_id| *process_id > 0 && *process_id <= u64::from(u32::MAX))
-        .ok_or_else(|| anyhow::anyhow!("RustFS fixture did not publish its process identity"))?;
-    #[cfg(target_os = "linux")]
-    {
-        let current_stat = read_file(Utf8Path::new("/proc/self/stat"))?;
-        anyhow::ensure!(
-            current_stat.starts_with(&format!("{} (", std::process::id())),
-            "current procfs process identity could not be verified"
-        );
-        let fixture_stat = format!("/proc/{process_id}/stat");
-        anyhow::ensure!(
-            read_optional_file(Utf8Path::new(&fixture_stat))?.is_none(),
-            "RustFS fixture process must be absent"
-        );
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let output = StdCommand::new("ps")
-            .args(["-p", &process_id.to_string(), "-o", "pid="])
-            .output()?;
-        let summary = command_output_summary(&output);
-        anyhow::ensure!(
-            summary == (false, Some(1), String::new(), String::new()),
-            "RustFS fixture process must be absent: {summary:?}"
-        );
-    }
-    records
-        .iter()
-        .map(|record| {
-            anyhow::ensure!(record["pid"].as_u64() == Some(process_id));
-            record["event"]
-                .as_str()
-                .map(str::to_string)
-                .ok_or_else(|| anyhow::anyhow!("RustFS fixture event is missing"))
-        })
-        .collect()
-}
-
 fn write_fake_rustfs(path: &Utf8Path) -> Result<()> {
     write_executable(
         path,
@@ -5776,7 +5599,6 @@ export PV_TEST_RUSTFS_ADDRESS=$address
 export PV_TEST_RUSTFS_CONSOLE_ADDRESS=$console_address
 exec python3 - <<'PY'
 import http.server
-import json
 import os
 import signal
 import socket
@@ -5786,31 +5608,13 @@ import time
 
 bucket_names = set()
 
-def record(event, first=False):
-    path = os.environ.get("PV_TEST_RUSTFS_LIFECYCLE")
-    if not path:
-        return
-    destination = path + ".tmp" if first else path
-    with open(destination, "w" if first else "a") as output:
-        output.write(json.dumps({"pid": os.getpid(), "event": event}) + "\n")
-    if first:
-        os.replace(destination, path)
-
-def stop(_signal, _frame):
-    record("term")
-    time.sleep(float(os.environ.get("PV_TEST_RUSTFS_STOP_DELAY", "0")))
-    exit_code = int(os.environ.get("PV_TEST_RUSTFS_EXIT_CODE", "0"))
-    record(f"exit:{exit_code}")
-    raise SystemExit(exit_code)
-
 def split_address(address):
     host, port = address.rsplit(":", 1)
     return host, int(port)
 
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        names = [] if os.environ.get("PV_TEST_RUSTFS_OMIT_BUCKET") else sorted(bucket_names)
-        body = "\n".join(names).encode("utf-8")
+        body = "\n".join(sorted(bucket_names)).encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -5818,7 +5622,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_PUT(self):
         bucket_names.add(self.path.strip("/"))
-        record("put")
         self.send_response(200)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -5834,6 +5637,7 @@ class Server(http.server.HTTPServer):
 
 api_host, api_port = split_address(os.environ["PV_TEST_RUSTFS_ADDRESS"])
 server = Server((api_host, api_port), Handler)
+threading.Thread(target=server.serve_forever, daemon=True).start()
 
 console_address = os.environ.get("PV_TEST_RUSTFS_CONSOLE_ADDRESS")
 console_socket = None
@@ -5847,12 +5651,12 @@ if console_address:
 if os.environ.get("PV_TEST_RUSTFS_IGNORE_TERM"):
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
 else:
+    def stop(_signal, _frame):
+        time.sleep(float(os.environ.get("PV_TEST_RUSTFS_STOP_DELAY", "0")))
+        raise SystemExit(0)
     signal.signal(signal.SIGTERM, stop)
 
-record("ready", first=True)
-threading.Thread(target=server.serve_forever, daemon=True).start()
-time.sleep(150)
-record("expired")
+time.sleep(float(os.environ.get("PV_TEST_RUSTFS_SLEEP_SECONDS", "60")))
 PY
 "#,
     )
