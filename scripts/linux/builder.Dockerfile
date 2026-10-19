@@ -38,7 +38,8 @@ RUN case "$TARGETARCH" in \
     && install /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck \
     && rm -rf /tmp/shellcheck.tar.xz /tmp/shellcheck-v0.11.0
 
-RUN useradd --create-home --uid 1000 dev \
+ARG BUILDER_UID=1000
+RUN useradd --create-home --uid "$BUILDER_UID" dev \
     && mkdir /work /target \
     && chown -R dev:dev /opt/cargo /work /target
 USER dev
