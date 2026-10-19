@@ -76,7 +76,6 @@ done
 rm -rf -- /usr/local/libexec/pv /var/lib/pv /etc/systemd/system/pv-helper.service.d
 rm -f -- /etc/systemd/system/pv-helper.socket /etc/systemd/system/pv-helper.service \
     /etc/systemd/system/pv-helper.socket.rollback /etc/systemd/system/pv-helper.service.rollback \
-    /etc/systemd/system/pv-helper.socket.candidate /etc/systemd/system/pv-helper.service.candidate \
     /run/pv-helper.sock /var/log/pv-helper.err.log \
     /etc/systemd/system/sockets.target.wants/pv-helper.socket \
     /run/systemd/system/sockets.target.wants/pv-helper.socket
