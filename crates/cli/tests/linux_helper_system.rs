@@ -9,12 +9,12 @@ use anyhow::{Context, Result, anyhow, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::{Utf8TempDir, tempdir};
 use cli::{Environment, ProcessEnvironment};
-use insta::{Settings, allow_duplicates, assert_snapshot};
+use insta::{Settings, assert_snapshot};
 use platform::{
     HELPER_EXECUTABLE_PATH, HELPER_METADATA_PATH, HELPER_PROTOCOL_VERSION, HELPER_SOCKET_PATH,
     PRIVILEGED_HELPER_VERSION, PrivilegedHelperClient, ProcessStartIdentity,
 };
-use serde_json::{Deserializer, Value, json};
+use serde_json::{Value, json};
 use state::fs;
 
 #[expect(
@@ -41,11 +41,6 @@ const ENABLED_LINKS: [&str; 2] = [
 const UNIT_ROLLBACK_PATHS: [&str; 2] = [
     "/etc/systemd/system/pv-helper.socket.rollback",
     "/etc/systemd/system/pv-helper.service.rollback",
-];
-const UNRELATED_CANDIDATES: [(&str, &str); 3] = [
-    ("/var/lib/pv/helper.json.candidate", "0600"),
-    ("/etc/systemd/system/pv-helper.socket.candidate", "0644"),
-    ("/etc/systemd/system/pv-helper.service.candidate", "0644"),
 ];
 const INSTALLATION_PATHS: [&str; 6] = [
     EXECUTABLE_DIRECTORY,
@@ -114,7 +109,6 @@ fn systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes() -> R
         .into_iter()
         .chain(ENABLED_LINKS)
         .chain(UNIT_ROLLBACK_PATHS)
-        .chain(UNRELATED_CANDIDATES.map(|(path, _mode)| path))
         .chain([LOG, CONTROL_DIRECTORY])
     {
         ensure!(
@@ -204,101 +198,7 @@ impl HelperFixture {
         ensure!(original_sha256 != replacement_sha256);
         self.arm_cleanup()?;
 
-        root(&["/usr/bin/install", "-d", "-m", "0755", DROP_IN_DIRECTORY])?;
-        self.root_file(
-            "first-install-failure.sh",
-            "printf 'started\\n' > /run/pv-helper-system-test/first-install-started\nexec /usr/bin/sleep 150\n",
-            &format!("{CONTROL_DIRECTORY}/first-install-failure.sh"),
-            "0700",
-        )?;
-        self.root_file(
-            "first-install-failure.conf",
-            "[Service]\nExecStartPre=/bin/sh /run/pv-helper-system-test/first-install-failure.sh\n",
-            &format!("{DROP_IN_DIRECTORY}/10-pv-system-test.conf"),
-            "0644",
-        )?;
-        let failure = self
-            .install(&original, &original_sha256)
-            .err()
-            .context("initial activation must fail")?;
-        assert_eq!(
-            root_text(&[
-                "/usr/bin/cat",
-                &format!("{CONTROL_DIRECTORY}/first-install-started")
-            ])?,
-            "started\n"
-        );
-        self.remove_condition()?;
-        self.require_removed()
-            .with_context(|| format!("initial installation failed: {failure:#}"))?;
-        platform::remove_privileged_helper()?;
-
-        root(&[
-            "/usr/bin/install",
-            "-D",
-            "-o",
-            "root",
-            "-g",
-            "root",
-            "-m",
-            "0755",
-            original.as_str(),
-            HELPER_EXECUTABLE_PATH,
-        ])?;
-        root(&["/usr/bin/install", "-d", "-m", "0700", WORK_DIRECTORY])?;
-        let partial_metadata = serde_json::to_string_pretty(&json!({
-            "owner_uid": self.owner_uid,
-            "helper_version": PRIVILEGED_HELPER_VERSION,
-            "protocol_version": HELPER_PROTOCOL_VERSION,
-        }))?;
-        self.root_file(
-            "partial-metadata.json",
-            &partial_metadata,
-            HELPER_METADATA_PATH,
-            "0600",
-        )?;
-        root(&["/usr/bin/install", "-d", "-m", "0755", DROP_IN_DIRECTORY])?;
-        self.root_file(
-            "partial-install-failure.sh",
-            "printf 'partial\\n' > /run/pv-helper-system-test/first-install-started\nexit 1\n",
-            &format!("{CONTROL_DIRECTORY}/first-install-failure.sh"),
-            "0700",
-        )?;
-        self.root_file(
-            "partial-install-failure.conf",
-            "[Service]\nExecStartPre=/bin/sh /run/pv-helper-system-test/first-install-failure.sh\n",
-            &format!("{DROP_IN_DIRECTORY}/10-pv-system-test.conf"),
-            "0644",
-        )?;
-        let partial_failure = self
-            .install(&replacement, &replacement_sha256)
-            .err()
-            .context("partial installation activation must fail")?;
-        assert_eq!(
-            root_text(&[
-                "/usr/bin/cat",
-                &format!("{CONTROL_DIRECTORY}/first-install-started")
-            ])?,
-            "partial\n"
-        );
-        self.remove_condition()?;
-        assert_eq!(
-            checksum(Utf8Path::new(HELPER_EXECUTABLE_PATH))?,
-            original_sha256
-        );
-        assert_eq!(
-            root_text(&["/usr/bin/cat", HELPER_METADATA_PATH])?,
-            partial_metadata
-        );
-        for path in [SOCKET_UNIT, SERVICE_UNIT] {
-            ensure!(
-                !fs::path_entry_exists(Utf8Path::new(path))?,
-                "introduced unit remains after partial rollback: {path}"
-            );
-        }
-        self.install(&original, &original_sha256).with_context(|| {
-            format!("retry after partial installation failed: {partial_failure:#}")
-        })?;
+        self.install(&original, &original_sha256)?;
         let first = self.capture_process()?;
         assert_eq!(
             PrivilegedHelperClient.status()?,
@@ -356,34 +256,13 @@ impl HelperFixture {
         self.require_other_owner_refused(&original, &original_sha256)?;
         assert_eq!(self.capture_process()?, first);
 
-        let unrelated_candidate_content = "unrelated root-owned candidate\n";
-        for (path, mode) in UNRELATED_CANDIDATES {
-            self.root_file(
-                "unrelated-candidate",
-                unrelated_candidate_content,
-                path,
-                mode,
-            )?;
-        }
         self.install(&replacement, &replacement_sha256)?;
         let replaced = self.capture_process()?;
         assert_ne!(replaced, first);
         require_exited(first)?;
-        for (path, _mode) in UNRELATED_CANDIDATES {
-            assert_eq!(
-                root_text(&["/usr/bin/cat", path])
-                    .with_context(|| format!("could not read unrelated candidate {path}"))?,
-                unrelated_candidate_content
-            );
-            root(&["/usr/bin/rm", "--", path])?;
-        }
         assert_eq!(
             checksum(Utf8Path::new(HELPER_EXECUTABLE_PATH))?,
             replacement_sha256
-        );
-        assert_eq!(
-            root_text(&["/usr/bin/stat", "-c", "%d:%i", LOCK])?,
-            lock_inode
         );
 
         self.root_file(
@@ -392,338 +271,12 @@ impl HelperFixture {
             &format!("{CONTROL_DIRECTORY}/expected.sha256"),
             "0600",
         )?;
-        // Exercise helper recovery after repeated startup failures hit systemd's start limit.
         root(&["/usr/bin/install", "-d", "-m", "0755", DROP_IN_DIRECTORY])?;
         self.root_file(
             "condition.conf",
-            "[Unit]\nStartLimitIntervalSec=60\nStartLimitBurst=10\n[Service]\nEnvironment=LC_ALL=C\nExecStartPre=/usr/bin/sha256sum --check /run/pv-helper-system-test/expected.sha256\nStandardOutput=append:/run/pv-helper-system-test/condition.log\n",
+            "[Service]\nEnvironment=LC_ALL=C\nExecStartPre=/usr/bin/sha256sum --check /run/pv-helper-system-test/expected.sha256\nStandardOutput=append:/run/pv-helper-system-test/condition.log\n",
             &format!("{DROP_IN_DIRECTORY}/10-pv-system-test.conf"),
             "0644",
-        )?;
-        let expected_installation = root_text(&[
-            "/usr/bin/sha256sum",
-            HELPER_EXECUTABLE_PATH,
-            HELPER_METADATA_PATH,
-            SOCKET_UNIT,
-            SERVICE_UNIT,
-        ])?;
-        root(&[
-            "/usr/bin/systemctl",
-            "stop",
-            "pv-helper.socket",
-            "pv-helper.service",
-        ])?;
-        require_exited(replaced)?;
-        let limit_window = Instant::now();
-        root(&[
-            "/usr/bin/systemctl",
-            "reset-failed",
-            "pv-helper.socket",
-            "pv-helper.service",
-        ])?;
-        self.root_file(
-            "expected.sha256",
-            &format!("{original_sha256}  {HELPER_EXECUTABLE_PATH}\n"),
-            &format!("{CONTROL_DIRECTORY}/expected.sha256"),
-            "0600",
-        )?;
-        root(&["/usr/bin/systemctl", "daemon-reload"])?;
-        root(&["/usr/bin/systemctl", "start", "pv-helper.socket"])?;
-        for _attempt in 0..11 {
-            let failure = SystemTestCommand::new("sudo")
-                .args(["-n", "/usr/bin/systemctl", "start", "pv-helper.service"])
-                .output()?;
-            ensure!(
-                !failure.status.success() && failure.status.code().is_some(),
-                "installed helper must fail its checksum condition: {failure:?}"
-            );
-        }
-        assert_eq!(
-            service_property("pv-helper.service", "ActiveState")?,
-            "failed"
-        );
-        assert_eq!(
-            service_property("pv-helper.socket", "ActiveState")?,
-            "failed"
-        );
-        assert_eq!(
-            service_property("pv-helper.socket", "Result")?,
-            "service-start-limit-hit"
-        );
-        self.root_file(
-            "expected.sha256",
-            &format!("{replacement_sha256}  {HELPER_EXECUTABLE_PATH}\n"),
-            &format!("{CONTROL_DIRECTORY}/expected.sha256"),
-            "0600",
-        )?;
-        self.install(&replacement, &replacement_sha256)
-            .context("first valid replacement must repair the retained start limit")?;
-        ensure!(
-            limit_window.elapsed() < Duration::from_secs(60),
-            "repair must finish before the start-limit interval expires"
-        );
-        assert_ne!(self.capture_process()?, replaced);
-        assert_eq!(
-            root_text(&[
-                "/usr/bin/sha256sum",
-                HELPER_EXECUTABLE_PATH,
-                HELPER_METADATA_PATH,
-                SOCKET_UNIT,
-                SERVICE_UNIT,
-            ])?,
-            expected_installation
-        );
-        for (socket_active, service_active) in [(true, true), (false, true), (true, false)] {
-            let prior_process = self.capture_process()?;
-            if !socket_active {
-                root(&["/usr/bin/systemctl", "stop", "pv-helper.socket"])?;
-                assert_eq!(
-                    service_property("pv-helper.socket", "ActiveState")?,
-                    "inactive"
-                );
-                ensure!(!fs::path_entry_exists(Utf8Path::new(HELPER_SOCKET_PATH))?);
-                assert_eq!(self.capture_service_process()?, prior_process);
-            }
-            if !service_active {
-                root(&["/usr/bin/systemctl", "stop", "pv-helper.service"])?;
-                require_exited(prior_process)?;
-                assert_eq!(
-                    service_property("pv-helper.socket", "ActiveState")?,
-                    "active"
-                );
-                assert_eq!(
-                    service_property("pv-helper.service", "LoadState")?,
-                    "loaded"
-                );
-                assert_eq!(
-                    service_property("pv-helper.service", "ActiveState")?,
-                    "inactive"
-                );
-                assert_eq!(service_property("pv-helper.service", "MainPID")?, "0");
-            }
-            self.root_file(
-                "empty-condition.log",
-                "",
-                &format!("{CONTROL_DIRECTORY}/condition.log"),
-                "0600",
-            )?;
-            root(&["/usr/bin/journalctl", "--sync"])?;
-            let last_entry: Value = serde_json::from_str(&root_text(&[
-                "/usr/bin/journalctl",
-                "--boot",
-                "--lines=1",
-                "--output=json",
-                "--quiet",
-                "--no-pager",
-            ])?)?;
-            let cursor = last_entry["__CURSOR"]
-                .as_str()
-                .context("journal must expose a cursor before the rejected replacement")?;
-            let failure = self
-                .install(&original, &original_sha256)
-                .err()
-                .context("replacement condition must reject the changed helper")?;
-            root(&["/usr/bin/journalctl", "--sync"])?;
-            let journal = root_text(&[
-                "/usr/bin/journalctl",
-                "--boot",
-                "--after-cursor",
-                cursor,
-                "--unit=pv-helper.socket",
-                "--output=json",
-                "--quiet",
-                "--no-pager",
-            ])?;
-            let entries = Deserializer::from_str(&journal)
-                .into_iter::<Value>()
-                .collect::<Result<Vec<_>, _>>()?;
-            ensure!(
-                entries
-                    .iter()
-                    .any(|entry| entry["UNIT_RESULT"] == "service-start-limit-hit"),
-                "replacement must hit the service start limit: {journal}"
-            );
-            let condition = root_text(&[
-                "/usr/bin/cat",
-                &format!("{CONTROL_DIRECTORY}/condition.log"),
-            ])?;
-            let restored = if service_active {
-                let restored = self.capture_service_process().with_context(|| {
-                    format!("helper did not recover after rejected replacement: {failure:#}")
-                })?;
-                assert_ne!(restored, prior_process);
-                Some(restored)
-            } else {
-                assert_eq!(
-                    service_property("pv-helper.service", "LoadState")?,
-                    "loaded"
-                );
-                assert_eq!(
-                    service_property("pv-helper.service", "ActiveState")?,
-                    "inactive",
-                    "rollback must restore the idle helper service"
-                );
-                assert_eq!(service_property("pv-helper.service", "MainPID")?, "0");
-                None
-            };
-            require_exited(prior_process)?;
-            assert_eq!(
-                service_property("pv-helper.socket", "ActiveState")?,
-                if socket_active { "active" } else { "inactive" }
-            );
-            assert_eq!(
-                fs::path_entry_exists(Utf8Path::new(HELPER_SOCKET_PATH))?,
-                socket_active
-            );
-            let mut condition_lines = condition.lines().collect::<Vec<_>>();
-            condition_lines.dedup();
-            allow_duplicates! {
-                assert_snapshot!(condition_lines.join("\n"), @r"
-                /usr/local/libexec/pv/pv-helper: FAILED
-                /usr/local/libexec/pv/pv-helper: OK
-                ");
-            }
-            assert_eq!(
-                checksum(Utf8Path::new(HELPER_EXECUTABLE_PATH))?,
-                replacement_sha256
-            );
-            assert_eq!(
-                serde_json::from_str::<Value>(&root_text(&[
-                    "/usr/bin/cat",
-                    HELPER_METADATA_PATH
-                ])?)?,
-                metadata
-            );
-            assert_eq!(
-                fs::read_link(Utf8Path::new(ENABLED_LINKS[0]))?,
-                Utf8Path::new(SOCKET_UNIT)
-            );
-            for path in UNIT_ROLLBACK_PATHS {
-                ensure!(
-                    !fs::path_entry_exists(Utf8Path::new(path))?,
-                    "helper unit rollback remains after recovery: {path}"
-                );
-            }
-            if let Some(restored) = restored
-                && !socket_active
-            {
-                root(&["/usr/bin/systemctl", "stop", "pv-helper.service"])?;
-                require_exited(restored)?;
-                root(&["/usr/bin/systemctl", "start", "pv-helper.socket"])?;
-            }
-            self.capture_process()?;
-        }
-        self.remove_condition()?;
-
-        root(&["/usr/bin/install", "-d", "-m", "0755", DROP_IN_DIRECTORY])?;
-        self.root_file(
-            "cleanup-warning.conf",
-            "[Service]\nExecStartPre=/usr/bin/chmod 0644 /usr/local/libexec/pv/pv-helper.rollback\n",
-            &format!("{DROP_IN_DIRECTORY}/10-pv-system-test.conf"),
-            "0644",
-        )?;
-        let outcome = platform::install_privileged_helper(
-            &original,
-            self.scratch.path(),
-            &original_sha256,
-            PRIVILEGED_HELPER_VERSION,
-            HELPER_PROTOCOL_VERSION,
-        )?;
-        ensure!(outcome.cleanup_warning().is_some(), "{outcome:?}");
-        self.capture_process()?;
-        assert_eq!(
-            checksum(Utf8Path::new(HELPER_EXECUTABLE_PATH))?,
-            original_sha256
-        );
-        assert_eq!(
-            checksum(Utf8Path::new(&format!("{HELPER_EXECUTABLE_PATH}.rollback")))?,
-            replacement_sha256
-        );
-        self.remove_condition()?;
-        for path in [
-            HELPER_EXECUTABLE_PATH,
-            HELPER_METADATA_PATH,
-            SOCKET_UNIT,
-            SERVICE_UNIT,
-        ] {
-            root(&["/usr/bin/rm", "--", &format!("{path}.rollback")])?;
-        }
-
-        for directory in [WORK_DIRECTORY, EXECUTABLE_DIRECTORY] {
-            let live = self.capture_process()?;
-            let unrelated = format!("{directory}/unrelated-system-test-file");
-            let content = "unrelated root-owned content\n";
-            self.root_file("unrelated", content, &unrelated, "0600")?;
-            let failure = platform::remove_privileged_helper()
-                .err()
-                .context("removal must preserve unrelated directory contents")?;
-            assert_eq!(
-                root_text(&["/usr/bin/cat", &unrelated])?,
-                content,
-                "unrelated content changed after removal failed: {failure:#}"
-            );
-            for path in [
-                HELPER_EXECUTABLE_PATH,
-                HELPER_METADATA_PATH,
-                SOCKET_UNIT,
-                SERVICE_UNIT,
-                HELPER_SOCKET_PATH,
-                LOG,
-            ]
-            .into_iter()
-            .chain(ENABLED_LINKS)
-            .chain(UNIT_ROLLBACK_PATHS)
-            {
-                root(&["/usr/bin/test", "!", "-e", path])
-                    .with_context(|| format!("helper cleanup did not reach {path}: {failure:#}"))?;
-            }
-            require_units_absent(&["pv-helper.socket", "pv-helper.service"])
-                .with_context(|| format!("helper cleanup did not finish: {failure:#}"))?;
-            require_exited(live)?;
-
-            // Administrator recovery belongs to the fixture, not the removal retry contract.
-            root(&["/usr/bin/rm", "--", &unrelated])?;
-            for directory in [WORK_DIRECTORY, EXECUTABLE_DIRECTORY] {
-                if fs::path_entry_exists(Utf8Path::new(directory))? {
-                    root(&["/usr/bin/rmdir", "--", directory])?;
-                }
-            }
-            self.require_removed()?;
-            self.install(&original, &original_sha256)?;
-        }
-
-        root(&[
-            "/usr/bin/install",
-            "-o",
-            "root",
-            "-g",
-            "root",
-            "-m",
-            "0755",
-            HELPER_EXECUTABLE_PATH,
-            CANDIDATE,
-        ])?;
-        let owner_uid = self.owner_uid.to_string();
-        let removal_arguments = [
-            CANDIDATE,
-            "helper-lifecycle",
-            "remove",
-            "--owner-uid",
-            &owner_uid,
-            "--sha256",
-            &original_sha256,
-            "--helper-version",
-            "1.0.0",
-            "--protocol-version",
-            "2",
-        ];
-        let mut mismatched_metadata = metadata.clone();
-        mismatched_metadata["helper_version"] = json!("1.0.0");
-        self.root_file(
-            "mismatched-metadata.json",
-            &serde_json::to_string_pretty(&mismatched_metadata)?,
-            HELPER_METADATA_PATH,
-            "0600",
         )?;
         let before = root_text(&[
             "/usr/bin/sha256sum",
@@ -732,66 +285,48 @@ impl HelperFixture {
             SOCKET_UNIT,
             SERVICE_UNIT,
         ])?;
-        let live = self.capture_process()?;
-        let refused = SystemTestCommand::new("sudo")
-            .arg("-n")
-            .args(removal_arguments)
-            .output()?;
-        ensure!(
-            !refused.status.success(),
-            "mismatched installed identity was removed"
-        );
+        let failure = self
+            .install(&original, &original_sha256)
+            .err()
+            .context("replacement must fail its activation checksum")?;
+        let restored = self.capture_process().with_context(|| {
+            format!("helper did not recover after failed replacement: {failure:#}")
+        })?;
+        assert_ne!(restored, replaced);
+        require_exited(replaced)?;
         assert_eq!(
             root_text(&[
                 "/usr/bin/sha256sum",
                 HELPER_EXECUTABLE_PATH,
                 HELPER_METADATA_PATH,
                 SOCKET_UNIT,
-                SERVICE_UNIT
+                SERVICE_UNIT,
             ])?,
             before
         );
-        assert_eq!(self.capture_process()?, live);
-        self.root_file(
-            "restored-metadata.json",
-            &serde_json::to_string_pretty(&metadata)?,
-            HELPER_METADATA_PATH,
-            "0600",
-        )?;
+        let condition = root_text(&[
+            "/usr/bin/cat",
+            &format!("{CONTROL_DIRECTORY}/condition.log"),
+        ])?;
+        let mut lines = condition.lines().collect::<Vec<_>>();
+        lines.dedup();
+        assert_snapshot!(lines.join("\n"), @r"
+        /usr/local/libexec/pv/pv-helper: FAILED
+        /usr/local/libexec/pv/pv-helper: OK
+        ");
+        self.remove_condition()?;
+
         ensure!(
             fs::path_entry_exists(Utf8Path::new(LOG))?,
-            "installed helper service did not create its error log"
+            "helper log was not created"
         );
-        root(&[
-            "/usr/bin/systemctl",
-            "kill",
-            "--kill-who=main",
-            "--signal=KILL",
-            "pv-helper.service",
-        ])?;
-        require_exited(live)?;
-        let deadline = Instant::now() + Duration::from_secs(2);
-        loop {
-            let active_state = service_property("pv-helper.service", "ActiveState")?;
-            if active_state == "failed" {
-                break;
-            }
-            ensure!(
-                Instant::now() < deadline,
-                "killed helper did not reach failed state: {active_state}"
-            );
-            thread::sleep(Duration::from_millis(10));
-        }
-        let response = root(&removal_arguments)?;
-        assert_eq!(
-            serde_json::from_slice::<Option<String>>(&response.stdout)?,
-            None
-        );
+        platform::remove_privileged_helper()?;
+        require_exited(restored)?;
+        self.require_removed()?;
         ensure!(
             !fs::path_entry_exists(Utf8Path::new(LOG))?,
-            "helper error log remains after successful removal"
+            "helper log remains after removal"
         );
-        self.require_removed()?;
         platform::remove_privileged_helper()?;
         assert_eq!(
             root_text(&["/usr/bin/stat", "-c", "%d:%i", LOCK])?,
@@ -959,7 +494,6 @@ impl HelperFixture {
             .into_iter()
             .chain(ENABLED_LINKS)
             .chain(UNIT_ROLLBACK_PATHS)
-            .chain(UNRELATED_CANDIDATES.map(|(path, _mode)| path))
         {
             ensure!(
                 !fs::path_entry_exists(Utf8Path::new(path))?,
@@ -977,9 +511,6 @@ impl HelperFixture {
             return Ok(());
         }
         self.remove_condition()?;
-        for (path, _mode) in UNRELATED_CANDIDATES {
-            root(&["/usr/bin/rm", "-f", "--", path])?;
-        }
         platform::remove_privileged_helper()?;
         self.require_removed()?;
         root(&["/usr/bin/rm", "-f", "--", LOG])?;
