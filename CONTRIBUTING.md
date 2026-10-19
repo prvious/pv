@@ -206,6 +206,15 @@ cargo-shear, shellcheck, and the native build tools. Its Ubuntu base is pinned
 by digest and supplies the glibc 2.35 baseline for Linux artifacts. Local Apple
 Silicon runs are ARM64 only; use native GitHub runners for amd64.
 
+The MySQL packaging fixture requires the baseline builder's CMake and library
+layout. CI runs it explicitly on both CPUs, alongside the full native workspace
+and system tests. Inside that builder, select it with:
+
+```shell
+cargo nextest run --profile ci --locked -p pv-release --all-features --run-ignored only \
+  -E 'test(=mysql_linux_build_packages_relocatable_elf_and_rejects_newer_glibc)'
+```
+
 Use Docker's `--init` for ordinary builder test runs so orphaned children are
 reaped, as they are by init on a normal host. The systemd test containers below
 already run their own init.

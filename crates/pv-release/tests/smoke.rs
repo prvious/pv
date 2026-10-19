@@ -3008,6 +3008,7 @@ fn mysql_build_recipe_builds_openssl_prefix_for_cmake() -> Result<()> {
     target_os = "linux",
     any(target_arch = "aarch64", target_arch = "x86_64")
 ))]
+#[ignore = "requires the Ubuntu 22.04 artifact builder toolchain and libraries"]
 fn mysql_linux_build_packages_relocatable_elf_and_rejects_newer_glibc() -> Result<()> {
     let platform = if cfg!(target_arch = "aarch64") {
         "linux-arm64"
