@@ -1300,6 +1300,8 @@ mod tests {
         manifest_available: bool,
         target: Option<PlatformTarget>,
         #[cfg(target_os = "linux")]
+        host_ready: bool,
+        #[cfg(target_os = "linux")]
         final_dns_ready: bool,
         operations: RefCell<Vec<&'static str>>,
     }
@@ -1345,9 +1347,13 @@ mod tests {
         #[cfg(target_os = "linux")]
         fn check_linux_setup_host(&self) -> Result<(), PlatformError> {
             self.operations.borrow_mut().push("host check");
-            Err(PlatformError::SystemIntegration(
-                "fixture Linux host prerequisite refused".to_owned(),
-            ))
+            if self.host_ready {
+                Ok(())
+            } else {
+                Err(PlatformError::SystemIntegration(
+                    "fixture Linux host prerequisite refused".to_owned(),
+                ))
+            }
         }
 
         #[cfg(target_os = "linux")]
@@ -1421,6 +1427,8 @@ mod tests {
         let environment = SetupEnvironment {
             shell: "/bin/bash",
             home: directory.path().as_std_path().to_path_buf(),
+            #[cfg(target_os = "linux")]
+            host_ready: true,
             ..Default::default()
         };
         let presentation = Presentation::detect(&["--no-color".into()], &environment);
