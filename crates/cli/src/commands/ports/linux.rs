@@ -382,10 +382,7 @@ mod tests {
         }
 
         fn socket_proxy_units_absent(&self) -> Result<bool, PlatformError> {
-            self.native_absence
-                .borrow_mut()
-                .take()
-                .unwrap_or(Ok(false))
+            self.native_absence.borrow_mut().take().unwrap_or(Ok(false))
         }
     }
 
