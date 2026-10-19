@@ -240,7 +240,18 @@ fn stage_and_run(
     validate_directory_chain(Utf8Path::new(EXECUTABLE_DIRECTORY), false)?;
     run_sudo(&[
         "/usr/bin/install",
-        "-D",
+        "-d",
+        "-o",
+        "root",
+        "-g",
+        "root",
+        "-m",
+        "0755",
+        "/usr/local/libexec",
+        EXECUTABLE_DIRECTORY,
+    ])?;
+    run_sudo(&[
+        "/usr/bin/install",
         "-o",
         "root",
         "-g",
