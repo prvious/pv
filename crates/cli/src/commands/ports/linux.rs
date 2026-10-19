@@ -191,12 +191,20 @@ pub(super) fn uninstall(
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    if !check_unit_files(&system_directory(environment)?, &mut streams.out)? {
+    let directory = system_directory(environment)?;
+    if !check_unit_files(&directory, &mut streams.out)? {
         return Ok(ExitCode::FAILURE);
     }
 
-    // Earlier helper work can still be queued even when inspection sees no files.
-    environment.remove_socket_proxy_units()?;
+    let files_missing = socket_proxy_unit_names().into_iter().all(|name| {
+        matches!(
+            inspect_socket_proxy_unit(&directory.join(name), None),
+            PfFileState::Missing { .. }
+        )
+    });
+    if !files_missing || !environment.socket_proxy_units_absent()? {
+        environment.remove_socket_proxy_units()?;
+    }
     for name in socket_proxy_unit_names() {
         let prepared = paths.ports_config().join(name);
         let deleted = delete_optional_file(&prepared)?;
@@ -258,6 +266,7 @@ mod tests {
         active_inspection: RefCell<Option<ActivePfRedirectInspection>>,
         reconciliation_requests: Cell<u32>,
         removals: Cell<u32>,
+        native_absence: RefCell<Option<Result<bool, PlatformError>>>,
     }
 
     impl TestEnvironment {
@@ -285,6 +294,7 @@ mod tests {
                 active_inspection: RefCell::new(None),
                 reconciliation_requests: Cell::new(0),
                 removals: Cell::new(0),
+                native_absence: RefCell::new(None),
             }
         }
 
@@ -369,6 +379,13 @@ mod tests {
         fn remove_socket_proxy_units(&self) -> Result<(), PlatformError> {
             self.removals.set(self.removals.get() + 1);
             self.error.borrow_mut().take().map_or(Ok(()), Err)
+        }
+
+        fn socket_proxy_units_absent(&self) -> Result<bool, PlatformError> {
+            self.native_absence
+                .borrow_mut()
+                .take()
+                .unwrap_or(Ok(false))
         }
     }
 
@@ -740,6 +757,60 @@ mod tests {
           }
         ]
         "#);
+        Ok(())
+    }
+
+    #[test]
+    fn uninstall_skips_the_helper_only_when_native_units_are_absent() -> Result<()> {
+        let directory = tempdir()?;
+        for (case, absence) in [
+            ("absent", Ok(true)),
+            ("retained", Ok(false)),
+            (
+                "unreadable",
+                Err(PlatformError::SystemIntegration(
+                    "fixture bus unavailable".to_owned(),
+                )),
+            ),
+        ] {
+            let environment = TestEnvironment::new(&directory.path().join(case));
+            prepare(&environment)?;
+            let paths = environment.paths();
+            let before = Database::open(&paths)?.assigned_ports()?;
+            *environment.native_absence.borrow_mut() = Some(absence);
+            *environment.error.borrow_mut() = Some(PlatformError::PrivilegedHelperUnavailable);
+
+            let (outcome, stdout) = run_uninstall(&environment)?;
+            match case {
+                "absent" => assert_eq!(outcome?, ExitCode::SUCCESS),
+                "retained" => assert!(matches!(
+                    outcome,
+                    Err(ExecuteError::Platform(
+                        PlatformError::PrivilegedHelperUnavailable
+                    ))
+                )),
+                _ => assert!(matches!(
+                    outcome,
+                    Err(ExecuteError::Platform(PlatformError::SystemIntegration(_)))
+                )),
+            }
+            assert_eq!(environment.removals.get(), u32::from(case == "retained"));
+            assert_eq!(Database::open(&paths)?.assigned_ports()?, before);
+            for name in socket_proxy_unit_names() {
+                assert_eq!(paths.ports_config().join(name).exists(), case != "absent");
+            }
+            if case == "absent" {
+                assert_snapshot!(stdout.replace(directory.path().as_str(), "<tempdir>"), @r"
+                Deleted prepared socket proxy unit: <tempdir>/absent/home/.pv/config/ports/pv-http.socket
+                Deleted prepared socket proxy unit: <tempdir>/absent/home/.pv/config/ports/pv-http.service
+                Deleted prepared socket proxy unit: <tempdir>/absent/home/.pv/config/ports/pv-https.socket
+                Deleted prepared socket proxy unit: <tempdir>/absent/home/.pv/config/ports/pv-https.service
+                Removed PV-owned system socket proxy units
+                ");
+            } else {
+                assert!(stdout.is_empty());
+            }
+        }
         Ok(())
     }
 
