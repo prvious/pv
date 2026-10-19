@@ -146,9 +146,9 @@ A Linux DNS helper request may remain queued or in progress after its client los
 
 The internal DNS resolver supports both UDP and TCP DNS on the chosen DNS port.
 
-Linux's resolver listens only on `127.0.0.2`, the same fixed destination used by systemd-resolved. The owned `pv0` link requires a permanent `127.0.0.2/32` address with global address scope, its corresponding kernel local route, and an effective resolved DNS scope. macOS's resolver continues to listen on `127.0.0.1`. Prepared resolver configuration selects the same fixed platform address; the helper protocol carries only the port.
+Linux's resolver listens only on `127.0.0.2`, the same fixed destination used by systemd-resolved. The owned `pv0` link requires a `127.0.0.2/32` address with global address scope and an effective resolved DNS scope. macOS's resolver continues to listen on `127.0.0.1`. Prepared resolver configuration selects the same fixed platform address; the helper protocol carries only the port.
 
-Missing or narrowly recognized drift in the owned DNS endpoint is stale. Repair verifies ownership, deletes the retained link and recreates it exclusively, including after a failed service start. Additional static addresses or routes, or a controller on `pv0`, are foreign conflicts. A foreign address or route at the fixed DNS endpoint prevents apply; verified removal of PV's owned resources preserves that foreign state.
+PV identifies its DNS link by the fixed `pv0` name, `Managed by PV` alias and dummy type. Missing address or resolved settings are stale. Repair verifies that ownership and recreates the link exclusively, replacing any configuration attached to that PV-owned link. Unmarked links and competing `test` domains remain conflicts; removal deletes only PV-owned resources and preserves foreign domains.
 
 The resolver answers all `.test` hostnames with the IPv4 loopback record `127.0.0.1`. AAAA queries return NODATA. The Gateway decides whether a hostname maps to a linked Project.
 

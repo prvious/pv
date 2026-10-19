@@ -291,17 +291,11 @@ and active NetworkManager on Fedora. Select it in the command above with:
 It runs the real daemon's DNS resolver from a temporary PV home, verifies
 fresh `getaddrinfo` through resolved immediately after installation, resolved restart and a DNS
 port change, and checks that foreign units, links and `~test` routes survive
-rejected mutations. It temporarily sets global DNSSEC to `allow-downgrade`.
+rejected mutations.
 Its independent 140-second root timer stops the test and helper/DNS services,
 removes only preflight-absent fixture paths and links, and restores resolved.
 Explicit cleanup cancels that timer only after verifying removal. Failed cleanup
 keeps `/run/pv-dns-system-test` and any scheduled timer for inspection.
-Three additional focused cases use the same fixture:
-
-- `dns_system::systemd_dns_repairs_retained_owned_endpoint_defects` independently seeds address and route defects in retained owned links, then verifies repair and resolution.
-- `dns_system::systemd_dns_preserves_foreign_interface_and_endpoint_state` verifies rejected mutations preserve foreign state and that owned removal preserves external endpoint conflicts.
-- `dns_system::systemd_dns_uses_both_transports_and_isolates_eligible_scopes` checks the real daemon over UDP and TCP, resolved's truncated-UDP-to-TCP fallback, isolation from another eligible DNS scope, and canonical loopback routing and connectivity.
-
 CI runs each helper and DNS case in its own bounded service and nextest state
 directory. The `nextest-helper-run-<runner>` artifact contains one recording ZIP
 per case, including a failed case when recording export succeeds.

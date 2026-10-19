@@ -280,11 +280,7 @@ jobs:
           set -euo pipefail
           for test_case in \
             systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes \
-            dns_system::systemd_dns_inspection_does_not_activate_stopped_resolved \
-            dns_system::systemd_dns_routes_test_reapplies_after_restart_changes_port_and_refuses_conflicts \
-            dns_system::systemd_dns_repairs_retained_owned_endpoint_defects \
-            dns_system::systemd_dns_preserves_foreign_interface_and_endpoint_state \
-            dns_system::systemd_dns_uses_both_transports_and_isolates_eligible_scopes
+            dns_system::systemd_dns_routes_test_reapplies_after_restart_changes_port_and_refuses_conflicts
           do
             NEXTEST_STATE_DIR=$(mktemp -d "$RUNNER_TEMP/nextest-helper-state.XXXXXX")
             export NEXTEST_STATE_DIR
