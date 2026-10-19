@@ -3,11 +3,13 @@ use anyhow::Context;
 use anyhow::Result;
 use camino::Utf8Path;
 use insta::assert_snapshot;
+#[cfg(unix)]
+use serde_json::Value;
 
 #[cfg(unix)]
 #[expect(
     clippy::disallowed_types,
-    reason = "workflow tests execute publication preflight Bash and the macOS app release awk"
+    reason = "workflow tests execute build selection, publication preflight Bash and the macOS app release awk"
 )]
 type StdCommand = std::process::Command;
 
@@ -20,6 +22,76 @@ const APP_RELEASE_WORKFLOW_PATH: &str = ".github/workflows/app-release.yml";
 const APP_PUBLICATION_WORKFLOW_PATH: &str = ".github/workflows/app-publication.yml";
 const PRIVILEGED_MACOS_RC_WORKFLOW_PATH: &str = ".github/workflows/privileged-macos-rc.yml";
 const REAL_ARTIFACT_E2E_WORKFLOW_PATH: &str = ".github/workflows/real-artifact-e2e.yml";
+
+#[cfg(unix)]
+#[test]
+fn artifact_recipes_selects_requested_tracks_on_native_linux_runners() -> Result<()> {
+    let root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let workflow = read_file(&root.join(".github/workflows/artifact-recipes.yml"))?;
+    let step = workflow_step(&workflow, "Select native Linux builds")
+        .context("missing Linux selection step")?;
+    let program = step
+        .split_once("python3 - <<'PYTHON'\n")
+        .context("missing matrix program")?
+        .1
+        .lines()
+        .take_while(|line| line.trim() != "PYTHON")
+        .map(|line| line.strip_prefix("          ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut rows = Vec::new();
+    for (resource, track, platform, expected) in [
+        ("all", "all", "all-linux", 26),
+        ("mysql", "8.4", "all-linux", 2),
+        ("php", "8.5", "linux-amd64", 1),
+        ("all", "all", "all", 0),
+    ] {
+        let output = StdCommand::new("python3")
+            .args(["-c", &program])
+            .env("PV_RECIPE_RESOURCE", resource)
+            .env("PV_RECIPE_TRACK", track)
+            .env("PV_RECIPE_PLATFORM", platform)
+            .env("GITHUB_OUTPUT", "/dev/stdout")
+            .output()?;
+        anyhow::ensure!(
+            output.status.success(),
+            "matrix selection failed: {output:?}"
+        );
+        let text = String::from_utf8(output.stdout)?;
+        let matrix: Value = serde_json::from_str(
+            text.trim()
+                .strip_prefix("matrix=")
+                .context("missing matrix output")?,
+        )?;
+        let builds = matrix["include"].as_array().context("missing builds")?;
+        assert_eq!(builds.len(), expected);
+        for build in builds {
+            let runner = match build["platform"].as_str() {
+                Some("linux-amd64") => "ubuntu-24.04",
+                Some("linux-arm64") => "ubuntu-24.04-arm",
+                value => anyhow::bail!("unexpected Linux platform: {value:?}"),
+            };
+            assert_eq!(build["runner"], runner);
+            if resource != "all" {
+                assert_eq!(build["resource"], resource);
+            }
+            if track != "all" {
+                assert_eq!(build["track"], track);
+            }
+        }
+        rows.push(format!(
+            "{resource}/{track}/{platform}: {} builds",
+            builds.len()
+        ));
+    }
+    assert_snapshot!(rows.join("\n"), @"
+    all/all/all-linux: 26 builds
+    mysql/8.4/all-linux: 2 builds
+    php/8.5/linux-amd64: 1 builds
+    all/all/all: 0 builds
+    ");
+    Ok(())
+}
 
 #[test]
 fn artifact_recipes_defaults_defer_staticphp_unstable_lanes() -> Result<()> {
@@ -38,7 +110,7 @@ fn artifact_recipes_defaults_defer_staticphp_unstable_lanes() -> Result<()> {
     assert_snapshot!(summary, @r#"
     track_default=all
     platform_default=all
-    platform_description=Artifact platform: all uses darwin-arm64 for native recipes, adds darwin-amd64 for Postgres and Caddy, and uses any for Composer; choose darwin-arm64 or darwin-amd64 explicitly for one platform
+    platform_description=Artifact platform: all uses darwin-arm64 for native recipes, adds darwin-amd64 for Postgres and Caddy, and uses any for Composer; choose a platform explicitly, or all-linux for both Linux CPUs
     platform_matrices=["platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\",\"darwin-amd64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: [any]", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\",\"darwin-amd64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\",\"darwin-amd64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}"]
     staticphp_comment_present=true
     staticphp_work_cleanup_restores_write_permission=true
@@ -90,13 +162,13 @@ fn artifact_recipes_builds_resource_lanes_in_parallel() -> Result<()> {
     );
 
     assert_snapshot!(summary, @r###"
-    jobs=["validate", "build-php", "build-caddy", "build-composer", "build-redis", "build-mysql", "build-postgres-dependencies", "build-postgres", "build-mailpit", "build-rustfs"]
-    upload_steps=10
-    archive_upload_paths=8
-    manifest_upload_paths=8
-    record_upload_paths=8
-    recipe_track_envs=10
-    track_upload_names=9
+    jobs=["validate", "build-php", "build-caddy", "build-composer", "build-redis", "build-mysql", "build-postgres-dependencies", "build-postgres", "build-mailpit", "build-rustfs", "build-linux"]
+    upload_steps=12
+    archive_upload_paths=9
+    manifest_upload_paths=9
+    record_upload_paths=9
+    recipe_track_envs=11
+    track_upload_names=11
     staticphp_failure_logs=true
     "###);
 

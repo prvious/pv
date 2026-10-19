@@ -24,7 +24,7 @@ on:
         default: "all"
         type: string
       platform:
-        description: "Artifact platform: all uses darwin-arm64 for native recipes, adds darwin-amd64 for Postgres and Caddy, and uses any for Composer; choose darwin-arm64 or darwin-amd64 explicitly for one platform"
+        description: "Artifact platform: all uses darwin-arm64 for native recipes, adds darwin-amd64 for Postgres and Caddy, and uses any for Composer; choose a platform explicitly, or all-linux for both Linux CPUs"
         required: true
         default: "all"
         type: choice
@@ -32,6 +32,9 @@ on:
           - all
           - darwin-arm64
           - darwin-amd64
+          - all-linux
+          - linux-amd64
+          - linux-arm64
 
 permissions:
   contents: read
@@ -40,6 +43,8 @@ jobs:
   validate:
     name: validate
     runs-on: macos-14
+    outputs:
+      linux_matrix: ${{ steps.linux-matrix.outputs.matrix }}
 
     steps:
       - name: Checkout
@@ -57,7 +62,7 @@ jobs:
           set -eu
 
           case "$PV_RECIPE_PLATFORM" in
-            all | darwin-arm64 | darwin-amd64) ;;
+            all | darwin-arm64 | darwin-amd64 | all-linux | linux-amd64 | linux-arm64) ;;
             *) printf '%s\n' "unsupported platform: $PV_RECIPE_PLATFORM" >&2; exit 1 ;;
           esac
 
@@ -76,6 +81,30 @@ jobs:
               exit 1
               ;;
           esac
+
+      - name: Select native Linux builds
+        id: linux-matrix
+        env:
+          PV_RECIPE_RESOURCE: ${{ inputs.resource }}
+          PV_RECIPE_TRACK: ${{ inputs.track }}
+          PV_RECIPE_PLATFORM: ${{ inputs.platform }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          tracks = {"php": ["8.3", "8.4", "8.5"], "composer": ["2"], "redis": ["8.8"],
+                    "mysql": ["8.0", "8.4", "9.7"], "postgres": ["17", "18"],
+                    "mailpit": ["1"], "rustfs": ["1"], "caddy": ["2"]}
+          platform = os.environ["PV_RECIPE_PLATFORM"]
+          platforms = ["linux-amd64", "linux-arm64"] if platform == "all-linux" else [platform]
+          builds = [{"resource": resource, "track": track, "platform": cpu,
+                     "runner": "ubuntu-24.04-arm" if cpu == "linux-arm64" else "ubuntu-24.04"}
+                    for resource, versions in tracks.items() for track in versions for cpu in platforms
+                    if cpu.startswith("linux-")
+                    and os.environ["PV_RECIPE_RESOURCE"] in ("all", resource)
+                    and os.environ["PV_RECIPE_TRACK"] in ("all", track)]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("matrix=" + json.dumps({"include": builds}) + "\n")
+          PYTHON
 
       - name: Validate recipe metadata
         run: |
@@ -105,7 +134,7 @@ jobs:
   build-php:
     name: "php & frankenphp ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
-    if: ${{ inputs.resource == 'all' || inputs.resource == 'php' }}
+    if: ${{ (inputs.platform == 'all' || startsWith(inputs.platform, 'darwin-')) && (inputs.resource == 'all' || inputs.resource == 'php') }}
     runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
     strategy:
       fail-fast: false
@@ -226,7 +255,7 @@ jobs:
   build-caddy:
     name: "caddy ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
-    if: ${{ inputs.resource == 'all' || inputs.resource == 'caddy' }}
+    if: ${{ (inputs.platform == 'all' || startsWith(inputs.platform, 'darwin-')) && (inputs.resource == 'all' || inputs.resource == 'caddy') }}
     runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
     strategy:
       fail-fast: false
@@ -296,7 +325,7 @@ jobs:
   build-composer:
     name: "composer ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
-    if: ${{ inputs.resource == 'all' || inputs.resource == 'composer' }}
+    if: ${{ (inputs.platform == 'all' || startsWith(inputs.platform, 'darwin-')) && (inputs.resource == 'all' || inputs.resource == 'composer') }}
     runs-on: macos-14
     strategy:
       fail-fast: false
@@ -371,7 +400,7 @@ jobs:
   build-redis:
     name: "redis ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
-    if: ${{ inputs.resource == 'all' || inputs.resource == 'redis' }}
+    if: ${{ (inputs.platform == 'all' || startsWith(inputs.platform, 'darwin-')) && (inputs.resource == 'all' || inputs.resource == 'redis') }}
     runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
     strategy:
       fail-fast: false
@@ -439,7 +468,7 @@ jobs:
   build-mysql:
     name: "mysql ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
-    if: ${{ inputs.resource == 'all' || inputs.resource == 'mysql' }}
+    if: ${{ (inputs.platform == 'all' || startsWith(inputs.platform, 'darwin-')) && (inputs.resource == 'all' || inputs.resource == 'mysql') }}
     runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
     strategy:
       fail-fast: false
@@ -507,7 +536,7 @@ jobs:
   build-postgres-dependencies:
     name: "postgres dependencies ${{ matrix.platform }}"
     needs: validate
-    if: ${{ inputs.resource == 'all' || inputs.resource == 'postgres' }}
+    if: ${{ (inputs.platform == 'all' || startsWith(inputs.platform, 'darwin-')) && (inputs.resource == 'all' || inputs.resource == 'postgres') }}
     runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
     strategy:
       fail-fast: false
@@ -588,7 +617,7 @@ jobs:
   build-postgres:
     name: "postgres ${{ matrix.track }} ${{ matrix.platform }}"
     needs: [validate, build-postgres-dependencies]
-    if: ${{ inputs.resource == 'all' || inputs.resource == 'postgres' }}
+    if: ${{ (inputs.platform == 'all' || startsWith(inputs.platform, 'darwin-')) && (inputs.resource == 'all' || inputs.resource == 'postgres') }}
     runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
     strategy:
       fail-fast: false
@@ -714,7 +743,7 @@ jobs:
   build-mailpit:
     name: "mailpit ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
-    if: ${{ inputs.resource == 'all' || inputs.resource == 'mailpit' }}
+    if: ${{ (inputs.platform == 'all' || startsWith(inputs.platform, 'darwin-')) && (inputs.resource == 'all' || inputs.resource == 'mailpit') }}
     runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
     strategy:
       fail-fast: false
@@ -782,7 +811,7 @@ jobs:
   build-rustfs:
     name: "rustfs ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
-    if: ${{ inputs.resource == 'all' || inputs.resource == 'rustfs' }}
+    if: ${{ (inputs.platform == 'all' || startsWith(inputs.platform, 'darwin-')) && (inputs.resource == 'all' || inputs.resource == 'rustfs') }}
     runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
     strategy:
       fail-fast: false
@@ -841,6 +870,64 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: pv-artifact-recipes-rustfs-${{ matrix.track }}-${{ matrix.platform }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/pv-artifacts/*.tar.gz
+            ${{ runner.temp }}/pv-artifacts/manifest.json
+            ${{ runner.temp }}/pv-records/**/*.json
+          if-no-files-found: error
+
+  build-linux:
+    name: "${{ matrix.resource }} ${{ matrix.track }} ${{ matrix.platform }}"
+    needs: validate
+    if: ${{ startsWith(inputs.platform, 'linux-') || inputs.platform == 'all-linux' }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.validate.outputs.linux_matrix) }}
+    env:
+      CARGO_BUILD_JOBS: 2
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+      PV_BUILD_JOBS: 2
+      PV_RECIPE_RESOURCE: ${{ matrix.resource }}
+      PV_RECIPE_TRACK: ${{ matrix.track }}
+      PV_RECIPE_PLATFORM: ${{ matrix.platform }}
+      PV_COMMIT: ${{ github.sha }}
+      PV_BUILD_RUN_ID: ${{ github.run_id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+      - name: Build Ubuntu 22.04 builder locally
+        run: |
+          df -h /
+          docker build -f scripts/linux/builder.Dockerfile -t pv-linux-builder .
+      - name: Build and smoke native Linux archive
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/pv-artifacts" "$RUNNER_TEMP/pv-records"
+          docker run --rm --init --user "$(id -u):$(id -g)" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/src,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP,dst=/work" --workdir /src \
+            --env HOME=/work/home --env CARGO_HOME=/work/cargo --env CARGO_TARGET_DIR=/work/target \
+            --env CARGO_BUILD_JOBS --env CARGO_PROFILE_DEV_DEBUG --env CARGO_INCREMENTAL \
+            --env PV_BUILD_JOBS --env PV_RECIPE_RESOURCE --env PV_RECIPE_TRACK --env PV_RECIPE_PLATFORM \
+            --env PV_COMMIT --env PV_BUILD_RUN_ID --env GITHUB_TOKEN \
+            --env PV_ARTIFACT_OUT_DIR=/work/pv-artifacts --env PV_ARTIFACT_RECORD_DIR=/work/pv-records \
+            pv-linux-builder sh scripts/linux/build-artifact.sh
+      - name: Upload Linux build failure logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-artifact-recipes-linux-logs-${{ matrix.resource }}-${{ matrix.track }}-${{ matrix.platform }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/pv-artifacts/work/**/*.log
+          if-no-files-found: ignore
+      - name: Upload artifact archives and records
+        uses: actions/upload-artifact@v7
+        with:
+          name: pv-artifact-recipes-${{ matrix.resource }}-${{ matrix.track }}-${{ matrix.platform }}-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/pv-artifacts/*.tar.gz
             ${{ runner.temp }}/pv-artifacts/manifest.json
