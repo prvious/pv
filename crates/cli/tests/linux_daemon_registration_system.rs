@@ -1,6 +1,5 @@
 #![cfg(target_os = "linux")]
 
-use std::ffi::OsString;
 use std::io::{self, Write as _};
 #[expect(
     clippy::disallowed_types,
