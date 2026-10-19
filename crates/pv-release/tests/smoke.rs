@@ -5049,7 +5049,15 @@ fn run_php_build_recipe_smoke_with_options(
     let removed_rpaths_log = tempdir.path().join("removed-rpaths.log");
 
     create_dir_all(&fake_bin)?;
-    write_source_archive(&source_archive, "frankenphp-source")?;
+    if options.platform.starts_with("linux-") {
+        write_single_file_archive(
+            &source_archive,
+            "frankenphp-source/types.h",
+            b"void __hash_update_string__(void);\n",
+        )?;
+    } else {
+        write_source_archive(&source_archive, "frankenphp-source")?;
+    }
     if options.require_staticphp_php83_frankenphp_patch_context {
         write_php_source_archive(&php_source_archive)?;
     } else {
@@ -7367,6 +7375,10 @@ case "$PV_RECIPE_PLATFORM" in
     [ -z "${SPC_TARGET:-}" ] || exit 92
     [ "${SPC_CONCURRENCY:-}" = 2 ] || exit 93
     [ -z "${MACOSX_DEPLOYMENT_TARGET:-}" ] || exit 94
+    mkdir -p buildroot/include/webp
+    printf '%s\n' '/* libwebp has no FrankenPHP helper declarations. */' >buildroot/include/webp/types.h
+    printf '%s\n' '#include "types.h"' 'void *helper = (void *)__hash_update_string__;' | \
+      cc ${frankenphp_CFLAGS:-} -I"$PWD/buildroot/include/webp" -Werror -x c -fsyntax-only -
     cat >sapi.c <<'C'
 #include <dlfcn.h>
 #include <stdio.h>
