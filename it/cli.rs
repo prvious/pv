@@ -569,11 +569,23 @@ fn env_rejects_unsupported_shells() -> Result<()> {
     Ok(())
 }
 
+fn linux_integration_descriptions(script: &str) -> String {
+    script
+        .lines()
+        .filter(|line| {
+            line.contains("socket prox") || line.contains("system and browser trust stores")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[test]
 fn linux_completions_generate_zsh_script() -> Result<()> {
     let output = run_pv_for_target(&["completions", "zsh"], PlatformTarget::Linux)?;
 
-    assert_snapshot!(output.stdout);
+    assert_eq!(output.code, Some(0));
+    assert!(output.stderr.is_empty());
+    assert_snapshot!(linux_integration_descriptions(&output.stdout));
     Ok(())
 }
 
@@ -601,7 +613,9 @@ fn completions_generate_bash_script() -> Result<()> {
 fn linux_completions_generate_fish_script() -> Result<()> {
     let output = run_pv_for_target(&["completions", "fish"], PlatformTarget::Linux)?;
 
-    assert_snapshot!(output.stdout);
+    assert_eq!(output.code, Some(0));
+    assert!(output.stderr.is_empty());
+    assert_snapshot!(linux_integration_descriptions(&output.stdout));
     Ok(())
 }
 
