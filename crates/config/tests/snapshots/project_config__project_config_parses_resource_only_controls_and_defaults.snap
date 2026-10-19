@@ -9,6 +9,10 @@ expression: "(defaults, resource_only)"
         php: None,
         root: None,
         env: {},
+        hooks: ProjectHooks {
+            prepare: [],
+            setup: [],
+        },
         resources: {},
     },
     ProjectConfig {
@@ -21,6 +25,10 @@ expression: "(defaults, resource_only)"
         env: {
             "APP_ENV": "local",
             "APP_URL": "${url}",
+        },
+        hooks: ProjectHooks {
+            prepare: [],
+            setup: [],
         },
         resources: {},
     },

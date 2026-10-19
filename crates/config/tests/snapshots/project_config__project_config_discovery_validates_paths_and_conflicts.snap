@@ -15,6 +15,10 @@ expression: "(config_file.path.file_name(), config_file.exists, config_file.conf
             "public",
         ),
         env: {},
+        hooks: ProjectHooks {
+            prepare: [],
+            setup: [],
+        },
         resources: {},
     },
 )

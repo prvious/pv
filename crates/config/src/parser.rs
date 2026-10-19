@@ -8,7 +8,9 @@ use resources::{
 use yaml_serde::{Mapping, Number, Value};
 
 use crate::discovery::validate_root_shape;
-use crate::{AllocationConfig, ConfigError, PhpConfig, ProjectConfig, ResourceConfig};
+use crate::{
+    AllocationConfig, ConfigError, PhpConfig, ProjectConfig, ProjectHooks, ResourceConfig,
+};
 
 const TLS_ENV_PLACEHOLDERS: &[&str] = &["tls.ca", "tls.cert", "tls.key"];
 
@@ -70,6 +72,9 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
             "env" => {
                 config.env = parse_env_mapping("env", EnvPlaceholderScope::Project, &value)?;
             }
+            "hooks" => {
+                config.hooks = parse_hooks(&value)?;
+            }
             resource => {
                 let Some(resource_name) = project_config_resource_name(resource) else {
                     return Err(ConfigError::UnknownTopLevelKey { key: key.clone() });
@@ -89,6 +94,38 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
     }
 
     Ok(config)
+}
+
+fn parse_hooks(value: &Value) -> Result<ProjectHooks, ConfigError> {
+    let Value::Mapping(mapping) = value else {
+        return Err(ConfigError::InvalidFieldType {
+            field: "hooks".to_string(),
+            expected: "a mapping",
+            found: value_type(value),
+        });
+    };
+    let mut hooks = ProjectHooks::default();
+    for (key, value) in mapping {
+        let key = string_key_ref(key)?;
+        let commands = match key.as_str() {
+            "prepare" => &mut hooks.prepare,
+            "setup" => &mut hooks.setup,
+            _ => return Err(ConfigError::UnknownHookKey { key }),
+        };
+        let field = format!("hooks.{key}");
+        let Value::Sequence(sequence) = value else {
+            return Err(ConfigError::InvalidFieldType {
+                field,
+                expected: "a sequence",
+                found: value_type(value),
+            });
+        };
+        *commands = sequence
+            .iter()
+            .map(|value| non_empty_string(&field, value))
+            .collect::<Result<_, _>>()?;
+    }
+    Ok(hooks)
 }
 
 fn parse_resource_config(

@@ -66,10 +66,35 @@ hooks:
 | D8 | Shell for the commands | `/bin/sh -c`. The login shell only supplies variables, so one committed `pv.yml` works for zsh, bash and fish users alike (owner, 2026-10-16) |
 | D9 | What is captured | The whole environment, not only `PATH`. Tools rely on variables such as `COMPOSER_AUTH` and `PNPM_HOME` (owner, 2026-10-16) |
 | D10 | `pv link` with setup hooks | Waits for the Project's reconciliation, then runs `setup` in the terminal (owner, 2026-10-18) |
-| D11 | Reporting background runs | A job record per run, plus a per-run log file. The records are history only and never decide whether hooks run (owner, 2026-10-18) |
+| D11 | Reporting background runs | A job record per run, plus a log file per subject, replaced at each run. Completed records provide history and failures, not idempotency tracking; queued/running rows exclude concurrent foreground hooks (owner, 2026-10-18) |
 | D12 | Main checkout path for worktree hooks | `PV_SOURCE_PATH` (owner, 2026-10-18) |
 | D13 | A failed `prepare` on a discovered worktree | Remembered in daemon memory; retried after the daemon restarts. Not an opt-out, because `pv link` on an opted-out worktree would make it an ordinary Project (owner, 2026-10-18) |
 | D14 | `pv link` before `pv setup` | `prepare` runs; `setup` is skipped with a warning to run `pv link` again after `pv setup`. No deferred-hook marker (follows D4) |
+
+D2 accepts credential exposure as well as command execution: branch hooks receive the whole login-shell environment and can read and send away credentials such as `COMPOSER_AUTH`. Branch code PV serves and Composer/pnpm scripts already run as the user and can read those same secrets from files.
+
+## Owner-approved review amendments (2026-10-19)
+
+These amendments override the original design where they differ.
+
+- **A1. Credential exposure.** Hooks from a branch run with the user's whole environment, so they can read and send away credentials such as `COMPOSER_AUTH`. Accepted: branch code PV serves, and `composer`/`pnpm` scripts, already run as the user and can read the same secrets from files. Add this to D2's rationale and to Risks.
+- **A2. Foreground runs and cleanup.** "Stop hooks before cleanup deletes allocations" covers daemon runs only. A `pv link` run belongs to the user's terminal; removing a worktree while you run `pv link` in it is like deleting a folder mid-`composer install`. No handoff between the CLI and the daemon.
+- **A3. Record queued runs.** The daemon creates the `hooks` job row when it queues a run, not when the run starts. That has two effects:
+  - Daemon startup marks queued runs failed along with running ones, so a lost `setup` shows up in `pv status`.
+  - `pv link`'s "daemon hooks in progress for this Project" check also sees queued runs, so the spec's "A `setup` queued but not started" risk goes away.
+- **A4. Remember a successful `prepare`.** Besides the running and failed sets, the daemon keeps a prepared set:
+  - A successful `prepare` puts the worktree ID in it.
+  - Discovery links a prepared worktree without running `prepare` again, and removes it from the set once linked.
+  - A daemon restart empties the set, so `prepare` runs again. The spec already accepts that.
+- **A5. Lifecycle admission.** `pv link` holds its shared runtime lifecycle admission all the time, except while hook commands run:
+  - Release it right before a hook list starts and reacquire it right after.
+  - If reacquiring fails (`pv daemon:disable` or `pv uninstall` took it), stop without recording state or contacting the daemon, and exit non-zero.
+- **A6. Waiting on a coalesced job.** `pv link` waits on the job ID in the daemon's accepted response. That is either its own new job or the existing queued job it was merged into (`reconciliation already queued or running`). It reads that job's record in `pv.db` until the job finishes, then checks the Project's own outcome. No protocol change, and no reuse of the streaming setup client.
+- **A7. Two `pv link` runs at once.** Not handled. Two `pv link` runs in one folder at once is the same as running `composer install` twice by hand. A3 covers daemon-versus-terminal.
+- **A8. Hook logs.**
+  - One log per subject, replaced at each run: `~/.pv/logs/hooks/project-<project-id>.log`, or `~/.pv/logs/hooks/worktree-<source-project-id>-<worktree-id>.log` for a `prepare` before linking.
+  - Worktree cleanup deletes that worktree's logs.
+  - No pruning sweep. Drop the spec's "logs never outlive their records" promise.
 
 ## Design
 
@@ -97,7 +122,7 @@ A discovered worktree uses only its own `pv.yml`, as today. Its hooks are the on
 | Editing `pv.yml`, any reconciliation, daemon start, `pv setup`, `pv update`, `git worktree move` | No | No |
 | Projects already linked when this ships | No | No (see below for one exception) |
 
-PV never needs a record of whether hooks ran. A Project that is already linked doesn't get them, and running `pv link` again is how a user reruns them.
+PV keeps no persistent completed-hook marker to decide whether to rerun hooks. A Project that is already linked does not get them automatically, and running `pv link` again reruns them. Discovery remembers successful prepare runs in memory only until linking, as described below.
 
 Exception: a discovered Project linked before this change that has never finished its first reconciliation (`first_reconciled_at` is null) runs `setup` when it does. Such a Project was never usable, so this is the first link that counts.
 
@@ -154,21 +179,22 @@ Known limit: tools that load only after the first prompt (zinit turbo mode, lazy
 
 ### `pv link`
 
-1. **Read and validate Project config,** as today. If the daemon is running hooks for this Project (a running `hooks` job for it), fail before running anything and say to wait for that job, or pass `--skip-hooks`. Two runs of `composer install` in one directory at once can break it.
+1. **Read and validate Project config,** as today. If the daemon is running hooks for this Project (a queued or running `hooks` job for it), fail before running anything and say to wait for that job, or pass `--skip-hooks`. Two runs of `composer install` in one directory at once can break it.
 2. **Run `prepare`** in the terminal, unless `--skip-hooks` is passed or there is no `prepare` list. On failure:
    - Exit non-zero.
    - On a first link, nothing is recorded.
    - On a relink, the existing record is left as it was and no reconciliation is requested.
 3. **Record desired state and request reconciliation,** as today.
 4. **Run `setup`,** if the Project has a `setup` list and `--skip-hooks` wasn't passed:
-   - Wait for the reconciliation job, using the waiting job client that `pv setup` uses.
+   - Wait for the job ID in the daemon's accepted response by reading its record in `pv.db` until it finishes. The ID may name a new job or an existing queued/running reconciliation into which the request was coalesced. Then check the Project's own outcome. This uses the existing protocol and does not reuse the streaming setup client.
    - If the job fails, or the Project's own reconciliation didn't succeed, don't run `setup`. Exit non-zero and say why.
    - If the daemon isn't running (including before `pv setup`), skip `setup`. Warn that it runs when `pv link` is run again after `pv setup`, and exit zero, matching how `pv link` behaves before setup today.
    - Otherwise run `setup` in the terminal. On failure, exit non-zero. The Project stays linked with its allocations and env block.
 5. **Record the run as a `hooks` job** for the Project when it finishes (next section). A `prepare` failure on a first link has no Project to record against, so it appears only in the terminal.
 
 Details:
-- Before running hooks, `pv link` releases its shared runtime lifecycle admission, as the PHP and Composer shims do before running PHP. Otherwise a long `setup` would block `pv daemon:disable` and `pv uninstall`.
+- `pv link` holds shared runtime lifecycle admission throughout the command, except while hook commands run. Release it immediately before each hook list and reacquire it immediately afterwards. If reacquiring fails because `pv daemon:disable` or `pv uninstall` took it, exit non-zero without recording state or contacting the daemon. Otherwise a long `setup` would block disable or uninstall.
+- Two concurrent `pv link` invocations in the same folder are not coordinated, like running `composer install` twice by hand.
 - `pv link` without setup hooks stays a fast intent command that returns once the daemon accepts reconciliation.
 - A reconciliation that `pv link` requested never makes the daemon run `setup` as well. `pv link` runs or skips hooks itself, including for a discovered Project whose first reconciliation it triggers.
 - Each command is announced on its own line before its output, such as `Running setup: pnpm build`. Command output is passed through unchanged.
@@ -180,8 +206,8 @@ For a newly found worktree (not opted out, its directory exists, its config can 
 1. **PV copies the source's env file** if the worktree has none, as today.
 2. **If the worktree's config has a `prepare` list,** PV doesn't link it yet:
    - It hands the worktree to the hook runner, outside the job queue.
-   - While that `prepare` runs, discovery and the 30-second health scan leave that worktree alone.
-   - When `prepare` succeeds, the runner requests system reconciliation, and discovery links the worktree.
+   - While that `prepare` is queued or running, discovery and the 30-second health scan leave that worktree alone.
+   - When `prepare` succeeds, the runner adds the worktree ID to an in-memory prepared set and requests system reconciliation. Discovery and the health scan honour that set: discovery links the prepared worktree without another `prepare` and removes it from the set once linked. The set is empty after a daemon restart.
    - When `prepare` fails, the daemon remembers the worktree ID in memory. Discovery and the health scan skip the worktree until the daemon restarts. The failure says to fix the cause and run `pv daemon:restart`. Nothing is written to `worktree_opt_outs`, so the worktree stays a discovered worktree.
    - If the daemon restarts at any point before the worktree is linked, `prepare` runs again on the next discovery.
 3. **Without a `prepare` list,** discovery links the worktree straight away, as today.
@@ -198,7 +224,7 @@ The serving gate is unchanged. A worktree's route appears once its first reconci
 - The runner uses tokio child processes on the daemon's current-thread runtime, with the process-group and `kill_on_drop` pattern from `run_validation_command` (`crates/daemon/src/gateway.rs`).
 - **Stopping runs:**
   - Unlinking a Project, or unlinking a source and with it its discovered Projects, stops their queued and running hooks.
-  - When Git removes a worktree, PV stops its hooks before cleanup deletes any allocation object, so a migration never runs against a database being dropped.
+  - When Git removes a worktree, PV stops its daemon hooks before cleanup deletes any allocation object, so a daemon migration never runs against a database being dropped. A foreground `pv link` belongs to the user's terminal; removing its worktree mid-command is like deleting a folder during `composer install`. There is no CLI/daemon handoff.
   - The daemon stopping kills every hook process group.
 
 ### Reporting
@@ -207,16 +233,16 @@ The serving gate is unchanged. A worktree's route appears once its first reconci
 - Every hook run is recorded as a job of kind `hooks`. Scopes:
   - `project:<id>` for a linked Project. This covers `pv link` runs and daemon `setup` runs.
   - `worktree:<source-project-id>:<worktree-id>` for a daemon `prepare` run on a worktree that isn't linked yet. That pair is the discovered Project's identity (DESIGN.md, Git Worktrees).
-- A successful run records success coverage for its scope's subject. A failed run records a failure naming the phase, the command, its exit status and the log path, for example ``setup: `pnpm build` exited with status 1 (log: ~/.pv/logs/hooks/job_000123.log)``.
+- A successful run records success coverage for its scope's subject. A failed run records a failure naming the phase, the command, its exit status and the log path, for example ``setup: `pnpm build` exited with status 1 (log: ~/.pv/logs/hooks/project-<project-id>.log)``.
 - Today's `JobDiagnosticSubject::from_job_identity` already maps any non-`reconcile` kind to a subject per kind and scope, so the existing current-failure rules apply unchanged: a failure stays current until a newer success for the same subject.
 - `pv status` lists current hook failures with their log paths.
 - `pv status` ignores a hook failure whose Project, or for a `worktree:` scope whose source Project, is no longer linked.
 - `pv jobs` lists hook runs like any other job, plus their log path.
-- The daemon records its runs when they start, so one cut off by a restart is failed at startup like any other job left running. `pv link` records its run when it finishes. A row left running by `pv link` would be failed by a daemon restart while the command was still going.
+- The daemon creates the `hooks` job row when it queues a run, in the running state. Startup fails queued runs as well as active runs, so a lost queued `setup` is visible in `pv status`, and `pv link` can see queued daemon hooks. `pv link` records its run when it finishes. A row left running by `pv link` would be failed by a daemon restart while the command was still going.
 
 **Logs:**
-- Each daemon run writes its commands' interleaved stdout and stderr to `~/.pv/logs/hooks/<job-id>.log`. The directory is `0700` and each file `0600`, because command output can contain secrets.
-- Before each run, the daemon deletes logs whose job is no longer in the retained job history, so the logs never outlive their records.
+- Each daemon run writes its commands' interleaved stdout and stderr to one log per subject, replaced at each run: `~/.pv/logs/hooks/project-<project-id>.log` for a linked Project, or `~/.pv/logs/hooks/worktree-<source-project-id>-<worktree-id>.log` for a pre-link `prepare`. The directory is `0700` and each file `0600`, because command output can contain secrets.
+- Worktree cleanup deletes that worktree's logs. There is no pruning sweep and no promise that logs and retained job records have the same lifetime. Historical job paths refer to the subject's latest log.
 - `pv link` runs write no log; their output went to the terminal.
 
 ## DESIGN.md Changes
@@ -257,7 +283,7 @@ A linear `gh stack` of four PRs.
    - `prepare` before recording, waiting for reconciliation, `setup`, `--skip-hooks`, the lifecycle admission release, the not-running warning, the `hooks` job record, and the "requested by `pv link`" flag on the reconciliation request.
    - Integration tests in `it/` with insta snapshots of terminal output.
 4. **Daemon.**
-   - The runner pool, the discovery `prepare` flow with its in-memory running and failed sets (honoured by the health scan), queuing `setup` on the first-reconciliation transition, job records and log files with pruning, stopping runs on unlink, worktree removal and shutdown, and the `pv status` / `pv jobs` output.
+   - The runner pool, the discovery `prepare` flow with its in-memory running, failed and prepared sets (honoured by the health scan), queuing `setup` on the first-reconciliation transition, job rows created at queue time and per-subject log files removed by worktree cleanup, stopping runs on unlink, worktree removal and shutdown, and the `pv status` / `pv jobs` output.
    - Integration tests for: 6 worktrees appearing at once (at most 4 runs at a time), a `prepare` failure retried after restart, a run cut off by a restart showing as failed, cleanup waiting for a running hook, and `pv link` in a discovered worktree not causing a second `setup`.
 
 ## Verification
@@ -276,11 +302,11 @@ For the stack, on the owner's laptop with many worktrees:
 - **Load spikes.** 20 new worktrees mean up to 40 hook runs. The 4-run cap bounds the load, and Projects already linked never run hooks.
 - **Agents running the same commands.** An agent that runs `pnpm install` in the same worktree at the same time can collide with PV. Once PV owns setup, remove those steps from agent setup scripts.
 - **Shell startup problems.** Markers, stdin from `/dev/null` and the 10 s timeout cover noise, prompts and hangs. Lazily loaded tools stay a documented limit.
-- **Secrets.** Captured values are never written anywhere. Command output can still contain secrets, so hook logs are owner-only.
+- **Secrets.** Hooks receive the whole environment and can read and send away credentials such as `COMPOSER_AUTH`. Accepted: branch code PV serves and Composer/pnpm scripts already run as the user and can read those same secrets from files (D2). PV never persists captured values. Command output can still contain secrets, so hook logs are owner-only.
 - **Job history churn.** Hook runs share the 100-job history, so a burst of worktrees pushes older jobs out sooner.
 - **Never-linked worktrees.** A `prepare` failure for a worktree that Git then removes, while its source stays linked, stays in `pv status` until it ages out of the job history. Accepted.
-- **Database drops during migrations.** Cleanup stops a worktree's hooks before deleting its allocation objects.
-- **A `setup` queued but not started.** The daemon records a run when it starts, so `pv link` can't see one that is still waiting for a free slot. Running `pv link` in that window can still run `setup` twice. Accepted; the window closes as soon as a slot frees up.
+- **Database drops during migrations.** Cleanup stops a worktree's daemon hooks before deleting its allocation objects. Foreground runs belong to the terminal; removing a worktree during `pv link` has no CLI/daemon handoff.
+- **Concurrent foreground links.** Two `pv link` runs in the same folder are not coordinated, like two manually started Composer installs. Queued daemon runs are covered by their job rows.
 
 ## Acceptance Criteria
 
@@ -292,8 +318,8 @@ For the stack, on the owner's laptop with many worktrees:
 - Hook commands run under `/bin/sh -c` with the freshly captured login-shell environment plus PV's overlay, and `pnpm` resolves from the daemon.
 - The daemon runs at most 4 hook runs at once, never under `jobs.lock`.
 - Every daemon hook run, and every `pv link` hook run for a recorded Project, appears in `pv jobs`. A failed daemon run shows in `pv status` with its log path until a newer success.
-- `pv link` refuses to run hooks while the daemon is running hooks for the same Project.
-- Unlink, worktree removal and daemon shutdown stop running hooks. Cleanup never deletes an allocation object while a hook for that Project is still running.
+- `pv link` refuses to run hooks while the daemon has queued or running hooks for the same Project.
+- Unlink, worktree removal and daemon shutdown stop running hooks. Cleanup never deletes an allocation object while a daemon hook for that Project is still running. Foreground runs remain owned by their terminal.
 
 ## Rejected Alternatives
 

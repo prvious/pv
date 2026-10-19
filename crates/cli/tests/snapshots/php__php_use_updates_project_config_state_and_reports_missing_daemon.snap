@@ -27,6 +27,15 @@ expression: "(output, config_file.config,\nproject_snapshot(&project_after, temp
             ".",
         ),
         env: {},
+        hooks: ProjectHooks {
+            prepare: [
+                "cp template.env .env",
+            ],
+            setup: [
+                "composer install",
+                "pnpm build",
+            ],
+        },
         resources: {},
     },
     ProjectSnapshot {

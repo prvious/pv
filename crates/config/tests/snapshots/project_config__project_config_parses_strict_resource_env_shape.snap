@@ -19,6 +19,10 @@ ProjectConfig {
     env: {
         "APP_URL": "${url}",
     },
+    hooks: ProjectHooks {
+        prepare: [],
+        setup: [],
+    },
     resources: {
         "mysql": ResourceConfig {
             track: Some(

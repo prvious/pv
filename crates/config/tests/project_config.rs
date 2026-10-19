@@ -37,6 +37,94 @@ postgresql:
 }
 
 #[test]
+fn project_config_parses_hooks_in_both_serving_modes() -> Result<()> {
+    let source = r#"
+hooks:
+  prepare:
+    - cp "$PV_SOURCE_PATH/auth.json" auth.json
+  setup:
+    - composer install
+    - |
+      pnpm install
+      pnpm build
+"#;
+    let serving = ProjectConfig::parse(source)?;
+    let resource_only = ProjectConfig::parse(&format!("serve: false\n{source}"))?;
+    assert_eq!(serving.hooks, resource_only.hooks);
+    assert_debug_snapshot!(serving.hooks);
+
+    for source in ["", "hooks: {}", "hooks: { prepare: [], setup: [] }"] {
+        let config = ProjectConfig::parse(source)?;
+        assert!(config.hooks.is_empty());
+        assert_eq!(config, ProjectConfig::default());
+    }
+    Ok(())
+}
+
+#[test]
+fn project_config_rejects_invalid_hooks() -> Result<()> {
+    let mut errors = Vec::new();
+    for (source, expected_field) in [
+        ("hooks: null", "hooks"),
+        ("hooks: []", "hooks"),
+        ("hooks: install", "hooks"),
+        ("hooks: { prepare: install }", "hooks.prepare"),
+        ("hooks: { setup: null }", "hooks.setup"),
+        ("hooks: { setup: [1] }", "hooks.setup"),
+        ("hooks: { setup: [false] }", "hooks.setup"),
+        ("hooks: { setup: [{}] }", "hooks.setup"),
+        ("hooks: { prepare: [null] }", "hooks.prepare"),
+    ] {
+        let error = ProjectConfig::parse(source)
+            .err()
+            .ok_or_else(|| anyhow!("accepted {source}"))?;
+        assert!(matches!(
+            &error,
+            ConfigError::InvalidFieldType { field, .. } if field == expected_field
+        ));
+        errors.push(error.to_string());
+    }
+    for source in ["hooks: { prepare: [''] }", "hooks: { setup: ['   '] }"] {
+        let error = ProjectConfig::parse(source)
+            .err()
+            .ok_or_else(|| anyhow!("accepted {source}"))?;
+        assert!(matches!(&error, ConfigError::EmptyField { .. }));
+        errors.push(error.to_string());
+    }
+    let error = ProjectConfig::parse("hooks: { ready: [] }")
+        .err()
+        .ok_or_else(|| anyhow!("accepted unknown hook"))?;
+    assert!(matches!(&error, ConfigError::UnknownHookKey { key } if key == "ready"));
+    errors.push(error.to_string());
+    assert_debug_snapshot!(errors);
+    Ok(())
+}
+
+#[test]
+fn project_config_writer_preserves_hooks_when_updating_php() -> Result<()> {
+    let tempdir = tempdir()?;
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    let source = r#"
+php: 8.3
+hooks:
+  prepare:
+    - cp "$PV_SOURCE_PATH/auth.json" auth.json
+  setup:
+    - composer install
+    - pnpm build
+"#;
+    write_file(&project.join("pv.yml"), source)?;
+    let original = ProjectConfig::parse(source)?;
+    let updated = write_project_php_track(&project, "8.4")?;
+    let reloaded = ProjectConfigFile::read_from_root(&project)?;
+    assert_eq!(updated.config.hooks, original.hooks);
+    assert_eq!(reloaded.config, updated.config);
+    assert_snapshot!(read_file(&project.join("pv.yml"))?);
+    Ok(())
+}
+
+#[test]
 fn project_config_parses_resource_only_controls_and_defaults() -> Result<()> {
     let defaults = ProjectConfig::parse("")?;
     let resource_only = ProjectConfig::parse(

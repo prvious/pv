@@ -20,6 +20,10 @@ expression: "(updated.path.file_name(), updated.exists, updated.config)"
         ),
         root: None,
         env: {},
+        hooks: ProjectHooks {
+            prepare: [],
+            setup: [],
+        },
         resources: {},
     },
 )

@@ -1040,7 +1040,10 @@ fn php_use_updates_project_config_state_and_reports_missing_daemon() -> anyhow::
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
     create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "root: .\n")?;
+    write_file(
+        &project.join("pv.yml"),
+        "root: .\nhooks:\n  prepare:\n    - cp template.env .env\n  setup:\n    - composer install\n    - pnpm build\n",
+    )?;
     let project_record = register_project(&home, &project, "acme.test")?;
     let artifacts = php_pair_artifacts("8.4.8-pv1")?;
     prepare_existing_php_pair_releases(&home, "8.4", &artifacts)?;
