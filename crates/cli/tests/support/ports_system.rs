@@ -21,7 +21,7 @@ use state::{Database, GatewayPort, MonitorReservation, PortRequest, PvPaths, fs}
 use tokio::runtime::{Builder, Runtime};
 
 use super::{
-    HelperFixture, checked, checksum, require_units_absent, root, root_text, service_property,
+    HelperFixture, checksum, require_units_absent, root, root_text, service_property,
     with_helper_fixture,
 };
 

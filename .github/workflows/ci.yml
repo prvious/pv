@@ -270,10 +270,10 @@ jobs:
           set -euo pipefail
           cargo build --locked --all-features -p pv-privileged-helper
           cargo nextest list --locked --all-features -p cli --run-ignored only \
-            -E 'binary(=linux_helper_system) and (test(=systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes) or test(/^dns_system::/))'
+            -E 'binary(=linux_helper_system) and (test(=systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes) or test(/^dns_system::/) or test(/^ports_system::/))'
           mkdir "$RUNNER_TEMP/nextest-helper-recordings"
 
-      - name: Run native Linux helper and DNS tests
+      - name: Run native Linux helper, DNS and proxy tests
         id: linux_helper_tests
         shell: bash
         run: |
@@ -281,7 +281,8 @@ jobs:
           sudo -n ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
           for test_case in \
             systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes \
-            dns_system::systemd_dns_routes_test_reapplies_after_restart_changes_port_and_refuses_conflicts
+            dns_system::systemd_dns_routes_test_reapplies_after_restart_changes_port_and_refuses_conflicts \
+            ports_system::systemd_socket_proxies_route_gateway_identity_repair_and_refuse_foreign_units
           do
             NEXTEST_STATE_DIR=$(mktemp -d "$RUNNER_TEMP/nextest-helper-state.XXXXXX")
             export NEXTEST_STATE_DIR
