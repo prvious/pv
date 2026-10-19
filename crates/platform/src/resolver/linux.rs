@@ -840,7 +840,6 @@ pub(crate) fn remove_resolver_config_privileged() -> Result<(), PlatformError> {
         stop_link().await?;
         read_owned_unit(path)?;
         state::fs::remove_file_if_exists(path)
-            .and_then(|()| state::fs::sync_parent_directory(path))
             .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
         manager
             .call::<_, _, ()>("Reload", &())
