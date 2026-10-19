@@ -514,6 +514,7 @@ impl HelperFixture {
         platform::remove_privileged_helper()?;
         self.require_removed()?;
         root(&["/usr/bin/rm", "-f", "--", LOG])?;
+        root(&["/usr/bin/rm", "-rf", "--", CONTROL_DIRECTORY])?;
         if self.timer_attempted {
             root(&[
                 "/usr/bin/systemctl",
@@ -521,7 +522,6 @@ impl HelperFixture {
                 &format!("{CLEANUP_UNIT}.timer"),
             ])?;
         }
-        root(&["/usr/bin/rm", "-rf", "--", CONTROL_DIRECTORY])?;
         self.cleaned = true;
         Ok(())
     }
