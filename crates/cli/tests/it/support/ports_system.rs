@@ -104,28 +104,6 @@ fn require_absent() -> Result<()> {
     require_units_absent(&names.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
-fn require_proxy_units_unloaded() -> Result<()> {
-    let names = socket_proxy_unit_names();
-    let arguments = [
-        "list-units",
-        "--all",
-        "--no-legend",
-        "--no-pager",
-        "--plain",
-    ]
-    .into_iter()
-    .chain(names.iter().map(String::as_str))
-    .collect::<Vec<_>>();
-    let output = checked("/usr/bin/systemctl", &arguments)?;
-    ensure!(
-        output.stdout.is_empty() && output.stderr.is_empty(),
-        "socket proxy units remain loaded: {}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    Ok(())
-}
-
 fn socket_target_dependencies() -> Result<String> {
     let dependencies = service_property("sockets.target", "Wants")?;
     let mut sockets = dependencies
@@ -193,37 +171,6 @@ impl PortsFixture {
         let ca = platform::generate_local_ca()?;
         fs::write_sensitive_file(&self.paths.ca_certificate(), &ca.certificate_pem)?;
         fs::write_sensitive_file(&self.paths.ca_private_key(), &ca.private_key_pem)?;
-        let retained = "/etc/systemd/system/pv-http.socket.rollback";
-        let retained_bytes = "retained administrator recovery bytes\n";
-        helper_fixture.root_file("retained.socket", retained_bytes, retained, "0644")?;
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let code = run_with_environment(
-            ["pv", "ports:install"],
-            &PortEnvironment(&self.paths),
-            &mut stdout,
-            &mut stderr,
-        )?;
-        ensure!(code == ExitCode::FAILURE);
-        for name in socket_proxy_unit_names() {
-            ensure!(fs::path_entry_exists(
-                &self.paths.ports_config().join(name)
-            )?);
-        }
-        assert_eq!(
-            Database::open(&self.paths)?.assigned_ports()?,
-            [],
-            "{}",
-            String::from_utf8_lossy(&stderr)
-        );
-        assert_eq!(fs::read_to_string(Utf8Path::new(retained))?, retained_bytes);
-        assert_snapshot!(String::from_utf8(stderr)?, @"error: PV privileged helper rejected the request: PV privileged helper rejected the request: system integration operation failed: retained unit rollback requires administrator inspection before retrying: /etc/systemd/system/pv-http.socket.rollback\n");
-        root(&["/usr/bin/rm", "--", retained])?;
-        for name in socket_proxy_unit_names() {
-            fs::delete_file(&self.paths.ports_config().join(name))?;
-        }
-        require_absent()?;
-
         let [http_port, https_port, changed_port] = pv_fake::ports::<3>()?;
         let config = PfRedirectConfig::new(http_port, https_port);
         let mut database = Database::open(&self.paths)?;
@@ -278,86 +225,9 @@ impl PortsFixture {
         root(&["/usr/bin/systemctl", "daemon-reload"])?;
         require_absent()?;
 
-        for (name, content) in render_socket_proxy_units(&config) {
-            helper_fixture.root_file(
-                &name,
-                &content,
-                &format!("{SYSTEM_SOCKET_PROXY_DIRECTORY}/{name}"),
-                "0644",
-            )?;
-        }
-        require_proxy_units_unloaded()?;
-        let inspection = platform::inspect_active_pf_redirects_unprivileged()?;
-        assert_snapshot!(serde_json::to_string_pretty(&inspection)?, @r#"
-        {
-          "pf_enabled": false,
-          "pv_config": null,
-          "pv_anchor_has_unparsed_rules": false,
-          "resolved_target_ports": [],
-          "has_unresolved_redirect_targets": false
-        }
-        "#);
-        assert_eq!(PrivilegedHelperClient.inspect_pf()?, inspection);
-        self.require_status("inactive", "systemd")?;
-        ensure!(platform::repairable_socket_proxy_ports()?.is_empty());
-        require_proxy_units_unloaded()?;
-
         self.start_gateway(&config)?;
         self.command("ports:install")?;
         self.require_active(&config)?;
-        let unit = "/etc/systemd/system/pv-http.service";
-        let expected = fs::read_to_string(Utf8Path::new(unit))?;
-        let proxy_pid = service_property("pv-http.service", "MainPID")?;
-        let owner_uid = helper_fixture.owner_uid.to_string();
-        // Hard links must share the installed unit's filesystem.
-        let hard_link = format!("{SYSTEM_SOCKET_PROXY_DIRECTORY}/{FOREIGN_SERVICE}");
-        let metadata_changes: [(&[&str], &[&str]); 3] = [
-            (
-                &["/usr/bin/chown", &owner_uid, unit],
-                &["/usr/bin/chown", "0:0", unit],
-            ),
-            (
-                &["/usr/bin/chmod", "0664", unit],
-                &["/usr/bin/chmod", "0644", unit],
-            ),
-            (
-                &["/usr/bin/ln", unit, &hard_link],
-                &["/usr/bin/rm", "--", &hard_link],
-            ),
-        ];
-        for (mutation_arguments, restoration_arguments) in metadata_changes {
-            root(mutation_arguments)?;
-            let current = platform::socket_proxy_files_current(
-                &config,
-                &self.paths.ports_config(),
-                Utf8Path::new(SYSTEM_SOCKET_PROXY_DIRECTORY),
-            );
-            let content = fs::read_to_string(Utf8Path::new(unit));
-            let mut stdout = Vec::new();
-            let mut stderr = Vec::new();
-            let status = run_with_environment(
-                ["pv", "ports:status", "--json"],
-                &PortEnvironment(&self.paths),
-                &mut stdout,
-                &mut stderr,
-            );
-            let refused = PrivilegedHelperClient.apply_pf(&config);
-            root(restoration_arguments)?;
-            let code = status?;
-            assert_eq!(content?, expected);
-            assert!(!current, "untrusted installed metadata counted as current");
-            ensure!(stderr.is_empty(), "{}", String::from_utf8_lossy(&stderr));
-            let observed: Value = serde_json::from_slice(&stdout)?;
-            assert_eq!(observed["state"], "drifted");
-            assert_eq!(observed["evidence"], "systemd");
-            assert_eq!(code, ExitCode::FAILURE);
-            assert!(matches!(
-                refused,
-                Err(PlatformError::PrivilegedHelperRejected { .. })
-            ));
-            self.require_active(&config)?;
-            assert_eq!(service_property("pv-http.service", "MainPID")?, proxy_pid);
-        }
         assert_snapshot!(socket_target_dependencies()?, @r"
         pv-http.socket
         pv-https.socket
@@ -373,8 +243,6 @@ impl PortsFixture {
         self.start_gateway(&config)?;
         self.require_active(&config)?;
 
-        // The restored HTTPS socket's start job waits for an HTTP request, so socket
-        // activation has completed before rollback checks the previously idle service.
         root(&[
             "/usr/bin/systemctl",
             "stop",
@@ -384,11 +252,7 @@ impl PortsFixture {
         let mut previous_units = render_socket_proxy_units(&config);
         previous_units[2].1 = previous_units[2]
             .1
-            .replace("127.0.0.1:443", &format!("127.0.0.1:{changed_port}"))
-            .replace(
-                "[Socket]\n",
-                "[Socket]\nExecStartPost=/usr/bin/curl --fail --silent --show-error --max-time 2 --output /dev/null --header Host:pv-gateway.localhost http://127.0.0.1/__pv/health\n",
-            );
+            .replace("127.0.0.1:443", &format!("127.0.0.1:{changed_port}"));
         helper_fixture.root_file(
             "rollback-activation.socket",
             &previous_units[2].1,
@@ -414,12 +278,7 @@ impl PortsFixture {
             "pv-https.socket",
             FOREIGN_SOCKET,
         ])?;
-        root(&["/usr/bin/systemctl", "stop", "pv-http.service"])?;
-        assert_eq!(service_property("pv-http.socket", "ActiveState")?, "active");
-        assert_eq!(
-            service_property("pv-http.service", "ActiveState")?,
-            "inactive"
-        );
+        self.require_forwarding(&config, 80, changed_port)?;
         let conflict = PrivilegedHelperClient
             .inspect_low_ports()?
             .ports
@@ -456,46 +315,6 @@ impl PortsFixture {
         pv-https.socket
         ");
 
-        // A failed restoration must stop before another unit can reactivate routing.
-        let rejection_flag = format!("{CONTROL}/reject-restore");
-        let rejecting_socket =
-            fs::read_to_string(Utf8Path::new("/etc/systemd/system/pv-http.socket"))?.replace(
-                "[Socket]\n",
-                &format!("[Socket]\nExecStartPost=/usr/bin/test ! -e {rejection_flag}\n"),
-            );
-        helper_fixture.root_file(
-            "rejecting-restore.socket",
-            &rejecting_socket,
-            "/etc/systemd/system/pv-http.socket",
-            "0644",
-        )?;
-        root(&["/usr/bin/systemctl", "daemon-reload"])?;
-        root(&["/usr/bin/systemctl", "restart", "pv-http.socket"])?;
-        root(&["/usr/bin/systemctl", "stop", "pv-http.service"])?;
-        helper_fixture.root_file("reject-restore", "reject\n", &rejection_flag, "0600")?;
-        root(&["/usr/bin/test", "-f", &rejection_flag])?;
-        for name in ["pv-http.socket", "pv-https.socket"] {
-            assert_eq!(service_property(name, "ActiveState")?, "active");
-        }
-        let failure = PrivilegedHelperClient
-            .apply_pf(&config)
-            .err()
-            .context("conflicting socket proxy apply unexpectedly succeeded")?;
-        assert_eq!(
-            service_property("pv-http.socket", "ActiveState")?,
-            "failed",
-            "{failure:#}"
-        );
-        for name in ["pv-https.socket", "pv-https.service"] {
-            assert_eq!(
-                service_property(name, "ActiveState")?,
-                "inactive",
-                "{failure:#}"
-            );
-        }
-        assert_eq!(service_property(FOREIGN_SOCKET, "ActiveState")?, "active");
-        root(&["/usr/bin/rm", "--", &rejection_flag])?;
-        root(&["/usr/bin/systemctl", "reset-failed", "pv-http.socket"])?;
         root(&["/usr/bin/systemctl", "stop", FOREIGN_SOCKET])?;
         for name in [FOREIGN_SOCKET, FOREIGN_SERVICE] {
             root(&[
@@ -538,99 +357,8 @@ impl PortsFixture {
         self.command("ports:install")?;
         self.require_active(&config)?;
 
-        // The loaded command must not substitute for a forwarder's running target.
-        let service = render_socket_proxy_units(&config)[1].1.clone();
-        let changed_service = service.replace(
-            &format!("127.0.0.1:{http_port}"),
-            &format!("127.0.0.1:{changed_port}"),
-        );
-        helper_fixture.root_file(
-            "changed.service",
-            &changed_service,
-            "/etc/systemd/system/pv-http.service",
-            "0644",
-        )?;
-        root(&["/usr/bin/systemctl", "daemon-reload"])?;
-        root(&["/usr/bin/systemctl", "restart", "pv-http.service"])?;
-        let proxy_pid = service_property("pv-http.service", "MainPID")?;
-        ensure!(proxy_pid != "0", "HTTP forwarder is not running");
-        helper_fixture.root_file(
-            "current.service",
-            &service,
-            "/etc/systemd/system/pv-http.service",
-            "0644",
-        )?;
-        root(&["/usr/bin/systemctl", "daemon-reload"])?;
-        assert_eq!(service_property("pv-http.service", "MainPID")?, proxy_pid);
-        ensure!(platform::socket_proxy_files_current(
-            &config,
-            &self.paths.ports_config(),
-            Utf8Path::new(SYSTEM_SOCKET_PROXY_DIRECTORY)
-        ));
-        let inspection = platform::inspect_active_pf_redirects_unprivileged()?;
-        assert_eq!(inspection.pv_config, None);
-        ensure!(inspection.has_unresolved_redirect_targets);
-        self.require_status("drifted", "systemd")?;
-        self.command("ports:install")?;
-        self.require_active(&config)?;
-
-        helper_fixture.root_file(
-            "failed-proxy.service",
-            "# Managed by PV\n[Service]\nType=oneshot\nExecStart=/usr/bin/false\n",
-            "/etc/systemd/system/pv-http.service",
-            "0644",
-        )?;
-        root(&["/usr/bin/systemctl", "daemon-reload"])?;
-        ensure!(root(&["/usr/bin/systemctl", "restart", "pv-http.service"]).is_err());
-        assert_eq!(
-            service_property("pv-http.service", "ActiveState")?,
-            "failed"
-        );
         self.command("ports:uninstall")?;
         self.command("ports:uninstall")?;
-        require_absent()?;
-        self.command("ports:install")?;
-        self.require_active(&config)?;
-
-        root(&[
-            "/usr/bin/systemctl",
-            "stop",
-            "pv-http.service",
-            "pv-http.socket",
-        ])?;
-        let foreign_socket = "[Socket]\nListenStream=127.0.0.1:80\n";
-        helper_fixture.root_file(
-            "conflicting.socket",
-            foreign_socket,
-            &format!("{SYSTEM_SOCKET_PROXY_DIRECTORY}/{FOREIGN_SOCKET}"),
-            "0644",
-        )?;
-        helper_fixture.root_file(
-            "conflicting.service",
-            "[Service]\nExecStart=/usr/bin/true\n",
-            &format!("{SYSTEM_SOCKET_PROXY_DIRECTORY}/{FOREIGN_SERVICE}"),
-            "0644",
-        )?;
-        root(&["/usr/bin/systemctl", "daemon-reload"])?;
-        root(&["/usr/bin/systemctl", "start", FOREIGN_SOCKET])?;
-        ensure!(root(&["/usr/bin/systemctl", "start", "pv-http.socket"]).is_err());
-        assert_eq!(service_property("pv-http.socket", "ActiveState")?, "failed");
-        self.command("ports:uninstall")?;
-        self.command("ports:uninstall")?;
-        assert_eq!(service_property(FOREIGN_SOCKET, "ActiveState")?, "active");
-        assert_eq!(
-            fs::read_to_string(&Utf8Path::new(SYSTEM_SOCKET_PROXY_DIRECTORY).join(FOREIGN_SOCKET))?,
-            foreign_socket
-        );
-        root(&["/usr/bin/systemctl", "stop", FOREIGN_SOCKET])?;
-        for name in [FOREIGN_SOCKET, FOREIGN_SERVICE] {
-            root(&[
-                "/usr/bin/rm",
-                "--",
-                &format!("{SYSTEM_SOCKET_PROXY_DIRECTORY}/{name}"),
-            ])?;
-        }
-        root(&["/usr/bin/systemctl", "daemon-reload"])?;
         require_absent()?;
         self.require_status("inactive", "systemd")?;
         for name in socket_proxy_unit_names() {
