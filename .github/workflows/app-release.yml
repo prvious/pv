@@ -204,7 +204,7 @@ jobs:
         if: ${{ startsWith(matrix.platform, 'linux-') && contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform)) }}
         run: |
           df -h /
-          docker build -f scripts/linux/builder.Dockerfile -t pv-linux-builder .
+          docker build -f scripts/linux/builder.Dockerfile --build-arg BUILDER_UID="$(id -u)" -t pv-linux-builder .
 
       - name: Build app and privileged helper binaries
         if: ${{ contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform)) }}
