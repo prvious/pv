@@ -155,11 +155,15 @@ select_asset() {
         die "PV needs glibc 2.35 or newer; found ${libc}"
       fi
       [ -d /run/systemd/system ] || die "PV needs systemd running"
+      ID= VERSION_ID= PRETTY_NAME=
       if [ -r /etc/os-release ]; then
         # shellcheck source=/dev/null
         . /etc/os-release
       fi
-      warn "Linux distribution: ${PRETTY_NAME:-Linux} (untested)"
+      case "${ID:-}:${VERSION_ID:-}:${platform}" in
+        @@SUPPORTED_LINUX_DISTRIBUTIONS@@) ;;
+        *) warn "Linux distribution: ${PRETTY_NAME:-Linux} (untested)" ;;
+      esac
       ;;
     *)
       die "macOS or Linux is required; found ${os}"
@@ -854,6 +858,14 @@ pub fn generate_app_installer_script(
     generate_app_manifest_json(records, base_url)?;
 
     let mut installer = APP_INSTALLER_TEMPLATE
+        .replace(
+            "@@SUPPORTED_LINUX_DISTRIBUTIONS@@",
+            &include_str!("../../../release/linux-supported-distributions.txt")
+                .lines()
+                .map(shell_quote)
+                .collect::<Vec<_>>()
+                .join("|"),
+        )
         .replace("@@PV_VERSION@@", &shell_quote(first_record.version()))
         .replace(
             "@@HELPER_VERSION@@",

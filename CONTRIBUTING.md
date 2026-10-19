@@ -282,6 +282,11 @@ Each pair uploads its result and step logs. The acceptance script runs only as
 an ordinary user on an explicitly opted-in disposable machine, with its own
 user manager and no existing PV installation.
 
+Record passing pairs in `release/linux-supported-distributions.txt` as
+`ID:VERSION_ID:platform`, using `/etc/os-release` and PV's platform names. Both
+the generated installer and diagnostics embed this list. Add a pair only after
+its complete artifact and system acceptance gate passes.
+
 
 The daemon-registration system test requires a disposable user's real user
 manager and refuses an existing PV home, unit file, or loaded service. Build PV

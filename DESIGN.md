@@ -24,21 +24,47 @@ Per-project versions are supported too — add a pv.yml file with php: "8.4" in 
 
 ## Platform Scope
 
-PV v1 supports macOS 14 and newer. Stabilizing the macOS application remains the immediate product priority.
+PV v1 supports macOS 14 and newer and the Linux distribution/CPU pairs below.
+
+| Linux distribution | Supported CPUs |
+| --- | --- |
+| Ubuntu 22.04 | amd64, arm64 |
+| Ubuntu 24.04 | amd64, arm64 |
+| Ubuntu 26.04 | amd64, arm64 |
+| Debian 12 | amd64, arm64 |
+| Debian 13 | amd64, arm64 |
+| Fedora 43 | amd64, arm64 |
+| Fedora 44 | amd64, arm64 |
+
+A Linux pair enters this list only after every Managed Resource artifact smoke
+and the full system acceptance journey pass. The same list is embedded from
+`release/linux-supported-distributions.txt` into installer warnings and
+informational diagnostics. Other glibc distributions may run PV but remain
+untested. Derivatives do not inherit support from their base distribution.
+
+Linux requires glibc 2.35 or newer, kernel 5.15 or newer, systemd as PID 1, a
+reachable per-user manager, systemd-resolved as the active stub resolver, sudo
+and NSS certutil. Setup reports missing prerequisites with repair guidance;
+PV does not install system packages. musl, non-systemd hosts, WSL and containers
+as installed PV hosts are unsupported. Disposable acceptance containers are
+test infrastructure.
+
+Linux's robustness bar is parity with macOS main. It does not add CA history,
+extra durability barriers or interruption guarantees beyond the macOS code.
 
 macOS 13 may continue to run PV when the application and Managed Resource binaries remain compatible, but it is untested and unsupported. Dropping support does not by itself require raising binary deployment targets or republishing otherwise compatible Managed Resource artifacts. Before PV deliberately ships an application binary that cannot run on macOS 13, the application update manifest and updater must prevent an incompatible update from being activated there.
 
 The full macOS CI quality and behavior suite covers every supported macOS major version and both supported architectures across a representative matrix rather than every version/architecture combination. The initial matrix is macOS 14 on Apple Silicon, macOS 15 on Intel, macOS 26 on Apple Silicon, and macOS 27 on Apple Silicon. Every use of an undocumented or private macOS interface fails closed: a result that cannot prove it saw other processes is an error, never an empty success. Acceptance tests for OS behavior PV relies on, such as bind conflict rules and process identity, observe a separate process and run in every matrix lane. Behavior that depends on root is tested as root. New supported macOS major versions must be added to the matrix before PV relies on behavior there.
 
-Linux and Windows are committed subsequent platforms. During macOS stabilization, the installed application and runtime crates compile natively on macOS, Linux, and Windows so new system boundaries do not create unnecessary portability blockers.
+Windows is a committed subsequent platform. The installed application and runtime crates compile natively on macOS, Linux, and Windows so new system boundaries do not create unnecessary portability blockers.
 
-Native compile support and explicit unsupported behavior do not make Linux or Windows supported distributions, add them to v1, or authorize publishing Linux or Windows binaries.
+Native Windows compile support and explicit unsupported behavior do not make Windows supported or authorize publishing Windows binaries. Linux implementation and acceptance do not authorize publication; the owner runs releases separately.
 
-Resource and application manifests recognize `linux-amd64` and `linux-arm64` alongside the two macOS platforms. This metadata foundation does not imply Linux system integration or a supported Linux distribution. Before any Linux entries are published, the macOS release that recognizes these platform names must be installed on both maintainer laptops; older clients reject manifests containing unknown platforms.
+Resource and application manifests recognize `linux-amd64` and `linux-arm64` alongside the two macOS platforms. Before any Linux entries are published, the macOS release that recognizes these platform names must be installed on both maintainer laptops; older clients reject manifests containing unknown platforms.
 
 The design may use macOS-specific primitives where they materially improve the v1 experience, including launch agents for daemon startup and the macOS System keychain for local CA trust.
 
-PV uses a host platform boundary in the Rust workspace. Application crates such as `cli`, `daemon`, `state`, `config`, and `resources` should not depend directly on macOS implementation APIs. The v1 concrete host platform implementation is macOS-only; unfinished Linux and Windows implementations return explicit unsupported results, and app-facing code should call the `platform` crate for host integration concerns. Composite setup and uninstall commands check every required host integration before accessing PV paths or changing installation state; enabling a standalone integration does not enable an unfinished composite workflow.
+PV uses a host platform boundary in the Rust workspace. Application crates such as `cli`, `daemon`, `state`, `config`, and `resources` should not depend directly on macOS implementation APIs. The concrete host implementations are macOS and Linux; unfinished Windows integrations return explicit unsupported results. App-facing code calls the `platform` crate for host integration concerns. Composite setup and uninstall commands check every required host integration before accessing PV paths or changing installation state.
 
 ## Implementation Language
 
