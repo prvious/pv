@@ -7364,6 +7364,9 @@ endif()
 if(NOT WITH_SSL STREQUAL "$ENV{PV_TEST_OPENSSL_PREFIX}")
   message(FATAL_ERROR "supplied OpenSSL prefix is required")
 endif()
+if("$ENV{PV_TEST_UPSTREAM_VERSION}" MATCHES "^9[.]7[.]" AND NOT WITH_CURL STREQUAL "bundled")
+  message(FATAL_ERROR "MySQL 9.7 requires its bundled static curl")
+endif()
 foreach(dependency EDITLINE ICU LZ4 PROTOBUF ZLIB ZSTD)
   if(NOT WITH_${dependency} STREQUAL "bundled")
     message(FATAL_ERROR "missing bundled ${dependency}")
@@ -7375,7 +7378,7 @@ endif()
 if(NOT MYSQL_DATADIR STREQUAL "${CMAKE_INSTALL_PREFIX}/data")
   message(FATAL_ERROR "unexpected MySQL data directory")
 endif()
-file(WRITE "$ENV{PV_TEST_CMAKE_LOG}" "bison=${BISON_EXECUTABLE}\nnuma=${WITH_NUMA}\n")
+file(WRITE "$ENV{PV_TEST_CMAKE_LOG}" "bison=${BISON_EXECUTABLE}\nnuma=${WITH_NUMA}\ncurl=${WITH_CURL}\n")
 find_library(aio_library NAMES aio REQUIRED)
 find_library(CURSES_LIBRARY NAMES tinfo REQUIRED)
 if(NOT INSTALL_PRIV_LIBDIR)
@@ -7443,6 +7446,11 @@ install(TARGETS fixture_module LIBRARY DESTINATION lib/plugin)
         &mut builder,
         "mysql-source/newer.map",
         b"GLIBC_2.36 { global: module_fixture; local: *; };\n",
+    )?;
+    append_archive_file(
+        &mut builder,
+        "mysql-source/extra/curl/curl-8.14.1/COPYING",
+        b"curl fixture license\n",
     )?;
     let encoder = builder.into_inner()?;
     encoder.finish()?;
