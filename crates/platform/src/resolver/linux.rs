@@ -14,7 +14,7 @@ use rtnetlink::{Handle, LinkDummy, LinkUnspec};
 use rustix::net::AddressFamily;
 use rustix::process::{geteuid, getuid};
 use tokio::runtime::Builder;
-use zbus::fdo::DBusProxy;
+use zbus::fdo::{DBusProxy, Error as DBusError};
 use zbus::names::BusName;
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedObjectPath;
@@ -496,6 +496,61 @@ async fn resolved_link_path(
     }
 }
 
+async fn wait_for_networkd_initialization(
+    connection: &Connection,
+    index: i32,
+) -> Result<(), PlatformError> {
+    let name = BusName::try_from("org.freedesktop.network1")
+        .map_err(zbus::Error::from)
+        .map_err(bus_error)?;
+    let destination = match DBusProxy::new(connection)
+        .await
+        .map_err(bus_error)?
+        .get_name_owner(name)
+        .await
+    {
+        Ok(owner) => owner.into(),
+        Err(DBusError::NameHasNoOwner(_)) => return Ok(()),
+        Err(error) => return Err(bus_error(error.into())),
+    };
+    let manager = resolved_proxy(
+        connection,
+        destination,
+        "/org/freedesktop/network1"
+            .try_into()
+            .map_err(zbus::Error::from)
+            .map_err(bus_error)?,
+        "org.freedesktop.network1.Manager",
+    )
+    .await?;
+    loop {
+        let (_, path): (String, OwnedObjectPath) =
+            match manager.call("GetLinkByIndex", &(index,)).await {
+                Ok(link) => link,
+                Err(error) if method_error(&error, "org.freedesktop.network1.NoSuchLink") => {
+                    Timer::after(Duration::from_millis(25)).await;
+                    continue;
+                }
+                Err(error) => return Err(bus_error(error)),
+            };
+        let link = resolved_proxy(
+            connection,
+            manager.destination().to_owned(),
+            path,
+            "org.freedesktop.network1.Link",
+        )
+        .await?;
+        let state: String = link
+            .get_property("AdministrativeState")
+            .await
+            .map_err(bus_error)?;
+        if !matches!(state.as_str(), "pending" | "initialized") {
+            return Ok(());
+        }
+        Timer::after(Duration::from_millis(25)).await;
+    }
+}
+
 /// Configures the fixed PV dummy link and its per-link resolved routing. Requires root.
 pub fn start_resolver_link(port: u16) -> Result<(), PlatformError> {
     require_root()?;
@@ -556,6 +611,9 @@ pub fn start_resolver_link(port: u16) -> Result<(), PlatformError> {
                 .map_err(netlink_error)?;
             let resolved_index = i32::try_from(index)
                 .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
+            // Older resolved treats networkd's temporary initialized state as managed,
+            // then clears bus settings when the link becomes unmanaged.
+            wait_for_networkd_initialization(resolved.connection(), resolved_index).await?;
             // resolved handles kernel notifications independently of netlink ACKs.
             while resolved_link_path(&resolved, resolved_index)
                 .await?
