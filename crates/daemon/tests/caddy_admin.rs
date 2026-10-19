@@ -84,61 +84,94 @@ async fn load_caddyfile_sends_exact_request_and_accepts_success() -> Result<()> 
 
 #[tokio::test]
 async fn load_caddyfile_accepts_complete_adapter_warnings() -> Result<()> {
-    let warnings = br#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies"}]"#;
-    let (endpoint, server) = spawn_response_server(vec![http_response(200, warnings)])?;
+    for warnings in [
+        br#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies"}]"#.as_slice(),
+        br#"{"warnings":[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies"}]}"#.as_slice(),
+    ] {
+        let (endpoint, server) = spawn_response_server(vec![http_response(200, warnings)])?;
 
-    test_client()
-        .load_caddyfile(&endpoint, b"candidate\n")
-        .await?;
-    let requests = server.await??;
+        test_client()
+            .load_caddyfile(&endpoint, b"candidate\n")
+            .await?;
+        let requests = server.await??;
 
-    assert_eq!(requests.len(), 1);
+        assert_eq!(requests.len(), 1);
+    }
     Ok(())
 }
 
 #[tokio::test]
 async fn load_caddyfile_rejects_error_reported_after_adapter_warnings() -> Result<()> {
-    let body = br#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted"}]{"error":"loading config: listener unavailable"}
-"#;
-    let (endpoint, server) = spawn_response_server(vec![http_response(200, body)])?;
+    for body in [
+        br#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted"}]{"error":"loading config: listener unavailable"}"#.as_slice(),
+        br#"{"warnings":[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted"}]}{"error":"loading config: listener unavailable"}"#.as_slice(),
+    ] {
+        let (endpoint, server) = spawn_response_server(vec![http_response(200, body)])?;
 
-    let result = test_client()
-        .load_caddyfile(&endpoint, b"candidate\n")
-        .await;
-    let requests = server.await??;
+        let result = test_client()
+            .load_caddyfile(&endpoint, b"candidate\n")
+            .await;
+        let requests = server.await??;
 
-    assert_eq!(requests.len(), 1);
-    assert!(matches!(
-        result,
-        Err(CaddyAdminError::LoadReportedFailure {
-            status: 200,
-            detail,
-            ..
-        }) if detail == "loading config: listener unavailable"
-    ));
+        assert_eq!(requests.len(), 1);
+        assert!(matches!(
+            result,
+            Err(CaddyAdminError::LoadReportedFailure {
+                status: 200,
+                detail,
+                ..
+            }) if detail == "loading config: listener unavailable"
+        ));
+    }
     Ok(())
 }
 
 #[tokio::test]
-async fn load_caddyfile_rejects_error_reported_without_adapter_warnings() -> Result<()> {
-    let body = br#"{"error":"loading config: listener unavailable"}
-"#;
-    let (endpoint, server) = spawn_response_server(vec![http_response(200, body)])?;
+async fn load_caddyfile_rejects_error_objects() -> Result<()> {
+    for body in [
+        br#"{"error":"loading config: listener unavailable"}"#.as_slice(),
+        br#"{"warnings":[],"error":"loading config: listener unavailable"}"#.as_slice(),
+    ] {
+        let (endpoint, server) = spawn_response_server(vec![http_response(200, body)])?;
 
-    let result = test_client()
-        .load_caddyfile(&endpoint, b"candidate\n")
-        .await;
-    let requests = server.await??;
+        let result = test_client()
+            .load_caddyfile(&endpoint, b"candidate\n")
+            .await;
+        let requests = server.await??;
 
-    assert_eq!(requests.len(), 1);
-    assert!(matches!(
-        result,
-        Err(CaddyAdminError::LoadReportedFailure {
-            status: 200,
-            detail,
-            ..
-        }) if detail == "loading config: listener unavailable"
-    ));
+        assert_eq!(requests.len(), 1);
+        assert!(matches!(
+            result,
+            Err(CaddyAdminError::LoadReportedFailure {
+                status: 200,
+                detail,
+                ..
+            }) if detail == "loading config: listener unavailable"
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn load_caddyfile_keeps_unrecognized_warning_objects_unknown() -> Result<()> {
+    for body in [
+        br#"{"warnings":null}"#.as_slice(),
+        br#"{"warnings":[],"unexpected":true}"#.as_slice(),
+    ] {
+        let (endpoint, server) = spawn_response_server(vec![http_response(200, body)])?;
+        let result = test_client()
+            .load_caddyfile(&endpoint, b"candidate\n")
+            .await;
+        let requests = server.await??;
+        assert_eq!(requests.len(), 1);
+        assert!(matches!(
+            result,
+            Err(CaddyAdminError::RequestOutcomeUnknown {
+                operation: CaddyAdminOperation::Load,
+                ..
+            })
+        ));
+    }
     Ok(())
 }
 

@@ -569,14 +569,14 @@ fn successful_load_response_error(response: &AdminResponse) -> Result<Option<Str
         .map_err(|error| format!("successful response body was not valid JSON: {error}"))?;
 
     match values.as_slice() {
-        [warnings] if warnings.is_array() => Ok(None),
+        [warnings] if is_adapter_warnings(warnings) => Ok(None),
         [error] => caddy_api_error(error)
             .map(str::to_owned)
             .map(Some)
             .ok_or_else(|| {
                 "successful response body was neither adapter warnings nor an API error".to_owned()
             }),
-        [warnings, error] if warnings.is_array() => caddy_api_error(error)
+        [warnings, error] if is_adapter_warnings(warnings) => caddy_api_error(error)
             .map(str::to_owned)
             .map(Some)
             .ok_or_else(|| {
@@ -584,6 +584,13 @@ fn successful_load_response_error(response: &AdminResponse) -> Result<Option<Str
             }),
         _ => Err("successful response contained unexpected data".to_owned()),
     }
+}
+
+fn is_adapter_warnings(value: &Value) -> bool {
+    value.is_array()
+        || value.as_object().is_some_and(|object| {
+            object.len() == 1 && object.get("warnings").is_some_and(Value::is_array)
+        })
 }
 
 fn caddy_api_error(value: &Value) -> Option<&str> {

@@ -32,6 +32,7 @@ use resources::{
     ManagedResourceCommands, ResourceHttpClient, ResourcesError, TargetPlatform, TrackSelector,
     caddy_adapter, frankenphp_adapter, php_adapter,
 };
+use serde_json::Value;
 use state::PvPaths;
 
 #[expect(
@@ -350,15 +351,19 @@ fn assert_validation_contract(
     let missing_path = paths.config().join("missing.Caddyfile");
     let missing = run_runtime_cli(executable, &command.validate_arguments(&missing_path))?;
     assert_eq!(missing.status.code(), Some(1));
-    assert_eq!(
-        String::from_utf8(missing.stderr)?.lines().last(),
-        Some(
-            format!(
-                "Error: reading config from file: open {missing_path}: no such file or directory"
-            )
-            .as_str()
-        )
-    );
+    let stderr = String::from_utf8(missing.stderr)?;
+    let error = stderr
+        .lines()
+        .last()
+        .context("missing config error was not reported")?;
+    let expected =
+        format!("reading config from file: open {missing_path}: no such file or directory");
+    if let Ok(log) = serde_json::from_str::<Value>(error) {
+        assert_eq!(log["level"], "error");
+        assert_eq!(log["msg"], expected);
+    } else {
+        assert_eq!(error, format!("Error: {expected}"));
+    }
 
     Ok(())
 }
