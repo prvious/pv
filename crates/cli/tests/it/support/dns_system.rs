@@ -101,8 +101,38 @@ fn with_dns_fixture(helper_fixture: &mut HelperFixture, helper: &Utf8Path) -> Re
             "--unit=pv-dns.service",
             "--unit=systemd-resolved.service",
         ]);
+        let address = root_text(&[
+            "/usr/bin/timeout",
+            "5s",
+            "/usr/sbin/ip",
+            "-j",
+            "address",
+            "show",
+            "dev",
+            "pv0",
+        ]);
+        let resolved = link("pv0").ok().flatten().and_then(|link| {
+            let index = link["ifindex"].as_u64()?;
+            Some(root_text(&[
+                "/usr/bin/timeout",
+                "5s",
+                "/usr/bin/busctl",
+                "introspect",
+                "org.freedesktop.resolve1",
+                &format!("/org/freedesktop/resolve1/link/_{index}"),
+                "org.freedesktop.resolve1.Link",
+            ]))
+        });
+        let network = root_text(&[
+            "/usr/bin/timeout",
+            "5s",
+            "/usr/bin/networkctl",
+            "--no-pager",
+            "status",
+            "pv0",
+        ]);
         error.context(format!(
-            "DNS service journal before fixture cleanup: {journal:?}"
+            "DNS state before fixture cleanup: addresses={address:?}; resolved={resolved:?}; network={network:?}; journal={journal:?}"
         ))
     });
     let cleanup = fixture.cleanup();
