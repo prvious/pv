@@ -10,10 +10,12 @@ use insta::{assert_debug_snapshot, assert_snapshot};
 use platform::hooks::{
     HookCommandContext, HookEnvironment, HookError, HookOutput, capture_environment, run_commands,
 };
+#[cfg(target_os = "linux")]
+use procfs::{ProcError, process::Process};
 use state::{PvPaths, fs};
 use tokio::sync::watch;
 use tokio::time::Instant;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use tokio::time::{sleep, timeout};
 
 #[tokio::test]
@@ -107,6 +109,41 @@ printf 'Goodbye\n'
 }
 
 #[tokio::test]
+async fn hook_capture_preserves_marker_text_inside_values_and_later_entries() -> Result<()> {
+    let temporary = tempdir()?;
+    let paths = PvPaths::for_home(temporary.path());
+    let shell = fake_shell(
+        temporary.path(),
+        "printf '__PV_HOOK_ENV_START__\\0FIRST=prefix__PV_HOOK_ENV_END__\\0AFTER=retained\\0__PV_HOOK_ENV_END__\\0'",
+    )?;
+    let (_sender, mut shutdown) = watch::channel(false);
+    let environment = capture_environment(
+        shell.as_std_path(),
+        paths.home(),
+        temporary.path(),
+        &mut shutdown,
+    )
+    .await?;
+    let log = temporary.path().join("hook.log");
+    run_commands(
+        &HookCommandContext {
+            paths: &paths,
+            project_path: temporary.path(),
+            source_path: None,
+            environment: &environment,
+            output: HookOutput::Log(&log),
+        },
+        "prepare",
+        &[r#"printf '%s\n' "$FIRST" "$AFTER""#.to_string()],
+        &mut shutdown,
+        |_| Ok(()),
+    )
+    .await?;
+    assert_snapshot!(fs::read_to_string(&log)?);
+    Ok(())
+}
+
+#[tokio::test]
 async fn hook_capture_rejects_nonzero_exit_and_missing_markers() -> Result<()> {
     let temporary = tempdir()?;
     let (_sender, mut shutdown) = watch::channel(false);
@@ -155,7 +192,7 @@ async fn hook_capture_times_out_shell_startup() -> Result<()> {
     };
     assert_snapshot!(error.to_string());
     assert!(started.elapsed() < Duration::from_secs(20));
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     assert_stopped(fs::read_to_string(&temporary.path().join("pid"))?.parse::<u32>()?).await?;
     Ok(())
 }
@@ -199,7 +236,7 @@ async fn hook_commands_fail_fast_and_announce_in_order() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test]
 async fn hook_cancellation_stops_every_process_in_the_command_group() -> Result<()> {
     let temporary = tempdir()?;
@@ -229,7 +266,7 @@ async fn hook_cancellation_stops_every_process_in_the_command_group() -> Result<
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test]
 async fn dropping_a_hook_run_stops_its_process_group() -> Result<()> {
     let temporary = tempdir()?;
@@ -261,7 +298,7 @@ async fn dropping_a_hook_run_stops_its_process_group() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 async fn wait_for_pid(path: &Utf8Path) -> Result<u32> {
     timeout(Duration::from_secs(5), async {
         while !fs::path_entry_exists(path)? {
@@ -272,19 +309,32 @@ async fn wait_for_pid(path: &Utf8Path) -> Result<u32> {
     .await?
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 async fn assert_stopped(pid: u32) -> Result<()> {
     timeout(Duration::from_secs(5), async {
         loop {
-            if platform::inspect_process_start_identity(pid)?.is_none()
-                || platform::process_is_zombie(pid)?
-            {
+            if process_stopped(pid)? {
                 return Ok::<_, anyhow::Error>(());
             }
             sleep(Duration::from_millis(10)).await;
         }
     })
     .await?
+}
+
+#[cfg(target_os = "macos")]
+fn process_stopped(pid: u32) -> Result<bool> {
+    Ok(platform::inspect_process_start_identity(pid)?.is_none()
+        || platform::process_is_zombie(pid)?)
+}
+
+#[cfg(target_os = "linux")]
+fn process_stopped(pid: u32) -> Result<bool> {
+    match Process::new(i32::try_from(pid)?).and_then(|process| process.stat()) {
+        Ok(status) => Ok(status.state == 'Z'),
+        Err(ProcError::NotFound(_)) => Ok(true),
+        Err(error) => Err(error.into()),
+    }
 }
 
 async fn test_environment(

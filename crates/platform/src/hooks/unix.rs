@@ -8,10 +8,12 @@ use std::time::Duration;
 
 use camino::Utf8Path;
 use nix::unistd::{Uid, User};
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+use procfs::{ProcError, ProcResult, process::all_processes_with_root};
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use rustix::process::test_kill_process_group;
 use rustix::process::{Pid, Signal, kill_process_group};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Child;
 use tokio::sync::watch;
 use tokio::time::{Instant, sleep, timeout};
@@ -20,6 +22,7 @@ use super::{HookCommandContext, HookEnvironment, HookError, HookOutput, composer
 
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+const STDERR_TAIL_LENGTH: usize = 2048;
 const START_MARKER: &[u8] = b"__PV_HOOK_ENV_START__\0";
 const END_MARKER: &[u8] = b"__PV_HOOK_ENV_END__\0";
 const CAPTURE_SCRIPT: &str = "cd \"$PV_HOOK_PROJECT\" && printf '__PV_HOOK_ENV_START__\\0' && /usr/bin/env -0 && printf '__PV_HOOK_ENV_END__\\0'";
@@ -69,8 +72,8 @@ pub async fn capture_environment(
         let capture = async {
             let (status, _, _) = tokio::try_join!(
                 process.wait(),
-                stdout.read_to_end(&mut stdout_bytes),
-                stderr.read_to_end(&mut stderr_bytes),
+                read_environment_output(&mut stdout, &mut stdout_bytes),
+                read_stderr_tail(&mut stderr, &mut stderr_bytes),
             )?;
             Ok::<_, io::Error>(status)
         };
@@ -98,6 +101,65 @@ fn missing_output() -> io::Error {
     io::Error::other("hook environment capture output was not piped")
 }
 
+async fn read_environment_output(
+    output: &mut (impl AsyncRead + Unpin),
+    bytes: &mut Vec<u8>,
+) -> io::Result<()> {
+    let mut buffer = [0; 8192];
+    let mut started = false;
+    let mut complete = false;
+    loop {
+        let length = output.read(&mut buffer).await?;
+        if length == 0 {
+            return Ok(());
+        }
+        if complete {
+            continue;
+        }
+        bytes.extend_from_slice(&buffer[..length]);
+        if !started {
+            if let Some(start) = bytes
+                .windows(START_MARKER.len())
+                .position(|window| window == START_MARKER)
+            {
+                bytes.drain(..start);
+                started = true;
+            } else {
+                bytes.drain(..bytes.len().saturating_sub(START_MARKER.len() - 1));
+                continue;
+            }
+        }
+        if let Some(end) = environment_end(&bytes[START_MARKER.len()..]) {
+            bytes.truncate(START_MARKER.len() + end + END_MARKER.len());
+            complete = true;
+        }
+    }
+}
+
+async fn read_stderr_tail(
+    output: &mut (impl AsyncRead + Unpin),
+    bytes: &mut Vec<u8>,
+) -> io::Result<()> {
+    let mut buffer = [0; 8192];
+    loop {
+        let length = output.read(&mut buffer).await?;
+        if length == 0 {
+            return Ok(());
+        }
+        bytes.extend_from_slice(&buffer[..length]);
+        bytes.drain(..bytes.len().saturating_sub(STDERR_TAIL_LENGTH));
+    }
+}
+
+fn environment_end(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .windows(END_MARKER.len())
+        .enumerate()
+        .find_map(|(index, window)| {
+            (window == END_MARKER && (index == 0 || bytes[index - 1] == 0)).then_some(index)
+        })
+}
+
 fn parse_environment(stdout: &[u8], stderr: &[u8]) -> Result<HookEnvironment, HookError> {
     let Some(start) = stdout
         .windows(START_MARKER.len())
@@ -106,10 +168,7 @@ fn parse_environment(stdout: &[u8], stderr: &[u8]) -> Result<HookEnvironment, Ho
         return Err(environment_error("missing start marker", stderr));
     };
     let remaining = &stdout[start + START_MARKER.len()..];
-    let Some(end) = remaining
-        .windows(END_MARKER.len())
-        .position(|bytes| bytes == END_MARKER)
-    else {
+    let Some(end) = environment_end(remaining) else {
         return Err(environment_error("missing end marker", stderr));
     };
     let mut values = BTreeMap::new();
@@ -136,7 +195,7 @@ fn parse_environment(stdout: &[u8], stderr: &[u8]) -> Result<HookEnvironment, Ho
 }
 
 fn environment_error(reason: impl Into<String>, stderr: &[u8]) -> HookError {
-    let tail = &stderr[stderr.len().saturating_sub(2048)..];
+    let tail = &stderr[stderr.len().saturating_sub(STDERR_TAIL_LENGTH)..];
     let stderr = String::from_utf8_lossy(tail);
     let stderr = stderr.trim();
     HookError::Environment {
@@ -324,7 +383,76 @@ fn group_is_running(group: Pid) -> io::Result<bool> {
         .map_err(io::Error::other)
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+fn group_is_running(group: Pid) -> io::Result<bool> {
+    linux_group_is_running(Path::new("/proc"), group)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_group_is_running(root: &Path, group: Pid) -> io::Result<bool> {
+    let mut previous_zombies = None;
+    for _attempt in 0..8 {
+        let mut zombies = Vec::new();
+        for process in all_processes_with_root(root).map_err(io::Error::other)? {
+            let Some(process) = existing_process(process)? else {
+                continue;
+            };
+            let Some(status) = existing_process(process.stat())? else {
+                continue;
+            };
+            if status.pgrp != group.as_raw_nonzero().get() {
+                continue;
+            }
+            if status.state != 'Z' {
+                return Ok(true);
+            }
+            // A Linux thread-group leader can be a zombie while another thread still runs.
+            // Inspect all tasks and require the zombie snapshot to stay stable.
+            let Some(tasks) = existing_process(process.tasks())? else {
+                if existing_process(process.stat())?.is_some() {
+                    return Err(io::Error::other("hook process-group tasks unavailable"));
+                }
+                continue;
+            };
+            let mut inspected_task = false;
+            for task in tasks {
+                let Some(task) = existing_process(task)? else {
+                    continue;
+                };
+                let Some(status) = existing_process(task.stat())? else {
+                    continue;
+                };
+                inspected_task = true;
+                if status.state != 'Z' {
+                    return Ok(true);
+                }
+                zombies.push((status.pid, status.starttime));
+            }
+            if !inspected_task && existing_process(process.stat())?.is_some() {
+                return Err(io::Error::other("hook process-group tasks unavailable"));
+            }
+        }
+        zombies.sort_unstable();
+        if zombies.is_empty() || previous_zombies.as_ref() == Some(&zombies) {
+            return Ok(false);
+        }
+        previous_zombies = Some(zombies);
+    }
+    Err(io::Error::other(
+        "hook process-group snapshot did not stabilize",
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn existing_process<T>(result: ProcResult<T>) -> io::Result<Option<T>> {
+    match result {
+        Ok(value) => Ok(Some(value)),
+        Err(ProcError::NotFound(_)) => Ok(None),
+        Err(error) => Err(io::Error::other(error)),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn group_is_running(group: Pid) -> io::Result<bool> {
     match test_kill_process_group(group) {
         Ok(()) => Ok(true),
@@ -349,10 +477,103 @@ mod tests {
     use std::process::Stdio;
     use std::time::Duration;
 
+    #[cfg(target_os = "linux")]
+    use camino::Utf8Path;
     use camino_tempfile::tempdir;
+    #[cfg(target_os = "linux")]
+    use rustix::process::Pid;
     use tokio::time::{sleep, timeout};
 
-    use super::{HookCommand, HookError, HookProcess, finish_cleanup, parse_environment};
+    #[cfg(target_os = "linux")]
+    use super::linux_group_is_running;
+    use super::{
+        END_MARKER, HookCommand, HookError, HookProcess, STDERR_TAIL_LENGTH, finish_cleanup,
+        parse_environment, read_environment_output, read_stderr_tail,
+    };
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_group_checks_threads_after_the_leader_exits() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let leader = directory.path().join("123");
+        write_process_stat(&leader, 123, 'Z')?;
+        write_process_stat(&leader.join("task/123"), 123, 'Z')?;
+        write_process_stat(&leader.join("task/124"), 124, 'S')?;
+        let group = Pid::from_raw(123).ok_or_else(|| anyhow::anyhow!("invalid fixture group"))?;
+        assert!(linux_group_is_running(
+            directory.path().as_std_path(),
+            group
+        )?);
+        write_process_stat(&leader.join("task/124"), 124, 'Z')?;
+        assert!(!linux_group_is_running(
+            directory.path().as_std_path(),
+            group
+        )?);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_group_does_not_treat_missing_tasks_as_stopped() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let leader = directory.path().join("123");
+        write_process_stat(&leader, 123, 'Z')?;
+        let group = Pid::from_raw(123).ok_or_else(|| anyhow::anyhow!("invalid fixture group"))?;
+        let mut errors = Vec::new();
+        for empty_directory in [false, true] {
+            if empty_directory {
+                state::fs::ensure_user_dir(&leader.join("task"))?;
+            }
+            let error = linux_group_is_running(directory.path().as_std_path(), group)
+                .err()
+                .ok_or_else(|| anyhow::anyhow!("expected uncertain task inspection"))?;
+            errors.push(error.to_string());
+        }
+        insta::assert_debug_snapshot!(errors, @r#"
+        [
+            "hook process-group tasks unavailable",
+            "hook process-group tasks unavailable",
+        ]
+        "#);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn write_process_stat(directory: &Utf8Path, pid: i32, status: char) -> anyhow::Result<()> {
+        state::fs::ensure_user_dir(directory)?;
+        let mut fields = vec!["0".to_string(); 52];
+        fields[0] = pid.to_string();
+        fields[1] = "(fixture)".to_string();
+        fields[2] = status.to_string();
+        fields[4] = "123".to_string();
+        fields[21] = "42".to_string();
+        state::fs::write_sensitive_file(&directory.join("stat"), &fields.join(" "))?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn capture_discards_noise_and_retains_only_the_stderr_tail() -> anyhow::Result<()> {
+        let frame = b"__PV_HOOK_ENV_START__\0FIRST=prefix__PV_HOOK_ENV_END__\0AFTER=retained\0__PV_HOOK_ENV_END__\0";
+        // Split the start marker across reads, then keep draining after the end marker.
+        for padding in [
+            8192 * 3 - 7,
+            8192 * 3 - (frame.len() - END_MARKER.len()) - 7,
+        ] {
+            let mut output = vec![b'x'; padding];
+            output.extend_from_slice(frame);
+            output.extend(vec![b'y'; 8192 * 3]);
+            let mut captured = Vec::new();
+            read_environment_output(&mut output.as_slice(), &mut captured).await?;
+            assert_eq!(captured, frame);
+        }
+
+        let mut stderr = vec![b'x'; 8192 * 3];
+        stderr.extend(vec![b't'; STDERR_TAIL_LENGTH]);
+        let mut tail = Vec::new();
+        read_stderr_tail(&mut stderr.as_slice(), &mut tail).await?;
+        assert_eq!(tail, vec![b't'; STDERR_TAIL_LENGTH]);
+        Ok(())
+    }
 
     #[test]
     fn capture_drops_shell_bookkeeping_without_changing_values() -> anyhow::Result<()> {
