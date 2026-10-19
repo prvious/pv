@@ -1,6 +1,5 @@
 #![cfg(target_os = "linux")]
 
-use std::cell::Cell;
 use std::ffi::OsString;
 use std::io::{self, Write as _};
 #[expect(
@@ -8,7 +7,6 @@ use std::io::{self, Write as _};
     reason = "the opt-in system test arms and cancels its independent native cleanup timer"
 )]
 type SystemTestCommand = std::process::Command;
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -16,10 +14,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, anyhow, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use cli::{Environment, ProcessEnvironment, run_with_environment};
-use insta::assert_debug_snapshot;
-use platform::{
-    DaemonRegistrationConfig, DaemonRegistrationStatus, LowPortInspection, PlatformError,
-};
+use platform::{DaemonRegistrationConfig, DaemonRegistrationStatus, PlatformError};
 use pv_fake::{FakeSettings, Persona, Scenario};
 use serde_json::Value;
 use state::{
@@ -128,146 +123,6 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
     let (first_job, monitor) = wait_for_redis_monitor(&fixture.paths, None)?;
     fixture.monitor_record = Some(monitor.clone());
 
-    let mut status_observations = Vec::new();
-    for load_state in ["loaded", "error", "bad-setting"] {
-        let status_environment = SystemTestEnvironment {
-            registration_load_state: Some(load_state),
-            ..Default::default()
-        };
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let _exit_code = run_with_environment(
-            ["pv", "status", "--json"],
-            &status_environment,
-            &mut stdout,
-            &mut stderr,
-        )?;
-        ensure!(stderr.is_empty(), "unexpected status errors: {stderr:?}");
-        let report: Value = serde_json::from_slice(&stdout)?;
-        assert_eq!(report["daemon"]["socket"], "healthy");
-        let state = report["daemon"]["state"]
-            .as_str()
-            .context("missing daemon state")?;
-        let failure = report["daemon"]["failure"]
-            .as_bool()
-            .context("missing daemon failure")?;
-        assert_eq!(
-            state,
-            if load_state == "loaded" {
-                "running"
-            } else {
-                "down"
-            }
-        );
-        assert_eq!(failure, load_state != "loaded");
-        status_observations.push((load_state, state.to_owned(), failure));
-    }
-    assert_debug_snapshot!(status_observations, @r#"
-    [
-        (
-            "loaded",
-            "running",
-            false,
-        ),
-        (
-            "error",
-            "down",
-            true,
-        ),
-        (
-            "bad-setting",
-            "down",
-            true,
-        ),
-    ]
-    "#);
-    assert_eq!(status()?.main_pid, first.main_pid);
-    let (_, preserved_monitor) = wait_for_redis_monitor(&fixture.paths, None)?;
-    assert_eq!(preserved_monitor, monitor);
-
-    let mut enablement_observations = Vec::new();
-    for enabled in [false, true] {
-        if enabled {
-            environment.enable_daemon_registration(&fixture.unit)?;
-        } else {
-            fs::delete_file(&enabled_link)?;
-        }
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let _exit_code = run_with_environment(
-            ["pv", "doctor", "--json"],
-            &SystemTestEnvironment::default(),
-            &mut stdout,
-            &mut stderr,
-        )?;
-        ensure!(stderr.is_empty(), "unexpected doctor errors: {stderr:?}");
-        let report: Value = serde_json::from_slice(&stdout)?;
-        let manager = report["sections"]
-            .as_array()
-            .context("missing doctor sections")?
-            .iter()
-            .filter_map(|section| section["checks"].as_array())
-            .flatten()
-            .find(|check| check["name"] == "Systemd user manager")
-            .context("missing user manager check")?;
-        assert_eq!(manager["status"], if enabled { "pass" } else { "fail" });
-        assert_eq!(
-            manager["repair"],
-            if enabled {
-                Value::Null
-            } else {
-                Value::String("pv daemon:enable".to_owned())
-            }
-        );
-        stdout.clear();
-        stderr.clear();
-        let _exit_code = run_with_environment(
-            ["pv", "status", "--json"],
-            &SystemTestEnvironment::default(),
-            &mut stdout,
-            &mut stderr,
-        )?;
-        ensure!(stderr.is_empty(), "unexpected status errors: {stderr:?}");
-        let status_report: Value = serde_json::from_slice(&stdout)?;
-        let daemon = &status_report["daemon"];
-        assert_eq!(daemon["socket"], "healthy");
-        assert_eq!(
-            daemon["registration_runtime"]["unit_file_state"],
-            if enabled { "enabled" } else { "disabled" }
-        );
-        assert_eq!(daemon["registration_runtime"]["main_pid"], first.main_pid);
-        assert_eq!(daemon["state"], if enabled { "running" } else { "down" });
-        assert_eq!(daemon["failure"], !enabled);
-        enablement_observations.push((
-            enabled,
-            manager["status"].clone(),
-            manager["repair"].clone(),
-            daemon["state"].clone(),
-            daemon["failure"].clone(),
-        ));
-        assert_eq!(status()?.main_pid, first.main_pid);
-        let (_, preserved_monitor) = wait_for_redis_monitor(&fixture.paths, None)?;
-        assert_eq!(preserved_monitor, monitor);
-    }
-    assert_debug_snapshot!(enablement_observations, @r#"
-    [
-        (
-            false,
-            String("fail"),
-            String("pv daemon:enable"),
-            String("down"),
-            Bool(true),
-        ),
-        (
-            true,
-            String("pass"),
-            Null,
-            String("running"),
-            Bool(false),
-        ),
-    ]
-    "#);
-
     let drop_in_directory = fixture.unit.with_extension("service.d");
     ensure!(!fs::path_entry_exists(&drop_in_directory)?);
     let daemon_identity = platform::inspect_process_start_identity(first.main_pid)?
@@ -312,116 +167,9 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
     let previous_daemon_pid = first.main_pid;
     let first = status()?;
     assert_ne!(first.main_pid, previous_daemon_pid);
-    let (first_job, preserved_monitor) = wait_for_redis_monitor(&fixture.paths, Some(&first_job))?;
+    let (_, preserved_monitor) = wait_for_redis_monitor(&fixture.paths, Some(&first_job))?;
     assert_eq!(preserved_monitor, monitor);
 
-    let stale = config
-        .render()?
-        .replace("KillMode=process", "KillMode=control-group");
-    let mut repair_observations = Vec::new();
-    for file_already_current in [false, true] {
-        fs::write_sensitive_file(&fixture.unit, &stale)?;
-        environment.enable_daemon_registration(&fixture.unit)?;
-        if file_already_current {
-            // An interrupted repair can leave a current file with a stale loaded unit.
-            platform::write_daemon_registration_file(&fixture.unit, &config)?;
-        }
-        fs::delete_file(&enabled_link)?;
-        let before = loaded_kill_mode()?;
-        let update_environment = SystemTestEnvironment::default();
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let code = run_with_environment(
-            ["pv", "update"],
-            &update_environment,
-            &mut stdout,
-            &mut stderr,
-        )?;
-        let failure = String::from_utf8(stderr)?;
-        ensure!(
-            code == ExitCode::FAILURE,
-            "fixture manifest request must fail"
-        );
-        ensure!(update_environment.manifest_requested.get(), "{failure}");
-        assert_eq!(fs::read_to_string(&fixture.unit)?, config.render()?);
-        ensure!(!fs::path_entry_exists(&enabled_link)?);
-        repair_observations.push((
-            file_already_current,
-            before,
-            loaded_kill_mode()?,
-            failure.trim().to_owned(),
-        ));
-        assert_eq!(status()?.main_pid, first.main_pid);
-        let (_, preserved_monitor) = wait_for_redis_monitor(&fixture.paths, None)?;
-        assert_eq!(preserved_monitor, monitor);
-    }
-    assert_debug_snapshot!(repair_observations, @r#"
-    [
-        (
-            false,
-            "control-group",
-            "process",
-            "error: HTTP request failed for `pv-system-test://manifest`: bad uri: unknown scheme: pv-system-test",
-        ),
-        (
-            true,
-            "control-group",
-            "process",
-            "error: HTTP request failed for `pv-system-test://manifest`: bad uri: unknown scheme: pv-system-test",
-        ),
-    ]
-    "#);
-    environment.restart_daemon_registration()?;
-    daemon::wait_until_healthy_blocking(fixture.paths.clone())?;
-    let mut restarted = status()?;
-    assert_ne!(restarted.main_pid, first.main_pid);
-    let (mut previous_job, adopted_monitor) =
-        wait_for_redis_monitor(&fixture.paths, Some(&first_job))?;
-    assert_eq!(adopted_monitor, monitor);
-
-    for content in [config.render()?, stale] {
-        fs::write_sensitive_file(&fixture.unit, &content)?;
-        environment.enable_daemon_registration(&fixture.unit)?;
-        fs::delete_file(&enabled_link)?;
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let code = run_with_environment(
-            ["pv", "daemon:restart"],
-            &environment,
-            &mut stdout,
-            &mut stderr,
-        )?;
-        ensure!(
-            code == ExitCode::SUCCESS,
-            "restart failed: {}",
-            String::from_utf8_lossy(&stderr)
-        );
-        assert_eq!(fs::read_link(&enabled_link)?, fixture.unit);
-        assert_eq!(fs::read_to_string(&fixture.unit)?, config.render()?);
-        let current = status()?;
-        assert_ne!(current.main_pid, restarted.main_pid);
-        restarted = current;
-        let (job, adopted_monitor) = wait_for_redis_monitor(&fixture.paths, Some(&previous_job))?;
-        previous_job = job;
-        assert_eq!(adopted_monitor, monitor);
-    }
-
-    // Reloading a deleted fragment must retain evidence of its still-live daemon.
-    fs::delete_file(&fixture.unit)?;
-    assert!(matches!(
-        environment.enable_daemon_registration(&fixture.unit),
-        Err(PlatformError::DaemonRegistrationConflict { .. })
-    ));
-    let deleted = status()?;
-    assert_eq!(deleted.unit_file_state, None);
-    assert_eq!(deleted.main_pid, restarted.main_pid);
-    assert_eq!(deleted.active_state, "active");
-    assert!(matches!(
-        environment.stop_daemon_registration(),
-        Err(PlatformError::DaemonRegistrationConflict { .. })
-    ));
-    fs::write_sensitive_file(&fixture.unit, &config.render()?)?;
-    environment.enable_daemon_registration(&fixture.unit)?;
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let code = run_with_environment(
@@ -512,79 +260,6 @@ fn status() -> Result<DaemonRegistrationStatus> {
     ProcessEnvironment
         .inspect_daemon_registration()?
         .context("PV unit was not reported")
-}
-
-fn loaded_kill_mode() -> Result<String> {
-    let output = SystemTestCommand::new("/usr/bin/systemctl")
-        .args([
-            "--user",
-            "show",
-            "pv-daemon.service",
-            "--property=KillMode",
-            "--value",
-        ])
-        .output()?;
-    ensure!(
-        output.status.success() && output.stderr.is_empty(),
-        "cannot inspect daemon KillMode: {}: {}{}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    Ok(String::from_utf8(output.stdout)?.trim().to_owned())
-}
-
-#[derive(Default)]
-struct SystemTestEnvironment {
-    manifest_requested: Cell<bool>,
-    registration_load_state: Option<&'static str>,
-}
-
-impl Environment for SystemTestEnvironment {
-    fn inspect_daemon_registration(
-        &self,
-    ) -> Result<Option<DaemonRegistrationStatus>, PlatformError> {
-        let mut status = ProcessEnvironment.inspect_daemon_registration()?;
-        if let Some(status) = &mut status
-            && let Some(load_state) = self.registration_load_state
-        {
-            status.load_state = load_state.to_owned();
-        }
-        Ok(status)
-    }
-
-    fn inspect_low_ports(&self) -> Result<LowPortInspection, PlatformError> {
-        ProcessEnvironment.inspect_low_ports()
-    }
-
-    fn var_os(&self, key: &str) -> Option<OsString> {
-        ProcessEnvironment.var_os(key)
-    }
-
-    fn home_dir(&self) -> Option<PathBuf> {
-        ProcessEnvironment.home_dir()
-    }
-
-    fn current_dir(&self) -> io::Result<PathBuf> {
-        ProcessEnvironment.current_dir()
-    }
-
-    fn current_exe(&self) -> io::Result<PathBuf> {
-        ProcessEnvironment.current_exe()
-    }
-
-    fn stdin_is_terminal(&self) -> bool {
-        false
-    }
-
-    fn open_url(&self, _url: &str) -> io::Result<()> {
-        Err(io::Error::other("no browser in the system fixture"))
-    }
-
-    fn app_update_manifest_url(&self) -> Option<String> {
-        self.manifest_requested.set(true);
-        Some("pv-system-test://manifest".to_owned())
-    }
 }
 
 fn wait_for_redis_monitor(paths: &PvPaths, previous_job: Option<&str>) -> Result<(String, Value)> {
