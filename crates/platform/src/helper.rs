@@ -1236,6 +1236,9 @@ fn call_helper(
             HelperOperation::PfInspect => {
                 crate::pf::PORT_PROXY_INSPECTION_TIMEOUT + HELPER_IO_TIMEOUT
             }
+            HelperOperation::CaApply { .. } | HelperOperation::CaRemove { .. } => {
+                crate::trust::linux::COMMAND_TIMEOUT + HELPER_IO_TIMEOUT
+            }
             _ => HELPER_IO_TIMEOUT,
         }))
         .map_err(PlatformError::PrivilegedHelperIo)?;
@@ -2309,6 +2312,22 @@ mod tests {
                 },
                 HelperOperation::PfRemove,
             ),
+            (
+                HelperOperation::CaApply {
+                    fingerprint: "a".repeat(64),
+                },
+                HelperOperation::CaRemove {
+                    fingerprint: "a".repeat(64),
+                },
+            ),
+            (
+                HelperOperation::CaRemove {
+                    fingerprint: "a".repeat(64),
+                },
+                HelperOperation::CaApply {
+                    fingerprint: "a".repeat(64),
+                },
+            ),
         ] {
             let directory = tempdir()?;
             let socket = directory.path().join("mutation-helper.sock");
@@ -2360,10 +2379,15 @@ mod tests {
                 .ok_or_else(|| anyhow!("removal request was not sent"))?
                 .err()
                 .ok_or_else(|| anyhow!("removal unexpectedly succeeded without a response"))?;
-            assert!(matches!((&remove_operation, &error),
+            assert!(
+                matches!((&remove_operation, &error),
                     (HelperOperation::DnsRemove, PlatformError::ResolverMutation { operation: "remove", source })
                     | (HelperOperation::PfRemove, PlatformError::PortProxyMutation { operation: "remove", source })
-                    if matches!(source.as_ref(), PlatformError::PrivilegedHelperIo(source) if source.kind() == ErrorKind::UnexpectedEof)));
+                    if matches!(source.as_ref(), PlatformError::PrivilegedHelperIo(source) if source.kind() == ErrorKind::UnexpectedEof))
+                    || matches!((&remove_operation, &error),
+                    (HelperOperation::CaApply { .. } | HelperOperation::CaRemove { .. }, PlatformError::PrivilegedHelperIo(source))
+                    if source.kind() == ErrorKind::UnexpectedEof)
+            );
             match error {
                 PlatformError::ResolverMutation { .. } => {
                     assert_snapshot!(error.to_string(), @"resolver remove failed: PV privileged helper I/O failed: helper protocol connection closed before a complete frame was received; DNS state may be partial and a queued or in-flight request may still complete; inspect pv-dns.service, pv-dns.service.candidate and pv0 with an administrator before retrying `pv dns:install` or `pv dns:uninstall`")
@@ -2371,6 +2395,7 @@ mod tests {
                 PlatformError::PortProxyMutation { .. } => {
                     assert_snapshot!(error.to_string(), @"socket proxy remove failed: PV privileged helper I/O failed: helper protocol connection closed before a complete frame was received; port routing may be partial and a queued or in-flight request may still complete; inspect pv-http and pv-https units, their .candidate and .rollback files with an administrator before retrying `pv ports:install` or `pv ports:uninstall`")
                 }
+                PlatformError::PrivilegedHelperIo(_) => {}
                 error => return Err(error.into()),
             }
         }
