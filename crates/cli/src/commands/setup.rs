@@ -1611,7 +1611,7 @@ mod tests {
         let ExecuteError::Platform(PlatformError::SystemIntegration(message)) = &error else {
             anyhow::bail!("{error}; operations: {:?}", environment.operations.borrow());
         };
-        assert!(!fs::path_entry_exists(&paths.root())?);
+        assert!(!fs::path_entry_exists(paths.root())?);
         assert!(stdout.is_empty());
         assert!(stderr.is_empty());
         assert_snapshot!(format!("{message}\n{:?}", environment.operations.borrow()), @r#"
