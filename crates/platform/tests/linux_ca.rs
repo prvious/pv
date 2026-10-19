@@ -1,13 +1,14 @@
 #![cfg(target_os = "linux")]
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::assert_debug_snapshot;
 use platform::{
-    TrustDomainState, browser_ca_databases, generate_local_ca, inspect_browser_ca_trust,
-    trust_browser_ca, untrust_browser_ca,
+    PlatformError, TrustDomainState, browser_ca_databases, generate_local_ca,
+    inspect_browser_ca_trust, trust_browser_ca, untrust_browser_ca,
 };
+use rcgen::{BasicConstraints, CertificateParams, DnType, IsCa, KeyPair, KeyUsagePurpose};
 use state::{PvPaths, fs};
 
 #[expect(
@@ -50,7 +51,7 @@ fn linux_browser_ca_discovery_uses_existing_profiles_without_creating_files() ->
     Ok(())
 }
 
-fn certutil(database: &Utf8Path, arguments: &[&str]) -> Result<()> {
+fn certutil(database: &Utf8Path, arguments: &[&str]) -> Result<String> {
     let output = Command::new("/usr/bin/certutil")
         .args(["-d", &format!("sql:{database}")])
         .args(arguments)
@@ -60,7 +61,7 @@ fn certutil(database: &Utf8Path, arguments: &[&str]) -> Result<()> {
         "fixture certutil failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    Ok(())
+    Ok(String::from_utf8(output.stdout)?)
 }
 
 #[test]
@@ -119,7 +120,48 @@ fn linux_certutil_adds_inspects_repairs_and_removes_only_pv_trust() -> Result<()
         TrustDomainState::NotTrusted { .. }
     ));
     certutil(&database, &["-L", "-n", "Other CA"])?;
+    let mut parameters = CertificateParams::default();
+    parameters
+        .distinguished_name
+        .push(DnType::CommonName, "Other browser CA");
+    parameters.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    parameters.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+    let misleading = parameters.self_signed(&KeyPair::generate()?)?.pem();
+    let misleading_path = directory.path().join("misleading.pem");
+    fs::write_sensitive_file(&misleading_path, &misleading)?;
+    let misleading_name = format!(
+        "PV Local Development CA {}",
+        &other.metadata.fingerprint[..16]
+    );
+    certutil(
+        &database,
+        &[
+            "-A",
+            "-n",
+            &misleading_name,
+            "-t",
+            "C,,",
+            "-i",
+            misleading_path.as_str(),
+        ],
+    )?;
+    assert!(matches!(
+        inspect_browser_ca_trust(&database, Some(&other.metadata)),
+        TrustDomainState::Unreadable { .. }
+    ));
+    assert!(matches!(
+        trust_browser_ca(&database, &other_path),
+        Err(PlatformError::SystemIntegration(_))
+    ));
     trust_browser_ca(&database, &paths.ca_certificate())?;
+    let listing = certutil(&database, &["-L"])?;
+    let misleading_position = listing
+        .find(&misleading_name)
+        .context("misleading nickname is missing from the fixture")?;
+    let pv_position = listing
+        .find(&name)
+        .context("PV nickname is missing from the fixture")?;
+    assert!(misleading_position < pv_position);
     untrust_browser_ca(&database, None)?;
     untrust_browser_ca(&database, None)?;
     assert!(matches!(
@@ -127,6 +169,7 @@ fn linux_certutil_adds_inspects_repairs_and_removes_only_pv_trust() -> Result<()
         TrustDomainState::NotTrusted { .. }
     ));
     certutil(&database, &["-L", "-n", "Other CA"])?;
+    certutil(&database, &["-L", "-n", &misleading_name])?;
     assert!(fs::read_to_string(&paths.ca_certificate())? == generated.certificate_pem);
     assert!(!fs::path_entry_exists(
         &paths.certificates().join("ca-ownership.json")

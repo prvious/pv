@@ -253,6 +253,7 @@ fn certutil(database: &Utf8Path, arguments: &[&str]) -> Result<String, PlatformE
 fn certificate(
     database: &Utf8Path,
     nickname: &str,
+    skip_foreign: bool,
 ) -> Result<Option<LocalCaMetadata>, PlatformError> {
     let location = format!("sql:{database}");
     let arguments = ["-d", location.as_str(), "-L", "-n", nickname, "-a"];
@@ -271,15 +272,20 @@ fn certificate(
         return Ok(None);
     }
     let pem = system_command_output(command, output)?;
+    let mut found_certificate = false;
     for der in rustls_pemfile::certs(&mut Cursor::new(pem)) {
         let der = der.map_err(integration_error)?;
         let metadata =
             LocalCaMetadata::from_certificate_pem(&pem_from_der("CERTIFICATE", der.as_ref()))?;
+        found_certificate = true;
         if is_pv_ca_metadata(&metadata)
             && nickname == format!("{NICKNAME_PREFIX}{}", &metadata.fingerprint[..16])
         {
             return Ok(Some(metadata));
         }
+    }
+    if skip_foreign && found_certificate {
+        return Ok(None);
     }
     Err(integration_error(
         "PV browser CA nickname does not match its certificate",
@@ -302,7 +308,7 @@ pub(super) fn inspect_browser_ca(
             });
         }
         let name = nickname(&metadata.fingerprint)?;
-        let Some(actual) = certificate(database, &name)? else {
+        let Some(actual) = certificate(database, &name, false)? else {
             return Ok(TrustDomainState::NotTrusted {
                 fingerprint: metadata.fingerprint.clone(),
             });
@@ -347,7 +353,7 @@ pub(super) fn trust_browser_ca(
         fs::ensure_user_dir(database).map_err(integration_error)?;
         certutil(database, &["-N", "--empty-password"])?;
     }
-    match certificate(database, &name)? {
+    match certificate(database, &name, false)? {
         Some(existing) if existing.fingerprint != metadata.fingerprint => {
             return Err(integration_error(
                 "PV browser CA nickname contains a different certificate",
@@ -396,7 +402,7 @@ pub(super) fn untrust_browser_ca(
             .collect()
     };
     for name in names {
-        if certificate(database, &name)?.is_some() {
+        if certificate(database, &name, true)?.is_some() {
             certutil(database, &["-D", "-n", &name])?;
         }
     }
