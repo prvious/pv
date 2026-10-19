@@ -973,7 +973,6 @@ dependencies = [
  "config",
  "console",
  "daemon",
- "hickory-proto",
  "home",
  "indicatif",
  "insta",
