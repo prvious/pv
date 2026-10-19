@@ -217,8 +217,6 @@ pub(crate) fn uninstall(
 
     match system_state {
         ResolverFileState::Missing { path } => {
-            #[cfg(target_os = "linux")]
-            environment.remove_resolver_config(&system_path)?;
             output.note(Line::field(
                 "System resolver config already absent: ",
                 &path,

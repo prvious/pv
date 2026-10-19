@@ -256,7 +256,7 @@ fn linux_dns_install_releases_a_new_port_after_an_unavailable_or_rejecting_helpe
 }
 
 #[test]
-fn linux_dns_uninstall_waits_for_removal_even_when_inspection_is_missing() -> Result<()> {
+fn linux_dns_uninstall_skips_the_helper_when_native_configuration_is_absent() -> Result<()> {
     let directory = tempdir()?;
     let environment = TestEnvironment::new(&directory.path().join("home"));
     let paths = environment.paths();
@@ -265,19 +265,13 @@ fn linux_dns_uninstall_waits_for_removal_even_when_inspection_is_missing() -> Re
         &paths.resolver_config(),
         &ResolverConfig::new(port).render(),
     )?;
-    *environment.remove_error.borrow_mut() = Some(unknown_outcome("remove"));
-    let first = run_pv(&["dns:uninstall"], &environment)?;
-    assert_eq!(first.exit_code, ExitCode::FAILURE);
-    assert_eq!(dns_port(&paths)?, Some(port));
-    let retry = run_pv(&["dns:uninstall"], &environment)?;
-    assert_eq!(retry.exit_code, ExitCode::SUCCESS);
+    *environment.remove_error.borrow_mut() = Some(PlatformError::PrivilegedHelperUnavailable);
+    let output = run_pv(&["dns:uninstall"], &environment)?;
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert_eq!(dns_port(&paths)?, None);
-    assert_eq!(
-        *environment.operations.borrow(),
-        vec![Operation::Remove, Operation::Remove]
-    );
+    assert!(environment.operations.borrow().is_empty());
     assert!(!paths.resolver_config().exists());
-    snapshot_settings(directory.path(), &[port]).bind(|| assert_debug_snapshot!((first, retry)));
+    snapshot_settings(directory.path(), &[port]).bind(|| assert_debug_snapshot!(output));
     Ok(())
 }
 

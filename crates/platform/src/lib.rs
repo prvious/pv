@@ -69,6 +69,7 @@ pub use pf::{
 pub use pf::{
     SYSTEM_SOCKET_PROXY_DIRECTORY, inspect_socket_proxy_unit, render_socket_proxy_units,
     repairable_socket_proxy_ports, socket_proxy_files_current, socket_proxy_unit_names,
+    socket_proxy_units_absent,
 };
 pub use port::loopback_tcp_port_available;
 pub use process::{

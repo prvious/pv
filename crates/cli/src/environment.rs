@@ -230,6 +230,11 @@ pub trait Environment {
         platform::PrivilegedHelperClient.remove_pf()
     }
 
+    #[cfg(target_os = "linux")]
+    fn socket_proxy_units_absent(&self) -> Result<bool, platform::PlatformError> {
+        platform::socket_proxy_units_absent()
+    }
+
     fn loopback_tcp_port_available(&self, port: u16) -> bool {
         platform::loopback_tcp_port_available(port)
     }

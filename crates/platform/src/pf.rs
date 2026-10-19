@@ -46,6 +46,12 @@ pub fn socket_proxy_unit_names() -> [String; 4] {
     linux::unit_names()
 }
 
+/// Checks that none of the four fixed proxy units remains loaded in systemd.
+#[cfg(target_os = "linux")]
+pub fn socket_proxy_units_absent() -> Result<bool, PlatformError> {
+    linux::units_absent()
+}
+
 /// Public ports whose fixed PV units permit a repair attempt.
 ///
 /// This does not prove bind availability or ownership of every current listener.
