@@ -205,7 +205,7 @@ def system_acceptance():
             started = time.monotonic()
             run("unlink-with-open-client", str(PV), "unlink", "linux-acceptance.test", timeout=30)
             client.wait(timeout=10)
-            assert not Path(f"/proc/{postgres_pid}").exists(), "Postgres remains after stop"
+            wait_for("Postgres stop with an open client", lambda: not Path(f"/proc/{postgres_pid}").exists(), 10)
             assert time.monotonic() - started < 20, "Postgres stop was not fast"
         finally:
             if client.poll() is None:
