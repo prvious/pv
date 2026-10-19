@@ -59,7 +59,7 @@ jobs:
       - name: Build local baseline image
         run: |
           df -h /
-          docker build -f scripts/linux/builder.Dockerfile -t pv-linux-builder .
+          docker build -f scripts/linux/builder.Dockerfile --build-arg BUILDER_UID="$(id -u)" -t pv-linux-builder .
       - name: Build app, helper and release tools
         env:
           PV_COMMIT: ${{ github.sha }}
