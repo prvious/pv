@@ -7409,7 +7409,7 @@ C
         printf '%s\n' 'GLIBC_2.36 { global: module_entry; local: *; };' >newer.map
         cc -shared -fPIC module.c -Wl,--version-script=newer.map -o "$module"
       else
-        cc -shared -fPIC module.c -o "$module"
+        cc -shared -fPIC module.c -Wl,-rpath,"$PWD/buildroot/lib" -o "$module"
       fi
     done
     ;;

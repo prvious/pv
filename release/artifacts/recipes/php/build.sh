@@ -27,7 +27,9 @@ case "$PLATFORM" in
     need otool
     ;;
   linux-amd64 | linux-arm64)
+    need cmp
     need file
+    need patchelf
     need readelf
     [ "$(uname -s)" = Linux ] || die "Linux PHP artifacts require a native Linux runner"
     [ "$(uname -m)" = "$(expected_arch_for_platform "$PLATFORM")" ] || die "PHP runner architecture does not match $PLATFORM"
@@ -528,6 +530,7 @@ stage_artifact() {
       validate_macho_binary "$root_dir/bin/$binary_name"
       ;;
     linux-amd64 | linux-arm64)
+      pv_recipe_normalize_elf_tree "$root_dir"
       pv_recipe_validate_elf_tree "$root_dir" "$PLATFORM"
       ;;
   esac
