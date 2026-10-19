@@ -142,6 +142,11 @@ def install():
     # Only fixture asset URLs change. The generated install/checksum/setup body runs intact.
     installer.write_text(installer.read_text().replace(base, INPUTS.as_uri()))
     run("install", "bash", str(installer), "--yes", "--no-setup", timeout=180)
+    run("uninstall-before-setup", str(PV), "uninstall", "--prune", "--force")
+    assert not PV_HOME.exists(), "PV home remains after uninstall before setup"
+    # Seed downloads after --prune, which removes the first installation's cache.
+    prepare_artifacts()
+    run("reinstall", "bash", str(installer), "--yes", "--no-setup", timeout=180)
     run("setup", str(PV), "setup", "--yes", timeout=600)
 
 
@@ -247,7 +252,6 @@ def main():
         run("user-manager", "systemctl", "--user", "show-environment")
         run("resolved-active", "systemctl", "is-active", "systemd-resolved.service")
         assert shutil.which("certutil"), "certutil is required"
-        prepare_artifacts()
         install()
         system_acceptance()
         result = {"platform": PLATFORM, "artifact_smoke": "passed", "system_acceptance": "passed"}
