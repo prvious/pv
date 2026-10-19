@@ -612,10 +612,16 @@ async fn an_old_prepare_cannot_replace_a_new_run_after_an_ordinary_link_is_unlin
         hold_until("release-first"),
         hold_until("release-second")
     );
-    let path = fixture.worktree("relinked", Some(&prepare), Some("touch setup-done"))?;
+    let original = fixture.worktree("relinked", Some(&prepare), Some("touch setup-done"))?;
+    let path = fixture.root.join("relinked-moved");
     let daemon = fixture.start().await?;
     shutdown_after(daemon, &fixture.paths, async {
-        file_exists(&path.join("first-started")).await?;
+        file_exists(&original.join("first-started")).await?;
+        state::fs::rename(&original, &path)?;
+        state::fs::write_sensitive_file(
+            &fixture.source.path.join(".git/worktrees/relinked/gitdir"),
+            &format!("{path}/.git\n"),
+        )?;
         let ordinary = Database::open(&fixture.paths)?
             .link_project_with_mode(
                 LinkProjectInput {
@@ -654,6 +660,105 @@ async fn an_old_prepare_cannot_replace_a_new_run_after_an_ordinary_link_is_unlin
         Ok(())
     })
     .await
+}
+
+#[tokio::test]
+async fn queued_prepare_and_setup_follow_worktree_moves_without_requeueing() -> Result<()> {
+    for phase in ["prepare", "setup"] {
+        let fixture = Fixture::new()?;
+        let command = format!(
+            "pwd -P > actual-path; printf '%s\\n' \"$PV_SOURCE_PATH\" >> actual-path; touch started; {}; touch done",
+            hold_until("release")
+        );
+        let paths = (0..5)
+            .map(|index| {
+                fixture.worktree(
+                    &format!("queued-{index}"),
+                    (phase == "prepare").then_some(command.as_str()),
+                    (phase == "setup").then_some(command.as_str()),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let daemon = fixture.start().await?;
+        shutdown_after(daemon, &fixture.paths, async {
+            eventually(|| Ok((fixture.hook_jobs()?.len() == 5).then_some(()))).await?;
+            eventually(|| {
+                Ok((paths
+                    .iter()
+                    .filter(|path| path.join("started").exists())
+                    .count()
+                    == 4)
+                    .then_some(()))
+            })
+            .await?;
+            reconcile(&fixture.paths, "system", false).await?;
+            let queued_index = paths
+                .iter()
+                .position(|path| !path.join("started").exists())
+                .ok_or_else(|| anyhow!("fifth hook did not stay queued"))?;
+            let queued_path = &paths[queued_index];
+            let database = Database::open(&fixture.paths)?;
+            let entry = fixture
+                .source
+                .path
+                .join(format!(".git/worktrees/queued-{queued_index}"));
+            let worktree_id = state::fs::read_to_string(&entry.join("pv-id"))?;
+            let scope = if phase == "prepare" {
+                format!("worktree:{}:{}", fixture.source.id, worktree_id.trim())
+            } else {
+                let project = database
+                    .project_by_path(queued_path)?
+                    .ok_or_else(|| anyhow!("queued setup Project missing"))?;
+                format!("project:{}", project.id)
+            };
+            let queued = database
+                .active_hook_job(&scope)?
+                .ok_or_else(|| anyhow!("queued hook missing"))?;
+            let moved = fixture.root.join("queued-moved");
+            state::fs::rename(queued_path, &moved)?;
+            state::fs::write_sensitive_file(&entry.join("gitdir"), &format!("{moved}/.git\n"))?;
+            reconcile(&fixture.paths, "system", false).await?;
+            let running = paths
+                .iter()
+                .enumerate()
+                .find(|(index, _)| *index != queued_index)
+                .map(|(_, path)| path)
+                .ok_or_else(|| anyhow!("running hook missing"))?;
+            state::fs::write_sensitive_file(&running.join("release"), "")?;
+            file_exists(&moved.join("started")).await?;
+            assert_eq!(
+                state::fs::read_to_string(&moved.join("actual-path"))?,
+                format!("{moved}\n{}\n", fixture.source.path)
+            );
+            for path in paths
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != queued_index)
+                .map(|(_, path)| path)
+                .chain(std::iter::once(&moved))
+            {
+                state::fs::write_sensitive_file(&path.join("release"), "")?;
+            }
+            eventually(|| {
+                Ok(Database::open(&fixture.paths)?
+                    .job(&queued.id)?
+                    .filter(|job| job.status == JobStatus::Succeeded))
+            })
+            .await?;
+            eventually(|| {
+                Ok(fixture
+                    .hook_jobs()?
+                    .iter()
+                    .all(|job| job.status == JobStatus::Succeeded)
+                    .then_some(()))
+            })
+            .await?;
+            assert_eq!(fixture.hook_jobs()?.len(), 5);
+            Ok(())
+        })
+        .await?;
+    }
+    Ok(())
 }
 
 #[tokio::test]

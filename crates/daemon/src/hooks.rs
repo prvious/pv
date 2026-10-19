@@ -5,7 +5,6 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use config::ProjectConfigFile;
 use platform::hooks::{self, HookCommandContext, HookError, HookOutput};
 use state::{Database, JobDiagnosticSubject, PvPaths};
 use tokio::sync::{Notify, watch};
@@ -26,11 +25,14 @@ pub(crate) struct HookReconciliation {
 }
 
 impl HookReconciliation {
-    pub(crate) fn queue_setups(&self, projects: &[String]) -> Result<(), DaemonError> {
+    pub(crate) fn queue_setups(
+        &self,
+        projects: &[(String, Vec<String>)],
+    ) -> Result<(), DaemonError> {
         let foreground = self.queue.foreground_hook_projects(&self.job_id);
-        for project in projects {
+        for (project, commands) in projects {
             if !foreground.contains(project) {
-                self.hooks.queue_setup(project)?;
+                self.hooks.queue_setup(project, commands.clone())?;
             }
         }
         Ok(())
@@ -56,6 +58,7 @@ struct HookState {
 struct PrepareState {
     path: Utf8PathBuf,
     source_project_id: String,
+    worktree_id: String,
     outcome: PrepareOutcome,
 }
 
@@ -129,14 +132,22 @@ impl DaemonHooks {
     /// An ordinary `pv link` takes ownership of this path. An already executing prepare may
     /// finish, but its result must never put the path back into discovery's transient sets.
     pub(crate) fn forget_linked_prepares(&self, database: &Database) -> Result<(), DaemonError> {
-        let paths = database
-            .projects()?
-            .into_iter()
-            .map(|project| project.path)
-            .collect::<Vec<_>>();
-        self.state()
-            .prepares
-            .retain(|_scope, prepare| !paths.contains(&prepare.path));
+        let projects = database.projects()?;
+        self.state().prepares.retain(|scope, prepare| {
+            if projects.iter().any(|project| project.path == prepare.path) {
+                return false;
+            }
+            let current = projects
+                .iter()
+                .find(|project| project.id == prepare.source_project_id)
+                .and_then(|source| {
+                    self.registered_path(&source.path, &prepare.path, &prepare.worktree_id, scope)
+                });
+            if let Some(current) = current {
+                prepare.path = current;
+            }
+            !projects.iter().any(|project| project.path == prepare.path)
+        });
         Ok(())
     }
 
@@ -172,6 +183,7 @@ impl DaemonHooks {
             PrepareState {
                 path: project_path.to_owned(),
                 source_project_id: source_project_id.to_owned(),
+                worktree_id: worktree_id.to_owned(),
                 outcome: PrepareOutcome::Pending,
             },
         );
@@ -196,7 +208,14 @@ impl DaemonHooks {
         Ok(())
     }
 
-    pub(crate) fn queue_setup(&self, project_id: &str) -> Result<(), DaemonError> {
+    pub(crate) fn queue_setup(
+        &self,
+        project_id: &str,
+        commands: Vec<String>,
+    ) -> Result<(), DaemonError> {
+        if commands.is_empty() {
+            return Ok(());
+        }
         let mut database = Database::open(&self.paths)?;
         let Some(discovered) = database
             .discovered_projects()?
@@ -211,13 +230,6 @@ impl DaemonHooks {
         let Some(source) = database.project_by_id(&discovered.source_project_id)? else {
             return Ok(());
         };
-        let commands = ProjectConfigFile::read_from_root(&project.path)?
-            .config
-            .hooks
-            .setup;
-        if commands.is_empty() {
-            return Ok(());
-        }
         let scope = format!("project:{project_id}");
         let mut state = self.state();
         if state.active.contains_key(&scope) || state.queued.iter().any(|run| run.scope == scope) {
@@ -285,8 +297,8 @@ impl DaemonHooks {
         for (scope, prepare) in &state.prepares {
             let registered =
                 if let Some(source) = database.project_by_id(&prepare.source_project_id)? {
-                    let worktree_id = scope.rsplit(':').next().unwrap_or_default();
-                    self.registration_is_preserved(&source.path, &prepare.path, worktree_id, scope)
+                    self.registered_path(&source.path, &prepare.path, &prepare.worktree_id, scope)
+                        .is_some()
                 } else {
                     false
                 };
@@ -294,26 +306,35 @@ impl DaemonHooks {
                 obsolete.push(scope.clone());
             }
         }
-        for run in state
-            .queued
-            .iter()
-            .chain(state.active.values().map(|active| &active.run))
+        let HookState { queued, active, .. } = &mut *state;
+        for run in queued
+            .iter_mut()
+            .chain(active.values_mut().map(|active| &mut active.run))
         {
             let project_removed = if let Some(project_id) = &run.project_id {
-                database.project_by_id(project_id)?.is_none()
+                if let Some(project) = database.project_by_id(project_id)? {
+                    run.project_path = project.path;
+                    false
+                } else {
+                    true
+                }
             } else {
                 false
             };
-            let registered = self.registration_is_preserved(
+            let source = database.project_by_id(&run.source_project_id)?;
+            if let Some(source) = &source {
+                run.source_path = source.path.clone();
+            }
+            let registered = self.registered_path(
                 &run.source_path,
                 &run.project_path,
                 &run.worktree_id,
                 &run.scope,
             );
-            if project_removed
-                || database.project_by_id(&run.source_project_id)?.is_none()
-                || !registered
-            {
+            if let Some(path) = &registered {
+                run.project_path = path.clone();
+            }
+            if project_removed || source.is_none() || registered.is_none() {
                 obsolete.push(run.scope.clone());
             }
         }
@@ -347,20 +368,20 @@ impl DaemonHooks {
         Ok(waiting)
     }
 
-    fn registration_is_preserved(
+    fn registered_path(
         &self,
         source: &Utf8Path,
         path: &Utf8Path,
         worktree_id: &str,
         scope: &str,
-    ) -> bool {
+    ) -> Option<Utf8PathBuf> {
         match worktrees::registered_worktree_path(source, path, worktree_id) {
             Ok(registered) => registered,
             Err(error) => {
                 // An unreadable Git entry is not evidence of removal. Discovery skips new
                 // removal decisions for the same source until it can read the entry.
                 structured_log::worktree_discovery_failed(&self.paths, scope, &error.to_string());
-                true
+                Some(path.to_owned())
             }
         }
     }
@@ -424,13 +445,41 @@ impl DaemonHooks {
         loop {
             self.cancel_obsolete()?;
             while tasks.len() < CONCURRENCY && !*shutdown.borrow() {
-                let Some(run) = self.state().queued.pop_front() else {
+                let Some(mut run) = self.state().queued.pop_front() else {
                     break;
                 };
                 // A queued prepare superseded by an ordinary link has nothing left to do.
                 if run.phase == "prepare" && !self.state().prepares.contains_key(&run.scope) {
                     self.record_outcome(&run, &Err(HookError::Interrupted))?;
                     continue;
+                }
+                let database = Database::open(&self.paths)?;
+                let source = database.project_by_id(&run.source_project_id)?;
+                let current = source.as_ref().and_then(|source| {
+                    self.registered_path(
+                        &source.path,
+                        &run.project_path,
+                        &run.worktree_id,
+                        &run.scope,
+                    )
+                });
+                let project_linked = if let Some(project_id) = &run.project_id {
+                    database.project_by_id(project_id)?.is_some()
+                } else {
+                    true
+                };
+                if let (Some(source), Some(path)) = (source, current)
+                    && project_linked
+                {
+                    run.source_path = source.path;
+                    run.project_path = path;
+                } else {
+                    self.record_outcome(&run, &Err(HookError::Interrupted))?;
+                    self.state().prepares.remove(&run.scope);
+                    continue;
+                }
+                if let Some(prepare) = self.state().prepares.get_mut(&run.scope) {
+                    prepare.path = run.project_path.clone();
                 }
                 let (cancel, receiver) = watch::channel(false);
                 self.state().active.insert(
@@ -595,5 +644,104 @@ pub(crate) fn delete_log(path: &Utf8Path) -> Result<(), DaemonError> {
             Ok(())
         }
         Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use std::time::Duration;
+
+    use anyhow::{Result, anyhow};
+    use camino_tempfile::tempdir;
+    use state::{
+        Database, JobStatus, LinkDiscoveredProjectInput, LinkProjectInput, ProjectMode, PvPaths,
+    };
+    use tokio::sync::watch;
+    use tokio::time::{sleep, timeout};
+
+    use super::DaemonHooks;
+    use crate::project_env::reconcile_project_env;
+    use crate::reconciliation::ReconciliationDebouncer;
+
+    #[tokio::test]
+    async fn setup_uses_applied_commands_after_the_config_disappears() -> Result<()> {
+        let directory = tempdir()?;
+        let paths = PvPaths::for_home(directory.path().join("home"));
+        let source_path = directory.path().join("source");
+        let project_path = directory.path().join("worktree");
+        let entry = source_path.join(".git/worktrees/fixture");
+        state::fs::write_sensitive_file(&source_path.join("pv.yml"), "serve: false\n")?;
+        state::fs::write_sensitive_file(&entry.join("gitdir"), &format!("{project_path}/.git\n"))?;
+        state::fs::write_sensitive_file(&entry.join("pv-id"), "fixtureid")?;
+        state::fs::write_sensitive_file(&project_path.join(".git"), &format!("gitdir: {entry}\n"))?;
+        let config_path = project_path.join("pv.yml");
+        state::fs::write_sensitive_file(
+            &config_path,
+            "serve: false\nhooks:\n  setup:\n    - touch setup-ran\n",
+        )?;
+        let mut database = Database::open(&paths)?;
+        let source = database
+            .link_project_with_mode(
+                LinkProjectInput {
+                    path: source_path.clone(),
+                    original_path: source_path,
+                    primary_hostname: "source.test".to_owned(),
+                    config_path: directory.path().join("source/pv.yml"),
+                    desired_php_track: None,
+                },
+                ProjectMode::ResourceOnly,
+            )?
+            .project;
+        let project = database.link_discovered_project(LinkDiscoveredProjectInput {
+            source_project_id: source.id,
+            worktree_id: "fixtureid".to_owned(),
+            worktree_name: "worktree".to_owned(),
+            path: project_path.clone(),
+            config_path: config_path.clone(),
+            mode: ProjectMode::ResourceOnly,
+        })?;
+        let applied = reconcile_project_env(&paths, &project.id).await?;
+        let commands = applied
+            .first_setup_commands
+            .ok_or_else(|| anyhow!("first apply did not carry setup"))?;
+        state::fs::delete_file(&config_path)?;
+        let hooks = DaemonHooks::new(paths.clone());
+        hooks.queue_setup(&project.id, commands)?;
+        let queued = database
+            .active_hook_job(&format!("project:{}", project.id))?
+            .ok_or_else(|| anyhow!("setup was not queued"))?;
+        let (shutdown, receiver) = watch::channel(false);
+        let runner = hooks.clone();
+        let task = tokio::spawn(async move {
+            runner
+                .run(
+                    ReconciliationDebouncer::new(Duration::ZERO, |_| {}),
+                    receiver,
+                )
+                .await
+        });
+        let completed = timeout(Duration::from_secs(10), async {
+            loop {
+                if let Some(job) = database.job(&queued.id)?
+                    && job.status != JobStatus::Running
+                {
+                    return Ok::<_, state::StateError>(job);
+                }
+                sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        shutdown.send_replace(true);
+        task.await??;
+        let completed = completed??;
+        anyhow::ensure!(
+            completed.status == JobStatus::Succeeded,
+            "setup failed: {:?}",
+            completed.error
+        );
+        assert!(state::fs::path_entry_exists(
+            &project_path.join("setup-ran")
+        )?);
+        Ok(())
     }
 }

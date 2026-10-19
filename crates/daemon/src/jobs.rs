@@ -2146,7 +2146,7 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
     finish_project_phase(project_timer, &project_result);
     let mut project_report = project_result?;
     if let Some(context) = &options.hooks {
-        context.queue_setups(&project_report.first_reconciled_project_ids)?;
+        context.queue_setups(&project_report.first_setups)?;
     }
     for (project_id, error) in strict_failures {
         let project_label = dependent_projects
@@ -2679,7 +2679,7 @@ async fn complete_system_reconciliation_with_progress(
     if let Some(context) = &options.hooks
         && let Ok(report) = &project_result
     {
-        context.queue_setups(&report.first_reconciled_project_ids)?;
+        context.queue_setups(&report.first_setups)?;
     }
     if fallback_shutdown_requested(fallback_shutdown) {
         return cancel_or_preserve_system_reconciliation_errors(
@@ -2914,10 +2914,10 @@ async fn complete_project_reconciliation_with_progress_and_fallback(
             };
         }
     };
-    if project_env_summary.first_reconciled
+    if let Some(commands) = &project_env_summary.first_setup_commands
         && let Some(context) = &options.hooks
     {
-        context.queue_setups(&[id.as_str().to_owned()])?;
+        context.queue_setups(&[(id.as_str().to_owned(), commands.clone())])?;
     }
     let gateway_outcome = match fallback_shutdown {
         Some(fallback_shutdown) => {
@@ -3252,7 +3252,7 @@ struct SystemProjectReconciliationReport {
     total: usize,
     succeeded: usize,
     successful_project_ids: Vec<String>,
-    first_reconciled_project_ids: Vec<String>,
+    first_setups: Vec<(String, Vec<String>)>,
     summaries: Vec<String>,
     failures: Vec<DaemonError>,
 }
@@ -3318,8 +3318,10 @@ async fn reconcile_system_projects_with_progress(
         {
             Ok(ReconciliationOutcome::Completed(summary)) => {
                 report.succeeded += 1;
-                if summary.first_reconciled {
-                    report.first_reconciled_project_ids.push(project.id.clone());
+                if let Some(commands) = &summary.first_setup_commands {
+                    report
+                        .first_setups
+                        .push((project.id.clone(), commands.clone()));
                 }
                 report.successful_project_ids.push(project.id.clone());
                 report.summaries.push(summary.as_str().to_owned());
@@ -5838,7 +5840,7 @@ mod tests {
             total: 2,
             succeeded: 1,
             successful_project_ids: vec![successful.project.id],
-            first_reconciled_project_ids: Vec::new(),
+            first_setups: Vec::new(),
             summaries: vec!["Project env current".to_owned()],
             failures: vec![DaemonError::ProjectReconciliation {
                 project_label: "failed.test".to_owned(),

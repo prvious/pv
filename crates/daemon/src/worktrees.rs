@@ -160,15 +160,18 @@ pub(crate) fn registered_worktree_path(
     source: &Utf8Path,
     path: &Utf8Path,
     worktree_id: &str,
-) -> Result<bool, DaemonError> {
+) -> Result<Option<Utf8PathBuf>, DaemonError> {
     // An unavailable source is not evidence of removal, and discovery leaves it alone too.
     let Some(worktrees) = source_worktrees(source)? else {
-        return Ok(true);
+        return Ok(Some(path.to_owned()));
     };
-    Ok(worktrees.iter().any(|worktree| {
-        worktree.worktree_id.as_deref() == Some(worktree_id)
-            || (worktree.worktree_id.is_none() && worktree.path == path)
-    }))
+    Ok(worktrees
+        .into_iter()
+        .find(|worktree| {
+            worktree.worktree_id.as_deref() == Some(worktree_id)
+                || (worktree.worktree_id.is_none() && worktree.path == path)
+        })
+        .map(|worktree| worktree.path))
 }
 
 fn plan_source_changes(

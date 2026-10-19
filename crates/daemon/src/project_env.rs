@@ -31,7 +31,7 @@ pub(crate) struct ProjectEnvReconciliationSummary {
     message: &'static str,
     requested_php_extensions: bool,
     recorded_tracks: BTreeSet<DemandedResourceTrack>,
-    pub(crate) first_reconciled: bool,
+    pub(crate) first_setup_commands: Option<Vec<String>>,
 }
 
 impl ProjectEnvReconciliationSummary {
@@ -797,7 +797,7 @@ async fn reconcile_loaded_project(
                 message: "project requirements recorded",
                 requested_php_extensions,
                 recorded_tracks,
-                first_reconciled: false,
+                first_setup_commands: None,
             },
         ));
     }
@@ -834,7 +834,7 @@ async fn reconcile_loaded_project(
             message: rendered.summary,
             requested_php_extensions,
             recorded_tracks: BTreeSet::new(),
-            first_reconciled,
+            first_setup_commands: first_reconciled.then(|| config_file.config.hooks.setup.clone()),
         },
     ))
 }

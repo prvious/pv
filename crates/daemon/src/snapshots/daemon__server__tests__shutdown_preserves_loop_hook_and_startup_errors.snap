@@ -1,0 +1,5 @@
+---
+source: crates/daemon/src/server.rs
+expression: error.to_string()
+---
+I/O error: serve failed; additionally failed to clean up runtime `daemon shutdown` transaction: cannot clean up `project:fixture` before its hook process group stops: process group could not be stopped; additionally failed to clean up runtime `daemon shutdown` transaction: I/O error: startup cleanup failed
