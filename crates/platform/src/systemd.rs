@@ -17,6 +17,23 @@ use crate::helper::linux as root_files;
 
 const PV_MARKER: &str = "# Managed by PV";
 
+// Distribution-wide service defaults are trusted OS policy, not PV overrides.
+pub(crate) fn is_vendor_service_drop_in(path: &str, unit_name: &str, scope: &str) -> bool {
+    let path = Utf8Path::new(path);
+    unit_name.ends_with(".service")
+        && path.extension() == Some("conf")
+        && matches!(
+            (scope, path.parent().map(Utf8Path::as_str)),
+            (
+                "system",
+                Some("/usr/lib/systemd/system/service.d" | "/lib/systemd/system/service.d")
+            ) | (
+                "user",
+                Some("/usr/lib/systemd/user/service.d" | "/lib/systemd/user/service.d")
+            )
+        )
+}
+
 #[expect(
     clippy::disallowed_types,
     reason = "system unit inspection owns a native NOFOLLOW/NONBLOCK-validated descriptor"
@@ -146,4 +163,45 @@ pub(crate) async fn unit_job(
     Err(zbus::Error::Failure(
         "systemd disconnected before job completion".to_owned(),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_vendor_service_drop_in;
+
+    #[test]
+    fn vendor_service_defaults_require_the_exact_directory_scope_and_unit_type() {
+        for (scope, directory) in [
+            ("system", "/usr/lib/systemd/system/service.d"),
+            ("system", "/lib/systemd/system/service.d"),
+            ("user", "/usr/lib/systemd/user/service.d"),
+            ("user", "/lib/systemd/user/service.d"),
+        ] {
+            let path = format!("{directory}/10-timeout-abort.conf");
+            assert!(is_vendor_service_drop_in(&path, "pv-dns.service", scope));
+            assert!(!is_vendor_service_drop_in(&path, "pv-http.socket", scope));
+        }
+        for path in [
+            "/etc/systemd/system/service.d/override.conf",
+            "/run/systemd/system/service.d/override.conf",
+            "/usr/local/lib/systemd/system/service.d/override.conf",
+            "/usr/lib/systemd/system/pv-dns.service.d/override.conf",
+            "/usr/lib/systemd/system/pv-.service.d/override.conf",
+            "/usr/lib/systemd/system/socket.d/override.conf",
+            "/usr/lib/systemd/system/service.d/nested/override.conf",
+            "/usr/lib/systemd/system/service.d/not-a-conf",
+            "/home/dev/.config/systemd/user/service.d/override.conf",
+            "/usr/lib/systemd/user/service.d/10-timeout-abort.conf",
+        ] {
+            assert!(
+                !is_vendor_service_drop_in(path, "pv-dns.service", "system"),
+                "{path}"
+            );
+        }
+        assert!(!is_vendor_service_drop_in(
+            "/usr/lib/systemd/system/service.d/10-timeout-abort.conf",
+            "pv-daemon.service",
+            "user"
+        ));
+    }
 }

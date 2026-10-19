@@ -26,8 +26,8 @@ use super::{
 use crate::PlatformError;
 use crate::helper::{linux as root_files, validate_high_port};
 use crate::systemd::{
-    native_proxy, read_owned_unit, require_no_candidate, system_manager_proxy, unit_job, within,
-    write_owned_unit,
+    is_vendor_service_drop_in, native_proxy, read_owned_unit, require_no_candidate,
+    system_manager_proxy, unit_job, within, write_owned_unit,
 };
 
 const LINK_NAME: &str = "pv0";
@@ -142,7 +142,10 @@ impl Observation {
             || self.unit_status.as_ref().is_some_and(|status| {
                 self.unit_content.is_none()
                     || status.fragment_path != path
-                    || !status.drop_in_paths.is_empty()
+                    || status
+                        .drop_in_paths
+                        .iter()
+                        .any(|path| !is_vendor_service_drop_in(path, UNIT_NAME, "system"))
             })
             || link.is_some_and(|link| !owned_link(link))
     }
@@ -946,7 +949,9 @@ mod tests {
                 active_state: "active".to_owned(),
                 unit_file_state: "enabled".to_owned(),
                 fragment_path: SYSTEM_RESOLVER_TEST_PATH.into(),
-                drop_in_paths: Vec::new(),
+                drop_in_paths: vec![
+                    "/usr/lib/systemd/system/service.d/10-timeout-abort.conf".to_owned(),
+                ],
             }),
             links: vec![
                 LinkDummy::new(LINK_NAME)
@@ -1003,6 +1008,27 @@ mod tests {
         ] {
             assert_eq!(parse_unit(&content), None);
         }
+    }
+
+    #[test]
+    fn inactive_vendor_configured_unit_is_owned_and_stale_before_link_creation() {
+        let mut observation = Observation {
+            unit_content: Some(render_unit(&ResolverConfig::new(35353))),
+            unit_status: current().unit_status,
+            ..Observation::default()
+        };
+        if let Some(status) = &mut observation.unit_status {
+            status.active_state = "inactive".to_owned();
+            status.unit_file_state = "disabled".to_owned();
+        }
+        assert!(observation.require_apply().is_ok());
+        assert!(matches!(
+            observation.state(None),
+            ResolverFileState::Stale {
+                actual_port: Some(35353),
+                ..
+            }
+        ));
     }
 
     #[test]

@@ -10,7 +10,8 @@ use super::{
 use crate::helper::linux::{self as root_files, RootFile};
 use crate::helper::validate_high_port;
 use crate::systemd::{
-    read_owned_unit, require_no_candidate, system_manager_proxy, unit_job, within, write_owned_unit,
+    is_vendor_service_drop_in, read_owned_unit, require_no_candidate, system_manager_proxy,
+    unit_job, within, write_owned_unit,
 };
 use crate::{PfRedirectConfig, PlatformError};
 
@@ -258,7 +259,12 @@ fn require_owned_status(
     status: Option<&UnitStatus>,
 ) -> Result<(), PlatformError> {
     if let Some(status) = status
-        && (!has_file || status.fragment_path != path(name) || !status.drop_in_paths.is_empty())
+        && (!has_file
+            || status.fragment_path != path(name)
+            || status
+                .drop_in_paths
+                .iter()
+                .any(|path| !is_vendor_service_drop_in(path, name, "system")))
     {
         return Err(PlatformError::SystemIntegration(format!(
             "refusing socket proxy unit {name}: loaded ownership could not be verified; inspect the unit and its overrides with an administrator"
@@ -563,6 +569,20 @@ mod tests {
         };
         assert!(require_owned_status(&name, false, None).is_ok());
         assert!(require_owned_status(&name, true, Some(&status)).is_ok());
+        let service_name = HTTP.service_name();
+        let service_status = UnitStatus {
+            fragment_path: path(&service_name),
+            drop_in_paths: vec![
+                "/usr/lib/systemd/system/service.d/10-timeout-abort.conf".to_owned(),
+            ],
+            ..status.clone()
+        };
+        assert!(require_owned_status(&service_name, true, Some(&service_status)).is_ok());
+        let mut overridden_service = service_status;
+        overridden_service
+            .drop_in_paths
+            .push("/etc/systemd/system/service.d/administrator.conf".to_owned());
+        assert!(require_owned_status(&service_name, true, Some(&overridden_service)).is_err());
         let mut foreign_fragment = status.clone();
         foreign_fragment.fragment_path = "/run/systemd/system/pv-http.socket".into();
         let mut overridden = status.clone();
