@@ -189,6 +189,7 @@ _arguments "${_arguments_options[@]}" : \
 (link)
 _arguments "${_arguments_options[@]}" : \
 '--hostname=[Primary .test hostname]:hostname:_default' \
+'--skip-hooks[Skip Project prepare and setup hooks]' \
 '--no-color[Disable colored output]' \
 '-h[Print help]' \
 '--help[Print help]' \

@@ -1,0 +1,44 @@
+---
+source: it/cli.rs
+expression: outputs
+---
+[
+    (
+        "prepare",
+        CommandOutput {
+            code: Some(
+                1,
+            ),
+            stdout: "Running prepare: touch ready; count=0; while test \"$count\" -lt 1500; do sleep 0.1; count=$((count + 1)); done\n",
+            stderr: "error: prepare: hook run interrupted\n",
+        },
+        [
+            (
+                "hooks",
+                Failed,
+                Some(
+                    "prepare: hook run interrupted",
+                ),
+            ),
+        ],
+    ),
+    (
+        "reconciliation",
+        CommandOutput {
+            code: Some(
+                1,
+            ),
+            stdout: "Running prepare: exit 0\nAlready linked acme (resource-only) -> <tempdir>/reconciliation/acme\n",
+            stderr: "warning: reconciliation deferred while another PV mutation holds the jobs lock\nerror: reconciliation: hook run interrupted\n",
+        },
+        [
+            (
+                "hooks",
+                Failed,
+                Some(
+                    "reconciliation: hook run interrupted",
+                ),
+            ),
+        ],
+    ),
+]

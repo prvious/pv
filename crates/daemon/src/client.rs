@@ -64,7 +64,7 @@ pub fn submit_job_blocking(
         .enable_time()
         .build()?;
 
-    runtime.block_on(submit_job(paths, kind, scope))
+    runtime.block_on(submit_job(paths, kind, scope, false))
 }
 
 pub fn run_job_blocking(
@@ -131,10 +131,15 @@ pub fn managed_resource_update_check_blocking(
     runtime.block_on(managed_resource_update_check(paths))
 }
 
-async fn submit_job(paths: PvPaths, kind: &str, scope: &str) -> Result<SubmittedJob, DaemonError> {
+pub async fn submit_job(
+    paths: PvPaths,
+    kind: &str,
+    scope: &str,
+    requested_by_link: bool,
+) -> Result<SubmittedJob, DaemonError> {
     let mut transport = connect_transport(&paths).await?;
 
-    write_job_request(&mut transport, kind, scope).await?;
+    write_job_request(&mut transport, kind, scope, requested_by_link).await?;
     let response = read_response(&mut transport).await?;
     validate_response_contract(&response)?;
 
@@ -149,7 +154,7 @@ async fn run_job(
 ) -> Result<CompletedJob, DaemonError> {
     let mut transport = connect_transport(&paths).await?;
 
-    write_job_request(&mut transport, kind, scope).await?;
+    write_job_request(&mut transport, kind, scope, false).await?;
     let response = read_response(&mut transport).await?;
     validate_response_contract(&response)?;
     let id = accepted_job_id(&response)?;
@@ -268,12 +273,14 @@ async fn write_job_request(
     transport: &mut protocol::DaemonTransport<ipc::LocalStream>,
     kind: &str,
     scope: &str,
+    requested_by_link: bool,
 ) -> Result<(), DaemonError> {
     let request = DaemonRequest {
         protocol_version: PROTOCOL_VERSION,
         command: DaemonCommand::RunJob {
             kind: kind.to_string(),
             scope: scope.to_string(),
+            requested_by_link,
         },
     };
 

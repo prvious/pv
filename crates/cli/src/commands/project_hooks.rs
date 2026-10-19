@@ -1,0 +1,240 @@
+use std::time::Duration;
+
+use camino::{Utf8Path, Utf8PathBuf};
+use platform::hooks::{self, HookCommandContext, HookEnvironment, HookError, HookOutput};
+use state::{
+    Database, JobDiagnosticSubject, JobStatus, ProjectRecord, PvPaths, RuntimeLifecycleLock,
+    StateError,
+};
+use tokio::sync::watch;
+
+use crate::error::{CliError, ExecuteError};
+use crate::output::Streams;
+
+/// One terminal invocation captures its environment once across prepare and setup.
+pub(super) struct LinkHookRun<'a> {
+    paths: &'a PvPaths,
+    project_path: &'a Utf8Path,
+    source_path: Option<Utf8PathBuf>,
+    captured: Option<HookEnvironment>,
+    runtime: tokio::runtime::Runtime,
+}
+
+impl<'a> LinkHookRun<'a> {
+    pub(super) fn new(
+        paths: &'a PvPaths,
+        project_path: &'a Utf8Path,
+        source_path: Option<Utf8PathBuf>,
+    ) -> Result<Self, ExecuteError> {
+        Ok(Self {
+            paths,
+            project_path,
+            source_path,
+            captured: None,
+            runtime: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?,
+        })
+    }
+
+    pub(super) fn run(
+        &mut self,
+        phase: &'static str,
+        commands: &[String],
+        streams: &mut Streams<'_>,
+    ) -> Result<(), ExecuteError> {
+        let result = self.runtime.block_on(async {
+            let (sender, mut shutdown) = watch::channel(false);
+            let operation = async {
+                let captured = match self.captured.take() {
+                    Some(captured) => captured,
+                    None => {
+                        hooks::capture_environment(
+                            &hooks::login_shell()?,
+                            self.paths.home(),
+                            self.project_path,
+                            &mut shutdown,
+                        )
+                        .await?
+                    }
+                };
+                let context = HookCommandContext {
+                    paths: self.paths,
+                    project_path: self.project_path,
+                    source_path: self.source_path.as_deref(),
+                    environment: &captured,
+                    output: HookOutput::Terminal,
+                };
+                let result =
+                    hooks::run_commands(&context, phase, commands, &mut shutdown, |announcement| {
+                        streams.out.line(announcement)?;
+                        streams.out.writer().flush()
+                    })
+                    .await;
+                self.captured = Some(captured);
+                result
+            };
+            tokio::pin!(operation);
+            tokio::select! {
+                biased;
+                interrupt = tokio::signal::ctrl_c() => {
+                    sender.send_replace(true);
+                    let stopped = operation.await;
+                    interrupt.map_err(HookError::from)?;
+                    stopped
+                }
+                result = &mut operation => result,
+            }
+        });
+        result.map_err(|source| ExecuteError::ProjectHook { phase, source })
+    }
+
+    pub(super) fn wait_for_reconciliation(
+        &self,
+        job_id: &str,
+        project: &ProjectRecord,
+    ) -> Result<(), ExecuteError> {
+        self.runtime.block_on(async {
+            tokio::select! {
+                biased;
+                interrupt = tokio::signal::ctrl_c() => {
+                    interrupt?;
+                    Err(ExecuteError::ProjectHook { phase: "setup", source: HookError::Interrupted })
+                }
+                result = wait_for_project_job(self.paths, job_id, &project.id) => result,
+            }
+        })
+    }
+
+    pub(super) fn request_reconciliation(
+        &self,
+        project: &ProjectRecord,
+        streams: &mut Streams<'_>,
+    ) -> Result<Option<daemon::SubmittedJob>, ExecuteError> {
+        if self.captured.is_none() {
+            return self
+                .runtime
+                .block_on(super::request_project_reconciliation_with_origin(
+                    self.paths, project, streams, true,
+                ));
+        }
+        self.runtime.block_on(async {
+            tokio::select! {
+                biased;
+                interrupt = tokio::signal::ctrl_c() => {
+                    interrupt?;
+                    Err(ExecuteError::ProjectHook { phase: "reconciliation", source: HookError::Interrupted })
+                }
+                result = super::request_project_reconciliation_with_origin(self.paths, project, streams, true) => result,
+            }
+        })
+    }
+}
+
+/// An outer error forbids further writes and IPC; the inner hook outcome may be recorded after
+/// admission has been reacquired.
+pub(super) fn run_with_admission(
+    run: &mut LinkHookRun<'_>,
+    phase: &'static str,
+    commands: &[String],
+    streams: &mut Streams<'_>,
+    admission: &mut Option<RuntimeLifecycleLock>,
+) -> Result<Result<(), ExecuteError>, ExecuteError> {
+    let had_admission = admission.is_some();
+    drop(admission.take());
+    let result = run.run(phase, commands, streams);
+    // Reacquire even after failure. A disable/uninstall owner ends the command before any further state
+    // write or daemon request, including recording the hook outcome.
+    if had_admission {
+        match RuntimeLifecycleLock::acquire_shared(run.paths)
+            .map_err(super::coordination_lock_error)
+        {
+            Ok(guard) => *admission = Some(guard),
+            Err(admission) => {
+                return Err(match result {
+                    Ok(()) => admission,
+                    Err(original) => ExecuteError::HookAdmission {
+                        original: Box::new(original),
+                        admission: Box::new(admission),
+                    },
+                });
+            }
+        }
+    }
+    Ok(result)
+}
+
+async fn wait_for_project_job(
+    paths: &PvPaths,
+    job_id: &str,
+    project_id: &str,
+) -> Result<(), ExecuteError> {
+    let database = Database::open(paths)?;
+    loop {
+        let job = database
+            .job(job_id)?
+            .ok_or_else(|| StateError::JobNotFound {
+                id: job_id.to_string(),
+            })?;
+        match job.status {
+            JobStatus::Running => tokio::time::sleep(Duration::from_millis(100)).await,
+            JobStatus::Failed => {
+                return Err(CliError::LinkReconciliationFailed {
+                    job_id: job_id.to_string(),
+                    message: job.error.unwrap_or_else(|| "unknown failure".to_string()),
+                }
+                .into());
+            }
+            JobStatus::Succeeded => {
+                if database.job_verified_subject(
+                    job_id,
+                    &JobDiagnosticSubject::Project {
+                        id: project_id.to_string(),
+                    },
+                )? {
+                    return Ok(());
+                }
+                return Err(CliError::LinkProjectNotReconciled {
+                    job_id: job_id.to_string(),
+                }
+                .into());
+            }
+        }
+    }
+}
+
+fn record_run(
+    paths: &PvPaths,
+    project: &ProjectRecord,
+    result: &Result<(), ExecuteError>,
+) -> Result<(), StateError> {
+    let scope = format!("project:{}", project.id);
+    let subject = JobDiagnosticSubject::Other {
+        kind: "hooks".to_string(),
+        scope: scope.clone(),
+    };
+    let mut database = Database::open(paths)?;
+    let job = database.start_job("hooks", &scope)?;
+    match result {
+        Ok(()) => {
+            database.complete_job_with_coverage(&job.id, "Project hooks completed", &[subject])?
+        }
+        Err(error) => database.fail_job_with_subject(&job.id, &error.to_string(), &subject)?,
+    }
+    Ok(())
+}
+
+pub(super) fn finish_run(
+    paths: &PvPaths,
+    project: &ProjectRecord,
+    result: Result<(), ExecuteError>,
+) -> Result<(), ExecuteError> {
+    match (record_run(paths, project, &result), result) {
+        (Ok(()), result) => result,
+        (Err(recording), Ok(())) => Err(recording.into()),
+        (Err(recording), Err(original)) => Err(ExecuteError::HookOutcomeRecording {
+            original: Box::new(original),
+            recording,
+        }),
+    }
+}

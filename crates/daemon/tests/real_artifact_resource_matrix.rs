@@ -526,6 +526,7 @@ async fn run_reconciliation_job(paths: &PvPaths, scope: &str) -> Result<String> 
     let request = DaemonRequest {
         protocol_version: PROTOCOL_VERSION,
         command: DaemonCommand::RunJob {
+            requested_by_link: false,
             kind: "reconcile".to_string(),
             scope: scope.to_string(),
         },

@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::io;
 use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::PermissionsExt;
+use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 
@@ -22,6 +23,51 @@ use state::{
     RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput, ResourceAllocationStatus,
     RuntimeLifecycleLock, RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
 };
+
+#[test]
+fn accepted_job_lookup_and_hook_admission_include_running_jobs_beyond_history_limit() -> Result<()>
+{
+    let temporary = tempdir()?;
+    let mut database = Database::open(&PvPaths::for_home(temporary.path()))?;
+    let hook = database.start_job("hooks", "project:waiting")?;
+    for _ in 0..105 {
+        let job = database.start_job("reconcile", "system")?;
+        database.complete_job(&job.id, "done")?;
+    }
+    assert!(!database.recent_jobs()?.iter().any(|job| job.id == hook.id));
+    assert_eq!(
+        database.job(&hook.id)?.map(|job| job.status),
+        Some(JobStatus::Running)
+    );
+    assert_eq!(
+        database
+            .active_hook_job("project:waiting")?
+            .map(|job| job.id),
+        Some(hook.id.clone())
+    );
+    assert!(database.active_hook_job("project:other")?.is_none());
+    database.fail_job(&hook.id, "interrupted")?;
+    assert!(database.active_hook_job("project:waiting")?.is_none());
+
+    let accepted = database.start_job("reconcile", "system")?;
+    let project = JobDiagnosticSubject::Project {
+        id: "target".to_string(),
+    };
+    assert!(!database.job_verified_subject(&accepted.id, &project)?);
+    database.complete_job_with_coverage(&accepted.id, "done", slice::from_ref(&project))?;
+    assert!(database.job_verified_subject(&accepted.id, &project)?);
+    assert!(!database.job_verified_subject(
+        &accepted.id,
+        &JobDiagnosticSubject::Project {
+            id: "other".to_string()
+        }
+    )?);
+    assert_eq!(
+        database.job(&accepted.id)?.map(|job| job.status),
+        Some(JobStatus::Succeeded)
+    );
+    Ok(())
+}
 
 #[test]
 fn paths_are_derived_from_an_injected_home() -> Result<()> {

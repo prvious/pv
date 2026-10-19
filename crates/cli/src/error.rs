@@ -4,6 +4,19 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum CliError {
+    #[error(
+        "Project hooks are already queued or running in daemon job {job_id}; wait for that job or pass `--skip-hooks`"
+    )]
+    ProjectHooksInProgress { job_id: String },
+
+    #[error("reconciliation {job_id} failed: {message}")]
+    LinkReconciliationFailed { job_id: String, message: String },
+
+    #[error(
+        "reconciliation {job_id} did not successfully reconcile this Project; setup hooks were not run"
+    )]
+    LinkProjectNotReconciled { job_id: String },
+
     #[error("prompt cancelled")]
     PromptCancelled,
 
@@ -191,6 +204,25 @@ pub enum CliError {
 
 #[derive(Debug, Error)]
 pub(crate) enum ExecuteError {
+    #[error("{original}; could not reacquire runtime lifecycle admission: {admission}")]
+    HookAdmission {
+        original: Box<ExecuteError>,
+        #[source]
+        admission: Box<ExecuteError>,
+    },
+    #[error("{original}; could not record hook outcome: {recording}")]
+    HookOutcomeRecording {
+        original: Box<ExecuteError>,
+        #[source]
+        recording: state::StateError,
+    },
+    #[error("{phase}: {source}")]
+    ProjectHook {
+        phase: &'static str,
+        #[source]
+        source: platform::hooks::HookError,
+    },
+
     #[error(transparent)]
     User(#[from] CliError),
 

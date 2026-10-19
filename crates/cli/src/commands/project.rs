@@ -8,9 +8,10 @@ use serde::Serialize;
 use state::{
     Database, LinkProjectInput, LinkProjectStatus, ProjectEnvObservedStateRecord,
     ProjectEnvObservedStatus, ProjectEnvStateContext, ProjectMode, ProjectRecord, PvPaths,
-    StateError,
+    RuntimeLifecycleLock, StateError,
 };
 
+use super::project_hooks::{self, LinkHookRun};
 use crate::args::{LinkArgs, ListArgs, OpenArgs, ProjectEnvArgs, UnlinkArgs};
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
@@ -21,6 +22,7 @@ pub(crate) fn link(
     args: LinkArgs,
     environment: &impl Environment,
     streams: &mut Streams<'_>,
+    mut runtime_lifecycle_lock: Option<RuntimeLifecycleLock>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let original_project_path = resolve_project_path(args.path.as_deref(), environment)?;
@@ -35,8 +37,30 @@ pub(crate) fn link(
             .as_ref()
             .and_then(|php| php.version_selector()),
     )?;
-    let mut database = Database::open(&paths)?;
+    let database = Database::open(&paths)?;
     let existing = database.project_by_path(&project_path)?;
+    let hooks_enabled = !args.skip_hooks && !config_file.config.hooks.is_empty();
+    let discovered = database
+        .discovered_projects()?
+        .into_iter()
+        .find(|discovered| {
+            existing
+                .as_ref()
+                .is_some_and(|project| project.id == discovered.project_id)
+        });
+    if !args.skip_hooks
+        && let Some(project) = &existing
+        && let Some(job) = database.active_hook_job(&format!("project:{}", project.id))?
+    {
+        return Err(CliError::ProjectHooksInProgress { job_id: job.id }.into());
+    }
+    let source_path = if let Some(discovered) = &discovered {
+        database
+            .project_by_id(&discovered.source_project_id)?
+            .map(|source| source.path)
+    } else {
+        None
+    };
     let mode = if config_file.config.serve {
         ProjectMode::Served
     } else {
@@ -53,6 +77,27 @@ pub(crate) fn link(
             .unwrap_or_else(|| format!("{}.test", project.slug)),
         (None, None) => config::hostname_from_project_path(&project_path)?,
     };
+    drop(database);
+    let mut hook_run = LinkHookRun::new(&paths, &project_path, source_path)?;
+    let mut hooks_attempted = false;
+    if hooks_enabled && !config_file.config.hooks.prepare.is_empty() {
+        hooks_attempted = true;
+        let result = project_hooks::run_with_admission(
+            &mut hook_run,
+            "prepare",
+            &config_file.config.hooks.prepare,
+            streams,
+            &mut runtime_lifecycle_lock,
+        )?;
+        if let Err(error) = result {
+            if let Some(project) = &existing {
+                project_hooks::finish_run(&paths, project, Err(error))?;
+                return Ok(ExitCode::FAILURE);
+            }
+            return Err(error);
+        }
+    }
+    let mut database = Database::open(&paths)?;
     let result = database.link_project_with_mode(
         LinkProjectInput {
             path: project_path.clone(),
@@ -63,6 +108,7 @@ pub(crate) fn link(
         },
         mode,
     )?;
+    drop(database);
 
     let output = &mut streams.out;
     let project_name = if result.project.mode == ProjectMode::ResourceOnly {
@@ -101,7 +147,36 @@ pub(crate) fn link(
             Line::field(&format!("{verb} {project_name} -> "), &result.project.path),
         )?;
     }
-    super::request_project_reconciliation(&paths, &result.project, streams)?;
+    let submitted = hook_run.request_reconciliation(&result.project, streams);
+    let outcome = match submitted {
+        Err(error) => Err(error),
+        Ok(job) if hooks_enabled && !config_file.config.hooks.setup.is_empty() => {
+            if let Some(job) = job {
+                hooks_attempted = true;
+                match hook_run.wait_for_reconciliation(&job.id, &result.project) {
+                    Err(error) => Err(error),
+                    Ok(()) => project_hooks::run_with_admission(
+                        &mut hook_run,
+                        "setup",
+                        &config_file.config.hooks.setup,
+                        streams,
+                        &mut runtime_lifecycle_lock,
+                    )?,
+                }
+            } else {
+                streams
+                    .err
+                    .warning("Setup hooks skipped; run `pv link` again after `pv setup`")?;
+                Ok(())
+            }
+        }
+        Ok(_) => Ok(()),
+    };
+    if hooks_attempted {
+        project_hooks::finish_run(&paths, &result.project, outcome)?;
+    } else {
+        outcome?;
+    }
 
     Ok(ExitCode::SUCCESS)
 }

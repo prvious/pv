@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 use rusqlite::{
-    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+    Connection, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior, params,
 };
 
 use crate::{PvPaths, StateError, fs, migrations};
@@ -577,6 +577,34 @@ struct JobRecordRow {
     error: Option<String>,
 }
 
+impl JobRecordRow {
+    fn read(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            kind: row.get(1)?,
+            scope: row.get(2)?,
+            status: row.get(3)?,
+            started_at: row.get(4)?,
+            finished_at: row.get(5)?,
+            summary: row.get(6)?,
+            error: row.get(7)?,
+        })
+    }
+
+    fn into_record(self) -> Result<JobRecord, StateError> {
+        Ok(JobRecord {
+            id: self.id,
+            kind: self.kind,
+            scope: self.scope,
+            status: JobStatus::from_database(self.status)?,
+            started_at: self.started_at,
+            finished_at: self.finished_at,
+            summary: self.summary,
+            error: self.error,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct JobDiagnosticOutcome {
     job_id: String,
@@ -864,35 +892,50 @@ impl Database {
         let mut statement = self.connection.prepare(
             "SELECT id, kind, scope, status, started_at, finished_at, summary, error FROM jobs ORDER BY started_at DESC, id DESC LIMIT ?1",
         )?;
-        let rows = statement.query_map(params![RECENT_JOB_LIMIT], |row| {
-            Ok(JobRecordRow {
-                id: row.get(0)?,
-                kind: row.get(1)?,
-                scope: row.get(2)?,
-                status: row.get(3)?,
-                started_at: row.get(4)?,
-                finished_at: row.get(5)?,
-                summary: row.get(6)?,
-                error: row.get(7)?,
-            })
-        })?;
+        let rows = statement.query_map(params![RECENT_JOB_LIMIT], JobRecordRow::read)?;
         let mut jobs = Vec::new();
 
         for row in rows {
-            let row = row?;
-            jobs.push(JobRecord {
-                id: row.id,
-                kind: row.kind,
-                scope: row.scope,
-                status: JobStatus::from_database(row.status)?,
-                started_at: row.started_at,
-                finished_at: row.finished_at,
-                summary: row.summary,
-                error: row.error,
-            });
+            jobs.push(row?.into_record()?);
         }
 
         Ok(jobs)
+    }
+
+    /// Reads a job by its accepted ID, including running jobs beyond the history display limit.
+    pub fn job(&self, id: &str) -> Result<Option<JobRecord>, StateError> {
+        self.connection.query_row(
+            "SELECT id, kind, scope, status, started_at, finished_at, summary, error FROM jobs WHERE id = ?1",
+            params![id], JobRecordRow::read,
+        ).optional()?.map(JobRecordRow::into_record).transpose()
+    }
+
+    /// Queued daemon hook runs also have running rows, so terminal runs see them before execution.
+    pub fn active_hook_job(&self, scope: &str) -> Result<Option<JobRecord>, StateError> {
+        self.connection
+            .query_row(
+                "SELECT id, kind, scope, status, started_at, finished_at, summary, error FROM jobs
+            WHERE kind = 'hooks' AND scope = ?1 AND status = 'running' ORDER BY id LIMIT 1",
+                params![scope],
+                JobRecordRow::read,
+            )
+            .optional()?
+            .map(JobRecordRow::into_record)
+            .transpose()
+    }
+
+    pub fn job_verified_subject(
+        &self,
+        id: &str,
+        subject: &JobDiagnosticSubject,
+    ) -> Result<bool, StateError> {
+        let (subject_kind, subject_id) = subject.database_identity();
+        Ok(self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM job_diagnostic_outcomes
+            WHERE job_id = ?1 AND subject_kind = ?2 AND subject_id = ?3 AND outcome = 'success')",
+            params![id, subject_kind, subject_id],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn unresolved_job_failures(&self) -> Result<Vec<UnresolvedJobFailure>, StateError> {

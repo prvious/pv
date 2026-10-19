@@ -324,15 +324,25 @@ fn artifact_subject(artifact: &resources::ManifestArtifact) -> String {
     )
 }
 
+pub(crate) struct JobRequest<'a> {
+    pub kind: &'a str,
+    pub scope: &'a str,
+    pub requested_by_link: bool,
+}
+
 pub(crate) async fn run_job(
     paths: PvPaths,
     queue: ReconciliationQueue,
     transport: DaemonTransport<LocalStream>,
-    kind: &str,
-    scope: &str,
+    request: JobRequest<'_>,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     fallback_shutdown: &watch::Receiver<bool>,
 ) -> Result<(), DaemonError> {
+    let JobRequest {
+        kind,
+        scope,
+        requested_by_link,
+    } = request;
     let parsed_scope = scope.parse::<ReconciliationScope>();
     if kind == "reconcile" {
         return match parsed_scope {
@@ -344,6 +354,7 @@ pub(crate) async fn run_job(
                     parsed_scope,
                     runtime_catalog,
                     fallback_shutdown,
+                    requested_by_link,
                 )
                 .await
             }
@@ -599,7 +610,14 @@ async fn run_reconciliation_job(
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     fallback_shutdown: &watch::Receiver<bool>,
+    requested_by_link: bool,
 ) -> Result<(), DaemonError> {
+    let foreground_project =
+        if requested_by_link && let ReconciliationScope::Project { id } = &scope {
+            Some(id.to_string())
+        } else {
+            None
+        };
     let result = match enqueue_foreground_reconciliation_job(&paths, &queue, scope) {
         Ok(result) => result,
         Err(DaemonError::State(
@@ -612,6 +630,13 @@ async fn run_reconciliation_job(
         Err(error) => return Err(error),
     };
 
+    if let Some(project_id) = foreground_project {
+        let job_id = match &result {
+            EnqueueResult::Queued(queued) => queued.job_id(),
+            EnqueueResult::Coalesced(job) => job.job_id(),
+        };
+        queue.mark_link_requested(job_id, &project_id);
+    }
     match result {
         EnqueueResult::Queued(queued) => {
             let job_id = queued.job_id().to_string();
@@ -10536,6 +10561,7 @@ mod tests {
                 scope,
                 None,
                 &fallback_receiver,
+                false,
             )
             .await
         });
@@ -10606,6 +10632,7 @@ mod tests {
                 ReconciliationScope::resource("caddy", "2")?,
                 None,
                 &fallback_receiver,
+                false,
             )
             .await
         });

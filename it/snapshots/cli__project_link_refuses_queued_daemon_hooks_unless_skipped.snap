@@ -1,0 +1,27 @@
+---
+source: it/cli.rs
+expression: "(refused, refused_after_config_edit, skipped)"
+---
+(
+    CommandOutput {
+        code: Some(
+            1,
+        ),
+        stdout: "",
+        stderr: "error: Project hooks are already queued or running in daemon job job_000001; wait for that job or pass `--skip-hooks`\n",
+    },
+    CommandOutput {
+        code: Some(
+            1,
+        ),
+        stdout: "",
+        stderr: "error: Project hooks are already queued or running in daemon job job_000001; wait for that job or pass `--skip-hooks`\n",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Already linked acme (resource-only) -> <tempdir>/acme\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+    },
+)
