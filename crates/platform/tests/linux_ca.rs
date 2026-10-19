@@ -78,6 +78,12 @@ fn linux_certutil_adds_inspects_repairs_and_removes_only_pv_trust() -> Result<()
         inspect_browser_ca_trust(&database, Some(&generated.metadata)),
         TrustDomainState::NotTrusted { .. }
     ));
+    fs::ensure_user_dir(&database)?;
+    untrust_browser_ca(&database, Some(&generated.metadata.fingerprint))?;
+    assert!(matches!(
+        inspect_browser_ca_trust(&database, Some(&generated.metadata)),
+        TrustDomainState::NotTrusted { .. }
+    ));
     trust_browser_ca(&database, &paths.ca_certificate())?;
     assert!(
         matches!(inspect_browser_ca_trust(&database, Some(&generated.metadata)), TrustDomainState::Current { fingerprint } if fingerprint == generated.metadata.fingerprint)

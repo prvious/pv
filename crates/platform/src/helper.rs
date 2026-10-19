@@ -1236,6 +1236,9 @@ fn call_helper(
             HelperOperation::PfInspect => {
                 crate::pf::PORT_PROXY_INSPECTION_TIMEOUT + HELPER_IO_TIMEOUT
             }
+            HelperOperation::CaApply { .. } | HelperOperation::CaRemove { .. } => {
+                crate::trust::linux::COMMAND_TIMEOUT + HELPER_IO_TIMEOUT
+            }
             _ => HELPER_IO_TIMEOUT,
         }))
         .map_err(PlatformError::PrivilegedHelperIo)?;
@@ -2276,13 +2279,31 @@ mod tests {
     #[test]
     fn mutations_wait_beyond_the_lifecycle_deadline_and_preserve_unknown_outcomes()
     -> anyhow::Result<()> {
-        for (apply_operation, remove_operation) in [(
-            HelperOperation::PfApply {
-                http_port: 48080,
-                https_port: 48443,
-            },
-            HelperOperation::PfRemove,
-        )] {
+        for (apply_operation, remove_operation) in [
+            (
+                HelperOperation::PfApply {
+                    http_port: 48080,
+                    https_port: 48443,
+                },
+                HelperOperation::PfRemove,
+            ),
+            (
+                HelperOperation::CaApply {
+                    fingerprint: "a".repeat(64),
+                },
+                HelperOperation::CaRemove {
+                    fingerprint: "a".repeat(64),
+                },
+            ),
+            (
+                HelperOperation::CaRemove {
+                    fingerprint: "a".repeat(64),
+                },
+                HelperOperation::CaApply {
+                    fingerprint: "a".repeat(64),
+                },
+            ),
+        ] {
             let directory = tempdir()?;
             let socket = directory.path().join("mutation-helper.sock");
             let listener = std::os::unix::net::UnixListener::bind(&socket)?;
@@ -2333,13 +2354,19 @@ mod tests {
                 .ok_or_else(|| anyhow!("removal request was not sent"))?
                 .err()
                 .ok_or_else(|| anyhow!("removal unexpectedly succeeded without a response"))?;
-            assert!(matches!((&remove_operation, &error),
+            assert!(
+                matches!((&remove_operation, &error),
                     (HelperOperation::PfRemove, PlatformError::PortProxyMutation { operation: "remove", source })
-                    if matches!(source.as_ref(), PlatformError::PrivilegedHelperIo(source) if source.kind() == ErrorKind::UnexpectedEof)));
+                    if matches!(source.as_ref(), PlatformError::PrivilegedHelperIo(source) if source.kind() == ErrorKind::UnexpectedEof))
+                    || matches!((&remove_operation, &error),
+                    (HelperOperation::CaApply { .. } | HelperOperation::CaRemove { .. }, PlatformError::PrivilegedHelperIo(source))
+                    if source.kind() == ErrorKind::UnexpectedEof)
+            );
             match error {
                 PlatformError::PortProxyMutation { .. } => {
                     assert_snapshot!(error.to_string(), @"socket proxy remove failed: PV privileged helper I/O failed: helper protocol connection closed before a complete frame was received; port routing may be partial and a queued or in-flight request may still complete; inspect pv-http and pv-https units, their .candidate and .rollback files with an administrator before retrying `pv ports:install` or `pv ports:uninstall`")
                 }
+                PlatformError::PrivilegedHelperIo(_) => {}
                 error => return Err(error.into()),
             }
         }

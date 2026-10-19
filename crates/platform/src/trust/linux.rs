@@ -14,7 +14,7 @@ use crate::helper::linux as root_files;
 use crate::helper::{owner_ca_certificate_path, validate_fingerprint};
 use crate::{LocalCaMetadata, PlatformError};
 
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 const CERTUTIL: &str = "/usr/bin/certutil";
 const STAGED_CA: &str = "/var/lib/pv/ca.pem";
 const NICKNAME_PREFIX: &str = "PV Local Development CA ";
@@ -296,7 +296,7 @@ pub(super) fn inspect_browser_ca(
         };
     };
     let inspect = || -> Result<TrustDomainState, PlatformError> {
-        if !fs::path_is_directory(database).map_err(integration_error)? {
+        if !fs::path_is_file(&database.join("cert9.db")).map_err(integration_error)? {
             return Ok(TrustDomainState::NotTrusted {
                 fingerprint: metadata.fingerprint.clone(),
             });
@@ -343,7 +343,7 @@ pub(super) fn trust_browser_ca(
     let pem = fs::read_to_string(certificate_path).map_err(integration_error)?;
     let metadata = checked_metadata(&pem, None)?;
     let name = nickname(&metadata.fingerprint)?;
-    if !fs::path_is_directory(database).map_err(integration_error)? {
+    if !fs::path_is_file(&database.join("cert9.db")).map_err(integration_error)? {
         fs::ensure_user_dir(database).map_err(integration_error)?;
         certutil(database, &["-N", "--empty-password"])?;
     }
@@ -377,7 +377,7 @@ pub(super) fn untrust_browser_ca(
     database: &Utf8Path,
     fingerprint: Option<&str>,
 ) -> Result<(), PlatformError> {
-    if !fs::path_is_directory(database).map_err(integration_error)? {
+    if !fs::path_is_file(&database.join("cert9.db")).map_err(integration_error)? {
         return Ok(());
     }
     let names = if let Some(fingerprint) = fingerprint {
