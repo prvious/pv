@@ -1,5 +1,5 @@
 use std::env::VarError;
-use std::io::{Error, Read, Write};
+use std::io::{Error, Write, copy};
 
 use anyhow::{Context, Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -63,19 +63,12 @@ impl ResourceHttpClient for RealArtifactClient {
             reason: error.to_string(),
         };
         let mut file = std::fs::File::open(&path).map_err(filesystem_error)?;
-        let mut buffer = [0_u8; 8192];
-        loop {
-            let count = file.read(&mut buffer).map_err(filesystem_error)?;
-            if count == 0 {
-                return Ok(());
-            }
-            writer.write_all(&buffer[..count]).map_err(|error| {
-                ResourcesError::DownloadWriteFailed {
-                    url: url.to_string(),
-                    reason: error.to_string(),
-                }
-            })?;
-        }
+        copy(&mut file, writer)
+            .map(|_| ())
+            .map_err(|error| ResourcesError::DownloadWriteFailed {
+                url: url.to_string(),
+                reason: error.to_string(),
+            })
     }
 }
 

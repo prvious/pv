@@ -153,6 +153,7 @@ def https_ready():
         return False
     body = json.loads(result.stdout)
     assert body["php"].startswith("8.5.")
+    assert {"pdo_mysql", "pdo_pgsql", "redis"} <= set(body["extensions"])
     assert body["mysql"] == body["postgres"] == 1
     assert body["redis"] and body["mailpit"] and body["rustfs"]
     (EVIDENCE / "project.json").write_text(json.dumps(body, indent=2))

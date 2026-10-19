@@ -13,6 +13,7 @@ $redis->connect($environment['REDIS_HOST'], (int) $environment['REDIS_PORT']);
 header('Content-Type: application/json');
 echo json_encode([
     'php' => PHP_VERSION,
+    'extensions' => get_loaded_extensions(),
     'mysql' => (int) $mysql->query('SELECT 1')->fetchColumn(),
     'postgres' => (int) $postgres->query('SELECT 1')->fetchColumn(),
     'redis' => (bool) $redis->ping(),
