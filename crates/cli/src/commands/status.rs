@@ -168,6 +168,16 @@ impl StatusSnapshot {
             output.line("    repair: pv ports:install")?;
         }
         output.line(&format!("  CA: {}", self.integrations.ca))?;
+        for report in &self.integrations.browser_ca {
+            output.line(&format!(
+                "  Browser CA: {} · {}",
+                report.database,
+                report.label()
+            ))?;
+            if let Some(detail) = report.detail() {
+                output.line(&format!("    {detail}"))?;
+            }
+        }
         output.line(&format!("Logs: {}", self.log_directory))?;
         output.line("Managed Resources:")?;
         if self.managed_resources.is_empty() {
@@ -344,6 +354,9 @@ impl StatusSnapshot {
                 Line::field("Browser CA: ", &report.database)
                     .text(format!(" · {}", report.label())),
             )?;
+            if let Some(detail) = report.detail() {
+                output.detail(detail)?;
+            }
         }
 
         output.section("Managed Resources")?;

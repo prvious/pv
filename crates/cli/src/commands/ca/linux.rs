@@ -118,11 +118,10 @@ pub(super) fn write_browser_state(
         },
         Line::field("Browser CA trust: ", &report.database).text(format!(" · {}", report.label())),
     )?;
-    match &report.state {
-        TrustDomainState::Unknown { reason } => output.detail(reason),
-        TrustDomainState::Unreadable { message } => output.detail(message),
-        _ => Ok(()),
+    if let Some(detail) = report.detail() {
+        output.detail(detail)?;
     }
+    Ok(())
 }
 
 fn write_system_state(output: &mut Output<'_>, state: &TrustDomainState) -> std::io::Result<()> {

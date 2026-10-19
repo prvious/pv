@@ -97,7 +97,11 @@ impl DoctorReport {
             match super::ca::browser_ca_reports(environment, &paths, metadata.as_ref()) {
                 Ok(reports) => {
                     for report in reports {
-                        let detail = format!("{}: {}", report.database, report.label());
+                        let mut detail = format!("{}: {}", report.database, report.label());
+                        if let Some(message) = report.detail() {
+                            detail.push_str(": ");
+                            detail.push_str(message);
+                        }
                         sections[1].checks.push(if report.current() {
                             DoctorCheck::pass("Browser CA trust", detail)
                         } else {

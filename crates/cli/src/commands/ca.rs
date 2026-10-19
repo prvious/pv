@@ -349,6 +349,14 @@ pub(crate) struct BrowserCaReport {
 }
 
 impl BrowserCaReport {
+    pub fn detail(&self) -> Option<&str> {
+        match &self.state {
+            TrustDomainState::Unknown { reason } => Some(reason),
+            TrustDomainState::Unreadable { message } => Some(message),
+            _ => None,
+        }
+    }
+
     pub fn current(&self) -> bool {
         matches!(self.state, TrustDomainState::Current { .. })
     }
