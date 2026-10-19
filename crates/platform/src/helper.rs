@@ -20,7 +20,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use camino::Utf8Path;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -1471,7 +1471,7 @@ fn read_frame(reader: &mut impl Read) -> Result<Vec<u8>, PlatformError> {
     Ok(bytes)
 }
 
-fn validate_fingerprint(fingerprint: &str) -> Result<(), PlatformError> {
+pub(crate) fn validate_fingerprint(fingerprint: &str) -> Result<(), PlatformError> {
     if fingerprint.len() == 64
         && fingerprint
             .bytes()
@@ -1798,16 +1798,24 @@ fn dispatch_request(
             Ok(HelperPayload::Empty)
         }
         #[cfg(target_os = "linux")]
-        HelperOperation::CaInspect
-        | HelperOperation::CaApply { .. }
-        | HelperOperation::CaRemove { .. } => Err(crate::capability::unsupported(
-            crate::PlatformCapability::TrustStore,
-        )?),
+        HelperOperation::CaInspect => Ok(HelperPayload::CaCertificates(
+            crate::trust::linux::trusted_certificates()?,
+        )),
+        #[cfg(target_os = "linux")]
+        HelperOperation::CaApply { fingerprint } => {
+            crate::trust::linux::apply_system_ca_privileged(metadata.owner_uid, &fingerprint)?;
+            Ok(HelperPayload::Empty)
+        }
+        #[cfg(target_os = "linux")]
+        HelperOperation::CaRemove { fingerprint } => {
+            crate::trust::linux::untrust_system_ca_privileged(&fingerprint)?;
+            Ok(HelperPayload::Empty)
+        }
     }
 }
 
-#[cfg(target_os = "macos")]
-fn owner_ca_certificate_path(owner_uid: u32) -> Result<Utf8PathBuf, PlatformError> {
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) fn owner_ca_certificate_path(owner_uid: u32) -> Result<Utf8PathBuf, PlatformError> {
     let user = nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(owner_uid))
         .map_err(|error| {
             PlatformError::PrivilegedHelperAuthentication(format!(

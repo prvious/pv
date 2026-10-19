@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use camino::Utf8PathBuf;
 use platform::{
     CaFileState, DAEMON_REGISTRATION_NAME, DaemonRegistrationFileState, LocalCaMetadata,
-    ResolverConfig, ResolverFileState, TrustDomainState,
+    PlatformTarget, ResolverConfig, ResolverFileState, TrustDomainState,
 };
 use self_update::AppUpdateVersion;
 use serde::Serialize;
@@ -53,12 +53,13 @@ struct DoctorSection {
 
 impl DoctorReport {
     fn read(environment: &impl Environment) -> Result<Self, ExecuteError> {
+        let target = environment.platform_target()?;
         let paths = pv_paths(environment)?;
         let database = Database::open_read_only(&paths)?;
         let daemon_registration_path = daemon_registration_path(environment)?;
         let registration =
             platform::inspect_daemon_registration_file(&daemon_registration_path, None);
-        let sections = [
+        let mut sections = [
             DoctorSection {
                 title: "System",
                 checks: vec![
@@ -72,7 +73,7 @@ impl DoctorReport {
                 checks: vec![
                     dns_check(environment, &paths)?,
                     ports_check(environment, &paths, database.as_ref())?,
-                    ca_check(environment, &paths),
+                    ca_check(environment, &paths, target),
                 ],
             },
             DoctorSection {
@@ -88,6 +89,29 @@ impl DoctorReport {
                 ],
             },
         ];
+
+        if target == PlatformTarget::Linux {
+            let local =
+                platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
+            let metadata = metadata_from_local_ca(&local);
+            match super::ca::browser_ca_reports(environment, &paths, metadata.as_ref()) {
+                Ok(reports) => {
+                    for report in reports {
+                        let detail = format!("{}: {}", report.database, report.label());
+                        sections[1].checks.push(if report.current() {
+                            DoctorCheck::pass("Browser CA trust", detail)
+                        } else {
+                            DoctorCheck::fail("Browser CA trust", detail, "pv ca:trust")
+                        });
+                    }
+                }
+                Err(error) => sections[1].checks.push(DoctorCheck::fail(
+                    "Browser CA trust",
+                    error.to_string(),
+                    "pv ca:trust",
+                )),
+            }
+        }
 
         Ok(Self { sections })
     }
@@ -616,7 +640,16 @@ fn display_port(port: Option<u16>) -> String {
     port.map_or_else(|| "-".to_owned(), |port| port.to_string())
 }
 
-fn ca_check(environment: &impl Environment, paths: &PvPaths) -> DoctorCheck {
+fn ca_check(
+    environment: &impl Environment,
+    paths: &PvPaths,
+    target: PlatformTarget,
+) -> DoctorCheck {
+    let store = if target == PlatformTarget::Linux {
+        "System trust store"
+    } else {
+        "System keychain"
+    };
     let local_ca =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
     let local_metadata = metadata_from_local_ca(&local_ca);
@@ -632,7 +665,7 @@ fn ca_check(environment: &impl Environment, paths: &PvPaths) -> DoctorCheck {
         (CaFileState::Current { .. }, TrustDomainState::NotTrusted { fingerprint }) => {
             DoctorCheck::fail(
                 "Local CA trust",
-                "local CA is not trusted in the System keychain",
+                format!("local CA is not trusted in the {store}"),
                 "pv ca:trust",
             )
             .with_detail(format!("fingerprint: {fingerprint}"))
@@ -644,28 +677,28 @@ fn ca_check(environment: &impl Environment, paths: &PvPaths) -> DoctorCheck {
             },
         ) => DoctorCheck::fail(
             "Local CA trust",
-            "System keychain has stale PV CA trust",
+            format!("{store} has stale PV CA trust"),
             "pv ca:trust",
         )
         .with_detail(format!("actual fingerprint: {actual_fingerprint}")),
         (CaFileState::Current { .. }, TrustDomainState::Denied { fingerprint }) => {
             DoctorCheck::fail(
                 "Local CA trust",
-                "System keychain denies PV CA trust",
+                format!("{store} denies PV CA trust"),
                 "pv ca:trust",
             )
             .with_detail(format!("fingerprint: {fingerprint}"))
         }
         (CaFileState::Current { .. }, TrustDomainState::Unknown { reason }) => DoctorCheck::fail(
             "Local CA trust",
-            "System keychain trust could not be determined",
+            format!("{store} trust could not be determined"),
             "pv ca:trust",
         )
         .with_detail(reason.clone()),
         (CaFileState::Current { .. }, TrustDomainState::Unreadable { message }) => {
             DoctorCheck::fail(
                 "Local CA trust",
-                "System keychain trust could not be inspected",
+                format!("{store} trust could not be inspected"),
                 "pv ca:trust",
             )
             .with_detail(message.clone())

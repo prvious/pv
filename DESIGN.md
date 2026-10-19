@@ -334,6 +334,8 @@ When a Project's PHP track or optional extension set changes, PV reconfigures on
 
 PV's local CA files are user-specific and live under `~/.pv/certificates/`. Trust is installed into the macOS System keychain so browsers trust Project certificates.
 
+On Linux, the helper installs PV's public CA as a fingerprint-named anchor in the distribution's system trust store and runs `update-ca-certificates` or `update-ca-trust`. Inspection verifies that the generated CA bundle contains the certificate. The CLI runs `certutil` as the user to add, inspect, repair trust flags, and remove PV's nickname in each browser NSS database: `~/.pki/nssdb`, existing Chromium databases under `~/.local/share/pki/nssdb` and Snap, and existing Firefox profiles under `~/.mozilla/firefox` and Snap. Trust creates the primary NSS database when absent; inspection does not create files. Every external trust command uses the existing bounded platform command runner. `pv ca:*`, `pv doctor`, and `pv status` report browser trust per database. Rerunning trust repairs browser entries even when system trust is already current. Untrust removes PV entries from both stores while retaining local CA files and unrelated certificates.
+
 `pv dns:*` commands remain available as lower-level resolver inspection and repair commands even though `pv setup` handles first-time resolver configuration.
 
 `pv dns:install` installs or repairs `/etc/resolver/test` and ensures the PV daemon is running so the resolver can answer `.test` lookups. If the LaunchAgent is not registered, it tells the user to run `pv setup` or `pv daemon:enable`.

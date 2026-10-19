@@ -1,0 +1,20 @@
+---
+source: crates/cli/tests/linux_daemon_registration.rs
+expression: checks
+---
+[
+    Object {
+        "detail": Null,
+        "message": String("<tempdir>/home/.pki/nssdb: current"),
+        "name": String("Browser CA trust"),
+        "repair": Null,
+        "status": String("pass"),
+    },
+    Object {
+        "detail": Null,
+        "message": String("<tempdir>/home/.mozilla/firefox/default: not trusted"),
+        "name": String("Browser CA trust"),
+        "repair": String("pv ca:trust"),
+        "status": String("fail"),
+    },
+]

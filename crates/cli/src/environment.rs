@@ -6,7 +6,7 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use console::Term;
 
 use crate::prompt::{Answer, Prompt};
@@ -305,6 +305,33 @@ pub trait Environment {
         platform::installed_helper_artifacts_present()
     }
 
+    fn browser_ca_databases(
+        &self,
+        _home: &Utf8Path,
+    ) -> Result<Vec<Utf8PathBuf>, platform::PlatformError> {
+        Ok(Vec::new())
+    }
+
+    fn inspect_browser_ca_trust(
+        &self,
+        database: &Utf8Path,
+        metadata: Option<&platform::LocalCaMetadata>,
+    ) -> platform::TrustDomainState {
+        platform::inspect_browser_ca_trust(database, metadata)
+    }
+
+    fn trust_browser_ca(
+        &self,
+        database: &Utf8Path,
+        certificate: &Utf8Path,
+    ) -> Result<(), platform::PlatformError> {
+        platform::trust_browser_ca(database, certificate)
+    }
+
+    fn untrust_browser_ca(&self, database: &Utf8Path) -> Result<(), platform::PlatformError> {
+        platform::untrust_browser_ca(database, None)
+    }
+
     fn trust_system_ca(&self, certificate_path: &Utf8Path) -> Result<(), platform::PlatformError> {
         platform::trust_system_ca(certificate_path)
     }
@@ -364,6 +391,13 @@ pub(crate) fn app_update_manifest_url(environment: &impl Environment) -> String 
 pub struct ProcessEnvironment;
 
 impl Environment for ProcessEnvironment {
+    fn browser_ca_databases(
+        &self,
+        home: &Utf8Path,
+    ) -> Result<Vec<Utf8PathBuf>, platform::PlatformError> {
+        platform::browser_ca_databases(home)
+    }
+
     fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError> {
         platform::PrivilegedHelperClient.inspect_low_ports()
     }

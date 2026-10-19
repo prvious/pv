@@ -343,7 +343,7 @@ pub(crate) fn is_pv_ca_metadata(metadata: &LocalCaMetadata) -> bool {
         && metadata.can_sign_certificates
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn pem_from_der(label: &str, der: &[u8]) -> String {
     let base64 = data_encoding::BASE64.encode(der);
     let mut pem = format!("-----BEGIN {label}-----\n");
