@@ -182,7 +182,7 @@ fn artifact_recipes_builds_resource_lanes_in_parallel() -> Result<()> {
     );
 
     assert_snapshot!(summary, @r###"
-    jobs=["validate", "build-php", "build-caddy", "build-composer", "build-redis", "build-mysql", "build-postgres-dependencies", "build-postgres", "build-mailpit", "build-rustfs", "build-linux"]
+    jobs=["linux-acceptance", "validate", "build-php", "build-caddy", "build-composer", "build-redis", "build-mysql", "build-postgres-dependencies", "build-postgres", "build-mailpit", "build-rustfs", "build-linux"]
     upload_steps=12
     archive_upload_paths=9
     manifest_upload_paths=9
