@@ -1,3 +1,4 @@
+use std::slice;
 use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -110,8 +111,9 @@ impl<'a> LinkHookRun<'a> {
         &self,
         project: &ProjectRecord,
         streams: &mut Streams<'_>,
+        hooks_enabled: bool,
     ) -> Result<Option<daemon::SubmittedJob>, ExecuteError> {
-        if self.captured.is_none() {
+        if !hooks_enabled {
             return self
                 .runtime
                 .block_on(super::request_project_reconciliation_with_origin(
@@ -207,6 +209,7 @@ fn record_run(
     paths: &PvPaths,
     project: &ProjectRecord,
     result: &Result<(), ExecuteError>,
+    verified: bool,
 ) -> Result<(), StateError> {
     let scope = format!("project:{}", project.id);
     let subject = JobDiagnosticSubject::Other {
@@ -214,13 +217,18 @@ fn record_run(
         scope: scope.clone(),
     };
     let mut database = Database::open(paths)?;
-    let job = database.start_job("hooks", &scope)?;
-    match result {
-        Ok(()) => {
-            database.complete_job_with_coverage(&job.id, "Project hooks completed", &[subject])?
-        }
-        Err(error) => database.fail_job_with_subject(&job.id, &error.to_string(), &subject)?,
-    }
+    let error = result.as_ref().err().map(ToString::to_string);
+    let outcome = match error.as_deref() {
+        Some(error) => Err(error),
+        None if verified => Ok("Project hooks completed"),
+        None => Ok("Prepare hooks completed; setup skipped"),
+    };
+    let subjects = if verified || result.is_err() {
+        slice::from_ref(&subject)
+    } else {
+        &[]
+    };
+    database.record_finished_job("hooks", &scope, outcome, subjects)?;
     Ok(())
 }
 
@@ -228,8 +236,9 @@ pub(super) fn finish_run(
     paths: &PvPaths,
     project: &ProjectRecord,
     result: Result<(), ExecuteError>,
+    verified: bool,
 ) -> Result<(), ExecuteError> {
-    match (record_run(paths, project, &result), result) {
+    match (record_run(paths, project, &result, verified), result) {
         (Ok(()), result) => result,
         (Err(recording), Ok(())) => Err(recording.into()),
         (Err(recording), Err(original)) => Err(ExecuteError::HookOutcomeRecording {

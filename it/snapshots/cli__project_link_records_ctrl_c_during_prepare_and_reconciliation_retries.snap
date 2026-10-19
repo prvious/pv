@@ -41,4 +41,23 @@ expression: outputs
             ),
         ],
     ),
+    (
+        "setup_only_submission",
+        CommandOutput {
+            code: Some(
+                1,
+            ),
+            stdout: "Already linked acme (resource-only) -> <tempdir>/setup_only_submission/acme\n",
+            stderr: "warning: reconciliation deferred while another PV mutation holds the jobs lock\nerror: reconciliation: hook run interrupted\n",
+        },
+        [
+            (
+                "hooks",
+                Failed,
+                Some(
+                    "reconciliation: hook run interrupted",
+                ),
+            ),
+        ],
+    ),
 ]

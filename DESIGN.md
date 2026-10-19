@@ -864,7 +864,7 @@ When `pv daemon:restart` interrupts active jobs, PV marks those jobs abandoned o
 
 `pv daemon:restart` waits for the LaunchAgent to restart, for the Unix socket to become available, and for the daemon to report healthy. If the daemon does not become healthy within 15 seconds, the command exits non-zero. After the daemon is healthy, it enqueues reconciliation and returns without waiting for full runtime reconciliation.
 
-PV keeps a fixed recent daemon job history in `pv.db`, such as the last 100 jobs. Detailed history belongs in logs.
+PV keeps a fixed recent daemon job history in `pv.db`, such as the last 100 jobs. Retention uses completion order and never prunes running jobs. Detailed history belongs in logs.
 
 Filesystem watcher events are briefly debounced. Queued reconciliation requests are coalesced by scope where possible, and each job reconciles from current `pv.db` and Project config rather than stale event payloads.
 Background Project reconciliation verifies that the Project remains linked before admission and again after waiting in the queue. A request for a Project removed before admission is discarded. An admitted job whose Project was removed while queued completes successfully as skipped with no diagnostic coverage. An explicit foreground request for a missing Project remains an error.
@@ -1621,7 +1621,7 @@ The serving gate is unchanged. A worktree's route appears once its first reconci
 - `pv status` lists current hook failures, with the log path for daemon runs.
 - `pv status` ignores a hook failure whose Project, or for a `worktree:` scope whose source Project, is no longer linked. A `worktree:` failure also stops counting once that worktree is linked as a discovered Project.
 - `pv jobs` lists hook runs like any other job, with the log path for daemon runs.
-- The daemon creates the `hooks` job row when it queues a run, in the running state. Startup fails queued runs as well as active runs, so a lost queued `setup` is visible in `pv status`, and `pv link` can see queued daemon hooks. `pv link` records its run when it finishes. A row left running by `pv link` would be failed by a daemon restart while the command was still going.
+- The daemon creates the `hooks` job row when it queues a run, in the running state. Startup fails queued runs as well as active runs, so a lost queued `setup` is visible in `pv status`, and `pv link` can see queued daemon hooks. `pv link` inserts its run and terminal outcome atomically when it finishes, so a daemon restart cannot mistake an active terminal run for an interrupted daemon run.
 
 **Logs:**
 - Each daemon run writes its commands' interleaved stdout and stderr to one log per subject, replaced at each run: `~/.pv/logs/hooks/project-<project-id>.log` for a linked Project, or `~/.pv/logs/hooks/worktree-<source-project-id>-<worktree-id>.log` for a pre-link `prepare`. The directory is `0700` and each file `0600`, because command output can contain secrets.

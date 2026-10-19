@@ -15,7 +15,7 @@ expression: "(output, jobs)"
             "hooks",
             Succeeded,
             Some(
-                "Project hooks completed",
+                "Prepare hooks completed; setup skipped",
             ),
         ),
     ],

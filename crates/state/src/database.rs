@@ -762,6 +762,45 @@ impl Database {
         })
     }
 
+    /// Records a foreground run after execution, atomically with its terminal status and
+    /// diagnostic outcomes. Callers must pass no subjects for successful but incomplete work.
+    pub fn record_finished_job(
+        &mut self,
+        kind: &str,
+        scope: &str,
+        result: Result<&str, &str>,
+        subjects: &[JobDiagnosticSubject],
+    ) -> Result<JobRecord, StateError> {
+        let finished_at = timestamp()?;
+        let (status, summary, error, outcome) = match result {
+            Ok(summary) => (JobStatus::Succeeded, Some(summary), None, "success"),
+            Err(error) => (JobStatus::Failed, None, Some(error), "failure"),
+        };
+        self.transaction(|transaction| {
+            let id = next_job_id(transaction)?;
+            let finished_sequence = next_job_finished_sequence(transaction)?;
+            transaction.execute(
+                "INSERT INTO jobs (id, kind, scope, status, started_at, finished_at, summary, error, finished_sequence)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7, ?8)",
+                params![id, kind, scope, status.as_str(), finished_at, summary, error, finished_sequence],
+            )?;
+            for subject in subjects {
+                insert_job_diagnostic_outcome(transaction, &id, subject, outcome)?;
+            }
+            prune_old_jobs(transaction)?;
+            Ok(JobRecord {
+                id,
+                kind: kind.to_string(),
+                scope: scope.to_string(),
+                status,
+                started_at: finished_at.clone(),
+                finished_at: Some(finished_at),
+                summary: summary.map(str::to_string),
+                error: error.map(str::to_string),
+            })
+        })
+    }
+
     pub fn complete_job(&mut self, id: &str, summary: &str) -> Result<(), StateError> {
         self.complete_job_with_coverage(id, summary, &[])
     }
@@ -775,9 +814,10 @@ impl Database {
         let finished_at = timestamp()?;
 
         let updated = self.transaction(|transaction| {
+            let finished_sequence = next_job_finished_sequence(transaction)?;
             let updated = transaction.execute(
-                "UPDATE jobs SET status = ?1, finished_at = ?2, summary = ?3, error = NULL WHERE id = ?4",
-                params![JobStatus::Succeeded.as_str(), finished_at, summary, id],
+                "UPDATE jobs SET status = ?1, finished_at = ?2, summary = ?3, error = NULL, finished_sequence = ?5 WHERE id = ?4",
+                params![JobStatus::Succeeded.as_str(), finished_at, summary, id, finished_sequence],
             )?;
             if updated > 0 {
                 for subject in coverage {
@@ -824,9 +864,10 @@ impl Database {
                     |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()?;
+            let finished_sequence = next_job_finished_sequence(transaction)?;
             let updated = transaction.execute(
-                "UPDATE jobs SET status = ?1, finished_at = ?2, error = ?3 WHERE id = ?4",
-                params![JobStatus::Failed.as_str(), finished_at, error, id],
+                "UPDATE jobs SET status = ?1, finished_at = ?2, error = ?3, finished_sequence = ?5 WHERE id = ?4",
+                params![JobStatus::Failed.as_str(), finished_at, error, id, finished_sequence],
             )?;
             if let Some((kind, scope)) = identity {
                 let subject = subject
@@ -865,17 +906,14 @@ impl Database {
                 }
                 jobs
             };
-            let updated = transaction.execute(
-                "UPDATE jobs SET status = ?1, finished_at = ?2, error = ?3 WHERE status = ?4",
-                params![
-                    JobStatus::Failed.as_str(),
-                    finished_at,
-                    error,
-                    JobStatus::Running.as_str()
-                ],
-            )?;
+            let updated = running_jobs.len();
             if updated > 0 {
                 for (id, kind, scope) in running_jobs {
+                    let finished_sequence = next_job_finished_sequence(transaction)?;
+                    transaction.execute(
+                        "UPDATE jobs SET status = ?1, finished_at = ?2, error = ?3, finished_sequence = ?5 WHERE id = ?4",
+                        params![JobStatus::Failed.as_str(), finished_at, error, id, finished_sequence],
+                    )?;
                     let subject = JobDiagnosticSubject::from_job_identity(&kind, &scope);
                     insert_job_diagnostic_outcome(transaction, &id, &subject, "failure")?;
                 }
@@ -5066,7 +5104,7 @@ fn configure_read_connection(connection: &Connection) -> Result<(), StateError> 
 
 fn next_job_id(transaction: &Transaction<'_>) -> rusqlite::Result<String> {
     let next_number = transaction.query_row(
-        "SELECT COALESCE(MAX(CAST(SUBSTR(id, 5) AS INTEGER)), 0) + 1 FROM jobs WHERE id GLOB 'job_[0-9]*'",
+        "UPDATE job_counters SET last_job_number = last_job_number + 1 RETURNING last_job_number",
         [],
         |row| row.get::<_, i64>(0),
     )?;
@@ -5087,12 +5125,20 @@ fn next_resource_allocation_id(transaction: &Transaction<'_>) -> rusqlite::Resul
 fn prune_old_jobs(transaction: &Transaction<'_>) -> rusqlite::Result<()> {
     transaction.execute(
         "DELETE FROM jobs WHERE status != ?1 AND id NOT IN (
-            SELECT id FROM jobs WHERE status != ?1 ORDER BY started_at DESC, id DESC LIMIT ?2
+            SELECT id FROM jobs WHERE status != ?1 ORDER BY finished_sequence DESC, id DESC LIMIT ?2
         )",
         params![JobStatus::Running.as_str(), RECENT_JOB_LIMIT],
     )?;
 
     Ok(())
+}
+
+fn next_job_finished_sequence(transaction: &Transaction<'_>) -> rusqlite::Result<i64> {
+    transaction.query_row(
+        "UPDATE job_counters SET last_finished_sequence = last_finished_sequence + 1 RETURNING last_finished_sequence",
+        [],
+        |row| row.get(0),
+    )
 }
 
 fn insert_job_diagnostic_outcome(

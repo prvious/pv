@@ -677,10 +677,46 @@ fn project_link_setup_failure_keeps_the_link_and_env_and_records_failure() -> Re
 
 #[cfg(target_os = "macos")]
 #[test]
+fn project_link_skipped_setup_does_not_clear_an_earlier_hook_failure() -> Result<()> {
+    let directory = tempdir()?;
+    let home = directory.path().join("home");
+    let project = directory.path().join("acme");
+    create_dir(&project)?;
+    create_dir(&home)?;
+    write_file(
+        &project.join("pv.yml"),
+        "serve: false\nhooks:\n  prepare:\n    - printf prepared > prepared\n  setup:\n    - exit 9\n",
+    )?;
+    let paths = PvPaths::for_home(&home);
+    let server = fake_link_reconciliation(&paths, &project, LinkJobOutcome::Succeeded)?;
+    assert_ne!(run_hook_pv(&["link"], &project, &home)?.code, Some(0));
+    server
+        .join()
+        .map_err(|_| anyhow::anyhow!("fixture daemon panicked"))??;
+    state::fs::remove_file_if_exists(&paths.daemon_socket())?;
+    let output = run_hook_pv(&["link"], &project, &home)?;
+    assert_eq!(output.code, Some(0));
+    let database = Database::open(&paths)?;
+    let failures = database.unresolved_job_failures()?;
+    assert_eq!(failures.len(), 1);
+    let failure = &failures[0].job;
+    let jobs = database
+        .recent_jobs()?
+        .into_iter()
+        .map(|job| (job.kind, job.status, job.summary))
+        .collect::<Vec<_>>();
+    hook_snapshot(directory.path(), || {
+        assert_debug_snapshot!((output, jobs, &failure.error))
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn project_link_records_ctrl_c_during_prepare_and_reconciliation_retries() -> Result<()> {
     let directory = tempdir()?;
     let mut outputs = Vec::new();
-    for phase in ["prepare", "reconciliation"] {
+    for phase in ["prepare", "reconciliation", "setup_only_submission"] {
         let home = directory.path().join(phase).join("home");
         let project = directory.path().join(phase).join("acme");
         create_dir(&project)?;
@@ -692,12 +728,14 @@ fn project_link_records_ctrl_c_during_prepare_and_reconciliation_retries() -> Re
         } else {
             "exit 0"
         };
-        write_file(
-            &project.join("pv.yml"),
-            &format!("serve: false\nhooks:\n  prepare:\n    - {command}\n"),
-        )?;
+        let hooks = if phase == "setup_only_submission" {
+            "serve: false\nhooks:\n  setup:\n    - printf setup > setup\n".to_string()
+        } else {
+            format!("serve: false\nhooks:\n  prepare:\n    - {command}\n")
+        };
+        write_file(&project.join("pv.yml"), &hooks)?;
         let paths = PvPaths::for_home(&home);
-        let retry_server = if phase == "reconciliation" {
+        let retry_server = if phase != "prepare" {
             Some(reject_link_reconciliations(&paths, &project.join("ready"))?)
         } else {
             None

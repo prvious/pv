@@ -29,7 +29,16 @@ fn accepted_job_lookup_and_hook_admission_include_running_jobs_beyond_history_li
 {
     let temporary = tempdir()?;
     let mut database = Database::open(&PvPaths::for_home(temporary.path()))?;
+    // Completion timestamps deliberately tie, regardless of test speed or clock boundaries.
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch(
+            "CREATE TRIGGER equal_job_finish_times AFTER UPDATE OF finished_at ON jobs
+             WHEN NEW.finished_at IS NOT NULL AND NEW.finished_at != '2026-01-01T00:00:00Z'
+             BEGIN UPDATE jobs SET finished_at = '2026-01-01T00:00:00Z' WHERE id = NEW.id; END;",
+        )
+    })?;
     let hook = database.start_job("hooks", "project:waiting")?;
+    let accepted = database.start_job("reconcile", "system")?;
     for _ in 0..105 {
         let job = database.start_job("reconcile", "system")?;
         database.complete_job(&job.id, "done")?;
@@ -48,8 +57,11 @@ fn accepted_job_lookup_and_hook_admission_include_running_jobs_beyond_history_li
     assert!(database.active_hook_job("project:other")?.is_none());
     database.fail_job(&hook.id, "interrupted")?;
     assert!(database.active_hook_job("project:waiting")?.is_none());
+    assert_eq!(
+        database.job(&hook.id)?.map(|job| job.status),
+        Some(JobStatus::Failed)
+    );
 
-    let accepted = database.start_job("reconcile", "system")?;
     let project = JobDiagnosticSubject::Project {
         id: "target".to_string(),
     };
@@ -66,6 +78,123 @@ fn accepted_job_lookup_and_hook_admission_include_running_jobs_beyond_history_li
         database.job(&accepted.id)?.map(|job| job.status),
         Some(JobStatus::Succeeded)
     );
+    let trailing = database.start_job("reconcile", "system")?;
+    database.complete_job(&trailing.id, "done")?;
+    assert!(database.job_verified_subject(&accepted.id, &project)?);
+    assert_eq!(
+        database.job(&accepted.id)?.map(|job| job.status),
+        Some(JobStatus::Succeeded)
+    );
+    Ok(())
+}
+
+#[test]
+fn job_completion_order_migrates_existing_history_and_resumes_both_counters() -> Result<()> {
+    let temporary = tempdir()?;
+    let paths = PvPaths::for_home(temporary.path());
+    let mut database = state::testing::open_with_migrations(
+        &paths,
+        &[Migration::new(
+            1,
+            "core_state_schema",
+            include_str!("../src/sql/001_core_state_schema.sql"),
+        )],
+    )?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch(
+            "INSERT INTO jobs (id,kind,scope,status,started_at,finished_at)
+             VALUES ('job_000054','reconcile','system','running','2026-01-01T00:00:00Z',NULL),
+                    ('job_000055','reconcile','system','succeeded','2026-01-01T00:00:01Z','2026-01-01T00:00:02Z');",
+        )
+    })?;
+    drop(database);
+    let mut database = Database::open(&paths)?;
+    database.complete_job("job_000054", "finished after migration")?;
+    let next = database.start_job("reconcile", "system")?;
+    let old_sequence = state::testing::query_i64(
+        &database,
+        "SELECT finished_sequence FROM jobs WHERE id = 'job_000055'",
+    )?;
+    let new_sequence = state::testing::query_i64(
+        &database,
+        "SELECT finished_sequence FROM jobs WHERE id = 'job_000054'",
+    )?;
+    assert_debug_snapshot!((next.id, old_sequence, new_sequence));
+    Ok(())
+}
+
+#[test]
+fn completing_older_jobs_does_not_reuse_a_pruned_job_id() -> Result<()> {
+    let temporary = tempdir()?;
+    let mut database = Database::open(&PvPaths::for_home(temporary.path()))?;
+    let mut jobs = Vec::new();
+    for _ in 0..101 {
+        jobs.push(database.start_job("reconcile", "system")?);
+    }
+    let newest = jobs.pop().ok_or_else(|| anyhow!("missing newest job"))?;
+    database.complete_job(&newest.id, "finished first")?;
+    for job in jobs {
+        database.complete_job(&job.id, "finished later")?;
+    }
+    assert!(database.job(&newest.id)?.is_none());
+    let next = database.start_job("reconcile", "system")?;
+    assert_debug_snapshot!((newest.id, next.id));
+    Ok(())
+}
+
+#[test]
+fn finished_foreground_jobs_are_atomic_with_their_diagnostic_outcomes() -> Result<()> {
+    let temporary = tempdir()?;
+    let mut database = Database::open(&PvPaths::for_home(temporary.path()))?;
+    let subject = JobDiagnosticSubject::Other {
+        kind: "hooks".to_string(),
+        scope: "project:fixture".to_string(),
+    };
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch(
+            "CREATE TRIGGER reject_outcome BEFORE INSERT ON job_diagnostic_outcomes
+             BEGIN SELECT RAISE(ABORT, 'fixture outcome recording failure'); END;",
+        )
+    })?;
+    let mut failures = Vec::new();
+    for outcome in [Ok("completed"), Err("setup failed")] {
+        let error = database
+            .record_finished_job(
+                "hooks",
+                "project:fixture",
+                outcome,
+                slice::from_ref(&subject),
+            )
+            .err()
+            .ok_or_else(|| anyhow!("expected outcome recording failure"))?;
+        failures.push(error.to_string());
+        assert!(database.recent_jobs()?.is_empty());
+        assert!(database.active_hook_job("project:fixture")?.is_none());
+    }
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch("DROP TRIGGER reject_outcome")
+    })?;
+    let failed = database.record_finished_job(
+        "hooks",
+        "project:fixture",
+        Err("setup failed"),
+        slice::from_ref(&subject),
+    )?;
+    let succeeded = database.record_finished_job(
+        "hooks",
+        "project:fixture",
+        Ok("completed"),
+        slice::from_ref(&subject),
+    )?;
+    assert!(database.active_hook_job("project:fixture")?.is_none());
+    assert!(database.unresolved_job_failures()?.is_empty());
+    assert_debug_snapshot!((
+        failures,
+        failed.status,
+        failed.error,
+        succeeded.status,
+        succeeded.summary
+    ));
     Ok(())
 }
 

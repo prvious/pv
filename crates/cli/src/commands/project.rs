@@ -91,7 +91,7 @@ pub(crate) fn link(
         )?;
         if let Err(error) = result {
             if let Some(project) = &existing {
-                project_hooks::finish_run(&paths, project, Err(error))?;
+                project_hooks::finish_run(&paths, project, Err(error), false)?;
                 return Ok(ExitCode::FAILURE);
             }
             return Err(error);
@@ -147,9 +147,13 @@ pub(crate) fn link(
             Line::field(&format!("{verb} {project_name} -> "), &result.project.path),
         )?;
     }
-    let submitted = hook_run.request_reconciliation(&result.project, streams);
+    let mut setup_skipped = false;
+    let submitted = hook_run.request_reconciliation(&result.project, streams, hooks_enabled);
     let outcome = match submitted {
-        Err(error) => Err(error),
+        Err(error) => {
+            hooks_attempted |= hooks_enabled && !config_file.config.hooks.setup.is_empty();
+            Err(error)
+        }
         Ok(job) if hooks_enabled && !config_file.config.hooks.setup.is_empty() => {
             if let Some(job) = job {
                 hooks_attempted = true;
@@ -164,6 +168,7 @@ pub(crate) fn link(
                     )?,
                 }
             } else {
+                setup_skipped = true;
                 streams
                     .err
                     .warning("Setup hooks skipped; run `pv link` again after `pv setup`")?;
@@ -173,7 +178,7 @@ pub(crate) fn link(
         Ok(_) => Ok(()),
     };
     if hooks_attempted {
-        project_hooks::finish_run(&paths, &result.project, outcome)?;
+        project_hooks::finish_run(&paths, &result.project, outcome, !setup_skipped)?;
     } else {
         outcome?;
     }
