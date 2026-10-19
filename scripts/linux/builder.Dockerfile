@@ -7,8 +7,9 @@ ENV CARGO_HOME=/opt/cargo \
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        bison build-essential ca-certificates cmake curl file flex git libaio-dev \
-        libncurses-dev patchelf php-cli pkg-config python3 unzip xz-utils \
+        autoconf automake autopoint bison build-essential bzip2 ca-certificates cmake curl \
+        file flex git gperf libaio-dev libncurses-dev libtool patchelf php-cli pkg-config \
+        python3 re2c unzip xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh \
