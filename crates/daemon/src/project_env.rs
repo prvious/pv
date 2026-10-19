@@ -22,6 +22,7 @@ use tokio::sync::watch;
 
 use crate::DaemonError;
 use crate::gateway::ReconciliationOutcome;
+use crate::hooks::DaemonHooks;
 use crate::jobs::DaemonDownloadProgress;
 use crate::managed_resources::ManagedResourceRuntimeCatalog;
 use crate::structured_log;
@@ -31,7 +32,6 @@ pub(crate) struct ProjectEnvReconciliationSummary {
     message: &'static str,
     requested_php_extensions: bool,
     recorded_tracks: BTreeSet<DemandedResourceTrack>,
-    pub(crate) first_setup_commands: Option<Vec<String>>,
 }
 
 impl ProjectEnvReconciliationSummary {
@@ -86,6 +86,7 @@ pub(crate) enum ProjectApplyStage {
 pub(crate) struct ProjectApplyOptions<'a> {
     stage: ProjectApplyStage,
     fallback_shutdown: Option<&'a watch::Receiver<bool>>,
+    hooks: Option<&'a DaemonHooks>,
 }
 
 impl<'a> ProjectApplyOptions<'a> {
@@ -96,7 +97,13 @@ impl<'a> ProjectApplyOptions<'a> {
         Self {
             stage,
             fallback_shutdown,
+            hooks: None,
         }
+    }
+
+    pub(crate) fn with_hooks(mut self, hooks: Option<&'a DaemonHooks>) -> Self {
+        self.hooks = hooks;
+        self
     }
 }
 
@@ -583,6 +590,7 @@ async fn reconcile_loaded_project(
     let ProjectApplyOptions {
         stage,
         fallback_shutdown,
+        hooks,
     } = options;
     if fallback_shutdown_requested(fallback_shutdown) {
         return Ok(ReconciliationOutcome::Cancelled);
@@ -797,7 +805,6 @@ async fn reconcile_loaded_project(
                 message: "project requirements recorded",
                 requested_php_extensions,
                 recorded_tracks,
-                first_setup_commands: None,
             },
         ));
     }
@@ -819,22 +826,25 @@ async fn reconcile_loaded_project(
         context.as_ref(),
         runtime_warnings,
     )?;
-    let first_reconciled = finalize_project_reconciliation_state(
+    let setup_job = finalize_project_reconciliation_state(
+        paths,
         database,
         project,
         &config_file,
         resolved_php_runtime.as_ref(),
-        rendered.status(),
-        rendered.message,
-        &rendered.warnings,
+        &rendered,
     )?;
+    if let Some(job_id) = setup_job
+        && let Some(hooks) = hooks
+    {
+        hooks.queue_setup(&project.id, &job_id, config_file.config.hooks.setup)?;
+    }
 
     Ok(ReconciliationOutcome::Completed(
         ProjectEnvReconciliationSummary {
             message: rendered.summary,
             requested_php_extensions,
             recorded_tracks: BTreeSet::new(),
-            first_setup_commands: first_reconciled.then(|| config_file.config.hooks.setup.clone()),
         },
     ))
 }
@@ -1337,14 +1347,13 @@ fn validate_project_config_and_plan(
 }
 
 fn finalize_project_reconciliation_state(
+    paths: &PvPaths,
     database: &mut Database,
     project: &ProjectRecord,
     config_file: &ProjectConfigFile,
     resolved_php_runtime: Option<&ResolvedPhpRuntime>,
-    env_status: ProjectEnvObservedStatus,
-    env_message: &str,
-    env_warnings: &[ProjectEnvObservedWarningInput],
-) -> Result<bool, DaemonError> {
+    rendered: &ProjectEnvRender,
+) -> Result<Option<String>, DaemonError> {
     let project =
         database
             .project_by_id(&project.id)?
@@ -1362,8 +1371,10 @@ fn finalize_project_reconciliation_state(
         loaded_extensions: runtime.loaded_extensions.clone(),
         ignored_extensions: runtime.ignored_extensions.clone(),
     });
-    let (_project, first_reconciled) =
+    let (_project, setup_job) =
         database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+            setup_hook_log: (!config_file.config.hooks.setup.is_empty())
+                .then(|| paths.project_hook_log(&project.id)),
             project_id: project.id.clone(),
             link: LinkProjectInput {
                 path: project.path.clone(),
@@ -1374,12 +1385,12 @@ fn finalize_project_reconciliation_state(
             },
             mode,
             php_runtime,
-            env_status,
-            env_message: Some(env_message.to_string()),
-            env_warnings: env_warnings.to_vec(),
+            env_status: rendered.status(),
+            env_message: Some(rendered.message.to_string()),
+            env_warnings: rendered.warnings.clone(),
         })?;
 
-    Ok(first_reconciled)
+    Ok(setup_job)
 }
 
 fn project_with_config_mode(project: &ProjectRecord, config: &ProjectConfig) -> ProjectRecord {

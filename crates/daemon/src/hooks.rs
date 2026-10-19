@@ -12,32 +12,11 @@ use tokio::task::JoinSet;
 use tokio::time::{MissedTickBehavior, interval};
 
 use crate::DaemonError;
-use crate::reconciliation::{ReconciliationDebouncer, ReconciliationQueue};
+use crate::reconciliation::ReconciliationDebouncer;
 use crate::{structured_log, worktrees};
 
 const CONCURRENCY: usize = 4;
 const OBSOLETE_SCAN_INTERVAL: Duration = Duration::from_millis(100);
-
-pub(crate) struct HookReconciliation {
-    pub(crate) hooks: DaemonHooks,
-    pub(crate) queue: ReconciliationQueue,
-    pub(crate) job_id: String,
-}
-
-impl HookReconciliation {
-    pub(crate) fn queue_setups(
-        &self,
-        projects: &[(String, Vec<String>)],
-    ) -> Result<(), DaemonError> {
-        let foreground = self.queue.foreground_hook_projects(&self.job_id);
-        for (project, commands) in projects {
-            if !foreground.contains(project) {
-                self.hooks.queue_setup(project, commands.clone())?;
-            }
-        }
-        Ok(())
-    }
-}
 
 #[derive(Clone)]
 pub(crate) struct DaemonHooks {
@@ -211,38 +190,44 @@ impl DaemonHooks {
     pub(crate) fn queue_setup(
         &self,
         project_id: &str,
+        job_id: &str,
         commands: Vec<String>,
     ) -> Result<(), DaemonError> {
-        if commands.is_empty() {
-            return Ok(());
-        }
         let mut database = Database::open(&self.paths)?;
-        let Some(discovered) = database
+        let discovered = database
             .discovered_projects()?
             .into_iter()
-            .find(|project| project.project_id == project_id)
-        else {
-            return Ok(());
-        };
-        let Some(project) = database.project_by_id(project_id)? else {
-            return Ok(());
-        };
-        let Some(source) = database.project_by_id(&discovered.source_project_id)? else {
-            return Ok(());
+            .find(|project| project.project_id == project_id);
+        let project = database.project_by_id(project_id)?;
+        let source = if let Some(discovered) = &discovered {
+            database.project_by_id(&discovered.source_project_id)?
+        } else {
+            None
         };
         let scope = format!("project:{project_id}");
+        let log = self.paths.project_hook_log(project_id);
+        let (Some(discovered), Some(project), Some(source)) = (discovered, project, source) else {
+            database.fail_job_with_subject(
+                job_id,
+                &format!("setup interrupted before execution (log: {log})"),
+                &JobDiagnosticSubject::Other {
+                    kind: "hooks".to_string(),
+                    scope: scope.clone(),
+                },
+            )?;
+            return Ok(());
+        };
         let mut state = self.state();
-        if state.active.contains_key(&scope) || state.queued.iter().any(|run| run.scope == scope) {
+        if state
+            .active
+            .values()
+            .any(|active| active.run.job_id == job_id)
+            || state.queued.iter().any(|run| run.job_id == job_id)
+        {
             return Ok(());
         }
-        let log = self.paths.project_hook_log(project_id);
-        let job = database.start_job_with_summary(
-            "hooks",
-            &scope,
-            Some(&format!("setup hooks queued (log: {log})")),
-        )?;
         let run = HookRun {
-            job_id: job.id,
+            job_id: job_id.to_string(),
             scope,
             phase: "setup",
             commands,
@@ -660,8 +645,13 @@ mod tests {
     use tokio::time::{sleep, timeout};
 
     use super::DaemonHooks;
-    use crate::project_env::reconcile_project_env;
+    use crate::jobs::DaemonDownloadProgress;
+    use crate::project_env::{
+        ProjectApplyOptions, ProjectApplyStage,
+        reconcile_project_env_with_runtime_catalog_and_progress,
+    };
     use crate::reconciliation::ReconciliationDebouncer;
+    use std::collections::BTreeSet;
 
     #[tokio::test]
     async fn setup_uses_applied_commands_after_the_config_disappears() -> Result<()> {
@@ -700,13 +690,19 @@ mod tests {
             config_path: config_path.clone(),
             mode: ProjectMode::ResourceOnly,
         })?;
-        let applied = reconcile_project_env(&paths, &project.id).await?;
-        let commands = applied
-            .first_setup_commands
-            .ok_or_else(|| anyhow!("first apply did not carry setup"))?;
-        state::fs::delete_file(&config_path)?;
         let hooks = DaemonHooks::new(paths.clone());
-        hooks.queue_setup(&project.id, commands)?;
+        reconcile_project_env_with_runtime_catalog_and_progress(
+            &paths,
+            &project.id,
+            None,
+            None,
+            &BTreeSet::new(),
+            DaemonDownloadProgress::disabled(),
+            ProjectApplyOptions::new(ProjectApplyStage::CompleteApply, None)
+                .with_hooks(Some(&hooks)),
+        )
+        .await?;
+        state::fs::delete_file(&config_path)?;
         let queued = database
             .active_hook_job(&format!("project:{}", project.id))?
             .ok_or_else(|| anyhow!("setup was not queued"))?;

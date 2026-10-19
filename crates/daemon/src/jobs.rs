@@ -11,7 +11,7 @@ use crate::gateway::{
     reconcile_project_gateway_runtimes_with_phase_log,
     reconcile_project_gateway_runtimes_with_phase_log_and_fallback_shutdown,
 };
-use crate::hooks::HookReconciliation;
+use crate::hooks::DaemonHooks;
 use crate::ipc::LocalStream;
 use crate::managed_resources::{
     ManagedResourceRuntimeCatalog, ManagedResourceUpdateReport,
@@ -1057,7 +1057,7 @@ where
 struct ForegroundReconciliationOptions<'a> {
     timing: ReconciliationJobTiming,
     fallback_shutdown: Option<&'a watch::Receiver<bool>>,
-    hooks: Option<HookReconciliation>,
+    hooks: Option<DaemonHooks>,
 }
 
 enum ForegroundReconciliationCompletion {
@@ -2078,6 +2078,7 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
         &linked_projects(paths)?,
         &skip_projects,
         fallback_shutdown,
+        options.hooks.as_ref(),
     )
     .await;
     finish_project_phase(record_timer, &record_result);
@@ -2141,13 +2142,11 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
         &dependent_projects,
         &skip_projects,
         fallback_shutdown,
+        options.hooks.as_ref(),
     )
     .await;
     finish_project_phase(project_timer, &project_result);
     let mut project_report = project_result?;
-    if let Some(context) = &options.hooks {
-        context.queue_setups(&project_report.first_setups)?;
-    }
     for (project_id, error) in strict_failures {
         let project_label = dependent_projects
             .iter()
@@ -2329,7 +2328,7 @@ struct ReconciliationJobOptions<'a> {
     discard_obsolete_project: bool,
     pf_routing_state: Option<GatewayPfRoutingState>,
     fallback_shutdown: Option<&'a watch::Receiver<bool>>,
-    hooks: Option<HookReconciliation>,
+    hooks: Option<DaemonHooks>,
 }
 
 #[expect(
@@ -2585,12 +2584,9 @@ async fn complete_system_reconciliation_with_progress(
 
     // Worktree discovery links, moves, and unlinks Projects, so it runs before PV reads them.
     if let Some(context) = &options.hooks {
-        context.hooks.stop_obsolete().await?;
+        context.stop_obsolete().await?;
     }
-    crate::worktrees::discover_worktrees_with_hooks(
-        paths,
-        options.hooks.as_ref().map(|context| &context.hooks),
-    )?;
+    crate::worktrees::discover_worktrees_with_hooks(paths, options.hooks.as_ref())?;
     let discovery_timer = phase_log.start(ReconciliationPhase::DemandDiscovery, "linked_projects");
     let discovery_result = discover_system_project_demand(paths);
     finish_demand_discovery_phase(discovery_timer, &discovery_result);
@@ -2673,14 +2669,10 @@ async fn complete_system_reconciliation_with_progress(
         &projects,
         &BTreeSet::new(),
         fallback_shutdown,
+        options.hooks.as_ref(),
     )
     .await;
     finish_project_phase(project_timer, &project_result);
-    if let Some(context) = &options.hooks
-        && let Ok(report) = &project_result
-    {
-        context.queue_setups(&report.first_setups)?;
-    }
     if fallback_shutdown_requested(fallback_shutdown) {
         return cancel_or_preserve_system_reconciliation_errors(
             resources_result,
@@ -2742,7 +2734,7 @@ async fn complete_system_reconciliation_with_progress(
         // Git or a terminal unlink may have changed since discovery's initial barrier.
         // A stopped group, not a removed Project row, admits allocation deletion.
         if let Some(context) = &options.hooks {
-            context.hooks.stop_obsolete().await?;
+            context.stop_obsolete().await?;
         }
         if let Err(error) = crate::managed_resources::clean_up_removed_allocations(
             paths,
@@ -2881,6 +2873,7 @@ async fn complete_project_reconciliation_with_progress_and_fallback(
             progress.clone(),
             phase_log,
             fallback_shutdown,
+            options.hooks.as_ref(),
         )
         .await;
     let project_env_summary = match project_result {
@@ -2914,11 +2907,6 @@ async fn complete_project_reconciliation_with_progress_and_fallback(
             };
         }
     };
-    if let Some(commands) = &project_env_summary.first_setup_commands
-        && let Some(context) = &options.hooks
-    {
-        context.queue_setups(&[(id.as_str().to_owned(), commands.clone())])?;
-    }
     let gateway_outcome = match fallback_shutdown {
         Some(fallback_shutdown) => {
             match reconcile_project_gateway_runtimes_with_phase_log_and_fallback_shutdown(
@@ -3049,6 +3037,7 @@ async fn reconcile_project_env_and_missing_resources(
             &format!("project:{project_id}"),
         ),
         None,
+        None,
     )
     .await?
     .into_completed()
@@ -3061,6 +3050,7 @@ async fn reconcile_project_env_and_missing_resources_with_progress_and_fallback_
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
     fallback_shutdown: Option<&watch::Receiver<bool>>,
+    hooks: Option<&DaemonHooks>,
 ) -> Result<ReconciliationOutcome<crate::project_env::ProjectEnvReconciliationSummary>, DaemonError>
 {
     if fallback_shutdown_requested(fallback_shutdown) {
@@ -3131,7 +3121,8 @@ async fn reconcile_project_env_and_missing_resources_with_progress_and_fallback_
         None,
         &BTreeSet::new(),
         progress,
-        ProjectApplyOptions::new(ProjectApplyStage::CompleteStagedApply, fallback_shutdown),
+        ProjectApplyOptions::new(ProjectApplyStage::CompleteStagedApply, fallback_shutdown)
+            .with_hooks(hooks),
     )
     .await;
     apply_timer.finish(
@@ -3252,7 +3243,6 @@ struct SystemProjectReconciliationReport {
     total: usize,
     succeeded: usize,
     successful_project_ids: Vec<String>,
-    first_setups: Vec<(String, Vec<String>)>,
     summaries: Vec<String>,
     failures: Vec<DaemonError>,
 }
@@ -3290,6 +3280,7 @@ async fn reconcile_system_projects_with_progress(
     projects: &[ProjectRecord],
     skip_project_ids: &BTreeSet<String>,
     fallback_shutdown: Option<&watch::Receiver<bool>>,
+    hooks: Option<&DaemonHooks>,
 ) -> Result<SystemProjectReconciliationReport, DaemonError> {
     let mut report = SystemProjectReconciliationReport {
         total: projects.len(),
@@ -3312,17 +3303,12 @@ async fn reconcile_system_projects_with_progress(
             Some(project_demands.get(&project.id).unwrap_or(&empty_demand)),
             demanded_tracks,
             progress.clone(),
-            ProjectApplyOptions::new(stage, fallback_shutdown),
+            ProjectApplyOptions::new(stage, fallback_shutdown).with_hooks(hooks),
         )
         .await
         {
             Ok(ReconciliationOutcome::Completed(summary)) => {
                 report.succeeded += 1;
-                if let Some(commands) = &summary.first_setup_commands {
-                    report
-                        .first_setups
-                        .push((project.id.clone(), commands.clone()));
-                }
                 report.successful_project_ids.push(project.id.clone());
                 report.summaries.push(summary.as_str().to_owned());
             }
@@ -3427,6 +3413,7 @@ async fn reconcile_system_projects_and_resources_with_progress(
         ProjectApplyStage::CompleteStagedApply,
         &linked_projects(paths)?,
         &BTreeSet::new(),
+        None,
         None,
     )
     .await;
@@ -5840,7 +5827,6 @@ mod tests {
             total: 2,
             succeeded: 1,
             successful_project_ids: vec![successful.project.id],
-            first_setups: Vec::new(),
             summaries: vec!["Project env current".to_owned()],
             failures: vec![DaemonError::ProjectReconciliation {
                 project_label: "failed.test".to_owned(),
@@ -7429,6 +7415,7 @@ mod tests {
             &linked_projects(&paths)?,
             &BTreeSet::new(),
             None,
+            None,
         )
         .await?;
         stop_undemanded_system_resource_runtimes(&paths, Some(&catalog)).await?;
@@ -7621,6 +7608,7 @@ mod tests {
                 &linked_projects(&paths)?,
                 &BTreeSet::new(),
                 None,
+                None,
             )
             .await?;
 
@@ -7716,6 +7704,7 @@ mod tests {
             desired_php_track: None,
         })?;
         database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+            setup_hook_log: None,
             project_id: linked.project.id.clone(),
             link: LinkProjectInput {
                 path: linked.project.path.clone(),
@@ -8049,6 +8038,7 @@ mod tests {
             Some("fixture mailpit readiness diagnostic"),
         )?;
         database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+            setup_hook_log: None,
             project_id: linked.project.id.clone(),
             link: LinkProjectInput {
                 path: linked.project.path.clone(),

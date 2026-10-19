@@ -8,7 +8,7 @@ use state::{JobsLock, PvPaths, StateError};
 use thiserror::Error;
 use tokio::sync::Notify;
 
-use crate::hooks::{DaemonHooks, HookReconciliation};
+use crate::hooks::DaemonHooks;
 use crate::watcher::ProjectConfigWatcher;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -408,14 +408,8 @@ impl Drop for QueuedReconciliation {
 }
 
 impl RunningReconciliation {
-    pub(crate) fn hooks(&self) -> Option<HookReconciliation> {
-        self.inner.hooks.clone().map(|hooks| HookReconciliation {
-            hooks,
-            queue: ReconciliationQueue {
-                inner: Arc::clone(&self.inner),
-            },
-            job_id: self.job.job_id.clone(),
-        })
+    pub(crate) fn hooks(&self) -> Option<DaemonHooks> {
+        self.inner.hooks.clone()
     }
     pub fn scope(&self) -> &ReconciliationScope {
         &self.job.scope

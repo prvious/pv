@@ -415,6 +415,8 @@ pub struct ProjectPhpRuntimeInput {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectReconciliationStateInput {
+    /// Requests a queued setup job on a discovered Project's first apply, retaining its log path.
+    pub setup_hook_log: Option<Utf8PathBuf>,
     pub project_id: String,
     pub link: LinkProjectInput,
     pub mode: ProjectMode,
@@ -751,26 +753,10 @@ impl Database {
         summary: Option<&str>,
     ) -> Result<JobRecord, StateError> {
         let started_at = timestamp()?;
-
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let id = next_job_id(&transaction)?;
-        transaction.execute(
-            "INSERT INTO jobs (id, kind, scope, status, started_at, summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, kind, scope, JobStatus::Running.as_str(), started_at, summary],
-        )?;
-
-        let job = JobRecord {
-            id,
-            kind: kind.to_string(),
-            scope: scope.to_string(),
-            status: JobStatus::Running,
-            started_at,
-            finished_at: None,
-            summary: summary.map(str::to_owned),
-            error: None,
-        };
+        let job = start_job_in_transaction(&transaction, kind, scope, summary, started_at)?;
         transaction.commit()?;
         Ok(job)
     }
@@ -1545,11 +1531,12 @@ impl Database {
             })
     }
 
-    /// Records a full Project apply and reports whether this was its first successful apply.
+    /// Records a full Project apply and atomically admits setup on a discovered first success
+    /// when `setup_hook_log` is supplied. Returns the committed setup job ID for runner handoff.
     pub fn finalize_project_reconciliation(
         &mut self,
         mut input: ProjectReconciliationStateInput,
-    ) -> Result<(ProjectRecord, bool), StateError> {
+    ) -> Result<(ProjectRecord, Option<String>), StateError> {
         input.link.desired_php_track = input
             .php_runtime
             .as_ref()
@@ -1602,6 +1589,26 @@ impl Database {
             WHERE id = ?2 AND first_reconciled_at IS NULL",
             params![timestamp()?, project.id],
         )? > 0;
+        let setup_job = if first_reconciled
+            && let Some(log) = input.setup_hook_log
+            && transaction.query_row(
+                "SELECT source_project_id IS NOT NULL FROM projects WHERE id = ?1",
+                [&project.id],
+                |row| row.get::<_, bool>(0),
+            )? {
+            Some(
+                start_job_in_transaction(
+                    &transaction,
+                    "hooks",
+                    &format!("project:{}", project.id),
+                    Some(&format!("setup hooks queued (log: {log})")),
+                    timestamp()?,
+                )?
+                .id,
+            )
+        } else {
+            None
+        };
         let project =
             project_by_id_in_transaction(&transaction, &project.id)?.ok_or_else(|| {
                 StateError::ProjectNotFound {
@@ -1610,7 +1617,7 @@ impl Database {
             })?;
         transaction.commit()?;
 
-        Ok((project, first_reconciled))
+        Ok((project, setup_job))
     }
 
     /// Discovered worktree Projects that haven't had a full reconciliation succeed yet. They get no
@@ -5181,6 +5188,27 @@ fn insert_job_diagnostic_outcome(
     )?;
 
     Ok(())
+}
+
+fn start_job_in_transaction(
+    transaction: &Transaction<'_>,
+    kind: &str,
+    scope: &str,
+    summary: Option<&str>,
+    started_at: String,
+) -> rusqlite::Result<JobRecord> {
+    let id = next_job_id(transaction)?;
+    transaction.execute("INSERT INTO jobs (id, kind, scope, status, started_at, summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![id, kind, scope, JobStatus::Running.as_str(), started_at, summary])?;
+    Ok(JobRecord {
+        id,
+        kind: kind.to_string(),
+        scope: scope.to_string(),
+        status: JobStatus::Running,
+        started_at,
+        finished_at: None,
+        summary: summary.map(str::to_string),
+        error: None,
+    })
 }
 
 fn timestamp() -> Result<String, StateError> {

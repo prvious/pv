@@ -32,7 +32,10 @@ use state::{
     Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths, UpdateLock,
 };
 #[cfg(target_os = "macos")]
-use state::{JobStatus, LinkDiscoveredProjectInput, ProjectMode, RuntimeLifecycleLock};
+use state::{
+    JobRecord, JobStatus, LinkDiscoveredProjectInput, LinkProjectInput, ProjectMode,
+    RuntimeLifecycleLock,
+};
 use support::{create_dir, create_laravel_init_fixture, run_pv_in, write_file};
 #[cfg(target_os = "macos")]
 use tokio::time::{sleep, timeout};
@@ -707,7 +710,7 @@ async fn project_link_during_daemon_prepare_stays_ordinary_after_prepare_finishe
         })
         .await??;
         for _ in 0..2 {
-            let accepted = daemon::submit_job(paths.clone(), "reconcile", "system", false).await?;
+            let accepted = daemon::submit_job(paths.clone(), "reconcile", "system").await?;
             timeout(Duration::from_secs(20), async {
                 loop {
                     if Database::open(&paths)?
@@ -1389,6 +1392,150 @@ fn project_link_does_not_recreate_state_pruned_during_hooks() -> Result<()> {
     }
     hook_snapshot(directory.path(), || assert_debug_snapshot!(outputs));
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn project_link_skip_hooks_still_runs_discovered_first_setup_in_the_daemon() -> Result<()> {
+    let directory = tempdir()?;
+    let root = state::fs::canonicalize(directory.path())?;
+    let home = root.join("home");
+    let source = root.join("source");
+    let project = root.join("worktree");
+    let entry = source.join(".git/worktrees/skip");
+    create_dir(&entry)?;
+    create_dir(&project)?;
+    write_file(&source.join("pv.yml"), "serve: false\n")?;
+    write_file(&entry.join("gitdir"), &format!("{project}/.git\n"))?;
+    write_file(&entry.join("pv-id"), "skipfirst\n")?;
+    write_file(&project.join(".git"), &format!("gitdir: {entry}\n"))?;
+    let setup = "grep -q '^READY=ready$' .env && printf 'setup\\n' >> setup-count";
+    write_file(
+        &project.join("pv.yml"),
+        &format!(
+            "serve: false\nenv:\n  READY: ready\nhooks:\n  prepare:\n    - touch unexpected-prepare\n  setup:\n    - {}\n",
+            serde_json::to_string(setup)?
+        ),
+    )?;
+    let paths = PvPaths::for_home(&home);
+    let mut database = Database::open(&paths)?;
+    let source = database
+        .link_project_with_mode(
+            LinkProjectInput {
+                path: source.clone(),
+                original_path: source.clone(),
+                primary_hostname: "source.test".to_string(),
+                config_path: source.join("pv.yml"),
+                desired_php_track: None,
+            },
+            ProjectMode::ResourceOnly,
+        )?
+        .project;
+    let input = LinkDiscoveredProjectInput {
+        source_project_id: source.id.clone(),
+        worktree_id: "skipfirst".to_string(),
+        worktree_name: "skip".to_string(),
+        path: project.clone(),
+        config_path: project.join("pv.yml"),
+        mode: ProjectMode::ResourceOnly,
+    };
+    let initial = database.link_discovered_project(input.clone())?;
+    database.unlink_project(&initial.id)?;
+    drop(database);
+    pv_fake::seed_dns_port(&paths)?;
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+    let outcome = async {
+        wait_for_finished_hook_fixture_job(&paths, "job_000001").await?;
+        let linked = Database::open(&paths)?.link_discovered_project(input)?;
+        let task_project = project.clone();
+        let task_home = home.clone();
+        let (refused, skipped) = tokio::task::spawn_blocking(move || {
+            Ok::<_, anyhow::Error>((
+                run_hook_pv(&["link"], &task_project, &task_home)?,
+                run_hook_pv(&["link", "--skip-hooks"], &task_project, &task_home)?,
+            ))
+        })
+        .await??;
+        assert_ne!(refused.code, Some(0));
+        assert_eq!(skipped.code, Some(0));
+        timeout(Duration::from_secs(20), async {
+            while !project.join("setup-count").exists() {
+                sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await?;
+        let database = Database::open(&paths)?;
+        let jobs = database
+            .recent_jobs()?
+            .into_iter()
+            .filter(|job| job.kind == "hooks")
+            .collect::<Vec<_>>();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(
+            wait_for_finished_hook_fixture_job(&paths, &jobs[0].id)
+                .await?
+                .status,
+            JobStatus::Succeeded
+        );
+        assert!(!project.join("unexpected-prepare").exists());
+        assert_eq!(
+            database
+                .discovered_projects()?
+                .iter()
+                .find(|child| child.project_id == linked.id)
+                .map(|child| &child.source_project_id),
+            Some(&source.id)
+        );
+        let repeated = daemon::submit_job(
+            paths.clone(),
+            "reconcile",
+            &format!("project:{}", linked.id),
+        )
+        .await?;
+        wait_for_finished_hook_fixture_job(&paths, &repeated.id).await?;
+        let setup_count = state::fs::read_to_string(&project.join("setup-count"))?;
+        assert_eq!(setup_count, "setup\n");
+        assert_eq!(
+            database
+                .recent_jobs()?
+                .iter()
+                .filter(|job| job.kind == "hooks")
+                .count(),
+            1
+        );
+        let mut settings = insta::Settings::clone_current();
+        settings.add_filter(r"job_[0-9]+", "<reconciliation-job>");
+        settings.bind(|| {
+            hook_snapshot(&root, || {
+                assert_debug_snapshot!((refused, skipped, setup_count))
+            })
+        });
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    match (outcome, daemon.shutdown().await) {
+        (outcome, Ok(())) => outcome,
+        (Ok(()), Err(error)) => Err(error.into()),
+        (Err(original), Err(cleanup)) => Err(anyhow::anyhow!(
+            "{original:#}; daemon shutdown also failed: {cleanup}"
+        )),
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn wait_for_finished_hook_fixture_job(paths: &PvPaths, id: &str) -> Result<JobRecord> {
+    timeout(Duration::from_secs(20), async {
+        loop {
+            if let Some(job) = Database::open(paths)?.job(id)?
+                && job.status != JobStatus::Running
+            {
+                return Ok::<_, anyhow::Error>(job);
+            }
+            sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await?
 }
 
 #[cfg(target_os = "macos")]

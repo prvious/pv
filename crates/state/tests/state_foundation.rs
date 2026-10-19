@@ -27,6 +27,105 @@ use state::{
 };
 
 #[test]
+fn first_discovered_apply_and_setup_admission_commit_atomically() -> Result<()> {
+    let directory = tempdir()?;
+    let paths = PvPaths::for_home(directory.path());
+    let mut database = Database::open(&paths)?;
+    let source = link_test_project(&mut database, directory.path(), "source", "source.test")?;
+    let project = database.link_discovered_project(discovered_input(
+        &source,
+        directory.path(),
+        "atomicid",
+        "atomic",
+        ProjectMode::ResourceOnly,
+    ))?;
+    let input = ProjectReconciliationStateInput {
+        setup_hook_log: Some(paths.project_hook_log(&project.id)),
+        project_id: project.id.clone(),
+        link: state::LinkProjectInput {
+            path: project.path.clone(),
+            original_path: project.original_path.clone(),
+            primary_hostname: "atomic.test".to_string(),
+            config_path: project.config_path.clone(),
+            desired_php_track: None,
+        },
+        mode: ProjectMode::ResourceOnly,
+        php_runtime: None,
+        env_status: ProjectEnvObservedStatus::Rendered,
+        env_message: Some("ready".to_string()),
+        env_warnings: Vec::new(),
+    };
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch(
+        "CREATE TRIGGER reject_setup BEFORE INSERT ON jobs WHEN NEW.kind = 'hooks' BEGIN SELECT RAISE(FAIL, 'fixture setup admission failed'); END;"
+    )
+    })?;
+    assert!(matches!(
+        database.finalize_project_reconciliation(input.clone()),
+        Err(StateError::Sqlite(_))
+    ));
+    assert!(database.held_project_ids()?.contains(&project.id));
+    assert!(database.project_env_observed_state(&project.id)?.is_none());
+    assert!(database.recent_jobs()?.is_empty());
+    assert_eq!(database.project_by_id(&project.id)?, Some(project.clone()));
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch("DROP TRIGGER reject_setup")
+    })?;
+    let (_project, queued) = database.finalize_project_reconciliation(input.clone())?;
+    let queued = queued.ok_or_else(|| anyhow!("first apply did not admit setup"))?;
+    assert_eq!(queued, "job_000001");
+    assert!(!database.held_project_ids()?.contains(&project.id));
+    assert_eq!(
+        database
+            .project_env_observed_state(&project.id)?
+            .map(|state| state.status),
+        Some(ProjectEnvObservedStatus::Rendered)
+    );
+    assert_eq!(
+        database
+            .active_hook_job(&format!("project:{}", project.id))?
+            .map(|job| job.id),
+        Some(queued.clone())
+    );
+    let (_project, repeated) = database.finalize_project_reconciliation(input)?;
+    assert!(repeated.is_none());
+    assert_eq!(database.recent_jobs()?.len(), 1);
+    // A crash before handoff leaves the atomic row for normal startup failure recovery.
+    database.fail_running_jobs("fixture daemon restarted before handoff")?;
+    let interrupted = database
+        .job(&queued)?
+        .ok_or_else(|| anyhow!("setup row disappeared"))?;
+    assert_eq!(interrupted.status, JobStatus::Failed);
+    assert!(
+        interrupted
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains(paths.project_hook_log(&project.id).as_str()))
+    );
+    // The same flag on an ordinary Project never admits daemon setup.
+    let (_source, ordinary) =
+        database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+            setup_hook_log: Some(paths.project_hook_log(&source.id)),
+            project_id: source.id.clone(),
+            link: state::LinkProjectInput {
+                path: source.path.clone(),
+                original_path: source.original_path.clone(),
+                primary_hostname: "source.test".to_string(),
+                config_path: source.config_path.clone(),
+                desired_php_track: None,
+            },
+            mode: source.mode,
+            php_runtime: None,
+            env_status: ProjectEnvObservedStatus::Rendered,
+            env_message: None,
+            env_warnings: Vec::new(),
+        })?;
+    assert!(ordinary.is_none());
+    assert_eq!(database.recent_jobs()?.len(), 1);
+    Ok(())
+}
+
+#[test]
 fn finished_foreground_jobs_are_atomic_with_their_diagnostic_outcomes() -> Result<()> {
     let temporary = tempdir()?;
     let mut database = Database::open(&PvPaths::for_home(temporary.path()))?;
@@ -2712,9 +2811,10 @@ fn held_worktrees_demand_no_php_worker_until_their_first_reconciliation() -> Res
         database.php_runtime_is_demanded("8.4")?,
     );
 
-    for expected_first in [true, false] {
-        let (_project, first_reconciled) =
+    for _ in 0..2 {
+        let (_project, setup_job) =
             database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+                setup_hook_log: None,
                 project_id: worktree.id.clone(),
                 link: link.clone(),
                 mode: ProjectMode::Served,
@@ -2728,7 +2828,7 @@ fn held_worktrees_demand_no_php_worker_until_their_first_reconciliation() -> Res
                 env_message: None,
                 env_warnings: Vec::new(),
             })?;
-        assert_eq!(first_reconciled, expected_first);
+        assert!(setup_job.is_none());
     }
     let released = (
         database.held_project_ids()?,
@@ -3528,6 +3628,7 @@ fn project_reconciliation_finalization_rolls_back_gateway_state_on_failure() -> 
     })?;
 
     let result = database.finalize_project_reconciliation(state::ProjectReconciliationStateInput {
+        setup_hook_log: None,
         project_id: project.id.clone(),
         link: state::LinkProjectInput {
             path: project.path.clone(),

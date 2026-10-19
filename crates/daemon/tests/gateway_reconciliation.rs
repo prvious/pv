@@ -5803,6 +5803,7 @@ async fn runtime_plan_holds_a_discovered_worktree_until_its_first_reconciliation
 
     let held = planned_project_ids(&paths)?;
     Database::open(&paths)?.finalize_project_reconciliation(ProjectReconciliationStateInput {
+        setup_hook_log: None,
         project_id: worktree.id.clone(),
         link: LinkProjectInput {
             path: worktree_path.clone(),

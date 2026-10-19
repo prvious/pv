@@ -136,8 +136,8 @@ async fn file_exists(path: &Utf8Path) -> Result<()> {
     eventually(|| Ok(state::fs::path_entry_exists(path)?.then_some(()))).await
 }
 
-async fn reconcile(paths: &PvPaths, scope: &str, by_link: bool) -> Result<()> {
-    let job = daemon::submit_job(paths.clone(), "reconcile", scope, by_link).await?;
+async fn reconcile(paths: &PvPaths, scope: &str) -> Result<()> {
+    let job = daemon::submit_job(paths.clone(), "reconcile", scope).await?;
     let completed = eventually(|| {
         Ok(Database::open(paths)?
             .job(&job.id)?
@@ -177,6 +177,45 @@ async fn shutdown_after<T>(
             "{original:#}; daemon shutdown also failed: {cleanup}"
         )),
     }
+}
+
+#[tokio::test]
+async fn setup_runs_after_own_apply_when_an_unrelated_project_fails() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let path = fixture.worktree(
+        "ready",
+        None,
+        Some("grep -q '^READY=ready$' .env && touch setup-ran"),
+    )?;
+    // Pre-create the env file so the source's invalid config cannot block discovery during env copying.
+    state::fs::write_sensitive_file(&path.join(".env"), "")?;
+    state::fs::write_sensitive_file(&fixture.source.config_path, "unknown: invalid\n")?;
+    let daemon = fixture.start().await?;
+    shutdown_after(daemon, &fixture.paths, async {
+        file_exists(&path.join("setup-ran")).await?;
+        let job = eventually(|| {
+            Ok(Database::open(&fixture.paths)?
+                .job("job_000001")?
+                .filter(|job| job.status != JobStatus::Running))
+        })
+        .await?;
+        assert_eq!(job.status, JobStatus::Failed);
+        let project = Database::open(&fixture.paths)?
+            .project_by_path(&path)?
+            .ok_or_else(|| anyhow!("ready Project missing"))?;
+        assert!(project.first_reconciled_at.is_some());
+        eventually(|| {
+            Ok(fixture
+                .hook_jobs()?
+                .iter()
+                .all(|job| job.status == JobStatus::Succeeded)
+                .then_some(()))
+        })
+        .await?;
+        assert_eq!(fixture.hook_jobs()?.len(), 1);
+        Ok(())
+    })
+    .await
 }
 
 #[tokio::test]
@@ -244,11 +283,7 @@ async fn hooks_run_four_at_a_time_in_fifo_order_and_prepared_worktrees_link_once
         // An occupied hook pool does not hold jobs.lock or delay an unrelated reconciliation.
         timeout(
             Duration::from_secs(10),
-            reconcile(
-                &fixture.paths,
-                &format!("project:{}", fixture.source.id),
-                false,
-            ),
+            reconcile(&fixture.paths, &format!("project:{}", fixture.source.id)),
         )
         .await??;
         state::fs::write_sensitive_file(&ordered[0].join("release"), "")?;
@@ -311,8 +346,8 @@ async fn failed_prepare_waits_for_restart_and_a_success_clears_its_failure() -> 
                 .find(|job| job.status == JobStatus::Failed))
         })
         .await?;
-        reconcile(&fixture.paths, "system", false).await?;
-        reconcile(&fixture.paths, "system", false).await?;
+        reconcile(&fixture.paths, "system").await?;
+        reconcile(&fixture.paths, "system").await?;
         assert_eq!(fixture.hook_jobs()?.len(), 1);
         assert!(
             Database::open(&fixture.paths)?
@@ -405,7 +440,7 @@ async fn queued_setup_is_recorded_and_interrupted_startup_keeps_its_log_path() -
                 .as_deref()
                 .is_some_and(|error| error.contains(log.as_str()))
         );
-        reconcile(&fixture.paths, "system", false).await?;
+        reconcile(&fixture.paths, "system").await?;
         assert_eq!(fixture.hook_jobs()?.len(), 7);
         Ok(())
     })
@@ -461,9 +496,9 @@ async fn removed_worktree_stops_its_hook_before_removing_the_project_and_logs() 
 }
 
 #[tokio::test]
-async fn link_requested_first_reconciliation_does_not_queue_daemon_setup() -> Result<()> {
+async fn requested_first_reconciliation_runs_daemon_setup_once() -> Result<()> {
     let fixture = Fixture::new()?;
-    let path = fixture.worktree("terminal", None, Some("touch unexpected-setup"))?;
+    let path = fixture.worktree("terminal", None, Some("printf setup >> setup-count"))?;
     state::fs::write_sensitive_file(
         &fixture.source.path.join(".git/worktrees/terminal/pv-id"),
         "terminal\n",
@@ -476,19 +511,31 @@ async fn link_requested_first_reconciliation_does_not_queue_daemon_setup() -> Re
         config_path: path.join("pv.yml"),
         mode: state::ProjectMode::ResourceOnly,
     };
-    // Keep startup from applying this worktree; its first successful apply will belong to link.
+    // Keep startup from applying this worktree; its first successful apply will follow an explicit request.
     let mut database = Database::open(&fixture.paths)?;
     let initial = database.link_discovered_project(input.clone())?;
     database.unlink_project(&initial.id)?;
     let daemon = fixture.start().await?;
     shutdown_after(daemon, &fixture.paths, async {
-        reconcile(&fixture.paths, "system", false).await?;
-        // Insert a discovered Project whose first reconciliation is explicitly owned by pv link.
+        reconcile(&fixture.paths, "system").await?;
+        // Insert a discovered Project whose first reconciliation is explicitly requested.
         let project = Database::open(&fixture.paths)?.link_discovered_project(input)?;
-        reconcile(&fixture.paths, &format!("project:{}", project.id), true).await?;
-        reconcile(&fixture.paths, &format!("project:{}", project.id), false).await?;
-        assert!(fixture.hook_jobs()?.is_empty());
-        assert!(!path.join("unexpected-setup").exists());
+        reconcile(&fixture.paths, &format!("project:{}", project.id)).await?;
+        reconcile(&fixture.paths, &format!("project:{}", project.id)).await?;
+        file_exists(&path.join("setup-count")).await?;
+        eventually(|| {
+            Ok(fixture
+                .hook_jobs()?
+                .into_iter()
+                .all(|job| job.status == JobStatus::Succeeded)
+                .then_some(()))
+        })
+        .await?;
+        assert_eq!(fixture.hook_jobs()?.len(), 1);
+        assert_eq!(
+            state::fs::read_to_string(&path.join("setup-count"))?,
+            "setup"
+        );
         Ok(())
     })
     .await
@@ -551,12 +598,12 @@ async fn moving_a_worktree_and_restoring_its_id_does_not_interrupt_setup() -> Re
         file_exists(&path.join("started")).await?;
         let entry = fixture.source.path.join(".git/worktrees/moving");
         state::fs::delete_file(&entry.join("pv-id"))?;
-        reconcile(&fixture.paths, "system", false).await?;
+        reconcile(&fixture.paths, "system").await?;
         assert!(entry.join("pv-id").exists());
         let moved = fixture.root.join("moved");
         state::fs::rename(&path, &moved)?;
         state::fs::write_sensitive_file(&entry.join("gitdir"), &format!("{moved}/.git\n"))?;
-        reconcile(&fixture.paths, "system", false).await?;
+        reconcile(&fixture.paths, "system").await?;
         state::fs::write_sensitive_file(&moved.join("release"), "")?;
         file_exists(&moved.join("setup-done")).await?;
         eventually(|| {
@@ -580,11 +627,11 @@ async fn prepare_survives_an_unavailable_source_and_a_worktree_move() -> Result<
     let daemon = fixture.start().await?;
     shutdown_after(daemon, &fixture.paths, async {
         file_exists(&path.join("started")).await?;
-        reconcile(&fixture.paths, "system", false).await?;
+        reconcile(&fixture.paths, "system").await?;
         let git = fixture.source.path.join(".git");
         let unavailable = fixture.source.path.join(".git-unavailable");
         state::fs::rename(&git, &unavailable)?;
-        reconcile(&fixture.paths, "system", false).await?;
+        reconcile(&fixture.paths, "system").await?;
         assert_eq!(fixture.hook_jobs()?[0].status, JobStatus::Running);
         state::fs::rename(&unavailable, &git)?;
         let moved = fixture.root.join("prepared-moved");
@@ -593,7 +640,7 @@ async fn prepare_survives_an_unavailable_source_and_a_worktree_move() -> Result<
             &git.join("worktrees/prepare-move/gitdir"),
             &format!("{moved}/.git\n"),
         )?;
-        reconcile(&fixture.paths, "system", false).await?;
+        reconcile(&fixture.paths, "system").await?;
         assert_eq!(fixture.hook_jobs()?[0].status, JobStatus::Running);
         state::fs::write_sensitive_file(&moved.join("release"), "")?;
         file_exists(&moved.join("setup-done")).await?;
@@ -634,9 +681,9 @@ async fn an_old_prepare_cannot_replace_a_new_run_after_an_ordinary_link_is_unlin
                 state::ProjectMode::ResourceOnly,
             )?
             .project;
-        reconcile(&fixture.paths, "system", false).await?;
+        reconcile(&fixture.paths, "system").await?;
         Database::open(&fixture.paths)?.unlink_project(&ordinary.id)?;
-        reconcile(&fixture.paths, "system", false).await?;
+        reconcile(&fixture.paths, "system").await?;
         assert_eq!(fixture.hook_jobs()?.len(), 1);
         assert!(!path.join("second-started").exists());
         state::fs::write_sensitive_file(&path.join("release-first"), "")?;
@@ -648,7 +695,7 @@ async fn an_old_prepare_cannot_replace_a_new_run_after_an_ordinary_link_is_unlin
                 .then_some(()))
         })
         .await?;
-        reconcile(&fixture.paths, "system", false).await?;
+        reconcile(&fixture.paths, "system").await?;
         file_exists(&path.join("second-started")).await?;
         assert!(
             Database::open(&fixture.paths)?
@@ -691,7 +738,7 @@ async fn queued_prepare_and_setup_follow_worktree_moves_without_requeueing() -> 
                     .then_some(()))
             })
             .await?;
-            reconcile(&fixture.paths, "system", false).await?;
+            reconcile(&fixture.paths, "system").await?;
             let queued_index = paths
                 .iter()
                 .position(|path| !path.join("started").exists())
@@ -717,7 +764,7 @@ async fn queued_prepare_and_setup_follow_worktree_moves_without_requeueing() -> 
             let moved = fixture.root.join("queued-moved");
             state::fs::rename(queued_path, &moved)?;
             state::fs::write_sensitive_file(&entry.join("gitdir"), &format!("{moved}/.git\n"))?;
-            reconcile(&fixture.paths, "system", false).await?;
+            reconcile(&fixture.paths, "system").await?;
             let running = paths
                 .iter()
                 .enumerate()

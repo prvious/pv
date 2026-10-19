@@ -2,7 +2,7 @@
 max-threads = 2
 
 [[profile.default.overrides]]
-filter = 'binary(project_hooks) | test(project_link_during_daemon_prepare)'
+filter = 'binary(project_hooks) | test(project_link_during_daemon_prepare) | test(project_link_skip_hooks_still)'
 test-group = 'project-hooks'
 
 [profile.ci]
