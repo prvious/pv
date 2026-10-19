@@ -154,9 +154,13 @@ def https_ready():
     result = subprocess.run(["curl", "--noproxy", "*", "--fail", "--silent", "--show-error",
                              "--max-time", "5", "https://linux-acceptance.test/"],
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    (EVIDENCE / "last-project-response.log").write_bytes(result.stdout + result.stderr)
     if result.returncode:
         return False
-    body = json.loads(result.stdout)
+    try:
+        body = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return False
     assert body["php"].startswith("8.5.")
     assert {"pdo_mysql", "pdo_pgsql", "redis"} <= set(body["extensions"])
     assert body["mysql"] == body["postgres"] == 1
