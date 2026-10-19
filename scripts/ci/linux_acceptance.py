@@ -30,12 +30,13 @@ EXPECTED = {
 
 def run(label, *command, environment=None, timeout=120, cwd=None):
     print(f"Checking {label}", flush=True)
-    result = subprocess.run(command, env=environment, cwd=cwd, timeout=timeout,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
-    (EVIDENCE / f"{label}.log").write_bytes(result.stdout)
+    log_path = EVIDENCE / f"{label}.log"
+    with log_path.open("wb") as output:
+        result = subprocess.run(command, env=environment, cwd=cwd, timeout=timeout,
+                                stdout=output, stderr=subprocess.STDOUT, check=False)
     if result.returncode:
         raise RuntimeError(f"{label} failed ({result.returncode}); see {label}.log")
-    return result.stdout.decode()
+    return log_path.read_text()
 
 
 def wait_for(label, check, seconds=120):
@@ -171,8 +172,9 @@ def https_ready():
         return False
     assert body["php"].startswith("8.5.")
     assert {"pdo_mysql", "pdo_pgsql", "redis"} <= set(body["extensions"])
-    assert body["mysql"] == body["postgres"] == 1
-    assert body["redis"] and body["mailpit"] and body["rustfs"]
+    if not (body["mysql"] == body["postgres"] == 1
+            and body["redis"] and body["mailpit"] and body["rustfs"]):
+        return False
     (EVIDENCE / "project.json").write_text(json.dumps(body, indent=2))
     return True
 
@@ -223,9 +225,17 @@ def system_acceptance():
             wait_for("Postgres stop with an open client", lambda: not Path(f"/proc/{postgres_pid}").exists(), 10)
             assert time.monotonic() - started < 20, "Postgres stop was not fast"
         finally:
+            primary_error = sys.exc_info()[1]
             if client.poll() is None:
-                client.terminate()
-                client.wait(timeout=10)
+                try:
+                    client.terminate()
+                    client.wait(timeout=10)
+                except Exception as cleanup_error:
+                    if primary_error is not None:
+                        raise RuntimeError(
+                            f"{primary_error}; PostgreSQL client cleanup also failed: {cleanup_error}"
+                        ) from primary_error
+                    raise
     run("enable-after-stop", str(PV), "daemon:enable", timeout=300)
     wait_for("resources after stop", https_ready)
     previous = runtime_pids()
@@ -239,7 +249,7 @@ def system_acceptance():
     run("uninstall", str(PV), "uninstall", "--prune", "--force", timeout=180)
     assert not PV_HOME.exists(), "PV home remains after prune"
     assert not pv_processes(), "PV processes remain after uninstall"
-    for path in ["/usr/local/libexec/pv", "/var/lib/pv", "/run/pv-helper.sock",
+    for path in ["/usr/local/libexec/pv", "/var/lib/pv", "/run/pv-helper.sock", "/var/log/pv-helper.err.log",
                  str(HOME / ".config/systemd/user/pv-daemon.service")]:
         assert not Path(path).exists(), f"PV installation remains: {path}"
     for directory in ["/etc/systemd/system", "/run/systemd/system"]:

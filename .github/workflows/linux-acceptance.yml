@@ -37,17 +37,25 @@ jobs:
           set -euo pipefail
           source_run_id="$SOURCE_RUN_ID"
           if [ -z "$source_run_id" ]; then
-            for candidate in $(gh run list --workflow artifact-recipes.yml --limit 30 --json databaseId,status --jq '.[] | select(.status == "completed") | .databaseId'); do
-              names=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$candidate/artifacts" --jq '.artifacts[].name')
-              if [[ "$names" == *linux-amd64* && "$names" == *linux-arm64* ]]; then
+            for candidate in $(gh run list --workflow artifact-recipes.yml --limit 30 --json databaseId,status,conclusion --jq '.[] | select(.status == "completed" and .conclusion == "success") | .databaseId'); do
+              names=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$candidate/artifacts" --jq '.artifacts[] | select(.expired == false) | .name')
+              complete=true
+              for identity in php-8.3 php-8.4 php-8.5 mysql-8.0 mysql-8.4 mysql-9.7 \
+                postgres-17 postgres-18 redis-8.8 caddy-2 mailpit-1 rustfs-1; do
+                for cpu in amd64 arm64; do
+                  [[ "$names" == *"pv-artifact-recipes-$identity-linux-$cpu-"* ]] || complete=false
+                done
+              done
+              [[ "$names" == *pv-artifact-recipes-composer-2-linux-amd64-* ]] || complete=false
+              if [ "$complete" = true ]; then
                 source_run_id=$candidate
                 break
               fi
             done
           fi
           [[ "$source_run_id" =~ ^[0-9]+$ ]] || { echo 'No Linux recipe run is available'; exit 1; }
-          gh run view "$source_run_id" --json workflowName,status --jq \
-            'select(.workflowName == "Artifact Recipes" and .status == "completed")' | grep -q .
+          gh run view "$source_run_id" --json workflowName,status,conclusion --jq \
+            'select(.workflowName == "Artifact Recipes" and .status == "completed" and .conclusion == "success")' | grep -q .
           printf 'run_id=%s\n' "$source_run_id" >> "$GITHUB_OUTPUT"
 
   app:
