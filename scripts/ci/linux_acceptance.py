@@ -59,6 +59,14 @@ def runtime_pids():
     return records
 
 
+def reconciliation_ready(previous_jobs):
+    jobs = json.loads(run("jobs-after-restart", str(PV), "jobs", "--json"))["jobs"]
+    new_jobs = [job for job in jobs if job["scope"] == "system" and job["id"] not in previous_jobs]
+    for job in new_jobs:
+        assert job["status"] != "failed", f"restart reconciliation failed: {job['error']}"
+    return bool(new_jobs) and all(job["status"] == "succeeded" for job in new_jobs)
+
+
 def pv_processes():
     processes = []
     for path in Path("/proc").glob("[0-9]*/exe"):
@@ -191,7 +199,10 @@ def system_acceptance():
     assert "https://linux-acceptance.test/" in redirect
     run("doctor", str(PV), "doctor", "--json")
     before = runtime_pids()
+    previous_jobs = {job["id"] for job in json.loads(
+        run("jobs-before-restart", str(PV), "jobs", "--json"))["jobs"]}
     run("daemon-restart", str(PV), "daemon:restart")
+    wait_for("restart reconciliation", lambda: reconciliation_ready(previous_jobs))
     wait_for("HTTPS after daemon restart", https_ready)
     assert runtime_pids() == before, "daemon restart replaced a managed runtime"
     environment = os.environ.copy()
