@@ -87,9 +87,13 @@ pub(crate) fn setup(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
+    let linux = environment.platform_target()? == PlatformTarget::Linux;
+    #[cfg(target_os = "linux")]
+    if linux {
+        environment.check_linux_setup_host()?;
+    }
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
-    let linux = environment.platform_target()? == PlatformTarget::Linux;
     let authentication = if linux { "sudo" } else { "macOS" };
 
     streams.out.flow_start(
@@ -107,11 +111,6 @@ pub(crate) fn setup(
     )?;
     install_command_shims(environment, &paths)?;
     let default_resource_plan = refresh_setup_artifact_manifest(environment, &paths, streams)?;
-
-    #[cfg(target_os = "linux")]
-    if linux {
-        environment.check_linux_setup_host()?;
-    }
 
     let helper_candidate = privileged_helper_candidate(environment, &paths)?;
     let helper_installation_required =
@@ -1577,8 +1576,7 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
-    fn linux_setup_checks_the_host_after_manifest_refresh_before_helper_inspection()
-    -> anyhow::Result<()> {
+    fn linux_setup_checks_the_host_before_touching_pv_state() -> anyhow::Result<()> {
         let directory = tempdir()?;
         let environment = SetupEnvironment {
             shell: "/bin/bash",
@@ -1605,18 +1603,12 @@ mod tests {
         let ExecuteError::Platform(PlatformError::SystemIntegration(message)) = &error else {
             anyhow::bail!("{error}; operations: {:?}", environment.operations.borrow());
         };
-        assert!(fs::path_is_file(&paths.bin().join("php"))?);
-        assert!(fs::path_is_file(&paths.bin().join("composer"))?);
-        assert!(fs::path_is_file(
-            resources::ArtifactManifestCache::new(paths.downloads()).path()
-        )?);
-        assert!(!fs::path_entry_exists(
-            &directory.path().join("pv-helper.json")
-        )?);
+        assert!(!fs::path_entry_exists(&paths.root())?);
+        assert!(stdout.is_empty());
         assert!(stderr.is_empty());
         assert_snapshot!(format!("{message}\n{:?}", environment.operations.borrow()), @r#"
         fixture Linux host prerequisite refused
-        ["executable", "manifest", "host check"]
+        ["host check"]
         "#);
         Ok(())
     }
