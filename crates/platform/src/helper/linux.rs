@@ -909,8 +909,6 @@ fn validate_directory_chain(path: &Utf8Path, create: bool) -> Result<(), Platfor
                     .mode(0o755)
                     .create(directory)
                     .map_err(PlatformError::PrivilegedHelperIo)?;
-                state::fs::sync_parent_directory(directory)
-                    .map_err(|error| installation_error(error.to_string()))?;
                 std::fs::symlink_metadata(directory).map_err(PlatformError::PrivilegedHelperIo)?
             }
             Err(error) => return Err(PlatformError::PrivilegedHelperIo(error)),
@@ -979,19 +977,14 @@ fn write_root_file(path: &Utf8Path, content: &[u8], mode: u32) -> Result<(), Pla
         .map_err(PlatformError::PrivilegedHelperIo)?;
     file.set_permissions(std::fs::Permissions::from_mode(mode))
         .map_err(PlatformError::PrivilegedHelperIo)?;
-    file.sync_all().map_err(PlatformError::PrivilegedHelperIo)?;
-    state::fs::sync_parent_directory(path).map_err(|error| installation_error(error.to_string()))
+    Ok(())
 }
 
 fn rename(source: &Utf8Path, destination: &Utf8Path) -> Result<(), PlatformError> {
-    state::fs::rename(source, destination)
-        .and_then(|()| state::fs::sync_parent_directory(destination))
-        .map_err(|error| installation_error(error.to_string()))
+    state::fs::rename(source, destination).map_err(|error| installation_error(error.to_string()))
 }
 fn remove_file(path: &Utf8Path) -> Result<(), PlatformError> {
-    state::fs::remove_file_if_exists(path)
-        .and_then(|()| state::fs::sync_parent_directory(path))
-        .map_err(|error| installation_error(error.to_string()))
+    state::fs::remove_file_if_exists(path).map_err(|error| installation_error(error.to_string()))
 }
 fn clear_transaction_files() -> Result<(), PlatformError> {
     let candidate = Utf8Path::new(CANDIDATE_PATH);
@@ -1013,7 +1006,7 @@ fn remove_empty_root_directory(path: &Utf8Path) -> Result<(), PlatformError> {
             "could not remove empty helper directory {path}: {error}"
         ))
     })?;
-    state::fs::sync_parent_directory(path).map_err(|error| installation_error(error.to_string()))
+    Ok(())
 }
 
 #[cfg(test)]
