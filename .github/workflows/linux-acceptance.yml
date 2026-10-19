@@ -151,6 +151,13 @@ jobs:
         run: |
           df -h /
           docker build -f scripts/linux/test.Dockerfile --build-arg BASE="$BASE" -t pv-linux-acceptance .
+      - name: Isolate Fedora PAM from Ubuntu host policy
+        if: ${{ startsWith(matrix.distro, 'fedora-') }}
+        run: |
+          # This disposable Ubuntu runner's executable policy also attaches inside Fedora containers.
+          if [ -f /etc/apparmor.d/unix-chkpwd ]; then
+            sudo apparmor_parser --remove /etc/apparmor.d/unix-chkpwd
+          fi
       - name: Run distro support gate
         if: ${{ matrix.distro != 'native' }}
         run: |
@@ -213,6 +220,7 @@ jobs:
       - name: Collect container failure logs
         if: ${{ failure() && matrix.distro != 'native' }}
         run: |
+          docker exec pv-linux-acceptance chown -R "$(id -u):$(id -g)" /evidence || true
           docker logs pv-linux-acceptance > "$RUNNER_TEMP/evidence/container.log" 2>&1 || true
           docker exec pv-linux-acceptance journalctl -b --no-pager \
             > "$RUNNER_TEMP/evidence/system-journal.log" 2>&1 || true

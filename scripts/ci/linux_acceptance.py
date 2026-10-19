@@ -207,7 +207,7 @@ def system_acceptance():
             time.sleep(1)
             assert client.poll() is None, "Postgres client failed before stop"
             started = time.monotonic()
-            run("unlink-with-open-client", str(PV), "unlink", "linux-acceptance.test", timeout=30)
+            run("stop-with-open-client", str(PV), "daemon:disable", timeout=30)
             client.wait(timeout=10)
             wait_for("Postgres stop with an open client", lambda: not Path(f"/proc/{postgres_pid}").exists(), 10)
             assert time.monotonic() - started < 20, "Postgres stop was not fast"
@@ -215,8 +215,8 @@ def system_acceptance():
             if client.poll() is None:
                 client.terminate()
                 client.wait(timeout=10)
-    run("relink", str(PV), "link", str(project), "--hostname", "linux-acceptance.test", timeout=300)
-    wait_for("resources after relink", https_ready)
+    run("enable-after-stop", str(PV), "daemon:enable", timeout=300)
+    wait_for("resources after stop", https_ready)
     previous = runtime_pids()
     manager = f"user@{os.getuid()}.service"
     run("logout", "sudo", "-n", "systemctl", "stop", manager)
@@ -264,6 +264,8 @@ def main():
         raise
     finally:
         (EVIDENCE / "result.json").write_text(json.dumps(result, indent=2) + "\n")
+        if result.get("result") == "failed" and (PV_HOME / "logs").is_dir():
+            shutil.copytree(PV_HOME / "logs", EVIDENCE / "pv-logs", dirs_exist_ok=True)
     print("Linux support gate passed", flush=True)
 
 
