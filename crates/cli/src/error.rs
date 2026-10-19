@@ -9,6 +9,16 @@ pub enum CliError {
     )]
     ProjectHooksInProgress { job_id: String },
 
+    #[error(
+        "PV runs this worktree's hooks automatically after its first successful reconciliation; check `pv jobs` or pass `--skip-hooks`"
+    )]
+    ProjectFirstReconciliationPending,
+
+    #[error(
+        "PV database disappeared while Project hooks were running, possibly after `pv uninstall --prune`; aborting without recreating PV state"
+    )]
+    LinkDatabaseRemoved,
+
     #[error("reconciliation {job_id} failed: {message}")]
     LinkReconciliationFailed { job_id: String, message: String },
 
@@ -204,11 +214,11 @@ pub enum CliError {
 
 #[derive(Debug, Error)]
 pub(crate) enum ExecuteError {
-    #[error("{original}; could not reacquire runtime lifecycle admission: {admission}")]
-    HookAdmission {
+    #[error("{original}; cannot resume after hooks: {resume}")]
+    HookResume {
         original: Box<ExecuteError>,
         #[source]
-        admission: Box<ExecuteError>,
+        resume: Box<ExecuteError>,
     },
     #[error("{original}; could not record hook outcome: {recording}")]
     HookOutcomeRecording {

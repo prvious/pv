@@ -15,6 +15,6 @@ expression: outputs
             1,
         ),
         stdout: "Running prepare: touch started; count=0; while test ! -f continue && test \"$count\" -lt 1500; do sleep 0.1; count=$((count + 1)); done; exit 7\n",
-        stderr: "error: prepare: hook command `touch started; count=0; while test ! -f continue && test \"$count\" -lt 1500; do sleep 0.1; count=$((count + 1)); done; exit 7` exited with exit status: 7; could not reacquire runtime lifecycle admission: PV self-update/daemon mutation coordination is active; the OS lock is held on <tempdir>/7/home/.pv-runtime-lifecycle.lock\n",
+        stderr: "error: prepare: hook command `touch started; count=0; while test ! -f continue && test \"$count\" -lt 1500; do sleep 0.1; count=$((count + 1)); done; exit 7` exited with exit status: 7; cannot resume after hooks: PV self-update/daemon mutation coordination is active; the OS lock is held on <tempdir>/7/home/.pv-runtime-lifecycle.lock\n",
     },
 ]

@@ -361,13 +361,11 @@ fn acquire_jobs_lock(paths: &PvPaths) -> Result<state::JobsLock, ExecuteError> {
 async fn submit_reconciliation(
     paths: &PvPaths,
     scope: &str,
-    requested_by_link: bool,
     stderr: &mut Output<'_>,
 ) -> Result<Option<::daemon::SubmittedJob>, ExecuteError> {
     let mut deferred = false;
     loop {
-        let submitted =
-            ::daemon::submit_job(paths.clone(), RECONCILE_KIND, scope, requested_by_link).await;
+        let submitted = ::daemon::submit_job(paths.clone(), RECONCILE_KIND, scope).await;
         match submitted {
             Ok(job) => return Ok(Some(job)),
             Err(::daemon::DaemonError::Io(error)) if daemon_is_unavailable(&error) => {
@@ -402,12 +400,9 @@ fn request_system_reconciliation(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    if let Some(job) = runtime.block_on(submit_reconciliation(
-        paths,
-        SYSTEM_SCOPE,
-        false,
-        &mut streams.err,
-    ))? {
+    if let Some(job) =
+        runtime.block_on(submit_reconciliation(paths, SYSTEM_SCOPE, &mut streams.err))?
+    {
         write_reconciliation_requested(&mut streams.out, &job.id)?;
     }
 
@@ -423,20 +418,19 @@ fn request_project_reconciliation(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(request_project_reconciliation_with_origin(
-        paths, project, streams, false,
+    runtime.block_on(request_project_reconciliation_async(
+        paths, project, streams,
     ))?;
     Ok(())
 }
 
-async fn request_project_reconciliation_with_origin(
+async fn request_project_reconciliation_async(
     paths: &PvPaths,
     project: &state::ProjectRecord,
     streams: &mut Streams<'_>,
-    requested_by_link: bool,
 ) -> Result<Option<::daemon::SubmittedJob>, ExecuteError> {
     let scope = format!("project:{}", project.id);
-    let job = submit_reconciliation(paths, &scope, requested_by_link, &mut streams.err).await?;
+    let job = submit_reconciliation(paths, &scope, &mut streams.err).await?;
     if let Some(job) = &job {
         streams.out.follow_up(
             Line::from("Queued reconciliation ")

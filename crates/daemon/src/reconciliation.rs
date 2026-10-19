@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -114,7 +114,6 @@ struct QueueState {
     active: Option<ReconciliationJob>,
     queued: VecDeque<ReconciliationJob>,
     jobs_lock: Option<JobsLock>,
-    foreground_hook_projects: BTreeMap<String, BTreeSet<String>>,
 }
 
 #[derive(Debug, Default)]
@@ -124,23 +123,6 @@ struct DebounceInner {
 }
 
 impl ReconciliationQueue {
-    pub(crate) fn mark_link_requested(&self, job_id: &str, project_id: &str) {
-        lock_queue_state(&self.inner)
-            .foreground_hook_projects
-            .entry(job_id.to_string())
-            .or_default()
-            .insert(project_id.to_string());
-    }
-
-    /// Projects whose terminal invocation owns setup, including requests coalesced into this job.
-    pub fn foreground_hook_projects(&self, job_id: &str) -> BTreeSet<String> {
-        lock_queue_state(&self.inner)
-            .foreground_hook_projects
-            .get(job_id)
-            .cloned()
-            .unwrap_or_default()
-    }
-
     pub fn new() -> Self {
         Self::with_project_config_watcher(None)
     }
@@ -645,7 +627,6 @@ fn remove_queued_job(inner: &QueueInner, job: &ReconciliationJob) -> bool {
     state.queued.retain(|queued| queued.job_id != job.job_id);
 
     if state.queued.len() != queued_len {
-        state.foreground_hook_projects.remove(&job.job_id);
         release_jobs_lock_if_idle(&mut state);
         inner.notify.notify_waiters();
         return true;
@@ -663,7 +644,6 @@ fn release_active_job(inner: &QueueInner, job: &ReconciliationJob) -> bool {
         .is_some_and(|active| active.job_id == job.job_id)
     {
         state.active = None;
-        state.foreground_hook_projects.remove(&job.job_id);
         release_jobs_lock_if_idle(&mut state);
         inner.notify.notify_waiters();
         return true;
@@ -724,35 +704,6 @@ mod tests {
             timing.execution_elapsed_at(started_at + Duration::from_millis(7)),
             Duration::from_millis(7)
         );
-    }
-
-    #[tokio::test]
-    async fn coalesced_link_marker_follows_the_accepted_job_until_completion() -> anyhow::Result<()>
-    {
-        let queue = ReconciliationQueue::new();
-        let scope = ReconciliationScope::project("target")?;
-        let waiting = queued(queue.enqueue(scope.clone(), || {
-            Ok::<_, anyhow::Error>("accepted".to_string())
-        })?)?;
-        let coalesced = queue.enqueue(scope, || {
-            Err::<String, _>(anyhow::anyhow!("coalesced request must not create a job"))
-        })?;
-        let EnqueueResult::Coalesced(job) = coalesced else {
-            anyhow::bail!("expected coalesced job");
-        };
-        assert_eq!(job.job_id(), waiting.job_id());
-        queue.mark_link_requested(job.job_id(), "target");
-        let running = waiting.wait_for_turn().await;
-        assert_eq!(
-            queue
-                .foreground_hook_projects(running.job_id())
-                .into_iter()
-                .collect::<Vec<_>>(),
-            ["target"]
-        );
-        running.finish();
-        assert!(queue.foreground_hook_projects("accepted").is_empty());
-        Ok(())
     }
 
     #[tokio::test]

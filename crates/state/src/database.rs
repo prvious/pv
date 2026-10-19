@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior, params,
 };
@@ -962,18 +964,22 @@ impl Database {
             .transpose()
     }
 
-    pub fn job_verified_subject(
+    /// Whether the Project has a successful env observation strictly newer than `started_at`.
+    pub fn project_env_succeeded_after(
         &self,
-        id: &str,
-        subject: &JobDiagnosticSubject,
+        project_id: &str,
+        started_at: &str,
     ) -> Result<bool, StateError> {
-        let (subject_kind, subject_id) = subject.database_identity();
-        Ok(self.connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM job_diagnostic_outcomes
-            WHERE job_id = ?1 AND subject_kind = ?2 AND subject_id = ?3 AND outcome = 'success')",
-            params![id, subject_kind, subject_id],
-            |row| row.get(0),
-        )?)
+        self.project_env_observed_state(project_id)?
+            .filter(|state| {
+                matches!(
+                    state.status,
+                    ProjectEnvObservedStatus::Rendered | ProjectEnvObservedStatus::Warning
+                )
+            })
+            .map_or(Ok(false), |state| {
+                timestamp_is_after(&state.observed_at, started_at)
+            })
     }
 
     pub fn unresolved_job_failures(&self) -> Result<Vec<UnresolvedJobFailure>, StateError> {
@@ -1074,15 +1080,9 @@ impl Database {
                     && state.status == RuntimeObservedStatus::Running)
                     .then(|| state.observed_at.clone())
             }),
-            JobDiagnosticSubject::Project { id } => self
-                .project_env_observed_state(id)?
-                .filter(|state| {
-                    matches!(
-                        state.status,
-                        ProjectEnvObservedStatus::Rendered | ProjectEnvObservedStatus::Warning
-                    )
-                })
-                .map(|state| state.observed_at),
+            JobDiagnosticSubject::Project { id } => {
+                return self.project_env_succeeded_after(id, failure_at);
+            }
             JobDiagnosticSubject::Resource { name, track } => {
                 runtime_states.iter().find_map(|state| {
                     let matches_subject = matches!(
@@ -1105,7 +1105,9 @@ impl Database {
             | JobDiagnosticSubject::Other { .. } => None,
         };
 
-        Ok(observed_at.is_some_and(|observed_at| observed_at.as_str() > failure_at))
+        observed_at.map_or(Ok(false), |observed_at| {
+            timestamp_is_after(&observed_at, failure_at)
+        })
     }
 
     pub fn link_project(
@@ -5161,9 +5163,14 @@ fn insert_job_diagnostic_outcome(
     Ok(())
 }
 
-fn timestamp() -> Result<String, StateError> {
-    let format =
-        time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
+fn timestamp_is_after(observed_at: &str, baseline: &str) -> Result<bool, StateError> {
+    Ok(OffsetDateTime::parse(observed_at, &Rfc3339)? > OffsetDateTime::parse(baseline, &Rfc3339)?)
+}
 
-    Ok(time::OffsetDateTime::now_utc().format(format)?)
+fn timestamp() -> Result<String, StateError> {
+    let format = time::macros::format_description!(
+        "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:9]Z"
+    );
+
+    Ok(OffsetDateTime::now_utc().format(format)?)
 }

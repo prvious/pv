@@ -18,6 +18,7 @@ pub(super) struct LinkHookRun<'a> {
     project_path: &'a Utf8Path,
     source_path: Option<Utf8PathBuf>,
     captured: Option<HookEnvironment>,
+    database_existed: bool,
     runtime: tokio::runtime::Runtime,
 }
 
@@ -26,12 +27,14 @@ impl<'a> LinkHookRun<'a> {
         paths: &'a PvPaths,
         project_path: &'a Utf8Path,
         source_path: Option<Utf8PathBuf>,
+        database_existed: bool,
     ) -> Result<Self, ExecuteError> {
         Ok(Self {
             paths,
             project_path,
             source_path,
             captured: None,
+            database_existed,
             runtime: tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?,
@@ -94,8 +97,13 @@ impl<'a> LinkHookRun<'a> {
         &self,
         job_id: &str,
         project: &ProjectRecord,
+        streams: &mut Streams<'_>,
     ) -> Result<(), ExecuteError> {
-        self.runtime.block_on(async {
+        streams
+            .out
+            .line(&format!("Waiting for reconciliation {job_id} before setup"))?;
+        streams.out.writer().flush()?;
+        let warning = self.runtime.block_on(async {
             tokio::select! {
                 biased;
                 interrupt = tokio::signal::ctrl_c() => {
@@ -104,7 +112,11 @@ impl<'a> LinkHookRun<'a> {
                 }
                 result = wait_for_project_job(self.paths, job_id, &project.id) => result,
             }
-        })
+        })?;
+        if let Some(warning) = warning {
+            streams.err.warning(&warning)?;
+        }
+        Ok(())
     }
 
     pub(super) fn request_reconciliation(
@@ -116,8 +128,8 @@ impl<'a> LinkHookRun<'a> {
         if !hooks_enabled {
             return self
                 .runtime
-                .block_on(super::request_project_reconciliation_with_origin(
-                    self.paths, project, streams, true,
+                .block_on(super::request_project_reconciliation_async(
+                    self.paths, project, streams,
                 ));
         }
         self.runtime.block_on(async {
@@ -127,7 +139,7 @@ impl<'a> LinkHookRun<'a> {
                     interrupt?;
                     Err(ExecuteError::ProjectHook { phase: "reconciliation", source: HookError::Interrupted })
                 }
-                result = super::request_project_reconciliation_with_origin(self.paths, project, streams, true) => result,
+                result = super::request_project_reconciliation_async(self.paths, project, streams) => result,
             }
         })
     }
@@ -147,21 +159,27 @@ pub(super) fn run_with_admission(
     let result = run.run(phase, commands, streams);
     // Reacquire even after failure. A disable/uninstall owner ends the command before any further state
     // write or daemon request, including recording the hook outcome.
-    if had_admission {
-        match RuntimeLifecycleLock::acquire_shared(run.paths)
+    let resume = if had_admission {
+        RuntimeLifecycleLock::acquire_shared(run.paths)
+            .map(|guard| *admission = Some(guard))
             .map_err(super::coordination_lock_error)
-        {
-            Ok(guard) => *admission = Some(guard),
-            Err(admission) => {
-                return Err(match result {
-                    Ok(()) => admission,
-                    Err(original) => ExecuteError::HookAdmission {
-                        original: Box::new(original),
-                        admission: Box::new(admission),
-                    },
-                });
-            }
+    } else {
+        Ok(())
+    }
+    .and_then(|()| {
+        if run.database_existed && !state::fs::path_entry_exists(run.paths.db())? {
+            return Err(CliError::LinkDatabaseRemoved.into());
         }
+        Ok(())
+    });
+    if let Err(resume) = resume {
+        return Err(match result {
+            Ok(()) => resume,
+            Err(original) => ExecuteError::HookResume {
+                original: Box::new(original),
+                resume: Box::new(resume),
+            },
+        });
     }
     Ok(result)
 }
@@ -170,7 +188,7 @@ async fn wait_for_project_job(
     paths: &PvPaths,
     job_id: &str,
     project_id: &str,
-) -> Result<(), ExecuteError> {
+) -> Result<Option<String>, ExecuteError> {
     let database = Database::open(paths)?;
     loop {
         let job = database
@@ -178,30 +196,29 @@ async fn wait_for_project_job(
             .ok_or_else(|| StateError::JobNotFound {
                 id: job_id.to_string(),
             })?;
-        match job.status {
-            JobStatus::Running => tokio::time::sleep(Duration::from_millis(100)).await,
-            JobStatus::Failed => {
-                return Err(CliError::LinkReconciliationFailed {
-                    job_id: job_id.to_string(),
-                    message: job.error.unwrap_or_else(|| "unknown failure".to_string()),
-                }
-                .into());
+        if job.status == JobStatus::Running {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            continue;
+        }
+        let project_succeeded =
+            database.project_env_succeeded_after(project_id, &job.started_at)?;
+        if project_succeeded {
+            return Ok((job.status == JobStatus::Failed).then(|| format!(
+                "Reconciliation {job_id} failed: {}; this Project reconciled successfully, continuing with setup",
+                job.error.unwrap_or_else(|| "unknown failure".to_string())
+            )));
+        }
+        return Err(if job.status == JobStatus::Failed {
+            CliError::LinkReconciliationFailed {
+                job_id: job_id.to_string(),
+                message: job.error.unwrap_or_else(|| "unknown failure".to_string()),
             }
-            JobStatus::Succeeded => {
-                if database.job_verified_subject(
-                    job_id,
-                    &JobDiagnosticSubject::Project {
-                        id: project_id.to_string(),
-                    },
-                )? {
-                    return Ok(());
-                }
-                return Err(CliError::LinkProjectNotReconciled {
-                    job_id: job_id.to_string(),
-                }
-                .into());
+        } else {
+            CliError::LinkProjectNotReconciled {
+                job_id: job_id.to_string(),
             }
         }
+        .into());
     }
 }
 

@@ -140,7 +140,10 @@ fn jobs_on_a_narrow_terminal_wraps_long_failure_summary() -> anyhow::Result<()> 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
     let mut settings = Settings::clone_current();
-    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
+        "<timestamp>",
+    );
     settings.bind(|| {
         assert_snapshot!(
             "jobs_on_a_narrow_terminal_wraps_long_failure_summary",
@@ -176,7 +179,10 @@ fn jobs_on_a_terminal_render_a_report_table() -> anyhow::Result<()> {
         assert!(output.stderr.is_empty());
     }
     let mut settings = Settings::clone_current();
-    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
+        "<timestamp>",
+    );
     settings.bind(|| {
         assert_snapshot!("jobs_on_a_terminal_empty", empty.stdout);
         assert_snapshot!("jobs_on_a_terminal_at_140_columns", wide.stdout);
@@ -236,7 +242,10 @@ fn seed_jobs(paths: &PvPaths) -> anyhow::Result<()> {
 
 fn assert_jobs_snapshot(name: &'static str, snapshot: impl std::fmt::Debug) {
     let mut settings = Settings::clone_current();
-    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
+        "<timestamp>",
+    );
     settings.bind(|| {
         assert_debug_snapshot!(name, snapshot);
     });

@@ -714,6 +714,9 @@ fn doctor_settings(tempdir: &Utf8Path) -> Settings {
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.add_filter(r"job_[0-9]+", "<job-id>");
     settings.add_filter(r"[0-9a-f]{64}", "<fingerprint>");
-    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
+        "<timestamp>",
+    );
     settings
 }

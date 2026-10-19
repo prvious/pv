@@ -28,6 +28,9 @@ impl fmt::Display for StateCapability {
 
 #[derive(Debug, Error)]
 pub enum StateError {
+    #[error(transparent)]
+    ParseTime(#[from] time::error::Parse),
+
     #[error("home directory could not be determined")]
     MissingHome,
 

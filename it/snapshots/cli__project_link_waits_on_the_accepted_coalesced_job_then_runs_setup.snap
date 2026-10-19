@@ -7,7 +7,7 @@ expression: "(output, jobs)"
         code: Some(
             0,
         ),
-        stdout: "Running prepare: printf 'prepare output\\n'\nprepare output\nLinked acme (resource-only) -> <tempdir>/acme\nQueued reconciliation job_000001 for acme\nRunning setup: test -f .env && printf 'setup output\\n' && printf setup > setup\nsetup output\n",
+        stdout: "Running prepare: printf 'prepare output\\n'\nprepare output\nLinked acme (resource-only) -> <tempdir>/acme\nQueued reconciliation job_000001 for acme\nWaiting for reconciliation job_000001 before setup\nRunning setup: test -f .env && printf 'setup output\\n' && printf setup > setup\nsetup output\n",
         stderr: "",
     },
     [

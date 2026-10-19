@@ -25,6 +25,7 @@ pub(crate) fn link(
     mut runtime_lifecycle_lock: Option<RuntimeLifecycleLock>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
+    let database_existed = state::fs::path_entry_exists(paths.db())?;
     let original_project_path = resolve_project_path(args.path.as_deref(), environment)?;
     let config_file = ProjectConfigFile::read_from_root(&original_project_path)?;
     config::validate_project_env_shape(&config_file.config)?;
@@ -48,6 +49,12 @@ pub(crate) fn link(
                 .as_ref()
                 .is_some_and(|project| project.id == discovered.project_id)
         });
+    if !args.skip_hooks
+        && let Some(project) = &existing
+        && database.held_project_ids()?.contains(&project.id)
+    {
+        return Err(CliError::ProjectFirstReconciliationPending.into());
+    }
     if !args.skip_hooks
         && let Some(project) = &existing
         && let Some(job) = database.active_hook_job(&format!("project:{}", project.id))?
@@ -78,7 +85,7 @@ pub(crate) fn link(
         (None, None) => config::hostname_from_project_path(&project_path)?,
     };
     drop(database);
-    let mut hook_run = LinkHookRun::new(&paths, &project_path, source_path)?;
+    let mut hook_run = LinkHookRun::new(&paths, &project_path, source_path, database_existed)?;
     let mut hooks_attempted = false;
     if hooks_enabled && !config_file.config.hooks.prepare.is_empty() {
         hooks_attempted = true;
@@ -157,7 +164,7 @@ pub(crate) fn link(
         Ok(job) if hooks_enabled && !config_file.config.hooks.setup.is_empty() => {
             if let Some(job) = job {
                 hooks_attempted = true;
-                match hook_run.wait_for_reconciliation(&job.id, &result.project) {
+                match hook_run.wait_for_reconciliation(&job.id, &result.project, streams) {
                     Err(error) => Err(error),
                     Ok(()) => project_hooks::run_with_admission(
                         &mut hook_run,

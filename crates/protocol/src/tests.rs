@@ -9,31 +9,6 @@ use crate::{
 };
 
 #[test]
-fn project_link_origin_defaults_off_and_round_trips_when_requested() -> anyhow::Result<()> {
-    let original = json!({ "protocol_version": PROTOCOL_VERSION, "command": "run_job", "kind": "reconcile", "scope": "project:target" });
-    let request: DaemonRequest = serde_json::from_value(original.clone())?;
-    assert!(matches!(
-        &request.command,
-        DaemonCommand::RunJob {
-            requested_by_link: false,
-            ..
-        }
-    ));
-    assert_eq!(serde_json::to_value(request)?, original);
-    let marked = json!({ "requested_by_link": true, "protocol_version": PROTOCOL_VERSION, "command": "run_job", "kind": "reconcile", "scope": "project:target" });
-    let request: DaemonRequest = serde_json::from_value(marked.clone())?;
-    assert!(matches!(
-        &request.command,
-        DaemonCommand::RunJob {
-            requested_by_link: true,
-            ..
-        }
-    ));
-    assert_eq!(serde_json::to_value(request)?, marked);
-    Ok(())
-}
-
-#[test]
 fn managed_resource_update_check_command_bumps_protocol_version() -> anyhow::Result<()> {
     let request = DaemonRequest {
         protocol_version: PROTOCOL_VERSION,

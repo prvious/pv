@@ -8033,7 +8033,10 @@ fn assert_with_normalized_postgres_runtime(
     snapshot: impl std::fmt::Debug,
 ) -> Result<()> {
     let mut settings = Settings::clone_current();
-    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
+        "<timestamp>",
+    );
     settings.add_filter(&regex_literal(tempdir.as_str()), "<tempdir>");
     settings.add_filter(
         r#"project_id: "[a-z0-9]{10}""#,
@@ -8063,7 +8066,10 @@ fn assert_with_normalized_runtime(
     snapshot: impl std::fmt::Debug,
 ) -> Result<()> {
     let mut settings = Settings::clone_current();
-    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
+        "<timestamp>",
+    );
     settings.add_filter(&regex_literal(tempdir.as_str()), "<tempdir>");
     settings.add_filter(
         r#"project_id: "[a-z0-9]{10}""#,

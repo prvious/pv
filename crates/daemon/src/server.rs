@@ -479,20 +479,13 @@ async fn handle_connection(
 
             Ok(())
         }
-        DaemonCommand::RunJob {
-            kind,
-            scope,
-            requested_by_link,
-        } => {
+        DaemonCommand::RunJob { kind, scope } => {
             run_job(
                 paths,
                 queue,
                 transport,
-                crate::jobs::JobRequest {
-                    kind: &kind,
-                    scope: &scope,
-                    requested_by_link,
-                },
+                &kind,
+                &scope,
                 runtime_catalog.as_deref(),
                 &fallback_shutdown,
             )

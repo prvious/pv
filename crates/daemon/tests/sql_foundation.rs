@@ -498,7 +498,10 @@ fn pg_env_guard() -> MutexGuard<'static, ()> {
 fn assert_sql_snapshot(name: &'static str, snapshot: impl std::fmt::Debug) -> Result<()> {
     let mut settings = Settings::clone_current();
 
-    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
+        "<timestamp>",
+    );
     settings.add_filter(
         r#"project_id: "[a-z0-9]{10}""#,
         r#"project_id: "<project_id>""#,

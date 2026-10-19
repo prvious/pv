@@ -32,7 +32,7 @@ use state::{
     Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths, UpdateLock,
 };
 #[cfg(target_os = "macos")]
-use state::{JobDiagnosticSubject, JobStatus, RuntimeLifecycleLock};
+use state::{JobStatus, LinkDiscoveredProjectInput, ProjectMode, RuntimeLifecycleLock};
 use support::{create_dir, create_laravel_init_fixture, run_pv_in, write_file};
 
 mod support;
@@ -629,7 +629,7 @@ fn project_link_waits_on_the_accepted_coalesced_job_then_runs_setup() -> Result<
     let request = server
         .join()
         .map_err(|_| anyhow::anyhow!("fixture daemon panicked"))??;
-    assert_eq!(request["requested_by_link"], true);
+    assert!(request.get("requested_by_link").is_none());
     assert_eq!(output.code, Some(0));
     assert!(state::fs::path_entry_exists(&project.join("setup"))?);
     let jobs = Database::open(&paths)?
@@ -846,6 +846,7 @@ fn reject_link_reconciliations(
     let ready = ready.to_path_buf();
     let task = thread::Builder::new().name("link-retry-fixture".to_string()).spawn(move || {
         let deadline = Instant::now() + Duration::from_secs(20);
+        let mut responses = 0;
         while !task_stop.load(Ordering::SeqCst) {
             anyhow::ensure!(Instant::now() < deadline, "retry fixture timed out");
             match listener.accept() {
@@ -857,7 +858,12 @@ fn reject_link_reconciliations(
                     BufReader::new(socket.try_clone()?).read_line(&mut line)?;
                     let request: Value = serde_json::from_str(&line)?;
                     writeln!(socket, "{}", json!({ "type": "response", "protocol_version": request["protocol_version"], "status": "error", "message": format!("coordination lock held: {}", paths.jobs_lock()) }))?;
-                    write_file(&ready, "ready")?;
+                    responses += 1;
+                    // A second request proves the CLI consumed the first rejection and printed
+                    // its warning before the test interrupts the next retry.
+                    if responses >= 2 {
+                        write_file(&ready, "ready")?;
+                    }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(10)),
                 Err(error) => return Err(error.into()),
@@ -876,6 +882,11 @@ fn project_link_skips_setup_after_failed_or_uncovered_reconciliation() -> Result
     for (name, outcome) in [
         ("failed", LinkJobOutcome::Failed),
         ("uncovered", LinkJobOutcome::Uncovered),
+        ("stale", LinkJobOutcome::StaleProject),
+        (
+            "failed-env",
+            LinkJobOutcome::FailedWithProject(ProjectEnvObservedStatus::Failed),
+        ),
     ] {
         let home = directory.path().join(name).join("home");
         let project = directory.path().join(name).join("acme");
@@ -965,6 +976,142 @@ fn project_link_releases_admission_for_prepare_and_stops_if_reacquisition_fails(
 }
 
 #[cfg(target_os = "macos")]
+#[test]
+fn project_link_refuses_a_discovered_project_until_its_first_apply_without_reading_the_queue()
+-> Result<()> {
+    let directory = tempdir()?;
+    let home = directory.path().join("home");
+    let source = directory.path().join("source");
+    let project = directory.path().join("worktree");
+    create_dir(&source)?;
+    create_dir(&project)?;
+    write_file(&source.join("pv.yml"), "serve: false\n")?;
+    write_file(
+        &project.join("pv.yml"),
+        "serve: false\nhooks:\n  prepare:\n    - touch unexpected-prepare\n  setup:\n    - touch unexpected-setup\n",
+    )?;
+    run_hook_pv(&["link", "--skip-hooks"], &source, &home)?;
+    let paths = PvPaths::for_home(&home);
+    let mut database = Database::open(&paths)?;
+    let source = database.projects()?.remove(0);
+    let linked = database.link_discovered_project(LinkDiscoveredProjectInput {
+        source_project_id: source.id,
+        worktree_id: "heldtree".to_string(),
+        worktree_name: "worktree".to_string(),
+        path: state::fs::canonicalize(&project)?,
+        config_path: state::fs::canonicalize(&project)?.join("pv.yml"),
+        mode: ProjectMode::ResourceOnly,
+    })?;
+    assert!(database.recent_jobs()?.is_empty());
+    let refused = run_hook_pv(&["link"], &project, &home)?;
+    assert_ne!(refused.code, Some(0));
+    assert_eq!(database.project_by_id(&linked.id)?, Some(linked));
+    assert!(database.recent_jobs()?.is_empty());
+    // Removing hooks from config still cannot bypass the linked Project's first-apply guard.
+    write_file(&project.join("pv.yml"), "serve: false\n")?;
+    let edited = run_hook_pv(&["link"], &project, &home)?;
+    assert_ne!(edited.code, Some(0));
+    let skipped = run_hook_pv(&["link", "--skip-hooks"], &project, &home)?;
+    assert_eq!(skipped.code, Some(0));
+    assert!(!project.join("unexpected-prepare").exists());
+    assert!(!project.join("unexpected-setup").exists());
+    hook_snapshot(directory.path(), || {
+        assert_debug_snapshot!((refused, edited, skipped))
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn project_link_runs_setup_after_its_project_succeeds_in_a_failed_job() -> Result<()> {
+    let directory = tempdir()?;
+    let mut outputs = Vec::new();
+    for (name, status) in [
+        ("rendered", ProjectEnvObservedStatus::Rendered),
+        ("warning", ProjectEnvObservedStatus::Warning),
+    ] {
+        let home = directory.path().join(name).join("home");
+        let project = directory.path().join(name).join("acme");
+        create_dir(&project)?;
+        write_file(
+            &project.join("pv.yml"),
+            "serve: false\nhooks:\n  setup:\n    - test -f .env && touch setup-ran\n",
+        )?;
+        let paths = PvPaths::for_home(&home);
+        let server =
+            fake_link_reconciliation(&paths, &project, LinkJobOutcome::FailedWithProject(status))?;
+        let output = run_hook_pv(&["link"], &project, &home)?;
+        server
+            .join()
+            .map_err(|_| anyhow::anyhow!("fixture daemon panicked"))??;
+        assert_eq!(output.code, Some(0));
+        assert!(project.join("setup-ran").exists());
+        outputs.push(output);
+    }
+    hook_snapshot(directory.path(), || assert_debug_snapshot!(outputs));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn project_link_does_not_recreate_state_pruned_during_hooks() -> Result<()> {
+    let directory = tempdir()?;
+    let mut outputs = Vec::new();
+    for (phase, exit_status) in [("prepare", 0), ("setup", 0), ("prepare", 7)] {
+        let root = directory.path().join(format!("{phase}-{exit_status}"));
+        let home = root.join("home");
+        let project = root.join("acme");
+        create_dir(&project)?;
+        write_file(
+            &project.join("pv.yml"),
+            &format!(
+                "serve: false\nhooks:\n  {phase}:\n    - touch started; count=0; while test ! -f continue && test \"$count\" -lt 1500; do sleep 0.1; count=$((count + 1)); done; exit {exit_status}\n"
+            ),
+        )?;
+        let paths = PvPaths::for_home(&home);
+        Database::open(&paths)?;
+        if exit_status != 0 {
+            assert_eq!(
+                run_hook_pv(&["link", "--skip-hooks"], &project, &home)?.code,
+                Some(0)
+            );
+        }
+        let server = if phase == "setup" {
+            Some(fake_link_reconciliation(
+                &paths,
+                &project,
+                LinkJobOutcome::Succeeded,
+            )?)
+        } else {
+            None
+        };
+        let task_home = home.clone();
+        let task_project = project.clone();
+        let command = thread::Builder::new()
+            .name("link-prune-fixture".to_string())
+            .spawn(move || run_hook_pv(&["link"], &task_project, &task_home))?;
+        wait_for_hook_fixture(&project.join("started"))?;
+        let exclusive = RuntimeLifecycleLock::acquire_exclusive(&paths)?;
+        state::fs::delete_dir_all(paths.root())?;
+        drop(exclusive);
+        write_file(&project.join("continue"), "go")?;
+        let output = command
+            .join()
+            .map_err(|_| anyhow::anyhow!("fixture CLI panicked"))??;
+        if let Some(server) = server {
+            server
+                .join()
+                .map_err(|_| anyhow::anyhow!("fixture daemon panicked"))??;
+        }
+        assert_ne!(output.code, Some(0));
+        assert!(!paths.root().exists());
+        outputs.push(output);
+    }
+    hook_snapshot(directory.path(), || assert_debug_snapshot!(outputs));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
 fn run_hook_pv(args: &[&str], project: &Utf8Path, home: &Utf8Path) -> Result<CommandOutput> {
     let output = Command::cargo_bin("pv")?
         .env("HOME", home)
@@ -993,6 +1140,8 @@ fn hook_snapshot(directory: &Utf8Path, assert: impl FnOnce()) {
 enum LinkJobOutcome {
     Succeeded,
     Failed,
+    FailedWithProject(ProjectEnvObservedStatus),
+    StaleProject,
     Uncovered,
     Running,
 }
@@ -1024,15 +1173,33 @@ fn fake_link_reconciliation(
         BufReader::new(socket.try_clone()?).read_line(&mut line)?;
         let request: Value = serde_json::from_str(&line)?;
         writeln!(socket, "{}", json!({ "type": "response", "protocol_version": request["protocol_version"], "status": "accepted", "message": "reconciliation already queued or running", "job_id": job.id }))?;
+        socket.flush()?;
+        drop(socket);
+        drop(listener);
+        state::fs::remove_file_if_exists(&paths.daemon_socket())?;
         if !matches!(outcome, LinkJobOutcome::Running) {
             thread::sleep(Duration::from_millis(50));
             let mut database = Database::open(&paths)?;
             let linked = database.project_by_path(&state::fs::canonicalize(&project)?)?.ok_or_else(|| anyhow::anyhow!("Project not recorded before reconciliation"))?;
             match outcome {
                 LinkJobOutcome::Failed => database.fail_job(&job.id, "fixture reconciliation failed")?,
+                LinkJobOutcome::FailedWithProject(status) => {
+                    write_file(&project.join(".env"), "READY=yes\n")?;
+                    database.record_project_env_observed_snapshot(&linked.id, status, None, &[])?;
+                    database.fail_job(&job.id, "fixture Gateway failed after Project apply")?;
+                }
+                LinkJobOutcome::StaleProject => {
+                    database.record_project_env_observed_snapshot(&linked.id, ProjectEnvObservedStatus::Rendered, None, &[])?;
+                    state::testing::transaction(&mut database, |transaction| {
+                        transaction.execute("UPDATE observed_states SET observed_at = ?1 WHERE subject_id = ?2", [job.started_at.as_str(), linked.id.as_str()])?;
+                        Ok(())
+                    })?;
+                    database.complete_job(&job.id, "unrelated Project reconciled")?;
+                }
                 LinkJobOutcome::Succeeded => {
                     write_file(&project.join(".env"), "READY=yes\n")?;
-                    database.complete_job_with_coverage(&job.id, "reconciled", &[JobDiagnosticSubject::Project { id: linked.id }])?;
+                    database.record_project_env_observed_snapshot(&linked.id, ProjectEnvObservedStatus::Rendered, None, &[])?;
+                    database.complete_job(&job.id, "reconciled")?;
                 }
                 LinkJobOutcome::Uncovered => database.complete_job(&job.id, "unrelated Project reconciled")?,
                 LinkJobOutcome::Running => {}

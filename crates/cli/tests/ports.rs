@@ -1021,6 +1021,9 @@ fn with_normalized_tempdir(tempdir: &Utf8Path, assertion: impl FnOnce()) {
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
-    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
+    settings.add_filter(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
+        "<timestamp>",
+    );
     settings.bind(assertion);
 }

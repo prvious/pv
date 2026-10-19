@@ -1,0 +1,27 @@
+---
+source: it/cli.rs
+expression: outputs
+---
+[
+    CommandOutput {
+        code: Some(
+            1,
+        ),
+        stdout: "Running prepare: touch started; count=0; while test ! -f continue && test \"$count\" -lt 1500; do sleep 0.1; count=$((count + 1)); done; exit 0\n",
+        stderr: "error: PV database disappeared while Project hooks were running, possibly after `pv uninstall --prune`; aborting without recreating PV state\n",
+    },
+    CommandOutput {
+        code: Some(
+            1,
+        ),
+        stdout: "Linked acme (resource-only) -> <tempdir>/setup-0/acme\nQueued reconciliation job_000001 for acme\nWaiting for reconciliation job_000001 before setup\nRunning setup: touch started; count=0; while test ! -f continue && test \"$count\" -lt 1500; do sleep 0.1; count=$((count + 1)); done; exit 0\n",
+        stderr: "error: PV database disappeared while Project hooks were running, possibly after `pv uninstall --prune`; aborting without recreating PV state\n",
+    },
+    CommandOutput {
+        code: Some(
+            1,
+        ),
+        stdout: "Running prepare: touch started; count=0; while test ! -f continue && test \"$count\" -lt 1500; do sleep 0.1; count=$((count + 1)); done; exit 7\n",
+        stderr: "error: prepare: hook command `touch started; count=0; while test ! -f continue && test \"$count\" -lt 1500; do sleep 0.1; count=$((count + 1)); done; exit 7` exited with exit status: 7; cannot resume after hooks: PV database disappeared while Project hooks were running, possibly after `pv uninstall --prune`; aborting without recreating PV state\n",
+    },
+]
