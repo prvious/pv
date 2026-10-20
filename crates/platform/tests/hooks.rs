@@ -1,6 +1,10 @@
 #![cfg(unix)]
 
+#[cfg(target_os = "macos")]
+use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "macos")]
+use std::thread;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -10,6 +14,8 @@ use insta::{assert_debug_snapshot, assert_snapshot};
 use platform::hooks::{
     HookCommandContext, HookEnvironment, HookError, HookOutput, capture_environment, run_commands,
 };
+#[cfg(target_os = "macos")]
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 #[cfg(target_os = "linux")]
 use procfs::{ProcError, process::Process};
 use state::{PvPaths, fs};
@@ -233,6 +239,139 @@ async fn hook_commands_fail_fast_and_announce_in_order() -> Result<()> {
         error.to_string(),
         fs::read_to_string(&temporary.path().join("order"))?
     ));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "the PTY regression reexecutes its own test binary with an isolated fixture home"
+)]
+fn hook_capture_keeps_real_zsh_inside_its_group_under_a_terminal() -> Result<()> {
+    const CHILD_HOME: &str = "PV_HOOK_PTY_CHILD_HOME";
+    if let Some(home) = std::env::var_os(CHILD_HOME) {
+        let home = Utf8PathBuf::from_path_buf(home.into())
+            .map_err(|_| anyhow!("non-UTF-8 fixture home"))?;
+        return tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                let (sender, mut shutdown) = watch::channel(false);
+                let cancel = async {
+                    let shell = wait_for_pid(&home.join("shell.pid")).await?;
+                    let descendant = wait_for_pid(&home.join("descendant.pid")).await?;
+                    sender.send(true)?;
+                    Ok::<_, anyhow::Error>((shell, descendant))
+                };
+                let (result, processes) = timeout(Duration::from_secs(5), async {
+                    tokio::join!(
+                        capture_environment(
+                            Utf8Path::new("/bin/zsh").as_std_path(),
+                            &home,
+                            &home,
+                            &mut shutdown
+                        ),
+                        cancel
+                    )
+                })
+                .await?;
+                assert!(matches!(result, Err(HookError::Interrupted)));
+                let (shell, descendant) = processes?;
+                assert_stopped(shell).await?;
+                assert_stopped(descendant).await?;
+                Ok(())
+            });
+    }
+
+    let temporary = tempdir()?;
+    fs::write_sensitive_file(&temporary.path().join(".zshenv"), "unsetopt GLOBAL_RCS\n")?;
+    fs::write_sensitive_file(
+        &temporary.path().join(".zshrc"),
+        "/bin/sleep 150 & descendant=$!\nprintf '%s' \"$$\" > \"$HOME/shell.tmp\"\nmv \"$HOME/shell.tmp\" \"$HOME/shell.pid\"\nprintf '%s' \"$descendant\" > \"$HOME/descendant.tmp\"\nmv \"$HOME/descendant.tmp\" \"$HOME/descendant.pid\"\nwait \"$descendant\"\n",
+    )?;
+    let pair = native_pty_system().openpty(PtySize::default())?;
+    let mut command = CommandBuilder::new(std::env::current_exe()?);
+    command.args([
+        "--exact",
+        "hook_capture_keeps_real_zsh_inside_its_group_under_a_terminal",
+        "--nocapture",
+    ]);
+    command.env(CHILD_HOME, temporary.path().as_str());
+    command.env("HOME", temporary.path().as_str());
+    command.env("ZDOTDIR", temporary.path().as_str());
+    let mut child = pair.slave.spawn_command(command)?;
+    drop(pair.slave);
+    // The PTY must be drained while the child runs, including while it exits.
+    let mut reader = pair.master.try_clone_reader()?;
+    let output = thread::spawn(move || {
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let outcome = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Err(error) => break Err(error.into()),
+            Ok(None) if Instant::now() >= deadline => {
+                break Err(anyhow!("PTY capture regression timed out"));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    if outcome.is_err() {
+        child.kill()?;
+        child.wait()?;
+    }
+    let output = output
+        .join()
+        .map_err(|_| anyhow!("PTY reader panicked"))??;
+    assert!(outcome?.success(), "{}", String::from_utf8_lossy(&output));
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[tokio::test]
+async fn hook_commands_follow_the_directory_when_it_moves_between_items() -> Result<()> {
+    let temporary = tempdir()?;
+    let paths = PvPaths::for_home(temporary.path());
+    let original = temporary.path().join("original");
+    let moved = temporary.path().join("moved");
+    fs::ensure_user_dir(&original)?;
+    let (_sender, mut shutdown) = watch::channel(false);
+    let environment = test_environment(temporary.path(), &mut shutdown).await?;
+    let log = temporary.path().join("hook.log");
+    let context = HookCommandContext {
+        paths: &paths,
+        project_path: &original,
+        source_path: None,
+        environment: &environment,
+        output: HookOutput::Log(&log),
+    };
+    let commands = vec![
+        "printf '%s' \"$$\" > ready.tmp; mv ready.tmp ready; remaining=150; while [ ! -f release ] && [ \"$remaining\" -gt 0 ]; do /bin/sleep 1; remaining=$((remaining - 1)); done; test -f release".to_string(),
+        "pwd > completed".to_string(),
+    ];
+    let running = run_commands(&context, "prepare", &commands, &mut shutdown, |_| Ok(()));
+    tokio::pin!(running);
+    let ready_path = original.join("ready");
+    tokio::select! {
+        result = &mut running => {
+            result?;
+            return Err(anyhow!("hook list finished before the move"));
+        }
+        ready = wait_for_pid(&ready_path) => { ready?; }
+    }
+    fs::rename(&original, &moved)?;
+    fs::write_sensitive_file(&moved.join("release"), "")?;
+    running.await?;
+    assert_eq!(
+        fs::canonicalize(Utf8Path::new(
+            fs::read_to_string(&moved.join("completed"))?.trim()
+        ))?,
+        fs::canonicalize(&moved)?
+    );
+    assert_eq!(fs::read_to_string(&log)?.lines().count(), 2);
     Ok(())
 }
 

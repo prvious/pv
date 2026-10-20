@@ -32,7 +32,7 @@ raunch = { workspace = true }
 security-framework = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true, features = ["event"] }
+nix = { workspace = true, features = ["event", "ioctl"] }
 rustix = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -44,4 +44,5 @@ camino-tempfile = { workspace = true }
 insta = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
+portable-pty = { workspace = true }
 pv-fake = { path = "../pv-fake" }

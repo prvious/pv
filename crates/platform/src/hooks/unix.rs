@@ -1,15 +1,18 @@
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io::{self, Write};
+use std::os::fd::AsRawFd;
 use std::os::unix::ffi::OsStringExt;
 use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
 use camino::Utf8Path;
+use nix::libc;
 use nix::unistd::{Uid, User};
 #[cfg(target_os = "linux")]
 use procfs::{ProcError, ProcResult, process::all_processes_with_root};
+use rustix::fs::{Mode, OFlags, open};
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use rustix::process::test_kill_process_group;
 use rustix::process::{Pid, Signal, kill_process_group};
@@ -28,6 +31,8 @@ const END_MARKER: &[u8] = b"__PV_HOOK_ENV_END__\0";
 const CAPTURE_SCRIPT: &str = "cd \"$PV_HOOK_PROJECT\" && printf '__PV_HOOK_ENV_START__\\0' && /usr/bin/env -0 && printf '__PV_HOOK_ENV_END__\\0'";
 // The pipe also stops the group if PV is killed without running Rust destructors.
 const GROUP_ANCHOR: &str = "while IFS= read -r _line; do :; done\nkill -KILL 0\n";
+
+nix::ioctl_none_bad!(detach_terminal, libc::TIOCNOTTY);
 
 #[expect(
     clippy::disallowed_types,
@@ -61,6 +66,24 @@ pub async fn capture_environment(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // SAFETY: This child-only callback uses only open/ioctl/close and errno access, without
+    // allocation or locks. The child is not its session leader, so TIOCNOTTY detaches only it
+    // from the inherited terminal; the descriptor remains owned until the ioctl finishes.
+    unsafe {
+        command.pre_exec(|| {
+            let terminal = match open(
+                c"/dev/tty",
+                OFlags::RDONLY | OFlags::NOCTTY | OFlags::CLOEXEC,
+                Mode::empty(),
+            ) {
+                Ok(terminal) => terminal,
+                Err(rustix::io::Errno::NXIO) => return Ok(()),
+                Err(error) => return Err(error.into()),
+            };
+            detach_terminal(terminal.as_raw_fd()).map_err(io::Error::from)?;
+            Ok(())
+        });
+    }
     let mut process = HookProcess::spawn(&mut command)
         .map_err(|error| environment_error(error.to_string(), &[]))?;
     let child = process.child_mut()?;
@@ -94,7 +117,7 @@ pub async fn capture_environment(
         Err(HookError::Environment { reason, .. }) => Err(environment_error(reason, &stderr_bytes)),
         Err(error) => Err(environment_error(error.to_string(), &stderr_bytes)),
     };
-    finish_cleanup(result, cleanup)
+    finish_cleanup(result, cleanup, *shutdown.borrow())
 }
 
 fn missing_output() -> io::Error {
@@ -215,6 +238,11 @@ pub async fn run_commands(
     shutdown: &mut watch::Receiver<bool>,
     mut announce: impl FnMut(&str) -> io::Result<()>,
 ) -> Result<(), HookError> {
+    let directory = state::fs::open_read_file(context.project_path)?.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::NotFound, "hook Project directory is missing")
+    })?;
+    // Keep the directory itself across renames, and its descriptor away from stdio slots.
+    let directory = rustix::io::fcntl_dupfd_cloexec(&directory, 3).map_err(io::Error::from)?;
     let mut log = match context.output {
         HookOutput::Terminal => None,
         HookOutput::Log(path) => {
@@ -239,11 +267,19 @@ pub async fn run_commands(
         let mut command = HookCommand::new("/bin/sh");
         command
             .args(["-c", script])
-            .current_dir(context.project_path)
             .env_clear()
             .envs(&context.environment.values)
             .envs(overlay.iter().cloned())
             .stdin(Stdio::null());
+        let command_directory =
+            rustix::io::fcntl_dupfd_cloexec(&directory, 3).map_err(io::Error::from)?;
+        // SAFETY: The child-only callback performs just fchdir on its owned live descriptor,
+        // with no allocation or locks. It changes no parent state, and exec closes the descriptor.
+        unsafe {
+            command.pre_exec(move || {
+                rustix::process::fchdir(&command_directory).map_err(io::Error::from)
+            });
+        }
         if let Some(source) = context.source_path {
             command.env("PV_SOURCE_PATH", source);
         } else {
@@ -272,7 +308,7 @@ pub async fn run_commands(
                 })
             }
         });
-        finish_cleanup(result, cleanup)?;
+        finish_cleanup(result, cleanup, *shutdown.borrow())?;
     }
     Ok(())
 }
@@ -280,7 +316,15 @@ pub async fn run_commands(
 fn finish_cleanup<T>(
     result: Result<T, HookError>,
     cleanup: io::Result<()>,
+    interrupted: bool,
 ) -> Result<T, HookError> {
+    let result = result.and_then(|value| {
+        if interrupted {
+            Err(HookError::Interrupted)
+        } else {
+            Ok(value)
+        }
+    });
     match (result, cleanup) {
         (result, Ok(())) => result,
         (Ok(_), Err(error)) => Err(error.into()),
@@ -592,13 +636,28 @@ mod tests {
             command: "exit 7".to_string(),
             status: "exit status: 7".to_string(),
         };
-        let result: Result<(), HookError> =
-            finish_cleanup(Err(failure), Err(io::Error::other("could not stop group")));
+        let result: Result<(), HookError> = finish_cleanup(
+            Err(failure),
+            Err(io::Error::other("could not stop group")),
+            false,
+        );
         let Err(error @ HookError::Cleanup { .. }) = result else {
             anyhow::bail!("expected original and cleanup failures");
         };
         insta::assert_snapshot!(error.to_string());
         Ok(())
+    }
+
+    #[test]
+    fn interruption_during_final_cleanup_cannot_report_success() {
+        assert!(matches!(
+            finish_cleanup(Ok(()), Ok(()), true),
+            Err(HookError::Interrupted)
+        ));
+        assert!(matches!(
+            finish_cleanup(Ok(()), Err(io::Error::other("could not stop group")), true),
+            Err(HookError::Cleanup { original, .. }) if matches!(*original, HookError::Interrupted)
+        ));
     }
 
     #[tokio::test]
