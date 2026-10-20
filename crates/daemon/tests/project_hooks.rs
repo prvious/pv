@@ -203,7 +203,11 @@ async fn setup_runs_after_own_apply_when_an_unrelated_project_fails() -> Result<
         let project = Database::open(&fixture.paths)?
             .project_by_path(&path)?
             .ok_or_else(|| anyhow!("ready Project missing"))?;
-        assert!(project.first_reconciled_at.is_some());
+        assert!(
+            !Database::open(&fixture.paths)?
+                .held_project_ids()?
+                .contains(&project.id)
+        );
         eventually(|| {
             Ok(fixture
                 .hook_jobs()?
