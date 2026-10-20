@@ -65,7 +65,7 @@ hooks:
 | D7 | Built-in worktree env copy | Kept. It runs first, then `prepare`, which may change or replace the copied file (owner, 2026-10-16) |
 | D8 | Shell for the commands | `/bin/sh -c`. The login shell only supplies variables, so one committed `pv.yml` works for zsh, bash and fish users alike (owner, 2026-10-16) |
 | D9 | What is captured | The whole environment, not only `PATH`. Tools rely on variables such as `COMPOSER_AUTH` and `PNPM_HOME` (owner, 2026-10-16) |
-| D10 | `pv link` with setup hooks | Waits for the Project's reconciliation, then runs `setup` in the terminal (owner, 2026-10-18) |
+| D10 | `pv link` with setup hooks | Waits for the accepted reconciliation job to succeed, then runs `setup` in the terminal (owner, 2026-10-18) |
 | D11 | Reporting background runs | A job record per run, plus a log file per subject, replaced at each run. Completed records provide history and failures, not idempotency tracking; queued/running rows exclude concurrent foreground hooks (owner, 2026-10-18) |
 | D12 | Main checkout path for worktree hooks | `PV_SOURCE_PATH` (owner, 2026-10-18) |
 | D13 | A failed `prepare` on a discovered worktree | Remembered in daemon memory; retried after the daemon restarts. Not an opt-out, because `pv link` on an opted-out worktree would make it an ordinary Project (owner, 2026-10-18) |
@@ -89,7 +89,7 @@ These amendments override the original design where they differ.
 - **A5. Lifecycle admission.** `pv link` holds its shared runtime lifecycle admission all the time, except while hook commands run:
   - Release it right before a hook list starts and reacquire it right after.
   - If reacquiring fails (`pv daemon:disable` or `pv uninstall` took it), stop without recording state or contacting the daemon, and exit non-zero. Also abort before opening the database or IPC if `pv.db` existed at command start but disappeared during hooks, as after `uninstall --prune`.
-- **A6. Waiting on a coalesced job.** `pv link` waits on the job ID in the daemon's accepted response. That is either its own new job or the existing queued job it was merged into (`reconciliation already queued or running`). It reads that job's record in `pv.db` until the job finishes, then checks its rendered/warning env observation is newer than the job start. Project success permits setup even if the job failed; print that failure as a warning. Print the accepted job ID and keep waiting through daemon restarts. No protocol change, and no reuse of the streaming setup client.
+- **A6. Waiting on a coalesced job.** `pv link` waits on the job ID in the daemon's accepted response. That is either its own new job or the existing queued job it was merged into (`reconciliation already queued or running`). It reads that job's record in `pv.db` until the job finishes, and runs setup only if that accepted job succeeds. If it fails, skip setup, show the job's error and say to run `pv link` again once it is fixed. Print the accepted job ID and keep waiting through daemon restarts. No protocol change, and no reuse of the streaming setup client.
 - **A7. Two `pv link` runs at once.** Not handled. Two `pv link` runs in one folder at once is the same as running `composer install` twice by hand. A3 covers daemon-versus-terminal.
 - **A8. Hook logs.**
   - One log per subject, replaced at each run: `~/.pv/logs/hooks/project-<project-id>.log`, or `~/.pv/logs/hooks/worktree-<source-project-id>-<worktree-id>.log` for a `prepare` before linking.
@@ -116,7 +116,7 @@ A discovered worktree uses only its own `pv.yml`, as today. Its hooks are the on
 
 | Event | `prepare` | `setup` |
 |---|---|---|
-| `pv link`, first or again | Yes, in the terminal, before PV records the Project | Yes, in the terminal, after the Project's reconciliation succeeds |
+| `pv link`, first or again | Yes, in the terminal, before PV records the Project | Yes, in the terminal, after the accepted reconciliation job succeeds |
 | `pv link --skip-hooks` | No terminal hooks | No terminal hooks; daemon setup still runs on a discovered Project's first-success transition |
 | Discovery links a new worktree | Yes, in the daemon, after the env copy and before linking | Yes, in the daemon, after the Project's first successful reconciliation |
 | Editing `pv.yml`, any reconciliation, daemon start, `pv setup`, `pv update`, `git worktree move` | No | No |
@@ -186,8 +186,8 @@ Known limit: tools that load only after the first prompt (zinit turbo mode, lazy
    - On a relink, the existing record is left as it was and no reconciliation is requested.
 3. **Record desired state and request reconciliation,** as today.
 4. **Run `setup`,** if the Project has a `setup` list and `--skip-hooks` wasn't passed:
-   - Wait for the job ID in the daemon's accepted response by reading its record in `pv.db` until it finishes. The ID may name a new job or an existing queued/running reconciliation into which the request was coalesced. Print the accepted job ID while waiting, and keep waiting through daemon restarts. Then check the Project's own env observed state: it must be rendered or warning and newer than that job's start. This uses the existing protocol and does not reuse the streaming setup client.
-   - If the Project's own reconciliation didn't succeed in that job, don't run `setup`. Exit non-zero and say why. If the Project succeeded but the job as a whole failed, print the job failure as a warning and run `setup`.
+   - Wait for the job ID in the daemon's accepted response by reading its record in `pv.db` until it finishes. The ID may name a new job or an existing queued/running reconciliation into which the request was coalesced. Print the accepted job ID while waiting, and keep waiting through daemon restarts. Run setup only when that accepted job finishes successfully. This uses the existing protocol and does not reuse the streaming setup client.
+   - If the accepted job fails, skip `setup`, exit non-zero, show the job's error and say to run `pv link` again once it is fixed. No per-Project outcome recording is added.
    - If the daemon isn't running (including before `pv setup`), skip `setup`. Warn that it runs when `pv link` is run again after `pv setup`, and exit zero, matching how `pv link` behaves before setup today.
    - Otherwise run `setup` in the terminal. On failure, exit non-zero. The Project stays linked with its allocations and env block.
 5. **Record the run as a `hooks` job** for the Project when it finishes (next section). A `prepare` failure on a first link has no Project to record against, so it appears only in the terminal.
@@ -311,7 +311,7 @@ For the stack, on the owner's laptop with many worktrees:
 ## Acceptance Criteria
 
 - `hooks.prepare` and `hooks.setup` validate as described, and `pv php:use` keeps them.
-- `pv link` runs `prepare` before recording the Project and `setup` after the Project's reconciliation succeeds, live in the terminal. It exits non-zero on a hook failure, and `--skip-hooks` skips both lists.
+- `pv link` runs `prepare` before recording the Project and `setup` only after its accepted reconciliation job succeeds, live in the terminal. If that job fails, it skips setup, reports the job error and tells the user to run `pv link` again once it is fixed. It exits non-zero on a hook failure, and `--skip-hooks` skips both lists.
 - `pv link` refuses terminal hooks for a discovered Project whose `first_reconciled_at` is null; `--skip-hooks` still links and permits automatic daemon setup.
 - First-success finalization and the queued daemon setup job commit atomically; restart reports an interrupted setup even if the daemon died before handing it to the runner.
 - `pv link` without setup hooks still returns without waiting for reconciliation.

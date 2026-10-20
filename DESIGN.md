@@ -476,7 +476,7 @@ Commands that change desired state write that state even when the daemon is not 
 
 After writing desired state, the command requests reconciliation. If the daemon is not running, the command warns that reconciliation is pending and exits successfully. The command exits non-zero when recording desired state fails or input is invalid. `pv link` also exits non-zero when hooks fail or its required reconciliation fails, as described in Project Hooks.
 
-Desired-state commands wait for reconciliation only when their contract implies readiness, such as `pv setup` and explicit install/update commands. `pv unlink` and `pv link` without active setup hooks write desired state, request reconciliation, and return after the daemon accepts the job. With setup hooks, `pv link` waits for the accepted reconciliation job and checks the Project outcome before running setup in the terminal.
+Desired-state commands wait for reconciliation only when their contract implies readiness, such as `pv setup` and explicit install/update commands. `pv unlink` and `pv link` without active setup hooks write desired state, request reconciliation, and return after the daemon accepts the job. With setup hooks, `pv link` waits for the accepted reconciliation job to succeed before running setup in the terminal.
 
 Non-waiting commands such as `pv link --skip-hooks` exit zero once desired state is recorded and the daemon has accepted reconciliation, even if that reconciliation later fails. Waiting commands such as setup, install, update, and restart exit non-zero when their daemon job fails.
 
@@ -1389,7 +1389,7 @@ PV does not choose package manager or framework commands to run. It runs only th
 
 PV v1 does not diagnose Laravel application state, such as missing `APP_KEY`.
 
-Without setup hooks, the command succeeds after recording desired state and submitting reconciliation. With setup hooks, it waits for the accepted job and the Project's own successful reconciliation, then runs setup. Hook failure or missing Project success exits non-zero; an enclosing job failure warns but permits setup when this Project's env observation is rendered or warning and newer than the job start. A prepare failure records no new Project and leaves an existing Project unchanged; a setup failure leaves the Project linked with its allocations and env block. A resource-only Project reconciles its resources, allocations, and env without a Gateway route.
+Without setup hooks, the command succeeds after recording desired state and submitting reconciliation. With setup hooks, it waits for the accepted reconciliation job to succeed, then runs setup. If that job fails, it skips setup, exits non-zero, shows the job's error and says to run `pv link` again once it is fixed. Hook failure also exits non-zero. A prepare failure records no new Project and leaves an existing Project unchanged; a setup failure leaves the Project linked with its allocations and env block. A resource-only Project reconciles its resources, allocations, and env without a Gateway route.
 
 `pv link` can run before `pv setup`. It runs prepare, records desired state, and warns that reconciliation is pending. Without a running daemon, setup hooks are skipped with a warning to run `pv link` again after `pv setup`; the command exits zero and records no deferred-hook marker. `--skip-hooks` skips both lists.
 
@@ -1503,7 +1503,7 @@ A discovered worktree uses only its own `pv.yml`, as today. Its hooks are the on
 
 | Event | `prepare` | `setup` |
 |---|---|---|
-| `pv link`, first or again | Yes, in the terminal, before PV records the Project | Yes, in the terminal, after the Project's reconciliation succeeds |
+| `pv link`, first or again | Yes, in the terminal, before PV records the Project | Yes, in the terminal, after the accepted reconciliation job succeeds |
 | `pv link --skip-hooks` | No terminal hooks | No terminal hooks; daemon setup still runs on a discovered Project's first-success transition |
 | Discovery links a new worktree | Yes, in the daemon, after the env copy and before linking | Yes, in the daemon, after the Project's first successful reconciliation |
 | Editing `pv.yml`, any reconciliation, daemon start, `pv setup`, `pv update`, `git worktree move` | No | No |
@@ -1573,8 +1573,8 @@ Known limit: tools that load only after the first prompt (zinit turbo mode, lazy
    - On a relink, the existing record is left as it was and no reconciliation is requested.
 3. **Record desired state and request reconciliation,** as today.
 4. **Run `setup`,** if the Project has a `setup` list and `--skip-hooks` wasn't passed:
-   - Wait for the job ID in the daemon's accepted response by reading its record in `pv.db` until it finishes. The ID may name a new job or an existing queued/running reconciliation into which the request was coalesced. Print the accepted job ID while waiting, and keep waiting through daemon restarts. Then check the Project's own env observed state: it must be rendered or warning and newer than that job's start. This uses the existing protocol and does not reuse the streaming setup client.
-   - If the Project's own reconciliation didn't succeed in that job, don't run `setup`. Exit non-zero and say why. If the Project succeeded but the job as a whole failed, print the job failure as a warning and run `setup`.
+   - Wait for the job ID in the daemon's accepted response by reading its record in `pv.db` until it finishes. The ID may name a new job or an existing queued/running reconciliation into which the request was coalesced. Print the accepted job ID while waiting, and keep waiting through daemon restarts. Run setup only when that accepted job finishes successfully. This uses the existing protocol and does not reuse the streaming setup client.
+   - If the accepted job fails, skip `setup`, exit non-zero, show the job's error and say to run `pv link` again once it is fixed. No per-Project outcome recording is added.
    - If the daemon isn't running (including before `pv setup`), skip `setup`. Warn that it runs when `pv link` is run again after `pv setup`, and exit zero, matching how `pv link` behaves before setup today.
    - Otherwise run `setup` in the terminal. On failure, exit non-zero. The Project stays linked with its allocations and env block.
 5. **Record the run as a `hooks` job** for the Project when it finishes (next section). A `prepare` failure on a first link has no Project to record against, so it appears only in the terminal.
