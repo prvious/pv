@@ -521,6 +521,7 @@ mod tests {
     use std::process::Stdio;
     use std::time::Duration;
 
+    use anyhow::Context;
     #[cfg(target_os = "linux")]
     use camino::Utf8Path;
     use camino_tempfile::tempdir;
@@ -532,7 +533,7 @@ mod tests {
     use super::linux_group_is_running;
     use super::{
         END_MARKER, HookCommand, HookError, HookProcess, STDERR_TAIL_LENGTH, finish_cleanup,
-        parse_environment, read_environment_output, read_stderr_tail,
+        group_is_running, parse_environment, read_environment_output, read_stderr_tail,
     };
 
     #[cfg(target_os = "linux")]
@@ -670,7 +671,7 @@ mod tests {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let mut process = HookProcess::spawn(&mut command)?;
+        let mut process = HookProcess::spawn(&mut command).context("spawn anchored command")?;
         timeout(Duration::from_secs(5), async {
             while !state::fs::path_entry_exists(&directory.path().join("pid"))? {
                 sleep(Duration::from_millis(10)).await;
@@ -679,8 +680,25 @@ mod tests {
         })
         .await??;
         process.anchor.stdin.take();
-        let status = timeout(Duration::from_secs(5), process.wait()).await??;
-        process.stop().await?;
+        let status = timeout(Duration::from_secs(5), process.wait())
+            .await
+            .context("wait for the command after owner-pipe closure")?
+            .context("read the command exit after owner-pipe closure")?;
+        // Verify the fallback itself stopped every member before parent cleanup can help.
+        // The unreaped anchor keeps the group identifier owned throughout this check.
+        timeout(Duration::from_secs(5), async {
+            while group_is_running(process.group)? {
+                sleep(Duration::from_millis(10)).await;
+            }
+            Ok::<_, io::Error>(())
+        })
+        .await
+        .context("wait for the anchor to stop its group")?
+        .context("inspect the anchor's group")?;
+        process
+            .stop()
+            .await
+            .context("reap the stopped anchor and command")?;
         assert!(!status.success());
         Ok(())
     }
