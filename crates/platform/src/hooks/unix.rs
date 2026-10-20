@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn cleanup_failure_after_success_remains_distinguishable() {
-        let result = finish_cleanup(Ok(()), Err(io::Error::other("could not stop group")));
+        let result = finish_cleanup(Ok(()), Err(io::Error::other("could not stop group")), false);
         assert!(matches!(result, Err(HookError::CleanupFailed(_))));
     }
 

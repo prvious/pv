@@ -591,8 +591,14 @@ async fn unlinking_a_source_stops_running_and_queued_hooks_for_its_children() ->
 #[tokio::test]
 async fn moving_a_worktree_and_restoring_its_id_does_not_interrupt_setup() -> Result<()> {
     let fixture = Fixture::new()?;
-    let setup = format!("touch started; {}; touch setup-done", hold_until("release"));
+    let setup = format!("touch started; {}", hold_until("release"));
     let path = fixture.worktree("moving", None, Some(&setup))?;
+    let config_path = path.join("pv.yml");
+    let configuration = state::fs::read_to_string(&config_path)?;
+    state::fs::write_sensitive_file(
+        &config_path,
+        &format!("{configuration}    - pwd > setup-directory; touch setup-done\n"),
+    )?;
     let daemon = fixture.start().await?;
     shutdown_after(daemon, &fixture.paths, async {
         file_exists(&path.join("started")).await?;
@@ -606,6 +612,10 @@ async fn moving_a_worktree_and_restoring_its_id_does_not_interrupt_setup() -> Re
         reconcile(&fixture.paths, "system").await?;
         state::fs::write_sensitive_file(&moved.join("release"), "")?;
         file_exists(&moved.join("setup-done")).await?;
+        assert_eq!(
+            state::fs::read_to_string(&moved.join("setup-directory"))?.trim(),
+            moved.as_str()
+        );
         eventually(|| {
             Ok(fixture
                 .hook_jobs()?
