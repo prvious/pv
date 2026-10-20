@@ -5106,7 +5106,10 @@ fn configure_read_connection(connection: &Connection) -> Result<(), StateError> 
 
 fn next_job_id(transaction: &Transaction<'_>) -> rusqlite::Result<String> {
     let next_number = transaction.query_row(
-        "UPDATE job_counters SET last_job_number = last_job_number + 1 RETURNING last_job_number",
+        "UPDATE job_counters SET last_job_number = MAX(last_job_number,
+             (SELECT COALESCE(MAX(CAST(SUBSTR(id, 5) AS INTEGER)), 0)
+              FROM jobs WHERE id GLOB 'job_[0-9]*')) + 1
+         RETURNING last_job_number",
         [],
         |row| row.get::<_, i64>(0),
     )?;
@@ -5136,8 +5139,23 @@ fn prune_old_jobs(transaction: &Transaction<'_>) -> rusqlite::Result<()> {
 }
 
 fn next_job_finished_sequence(transaction: &Transaction<'_>) -> rusqlite::Result<i64> {
+    // A rolled-back binary can finish jobs without the new sequence column. Those completions
+    // follow the sequenced history and must be admitted before this binary finishes another job.
+    transaction.execute(
+        "WITH completed AS (
+             SELECT id, ROW_NUMBER() OVER (ORDER BY finished_at, id) AS sequence
+             FROM jobs WHERE status != 'running' AND finished_sequence IS NULL
+         )
+         UPDATE jobs SET finished_sequence =
+             (SELECT last_finished_sequence FROM job_counters) +
+             (SELECT sequence FROM completed WHERE completed.id = jobs.id)
+         WHERE id IN (SELECT id FROM completed)",
+        [],
+    )?;
     transaction.query_row(
-        "UPDATE job_counters SET last_finished_sequence = last_finished_sequence + 1 RETURNING last_finished_sequence",
+        "UPDATE job_counters SET last_finished_sequence = MAX(last_finished_sequence,
+             (SELECT COALESCE(MAX(finished_sequence), 0) FROM jobs)) + 1
+         RETURNING last_finished_sequence",
         [],
         |row| row.get(0),
     )

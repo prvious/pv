@@ -176,6 +176,75 @@ fn job_completion_order_migrates_existing_history_and_resumes_both_counters() ->
 }
 
 #[test]
+fn job_ids_resume_after_a_rolled_back_binary_creates_jobs() -> Result<()> {
+    let temporary = tempdir()?;
+    let paths = PvPaths::for_home(temporary.path());
+    let mut database = Database::open(&paths)?;
+    let first = database.start_job("reconcile", "system")?;
+    database.complete_job(&first.id, "before rollback")?;
+    // The previous binary allocates from jobs and knows nothing about job_counters.
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch(
+            "INSERT INTO jobs (id, kind, scope, status, started_at)
+             SELECT PRINTF('job_%06d', COALESCE(MAX(CAST(SUBSTR(id, 5) AS INTEGER)), 0) + 1),
+                    'reconcile', 'system', 'running', '2026-01-01T00:00:00Z'
+             FROM jobs WHERE id GLOB 'job_[0-9]*';",
+        )
+    })?;
+    drop(database);
+    let mut database = Database::open(&paths)?;
+    let first_after_upgrade = database.start_job("reconcile", "system")?;
+    let second_after_upgrade = database.start_job("reconcile", "system")?;
+
+    assert_debug_snapshot!((first_after_upgrade.id, second_after_upgrade.id));
+    Ok(())
+}
+
+#[test]
+fn job_history_retains_failures_completed_by_a_rolled_back_binary() -> Result<()> {
+    let temporary = tempdir()?;
+    let paths = PvPaths::for_home(temporary.path());
+    let mut database = Database::open(&paths)?;
+    let mut oldest = None;
+    for _ in 0..99 {
+        let job = database.start_job("reconcile", "system")?;
+        database.complete_job(&job.id, "before rollback")?;
+        oldest.get_or_insert(job.id);
+    }
+    let rollback = database.start_job("reconcile", "system")?;
+    let pending = database.start_job("reconcile", "system")?;
+    // A previous-version completion leaves the new nullable column untouched.
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "UPDATE jobs SET status = 'failed', finished_at = '2026-01-01T00:00:00Z',
+             error = 'rollback failure' WHERE id = ?1",
+            [&rollback.id],
+        )?;
+        transaction.execute(
+            "INSERT INTO job_diagnostic_outcomes (job_id, subject_kind, subject_id, outcome)
+             VALUES (?1, 'system_reconciliation', '', 'failure')",
+            [&rollback.id],
+        )?;
+        Ok(())
+    })?;
+    drop(database);
+    let mut database = Database::open(&paths)?;
+    database.complete_job(&pending.id, "after re-upgrade")?;
+    let oldest = oldest.ok_or_else(|| anyhow!("missing oldest job"))?;
+    let retained = database
+        .job(&rollback.id)?
+        .map(|job| (job.id, job.status, job.error));
+
+    assert_debug_snapshot!((
+        retained,
+        database.job(&oldest)?.is_none(),
+        database.recent_jobs()?.len(),
+        database.unresolved_job_failures()?.len(),
+    ));
+    Ok(())
+}
+
+#[test]
 fn completing_older_jobs_does_not_reuse_a_pruned_job_id() -> Result<()> {
     let temporary = tempdir()?;
     let mut database = Database::open(&PvPaths::for_home(temporary.path()))?;
