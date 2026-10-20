@@ -212,10 +212,7 @@ postgres:
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
-    settings.add_filter(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
-        "<timestamp>",
-    );
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
     settings.add_filter(r#"id: "[a-z0-9]{10}""#, r#"id: "<project_id>""#);
     settings.bind(|| {
         assert_debug_snapshot!((initial_link, invalid_link, linked));

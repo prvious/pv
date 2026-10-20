@@ -2455,10 +2455,7 @@ fn assert_with_normalized_timestamps(
     snapshot: impl std::fmt::Debug,
 ) -> Result<()> {
     let mut settings = Settings::clone_current();
-    settings.add_filter(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
-        "<timestamp>",
-    );
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
     settings.add_filter(r"project:[a-z0-9]{10}", "project:<project_id>");
     settings.add_filter(r"projects/[a-z0-9]{10}/", "projects/<project_id>/");
     settings.add_filter(
@@ -2484,10 +2481,7 @@ fn assert_with_normalized_timestamps_and_tempdir(
     let mut settings = Settings::clone_current();
     settings.add_filter(tempdir.as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
-    settings.add_filter(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
-        "<timestamp>",
-    );
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
     settings.add_filter(r"project:[a-z0-9]{10}", "project:<project_id>");
     settings.add_filter(r"projects/[a-z0-9]{10}/", "projects/<project_id>/");
     settings.add_filter(

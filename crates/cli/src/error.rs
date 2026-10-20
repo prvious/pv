@@ -19,13 +19,10 @@ pub enum CliError {
     )]
     LinkDatabaseRemoved,
 
-    #[error("reconciliation {job_id} failed: {message}")]
-    LinkReconciliationFailed { job_id: String, message: String },
-
     #[error(
-        "reconciliation {job_id} did not successfully reconcile this Project; setup hooks were not run"
+        "reconciliation {job_id} failed: {message}\nSetup hooks were not run; run `pv link` again once the reconciliation error is fixed"
     )]
-    LinkProjectNotReconciled { job_id: String },
+    LinkReconciliationFailed { job_id: String, message: String },
 
     #[error("prompt cancelled")]
     PromptCancelled,

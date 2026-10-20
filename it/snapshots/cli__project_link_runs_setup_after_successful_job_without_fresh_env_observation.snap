@@ -1,0 +1,20 @@
+---
+source: it/cli.rs
+expression: outputs
+---
+[
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Linked acme (resource-only) -> <tempdir>/uncovered/acme\nQueued reconciliation job_000001 for acme\nWaiting for reconciliation job_000001 before setup\nRunning setup: printf setup > setup\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Linked acme (resource-only) -> <tempdir>/stale/acme\nQueued reconciliation job_000001 for acme\nWaiting for reconciliation job_000001 before setup\nRunning setup: printf setup > setup\n",
+        stderr: "",
+    },
+]

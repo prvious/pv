@@ -2,7 +2,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior, params,
@@ -964,24 +963,6 @@ impl Database {
             .transpose()
     }
 
-    /// Whether the Project has a successful env observation strictly newer than `started_at`.
-    pub fn project_env_succeeded_after(
-        &self,
-        project_id: &str,
-        started_at: &str,
-    ) -> Result<bool, StateError> {
-        self.project_env_observed_state(project_id)?
-            .filter(|state| {
-                matches!(
-                    state.status,
-                    ProjectEnvObservedStatus::Rendered | ProjectEnvObservedStatus::Warning
-                )
-            })
-            .map_or(Ok(false), |state| {
-                timestamp_is_after(&state.observed_at, started_at)
-            })
-    }
-
     pub fn unresolved_job_failures(&self) -> Result<Vec<UnresolvedJobFailure>, StateError> {
         let jobs = self.recent_jobs()?;
         let outcomes = self.job_diagnostic_outcomes()?;
@@ -1080,9 +1061,15 @@ impl Database {
                     && state.status == RuntimeObservedStatus::Running)
                     .then(|| state.observed_at.clone())
             }),
-            JobDiagnosticSubject::Project { id } => {
-                return self.project_env_succeeded_after(id, failure_at);
-            }
+            JobDiagnosticSubject::Project { id } => self
+                .project_env_observed_state(id)?
+                .filter(|state| {
+                    matches!(
+                        state.status,
+                        ProjectEnvObservedStatus::Rendered | ProjectEnvObservedStatus::Warning
+                    )
+                })
+                .map(|state| state.observed_at),
             JobDiagnosticSubject::Resource { name, track } => {
                 runtime_states.iter().find_map(|state| {
                     let matches_subject = matches!(
@@ -1105,9 +1092,7 @@ impl Database {
             | JobDiagnosticSubject::Other { .. } => None,
         };
 
-        observed_at.map_or(Ok(false), |observed_at| {
-            timestamp_is_after(&observed_at, failure_at)
-        })
+        Ok(observed_at.is_some_and(|observed_at| observed_at.as_str() > failure_at))
     }
 
     pub fn link_project(
@@ -5181,14 +5166,9 @@ fn insert_job_diagnostic_outcome(
     Ok(())
 }
 
-fn timestamp_is_after(observed_at: &str, baseline: &str) -> Result<bool, StateError> {
-    Ok(OffsetDateTime::parse(observed_at, &Rfc3339)? > OffsetDateTime::parse(baseline, &Rfc3339)?)
-}
-
 fn timestamp() -> Result<String, StateError> {
-    let format = time::macros::format_description!(
-        "[year]-[month]-[day]T[hour]:[minute]:[second].[subsecond digits:9]Z"
-    );
+    let format =
+        time::macros::format_description!("[year]-[month]-[day]T[hour]:[minute]:[second]Z");
 
-    Ok(OffsetDateTime::now_utc().format(format)?)
+    Ok(time::OffsetDateTime::now_utc().format(format)?)
 }

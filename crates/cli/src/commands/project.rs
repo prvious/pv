@@ -164,7 +164,7 @@ pub(crate) fn link(
         Ok(job) if hooks_enabled && !config_file.config.hooks.setup.is_empty() => {
             if let Some(job) = job {
                 hooks_attempted = true;
-                match hook_run.wait_for_reconciliation(&job.id, &result.project, streams) {
+                match hook_run.wait_for_reconciliation(&job.id, streams) {
                     Err(error) => Err(error),
                     Ok(()) => project_hooks::run_with_admission(
                         &mut hook_run,

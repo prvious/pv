@@ -453,10 +453,7 @@ fn assert_mysql_snapshot(
 ) -> Result<()> {
     let mut settings = Settings::clone_current();
 
-    settings.add_filter(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
-        "<timestamp>",
-    );
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
     settings.add_filter(&regex_literal(tempdir.as_str()), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.add_filter(

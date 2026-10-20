@@ -96,27 +96,22 @@ impl<'a> LinkHookRun<'a> {
     pub(super) fn wait_for_reconciliation(
         &self,
         job_id: &str,
-        project: &ProjectRecord,
         streams: &mut Streams<'_>,
     ) -> Result<(), ExecuteError> {
         streams
             .out
             .line(&format!("Waiting for reconciliation {job_id} before setup"))?;
         streams.out.writer().flush()?;
-        let warning = self.runtime.block_on(async {
+        self.runtime.block_on(async {
             tokio::select! {
                 biased;
                 interrupt = tokio::signal::ctrl_c() => {
                     interrupt?;
                     Err(ExecuteError::ProjectHook { phase: "setup", source: HookError::Interrupted })
                 }
-                result = wait_for_project_job(self.paths, job_id, &project.id) => result,
+                result = wait_for_reconciliation_job(self.paths, job_id) => result,
             }
-        })?;
-        if let Some(warning) = warning {
-            streams.err.warning(&warning)?;
-        }
-        Ok(())
+        })
     }
 
     pub(super) fn request_reconciliation(
@@ -184,11 +179,7 @@ pub(super) fn run_with_admission(
     Ok(result)
 }
 
-async fn wait_for_project_job(
-    paths: &PvPaths,
-    job_id: &str,
-    project_id: &str,
-) -> Result<Option<String>, ExecuteError> {
+async fn wait_for_reconciliation_job(paths: &PvPaths, job_id: &str) -> Result<(), ExecuteError> {
     let database = Database::open(paths)?;
     loop {
         let job = database
@@ -196,29 +187,17 @@ async fn wait_for_project_job(
             .ok_or_else(|| StateError::JobNotFound {
                 id: job_id.to_string(),
             })?;
-        if job.status == JobStatus::Running {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            continue;
-        }
-        let project_succeeded =
-            database.project_env_succeeded_after(project_id, &job.started_at)?;
-        if project_succeeded {
-            return Ok((job.status == JobStatus::Failed).then(|| format!(
-                "Reconciliation {job_id} failed: {}; this Project reconciled successfully, continuing with setup",
-                job.error.unwrap_or_else(|| "unknown failure".to_string())
-            )));
-        }
-        return Err(if job.status == JobStatus::Failed {
-            CliError::LinkReconciliationFailed {
-                job_id: job_id.to_string(),
-                message: job.error.unwrap_or_else(|| "unknown failure".to_string()),
-            }
-        } else {
-            CliError::LinkProjectNotReconciled {
-                job_id: job_id.to_string(),
+        match job.status {
+            JobStatus::Running => tokio::time::sleep(Duration::from_millis(100)).await,
+            JobStatus::Succeeded => return Ok(()),
+            JobStatus::Failed => {
+                return Err(CliError::LinkReconciliationFailed {
+                    job_id: job_id.to_string(),
+                    message: job.error.unwrap_or_else(|| "unknown failure".to_string()),
+                }
+                .into());
             }
         }
-        .into());
     }
 }
 

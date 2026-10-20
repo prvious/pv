@@ -876,17 +876,12 @@ fn reject_link_reconciliations(
 
 #[cfg(target_os = "macos")]
 #[test]
-fn project_link_skips_setup_after_failed_or_uncovered_reconciliation() -> Result<()> {
+fn project_link_runs_setup_after_successful_job_without_fresh_env_observation() -> Result<()> {
     let directory = tempdir()?;
     let mut outputs = Vec::new();
     for (name, outcome) in [
-        ("failed", LinkJobOutcome::Failed),
         ("uncovered", LinkJobOutcome::Uncovered),
         ("stale", LinkJobOutcome::StaleProject),
-        (
-            "failed-env",
-            LinkJobOutcome::FailedWithProject(ProjectEnvObservedStatus::Failed),
-        ),
     ] {
         let home = directory.path().join(name).join("home");
         let project = directory.path().join(name).join("acme");
@@ -902,8 +897,8 @@ fn project_link_skips_setup_after_failed_or_uncovered_reconciliation() -> Result
         server
             .join()
             .map_err(|_| anyhow::anyhow!("fixture daemon panicked"))??;
-        assert_ne!(output.code, Some(0));
-        assert!(!state::fs::path_entry_exists(&project.join("setup"))?);
+        assert_eq!(output.code, Some(0));
+        assert!(state::fs::path_entry_exists(&project.join("setup"))?);
         outputs.push(output);
     }
     hook_snapshot(directory.path(), || assert_debug_snapshot!(outputs));
@@ -1023,30 +1018,48 @@ fn project_link_refuses_a_discovered_project_until_its_first_apply_without_readi
 
 #[cfg(target_os = "macos")]
 #[test]
-fn project_link_runs_setup_after_its_project_succeeds_in_a_failed_job() -> Result<()> {
+fn project_link_skips_setup_after_failed_job_even_with_successful_env_observation() -> Result<()> {
     let directory = tempdir()?;
     let mut outputs = Vec::new();
-    for (name, status) in [
-        ("rendered", ProjectEnvObservedStatus::Rendered),
-        ("warning", ProjectEnvObservedStatus::Warning),
+    for (name, outcome) in [
+        ("failed", LinkJobOutcome::Failed),
+        (
+            "rendered",
+            LinkJobOutcome::FailedWithProject(ProjectEnvObservedStatus::Rendered),
+        ),
+        (
+            "warning",
+            LinkJobOutcome::FailedWithProject(ProjectEnvObservedStatus::Warning),
+        ),
+        (
+            "failed-env",
+            LinkJobOutcome::FailedWithProject(ProjectEnvObservedStatus::Failed),
+        ),
     ] {
         let home = directory.path().join(name).join("home");
         let project = directory.path().join(name).join("acme");
         create_dir(&project)?;
         write_file(
             &project.join("pv.yml"),
-            "serve: false\nhooks:\n  setup:\n    - test -f .env && touch setup-ran\n",
+            "serve: false\nhooks:\n  setup:\n    - touch setup-ran\n",
         )?;
         let paths = PvPaths::for_home(&home);
-        let server =
-            fake_link_reconciliation(&paths, &project, LinkJobOutcome::FailedWithProject(status))?;
+        let server = fake_link_reconciliation(&paths, &project, outcome)?;
         let output = run_hook_pv(&["link"], &project, &home)?;
         server
             .join()
             .map_err(|_| anyhow::anyhow!("fixture daemon panicked"))??;
-        assert_eq!(output.code, Some(0));
-        assert!(project.join("setup-ran").exists());
-        outputs.push(output);
+        assert_ne!(output.code, Some(0));
+        assert!(!project.join("setup-ran").exists());
+        let database = Database::open(&paths)?;
+        let linked = database.project_by_path(&state::fs::canonicalize(&project)?)?;
+        assert!(linked.is_some());
+        let jobs = database
+            .recent_jobs()?
+            .into_iter()
+            .map(|job| (job.kind, job.status, job.error))
+            .collect::<Vec<_>>();
+        outputs.push((output, jobs));
     }
     hook_snapshot(directory.path(), || assert_debug_snapshot!(outputs));
     Ok(())
@@ -1186,6 +1199,12 @@ fn fake_link_reconciliation(
                 LinkJobOutcome::FailedWithProject(status) => {
                     write_file(&project.join(".env"), "READY=yes\n")?;
                     database.record_project_env_observed_snapshot(&linked.id, status, None, &[])?;
+                    // A newer env observation is deliberately insufficient when the accepted job fails.
+                    state::testing::transaction(&mut database, |transaction| {
+                        transaction.execute("UPDATE jobs SET started_at = '2026-01-01T00:00:00Z' WHERE id = ?1", [&job.id])?;
+                        transaction.execute("UPDATE observed_states SET observed_at = '2026-01-01T00:00:01Z' WHERE subject_id = ?1", [&linked.id])?;
+                        Ok(())
+                    })?;
                     database.fail_job(&job.id, "fixture Gateway failed after Project apply")?;
                 }
                 LinkJobOutcome::StaleProject => {

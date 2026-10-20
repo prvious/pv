@@ -58,8 +58,8 @@ fn write_jobs(jobs: &[JobRecord], output: &mut Output<'_>) -> Result<(), Execute
             Line::from(job.kind.as_str()),
             Line::from(job.scope.as_str()),
             Line::marked(mark, job_status_label(job.status)),
-            Line::from(display_timestamp(&job.started_at)),
-            Line::from(display_timestamp(job.finished_at.as_deref().unwrap_or("-"))),
+            Line::from(job.started_at.as_str()),
+            Line::from(job.finished_at.as_deref().unwrap_or("-")),
             Line::from(job_summary(job)),
         ]);
     }
@@ -88,14 +88,6 @@ fn write_jobs(jobs: &[JobRecord], output: &mut Output<'_>) -> Result<(), Execute
     }
 
     Ok(())
-}
-
-fn display_timestamp(timestamp: &str) -> String {
-    // Human reports keep whole seconds; precise timestamps remain in state and JSON.
-    timestamp.split_once('.').map_or_else(
-        || timestamp.to_owned(),
-        |(seconds, _fraction)| format!("{seconds}Z"),
-    )
 }
 
 fn job_summary(job: &JobRecord) -> &str {

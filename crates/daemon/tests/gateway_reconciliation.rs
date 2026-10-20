@@ -7116,10 +7116,7 @@ fn assert_runtime_states_snapshot(
     snapshot: Vec<state::RuntimeObservedStateRecord>,
 ) -> Result<()> {
     let mut settings = Settings::clone_current();
-    settings.add_filter(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
-        "<timestamp>",
-    );
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
     settings.bind(|| {
         assert_debug_snapshot!(name, snapshot);
         Ok::<(), anyhow::Error>(())

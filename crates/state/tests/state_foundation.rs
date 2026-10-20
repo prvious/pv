@@ -25,63 +25,6 @@ use state::{
 };
 
 #[test]
-fn project_success_compares_mixed_precision_timestamps_as_instants() -> Result<()> {
-    let directory = tempdir()?;
-    let paths = PvPaths::for_home(directory.path());
-    let mut database = Database::open(&paths)?;
-    let project = link_test_project(&mut database, directory.path(), "acme", "acme.test")?;
-    let job = database.start_job("reconcile", "system")?;
-    database.fail_job_with_subject(
-        &job.id,
-        "fixture failure",
-        &JobDiagnosticSubject::Project {
-            id: project.id.clone(),
-        },
-    )?;
-    for (observed_at, baseline, expected) in [
-        (
-            "2026-01-01T00:00:00Z",
-            "2026-01-01T00:00:00.100000000Z",
-            false,
-        ),
-        (
-            "2026-01-01T00:00:00.100000000Z",
-            "2026-01-01T00:00:00Z",
-            true,
-        ),
-        (
-            "2026-01-01T00:00:00.100000000Z",
-            "2026-01-01T00:00:00.100000000Z",
-            false,
-        ),
-    ] {
-        database.record_project_env_observed_snapshot(
-            &project.id,
-            ProjectEnvObservedStatus::Rendered,
-            None,
-            &[],
-        )?;
-        state::testing::transaction(&mut database, |transaction| {
-            transaction.execute(
-                "UPDATE observed_states SET observed_at = ?1 WHERE subject_id = ?2",
-                params![observed_at, project.id],
-            )?;
-            transaction.execute(
-                "UPDATE jobs SET finished_at = ?1 WHERE id = ?2",
-                params![baseline, job.id],
-            )?;
-            Ok(())
-        })?;
-        assert_eq!(
-            database.project_env_succeeded_after(&project.id, baseline)?,
-            expected
-        );
-        assert_eq!(database.unresolved_job_failures()?.is_empty(), expected);
-    }
-    Ok(())
-}
-
-#[test]
 fn accepted_job_lookup_and_hook_admission_include_running_jobs_beyond_history_limit() -> Result<()>
 {
     let temporary = tempdir()?;
@@ -1096,10 +1039,7 @@ fn with_normalized_backup_names(assertion: impl FnOnce() -> Result<()>) -> Resul
 
 fn with_normalized_timestamps(assertion: impl FnOnce() -> Result<()>) -> Result<()> {
     let mut settings = Settings::clone_current();
-    settings.add_filter(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
-        "<timestamp>",
-    );
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
     settings.add_filter(r#"id: "[a-z0-9]{10}""#, r#"id: "<project_id>""#);
     settings.add_filter(
         r#"project_id: "[a-z0-9]{10}""#,
@@ -1807,10 +1747,7 @@ fn migrated_project_resource_state_round_trips_through_public_apis() -> Result<(
     );
 
     let mut settings = Settings::clone_current();
-    settings.add_filter(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
-        "<timestamp>",
-    );
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
     settings.add_filter(r#"id: "[a-z0-9]{10}""#, r#"id: "<project_id>""#);
     settings.add_filter(
         r#"project_id: "[a-z0-9]{10}""#,
@@ -3472,10 +3409,7 @@ fn linked_projects_preserve_ids_and_refresh_hostnames() -> Result<()> {
 
     assert_eq!(created.project.id, updated.project.id);
     let mut settings = Settings::clone_current();
-    settings.add_filter(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
-        "<timestamp>",
-    );
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
     settings.add_filter(r#"id: "[a-z0-9]{10}""#, r#"id: "<project_id>""#);
     settings.add_filter(tempdir.path().as_str(), "<tempdir>");
     settings.bind(|| {
@@ -4996,7 +4930,7 @@ fn env_context(values: &[(&str, &str)]) -> EnvContextValues {
 
 fn assert_public_timestamp(timestamp: &str) {
     let bytes = timestamp.as_bytes();
-    assert_eq!(bytes.len(), 30, "{timestamp}");
+    assert_eq!(bytes.len(), 20, "{timestamp}");
     for index in [0_usize, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18] {
         assert!(matches!(bytes.get(index), Some(byte) if byte.is_ascii_digit()));
     }
@@ -5005,9 +4939,7 @@ fn assert_public_timestamp(timestamp: &str) {
     assert_eq!(bytes.get(10), Some(&b'T'), "{timestamp}");
     assert_eq!(bytes.get(13), Some(&b':'), "{timestamp}");
     assert_eq!(bytes.get(16), Some(&b':'), "{timestamp}");
-    assert_eq!(bytes.get(19), Some(&b'.'), "{timestamp}");
-    assert!(bytes[20..29].iter().all(u8::is_ascii_digit));
-    assert_eq!(bytes.get(29), Some(&b'Z'), "{timestamp}");
+    assert_eq!(bytes.get(19), Some(&b'Z'), "{timestamp}");
 }
 
 fn set_managed_resource_env_json(database: &mut Database, env_json: &str) -> Result<()> {

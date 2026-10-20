@@ -3902,10 +3902,7 @@ fn assert_with_normalized_timestamps(
     snapshot: impl std::fmt::Debug,
 ) -> Result<()> {
     let mut settings = Settings::clone_current();
-    settings.add_filter(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z",
-        "<timestamp>",
-    );
+    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
 
     settings.bind(|| {
         assert_debug_snapshot!(name, snapshot);
