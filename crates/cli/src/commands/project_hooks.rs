@@ -85,7 +85,7 @@ impl<'a> LinkHookRun<'a> {
                     sender.send_replace(true);
                     let stopped = operation.await;
                     interrupt.map_err(HookError::from)?;
-                    stopped
+                    stopped.and(Err(HookError::Interrupted))
                 }
                 result = &mut operation => result,
             }
