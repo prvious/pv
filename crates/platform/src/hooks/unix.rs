@@ -10,13 +10,9 @@ use std::time::Duration;
 use camino::Utf8Path;
 use nix::libc;
 use nix::unistd::{Uid, User};
-#[cfg(target_os = "linux")]
-use procfs::{ProcError, ProcResult, process::all_processes_with_root};
 use rustix::fs::{Mode, OFlags, open};
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-use rustix::process::test_kill_process_group;
 use rustix::process::{Pid, Signal, kill_process_group};
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::watch;
 use tokio::time::{Instant, sleep, timeout};
@@ -66,39 +62,28 @@ pub async fn capture_environment(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // SAFETY: This child-only callback uses only open/ioctl/close and errno access, without
-    // allocation or locks. The child is not its session leader, so TIOCNOTTY detaches only it
-    // from the inherited terminal; the descriptor remains owned until the ioctl finishes.
-    unsafe {
-        command.pre_exec(|| {
-            let terminal = match open(
-                c"/dev/tty",
-                OFlags::RDONLY | OFlags::NOCTTY | OFlags::CLOEXEC,
-                Mode::empty(),
-            ) {
-                Ok(terminal) => terminal,
-                Err(rustix::io::Errno::NXIO) => return Ok(()),
-                Err(error) => return Err(error.into()),
-            };
-            detach_terminal(terminal.as_raw_fd()).map_err(io::Error::from)?;
-            Ok(())
-        });
-    }
     let mut process = HookProcess::spawn(&mut command)
         .map_err(|error| environment_error(error.to_string(), &[]))?;
     let child = process.child_mut()?;
-    let mut stdout = child.stdout.take().ok_or_else(missing_output)?;
+    let mut stdout = BufReader::new(child.stdout.take().ok_or_else(missing_output)?);
     let mut stderr = child.stderr.take().ok_or_else(missing_output)?;
     let mut stdout_bytes = Vec::new();
     let mut stderr_bytes = Vec::new();
     let result = {
         let capture = async {
-            let (status, _, _) = tokio::try_join!(
-                process.wait(),
-                read_environment_output(&mut stdout, &mut stdout_bytes),
-                read_stderr_tail(&mut stderr, &mut stderr_bytes),
-            )?;
-            Ok::<_, io::Error>(status)
+            let capture = async {
+                read_environment_output(&mut stdout, &mut stdout_bytes).await?;
+                process.wait().await
+            };
+            tokio::pin!(capture);
+            tokio::select! {
+                biased;
+                result = read_stderr_tail(&mut stderr, &mut stderr_bytes) => {
+                    result?;
+                    capture.await
+                }
+                result = &mut capture => result,
+            }
         };
         tokio::select! {
             result = timeout(CAPTURE_TIMEOUT, capture) => match result {
@@ -120,41 +105,44 @@ pub async fn capture_environment(
     finish_cleanup(result, cleanup, *shutdown.borrow())
 }
 
+fn detach_controlling_terminal(command: &mut HookCommand) {
+    // SAFETY: This child-only callback uses only open/ioctl/close and errno access, without
+    // allocation or locks. The child is not its session leader, so TIOCNOTTY detaches only it
+    // from the inherited terminal; the descriptor remains owned until the ioctl finishes.
+    unsafe {
+        command.pre_exec(|| {
+            let terminal = match open(
+                c"/dev/tty",
+                OFlags::RDONLY | OFlags::NOCTTY | OFlags::CLOEXEC,
+                Mode::empty(),
+            ) {
+                Ok(terminal) => terminal,
+                Err(rustix::io::Errno::NXIO) => return Ok(()),
+                Err(error) => return Err(error.into()),
+            };
+            detach_terminal(terminal.as_raw_fd()).map_err(io::Error::from)?;
+            Ok(())
+        });
+    }
+}
+
 fn missing_output() -> io::Error {
     io::Error::other("hook environment capture output was not piped")
 }
 
 async fn read_environment_output(
-    output: &mut (impl AsyncRead + Unpin),
+    output: &mut (impl AsyncBufRead + Unpin),
     bytes: &mut Vec<u8>,
 ) -> io::Result<()> {
-    let mut buffer = [0; 8192];
     let mut started = false;
-    let mut complete = false;
     loop {
-        let length = output.read(&mut buffer).await?;
-        if length == 0 {
+        let start = bytes.len();
+        if output.read_until(0, bytes).await? == 0 {
             return Ok(());
         }
-        if complete {
-            continue;
-        }
-        bytes.extend_from_slice(&buffer[..length]);
-        if !started {
-            if let Some(start) = bytes
-                .windows(START_MARKER.len())
-                .position(|window| window == START_MARKER)
-            {
-                bytes.drain(..start);
-                started = true;
-            } else {
-                bytes.drain(..bytes.len().saturating_sub(START_MARKER.len() - 1));
-                continue;
-            }
-        }
-        if let Some(end) = environment_end(&bytes[START_MARKER.len()..]) {
-            bytes.truncate(START_MARKER.len() + end + END_MARKER.len());
-            complete = true;
+        started |= bytes.ends_with(START_MARKER);
+        if started && &bytes[start..] == END_MARKER {
+            return Ok(());
         }
     }
 }
@@ -238,11 +226,6 @@ pub async fn run_commands(
     shutdown: &mut watch::Receiver<bool>,
     mut announce: impl FnMut(&str) -> io::Result<()>,
 ) -> Result<(), HookError> {
-    let directory = state::fs::open_read_file(context.project_path)?.ok_or_else(|| {
-        io::Error::new(io::ErrorKind::NotFound, "hook Project directory is missing")
-    })?;
-    // Keep the directory itself across renames, and its descriptor away from stdio slots.
-    let directory = rustix::io::fcntl_dupfd_cloexec(&directory, 3).map_err(io::Error::from)?;
     let mut log = match context.output {
         HookOutput::Terminal => None,
         HookOutput::Log(path) => {
@@ -267,19 +250,11 @@ pub async fn run_commands(
         let mut command = HookCommand::new("/bin/sh");
         command
             .args(["-c", script])
+            .current_dir(context.project_path)
             .env_clear()
             .envs(&context.environment.values)
             .envs(overlay.iter().cloned())
             .stdin(Stdio::null());
-        let command_directory =
-            rustix::io::fcntl_dupfd_cloexec(&directory, 3).map_err(io::Error::from)?;
-        // SAFETY: The child-only callback performs just fchdir on its owned live descriptor,
-        // with no allocation or locks. It changes no parent state, and exec closes the descriptor.
-        unsafe {
-            command.pre_exec(move || {
-                rustix::process::fchdir(&command_directory).map_err(io::Error::from)
-            });
-        }
         if let Some(source) = context.source_path {
             command.env("PV_SOURCE_PATH", source);
         } else {
@@ -351,6 +326,7 @@ struct HookProcess {
 
 impl HookProcess {
     fn spawn(command: &mut HookCommand) -> io::Result<Self> {
+        detach_controlling_terminal(command);
         let anchor = HookCommand::new("/bin/sh")
             .args(["-c", GROUP_ANCHOR])
             .stdin(Stdio::piped())
@@ -404,6 +380,7 @@ impl HookProcess {
     async fn stop(&mut self) -> io::Result<()> {
         self.signal()?;
         if let Some(child) = self.child.as_mut() {
+            child.start_kill()?;
             child.wait().await?;
         }
         self.anchor.wait().await?;
@@ -412,7 +389,10 @@ impl HookProcess {
             if Instant::now() >= deadline {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
-                    "hook process group did not exit",
+                    format!(
+                        "hook process group {} did not exit",
+                        self.group.as_raw_nonzero()
+                    ),
                 ));
             }
             sleep(Duration::from_millis(10)).await;
@@ -421,88 +401,15 @@ impl HookProcess {
     }
 }
 
-#[cfg(target_os = "macos")]
 fn group_is_running(group: Pid) -> io::Result<bool> {
-    crate::process_group_has_live_members(group.as_raw_nonzero().get().unsigned_abs())
-        .map_err(io::Error::other)
-}
-
-#[cfg(target_os = "linux")]
-fn group_is_running(group: Pid) -> io::Result<bool> {
-    linux_group_is_running(Path::new("/proc"), group)
-}
-
-#[cfg(target_os = "linux")]
-fn linux_group_is_running(root: &Path, group: Pid) -> io::Result<bool> {
-    let mut previous_zombies = None;
-    for _attempt in 0..8 {
-        let mut zombies = Vec::new();
-        for process in all_processes_with_root(root).map_err(io::Error::other)? {
-            let Some(process) = existing_process(process)? else {
-                continue;
-            };
-            let Some(status) = existing_process(process.stat())? else {
-                continue;
-            };
-            if status.pgrp != group.as_raw_nonzero().get() {
-                continue;
-            }
-            if status.state != 'Z' {
-                return Ok(true);
-            }
-            // A Linux thread-group leader can be a zombie while another thread still runs.
-            // Inspect all tasks and require the zombie snapshot to stay stable.
-            let Some(tasks) = existing_process(process.tasks())? else {
-                if existing_process(process.stat())?.is_some() {
-                    return Err(io::Error::other("hook process-group tasks unavailable"));
-                }
-                continue;
-            };
-            let mut inspected_task = false;
-            for task in tasks {
-                let Some(task) = existing_process(task)? else {
-                    continue;
-                };
-                let Some(status) = existing_process(task.stat())? else {
-                    continue;
-                };
-                inspected_task = true;
-                if status.state != 'Z' {
-                    return Ok(true);
-                }
-                zombies.push((status.pid, status.starttime));
-            }
-            if !inspected_task && existing_process(process.stat())?.is_some() {
-                return Err(io::Error::other("hook process-group tasks unavailable"));
-            }
-        }
-        zombies.sort_unstable();
-        if zombies.is_empty() || previous_zombies.as_ref() == Some(&zombies) {
-            return Ok(false);
-        }
-        previous_zombies = Some(zombies);
-    }
-    Err(io::Error::other(
-        "hook process-group snapshot did not stabilize",
-    ))
-}
-
-#[cfg(target_os = "linux")]
-fn existing_process<T>(result: ProcResult<T>) -> io::Result<Option<T>> {
-    match result {
-        Ok(value) => Ok(Some(value)),
-        Err(ProcError::NotFound(_)) => Ok(None),
-        Err(error) => Err(io::Error::other(error)),
-    }
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn group_is_running(group: Pid) -> io::Result<bool> {
-    match test_kill_process_group(group) {
-        Ok(()) => Ok(true),
-        Err(rustix::io::Errno::SRCH) => Ok(false),
-        Err(error) => Err(error.into()),
-    }
+    crate::process_group_has_live_members(group.as_raw_nonzero().get().unsigned_abs()).map_err(
+        |error| {
+            io::Error::other(format!(
+                "hook process group {}: {error}",
+                group.as_raw_nonzero()
+            ))
+        },
+    )
 }
 
 impl Drop for HookProcess {
@@ -518,107 +425,23 @@ impl Drop for HookProcess {
 mod tests {
     use std::io;
 
+    #[cfg(target_os = "macos")]
     use std::process::Stdio;
+    #[cfg(target_os = "macos")]
     use std::time::Duration;
 
+    #[cfg(target_os = "macos")]
     use anyhow::Context;
-    #[cfg(target_os = "linux")]
-    use camino::Utf8Path;
+    #[cfg(target_os = "macos")]
     use camino_tempfile::tempdir;
-    #[cfg(target_os = "linux")]
-    use rustix::process::Pid;
+    #[cfg(target_os = "macos")]
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    #[cfg(target_os = "macos")]
     use tokio::time::{sleep, timeout};
 
-    #[cfg(target_os = "linux")]
-    use super::linux_group_is_running;
-    use super::{
-        END_MARKER, HookCommand, HookError, HookProcess, STDERR_TAIL_LENGTH, finish_cleanup,
-        group_is_running, parse_environment, read_environment_output, read_stderr_tail,
-    };
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn linux_group_checks_threads_after_the_leader_exits() -> anyhow::Result<()> {
-        let directory = tempdir()?;
-        let leader = directory.path().join("123");
-        write_process_stat(&leader, 123, 'Z')?;
-        write_process_stat(&leader.join("task/123"), 123, 'Z')?;
-        write_process_stat(&leader.join("task/124"), 124, 'S')?;
-        let group = Pid::from_raw(123).ok_or_else(|| anyhow::anyhow!("invalid fixture group"))?;
-        assert!(linux_group_is_running(
-            directory.path().as_std_path(),
-            group
-        )?);
-        write_process_stat(&leader.join("task/124"), 124, 'Z')?;
-        assert!(!linux_group_is_running(
-            directory.path().as_std_path(),
-            group
-        )?);
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn linux_group_does_not_treat_missing_tasks_as_stopped() -> anyhow::Result<()> {
-        let directory = tempdir()?;
-        let leader = directory.path().join("123");
-        write_process_stat(&leader, 123, 'Z')?;
-        let group = Pid::from_raw(123).ok_or_else(|| anyhow::anyhow!("invalid fixture group"))?;
-        let mut errors = Vec::new();
-        for empty_directory in [false, true] {
-            if empty_directory {
-                state::fs::ensure_user_dir(&leader.join("task"))?;
-            }
-            let error = linux_group_is_running(directory.path().as_std_path(), group)
-                .err()
-                .ok_or_else(|| anyhow::anyhow!("expected uncertain task inspection"))?;
-            errors.push(error.to_string());
-        }
-        insta::assert_debug_snapshot!(errors, @r#"
-        [
-            "hook process-group tasks unavailable",
-            "hook process-group tasks unavailable",
-        ]
-        "#);
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    fn write_process_stat(directory: &Utf8Path, pid: i32, status: char) -> anyhow::Result<()> {
-        state::fs::ensure_user_dir(directory)?;
-        let mut fields = vec!["0".to_string(); 52];
-        fields[0] = pid.to_string();
-        fields[1] = "(fixture)".to_string();
-        fields[2] = status.to_string();
-        fields[4] = "123".to_string();
-        fields[21] = "42".to_string();
-        state::fs::write_sensitive_file(&directory.join("stat"), &fields.join(" "))?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn capture_discards_noise_and_retains_only_the_stderr_tail() -> anyhow::Result<()> {
-        let frame = b"__PV_HOOK_ENV_START__\0FIRST=prefix__PV_HOOK_ENV_END__\0AFTER=retained\0__PV_HOOK_ENV_END__\0";
-        // Split the start marker across reads, then keep draining after the end marker.
-        for padding in [
-            8192 * 3 - 7,
-            8192 * 3 - (frame.len() - END_MARKER.len()) - 7,
-        ] {
-            let mut output = vec![b'x'; padding];
-            output.extend_from_slice(frame);
-            output.extend(vec![b'y'; 8192 * 3]);
-            let mut captured = Vec::new();
-            read_environment_output(&mut output.as_slice(), &mut captured).await?;
-            assert_eq!(captured, frame);
-        }
-
-        let mut stderr = vec![b'x'; 8192 * 3];
-        stderr.extend(vec![b't'; STDERR_TAIL_LENGTH]);
-        let mut tail = Vec::new();
-        read_stderr_tail(&mut stderr.as_slice(), &mut tail).await?;
-        assert_eq!(tail, vec![b't'; STDERR_TAIL_LENGTH]);
-        Ok(())
-    }
+    #[cfg(target_os = "macos")]
+    use super::{HookCommand, HookProcess, group_is_running};
+    use super::{HookError, finish_cleanup, parse_environment};
 
     #[test]
     fn capture_drops_shell_bookkeeping_without_changing_values() -> anyhow::Result<()> {
@@ -661,6 +484,32 @@ mod tests {
         ));
     }
 
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn hook_cleanup_kills_a_direct_child_that_left_the_group() -> anyhow::Result<()> {
+        let mut command = HookCommand::new("python3");
+        command
+            .args([
+                "-c",
+                "import os,time; os.setsid(); print('ready', flush=True); time.sleep(150)",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut process = HookProcess::spawn(&mut command)?;
+        let stdout = process.child_mut()?.stdout.take().context("child stdout")?;
+        let mut ready = String::new();
+        timeout(
+            Duration::from_secs(5),
+            BufReader::new(stdout).read_line(&mut ready),
+        )
+        .await??;
+        assert_eq!(ready, "ready\n");
+        timeout(Duration::from_secs(5), process.stop()).await??;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn hook_anchor_stops_its_group_when_the_owner_pipe_closes() -> anyhow::Result<()> {
         let directory = tempdir()?;

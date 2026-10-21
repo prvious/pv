@@ -35,9 +35,6 @@ security-framework = { workspace = true }
 nix = { workspace = true, features = ["event", "ioctl"] }
 rustix = { workspace = true }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-procfs = { version = "0.18.0", default-features = false }
-
 [dev-dependencies]
 anyhow = { workspace = true }
 camino-tempfile = { workspace = true }

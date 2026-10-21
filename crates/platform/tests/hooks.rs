@@ -1,9 +1,7 @@
-#![cfg(unix)]
+#![cfg(target_os = "macos")]
 
-#[cfg(target_os = "macos")]
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
-#[cfg(target_os = "macos")]
 use std::thread;
 use std::time::Duration;
 
@@ -14,15 +12,10 @@ use insta::{assert_debug_snapshot, assert_snapshot};
 use platform::hooks::{
     HookCommandContext, HookEnvironment, HookError, HookOutput, capture_environment, run_commands,
 };
-#[cfg(target_os = "macos")]
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-#[cfg(target_os = "linux")]
-use procfs::{ProcError, process::Process};
 use state::{PvPaths, fs};
 use tokio::sync::watch;
-use tokio::time::Instant;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use tokio::time::{sleep, timeout};
+use tokio::time::{Instant, sleep, timeout};
 
 #[tokio::test]
 async fn hook_capture_ignores_startup_noise_and_prompt_and_applies_overlay() -> Result<()> {
@@ -150,6 +143,28 @@ async fn hook_capture_preserves_marker_text_inside_values_and_later_entries() ->
 }
 
 #[tokio::test]
+async fn hook_capture_does_not_wait_for_background_jobs_holding_output() -> Result<()> {
+    let temporary = tempdir()?;
+    let shell = fake_shell(
+        temporary.path(),
+        r#"/bin/sleep 150 & descendant=$!; printf '%s' "$descendant" > "$PV_HOOK_PROJECT/pid"; /bin/sh -c "$4""#,
+    )?;
+    let (_sender, mut shutdown) = watch::channel(false);
+    timeout(
+        Duration::from_secs(5),
+        capture_environment(
+            shell.as_std_path(),
+            temporary.path(),
+            temporary.path(),
+            &mut shutdown,
+        ),
+    )
+    .await??;
+    assert_stopped(fs::read_to_string(&temporary.path().join("pid"))?.parse::<u32>()?).await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn hook_capture_rejects_nonzero_exit_and_missing_markers() -> Result<()> {
     let temporary = tempdir()?;
     let (_sender, mut shutdown) = watch::channel(false);
@@ -198,7 +213,6 @@ async fn hook_capture_times_out_shell_startup() -> Result<()> {
     };
     assert_snapshot!(error.to_string());
     assert!(started.elapsed() < Duration::from_secs(20));
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
     assert_stopped(fs::read_to_string(&temporary.path().join("pid"))?.parse::<u32>()?).await?;
     Ok(())
 }
@@ -242,13 +256,12 @@ async fn hook_commands_fail_fast_and_announce_in_order() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
 #[test]
 #[expect(
     clippy::disallowed_methods,
     reason = "the PTY regression reexecutes its own test binary with an isolated fixture home"
 )]
-fn hook_capture_keeps_real_zsh_inside_its_group_under_a_terminal() -> Result<()> {
+fn hooks_detach_the_login_shell_and_commands_under_a_terminal() -> Result<()> {
     const CHILD_HOME: &str = "PV_HOOK_PTY_CHILD_HOME";
     if let Some(home) = std::env::var_os(CHILD_HOME) {
         let home = Utf8PathBuf::from_path_buf(home.into())
@@ -280,6 +293,27 @@ fn hook_capture_keeps_real_zsh_inside_its_group_under_a_terminal() -> Result<()>
                 let (shell, descendant) = processes?;
                 assert_stopped(shell).await?;
                 assert_stopped(descendant).await?;
+                let paths = PvPaths::for_home(&home);
+                let (_sender, mut shutdown) = watch::channel(false);
+                let environment = test_environment(&home, &mut shutdown).await?;
+                let result = timeout(
+                    Duration::from_secs(5),
+                    run_commands(
+                        &HookCommandContext {
+                            paths: &paths,
+                            project_path: &home,
+                            source_path: None,
+                            environment: &environment,
+                            output: HookOutput::Terminal,
+                        },
+                        "setup",
+                        &["read x < /dev/tty".to_string()],
+                        &mut shutdown,
+                        |_| Ok(()),
+                    ),
+                )
+                .await?;
+                assert!(matches!(result, Err(HookError::CommandFailed { .. })));
                 Ok(())
             });
     }
@@ -294,7 +328,7 @@ fn hook_capture_keeps_real_zsh_inside_its_group_under_a_terminal() -> Result<()>
     let mut command = CommandBuilder::new(std::env::current_exe()?);
     command.args([
         "--exact",
-        "hook_capture_keeps_real_zsh_inside_its_group_under_a_terminal",
+        "hooks_detach_the_login_shell_and_commands_under_a_terminal",
         "--nocapture",
     ]);
     command.env(CHILD_HOME, temporary.path().as_str());
@@ -330,52 +364,6 @@ fn hook_capture_keeps_real_zsh_inside_its_group_under_a_terminal() -> Result<()>
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-#[tokio::test]
-async fn hook_commands_follow_the_directory_when_it_moves_between_items() -> Result<()> {
-    let temporary = tempdir()?;
-    let paths = PvPaths::for_home(temporary.path());
-    let original = temporary.path().join("original");
-    let moved = temporary.path().join("moved");
-    fs::ensure_user_dir(&original)?;
-    let (_sender, mut shutdown) = watch::channel(false);
-    let environment = test_environment(temporary.path(), &mut shutdown).await?;
-    let log = temporary.path().join("hook.log");
-    let context = HookCommandContext {
-        paths: &paths,
-        project_path: &original,
-        source_path: None,
-        environment: &environment,
-        output: HookOutput::Log(&log),
-    };
-    let commands = vec![
-        "printf '%s' \"$$\" > ready.tmp; mv ready.tmp ready; remaining=150; while [ ! -f release ] && [ \"$remaining\" -gt 0 ]; do /bin/sleep 1; remaining=$((remaining - 1)); done; test -f release".to_string(),
-        "pwd > completed".to_string(),
-    ];
-    let running = run_commands(&context, "prepare", &commands, &mut shutdown, |_| Ok(()));
-    tokio::pin!(running);
-    let ready_path = original.join("ready");
-    tokio::select! {
-        result = &mut running => {
-            result?;
-            return Err(anyhow!("hook list finished before the move"));
-        }
-        ready = wait_for_pid(&ready_path) => { ready?; }
-    }
-    fs::rename(&original, &moved)?;
-    fs::write_sensitive_file(&moved.join("release"), "")?;
-    running.await?;
-    assert_eq!(
-        fs::canonicalize(Utf8Path::new(
-            fs::read_to_string(&moved.join("completed"))?.trim()
-        ))?,
-        fs::canonicalize(&moved)?
-    );
-    assert_eq!(fs::read_to_string(&log)?.lines().count(), 2);
-    Ok(())
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test]
 async fn hook_cancellation_stops_every_process_in_the_command_group() -> Result<()> {
     let temporary = tempdir()?;
@@ -405,7 +393,6 @@ async fn hook_cancellation_stops_every_process_in_the_command_group() -> Result<
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[tokio::test]
 async fn dropping_a_hook_run_stops_its_process_group() -> Result<()> {
     let temporary = tempdir()?;
@@ -437,7 +424,6 @@ async fn dropping_a_hook_run_stops_its_process_group() -> Result<()> {
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 async fn wait_for_pid(path: &Utf8Path) -> Result<u32> {
     timeout(Duration::from_secs(5), async {
         while !fs::path_entry_exists(path)? {
@@ -448,7 +434,6 @@ async fn wait_for_pid(path: &Utf8Path) -> Result<u32> {
     .await?
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 async fn assert_stopped(pid: u32) -> Result<()> {
     timeout(Duration::from_secs(5), async {
         loop {
@@ -461,19 +446,9 @@ async fn assert_stopped(pid: u32) -> Result<()> {
     .await?
 }
 
-#[cfg(target_os = "macos")]
 fn process_stopped(pid: u32) -> Result<bool> {
     Ok(platform::inspect_process_start_identity(pid)?.is_none()
         || platform::process_is_zombie(pid)?)
-}
-
-#[cfg(target_os = "linux")]
-fn process_stopped(pid: u32) -> Result<bool> {
-    match Process::new(i32::try_from(pid)?).and_then(|process| process.stat()) {
-        Ok(status) => Ok(status.state == 'Z'),
-        Err(ProcError::NotFound(_)) => Ok(true),
-        Err(error) => Err(error.into()),
-    }
 }
 
 async fn test_environment(
