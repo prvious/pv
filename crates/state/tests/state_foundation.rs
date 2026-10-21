@@ -4,13 +4,15 @@ use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::PermissionsExt;
 use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, TransactionBehavior, params};
 use state::testing::Migration;
 use state::{
     AppReleaseLayout, Database, EnvContextValues, GATEWAY_HTTP_PREFERRED_PORT,
@@ -77,6 +79,59 @@ fn finished_foreground_jobs_are_atomic_with_their_diagnostic_outcomes() -> Resul
         succeeded.status,
         succeeded.summary
     ));
+    Ok(())
+}
+
+#[test]
+fn job_insertions_wait_for_a_writer_before_reading_the_next_id() -> Result<()> {
+    let temporary = tempdir()?;
+    let paths = PvPaths::for_home(temporary.path());
+    let mut jobs = Vec::new();
+    for finished in [false, true] {
+        let mut database = Database::open(&paths)?;
+        let existing_job = database.start_job("reconcile", "system")?;
+        let mut connection = Connection::open(paths.db())?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "UPDATE jobs SET summary = 'held' WHERE id = ?1",
+            params![existing_job.id],
+        )?;
+        let (started, ready) = mpsc::channel();
+        let job = thread::scope(|scope| -> Result<_> {
+            let writer = scope.spawn(move || -> Result<_> {
+                started.send(())?;
+                if finished {
+                    Ok(database.record_finished_job(
+                        "hooks",
+                        "project:fixture",
+                        Ok("finished"),
+                        &[],
+                    )?)
+                } else {
+                    Ok(database.start_job("reconcile", "system")?)
+                }
+            });
+            ready.recv_timeout(Duration::from_secs(5))?;
+            thread::sleep(Duration::from_millis(25));
+            transaction.commit()?;
+            writer
+                .join()
+                .map_err(|_| anyhow!("job writer thread panicked"))?
+        })?;
+        jobs.push((job.id, job.status));
+    }
+    assert_debug_snapshot!(jobs, @r#"
+    [
+        (
+            "job_000002",
+            Running,
+        ),
+        (
+            "job_000004",
+            Succeeded,
+        ),
+    ]
+    "#);
     Ok(())
 }
 

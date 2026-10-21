@@ -743,24 +743,27 @@ impl Database {
     pub fn start_job(&mut self, kind: &str, scope: &str) -> Result<JobRecord, StateError> {
         let started_at = timestamp()?;
 
-        self.transaction(|transaction| {
-            let id = next_job_id(transaction)?;
-            transaction.execute(
-                "INSERT INTO jobs (id, kind, scope, status, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, kind, scope, JobStatus::Running.as_str(), started_at],
-            )?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let id = next_job_id(&transaction)?;
+        transaction.execute(
+            "INSERT INTO jobs (id, kind, scope, status, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, kind, scope, JobStatus::Running.as_str(), started_at],
+        )?;
 
-            Ok(JobRecord {
-                id,
-                kind: kind.to_string(),
-                scope: scope.to_string(),
-                status: JobStatus::Running,
-                started_at,
-                finished_at: None,
-                summary: None,
-                error: None,
-            })
-        })
+        let job = JobRecord {
+            id,
+            kind: kind.to_string(),
+            scope: scope.to_string(),
+            status: JobStatus::Running,
+            started_at,
+            finished_at: None,
+            summary: None,
+            error: None,
+        };
+        transaction.commit()?;
+        Ok(job)
     }
 
     /// Records a foreground run after execution, atomically with its terminal status and
@@ -777,28 +780,39 @@ impl Database {
             Ok(summary) => (JobStatus::Succeeded, Some(summary), None, "success"),
             Err(error) => (JobStatus::Failed, None, Some(error), "failure"),
         };
-        self.transaction(|transaction| {
-            let id = next_job_id(transaction)?;
-            transaction.execute(
-                "INSERT INTO jobs (id, kind, scope, status, started_at, finished_at, summary, error)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7)",
-                params![id, kind, scope, status.as_str(), finished_at, summary, error],
-            )?;
-            for subject in subjects {
-                insert_job_diagnostic_outcome(transaction, &id, subject, outcome)?;
-            }
-            prune_old_jobs(transaction)?;
-            Ok(JobRecord {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let id = next_job_id(&transaction)?;
+        transaction.execute(
+            "INSERT INTO jobs (id, kind, scope, status, started_at, finished_at, summary, error)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7)",
+            params![
                 id,
-                kind: kind.to_string(),
-                scope: scope.to_string(),
-                status,
-                started_at: finished_at.clone(),
-                finished_at: Some(finished_at),
-                summary: summary.map(str::to_string),
-                error: error.map(str::to_string),
-            })
-        })
+                kind,
+                scope,
+                status.as_str(),
+                finished_at,
+                summary,
+                error
+            ],
+        )?;
+        for subject in subjects {
+            insert_job_diagnostic_outcome(&transaction, &id, subject, outcome)?;
+        }
+        prune_old_jobs(&transaction)?;
+        let job = JobRecord {
+            id,
+            kind: kind.to_string(),
+            scope: scope.to_string(),
+            status,
+            started_at: finished_at.clone(),
+            finished_at: Some(finished_at),
+            summary: summary.map(str::to_string),
+            error: error.map(str::to_string),
+        };
+        transaction.commit()?;
+        Ok(job)
     }
 
     pub fn complete_job(&mut self, id: &str, summary: &str) -> Result<(), StateError> {
