@@ -1,0 +1,11 @@
+---
+source: it/cli.rs
+expression: output
+---
+CommandOutput {
+    code: Some(
+        1,
+    ),
+    stdout: "Linked project (resource-only) -> <tempdir>/project\nQueued reconciliation job_000001 for project\nWaiting for reconciliation job_000001 before setup\n",
+    stderr: "error: the outcome of reconciliation job_000001 is unknown\n  Setup hooks were not run; run `pv link` again\n",
+}

@@ -1,9 +1,0 @@
----
-source: crates/state/tests/state_foundation.rs
-expression: "(next.id, old_sequence, new_sequence)"
----
-(
-    "job_000056",
-    1,
-    2,
-)

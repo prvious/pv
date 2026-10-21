@@ -597,7 +597,8 @@ fn project_link_refuses_queued_daemon_hooks_unless_skipped() -> Result<()> {
     let job = database.start_job("hooks", &format!("project:{}", linked.id))?;
     let refused = run_hook_pv(&["link"], &project, &home)?;
     write_file(&project.join("pv.yml"), "serve: false\n")?;
-    let refused_after_config_edit = run_hook_pv(&["link"], &project, &home)?;
+    let without_hooks = run_hook_pv(&["link"], &project, &home)?;
+    assert_eq!(without_hooks.code, Some(0));
     let skipped = run_hook_pv(&["link", "--skip-hooks"], &project, &home)?;
     assert!(!state::fs::path_entry_exists(&project.join("ran"))?);
     assert_eq!(
@@ -606,7 +607,7 @@ fn project_link_refuses_queued_daemon_hooks_unless_skipped() -> Result<()> {
     );
     assert_eq!(database.recent_jobs()?.len(), 1);
     hook_snapshot(directory.path(), || {
-        assert_debug_snapshot!((refused, refused_after_config_edit, skipped))
+        assert_debug_snapshot!((refused, without_hooks, skipped))
     });
     Ok(())
 }
@@ -626,10 +627,9 @@ fn project_link_waits_on_the_accepted_coalesced_job_then_runs_setup() -> Result<
     let paths = PvPaths::for_home(&home);
     let server = fake_link_reconciliation(&paths, &project, LinkJobOutcome::Succeeded)?;
     let output = run_hook_pv(&["link"], &project, &home)?;
-    let request = server
+    server
         .join()
         .map_err(|_| anyhow::anyhow!("fixture daemon panicked"))??;
-    assert!(request.get("requested_by_link").is_none());
     assert_eq!(output.code, Some(0));
     assert!(state::fs::path_entry_exists(&project.join("setup"))?);
     let jobs = Database::open(&paths)?
@@ -1002,10 +1002,10 @@ fn project_link_refuses_a_discovered_project_until_its_first_apply_without_readi
     assert_ne!(refused.code, Some(0));
     assert_eq!(database.project_by_id(&linked.id)?, Some(linked));
     assert!(database.recent_jobs()?.is_empty());
-    // Removing hooks from config still cannot bypass the linked Project's first-apply guard.
+    // A Project without hooks can relink before its first successful reconciliation.
     write_file(&project.join("pv.yml"), "serve: false\n")?;
     let edited = run_hook_pv(&["link"], &project, &home)?;
-    assert_ne!(edited.code, Some(0));
+    assert_eq!(edited.code, Some(0));
     let skipped = run_hook_pv(&["link", "--skip-hooks"], &project, &home)?;
     assert_eq!(skipped.code, Some(0));
     assert!(!project.join("unexpected-prepare").exists());
@@ -1013,6 +1013,29 @@ fn project_link_refuses_a_discovered_project_until_its_first_apply_without_readi
     hook_snapshot(directory.path(), || {
         assert_debug_snapshot!((refused, edited, skipped))
     });
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn project_link_reports_an_unknown_outcome_when_the_accepted_job_is_missing() -> Result<()> {
+    let directory = tempdir()?;
+    let home = directory.path().join("home");
+    let project = directory.path().join("project");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "serve: false\nhooks:\n  setup:\n    - touch setup-ran\n",
+    )?;
+    let paths = PvPaths::for_home(&home);
+    let server = fake_link_reconciliation(&paths, &project, LinkJobOutcome::Missing)?;
+    let output = run_hook_pv(&["link"], &project, &home)?;
+    server
+        .join()
+        .map_err(|_| anyhow::anyhow!("fixture daemon panicked"))??;
+    assert_ne!(output.code, Some(0));
+    assert!(!project.join("setup-ran").exists());
+    hook_snapshot(directory.path(), || assert_debug_snapshot!(output));
     Ok(())
 }
 
@@ -1151,6 +1174,7 @@ fn hook_snapshot(directory: &Utf8Path, assert: impl FnOnce()) {
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 enum LinkJobOutcome {
+    Missing,
     Succeeded,
     Failed,
     FailedWithProject(ProjectEnvObservedStatus),
@@ -1164,7 +1188,7 @@ fn fake_link_reconciliation(
     paths: &PvPaths,
     project: &Utf8Path,
     outcome: LinkJobOutcome,
-) -> Result<JoinHandle<Result<Value>>> {
+) -> Result<JoinHandle<Result<()>>> {
     let job = Database::open(paths)?.start_job("reconcile", "system")?;
     let listener = UnixListener::bind(paths.daemon_socket())?;
     listener.set_nonblocking(true)?;
@@ -1195,6 +1219,12 @@ fn fake_link_reconciliation(
             let mut database = Database::open(&paths)?;
             let linked = database.project_by_path(&state::fs::canonicalize(&project)?)?.ok_or_else(|| anyhow::anyhow!("Project not recorded before reconciliation"))?;
             match outcome {
+                LinkJobOutcome::Missing => {
+                    state::testing::transaction(&mut database, |transaction| {
+                        transaction.execute("DELETE FROM jobs WHERE id = ?1", [&job.id])?;
+                        Ok(())
+                    })?;
+                }
                 LinkJobOutcome::Failed => database.fail_job(&job.id, "fixture reconciliation failed")?,
                 LinkJobOutcome::FailedWithProject(status) => {
                     write_file(&project.join(".env"), "READY=yes\n")?;
@@ -1224,7 +1254,7 @@ fn fake_link_reconciliation(
                 LinkJobOutcome::Running => {}
             }
         }
-        Ok(request)
+        Ok(())
     })?)
 }
 

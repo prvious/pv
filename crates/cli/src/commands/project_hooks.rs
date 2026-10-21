@@ -184,8 +184,8 @@ async fn wait_for_reconciliation_job(paths: &PvPaths, job_id: &str) -> Result<()
     loop {
         let job = database
             .job(job_id)?
-            .ok_or_else(|| StateError::JobNotFound {
-                id: job_id.to_string(),
+            .ok_or_else(|| CliError::LinkReconciliationUnknown {
+                job_id: job_id.to_string(),
             })?;
         match job.status {
             JobStatus::Running => tokio::time::sleep(Duration::from_millis(100)).await,

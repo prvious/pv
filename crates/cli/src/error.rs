@@ -24,6 +24,11 @@ pub enum CliError {
     )]
     LinkReconciliationFailed { job_id: String, message: String },
 
+    #[error(
+        "the outcome of reconciliation {job_id} is unknown\nSetup hooks were not run; run `pv link` again"
+    )]
+    LinkReconciliationUnknown { job_id: String },
+
     #[error("prompt cancelled")]
     PromptCancelled,
 

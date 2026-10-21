@@ -12,10 +12,10 @@ expression: "(refused, edited, skipped)"
     },
     CommandOutput {
         code: Some(
-            1,
+            0,
         ),
-        stdout: "",
-        stderr: "error: PV runs this worktree's hooks automatically after its first successful reconciliation; check `pv jobs` or pass `--skip-hooks`\n",
+        stdout: "Already linked source-worktree (resource-only) -> <tempdir>/worktree\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
     },
     CommandOutput {
         code: Some(

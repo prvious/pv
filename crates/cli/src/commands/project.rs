@@ -49,13 +49,13 @@ pub(crate) fn link(
                 .as_ref()
                 .is_some_and(|project| project.id == discovered.project_id)
         });
-    if !args.skip_hooks
+    if hooks_enabled
         && let Some(project) = &existing
         && database.held_project_ids()?.contains(&project.id)
     {
         return Err(CliError::ProjectFirstReconciliationPending.into());
     }
-    if !args.skip_hooks
+    if hooks_enabled
         && let Some(project) = &existing
         && let Some(job) = database.active_hook_job(&format!("project:{}", project.id))?
     {

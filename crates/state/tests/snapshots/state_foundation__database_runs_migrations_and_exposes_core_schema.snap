@@ -23,11 +23,9 @@ DatabaseInspection {
         "014:discovered_worktrees",
         "015:project_first_reconciled_at",
         "016:pending_cleanups",
-        "017:job_completion_order",
     ],
     tables: [
         "global_php_default_track",
-        "job_counters",
         "job_diagnostic_outcomes",
         "jobs",
         "managed_resource_tracks",

@@ -864,7 +864,7 @@ When `pv daemon:restart` interrupts active jobs, PV marks those jobs abandoned o
 
 `pv daemon:restart` waits for the LaunchAgent to restart, for the Unix socket to become available, and for the daemon to report healthy. If the daemon does not become healthy within 15 seconds, the command exits non-zero. After the daemon is healthy, it enqueues reconciliation and returns without waiting for full runtime reconciliation.
 
-PV keeps a fixed recent daemon job history in `pv.db`, such as the last 100 jobs. Retention uses completion order and never prunes running jobs. Detailed history belongs in logs.
+PV keeps a fixed recent daemon job history in `pv.db`, such as the last 100 jobs. Detailed history belongs in logs.
 
 Filesystem watcher events are briefly debounced. Queued reconciliation requests are coalesced by scope where possible, and each job reconciles from current `pv.db` and Project config rather than stale event payloads.
 Background Project reconciliation verifies that the Project remains linked before admission and again after waiting in the queue. A request for a Project removed before admission is discarded. An admitted job whose Project was removed while queued completes successfully as skipped with no diagnostic coverage. An explicit foreground request for a missing Project remains an error.

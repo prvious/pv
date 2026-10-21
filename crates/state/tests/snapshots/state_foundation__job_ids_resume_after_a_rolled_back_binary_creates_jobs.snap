@@ -1,8 +1,0 @@
----
-source: crates/state/tests/state_foundation.rs
-expression: "(first_after_upgrade.id, second_after_upgrade.id)"
----
-(
-    "job_000003",
-    "job_000004",
-)
