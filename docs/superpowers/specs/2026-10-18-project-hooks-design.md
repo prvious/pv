@@ -135,6 +135,7 @@ One hook run is one Project's `prepare` list or `setup` list. A `pv link` invoca
    - The working directory is the Project root.
    - stdin is `/dev/null`, everywhere, so a hook that works with `pv link` also works in the daemon.
    - Each command gets its own process group, so stopping a run stops everything it started.
+   - When a command exits, PV stops anything it left running in its process group. A `php artisan serve &` started by a hook is stopped.
 3. **Stop at the first command that exits non-zero.** The run fails, naming the command and its exit status.
 
 On macOS `/bin/sh` is bash in POSIX mode. On Debian and Ubuntu it is dash. Hooks should use POSIX syntax. Parallel work needs a `wait` per process, because a plain `wait` exits 0 even when a job failed:
@@ -179,7 +180,7 @@ Known limit: tools that load only after the first prompt (zinit turbo mode, lazy
 
 ### `pv link`
 
-1. **Read and validate Project config,** as today. If the Project is discovered and `first_reconciled_at` is still null, fail before running anything: PV runs this worktree's hooks automatically after its first successful reconciliation; check `pv jobs`, or pass `--skip-hooks` to link without terminal hooks. Otherwise, if the daemon is running hooks for this linked Project (a queued or running `hooks` job for it), fail before running anything and say to wait for that job, or pass `--skip-hooks`. Two runs of `composer install` in one directory at once can break it.
+1. **Read and validate Project config,** as today. If the Project declares hooks, is discovered and `first_reconciled_at` is still null, fail before running anything: PV runs this worktree's hooks automatically after its first successful reconciliation; check `pv jobs`, or pass `--skip-hooks` to link without terminal hooks. Otherwise, if the Project declares hooks and the daemon is running hooks for this linked Project (a queued or running `hooks` job for it), fail before running anything and say to wait for that job, or pass `--skip-hooks`. Two runs of `composer install` in one directory at once can break it.
 2. **Run `prepare`** in the terminal, unless `--skip-hooks` is passed or there is no `prepare` list. On failure:
    - Exit non-zero.
    - On a first link, nothing is recorded.
@@ -187,12 +188,14 @@ Known limit: tools that load only after the first prompt (zinit turbo mode, lazy
 3. **Record desired state and request reconciliation,** as today.
 4. **Run `setup`,** if the Project has a `setup` list and `--skip-hooks` wasn't passed:
    - Wait for the job ID in the daemon's accepted response by reading its record in `pv.db` until it finishes. The ID may name a new job or an existing queued/running reconciliation into which the request was coalesced. Print the accepted job ID while waiting, and keep waiting through daemon restarts. Run setup only when that accepted job finishes successfully. This uses the existing protocol and does not reuse the streaming setup client.
+   - If the accepted job record disappears, exit non-zero: its outcome is unknown, setup was not run, and the user should run `pv link` again.
    - If the accepted job fails, skip `setup`, exit non-zero, show the job's error and say to run `pv link` again once it is fixed. No per-Project outcome recording is added.
    - If the daemon isn't running (including before `pv setup`), skip `setup`. Warn that it runs when `pv link` is run again after `pv setup`, and exit zero, matching how `pv link` behaves before setup today.
    - Otherwise run `setup` in the terminal. On failure, exit non-zero. The Project stays linked with its allocations and env block.
 5. **Record the run as a `hooks` job** for the Project when it finishes (next section). A `prepare` failure on a first link has no Project to record against, so it appears only in the terminal.
 
 Details:
+- The guards cover linked Projects only. Before discovery links a worktree, `pv link` can run prepare there and link it as an ordinary Project. Discovery forgets that worktree from its running, prepared and failed sets and records a successful skipped prepare for its worktree scope, clearing any earlier failure. A daemon prepare finishing afterwards cannot link it or trigger setup.
 - `pv link` holds shared runtime lifecycle admission throughout the command, except while hook commands run. Release it immediately before each hook list and reacquire it immediately afterwards. If reacquiring fails because `pv daemon:disable` or `pv uninstall` took it, exit non-zero without recording state or contacting the daemon. If `pv.db` existed when the command started and is missing after a hook list, abort before opening the database or making IPC requests, so a completed `uninstall --prune` cannot recreate `~/.pv`. A completed disable or plain uninstall needs no extra detection. Otherwise a long `setup` would block disable or uninstall.
 - Two concurrent `pv link` invocations in the same folder are not coordinated, like running `composer install` twice by hand.
 - `pv link` without setup hooks stays a fast intent command that returns once the daemon accepts reconciliation.
@@ -304,7 +307,7 @@ For the stack, on the owner's laptop with many worktrees:
 - **Shell startup problems.** Markers, stdin from `/dev/null` and the 10 s timeout cover noise, prompts and hangs. Lazily loaded tools stay a documented limit.
 - **Secrets.** Hooks receive the whole environment and can read and send away credentials such as `COMPOSER_AUTH`. Accepted: branch code PV serves and Composer/pnpm scripts already run as the user and can read those same secrets from files (D2). PV never persists captured values. Command output can still contain secrets, so hook logs are owner-only.
 - **Job history churn.** Hook runs share the 100-job history, so a burst of worktrees pushes older jobs out sooner.
-- **Never-linked worktrees.** A `prepare` failure for a worktree that Git then removes, while its source stays linked, stays in `pv status` until it ages out of the job history. Accepted.
+- **Removed worktrees.** When Git removes a worktree, PV records a successful skipped prepare for its worktree scope, clearing any earlier prepare failure.
 - **Database drops during migrations.** Cleanup stops a worktree's daemon hooks before deleting its allocation objects. Foreground runs belong to the terminal; removing a worktree during `pv link` has no CLI/daemon handoff.
 - **Concurrent foreground links.** Two `pv link` runs in the same folder are not coordinated, like two manually started Composer installs. Queued daemon runs are covered by their job rows.
 
