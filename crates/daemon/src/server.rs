@@ -326,22 +326,21 @@ pub(crate) async fn serve(
         }
     };
 
-    combine_shutdown_results([result, hook_result, startup_result])
-}
-
-fn combine_shutdown_results(results: [Result<(), DaemonError>; 3]) -> Result<(), DaemonError> {
-    let mut combined = Ok(());
-    for cleanup in results {
-        combined = match (combined, cleanup) {
-            (Ok(()), result) | (result, Ok(())) => result,
-            (Err(source), Err(cleanup)) => Err(DaemonError::RuntimeCleanupFailed {
-                runtime: "daemon shutdown".to_owned(),
-                source: Box::new(source),
-                cleanup: Box::new(cleanup),
-            }),
-        };
+    let mut result = result;
+    for secondary in [hook_result, startup_result] {
+        if let Err(error) = secondary {
+            if result.is_err() {
+                structured_log::runtime_config_cleanup_failed(
+                    &paths,
+                    "daemon shutdown",
+                    &error.to_string(),
+                );
+            } else {
+                result = Err(error);
+            }
+        }
     }
-    combined
+    result
 }
 
 async fn run_debounced_reconciliation_job(
@@ -582,7 +581,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::io;
     #[cfg(target_os = "macos")]
     use std::sync::Arc;
     use std::time::Duration;
@@ -609,10 +607,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::enqueue_runtime_recovery_job;
     use super::{
-        combine_shutdown_results, handle_background_reconciliation_result,
-        handle_startup_task_result, read_request_line, run_debounced_reconciliation_job,
+        handle_background_reconciliation_result, handle_startup_task_result, read_request_line,
+        run_debounced_reconciliation_job,
     };
-    use crate::DaemonError;
     use crate::health::collect_project_tls_health_scopes;
     #[cfg(target_os = "macos")]
     use crate::health::{RuntimeRecoveryBackoff, scan_runtime_health};
@@ -625,24 +622,6 @@ mod tests {
     use crate::reconciliation::EnqueueResult;
     use crate::reconciliation::{ReconciliationQueue, ReconciliationScope};
     use protocol::transport;
-
-    #[test]
-    fn shutdown_preserves_loop_hook_and_startup_errors() -> Result<()> {
-        let result = combine_shutdown_results([
-            Err(io::Error::other("serve failed").into()),
-            Err(DaemonError::HookCleanup {
-                scope: "project:fixture".to_owned(),
-                reason: "process group could not be stopped".to_owned(),
-            }),
-            Err(io::Error::other("startup cleanup failed").into()),
-        ]);
-        let error = result
-            .err()
-            .ok_or_else(|| anyhow!("expected combined shutdown error"))?;
-        insta::assert_snapshot!(error.to_string());
-        assert!(combine_shutdown_results([Ok(()), Ok(()), Ok(())]).is_ok());
-        Ok(())
-    }
 
     #[cfg(target_os = "macos")]
     #[tokio::test]

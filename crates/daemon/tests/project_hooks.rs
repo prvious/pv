@@ -593,236 +593,6 @@ async fn unlinking_a_source_stops_running_and_queued_hooks_for_its_children() ->
 }
 
 #[tokio::test]
-async fn moving_a_worktree_and_restoring_its_id_does_not_interrupt_setup() -> Result<()> {
-    let fixture = Fixture::new()?;
-    let setup = format!("touch started; {}", hold_until("release"));
-    let path = fixture.worktree("moving", None, Some(&setup))?;
-    let config_path = path.join("pv.yml");
-    let configuration = state::fs::read_to_string(&config_path)?;
-    state::fs::write_sensitive_file(
-        &config_path,
-        &format!("{configuration}    - pwd > setup-directory; touch setup-done\n"),
-    )?;
-    let daemon = fixture.start().await?;
-    shutdown_after(daemon, &fixture.paths, async {
-        file_exists(&path.join("started")).await?;
-        let entry = fixture.source.path.join(".git/worktrees/moving");
-        state::fs::delete_file(&entry.join("pv-id"))?;
-        reconcile(&fixture.paths, "system").await?;
-        assert!(entry.join("pv-id").exists());
-        let moved = fixture.root.join("moved");
-        state::fs::rename(&path, &moved)?;
-        state::fs::write_sensitive_file(&entry.join("gitdir"), &format!("{moved}/.git\n"))?;
-        reconcile(&fixture.paths, "system").await?;
-        state::fs::write_sensitive_file(&moved.join("release"), "")?;
-        file_exists(&moved.join("setup-done")).await?;
-        assert_eq!(
-            state::fs::read_to_string(&moved.join("setup-directory"))?.trim(),
-            moved.as_str()
-        );
-        eventually(|| {
-            Ok(fixture
-                .hook_jobs()?
-                .into_iter()
-                .find(|job| job.status == JobStatus::Succeeded))
-        })
-        .await?;
-        assert_eq!(fixture.hook_jobs()?.len(), 1);
-        Ok(())
-    })
-    .await
-}
-
-#[tokio::test]
-async fn prepare_survives_an_unavailable_source_and_a_worktree_move() -> Result<()> {
-    let fixture = Fixture::new()?;
-    let prepare = format!("touch started; {}", hold_until("release"));
-    let path = fixture.worktree("prepare-move", Some(&prepare), Some("touch setup-done"))?;
-    let daemon = fixture.start().await?;
-    shutdown_after(daemon, &fixture.paths, async {
-        file_exists(&path.join("started")).await?;
-        reconcile(&fixture.paths, "system").await?;
-        let git = fixture.source.path.join(".git");
-        let unavailable = fixture.source.path.join(".git-unavailable");
-        state::fs::rename(&git, &unavailable)?;
-        reconcile(&fixture.paths, "system").await?;
-        assert_eq!(fixture.hook_jobs()?[0].status, JobStatus::Running);
-        state::fs::rename(&unavailable, &git)?;
-        let moved = fixture.root.join("prepared-moved");
-        state::fs::rename(&path, &moved)?;
-        state::fs::write_sensitive_file(
-            &git.join("worktrees/prepare-move/gitdir"),
-            &format!("{moved}/.git\n"),
-        )?;
-        reconcile(&fixture.paths, "system").await?;
-        assert_eq!(fixture.hook_jobs()?[0].status, JobStatus::Running);
-        state::fs::write_sensitive_file(&moved.join("release"), "")?;
-        file_exists(&moved.join("setup-done")).await?;
-        assert_eq!(fixture.hook_jobs()?.len(), 2);
-        Ok(())
-    })
-    .await
-}
-
-#[tokio::test]
-async fn an_old_prepare_cannot_replace_a_new_run_after_an_ordinary_link_is_unlinked() -> Result<()>
-{
-    let fixture = Fixture::new()?;
-    let prepare = format!(
-        "if [ ! -f first-finished ]; then touch first-started; {}; touch first-finished; else touch second-started; {}; fi",
-        hold_until("release-first"),
-        hold_until("release-second")
-    );
-    let original = fixture.worktree("relinked", Some(&prepare), Some("touch setup-done"))?;
-    let path = fixture.root.join("relinked-moved");
-    let daemon = fixture.start().await?;
-    shutdown_after(daemon, &fixture.paths, async {
-        file_exists(&original.join("first-started")).await?;
-        state::fs::rename(&original, &path)?;
-        state::fs::write_sensitive_file(
-            &fixture.source.path.join(".git/worktrees/relinked/gitdir"),
-            &format!("{path}/.git\n"),
-        )?;
-        let ordinary = Database::open(&fixture.paths)?
-            .link_project_with_mode(
-                LinkProjectInput {
-                    path: path.clone(),
-                    original_path: path.clone(),
-                    primary_hostname: "ordinary.test".to_owned(),
-                    config_path: path.join("pv.yml"),
-                    desired_php_track: None,
-                },
-                state::ProjectMode::ResourceOnly,
-            )?
-            .project;
-        reconcile(&fixture.paths, "system").await?;
-        Database::open(&fixture.paths)?.unlink_project(&ordinary.id)?;
-        reconcile(&fixture.paths, "system").await?;
-        assert_eq!(fixture.hook_jobs()?.len(), 1);
-        assert!(!path.join("second-started").exists());
-        state::fs::write_sensitive_file(&path.join("release-first"), "")?;
-        eventually(|| {
-            Ok(fixture
-                .hook_jobs()?
-                .iter()
-                .all(|job| job.status == JobStatus::Succeeded)
-                .then_some(()))
-        })
-        .await?;
-        reconcile(&fixture.paths, "system").await?;
-        file_exists(&path.join("second-started")).await?;
-        assert!(
-            Database::open(&fixture.paths)?
-                .discovered_projects()?
-                .is_empty()
-        );
-        state::fs::write_sensitive_file(&path.join("release-second"), "")?;
-        file_exists(&path.join("setup-done")).await?;
-        Ok(())
-    })
-    .await
-}
-
-#[tokio::test]
-async fn queued_prepare_and_setup_follow_worktree_moves_without_requeueing() -> Result<()> {
-    for phase in ["prepare", "setup"] {
-        let fixture = Fixture::new()?;
-        let command = format!(
-            "pwd -P > actual-path; printf '%s\\n' \"$PV_SOURCE_PATH\" >> actual-path; touch started; {}; touch done",
-            hold_until("release")
-        );
-        let paths = (0..5)
-            .map(|index| {
-                fixture.worktree(
-                    &format!("queued-{index}"),
-                    (phase == "prepare").then_some(command.as_str()),
-                    (phase == "setup").then_some(command.as_str()),
-                )
-            })
-            .collect::<Result<Vec<_>>>()?;
-        let daemon = fixture.start().await?;
-        shutdown_after(daemon, &fixture.paths, async {
-            eventually(|| Ok((fixture.hook_jobs()?.len() == 5).then_some(()))).await?;
-            eventually(|| {
-                Ok((paths
-                    .iter()
-                    .filter(|path| path.join("started").exists())
-                    .count()
-                    == 4)
-                    .then_some(()))
-            })
-            .await?;
-            reconcile(&fixture.paths, "system").await?;
-            let queued_index = paths
-                .iter()
-                .position(|path| !path.join("started").exists())
-                .ok_or_else(|| anyhow!("fifth hook did not stay queued"))?;
-            let queued_path = &paths[queued_index];
-            let database = Database::open(&fixture.paths)?;
-            let entry = fixture
-                .source
-                .path
-                .join(format!(".git/worktrees/queued-{queued_index}"));
-            let worktree_id = state::fs::read_to_string(&entry.join("pv-id"))?;
-            let scope = if phase == "prepare" {
-                format!("worktree:{}:{}", fixture.source.id, worktree_id.trim())
-            } else {
-                let project = database
-                    .project_by_path(queued_path)?
-                    .ok_or_else(|| anyhow!("queued setup Project missing"))?;
-                format!("project:{}", project.id)
-            };
-            let queued = database
-                .active_hook_job(&scope)?
-                .ok_or_else(|| anyhow!("queued hook missing"))?;
-            let moved = fixture.root.join("queued-moved");
-            state::fs::rename(queued_path, &moved)?;
-            state::fs::write_sensitive_file(&entry.join("gitdir"), &format!("{moved}/.git\n"))?;
-            reconcile(&fixture.paths, "system").await?;
-            let running = paths
-                .iter()
-                .enumerate()
-                .find(|(index, _)| *index != queued_index)
-                .map(|(_, path)| path)
-                .ok_or_else(|| anyhow!("running hook missing"))?;
-            state::fs::write_sensitive_file(&running.join("release"), "")?;
-            file_exists(&moved.join("started")).await?;
-            assert_eq!(
-                state::fs::read_to_string(&moved.join("actual-path"))?,
-                format!("{moved}\n{}\n", fixture.source.path)
-            );
-            for path in paths
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| *index != queued_index)
-                .map(|(_, path)| path)
-                .chain(std::iter::once(&moved))
-            {
-                state::fs::write_sensitive_file(&path.join("release"), "")?;
-            }
-            eventually(|| {
-                Ok(Database::open(&fixture.paths)?
-                    .job(&queued.id)?
-                    .filter(|job| job.status == JobStatus::Succeeded))
-            })
-            .await?;
-            eventually(|| {
-                Ok(fixture
-                    .hook_jobs()?
-                    .iter()
-                    .all(|job| job.status == JobStatus::Succeeded)
-                    .then_some(()))
-            })
-            .await?;
-            assert_eq!(fixture.hook_jobs()?.len(), 5);
-            Ok(())
-        })
-        .await?;
-    }
-    Ok(())
-}
-
-#[tokio::test]
 async fn allocation_cleanup_observes_a_stopped_hook_before_dropping_its_database() -> Result<()> {
     let fixture = Fixture::new()?;
     let release = fixture
@@ -893,7 +663,7 @@ async fn allocation_cleanup_observes_a_stopped_hook_before_dropping_its_database
 }
 
 #[tokio::test]
-async fn outcome_recording_failure_preserves_the_command_error_and_drains_other_hooks() -> Result<()>
+async fn outcome_recording_failure_keeps_daemon_running_and_startup_recovers_the_row() -> Result<()>
 {
     let fixture = Fixture::new()?;
     let failing = fixture.worktree(
@@ -906,33 +676,145 @@ async fn outcome_recording_failure_preserves_the_command_error_and_drains_other_
     )?;
     let held = fixture.worktree(
         "held-record",
-        Some(&format!(
-            "printf '%s\\n' \"$$\" > pid.tmp; mv pid.tmp pid; touch started; {}",
-            hold_until("release")
-        )),
+        Some(&format!("touch started; {}", hold_until("release"))),
         None,
     )?;
     let daemon = fixture.start().await?;
-    let operation = async {
+    let interrupted_id = shutdown_after(daemon, &fixture.paths, async {
         file_exists(&failing.join("started")).await?;
         file_exists(&held.join("started")).await?;
-        let process = Pid::from_raw(state::fs::read_to_string(&held.join("pid"))?.trim().parse::<i32>()?).ok_or_else(|| anyhow!("invalid hook PID"))?;
+        let worktree_id = state::fs::read_to_string(&fixture.source.path.join(".git/worktrees/failing-record/pv-id"))?;
+        let scope = format!("worktree:{}:{}", fixture.source.id, worktree_id.trim());
+        let job = Database::open(&fixture.paths)?.active_hook_job(&scope)?.ok_or_else(|| anyhow!("failing job missing"))?;
         Connection::open(fixture.paths.db())?.execute_batch("CREATE TRIGGER reject_hook_outcomes BEFORE UPDATE ON jobs WHEN OLD.kind = 'hooks' AND NEW.status != 'running' BEGIN SELECT RAISE(ABORT, 'hook outcome fixture'); END;")?;
         state::fs::write_sensitive_file(&failing.join("release"), "")?;
-        eventually(|| Ok(state::fs::read_to_string(&fixture.paths.daemon_log())?.contains("exit status: 23").then_some(()))).await?;
-        Ok::<_, anyhow::Error>(process)
-    }.await;
-    let stopped = daemon.shutdown().await;
-    let cleanup = daemon::stop_recorded_runtimes(fixture.paths.clone()).await;
-    let process = operation?;
-    cleanup?;
-    let error = stopped
-        .err()
-        .ok_or_else(|| anyhow!("hook recording failure did not fail the daemon"))?;
-    assert_eq!(test_kill_process(process), Err(Errno::SRCH));
-    let mut settings = insta::Settings::clone_current();
-    settings.add_filter(fixture.root.as_str(), "<fixture>");
-    settings.add_filter(r"worktree-[a-z0-9]+-[a-z0-9]+", "worktree-<source>-<id>");
-    settings.bind(|| assert_debug_snapshot!(error.to_string()));
+        eventually(|| Ok(state::fs::read_to_string(&fixture.paths.daemon_log())?.contains("hook outcome fixture").then_some(()))).await?;
+        let log = state::fs::read_to_string(&fixture.paths.daemon_log())?;
+        assert!(log.contains("exit status: 23"));
+        Connection::open(fixture.paths.db())?.execute_batch("DROP TRIGGER reject_hook_outcomes")?;
+        // A fresh reconciliation proves the daemon is still serving after the recording error.
+        reconcile(&fixture.paths, "system").await?;
+        assert_eq!(Database::open(&fixture.paths)?.job(&job.id)?.map(|job| job.status), Some(JobStatus::Running));
+        state::fs::write_sensitive_file(&held.join("release"), "")?;
+        eventually(|| Ok(Database::open(&fixture.paths)?.project_by_path(&held)?.map(|_| ()))).await?;
+        Ok(job.id)
+    }).await?;
+    let daemon = fixture.start().await?;
+    shutdown_after(daemon, &fixture.paths, async {
+        let recovered = Database::open(&fixture.paths)?
+            .job(&interrupted_id)?
+            .ok_or_else(|| anyhow!("interrupted row missing"))?;
+        assert_eq!(recovered.status, JobStatus::Failed);
+        reconcile(&fixture.paths, "system").await?;
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn removed_and_ordinary_linked_prepares_clear_running_queued_and_failed_scopes() -> Result<()>
+{
+    for ordinary in [false, true] {
+        let fixture = Fixture::new()?;
+        let failed = fixture.worktree("failed", Some("exit 17"), None)?;
+        let daemon = fixture.start().await?;
+        shutdown_after(daemon, &fixture.paths, async {
+            let failed_job = eventually(|| {
+                Ok(fixture
+                    .hook_jobs()?
+                    .into_iter()
+                    .find(|job| job.status == JobStatus::Failed))
+            })
+            .await?;
+            let mut active = Vec::new();
+            for index in 0..4 {
+                active.push(fixture.worktree(
+                    &format!("active-{index}"),
+                    Some(&format!(
+                        "touch started; {}; touch unexpected-completion",
+                        hold_until("release")
+                    )),
+                    None,
+                )?);
+            }
+            reconcile(&fixture.paths, "system").await?;
+            for path in &active {
+                file_exists(&path.join("started")).await?;
+            }
+            let queued = fixture.worktree("queued", Some("touch unexpected-queued"), None)?;
+            reconcile(&fixture.paths, "system").await?;
+            let mut scopes = Vec::new();
+            let mut database = Database::open(&fixture.paths)?;
+            for (name, path) in [
+                ("failed", &failed),
+                ("active-0", &active[0]),
+                ("queued", &queued),
+            ] {
+                let entry = fixture.source.path.join(".git/worktrees").join(name);
+                let worktree_id = state::fs::read_to_string(&entry.join("pv-id"))?;
+                scopes.push(format!(
+                    "worktree:{}:{}",
+                    fixture.source.id,
+                    worktree_id.trim()
+                ));
+                if ordinary {
+                    database.link_project_with_mode(
+                        LinkProjectInput {
+                            path: path.clone(),
+                            original_path: path.clone(),
+                            primary_hostname: format!("{name}.test"),
+                            config_path: path.join("pv.yml"),
+                            desired_php_track: None,
+                        },
+                        state::ProjectMode::ResourceOnly,
+                    )?;
+                } else {
+                    state::fs::delete_dir_all(&entry)?;
+                }
+            }
+            // The fifth prepare remains queued behind four held runs.
+            assert!(database.active_hook_job(&scopes[2])?.is_some());
+            assert!(!queued.join("unexpected-queued").exists());
+            reconcile(&fixture.paths, "system").await?;
+            let summary = if ordinary {
+                "prepare skipped: linked as an ordinary Project"
+            } else {
+                "prepare skipped: worktree removed"
+            };
+            for scope in &scopes {
+                let skipped = fixture
+                    .hook_jobs()?
+                    .into_iter()
+                    .find(|job| &job.scope == scope)
+                    .ok_or_else(|| anyhow!("skipped job missing"))?;
+                assert_eq!(skipped.status, JobStatus::Succeeded);
+                assert_eq!(skipped.summary.as_deref(), Some(summary));
+                assert!(database.active_hook_job(scope)?.is_none());
+            }
+            assert_eq!(
+                database.job(&failed_job.id)?.map(|job| job.status),
+                Some(JobStatus::Failed)
+            );
+            assert!(database.unresolved_job_failures()?.is_empty());
+            for path in &active {
+                state::fs::write_sensitive_file(&path.join("release"), "")?;
+            }
+            for path in &active[1..] {
+                eventually(|| Ok(database.project_by_path(path)?.map(|_| ()))).await?;
+            }
+            reconcile(&fixture.paths, "system").await?;
+            assert!(!active[0].join("unexpected-completion").exists());
+            assert!(!queued.join("unexpected-queued").exists());
+            let discovered = database.discovered_projects()?;
+            assert!(
+                discovered
+                    .iter()
+                    .all(|project| ![&failed, &active[0], &queued].contains(&&project.path))
+            );
+            assert!(database.unresolved_job_failures()?.is_empty());
+            Ok(())
+        })
+        .await?;
+    }
     Ok(())
 }

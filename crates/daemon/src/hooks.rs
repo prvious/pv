@@ -1,6 +1,7 @@
 //! Daemon hook runs have their own FIFO and never enter the reconciliation queue.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::io;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -9,14 +10,13 @@ use platform::hooks::{self, HookCommandContext, HookError, HookOutput};
 use state::{Database, JobDiagnosticSubject, PvPaths};
 use tokio::sync::{Notify, watch};
 use tokio::task::JoinSet;
-use tokio::time::{MissedTickBehavior, interval};
 
 use crate::DaemonError;
 use crate::reconciliation::ReconciliationDebouncer;
 use crate::{structured_log, worktrees};
 
 const CONCURRENCY: usize = 4;
-const OBSOLETE_SCAN_INTERVAL: Duration = Duration::from_millis(100);
+const CANCELLATION_WAIT: Duration = Duration::from_millis(100);
 
 #[derive(Clone)]
 pub(crate) struct DaemonHooks {
@@ -31,7 +31,6 @@ struct HookState {
     queued: VecDeque<HookRun>,
     active: BTreeMap<String, ActiveRun>,
     prepares: BTreeMap<String, PrepareState>,
-    cleanup_failures: BTreeMap<String, String>,
 }
 
 struct PrepareState {
@@ -110,23 +109,26 @@ impl DaemonHooks {
 
     /// An ordinary `pv link` takes ownership of this path. An already executing prepare may
     /// finish, but its result must never put the path back into discovery's transient sets.
-    pub(crate) fn forget_linked_prepares(&self, database: &Database) -> Result<(), DaemonError> {
+    pub(crate) fn forget_linked_prepares(
+        &self,
+        database: &mut Database,
+    ) -> Result<(), DaemonError> {
         let projects = database.projects()?;
-        self.state().prepares.retain(|scope, prepare| {
-            if projects.iter().any(|project| project.path == prepare.path) {
-                return false;
-            }
-            let current = projects
-                .iter()
-                .find(|project| project.id == prepare.source_project_id)
-                .and_then(|source| {
-                    self.registered_path(&source.path, &prepare.path, &prepare.worktree_id, scope)
-                });
-            if let Some(current) = current {
-                prepare.path = current;
-            }
-            !projects.iter().any(|project| project.path == prepare.path)
-        });
+        let mut state = self.state();
+        let scopes = state
+            .prepares
+            .iter()
+            .filter(|(_, prepare)| projects.iter().any(|project| project.path == prepare.path))
+            .map(|(scope, _)| scope.clone())
+            .collect::<Vec<_>>();
+        for scope in scopes {
+            self.discard_prepare(
+                &mut state,
+                database,
+                &scope,
+                "prepare skipped: linked as an ordinary Project",
+            )?;
+        }
         Ok(())
     }
 
@@ -179,7 +181,7 @@ impl DaemonHooks {
             source_project_id: source_project_id.to_owned(),
         };
         if state.stopping {
-            self.record_outcome(&run, &Err(HookError::Interrupted))?;
+            self.record_outcome(&run, &Err(HookError::Interrupted));
         } else {
             state.queued.push_back(run);
         }
@@ -239,7 +241,7 @@ impl DaemonHooks {
             source_project_id: discovered.source_project_id,
         };
         if state.stopping {
-            self.record_outcome(&run, &Err(HookError::Interrupted))?;
+            self.record_outcome(&run, &Err(HookError::Interrupted));
         } else {
             state.queued.push_back(run);
         }
@@ -247,7 +249,7 @@ impl DaemonHooks {
         Ok(())
     }
 
-    /// Cleanup waits for cancellation and process-group reaping before deleting allocations.
+    /// Waits for obsolete runs to finish or report cleanup failure before allocation cleanup.
     pub(crate) async fn stop_obsolete(&self) -> Result<(), DaemonError> {
         loop {
             let notified = self.changed.notified();
@@ -257,100 +259,147 @@ impl DaemonHooks {
             }
             tokio::select! {
                 _ = notified => {}
-                _ = tokio::time::sleep(OBSOLETE_SCAN_INTERVAL) => {}
+                _ = tokio::time::sleep(CANCELLATION_WAIT) => {}
             }
         }
     }
 
     fn cancel_obsolete(&self) -> Result<bool, DaemonError> {
-        {
-            let state = self.state();
-            if let Some((scope, reason)) = state.cleanup_failures.iter().next() {
-                return Err(DaemonError::HookCleanup {
-                    scope: scope.clone(),
-                    reason: reason.clone(),
-                });
-            }
-            if state.queued.is_empty() && state.active.is_empty() && state.prepares.is_empty() {
-                return Ok(false);
-            }
-        }
-        let database = Database::open(&self.paths)?;
-        self.forget_linked_prepares(&database)?;
         let mut state = self.state();
+        if state.queued.is_empty() && state.active.is_empty() && state.prepares.is_empty() {
+            return Ok(false);
+        }
+        let mut database = Database::open(&self.paths)?;
         let mut obsolete = Vec::new();
         for (scope, prepare) in &state.prepares {
-            let registered =
-                if let Some(source) = database.project_by_id(&prepare.source_project_id)? {
+            let source = database.project_by_id(&prepare.source_project_id)?;
+            let summary = if database.project_by_path(&prepare.path)?.is_some() {
+                Some("prepare skipped: linked as an ordinary Project")
+            } else if source
+                .as_ref()
+                .and_then(|source| {
                     self.registered_path(&source.path, &prepare.path, &prepare.worktree_id, scope)
-                        .is_some()
-                } else {
-                    false
-                };
-            if !registered {
-                obsolete.push(scope.clone());
-            }
-        }
-        let HookState { queued, active, .. } = &mut *state;
-        for run in queued
-            .iter_mut()
-            .chain(active.values_mut().map(|active| &mut active.run))
-        {
-            let project_removed = if let Some(project_id) = &run.project_id {
-                if let Some(project) = database.project_by_id(project_id)? {
-                    run.project_path = project.path;
-                    false
-                } else {
-                    true
-                }
+                })
+                .is_none()
+            {
+                Some("prepare skipped: worktree removed")
             } else {
-                false
+                None
             };
-            let source = database.project_by_id(&run.source_project_id)?;
-            if let Some(source) = &source {
-                run.source_path = source.path.clone();
-            }
-            let registered = self.registered_path(
-                &run.source_path,
-                &run.project_path,
-                &run.worktree_id,
-                &run.scope,
-            );
-            if let Some(path) = &registered {
-                run.project_path = path.clone();
-            }
-            if project_removed || source.is_none() || registered.is_none() {
-                obsolete.push(run.scope.clone());
+            if let Some(summary) = summary {
+                obsolete.push((scope.clone(), summary));
             }
         }
-        obsolete.sort();
-        obsolete.dedup();
-        let mut waiting = false;
-        for scope in obsolete {
-            if let Some(error) = state.cleanup_failures.get(&scope) {
-                return Err(DaemonError::HookCleanup {
-                    scope,
-                    reason: error.clone(),
-                });
+        for (scope, summary) in obsolete {
+            self.discard_prepare(&mut state, &mut database, &scope, summary)?;
+        }
+        let mut obsolete = Vec::new();
+        for run in state
+            .queued
+            .iter()
+            .chain(state.active.values().map(|active| &active.run))
+        {
+            if let Some(project_id) = &run.project_id {
+                let source = database.project_by_id(&run.source_project_id)?;
+                if database.project_by_id(project_id)?.is_none()
+                    || source
+                        .as_ref()
+                        .and_then(|source| {
+                            self.registered_path(
+                                &source.path,
+                                &run.project_path,
+                                &run.worktree_id,
+                                &run.scope,
+                            )
+                        })
+                        .is_none()
+                {
+                    obsolete.push(run.scope.clone());
+                }
             }
+        }
+        for scope in obsolete {
             if let Some(active) = state.active.get(&scope) {
                 active.cancel.send_replace(true);
-                waiting = true;
-                continue;
-            }
-            if let Some(index) = state.queued.iter().position(|run| run.scope == scope)
+            } else if let Some(index) = state.queued.iter().position(|run| run.scope == scope)
                 && let Some(run) = state.queued.remove(index)
             {
-                self.record_outcome(&run, &Err(HookError::Interrupted))?;
-            }
-            state.prepares.remove(&scope);
-            if scope.starts_with("worktree:")
-                && let Some(path) = self.paths.hook_log_for_scope(&scope)
-            {
-                delete_log(&path)?;
+                self.record_outcome(&run, &Err(HookError::Interrupted));
             }
         }
-        Ok(waiting)
+        Ok(state.active.values().any(|active| *active.cancel.borrow()))
+    }
+
+    fn discard_prepare(
+        &self,
+        state: &mut HookState,
+        database: &mut Database,
+        scope: &str,
+        summary: &str,
+    ) -> Result<(), DaemonError> {
+        let Some(prepare) = state.prepares.get(scope) else {
+            return Ok(());
+        };
+        let active = state.active.get(scope);
+        if let Some(active) = active {
+            active.cancel.send_replace(true);
+        }
+        let subject = JobDiagnosticSubject::Other {
+            kind: "hooks".to_owned(),
+            scope: scope.to_owned(),
+        };
+        if let Some(job) = database.active_hook_job(scope)? {
+            database.complete_job_with_coverage(&job.id, summary, &[subject])?;
+        } else if prepare.outcome == PrepareOutcome::Failed {
+            database.record_finished_job("hooks", scope, Ok(summary), &[subject])?;
+        }
+        state.prepares.remove(scope);
+        state.queued.retain(|run| run.scope != scope);
+        if active.is_none()
+            && let Some(log) = self.paths.hook_log_for_scope(scope)
+        {
+            delete_log(&log)?;
+        }
+        Ok(())
+    }
+
+    fn ready_to_run(&self, run: &mut HookRun) -> Result<bool, DaemonError> {
+        let mut database = Database::open(&self.paths)?;
+        let current = if let Some(project_id) = &run.project_id {
+            database
+                .project_by_id(project_id)?
+                .map(|project| project.path)
+        } else {
+            database
+                .project_by_id(&run.source_project_id)?
+                .and_then(|source| {
+                    run.source_path = source.path;
+                    self.registered_path(
+                        &run.source_path,
+                        &run.project_path,
+                        &run.worktree_id,
+                        &run.scope,
+                    )
+                })
+        };
+        let summary = if let Some(path) = current {
+            run.project_path = path;
+            if run.project_id.is_some() || database.project_by_path(&run.project_path)?.is_none() {
+                if let Some(prepare) = self.state().prepares.get_mut(&run.scope) {
+                    prepare.path = run.project_path.clone();
+                }
+                return Ok(true);
+            }
+            "prepare skipped: linked as an ordinary Project"
+        } else {
+            "prepare skipped: worktree removed"
+        };
+        if run.phase == "prepare" {
+            self.discard_prepare(&mut self.state(), &mut database, &run.scope, summary)?;
+        } else {
+            self.record_outcome(run, &Err(HookError::Interrupted));
+        }
+        Ok(false)
     }
 
     fn registered_path(
@@ -377,94 +426,21 @@ impl DaemonHooks {
         mut shutdown: watch::Receiver<bool>,
     ) -> Result<(), DaemonError> {
         let mut tasks = JoinSet::new();
-        let mut result = self.drive(&mut tasks, debouncer, &mut shutdown).await;
-        // Recording and discovery errors must drain children just like normal shutdown.
-        self.begin_shutdown();
-        let queued = self.state().queued.drain(..).collect::<Vec<_>>();
-        for run in queued {
-            result = combine_results(
-                result,
-                self.record_outcome(&run, &Err(HookError::Interrupted)),
-            );
-        }
-        while let Some(joined) = tasks.join_next().await {
-            match joined {
-                Ok((run, outcome)) => {
-                    result = combine_results(result, self.complete(&run, &outcome))
-                }
-                Err(error) => result = combine_results(result, Err(error.into())),
-            }
-        }
-        {
-            let mut state = self.state();
-            let scopes = state.active.keys().cloned().collect::<Vec<_>>();
-            for scope in scopes {
-                state.cleanup_failures.insert(
-                    scope,
-                    "hook task exited before process cleanup was verified".to_owned(),
-                );
-            }
-            state.active.clear();
-            if let Some((scope, reason)) = state.cleanup_failures.iter().next() {
-                result = combine_results(
-                    result,
-                    Err(DaemonError::HookCleanup {
-                        scope: scope.clone(),
-                        reason: reason.clone(),
-                    }),
-                );
-            }
-        }
-        self.changed.notify_waiters();
-        result
-    }
-
-    async fn drive(
-        &self,
-        tasks: &mut JoinSet<(HookRun, Result<(), HookError>)>,
-        debouncer: ReconciliationDebouncer,
-        shutdown: &mut watch::Receiver<bool>,
-    ) -> Result<(), DaemonError> {
-        let mut interval = interval(OBSOLETE_SCAN_INTERVAL);
-        interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
-            self.cancel_obsolete()?;
             while tasks.len() < CONCURRENCY && !*shutdown.borrow() {
                 let Some(mut run) = self.state().queued.pop_front() else {
                     break;
                 };
-                // A queued prepare superseded by an ordinary link has nothing left to do.
-                if run.phase == "prepare" && !self.state().prepares.contains_key(&run.scope) {
-                    self.record_outcome(&run, &Err(HookError::Interrupted))?;
-                    continue;
-                }
-                let database = Database::open(&self.paths)?;
-                let source = database.project_by_id(&run.source_project_id)?;
-                let current = source.as_ref().and_then(|source| {
-                    self.registered_path(
-                        &source.path,
-                        &run.project_path,
-                        &run.worktree_id,
-                        &run.scope,
-                    )
-                });
-                let project_linked = if let Some(project_id) = &run.project_id {
-                    database.project_by_id(project_id)?.is_some()
-                } else {
-                    true
-                };
-                if let (Some(source), Some(path)) = (source, current)
-                    && project_linked
-                {
-                    run.source_path = source.path;
-                    run.project_path = path;
-                } else {
-                    self.record_outcome(&run, &Err(HookError::Interrupted))?;
-                    self.state().prepares.remove(&run.scope);
-                    continue;
-                }
-                if let Some(prepare) = self.state().prepares.get_mut(&run.scope) {
-                    prepare.path = run.project_path.clone();
+                match self.ready_to_run(&mut run) {
+                    Ok(true) => {}
+                    Ok(false) => continue,
+                    Err(error) => {
+                        self.complete(
+                            &run,
+                            &Err(HookError::Io(io::Error::other(error.to_string()))),
+                        );
+                        continue;
+                    }
                 }
                 let (cancel, receiver) = watch::channel(false);
                 self.state().active.insert(
@@ -484,54 +460,74 @@ impl DaemonHooks {
                 biased;
                 _ = async { let _result = shutdown.wait_for(|requested| *requested).await; } => break,
                 joined = tasks.join_next(), if !tasks.is_empty() => {
-                    if let Some(joined) = joined {
-                        let (run, outcome) = joined?;
-                        self.complete(&run, &outcome)?;
-                        if outcome.is_ok() && run.phase == "prepare" && self.is_prepared(&run.source_project_id, &run.worktree_id) {
-                            debouncer.request(crate::ReconciliationScope::System).await;
+                    match joined {
+                        Some(Ok((run, outcome))) => {
+                            self.complete(&run, &outcome);
+                            if outcome.is_ok() && run.phase == "prepare" && self.is_prepared(&run.source_project_id, &run.worktree_id) {
+                                debouncer.request(crate::ReconciliationScope::System).await;
+                            }
                         }
+                        Some(Err(error)) => structured_log::job_abandonment_failed(&self.paths, "unknown", "hooks", &error.to_string()),
+                        None => {}
                     }
                 }
                 _ = self.changed.notified() => {}
-                _ = interval.tick() => {}
             }
         }
+        self.begin_shutdown();
+        let queued = self.state().queued.drain(..).collect::<Vec<_>>();
+        for run in queued {
+            self.record_outcome(&run, &Err(HookError::Interrupted));
+        }
+        while let Some(joined) = tasks.join_next().await {
+            match joined {
+                Ok((run, outcome)) => self.complete(&run, &outcome),
+                Err(error) => structured_log::job_abandonment_failed(
+                    &self.paths,
+                    "unknown",
+                    "hooks",
+                    &error.to_string(),
+                ),
+            }
+        }
+        self.state().active.clear();
+        self.changed.notify_waiters();
         Ok(())
     }
 
-    fn complete(&self, run: &HookRun, outcome: &Result<(), HookError>) -> Result<(), DaemonError> {
-        {
-            let mut state = self.state();
-            state.active.remove(&run.scope);
-            if let Err(error @ (HookError::Cleanup { .. } | HookError::CleanupFailed(_))) = outcome
-            {
-                state
-                    .cleanup_failures
-                    .insert(run.scope.clone(), error.to_string());
-            }
-        }
-        self.changed.notify_waiters();
-        let recorded = self.record_outcome(run, outcome);
-        let forgotten = Database::open(&self.paths)
-            .map_err(DaemonError::from)
-            .and_then(|database| self.forget_linked_prepares(&database));
-        combine_results(recorded, forgotten)?;
+    fn complete(&self, run: &HookRun, outcome: &Result<(), HookError>) {
         let mut state = self.state();
-        if let Some(prepare) = state.prepares.get_mut(&run.scope) {
+        state.active.remove(&run.scope);
+        self.changed.notify_waiters();
+        if run.phase == "prepare" {
+            let Some(prepare) = state.prepares.get_mut(&run.scope) else {
+                // Its subject is gone. Keep the successful skip even if cleanup failed.
+                if let Err(error @ (HookError::Cleanup { .. } | HookError::CleanupFailed(_))) =
+                    outcome
+                {
+                    structured_log::job_failed(
+                        &self.paths,
+                        &run.job_id,
+                        "hooks",
+                        &run.scope,
+                        &error.to_string(),
+                    );
+                }
+                if let Err(error) = delete_log(&run.log) {
+                    structured_log::worktree_cleanup_failed(&self.paths, &error.to_string());
+                }
+                return;
+            };
             prepare.outcome = if outcome.is_ok() {
                 PrepareOutcome::Prepared
             } else {
                 PrepareOutcome::Failed
             };
         }
-        Ok(())
+        self.record_outcome(run, outcome);
     }
 
-    fn record_outcome(
-        &self,
-        run: &HookRun,
-        outcome: &Result<(), HookError>,
-    ) -> Result<(), DaemonError> {
+    fn record_outcome(&self, run: &HookRun, outcome: &Result<(), HookError>) {
         let subject = JobDiagnosticSubject::Other {
             kind: "hooks".to_owned(),
             scope: run.scope.clone(),
@@ -558,30 +554,32 @@ impl DaemonHooks {
                 database.fail_job_with_subject(&run.job_id, &message, &subject)
             }
         });
-        if let Err(recording) = recording {
-            return Err(DaemonError::HookOutcomeRecording {
-                outcome: message,
-                recording: Box::new(recording),
-            });
+        match (outcome, recording) {
+            (Ok(()), Ok(())) => structured_log::job_completed(
+                &self.paths,
+                &run.job_id,
+                "hooks",
+                &run.scope,
+                &message,
+            ),
+            (Ok(()), Err(error)) => structured_log::job_completion_recording_failed(
+                &self.paths,
+                &run.job_id,
+                "hooks",
+                &run.scope,
+                &message,
+                &error.to_string(),
+            ),
+            (Err(_), Err(error)) => structured_log::job_failure_recording_failed(
+                &self.paths,
+                &run.job_id,
+                "hooks",
+                &run.scope,
+                &message,
+                &error.to_string(),
+            ),
+            (Err(_), Ok(())) => {}
         }
-        if outcome.is_ok() {
-            structured_log::job_completed(&self.paths, &run.job_id, "hooks", &run.scope, &message);
-        }
-        Ok(())
-    }
-}
-
-fn combine_results(
-    original: Result<(), DaemonError>,
-    cleanup: Result<(), DaemonError>,
-) -> Result<(), DaemonError> {
-    match (original, cleanup) {
-        (Ok(()), result) | (result, Ok(())) => result,
-        (Err(source), Err(cleanup)) => Err(DaemonError::RuntimeCleanupFailed {
-            runtime: "Project hooks".to_owned(),
-            source: Box::new(source),
-            cleanup: Box::new(cleanup),
-        }),
     }
 }
 
@@ -621,37 +619,73 @@ async fn execute(
 }
 
 pub(crate) fn delete_log(path: &Utf8Path) -> Result<(), DaemonError> {
-    match state::fs::delete_file(path) {
-        Ok(()) => Ok(()),
-        Err(state::StateError::Filesystem { source, .. })
-            if source.kind() == std::io::ErrorKind::NotFound =>
-        {
-            Ok(())
-        }
-        Err(error) => Err(error.into()),
-    }
+    state::fs::remove_file_if_exists(path).map_err(DaemonError::from)
 }
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
+    use std::collections::BTreeSet;
+    use std::io;
     use std::time::Duration;
 
     use anyhow::{Result, anyhow};
     use camino_tempfile::tempdir;
+    use platform::hooks::HookError;
+    use serde_json::Value;
     use state::{
         Database, JobStatus, LinkDiscoveredProjectInput, LinkProjectInput, ProjectMode, PvPaths,
     };
     use tokio::sync::watch;
     use tokio::time::{sleep, timeout};
 
-    use super::DaemonHooks;
+    use super::{DaemonHooks, HookRun};
     use crate::jobs::DaemonDownloadProgress;
     use crate::project_env::{
         ProjectApplyOptions, ProjectApplyStage,
         reconcile_project_env_with_runtime_catalog_and_progress,
     };
     use crate::reconciliation::ReconciliationDebouncer;
-    use std::collections::BTreeSet;
+
+    #[test]
+    fn skipped_prepare_cleanup_failure_keeps_its_success_and_logs_the_group() -> Result<()> {
+        let directory = tempdir()?;
+        let paths = PvPaths::for_home(directory.path());
+        let scope = "worktree:project_fixture:tree";
+        let mut database = Database::open(&paths)?;
+        let job = database.record_finished_job(
+            "hooks",
+            scope,
+            Ok("prepare skipped: worktree removed"),
+            &[],
+        )?;
+        let run = HookRun {
+            job_id: job.id.clone(),
+            scope: scope.to_owned(),
+            phase: "prepare",
+            commands: Vec::new(),
+            project_path: paths.home().to_owned(),
+            source_path: paths.home().to_owned(),
+            log: paths.worktree_hook_log("project_fixture", "tree"),
+            project_id: None,
+            worktree_id: "tree".to_owned(),
+            source_project_id: "project_fixture".to_owned(),
+        };
+        DaemonHooks::new(paths.clone()).complete(
+            &run,
+            &Err(HookError::CleanupFailed(io::Error::other(
+                "hook process group 1234 did not exit",
+            ))),
+        );
+        assert_eq!(database.job(&job.id)?, Some(job));
+        let event: Value = serde_json::from_str(&state::fs::read_to_string(&paths.daemon_log())?)?;
+        insta::assert_debug_snapshot!((&event["scope"], &event["error"]), @r#"
+        (
+            String("worktree:project_fixture:tree"),
+            String("hook process-group cleanup failed: hook process group 1234 did not exit"),
+        )
+        "#);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn setup_uses_applied_commands_after_the_config_disappears() -> Result<()> {
