@@ -2512,6 +2512,55 @@ fn discovered_projects_take_source_names_and_follow_moves() -> Result<()> {
 }
 
 #[test]
+fn discovered_projects_of_a_source_linked_before_slugs_take_its_directory_name() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let path = tempdir.path().join("Collective");
+    // Migration 009 gave every Project linked before slugs existed its Project ID as slug.
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "INSERT INTO projects (id, project_slug, path, original_path, primary_hostname, config_path, created_at, updated_at)
+            VALUES (?1, ?1, ?2, ?2, ?3, ?4, ?5, ?5)",
+            params![
+                "o0lfh43raq",
+                path.as_str(),
+                "collective.test",
+                path.join("pv.yml").as_str(),
+                "2026-05-23T00:00:00Z",
+            ],
+        )?;
+
+        Ok(())
+    })?;
+    let Some(source) = database.project_by_id("o0lfh43raq")? else {
+        return Err(anyhow!("legacy source Project is missing"));
+    };
+
+    let feat = database.link_discovered_project(discovered_input(
+        &source,
+        tempdir.path(),
+        "w1",
+        "feat",
+        ProjectMode::Served,
+    ))?;
+
+    assert_debug_snapshot!(
+        (feat.slug.as_str(), feat.primary_hostname.as_deref()),
+        @r#"
+    (
+        "collective-feat",
+        Some(
+            "collective-feat.test",
+        ),
+    )
+    "#
+    );
+
+    Ok(())
+}
+
+#[test]
 fn held_worktrees_demand_no_php_worker_until_their_first_reconciliation() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
