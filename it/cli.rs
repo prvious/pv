@@ -1276,10 +1276,11 @@ fn project_link_shows_hidden_characters_in_unapproved_commands() -> Result<()> {
     let project = directory.path().join("acme");
     create_dir(&project)?;
     // On a terminal, the carriage return and erase-line sequence would hide the real command.
-    // The last two commands differ only in a literal `\u{a}` against a real newline.
+    // The next two differ only in a literal `\u{a}` against a real newline, and the last two hide
+    // a zero-width space and a Cyrillic `е` in what looks like `./bin/setup`.
     write_file(
         &project.join("pv.yml"),
-        "serve: false\nhooks:\n  prepare:\n    - \"touch hidden # \\e[2K\\recho safe-looking-hook\"\n    - 'true # \\u{a}exit 73'\n    - \"true # \\nexit 73\"\n",
+        "serve: false\nhooks:\n  prepare:\n    - \"touch hidden # \\e[2K\\recho safe-looking-hook\"\n    - 'true # \\u{a}exit 73'\n    - \"true # \\nexit 73\"\n    - \"./bin/\\u200bsetup\"\n    - \"./bin/s\\u0435tup\"\n",
     )?;
     let output = run_unapproved_hook_pv(&["link"], &project, &home)?;
     assert!(!project.join("hidden").exists());
