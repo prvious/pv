@@ -542,7 +542,7 @@ _pv() {
             return 0
             ;;
         pv__subcmd__link)
-            opts="-h --hostname --no-color --help [path]"
+            opts="-h --hostname --skip-hooks --no-color --help [path]"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

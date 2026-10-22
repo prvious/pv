@@ -3,7 +3,13 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::{Utf8TempDir, tempdir};
 use state::{Database, LinkProjectInput, ProjectRecord, PvPaths};
 
-use crate::worktrees::{WorktreeChange, discover_worktrees, plan_worktree_changes};
+#[cfg(target_os = "macos")]
+use crate::hooks::DaemonHooks;
+#[cfg(target_os = "macos")]
+use crate::worktrees::discover_worktrees_with_hooks;
+use crate::worktrees::{
+    WorktreeChange, discover_worktrees, hook_approval_folder, plan_worktree_changes,
+};
 
 /// A discovered Project's worktree ID, slug, hostname, and path under the fixture root.
 type Discovered = (String, String, Option<String>, String);
@@ -45,6 +51,7 @@ impl Fixture {
         let entry_dir = main.join(".git/worktrees").join(entry);
         let checkout = self.root.join(checkout);
         state::fs::write_sensitive_file(&entry_dir.join("gitdir"), &format!("{checkout}/.git\n"))?;
+        state::fs::write_sensitive_file(&entry_dir.join("commondir"), "../..\n")?;
         state::fs::write_sensitive_file(&checkout.join(".git"), &format!("gitdir: {entry_dir}\n"))?;
 
         Ok(entry_dir)
@@ -496,16 +503,18 @@ async fn the_health_scan_requests_system_reconciliation_for_worktree_changes() -
         crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters()?,
     );
 
-    let before = crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog.clone()))
-        .await?
-        .maintenance_scopes;
+    let before =
+        crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog.clone()), None)
+            .await?
+            .maintenance_scopes;
     discover_worktrees(&fixture.paths)?;
-    let after = crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog.clone()))
-        .await?
-        .maintenance_scopes;
+    let after =
+        crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog.clone()), None)
+            .await?
+            .maintenance_scopes;
     // An entry without `gitdir` makes the source unreadable, which every scan reports.
     state::fs::ensure_user_dir(&repo.join(".git/worktrees/new"))?;
-    let unreadable = crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog))
+    let unreadable = crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog), None)
         .await?
         .errors;
 
@@ -520,5 +529,92 @@ async fn the_health_scan_requests_system_reconciliation_for_worktree_changes() -
             .collect::<Vec<_>>()
     );
 
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+async fn the_health_scan_leaves_pending_prepares_alone_and_ordinary_links_forget_them() -> Result<()>
+{
+    let fixture = Fixture::new()?;
+    let repo = fixture.main_checkout("repo")?;
+    let source = fixture.link("repo", "repo.test")?;
+    let entry = fixture.add_worktree(&repo, "feat", "worktrees/feat")?;
+    state::fs::write_sensitive_file(&repo.join("pv.yml"), "serve: false\n")?;
+    state::fs::write_sensitive_file(
+        &fixture.root.join("worktrees/feat/pv.yml"),
+        "serve: false\nhooks:\n  prepare:\n    - echo pending\n",
+    )?;
+    Database::open(&fixture.paths)?.approve_hook_commands(
+        &hook_approval_folder(&fixture.root.join("worktrees/feat")),
+        &["echo pending".to_owned()],
+    )?;
+    let hooks = DaemonHooks::new(fixture.paths.clone());
+    discover_worktrees_with_hooks(&fixture.paths, Some(&hooks))?;
+    let worktree = worktree_id(&entry)?;
+    assert!(hooks.prepare_is_blocked(&source.id, &worktree));
+    let scan = crate::health::scan_runtime_health(
+        fixture.paths.clone(),
+        Some(std::sync::Arc::new(
+            crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters()?,
+        )),
+        Some(hooks.clone()),
+    )
+    .await?;
+    assert!(
+        !scan
+            .maintenance_scopes
+            .contains(&crate::ReconciliationScope::System)
+    );
+    fixture.link("worktrees/feat", "ordinary.test")?;
+    // System reconciliation stops obsolete hook runs before discovery.
+    hooks.stop_obsolete().await?;
+    discover_worktrees_with_hooks(&fixture.paths, Some(&hooks))?;
+    assert!(!hooks.prepare_is_blocked(&source.id, &worktree));
+    assert!(!hooks.is_prepared(&source.id, &worktree));
+    assert!(fixture.discovered()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn hook_approvals_use_the_folder_in_the_main_checkout() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let repo = fixture.main_checkout("repo")?;
+    state::fs::ensure_user_dir(&repo.join("apps/web"))?;
+    // A main checkout and a folder outside Git keep their own folder.
+    assert_eq!(
+        hook_approval_folder(&repo.join("apps/web")),
+        repo.join("apps/web")
+    );
+    let plain = fixture.root.join("plain");
+    assert_eq!(hook_approval_folder(&plain), plain);
+    // A worktree outside the main checkout maps back to it, keeping the subfolder.
+    let entry = fixture.add_worktree(&repo, "feat", "elsewhere/feat")?;
+    let worktree_web = fixture.root.join("elsewhere/feat/apps/web");
+    state::fs::ensure_user_dir(&worktree_web)?;
+    assert_eq!(
+        hook_approval_folder(&worktree_web),
+        state::fs::canonicalize(&repo)?.join("apps/web")
+    );
+    // A hand-made `.git` file that Git's entry doesn't point back at keeps its own folder.
+    let impostor = fixture.root.join("impostor");
+    state::fs::write_sensitive_file(&impostor.join(".git"), &format!("gitdir: {entry}\n"))?;
+    assert_eq!(hook_approval_folder(&impostor), impostor);
+    // A forged entry outside the repository can't claim it, even when its back-reference matches
+    // and its `commondir` names the repository.
+    let forged = fixture.root.join("forged");
+    let forged_entry = fixture.root.join("forged-entry");
+    state::fs::write_sensitive_file(&forged.join(".git"), &format!("gitdir: {forged_entry}\n"))?;
+    state::fs::write_sensitive_file(&forged_entry.join("gitdir"), &format!("{forged}/.git\n"))?;
+    state::fs::write_sensitive_file(&forged_entry.join("commondir"), &format!("{repo}/.git\n"))?;
+    assert_eq!(hook_approval_folder(&forged), forged);
+    // A folder whose `.git` is a symlink to a registered worktree's `.git` isn't that worktree.
+    let symlinked = fixture.root.join("symlinked");
+    state::fs::ensure_user_dir(&symlinked)?;
+    state::fs::symlink_file(
+        &fixture.root.join("elsewhere/feat/.git"),
+        &symlinked.join(".git"),
+    )?;
+    assert_eq!(hook_approval_folder(&symlinked), symlinked);
     Ok(())
 }

@@ -24,6 +24,8 @@ pub struct ProjectConfig {
     pub root: Option<Utf8PathBuf>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "ProjectHooks::is_empty")]
+    pub hooks: ProjectHooks,
     #[serde(flatten, skip_serializing_if = "BTreeMap::is_empty")]
     pub resources: BTreeMap<String, ResourceConfig>,
 }
@@ -36,8 +38,23 @@ impl Default for ProjectConfig {
             php: None,
             root: None,
             env: BTreeMap::new(),
+            hooks: ProjectHooks::default(),
             resources: BTreeMap::new(),
         }
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize)]
+pub struct ProjectHooks {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub prepare: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub setup: Vec<String>,
+}
+
+impl ProjectHooks {
+    pub fn is_empty(&self) -> bool {
+        self.prepare.is_empty() && self.setup.is_empty()
     }
 }
 

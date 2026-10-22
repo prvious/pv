@@ -1,0 +1,106 @@
+---
+source: it/cli.rs
+expression: outputs
+---
+[
+    (
+        CommandOutput {
+            code: Some(
+                1,
+            ),
+            stdout: "Linked acme (resource-only) -> <tempdir>/failed/acme\nQueued reconciliation job_000001 for acme\nWaiting for reconciliation job_000001 before setup\n",
+            stderr: "error: reconciliation job_000001 failed: fixture reconciliation failed\n  Setup hooks were not run; run `pv link` again once the reconciliation error is fixed\n",
+        },
+        [
+            (
+                "hooks",
+                Failed,
+                Some(
+                    "reconciliation job_000001 failed: fixture reconciliation failed\nSetup hooks were not run; run `pv link` again once the reconciliation error is fixed",
+                ),
+            ),
+            (
+                "reconcile",
+                Failed,
+                Some(
+                    "fixture reconciliation failed",
+                ),
+            ),
+        ],
+    ),
+    (
+        CommandOutput {
+            code: Some(
+                1,
+            ),
+            stdout: "Linked acme (resource-only) -> <tempdir>/rendered/acme\nQueued reconciliation job_000001 for acme\nWaiting for reconciliation job_000001 before setup\n",
+            stderr: "error: reconciliation job_000001 failed: fixture Gateway failed after Project apply\n  Setup hooks were not run; run `pv link` again once the reconciliation error is fixed\n",
+        },
+        [
+            (
+                "hooks",
+                Failed,
+                Some(
+                    "reconciliation job_000001 failed: fixture Gateway failed after Project apply\nSetup hooks were not run; run `pv link` again once the reconciliation error is fixed",
+                ),
+            ),
+            (
+                "reconcile",
+                Failed,
+                Some(
+                    "fixture Gateway failed after Project apply",
+                ),
+            ),
+        ],
+    ),
+    (
+        CommandOutput {
+            code: Some(
+                1,
+            ),
+            stdout: "Linked acme (resource-only) -> <tempdir>/warning/acme\nQueued reconciliation job_000001 for acme\nWaiting for reconciliation job_000001 before setup\n",
+            stderr: "error: reconciliation job_000001 failed: fixture Gateway failed after Project apply\n  Setup hooks were not run; run `pv link` again once the reconciliation error is fixed\n",
+        },
+        [
+            (
+                "hooks",
+                Failed,
+                Some(
+                    "reconciliation job_000001 failed: fixture Gateway failed after Project apply\nSetup hooks were not run; run `pv link` again once the reconciliation error is fixed",
+                ),
+            ),
+            (
+                "reconcile",
+                Failed,
+                Some(
+                    "fixture Gateway failed after Project apply",
+                ),
+            ),
+        ],
+    ),
+    (
+        CommandOutput {
+            code: Some(
+                1,
+            ),
+            stdout: "Linked acme (resource-only) -> <tempdir>/failed-env/acme\nQueued reconciliation job_000001 for acme\nWaiting for reconciliation job_000001 before setup\n",
+            stderr: "error: reconciliation job_000001 failed: fixture Gateway failed after Project apply\n  Setup hooks were not run; run `pv link` again once the reconciliation error is fixed\n",
+        },
+        [
+            (
+                "hooks",
+                Failed,
+                Some(
+                    "reconciliation job_000001 failed: fixture Gateway failed after Project apply\nSetup hooks were not run; run `pv link` again once the reconciliation error is fixed",
+                ),
+            ),
+            (
+                "reconcile",
+                Failed,
+                Some(
+                    "fixture Gateway failed after Project apply",
+                ),
+            ),
+        ],
+    ),
+]

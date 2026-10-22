@@ -131,7 +131,11 @@ pub fn managed_resource_update_check_blocking(
     runtime.block_on(managed_resource_update_check(paths))
 }
 
-async fn submit_job(paths: PvPaths, kind: &str, scope: &str) -> Result<SubmittedJob, DaemonError> {
+pub async fn submit_job(
+    paths: PvPaths,
+    kind: &str,
+    scope: &str,
+) -> Result<SubmittedJob, DaemonError> {
     let mut transport = connect_transport(&paths).await?;
 
     write_job_request(&mut transport, kind, scope).await?;

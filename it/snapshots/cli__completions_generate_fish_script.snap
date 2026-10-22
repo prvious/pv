@@ -158,6 +158,7 @@ complete -c pv -n "__fish_pv_using_subcommand ca:trust" -s h -l help -d 'Print h
 complete -c pv -n "__fish_pv_using_subcommand ca:untrust" -l no-color -d 'Disable colored output'
 complete -c pv -n "__fish_pv_using_subcommand ca:untrust" -s h -l help -d 'Print help'
 complete -c pv -n "__fish_pv_using_subcommand link" -l hostname -d 'Primary .test hostname' -r
+complete -c pv -n "__fish_pv_using_subcommand link" -l skip-hooks -d 'Skip Project prepare and setup hooks'
 complete -c pv -n "__fish_pv_using_subcommand link" -l no-color -d 'Disable colored output'
 complete -c pv -n "__fish_pv_using_subcommand link" -s h -l help -d 'Print help'
 complete -c pv -n "__fish_pv_using_subcommand init" -l yes -d 'Write detected config without prompting'

@@ -656,30 +656,22 @@ mod tests {
     }
 
     #[test]
-    fn follow_sources_continues_after_a_rotation_truncates_the_log() -> anyhow::Result<()> {
+    fn followed_log_resumes_after_a_rotation_truncates_the_log() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let gateway_log = tempdir.path().join("gateway.log");
         write_test_file(&gateway_log, "")?;
-        let sources = vec![LogSource {
+        let source = LogSource {
             label: "gateway".to_string(),
             active_path: gateway_log.clone(),
-        }];
-        let mut stdout = Vec::new();
-
-        std::thread::scope(|scope| {
-            let writer = scope.spawn(|| {
-                std::thread::sleep(Duration::from_millis(250));
-                append_test_file(&gateway_log, "before rotation\n")?;
-                std::thread::sleep(Duration::from_millis(250));
-                // A monitor rotates by truncating the log the runtime keeps appending to.
-                truncate_test_file(&gateway_log)?;
-                append_test_file(&gateway_log, "after\n")
-            });
-            follow_sources_until(&sources, false, &mut stdout, Some(2))?;
-            writer
-                .join()
-                .map_err(|_panic| anyhow::anyhow!("log writer panicked"))?
-        })?;
+        };
+        let mut log = FollowedLog::new(&source, String::new())?;
+        append_test_file(&gateway_log, "before rotation\n")?;
+        let mut stdout = log.read_new_lines()?.concat();
+        // Consume the first line before rotation: filesystem events may coalesce, and a
+        // follower cannot recover a line already truncated before it was read.
+        truncate_test_file(&gateway_log)?;
+        append_test_file(&gateway_log, "after\n")?;
+        stdout.extend(log.read_new_lines()?.concat());
 
         assert_eq!(String::from_utf8(stdout)?, "before rotation\nafter\n");
 

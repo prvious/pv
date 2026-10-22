@@ -14,6 +14,10 @@ expression: cases
                 env: {
                     "APP_URL": "${url}",
                 },
+                hooks: ProjectHooks {
+                    prepare: [],
+                    setup: [],
+                },
                 resources: {},
             },
         ),
@@ -30,6 +34,10 @@ expression: cases
                     "PV_TLS_CA": "${tls.ca}",
                     "VITE_DEV_SERVER_CERT": "${tls.cert}",
                     "VITE_DEV_SERVER_KEY": "${tls.key}",
+                },
+                hooks: ProjectHooks {
+                    prepare: [],
+                    setup: [],
                 },
                 resources: {},
             },
@@ -53,6 +61,10 @@ expression: cases
                 php: None,
                 root: None,
                 env: {},
+                hooks: ProjectHooks {
+                    prepare: [],
+                    setup: [],
+                },
                 resources: {
                     "mysql": ResourceConfig {
                         track: None,
@@ -76,6 +88,10 @@ expression: cases
                 php: None,
                 root: None,
                 env: {},
+                hooks: ProjectHooks {
+                    prepare: [],
+                    setup: [],
+                },
                 resources: {
                     "mysql": ResourceConfig {
                         track: None,
@@ -106,6 +122,10 @@ expression: cases
                 php: None,
                 root: None,
                 env: {},
+                hooks: ProjectHooks {
+                    prepare: [],
+                    setup: [],
+                },
                 resources: {
                     "mysql": ResourceConfig {
                         track: None,
@@ -133,6 +153,10 @@ expression: cases
                 php: None,
                 root: None,
                 env: {},
+                hooks: ProjectHooks {
+                    prepare: [],
+                    setup: [],
+                },
                 resources: {
                     "mysql": ResourceConfig {
                         track: None,

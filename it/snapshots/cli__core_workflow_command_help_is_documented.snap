@@ -1,5 +1,6 @@
 ---
 source: it/cli.rs
+assertion_line: 340
 expression: output
 ---
 [
@@ -28,7 +29,7 @@ expression: output
         code: Some(
             0,
         ),
-        stdout: "Link a Project\n\nUsage: pv link [OPTIONS] [path]\n\nArguments:\n  [path]  Project path to link\n\nOptions:\n      --hostname <hostname>  Primary .test hostname\n      --no-color             Disable colored output\n  -h, --help                 Print help\n",
+        stdout: "Link a Project\n\nUsage: pv link [OPTIONS] [path]\n\nArguments:\n  [path]  Project path to link\n\nOptions:\n      --hostname <hostname>  Primary .test hostname\n      --no-color             Disable colored output\n      --skip-hooks           Skip Project prepare and setup hooks\n  -h, --help                 Print help\n",
         stderr: "",
     },
     CommandOutput {

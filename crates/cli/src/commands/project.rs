@@ -2,15 +2,18 @@ use std::io;
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use config::{AllocationEnvContext, ProjectConfigFile, ProjectEnvContext, ResourceEnvContext};
+use config::{
+    AllocationEnvContext, ProjectConfigFile, ProjectEnvContext, ProjectHooks, ResourceEnvContext,
+};
 use resources::{ArtifactManifestCache, ConcreteTrackName, ResourceName, TrackSelector};
 use serde::Serialize;
 use state::{
     Database, LinkProjectInput, LinkProjectStatus, ProjectEnvObservedStateRecord,
     ProjectEnvObservedStatus, ProjectEnvStateContext, ProjectMode, ProjectRecord, PvPaths,
-    StateError,
+    RuntimeLifecycleLock, StateError,
 };
 
+use super::project_hooks::{self, LinkHookRun};
 use crate::args::{LinkArgs, ListArgs, OpenArgs, ProjectEnvArgs, UnlinkArgs};
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
@@ -21,6 +24,7 @@ pub(crate) fn link(
     args: LinkArgs,
     environment: &impl Environment,
     streams: &mut Streams<'_>,
+    mut runtime_lifecycle_lock: Option<RuntimeLifecycleLock>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
     let original_project_path = resolve_project_path(args.path.as_deref(), environment)?;
@@ -37,22 +41,68 @@ pub(crate) fn link(
     )?;
     let mut database = Database::open(&paths)?;
     let existing = database.project_by_path(&project_path)?;
+    let mut hooks_enabled = !args.skip_hooks && !config_file.config.hooks.is_empty();
+    if hooks_enabled && let Some(project) = &existing {
+        refuse_concurrent_hooks(&database, project)?;
+    }
+    if hooks_enabled {
+        hooks_enabled = approve_hooks(
+            &mut database,
+            &config_file.config.hooks,
+            &project_path,
+            environment,
+            streams,
+        )?;
+    }
+    let source_path = match &existing {
+        Some(project) => discovered_source_path(&database, project)?,
+        None => None,
+    };
     let mode = if config_file.config.serve {
         ProjectMode::Served
     } else {
         ProjectMode::ResourceOnly
     };
-    let primary_hostname = match (
-        config_file.config.serve.then_some(args.hostname).flatten(),
-        existing.as_ref(),
-    ) {
-        (Some(hostname), _) => config::normalize_primary_hostname(&hostname)?,
-        (None, Some(project)) => project
-            .primary_hostname
-            .clone()
-            .unwrap_or_else(|| format!("{}.test", project.slug)),
+    let explicit_hostname = config_file.config.serve.then_some(args.hostname).flatten();
+    let mut primary_hostname = match (explicit_hostname.as_deref(), existing.as_ref()) {
+        (Some(hostname), _) => config::normalize_primary_hostname(hostname)?,
+        (None, Some(project)) => linked_hostname(project),
         (None, None) => config::hostname_from_project_path(&project_path)?,
     };
+    drop(database);
+    let mut hook_run = LinkHookRun::new(&paths, &project_path, source_path)?;
+    let mut hooks_attempted = false;
+    if hooks_enabled && !config_file.config.hooks.prepare.is_empty() {
+        hooks_attempted = true;
+        let result = project_hooks::run_with_admission(
+            &mut hook_run,
+            "prepare",
+            &config_file.config.hooks.prepare,
+            streams,
+            &mut runtime_lifecycle_lock,
+        )?;
+        if let Err(error) = result {
+            if let Some(project) = &existing {
+                project_hooks::finish_run(&paths, project, Err(error), false)?;
+                return Ok(ExitCode::FAILURE);
+            }
+            return Err(error);
+        }
+    }
+    let mut database = Database::open(&paths)?;
+    // Discovery may have linked this worktree while prepare ran. Keep its name, and don't run
+    // terminal hooks alongside the daemon's.
+    if existing.is_none()
+        && let Some(project) = database.project_by_path(&project_path)?
+    {
+        if hooks_enabled {
+            refuse_concurrent_hooks(&database, &project)?;
+        }
+        if explicit_hostname.is_none() {
+            primary_hostname = linked_hostname(&project);
+        }
+        hook_run.set_source_path(discovered_source_path(&database, &project)?);
+    }
     let result = database.link_project_with_mode(
         LinkProjectInput {
             path: project_path.clone(),
@@ -63,6 +113,7 @@ pub(crate) fn link(
         },
         mode,
     )?;
+    drop(database);
 
     let output = &mut streams.out;
     let project_name = if result.project.mode == ProjectMode::ResourceOnly {
@@ -101,9 +152,151 @@ pub(crate) fn link(
             Line::field(&format!("{verb} {project_name} -> "), &result.project.path),
         )?;
     }
-    super::request_project_reconciliation(&paths, &result.project, streams)?;
+    let mut setup_skipped = false;
+    let submitted = hook_run.request_reconciliation(&result.project, streams, hooks_enabled);
+    let outcome = match submitted {
+        Err(error) => {
+            hooks_attempted |= hooks_enabled && !config_file.config.hooks.setup.is_empty();
+            Err(error)
+        }
+        Ok(job) if hooks_enabled && !config_file.config.hooks.setup.is_empty() => {
+            if let Some(job) = job {
+                hooks_attempted = true;
+                match hook_run.wait_for_reconciliation(&job.id, streams) {
+                    Err(error) => Err(error),
+                    Ok(()) => project_hooks::run_with_admission(
+                        &mut hook_run,
+                        "setup",
+                        &config_file.config.hooks.setup,
+                        streams,
+                        &mut runtime_lifecycle_lock,
+                    )?,
+                }
+            } else {
+                setup_skipped = true;
+                streams
+                    .err
+                    .warning("Setup hooks skipped; run `pv link` again after `pv setup`")?;
+                Ok(())
+            }
+        }
+        Ok(_) => Ok(()),
+    };
+    if hooks_attempted {
+        project_hooks::finish_run(&paths, &result.project, outcome, !setup_skipped)?;
+    } else {
+        outcome?;
+    }
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Hooks run only when every command is approved for the Project's folder. Approving needs a
+/// terminal; without one, or when the user declines, the Project is linked without hooks.
+fn approve_hooks(
+    database: &mut Database,
+    hooks: &ProjectHooks,
+    project_path: &Utf8Path,
+    environment: &impl Environment,
+    streams: &mut Streams<'_>,
+) -> Result<bool, ExecuteError> {
+    let folder = daemon::hook_approval_folder(project_path);
+    let commands = hooks
+        .prepare
+        .iter()
+        .chain(&hooks.setup)
+        .cloned()
+        .collect::<Vec<_>>();
+    let unapproved = database.unapproved_hook_commands(&folder, &commands)?;
+    if unapproved.is_empty() {
+        return Ok(true);
+    }
+    // The prompt draws on stderr, so the commands it asks about go there too.
+    let output = &mut streams.err;
+    output.status(
+        Mark::Warning,
+        Line::field("Hook commands not approved for ", visible(folder.as_str())),
+    )?;
+    for command in &unapproved {
+        let phase = if hooks.prepare.contains(command) {
+            "prepare"
+        } else {
+            "setup"
+        };
+        output.detail(
+            Line::default()
+                .text(format!("{phase:<8} "))
+                .value(visible(command)),
+        )?;
+    }
+    if streams.interactive
+        && prompt::confirm(
+            environment,
+            &streams.out,
+            "Run them and remember the approval?",
+            false,
+        )?
+    {
+        database.approve_hook_commands(&folder, &unapproved)?;
+        return Ok(true);
+    }
+    streams.err.warning(
+        "Hooks skipped because they aren't approved; run `pv link` here in a terminal to review them",
+    )?;
+
+    Ok(false)
+}
+
+/// Shows branch-controlled text exactly: every character outside printable ASCII appears as an
+/// escape such as `\u{1b}` or `\u{200b}`, so control sequences, invisible characters and
+/// look-alike letters can't make two commands look the same. Backslashes appear doubled, so a
+/// literal `\u{a}` never looks like a real newline. The exact text is still what's approved.
+fn visible(text: &str) -> String {
+    text.chars()
+        .map(|character| match character {
+            '\\' => "\\\\".to_owned(),
+            ' '..='~' => character.to_string(),
+            _ => character.escape_unicode().to_string(),
+        })
+        .collect()
+}
+
+/// Terminal hooks wait while the daemon owns this Project's hooks.
+fn refuse_concurrent_hooks(
+    database: &Database,
+    project: &ProjectRecord,
+) -> Result<(), ExecuteError> {
+    if database.held_project_ids()?.contains(&project.id) {
+        return Err(CliError::ProjectFirstReconciliationPending.into());
+    }
+    if let Some(job) = database.active_hook_job(&format!("project:{}", project.id))? {
+        return Err(CliError::ProjectHooksInProgress { job_id: job.id }.into());
+    }
+    Ok(())
+}
+
+/// Hooks in a discovered worktree get its source Project's path as `PV_SOURCE_PATH`.
+fn discovered_source_path(
+    database: &Database,
+    project: &ProjectRecord,
+) -> Result<Option<Utf8PathBuf>, ExecuteError> {
+    let Some(discovered) = database
+        .discovered_projects()?
+        .into_iter()
+        .find(|discovered| discovered.project_id == project.id)
+    else {
+        return Ok(None);
+    };
+    Ok(database
+        .project_by_id(&discovered.source_project_id)?
+        .map(|source| source.path))
+}
+
+fn linked_hostname(project: &ProjectRecord) -> String {
+    project
+        .primary_hostname
+        .clone()
+        .unwrap_or_else(|| format!("{}.test", project.slug))
 }
 
 fn resolved_project_php_track(

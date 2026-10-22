@@ -1,0 +1,11 @@
+---
+source: it/cli.rs
+expression: refused
+---
+CommandOutput {
+    code: Some(
+        1,
+    ),
+    stdout: "Running prepare: touch started; count=0; while test ! -f continue && test \"$count\" -lt 1500; do sleep 0.1; count=$((count + 1)); done\n",
+    stderr: "error: PV runs this worktree's hooks automatically after its first successful reconciliation; check `pv jobs` or pass `--skip-hooks`\n",
+}

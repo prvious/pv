@@ -22,15 +22,18 @@ sha2 = { workspace = true }
 state = { path = "../state" }
 thiserror = { workspace = true }
 time = { workspace = true }
+tokio = { workspace = true }
 wait-timeout = { workspace = true }
 x509-parser = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = { workspace = true }
-nix = { workspace = true, features = ["event"] }
 raunch = { workspace = true }
-rustix = { workspace = true }
 security-framework = { workspace = true }
+
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["event", "ioctl"] }
+rustix = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
@@ -38,4 +41,5 @@ camino-tempfile = { workspace = true }
 insta = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
+portable-pty = { workspace = true }
 pv-fake = { path = "../pv-fake" }

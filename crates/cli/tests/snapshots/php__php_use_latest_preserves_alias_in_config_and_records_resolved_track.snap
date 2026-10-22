@@ -28,6 +28,10 @@ expression: "(output, config_after, config_file.config,\nproject_snapshot(&proje
             ".",
         ),
         env: {},
+        hooks: ProjectHooks {
+            prepare: [],
+            setup: [],
+        },
         resources: {},
     },
     ProjectSnapshot {

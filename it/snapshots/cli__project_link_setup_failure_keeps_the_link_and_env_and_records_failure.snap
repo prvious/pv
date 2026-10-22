@@ -1,0 +1,27 @@
+---
+source: it/cli.rs
+expression: "(output, jobs)"
+---
+(
+    CommandOutput {
+        code: Some(
+            1,
+        ),
+        stdout: "Linked acme (resource-only) -> <tempdir>/acme\nQueued reconciliation job_000001 for acme\nWaiting for reconciliation job_000001 before setup\nRunning setup: printf 'setup failed\\n'; exit 9\nsetup failed\n",
+        stderr: "error: setup: hook command `printf 'setup failed\\n'; exit 9` exited with exit status: 9\n",
+    },
+    [
+        (
+            "hooks",
+            Failed,
+            Some(
+                "setup: hook command `printf 'setup failed\\n'; exit 9` exited with exit status: 9",
+            ),
+        ),
+        (
+            "reconcile",
+            Succeeded,
+            None,
+        ),
+    ],
+)

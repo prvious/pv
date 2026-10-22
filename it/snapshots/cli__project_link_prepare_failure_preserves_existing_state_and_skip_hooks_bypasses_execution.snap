@@ -1,0 +1,36 @@
+---
+source: it/cli.rs
+expression: "(first, skipped, relink, jobs)"
+---
+(
+    CommandOutput {
+        code: Some(
+            1,
+        ),
+        stdout: "Running prepare: printf 'prepare failed\\n'; exit 7\nprepare failed\n",
+        stderr: "error: prepare: hook command `printf 'prepare failed\\n'; exit 7` exited with exit status: 7\n",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Linked acme (resource-only) -> <tempdir>/acme\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+    },
+    CommandOutput {
+        code: Some(
+            1,
+        ),
+        stdout: "Running prepare: printf 'prepare failed\\n'; exit 7\nprepare failed\n",
+        stderr: "error: prepare: hook command `printf 'prepare failed\\n'; exit 7` exited with exit status: 7\n",
+    },
+    [
+        (
+            "hooks",
+            Failed,
+            Some(
+                "prepare: hook command `printf 'prepare failed\\n'; exit 7` exited with exit status: 7",
+            ),
+        ),
+    ],
+)

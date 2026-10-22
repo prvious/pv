@@ -29,6 +29,7 @@ mod php;
 mod ports;
 mod postgres;
 mod project;
+mod project_hooks;
 mod redis;
 mod rustfs;
 mod setup;
@@ -78,7 +79,7 @@ where
         Command::CaStatus => ca::status(environment, streams),
         Command::CaTrust => ca::trust(environment, streams),
         Command::CaUntrust => ca::untrust(environment, streams),
-        Command::Link(args) => project::link(args, environment, streams),
+        Command::Link(args) => project::link(args, environment, streams, runtime_lifecycle_lock),
         Command::Init(args) => init::run(args, environment, streams),
         Command::Unlink(args) => project::unlink(args, environment, streams),
         Command::Open(args) => project::open(args, environment, streams),
@@ -357,14 +358,15 @@ fn acquire_jobs_lock(paths: &PvPaths) -> Result<state::JobsLock, ExecuteError> {
 /// mutation can win the handoff and make the daemon reject this request. Retry
 /// that specific rejection until the request is admitted instead of losing the
 /// reconciliation for committed state. Warnings go to `stderr`.
-fn submit_reconciliation(
+async fn submit_reconciliation(
     paths: &PvPaths,
     scope: &str,
     stderr: &mut Output<'_>,
 ) -> Result<Option<::daemon::SubmittedJob>, ExecuteError> {
     let mut deferred = false;
     loop {
-        match ::daemon::submit_job_blocking(paths.clone(), RECONCILE_KIND, scope) {
+        let submitted = ::daemon::submit_job(paths.clone(), RECONCILE_KIND, scope).await;
+        match submitted {
             Ok(job) => return Ok(Some(job)),
             Err(::daemon::DaemonError::Io(error)) if daemon_is_unavailable(&error) => {
                 if stderr.surface().decorated() {
@@ -382,7 +384,7 @@ fn submit_reconciliation(
                     deferred = true;
                     let _ = stderr.warning(DEFERRED_RECONCILIATION_WARNING);
                 }
-                std::thread::sleep(JOBS_LOCK_RETRY_INTERVAL);
+                tokio::time::sleep(JOBS_LOCK_RETRY_INTERVAL).await;
             }
             Err(error) => return Err(error.into()),
         }
@@ -395,7 +397,12 @@ fn request_system_reconciliation(
     paths: &PvPaths,
     streams: &mut Streams<'_>,
 ) -> Result<(), ExecuteError> {
-    if let Some(job) = submit_reconciliation(paths, SYSTEM_SCOPE, &mut streams.err)? {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    if let Some(job) =
+        runtime.block_on(submit_reconciliation(paths, SYSTEM_SCOPE, &mut streams.err))?
+    {
         write_reconciliation_requested(&mut streams.out, &job.id)?;
     }
 
@@ -408,16 +415,31 @@ fn request_project_reconciliation(
     project: &state::ProjectRecord,
     streams: &mut Streams<'_>,
 ) -> Result<(), ExecuteError> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(request_project_reconciliation_async(
+        paths, project, streams,
+    ))?;
+    Ok(())
+}
+
+async fn request_project_reconciliation_async(
+    paths: &PvPaths,
+    project: &state::ProjectRecord,
+    streams: &mut Streams<'_>,
+) -> Result<Option<::daemon::SubmittedJob>, ExecuteError> {
     let scope = format!("project:{}", project.id);
-    if let Some(job) = submit_reconciliation(paths, &scope, &mut streams.err)? {
+    let job = submit_reconciliation(paths, &scope, &mut streams.err).await?;
+    if let Some(job) = &job {
         streams.out.follow_up(
             Line::from("Queued reconciliation ")
-                .value(job.id)
+                .value(&job.id)
                 .text(format!(" for {}", project_display_name(project))),
         )?;
     }
 
-    Ok(())
+    Ok(job)
 }
 
 /// The name users know a Project by: its slug when resource-only, otherwise
@@ -650,6 +672,7 @@ mod tests {
                 Command::Link(LinkArgs {
                     path: None,
                     hostname: None,
+                    skip_hooks: false,
                 }),
                 Command::Unlink(UnlinkArgs { hostname: None }),
             ],
@@ -721,6 +744,7 @@ mod tests {
             Command::Link(LinkArgs {
                 path: None,
                 hostname: None,
+                skip_hooks: false,
             }),
             PlatformCapability::DaemonIpc,
         );

@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
+
 use rusqlite::{
-    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
+    Connection, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior, params,
 };
 
 use crate::{PvPaths, StateError, fs, migrations};
@@ -414,6 +415,8 @@ pub struct ProjectPhpRuntimeInput {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProjectReconciliationStateInput {
+    /// Requests a queued setup job on a discovered Project's first apply, retaining its log path.
+    pub setup_hook_log: Option<Utf8PathBuf>,
     pub project_id: String,
     pub link: LinkProjectInput,
     pub mode: ProjectMode,
@@ -577,6 +580,34 @@ struct JobRecordRow {
     error: Option<String>,
 }
 
+impl JobRecordRow {
+    fn read(row: &Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            kind: row.get(1)?,
+            scope: row.get(2)?,
+            status: row.get(3)?,
+            started_at: row.get(4)?,
+            finished_at: row.get(5)?,
+            summary: row.get(6)?,
+            error: row.get(7)?,
+        })
+    }
+
+    fn into_record(self) -> Result<JobRecord, StateError> {
+        Ok(JobRecord {
+            id: self.id,
+            kind: self.kind,
+            scope: self.scope,
+            status: JobStatus::from_database(self.status)?,
+            started_at: self.started_at,
+            finished_at: self.finished_at,
+            summary: self.summary,
+            error: self.error,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct JobDiagnosticOutcome {
     job_id: String,
@@ -712,26 +743,71 @@ impl Database {
     }
 
     pub fn start_job(&mut self, kind: &str, scope: &str) -> Result<JobRecord, StateError> {
+        self.start_job_with_summary(kind, scope, None)
+    }
+
+    pub fn start_job_with_summary(
+        &mut self,
+        kind: &str,
+        scope: &str,
+        summary: Option<&str>,
+    ) -> Result<JobRecord, StateError> {
         let started_at = timestamp()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let job = start_job_in_transaction(&transaction, kind, scope, summary, started_at)?;
+        transaction.commit()?;
+        Ok(job)
+    }
 
-        self.transaction(|transaction| {
-            let id = next_job_id(transaction)?;
-            transaction.execute(
-                "INSERT INTO jobs (id, kind, scope, status, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![id, kind, scope, JobStatus::Running.as_str(), started_at],
-            )?;
-
-            Ok(JobRecord {
+    /// Records a foreground run after execution, atomically with its terminal status and
+    /// diagnostic outcomes. Callers must pass no subjects for successful but incomplete work.
+    pub fn record_finished_job(
+        &mut self,
+        kind: &str,
+        scope: &str,
+        result: Result<&str, &str>,
+        subjects: &[JobDiagnosticSubject],
+    ) -> Result<JobRecord, StateError> {
+        let finished_at = timestamp()?;
+        let (status, summary, error, outcome) = match result {
+            Ok(summary) => (JobStatus::Succeeded, Some(summary), None, "success"),
+            Err(error) => (JobStatus::Failed, None, Some(error), "failure"),
+        };
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let id = next_job_id(&transaction)?;
+        transaction.execute(
+            "INSERT INTO jobs (id, kind, scope, status, started_at, finished_at, summary, error)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7)",
+            params![
                 id,
-                kind: kind.to_string(),
-                scope: scope.to_string(),
-                status: JobStatus::Running,
-                started_at,
-                finished_at: None,
-                summary: None,
-                error: None,
-            })
-        })
+                kind,
+                scope,
+                status.as_str(),
+                finished_at,
+                summary,
+                error
+            ],
+        )?;
+        for subject in subjects {
+            insert_job_diagnostic_outcome(&transaction, &id, subject, outcome)?;
+        }
+        prune_old_jobs(&transaction)?;
+        let job = JobRecord {
+            id,
+            kind: kind.to_string(),
+            scope: scope.to_string(),
+            status,
+            started_at: finished_at.clone(),
+            finished_at: Some(finished_at),
+            summary: summary.map(str::to_string),
+            error: error.map(str::to_string),
+        };
+        transaction.commit()?;
+        Ok(job)
     }
 
     pub fn complete_job(&mut self, id: &str, summary: &str) -> Result<(), StateError> {
@@ -837,17 +913,15 @@ impl Database {
                 }
                 jobs
             };
-            let updated = transaction.execute(
-                "UPDATE jobs SET status = ?1, finished_at = ?2, error = ?3 WHERE status = ?4",
-                params![
-                    JobStatus::Failed.as_str(),
-                    finished_at,
-                    error,
-                    JobStatus::Running.as_str()
-                ],
-            )?;
+            let updated = running_jobs.len();
             if updated > 0 {
                 for (id, kind, scope) in running_jobs {
+                    transaction.execute(
+                        "UPDATE jobs SET status = ?1, finished_at = ?2,
+                         error = CASE WHEN kind = 'hooks' AND summary IS NOT NULL
+                             THEN ?3 || '; ' || summary ELSE ?3 END WHERE id = ?4",
+                        params![JobStatus::Failed.as_str(), finished_at, error, id],
+                    )?;
                     let subject = JobDiagnosticSubject::from_job_identity(&kind, &scope);
                     insert_job_diagnostic_outcome(transaction, &id, &subject, "failure")?;
                 }
@@ -864,35 +938,36 @@ impl Database {
         let mut statement = self.connection.prepare(
             "SELECT id, kind, scope, status, started_at, finished_at, summary, error FROM jobs ORDER BY started_at DESC, id DESC LIMIT ?1",
         )?;
-        let rows = statement.query_map(params![RECENT_JOB_LIMIT], |row| {
-            Ok(JobRecordRow {
-                id: row.get(0)?,
-                kind: row.get(1)?,
-                scope: row.get(2)?,
-                status: row.get(3)?,
-                started_at: row.get(4)?,
-                finished_at: row.get(5)?,
-                summary: row.get(6)?,
-                error: row.get(7)?,
-            })
-        })?;
+        let rows = statement.query_map(params![RECENT_JOB_LIMIT], JobRecordRow::read)?;
         let mut jobs = Vec::new();
 
         for row in rows {
-            let row = row?;
-            jobs.push(JobRecord {
-                id: row.id,
-                kind: row.kind,
-                scope: row.scope,
-                status: JobStatus::from_database(row.status)?,
-                started_at: row.started_at,
-                finished_at: row.finished_at,
-                summary: row.summary,
-                error: row.error,
-            });
+            jobs.push(row?.into_record()?);
         }
 
         Ok(jobs)
+    }
+
+    /// Reads a job by its accepted ID, including running jobs beyond the history display limit.
+    pub fn job(&self, id: &str) -> Result<Option<JobRecord>, StateError> {
+        self.connection.query_row(
+            "SELECT id, kind, scope, status, started_at, finished_at, summary, error FROM jobs WHERE id = ?1",
+            params![id], JobRecordRow::read,
+        ).optional()?.map(JobRecordRow::into_record).transpose()
+    }
+
+    /// Queued daemon hook runs also have running rows, so terminal runs see them before execution.
+    pub fn active_hook_job(&self, scope: &str) -> Result<Option<JobRecord>, StateError> {
+        self.connection
+            .query_row(
+                "SELECT id, kind, scope, status, started_at, finished_at, summary, error FROM jobs
+            WHERE kind = 'hooks' AND scope = ?1 AND status = 'running' ORDER BY id LIMIT 1",
+                params![scope],
+                JobRecordRow::read,
+            )
+            .optional()?
+            .map(JobRecordRow::into_record)
+            .transpose()
     }
 
     pub fn unresolved_job_failures(&self) -> Result<Vec<UnresolvedJobFailure>, StateError> {
@@ -928,6 +1003,9 @@ impl Database {
             {
                 continue;
             }
+            if !self.hook_failure_is_linked(&outcome.subject)? {
+                continue;
+            }
             unresolved.push(UnresolvedJobFailure {
                 job: (*job).clone(),
                 subject: outcome.subject,
@@ -946,10 +1024,33 @@ impl Database {
             {
                 continue;
             }
-            unresolved.push(UnresolvedJobFailure { job, subject });
+            if self.hook_failure_is_linked(&subject)? {
+                unresolved.push(UnresolvedJobFailure { job, subject });
+            }
         }
 
         Ok(unresolved)
+    }
+
+    fn hook_failure_is_linked(&self, subject: &JobDiagnosticSubject) -> Result<bool, StateError> {
+        if let JobDiagnosticSubject::Other { kind, scope } = subject
+            && kind == "hooks"
+        {
+            let components = scope.split(':').collect::<Vec<_>>();
+            match components.as_slice() {
+                ["project", project_id] => return Ok(self.project_by_id(project_id)?.is_some()),
+                // A pre-link prepare failure only matters while its worktree waits to be linked.
+                ["worktree", source_project_id, worktree_id] => {
+                    let linked = self.discovered_projects()?.into_iter().any(|project| {
+                        project.source_project_id == *source_project_id
+                            && project.worktree_id == *worktree_id
+                    });
+                    return Ok(!linked && self.project_by_id(source_project_id)?.is_some());
+                }
+                _ => {}
+            }
+        }
+        Ok(true)
     }
 
     fn job_diagnostic_outcomes(&self) -> Result<Vec<JobDiagnosticOutcome>, StateError> {
@@ -1325,6 +1426,49 @@ impl Database {
         Ok(())
     }
 
+    /// The commands not yet approved for `folder`, in their order and without repeats.
+    pub fn unapproved_hook_commands(
+        &self,
+        folder: &Utf8Path,
+        commands: &[String],
+    ) -> Result<Vec<String>, StateError> {
+        let mut approved = self
+            .connection
+            .prepare("SELECT 1 FROM hook_approvals WHERE folder = ?1 AND command = ?2")?;
+        let mut unapproved = Vec::new();
+        for command in commands {
+            if !unapproved.contains(command)
+                && !approved.exists(params![folder.as_str(), command])?
+            {
+                unapproved.push(command.clone());
+            }
+        }
+
+        Ok(unapproved)
+    }
+
+    /// Records approval of each exact command for `folder`. Existing approvals are kept.
+    pub fn approve_hook_commands(
+        &mut self,
+        folder: &Utf8Path,
+        commands: &[String],
+    ) -> Result<(), StateError> {
+        let approved_at = timestamp()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for command in commands {
+            transaction.execute(
+                "INSERT OR IGNORE INTO hook_approvals (folder, command, approved_at)
+                VALUES (?1, ?2, ?3)",
+                params![folder.as_str(), command, approved_at],
+            )?;
+        }
+        transaction.commit()?;
+
+        Ok(())
+    }
+
     /// Allocation objects of removed worktree Projects that PV still has to delete.
     pub fn pending_cleanups(&self) -> Result<Vec<PendingCleanupRecord>, StateError> {
         let mut statement = self.connection.prepare(
@@ -1435,10 +1579,12 @@ impl Database {
             })
     }
 
+    /// Records a full Project apply and atomically admits setup on a discovered first success
+    /// when `setup_hook_log` is supplied. Returns the committed setup job ID for runner handoff.
     pub fn finalize_project_reconciliation(
         &mut self,
         mut input: ProjectReconciliationStateInput,
-    ) -> Result<ProjectRecord, StateError> {
+    ) -> Result<(ProjectRecord, Option<String>), StateError> {
         input.link.desired_php_track = input
             .php_runtime
             .as_ref()
@@ -1485,12 +1631,32 @@ impl Database {
             &input.env_warnings,
         )?;
         // The first full success ends a discovered worktree's wait to be served.
-        transaction.execute(
+        let first_reconciled = transaction.execute(
             "UPDATE projects
-            SET first_reconciled_at = COALESCE(first_reconciled_at, ?1)
-            WHERE id = ?2",
+            SET first_reconciled_at = ?1
+            WHERE id = ?2 AND first_reconciled_at IS NULL",
             params![timestamp()?, project.id],
-        )?;
+        )? > 0;
+        let setup_job = if first_reconciled
+            && let Some(log) = input.setup_hook_log
+            && transaction.query_row(
+                "SELECT source_project_id IS NOT NULL FROM projects WHERE id = ?1",
+                [&project.id],
+                |row| row.get::<_, bool>(0),
+            )? {
+            Some(
+                start_job_in_transaction(
+                    &transaction,
+                    "hooks",
+                    &format!("project:{}", project.id),
+                    Some(&format!("setup hooks queued (log: {log})")),
+                    timestamp()?,
+                )?
+                .id,
+            )
+        } else {
+            None
+        };
         let project =
             project_by_id_in_transaction(&transaction, &project.id)?.ok_or_else(|| {
                 StateError::ProjectNotFound {
@@ -1499,7 +1665,7 @@ impl Database {
             })?;
         transaction.commit()?;
 
-        Ok(project)
+        Ok((project, setup_job))
     }
 
     /// Discovered worktree Projects that haven't had a full reconciliation succeed yet. They get no
@@ -5077,6 +5243,27 @@ fn insert_job_diagnostic_outcome(
     )?;
 
     Ok(())
+}
+
+fn start_job_in_transaction(
+    transaction: &Transaction<'_>,
+    kind: &str,
+    scope: &str,
+    summary: Option<&str>,
+    started_at: String,
+) -> rusqlite::Result<JobRecord> {
+    let id = next_job_id(transaction)?;
+    transaction.execute("INSERT INTO jobs (id, kind, scope, status, started_at, summary) VALUES (?1, ?2, ?3, ?4, ?5, ?6)", params![id, kind, scope, JobStatus::Running.as_str(), started_at, summary])?;
+    Ok(JobRecord {
+        id,
+        kind: kind.to_string(),
+        scope: scope.to_string(),
+        status: JobStatus::Running,
+        started_at,
+        finished_at: None,
+        summary: summary.map(str::to_string),
+        error: None,
+    })
 }
 
 fn timestamp() -> Result<String, StateError> {

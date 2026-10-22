@@ -24,6 +24,10 @@ expression: "(written.path.file_name(), written.exists, reloaded.config)"
         env: {
             "APP_URL": "${url}",
         },
+        hooks: ProjectHooks {
+            prepare: [],
+            setup: [],
+        },
         resources: {
             "mysql": ResourceConfig {
                 track: Some(

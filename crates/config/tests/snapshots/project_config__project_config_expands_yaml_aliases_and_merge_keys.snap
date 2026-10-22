@@ -11,6 +11,10 @@ ProjectConfig {
         "MATH": "2 * 3",
         "TEAM": "R&D & QA",
     },
+    hooks: ProjectHooks {
+        prepare: [],
+        setup: [],
+    },
     resources: {
         "mysql": ResourceConfig {
             track: Some(

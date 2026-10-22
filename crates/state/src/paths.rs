@@ -158,6 +158,31 @@ impl PvPaths {
         self.logs().join("daemon.log")
     }
 
+    pub fn project_hook_log(&self, project_id: &str) -> Utf8PathBuf {
+        self.logs().join(format!("hooks/project-{project_id}.log"))
+    }
+
+    pub fn worktree_hook_log(&self, source_project_id: &str, worktree_id: &str) -> Utf8PathBuf {
+        self.logs().join(format!(
+            "hooks/worktree-{source_project_id}-{worktree_id}.log"
+        ))
+    }
+
+    /// A daemon hook subject's log. Terminal runs may have no file at this path.
+    pub fn hook_log_for_scope(&self, scope: &str) -> Option<Utf8PathBuf> {
+        match scope.split(':').collect::<Vec<_>>().as_slice() {
+            ["project", project] if safe_hook_component(project) => {
+                Some(self.project_hook_log(project))
+            }
+            ["worktree", source, worktree]
+                if safe_hook_component(source) && safe_hook_component(worktree) =>
+            {
+                Some(self.worktree_hook_log(source, worktree))
+            }
+            _ => None,
+        }
+    }
+
     pub fn launchd_stdout_log(&self) -> Utf8PathBuf {
         self.logs().join("launchd.out.log")
     }
@@ -373,4 +398,11 @@ fn short_digest(value: &str) -> String {
     let digest = format!("{:x}", Sha256::digest(value.as_bytes()));
 
     digest[..12].to_owned()
+}
+
+fn safe_hook_component(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }

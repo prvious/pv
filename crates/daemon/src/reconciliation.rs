@@ -8,6 +8,7 @@ use state::{JobsLock, PvPaths, StateError};
 use thiserror::Error;
 use tokio::sync::Notify;
 
+use crate::hooks::DaemonHooks;
 use crate::watcher::ProjectConfigWatcher;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -101,6 +102,7 @@ struct QueueInner {
     state: Mutex<QueueState>,
     notify: Notify,
     project_config_watcher: Option<ProjectConfigWatcher>,
+    hooks: Option<DaemonHooks>,
 }
 
 type JobFinalizer = Box<dyn FnOnce(&str) + Send + 'static>;
@@ -124,22 +126,29 @@ struct DebounceInner {
 
 impl ReconciliationQueue {
     pub fn new() -> Self {
-        Self::with_project_config_watcher(None)
+        Self::with_project_config_watcher(None, None)
     }
 
     /// A queue that has `watcher` re-read the linked Projects whenever it admits a job and
     /// whenever a job ends, since commands commit their changes before they request a job and
     /// system reconciliation links and unlinks discovered worktrees.
-    pub(crate) fn watching_project_configs(watcher: ProjectConfigWatcher) -> Self {
-        Self::with_project_config_watcher(Some(watcher))
+    pub(crate) fn watching_project_configs(
+        watcher: ProjectConfigWatcher,
+        hooks: DaemonHooks,
+    ) -> Self {
+        Self::with_project_config_watcher(Some(watcher), Some(hooks))
     }
 
-    fn with_project_config_watcher(project_config_watcher: Option<ProjectConfigWatcher>) -> Self {
+    fn with_project_config_watcher(
+        project_config_watcher: Option<ProjectConfigWatcher>,
+        hooks: Option<DaemonHooks>,
+    ) -> Self {
         Self {
             inner: Arc::new(QueueInner {
                 state: Mutex::new(QueueState::default()),
                 notify: Notify::new(),
                 project_config_watcher,
+                hooks,
             }),
         }
     }
@@ -399,6 +408,9 @@ impl Drop for QueuedReconciliation {
 }
 
 impl RunningReconciliation {
+    pub(crate) fn hooks(&self) -> Option<DaemonHooks> {
+        self.inner.hooks.clone()
+    }
     pub fn scope(&self) -> &ReconciliationScope {
         &self.job.scope
     }

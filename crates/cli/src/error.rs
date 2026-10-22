@@ -4,6 +4,31 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum CliError {
+    #[error(
+        "Project hooks are already queued or running in daemon job {job_id}; wait for that job or pass `--skip-hooks`"
+    )]
+    ProjectHooksInProgress { job_id: String },
+
+    #[error(
+        "PV runs this worktree's hooks automatically after its first successful reconciliation; check `pv jobs` or pass `--skip-hooks`"
+    )]
+    ProjectFirstReconciliationPending,
+
+    #[error(
+        "PV database disappeared while Project hooks were running, possibly after `pv uninstall --prune`; aborting without recreating PV state"
+    )]
+    LinkDatabaseRemoved,
+
+    #[error(
+        "reconciliation {job_id} failed: {message}\nSetup hooks were not run; run `pv link` again once the reconciliation error is fixed"
+    )]
+    LinkReconciliationFailed { job_id: String, message: String },
+
+    #[error(
+        "the outcome of reconciliation {job_id} is unknown\nSetup hooks were not run; run `pv link` again"
+    )]
+    LinkReconciliationUnknown { job_id: String },
+
     #[error("prompt cancelled")]
     PromptCancelled,
 
@@ -191,6 +216,25 @@ pub enum CliError {
 
 #[derive(Debug, Error)]
 pub(crate) enum ExecuteError {
+    #[error("{original}; cannot resume after hooks: {resume}")]
+    HookResume {
+        original: Box<ExecuteError>,
+        #[source]
+        resume: Box<ExecuteError>,
+    },
+    #[error("{original}; could not record hook outcome: {recording}")]
+    HookOutcomeRecording {
+        original: Box<ExecuteError>,
+        #[source]
+        recording: state::StateError,
+    },
+    #[error("{phase}: {source}")]
+    ProjectHook {
+        phase: &'static str,
+        #[source]
+        source: platform::hooks::HookError,
+    },
+
     #[error(transparent)]
     User(#[from] CliError),
 

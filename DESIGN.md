@@ -474,11 +474,11 @@ The `php` shim does not auto-download missing tracks. If the resolved Project or
 
 Commands that change desired state write that state even when the daemon is not running.
 
-After writing desired state, the command requests reconciliation. If the daemon is not running, the command warns that reconciliation is pending and exits successfully. The command exits non-zero only when recording desired state fails or the command input is invalid.
+After writing desired state, the command requests reconciliation. If the daemon is not running, the command warns that reconciliation is pending and exits successfully. The command exits non-zero when recording desired state fails or input is invalid. `pv link` also exits non-zero when hooks fail or its required reconciliation fails, as described in Project Hooks.
 
-Desired-state commands wait for reconciliation only when their contract implies readiness, such as `pv setup` and explicit install/update commands. Fast intent commands such as `pv link` and `pv unlink` write desired state, request reconciliation, and return after the daemon accepts the job.
+Desired-state commands wait for reconciliation only when their contract implies readiness, such as `pv setup` and explicit install/update commands. `pv unlink` and `pv link` without active setup hooks write desired state, request reconciliation, and return after the daemon accepts the job. With setup hooks, `pv link` waits for the accepted reconciliation job to succeed before running setup in the terminal.
 
-Non-waiting commands such as `pv link` exit zero once desired state is recorded and the daemon has accepted reconciliation, even if that reconciliation later fails. Waiting commands such as setup, install, update, and restart exit non-zero when their daemon job fails.
+Non-waiting commands such as `pv link --skip-hooks` exit zero once desired state is recorded and the daemon has accepted reconciliation, even if that reconciliation later fails. Waiting commands such as setup, install, update, and restart exit non-zero when their daemon job fails.
 
 Install and update commands submit daemon jobs, stream progress over the socket, and exit when the job completes or fails.
 
@@ -746,7 +746,7 @@ If reactivating the previous release reports an error but the active symlink alr
 
 PV uses OS-level advisory filesystem locks. `~/.pv/run/update.lock` protects foreground self-update and the daemon transition. `~/.pv/run/jobs.lock` protects the daemon mutation queue. `pv update` acquires `update.lock` and then `jobs.lock` before changing the application or daemon; the daemon queue acquires only `jobs.lock` and never waits while holding `update.lock`. Ordinary mutating CLI preflight checks only `update.lock`, so an active daemon reconciliation does not reject unrelated intent recording. Direct foreground Managed Resource install, update, and PHP selection commands also hold `jobs.lock` through artifact and related selection mutations, then release it before submitting daemon reconciliation. Once startup reconciliation begins running, daemon shutdown waits for it to finish so blocking installation work retains the jobs lock through completion. Startup waiting for the jobs lock remains cancellable.
 
-The external `~/.pv-runtime-lifecycle.lock` admits foreground mutations and short daemon bootstrap with shared ownership. PHP and Composer shims hold shared admission during initialization and release it before executing PHP. Disable and uninstall hold it exclusively until shutdown and removal finish, including removal of `~/.pv` itself. Uninstall acquires it after prune confirmation and before the helper lifecycle lock. Declining confirmation or refusing a noninteractive prune creates no lifecycle lock file.
+The external `~/.pv-runtime-lifecycle.lock` admits foreground mutations and short daemon bootstrap with shared ownership. PHP and Composer shims hold shared admission during initialization and release it before executing PHP. `pv link` holds it except while each hook list runs, then reacquires it; if disable or uninstall owns admission at that point, link exits non-zero without recording state or contacting the daemon. Disable and uninstall hold it exclusively until shutdown and removal finish, including removal of `~/.pv` itself. Uninstall acquires it after prune confirmation and before the helper lifecycle lock. Declining confirmation or refusing a noninteractive prune creates no lifecycle lock file.
 
 Contention errors describe the active coordination lock and its backing path. Persistent lock files are not themselves evidence of contention: they may remain after the owning process exits, and unlocked stale files do not block work. Active OS locks are released automatically when their owning file handles close.
 
@@ -789,6 +789,7 @@ PV stores machine state and installed assets under `~/.pv`:
     releases/
   run/
   logs/
+    hooks/
   downloads/
   config/
   certificates/
@@ -1118,6 +1119,8 @@ Projects may opt in to Project-specific Managed Resource requirements and enviro
 
 An empty Project config is valid and means no Project-specific overrides. PV uses defaults and does not touch `.env`.
 
+Project config accepts the top-level keys `serve`, `env_file`, `php`, `root`, `env`, `hooks`, and registered backing Managed Resource names. `hooks` declares prepare and setup command lists; see Project Hooks.
+
 Project config accepts a root-level `serve` boolean. It defaults to `true`. With `serve: false`, the Project remains linked and PV still reconciles its declared Managed Resources, Resource allocations, and environment mappings, but PV does not create a Gateway route, TLS demand, or PHP worker for the Project. PV does not start framework or application development servers on the Project's behalf.
 
 Serving-only config remains valid but dormant while `serve: false`. This includes `root`, the primary Project hostname, root env entries that use `${url}`, and env entries at any scope that use `${tls.cert}`, `${tls.key}`, or `${tls.ca}`. PV preserves those values in user-owned config, ignores them for runtime planning, and omits env entries that depend on serving-only placeholders. If serving is enabled again, PV validates and applies those values normally and restores the omitted env entries. Resource and allocation `${url}` values remain active while serving is disabled.
@@ -1382,15 +1385,13 @@ If the selected document root has no `index.php`, PV serves static files normall
 
 PV v1 does not manage Project background processes such as Laravel queues, scheduler, Horizon, Reverb, or similar long-running Project commands.
 
-PV v1 does not run Project package manager commands, such as `composer install`, automatically.
-
-PV v1 does not run Laravel application commands, such as `php artisan key:generate` or migrations, automatically.
+PV does not choose package manager or framework commands to run. It runs only the commands a Project declares in `hooks`; see Project Hooks.
 
 PV v1 does not diagnose Laravel application state, such as missing `APP_KEY`.
 
-The command succeeds when PV has recorded the desired Project and submitted the reconciliation request. If the daemon is running and reconciliation succeeds, a served Project should be reachable at its `.test` URL by the end of the command. A resource-only Project should have its declared Managed Resources, allocations, and env reconciled without becoming reachable through the Gateway.
+Without setup hooks, the command succeeds after recording desired state and submitting reconciliation. With setup hooks, it waits for the accepted reconciliation job to succeed, then runs setup. If that job fails, it skips setup, exits non-zero, shows the job's error and says to run `pv link` again once it is fixed. Hook failure also exits non-zero. A prepare failure records no new Project and leaves an existing Project unchanged; a setup failure leaves the Project linked with its allocations and env block. A resource-only Project reconciles its resources, allocations, and env without a Gateway route.
 
-`pv link` can run before `pv setup`. It records desired state and warns that setup is incomplete, so routing will not work until `pv setup` completes.
+`pv link` can run before `pv setup`. It runs prepare, records desired state, and warns that reconciliation is pending. Without a running daemon, setup hooks are skipped with a warning to run `pv link` again after `pv setup`; the command exits zero and records no deferred-hook marker. `--skip-hooks` skips both terminal lists; a discovered Project still gets daemon setup on its first successful reconciliation.
 
 By default, PV derives the Project hostname from the Project directory basename, normalized to a DNS-safe slug. For example, `/Users/me/Code/Acme Store` becomes `acme-store.test`.
 
@@ -1428,7 +1429,7 @@ If `pv link` is run for an already linked Project with a different `--hostname`,
 
 Changing a Project's primary hostname triggers full Project reconciliation, including Gateway routing updates, certificate configuration updates, and PV-managed `.env` updates when the Project has opted into env rendering.
 
-If `pv link` is run for an already linked Project with the same hostname, it is idempotent: PV refreshes desired state, requests reconciliation, reports that the Project was already linked, and exits successfully.
+If `pv link` is run for an already linked Project with the same hostname, PV refreshes desired state, requests reconciliation, and reports that the Project was already linked. Each invocation reruns its declared hooks, subject to the guards in Project Hooks, unless `--skip-hooks` is passed.
 
 If `pv link` is run for an already linked Project without `--hostname`, PV preserves the existing Project hostname, including any previously configured custom hostname.
 
@@ -1444,7 +1445,7 @@ If a bare selector could resolve both an exact Project slug and a normalized hos
 
 `pv unlink` exits non-zero if the target cannot be resolved to a linked Project.
 
-`pv unlink` removes the Project from desired state and requests reconciliation. It never deletes the Project directory. Resource allocations, databases, Redis data, RustFS data, and other managed service data remain unless a separate destructive command is introduced. PV stops reconciling and watching them for that Project. This also applies to discovered worktree Projects; Git Worktrees describes the separate cleanup that follows Git removing a worktree.
+`pv unlink` removes the Project from desired state, stops its queued and running daemon hooks (including discovered children when unlinking a source), and requests reconciliation. It never deletes the Project directory. Resource allocations, databases, Redis data, RustFS data, and other managed service data remain unless a separate destructive command is introduced. PV stops reconciling and watching them for that Project. This also applies to discovered worktree Projects; Git Worktrees describes the separate cleanup that follows Git removing a worktree.
 
 If PV previously generated a Project `.env` block, `pv unlink` leaves the block and any `# pv: ` lines in place and stops updating them.
 
@@ -1464,13 +1465,13 @@ A discovered Project's slug is `<source-slug>-<worktree-directory>`, where the w
 
 A discovered Project reads only its own Project config. It does not inherit the source's config; without a `pv.yml`, it behaves like any linked Project without Project config.
 
-When PV first discovers a worktree and the discovered Project's configured env file does not exist, PV copies the source Project's configured env file to it before linking the worktree. In the copy, PV restores the source's `# pv: ` lines and empties the source's PV-managed block, so nothing in the copy points at the source's Resource allocations; reconciliation then renders the discovered Project's own block as usual. The copy is owner-only. PV never overwrites an existing env file and never changes the source's env file. A source without an env file means there is nothing to copy. If the worktree's config can't be read, or a copy is needed and the source's config or env file can't be read, PV doesn't link the worktree yet and tries again on the next scan. PV does not install dependencies or run migrations, seeders, or other application commands for a worktree.
+When PV first discovers a worktree and the discovered Project's configured env file does not exist, PV copies the source Project's configured env file to it before linking the worktree. In the copy, PV restores the source's `# pv: ` lines and empties the source's PV-managed block, so nothing in the copy points at the source's Resource allocations; reconciliation then renders the discovered Project's own block as usual. The copy is owner-only. PV never overwrites an existing env file and never changes the source's env file. A source without an env file means there is nothing to copy. If the worktree's config can't be read, or a copy is needed and the source's config or env file can't be read, PV doesn't link the worktree yet and tries again on the next scan. PV runs only the worktree's declared prepare and setup hooks, as described in Project Hooks.
 
 A discovered Project gets no Gateway route or PHP worker until its first reconciliation of Resource allocations and env completes successfully, including when there is nothing to render. PV records that success in `pv.db`. After it, the normal rules apply, including serving the last valid state when later reconciliation fails.
 
 A worktree whose checkout directory is missing while Git still registers it remains a linked, missing Project. Git keeps such entries, reported as prunable, until they are pruned.
 
-When a worktree's entry directory no longer exists, including after `git worktree remove` or `git worktree prune`, PV deletes the discovered Project's PV-owned data. In one transaction, PV unlinks the Project and records each allocation object it owned in a cleanup list: active and inactive allocations, and retired allocations left on previous tracks. Because the Project is no longer linked, reconciliation cannot recreate those objects. After the Gateway reloads without the Project's routes, PV deletes each object: MySQL and Postgres databases, Redis keys with the allocation's prefix in every logical database, and RustFS buckets with their contents. A deletion that finds the object already gone succeeds. A MySQL drop waits at most 10 seconds for each lock that a client's open transaction holds on the database, then fails rather than hold up other daemon jobs.
+When a worktree's entry directory no longer exists, including after `git worktree remove` or `git worktree prune`, PV deletes the discovered Project's PV-owned data. In one transaction, PV unlinks the Project and records each allocation object it owned in a cleanup list: active and inactive allocations, and retired allocations left on previous tracks. Because the Project is no longer linked, reconciliation cannot recreate those objects. After the Gateway reloads without the Project's routes, PV stops the worktree's queued and running daemon hooks, deletes its hook logs, and deletes each object: MySQL and Postgres databases, Redis keys with the allocation's prefix in every logical database, and RustFS buckets with their contents. A deletion that finds the object already gone succeeds. A MySQL drop waits at most 10 seconds for each lock that a client's open transaction holds on the database, then fails rather than hold up other daemon jobs.
 
 PV removes an object from the cleanup list only after its deletion succeeds. It tries the rest again on the next system reconciliation, which runs at daemon startup, on `pv daemon:restart` and `pv unlink`, after a Managed Resource install, update, or uninstall, and when a worktree appears or goes. It doesn't retry on a timer, so an object that can't be deleted yet doesn't make PV reconcile every 30 seconds. A failed cleanup never fails the reconciliation job, and `pv status` lists each pending object with its last error. When an object's track is installed but stopped, PV starts it for cleanup and stops it again when no Project uses it. When the track is no longer installed but its data directory remains, the object stays pending and `pv status` gives the install command that lets PV finish. When the data directory is gone, as after uninstalling the track with `--prune`, the object went with it.
 
@@ -1479,6 +1480,166 @@ Slugs and generated names in the cleanup list stay reserved, so no new Project r
 Only a missing entry directory counts as removal. A missing source directory, an unreadable `.git/worktrees/` directory or entry, or any other uncertain result changes nothing for that source, and PV retries on the next scan.
 
 `pv unlink` on a discovered Project keeps its data and stops PV from discovering that worktree again until Git removes it. After that, running `pv link` on its path links it as an ordinary Project. Running `pv link` on a discovered Project that is still linked updates it like any relink, and it stays discovered. Unlinking a source also unlinks its discovered Projects, keeps their data, and lists them in its output. When Git later removes a worktree whose Project was unlinked, PV deletes nothing.
+
+## Project Hooks
+
+Projects may declare prepare and setup shell commands. PV runs them only after the user approves each command's exact text, as described in Approving hook commands. Approved commands receive the user's whole environment and can read and send away credentials such as `COMPOSER_AUTH`. PV does not manage long-running Project processes.
+
+### Config
+
+`hooks` is a top-level key in Project config:
+- It is a mapping with two optional keys, `prepare` and `setup`.
+- Each value is a list of non-empty strings, one shell command per item. A single string instead of a list is an error.
+- Unknown keys under `hooks` fail validation, like every other unknown key.
+- `hooks: {}` and empty lists are valid and mean no hooks.
+- It is valid in both serving modes.
+- Like other config errors, invalid hooks keep the last valid desired state active. `pv link` fails before running anything.
+
+A discovered worktree uses only its own `pv.yml`, as today. Its hooks are the ones committed on its branch.
+
+### Approving hook commands
+
+PV runs a hook command only after the user has approved its exact text for the Project's folder. Approvals are stored in `pv.db`, outside any repository, so nothing committed on a branch can approve a command.
+
+- **Approval folder.** It is the Project's folder in the repository's main checkout. For a Project inside a linked Git worktree, PV reads the worktree's `.git` file and that entry's `commondir` to find the main checkout, and keeps the Project's path relative to the worktree, so `<worktree>/apps/web` uses `<main>/apps/web`. The entry must sit inside that repository's `.git/worktrees/`, and the checkout folder its `gitdir` names must be the folder being linked once symlinks are resolved, so neither a hand-made `.git` file nor a `.git` symlinked to a real worktree's lets a folder claim a repository it doesn't belong to. A worktree anywhere on disk therefore shares its main checkout's approvals. Anything else, including a submodule, a bare repository's worktree or an entry PV can't read, uses the Project's own folder, which means PV asks again.
+- **Exact commands.** Each approval is one command's exact text. A changed or new command needs approval; removing or reordering commands doesn't.
+- **All or nothing.** Hooks run only when every command in both lists is approved. Otherwise PV skips both lists.
+- **Linking never waits for approval.** A Project whose hooks aren't approved is linked and provisioned as if it had no hooks.
+- **Only `pv link` in a terminal approves.** It lists the unapproved commands with their phase on stderr, next to the prompt, showing every character outside printable ASCII as an escape such as `\u{1b}` or `\u{200b}` and backslashes doubled, so control sequences, invisible characters and look-alike letters can't make two commands look the same, and asks once. The exact text is still what's approved and run. Yes approves them and runs the hooks. No, or no terminal, links the Project without hooks, warns which commands were skipped and that `pv link` in a terminal reviews them, and exits zero. There is no `--yes` and no separate approval command.
+- **The daemon never asks.** A discovered worktree whose hooks aren't all approved is linked without `prepare`, and its `setup` is skipped. Each skipped daemon run completes with a summary that names `pv link` in the worktree, and records no coverage, so it shows in `pv jobs` but not as a failure. After approving through `pv link` in the worktree, its hooks run there.
+- **Approval covers a command's text, not the files it runs.** An approved `./bin/setup` runs whatever that script contains.
+
+### When hooks run
+
+| Event | `prepare` | `setup` |
+|---|---|---|
+| `pv link`, first or again | Yes, in the terminal, before PV records the Project | Yes, in the terminal, after the accepted reconciliation job succeeds |
+| `pv link --skip-hooks` | No terminal hooks | No terminal hooks; daemon setup still runs on a discovered Project's first-success transition |
+| Discovery links a new worktree | Yes, in the daemon, after the env copy and before linking | Yes, in the daemon, after the Project's first successful reconciliation |
+| Editing `pv.yml`, any other reconciliation, daemon start, `pv setup`, `pv update`, `git worktree move` | No | No |
+
+PV keeps no persistent completed-hook marker to decide whether to rerun hooks. An ordinary Project that is already linked does not get them automatically; a discovered Project runs setup on its first successful reconciliation. Running `pv link` again reruns hooks. Discovery remembers successful prepare runs in memory only until linking, as described below. In every row, hooks run only when all of the Project's hook commands are approved.
+
+### Running a hook list
+
+One hook run is one Project's `prepare` list or `setup` list. A `pv link` invocation is a single run that covers both.
+
+1. **Capture the environment.** Once per run, as described in the next section.
+2. **Run each command** as `/bin/sh -c '<command>'`:
+   - The working directory is the Project root.
+   - stdin is `/dev/null`, everywhere, so a hook that works with `pv link` also works in the daemon.
+   - Each command gets its own process group, so stopping a run stops everything it started.
+   - When a command exits, PV stops anything it left running in its process group. A `php artisan serve &` started by a hook is stopped.
+3. **Stop at the first command that exits non-zero.** The run fails, naming the command and its exit status.
+
+On macOS `/bin/sh` is bash in POSIX mode. On Debian and Ubuntu it is dash. Hooks should use POSIX syntax. Parallel work needs a `wait` per process, because a plain `wait` exits 0 even when a job failed:
+
+```sh
+pnpm install & a=$!; composer install & b=$!; wait $a && wait $b
+```
+
+**Command environment**, in order of precedence (highest first):
+1. `PV_SOURCE_PATH`, for discovered worktree Projects only: the source Project's path, which sits in the main checkout. It is unset for ordinary Projects.
+2. PV's Composer overlay, the same values the `composer` shim sets: `~/.pv/bin` and `~/.pv/composer/vendor/bin` at the front of `PATH`, `COMPOSER_HOME` and `COMPOSER_CACHE_DIR`.
+3. The captured login-shell environment.
+
+There is no command timeout:
+- In the terminal, Ctrl-C stops the running command's process group.
+- In the daemon, a run stops when its Project is unlinked, when Git removes its worktree, or when the daemon stops.
+
+### Capturing the login-shell environment
+
+The daemon is a LaunchAgent with no `EnvironmentVariables`, so it has launchd's bare `PATH` (`/usr/bin:/bin:/usr/sbin:/sbin`). Under it, `pnpm` and `node` installed through Homebrew, fnm, nvm or mise aren't found. Saving a `PATH` at link time goes stale. fnm, for example, puts a different directory on `PATH` for every shell, such as `~/.local/state/fnm_multishells/<pid>_<time>/bin`. So PV asks the user's shell each time:
+
+1. **Find the login shell** from the account record (`nix::unistd::User::from_uid`), not `$SHELL`.
+2. **Start it interactive and login** (`<shell> -i -l -c '<script>'`):
+   - It starts in `$HOME`, with the Project root passed in `PV_HOOK_PROJECT`.
+   - The script runs `cd "$PV_HOOK_PROJECT"` first, so version managers that switch on directory change (fnm `--use-on-cd`, mise) pick that directory's versions, as they would in a terminal.
+   - It then prints a start marker, `/usr/bin/env -0` and an end marker.
+   - The script uses only syntax that zsh, bash, sh and fish all accept.
+3. **Guard against shell startup quirks:**
+   - Output outside the markers is ignored, so a welcome banner or a tool's warning is harmless.
+   - stderr is kept only to explain a failure.
+   - stdin is `/dev/null`, so a startup prompt such as an oh-my-zsh update question gets an end of input straight away instead of waiting.
+   - A 10-second timeout kills the shell's process group.
+4. **Parse the NUL-separated variables,** then drop shell bookkeeping: `PWD`, `OLDPWD`, `SHLVL`, `_` and `PV_HOOK_PROJECT`.
+
+If the capture fails (timeout, non-zero exit, no markers), the run fails before any command starts. The error says "couldn't load your shell environment" and shows the end of the shell's stderr.
+
+Captured values never go into logs, job records or error messages, because they can contain secrets.
+
+Known limit: tools that load only after the first prompt (zinit turbo mode, lazy nvm loaders) never load under `-c`. Users fix that in their shell config, or with absolute paths in the hook.
+
+### `pv link`
+
+1. **Read and validate Project config,** as today. If the Project declares hooks, is discovered and `first_reconciled_at` is still null, fail before running anything: PV runs this worktree's hooks automatically after its first successful reconciliation; check `pv jobs`, or pass `--skip-hooks` to link without terminal hooks. Otherwise, if the Project declares hooks and the daemon is running hooks for this linked Project (a queued or running `hooks` job for it), fail before running anything and say to wait for that job, or pass `--skip-hooks`. Two runs of `composer install` in one directory at once can break it. Then, if any hook command isn't approved, ask once as described in Approving hook commands; when declined or without a terminal, continue without hooks, as with `--skip-hooks`.
+2. **Run `prepare`** in the terminal, unless `--skip-hooks` is passed or there is no `prepare` list. On failure:
+   - Exit non-zero.
+   - On a first link, nothing is recorded.
+   - On a relink, the existing record is left as it was and no reconciliation is requested.
+3. **Record desired state and request reconciliation,** as today.
+4. **Run `setup`,** if the Project has a `setup` list and `--skip-hooks` wasn't passed:
+   - Wait for the job ID in the daemon's accepted response by reading its record in `pv.db` until it finishes. The ID may name a new job or an existing queued/running reconciliation into which the request was coalesced. Print the accepted job ID while waiting, and keep waiting through daemon restarts. Run setup only when that accepted job finishes successfully.
+   - If the accepted job record disappears, exit non-zero: its outcome is unknown, setup was not run, and the user should run `pv link` again.
+   - If the accepted job fails, skip `setup`, exit non-zero, show the job's error and say to run `pv link` again once it is fixed.
+   - If the daemon isn't running (including before `pv setup`), skip `setup`. Warn that it runs when `pv link` is run again after `pv setup`, and exit zero, matching how `pv link` behaves before setup today.
+   - Otherwise run `setup` in the terminal. On failure, exit non-zero. The Project stays linked with its allocations and env block.
+5. **Record the run as a `hooks` job** for the Project when it finishes (next section). A `prepare` failure on a first link has no Project to record against, so it appears only in the terminal.
+
+Details:
+- The guards cover linked Projects only. Before discovery links a worktree, `pv link` can run prepare there and link it as an ordinary Project. Discovery then forgets that worktree and records a successful skipped prepare for its scope, clearing any earlier failure. A daemon prepare finishing afterwards cannot link it or trigger setup.
+- If discovery links the worktree while `pv link` runs prepare there, `pv link` reads the Project again before recording it: it keeps the discovered Project's hostname and applies the guards above again.
+- Hook commands allow disable and uninstall to proceed. If either operation holds lifecycle admission when hooks finish, `pv link` exits non-zero without further state writes or daemon requests. A completed `uninstall --prune` during hooks cannot recreate `~/.pv`.
+- Two concurrent `pv link` invocations in the same folder are not coordinated, like running `composer install` twice by hand.
+- `pv link` without setup hooks stays a fast intent command that returns once the daemon accepts reconciliation.
+- Each command is announced on its own line before its output, such as `Running setup: pnpm build`. Command output is passed through unchanged.
+- Ctrl-C stops the running command, records the run as interrupted and exits non-zero.
+
+### Discovered worktrees
+
+For a newly found worktree (not opted out, its directory exists, its config can be read):
+1. **PV copies the source's env file** if the worktree has none, as today.
+2. **If the worktree's config has a `prepare` list and all its hook commands are approved,** PV doesn't link it yet:
+   - It hands the worktree to the hook runner, outside the job queue.
+   - While that `prepare` is queued or running, discovery and the 30-second health scan leave that worktree alone.
+   - When `prepare` succeeds, the runner adds the worktree ID to an in-memory prepared set and requests system reconciliation. Discovery and the health scan honour that set: discovery links the prepared worktree without another `prepare` and removes it from the set once linked. The set is empty after a daemon restart.
+   - When `prepare` fails, the daemon remembers the worktree ID in memory. Discovery and the health scan skip the worktree until the daemon restarts. The failure says to fix the cause and run `pv daemon:restart`. Nothing is written to `worktree_opt_outs`, so the worktree stays a discovered worktree.
+   - If the daemon restarts at any point before the worktree is linked, `prepare` runs again on the next discovery.
+3. **Without a `prepare` list, or when a hook command isn't approved,** discovery links the worktree straight away, as today. A skipped `prepare` is recorded as described in Approving hook commands.
+4. **Run `setup`.** When a discovered Project's allocations and env first succeed (`first_reconciled_at` goes from null to set) and its applied config has a `setup` list, the existing finalization transaction also inserts the queued `hooks` job. The caller hands that job ID and the applied commands to the runner. Setup runs even if Gateway or another Project later fails the enclosing job, whoever requested reconciliation. A crash after commit leaves a queued job that startup marks failed.
+
+If the daemon stops while `setup` is queued or running, PV doesn't resume it. Startup marks the run's job failed, as it does for every job left running, so `pv status` shows it, and `pv link` in the worktree reruns the hooks.
+
+The serving gate is unchanged. A worktree's route appears once its first reconciliation succeeds, which may be before `setup` finishes.
+
+### Daemon hook runner
+
+- Hook runs never hold `jobs.lock` and never enter the reconciliation queue. The daemon runs one job at a time, and a minutes-long `pnpm install` must not delay `pv php:install` or reconciliation.
+- Up to 4 runs at once, `prepare` and `setup` alike; the rest wait in arrival order.
+- Right before each run, the runner checks again that every hook command is approved for the Project's folder. If not, nothing runs: a skipped `prepare` lets discovery link the worktree without it, and the run's job completes as skipped.
+- **Stopping runs:**
+  - Unlinking a Project, or unlinking a source and with it its discovered Projects, stops their queued and running hooks.
+  - When Git removes a worktree, PV stops its daemon hooks before cleanup deletes any allocation object, so a daemon migration never runs against a database being dropped. A foreground `pv link` belongs to the user's terminal; removing its worktree mid-command is like deleting a folder during `composer install`. There is no CLI/daemon handoff.
+  - A removed or superseded worktree prepare is recorded as successfully skipped, with success coverage for its worktree scope that clears any earlier failure.
+  - The daemon stopping kills every hook process group.
+
+### Reporting
+
+**Jobs:**
+- Every hook run is recorded as a job of kind `hooks`. Scopes:
+  - `project:<id>` for a linked Project. This covers `pv link` runs and daemon `setup` runs.
+  - `worktree:<source-project-id>:<worktree-id>` for a daemon `prepare` run on a worktree that isn't linked yet. That pair is the discovered Project's identity (DESIGN.md, Git Worktrees).
+- A successful run records success coverage for its scope's subject. A failed run records a failure naming the phase, the command and its exit status. A daemon run also names its log path, for example ``setup: `pnpm build` exited with status 1 (log: ~/.pv/logs/hooks/project-<project-id>.log)``. A `pv link` run has no log, because its output went to the terminal.
+- A failure stays current until a newer success for the same subject.
+- `pv status` lists current hook failures, with the log path for daemon runs.
+- `pv status` ignores a hook failure whose Project, or for a `worktree:` scope whose source Project, is no longer linked. A `worktree:` failure also stops counting once that worktree is linked as a discovered Project.
+- `pv jobs` lists hook runs like any other job, with the log path for daemon runs. Runs skipped for missing approval complete with a summary and no coverage, so they never count as failures.
+- The daemon creates the `hooks` job row when it queues a run, in the running state. Startup fails queued runs as well as active runs, so a lost queued `setup` is visible in `pv status`, and `pv link` can see queued daemon hooks. `pv link` inserts its run and terminal outcome atomically when it finishes, so a daemon restart cannot mistake an active terminal run for an interrupted daemon run.
+
+**Logs:**
+- Each daemon run writes its commands' interleaved stdout and stderr to one log per subject, replaced at each run: `~/.pv/logs/hooks/project-<project-id>.log` for a linked Project, or `~/.pv/logs/hooks/worktree-<source-project-id>-<worktree-id>.log` for a pre-link `prepare`. The directory is `0700` and each file `0600`, because command output can contain secrets.
+- Worktree cleanup deletes that worktree's logs. There is no pruning sweep and no promise that logs and retained job records have the same lifetime. Historical job paths refer to the subject's latest log.
+- `pv link` runs write no log; their output went to the terminal.
 
 ## Opening Projects
 
@@ -1551,6 +1712,8 @@ Failure deduplication applies only within one continuous unresolved episode. A r
 A background reconciliation failure before a job is admitted is recorded as a synthetic failed job. After a job starts, its execution failure is finalized on the originating job and is not inserted again by delayed background-task completion handling. If that finalization fails, the server logs the failure against the originating job ID.
 
 `pv status` and `pv doctor` select repair advice from the current failure's typed subject and condition. They prefer the narrowest command that can repair and then verify that subject, such as `pv daemon:restart`, `pv dns:install`, `pv ports:install`, `pv ca:trust`, or an applicable Managed Resource command. They use broader `pv restart` or `pv setup` guidance only when no focused command covers the failure. Historical failures remain visible through `pv jobs` but do not make aggregate status fail after their subjects have newer successful verification.
+
+`hooks` jobs record foreground runs for linked Projects and queued daemon prepare/setup runs. Hook failures remain current until newer success for the same subject; status ignores failures whose Project (or pre-link worktree's source Project) is no longer linked, and a pre-link worktree's failure once that worktree is linked. `pv status` shows hook failures and `pv jobs` lists hook runs, with log paths for daemon runs.
 
 `pv status` shows the log directory and a summary of the most recent daemon or reconciliation errors without dumping full logs by default.
 
@@ -1741,7 +1904,7 @@ Every terminal row in `design.pen` maps to one command state. "Stream" names whe
 
 | command                  | what it does                                                                                                      |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| pv link [path] [--hostname <hostname>] | Register a Project and request daemon reconciliation                                                    |
+| pv link [path] [--hostname <hostname>] [--skip-hooks] | Register a Project, run declared hooks, and request daemon reconciliation                                                    |
 | pv open [hostname]       | Opens a Project in the browser                                                                                    |
 | pv project:env [selector] [--json] | Print generated Project environment values without editing the configured env file                          |
 | pv list [--json]         | List linked Projects with PHP, declared Managed Resource demand, env status, and currently known serving status    |

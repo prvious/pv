@@ -2886,6 +2886,7 @@ dependencies = [
  "libc",
  "nix 0.31.3",
  "plist",
+ "portable-pty",
  "pv-fake",
  "raunch",
  "rcgen",
@@ -2900,6 +2901,7 @@ dependencies = [
  "state",
  "thiserror 2.0.18",
  "time",
+ "tokio",
  "wait-timeout",
  "x509-parser",
 ]
@@ -3085,6 +3087,7 @@ dependencies = [
  "camino",
  "camino-tempfile",
  "cli",
+ "config",
  "daemon",
  "insta",
  "portable-pty",

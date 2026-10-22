@@ -23,9 +23,11 @@ DatabaseInspection {
         "014:discovered_worktrees",
         "015:project_first_reconciled_at",
         "016:pending_cleanups",
+        "017:hook_approvals",
     ],
     tables: [
         "global_php_default_track",
+        "hook_approvals",
         "job_diagnostic_outcomes",
         "jobs",
         "managed_resource_tracks",

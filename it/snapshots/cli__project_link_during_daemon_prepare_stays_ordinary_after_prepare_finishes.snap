@@ -1,0 +1,15 @@
+---
+source: it/cli.rs
+expression: "(output, discovered, project.join(\"unexpected-daemon-setup\").exists())"
+---
+(
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Running prepare: if [ -n \"${PV_SOURCE_PATH:-}\" ]; then touch daemon-started; attempt=0; while [ ! -f release ]; do [ \"$attempt\" -lt 1500 ] || exit 91; attempt=$((attempt + 1)); sleep 0.1; done; else printf terminal > terminal-prepare; fi\nLinked feature (resource-only) -> <tempdir>/feature\nQueued reconciliation <reconciliation-job> for feature\n",
+        stderr: "",
+    },
+    [],
+    false,
+)

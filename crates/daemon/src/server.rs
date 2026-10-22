@@ -10,6 +10,7 @@ use tokio::time::{Instant, sleep, sleep_until, timeout};
 
 use crate::DaemonError;
 use crate::health::{RuntimeHealthScan, RuntimeRecoveryBackoff, scan_runtime_health};
+use crate::hooks::DaemonHooks;
 use crate::ipc::{LocalListener, LocalStream};
 use crate::jobs::{
     BackgroundReconciliationError, complete_queued_background_reconciliation_job,
@@ -41,7 +42,11 @@ pub(crate) async fn serve(
 ) -> Result<(), DaemonError> {
     let mut connections = JoinSet::new();
     let mut background_tasks = JoinSet::new();
-    let queue = ReconciliationQueue::watching_project_configs(project_config_watcher.clone());
+    let hooks = DaemonHooks::new(paths.clone());
+    let queue = ReconciliationQueue::watching_project_configs(
+        project_config_watcher.clone(),
+        hooks.clone(),
+    );
     let startup_paths = paths.clone();
     let startup_queue = queue.clone();
     let startup_runtime_catalog = runtime_catalog.clone();
@@ -67,6 +72,12 @@ pub(crate) async fn serve(
             let _send_result = background_scope_sender.send(scope);
         },
     );
+    let (hook_shutdown, hook_shutdown_receiver) = watch::channel(false);
+    let runner = hooks.clone();
+    let hook_debouncer = debouncer.clone();
+    let mut hook_task =
+        tokio::spawn(async move { runner.run(hook_debouncer, hook_shutdown_receiver).await });
+    let mut hook_task_finished = false;
     let mut watcher_task =
         tokio::spawn(project_config_watcher.run(watch_messages, debouncer.clone()));
     let mut watcher_task_finished = false;
@@ -76,6 +87,10 @@ pub(crate) async fn serve(
 
     let result = loop {
         tokio::select! {
+            outcome = &mut hook_task => {
+                hook_task_finished = true;
+                break outcome.map_err(DaemonError::from);
+            }
             _ = &mut shutdown => {
                 break Ok(());
             }
@@ -205,6 +220,7 @@ pub(crate) async fn serve(
                 runtime_health_task = Some(tokio::spawn(scan_runtime_health(
                     health_paths,
                     health_runtime_catalog,
+                    Some(hooks.clone()),
                 )));
             }
             scope = background_scope_receiver.recv(), if background_scopes_open => {
@@ -281,6 +297,9 @@ pub(crate) async fn serve(
         }
     };
 
+    hooks.begin_shutdown();
+    hook_shutdown.send_replace(true);
+
     if !watcher_task_finished {
         watcher_task.abort();
         let _join_result = watcher_task.await;
@@ -298,8 +317,27 @@ pub(crate) async fn serve(
     while background_tasks.join_next().await.is_some() {}
     while connections.join_next().await.is_some() {}
 
-    result?;
-    startup_result
+    let hook_result = if hook_task_finished {
+        Ok(())
+    } else {
+        hook_task.await.map_err(DaemonError::from)
+    };
+
+    let mut result = result;
+    for secondary in [hook_result, startup_result] {
+        if let Err(error) = secondary {
+            if result.is_err() {
+                structured_log::runtime_config_cleanup_failed(
+                    &paths,
+                    "daemon shutdown",
+                    &error.to_string(),
+                );
+            } else {
+                result = Err(error);
+            }
+        }
+    }
+    result
 }
 
 async fn run_debounced_reconciliation_job(
@@ -612,6 +650,7 @@ mod tests {
         let scan = scan_runtime_health(
             paths.clone(),
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
+            None,
         )
         .await?;
         let queue = ReconciliationQueue::new();

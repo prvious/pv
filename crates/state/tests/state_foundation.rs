@@ -2,14 +2,17 @@ use std::collections::BTreeMap;
 use std::io;
 use std::os::fd::AsRawFd as _;
 use std::os::unix::fs::PermissionsExt;
+use std::slice;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::thread;
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, TransactionBehavior, params};
 use state::testing::Migration;
 use state::{
     AppReleaseLayout, Database, EnvContextValues, GATEWAY_HTTP_PREFERRED_PORT,
@@ -22,6 +25,337 @@ use state::{
     RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput, ResourceAllocationStatus,
     RuntimeLifecycleLock, RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
 };
+
+#[test]
+fn first_discovered_apply_and_setup_admission_commit_atomically() -> Result<()> {
+    let directory = tempdir()?;
+    let paths = PvPaths::for_home(directory.path());
+    let mut database = Database::open(&paths)?;
+    let source = link_test_project(&mut database, directory.path(), "source", "source.test")?;
+    let project = database.link_discovered_project(discovered_input(
+        &source,
+        directory.path(),
+        "atomicid",
+        "atomic",
+        ProjectMode::ResourceOnly,
+    ))?;
+    let input = ProjectReconciliationStateInput {
+        setup_hook_log: Some(paths.project_hook_log(&project.id)),
+        project_id: project.id.clone(),
+        link: state::LinkProjectInput {
+            path: project.path.clone(),
+            original_path: project.original_path.clone(),
+            primary_hostname: "atomic.test".to_string(),
+            config_path: project.config_path.clone(),
+            desired_php_track: None,
+        },
+        mode: ProjectMode::ResourceOnly,
+        php_runtime: None,
+        env_status: ProjectEnvObservedStatus::Rendered,
+        env_message: Some("ready".to_string()),
+        env_warnings: Vec::new(),
+    };
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch(
+        "CREATE TRIGGER reject_setup BEFORE INSERT ON jobs WHEN NEW.kind = 'hooks' BEGIN SELECT RAISE(FAIL, 'fixture setup admission failed'); END;"
+    )
+    })?;
+    assert!(matches!(
+        database.finalize_project_reconciliation(input.clone()),
+        Err(StateError::Sqlite(_))
+    ));
+    assert!(database.held_project_ids()?.contains(&project.id));
+    assert!(database.project_env_observed_state(&project.id)?.is_none());
+    assert!(database.recent_jobs()?.is_empty());
+    assert_eq!(database.project_by_id(&project.id)?, Some(project.clone()));
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch("DROP TRIGGER reject_setup")
+    })?;
+    let (_project, queued) = database.finalize_project_reconciliation(input.clone())?;
+    let queued = queued.ok_or_else(|| anyhow!("first apply did not admit setup"))?;
+    assert_eq!(queued, "job_000001");
+    assert!(!database.held_project_ids()?.contains(&project.id));
+    assert_eq!(
+        database
+            .project_env_observed_state(&project.id)?
+            .map(|state| state.status),
+        Some(ProjectEnvObservedStatus::Rendered)
+    );
+    assert_eq!(
+        database
+            .active_hook_job(&format!("project:{}", project.id))?
+            .map(|job| job.id),
+        Some(queued.clone())
+    );
+    let (_project, repeated) = database.finalize_project_reconciliation(input)?;
+    assert!(repeated.is_none());
+    assert_eq!(database.recent_jobs()?.len(), 1);
+    // A crash before handoff leaves the atomic row for normal startup failure recovery.
+    database.fail_running_jobs("fixture daemon restarted before handoff")?;
+    let interrupted = database
+        .job(&queued)?
+        .ok_or_else(|| anyhow!("setup row disappeared"))?;
+    assert_eq!(interrupted.status, JobStatus::Failed);
+    assert!(
+        interrupted
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains(paths.project_hook_log(&project.id).as_str()))
+    );
+    // The same flag on an ordinary Project never admits daemon setup.
+    let (_source, ordinary) =
+        database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+            setup_hook_log: Some(paths.project_hook_log(&source.id)),
+            project_id: source.id.clone(),
+            link: state::LinkProjectInput {
+                path: source.path.clone(),
+                original_path: source.original_path.clone(),
+                primary_hostname: "source.test".to_string(),
+                config_path: source.config_path.clone(),
+                desired_php_track: None,
+            },
+            mode: source.mode,
+            php_runtime: None,
+            env_status: ProjectEnvObservedStatus::Rendered,
+            env_message: None,
+            env_warnings: Vec::new(),
+        })?;
+    assert!(ordinary.is_none());
+    assert_eq!(database.recent_jobs()?.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn finished_foreground_jobs_are_atomic_with_their_diagnostic_outcomes() -> Result<()> {
+    let temporary = tempdir()?;
+    let mut database = Database::open(&PvPaths::for_home(temporary.path()))?;
+    let subject = JobDiagnosticSubject::Other {
+        kind: "hooks".to_string(),
+        scope: "project:fixture".to_string(),
+    };
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch(
+            "CREATE TRIGGER reject_outcome BEFORE INSERT ON job_diagnostic_outcomes
+             BEGIN SELECT RAISE(ABORT, 'fixture outcome recording failure'); END;",
+        )
+    })?;
+    let mut failures = Vec::new();
+    for outcome in [Ok("completed"), Err("setup failed")] {
+        let error = database
+            .record_finished_job(
+                "hooks",
+                "project:fixture",
+                outcome,
+                slice::from_ref(&subject),
+            )
+            .err()
+            .ok_or_else(|| anyhow!("expected outcome recording failure"))?;
+        failures.push(error.to_string());
+        assert!(database.recent_jobs()?.is_empty());
+        assert!(database.active_hook_job("project:fixture")?.is_none());
+    }
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute_batch("DROP TRIGGER reject_outcome")
+    })?;
+    let failed = database.record_finished_job(
+        "hooks",
+        "project:fixture",
+        Err("setup failed"),
+        slice::from_ref(&subject),
+    )?;
+    let succeeded = database.record_finished_job(
+        "hooks",
+        "project:fixture",
+        Ok("completed"),
+        slice::from_ref(&subject),
+    )?;
+    assert!(database.active_hook_job("project:fixture")?.is_none());
+    assert!(database.unresolved_job_failures()?.is_empty());
+    assert_debug_snapshot!((
+        failures,
+        failed.status,
+        failed.error,
+        succeeded.status,
+        succeeded.summary
+    ));
+    Ok(())
+}
+
+#[test]
+fn worktree_prepare_failures_stop_counting_once_the_worktree_is_linked() -> Result<()> {
+    let temporary = tempdir()?;
+    let paths = PvPaths::for_home(temporary.path());
+    let mut database = Database::open(&paths)?;
+    let source = link_test_project(&mut database, temporary.path(), "source", "source.test")?;
+    let scope = format!("worktree:{}:tree", source.id);
+    let prepare = database.start_job("hooks", &scope)?;
+    database.fail_job_with_subject(
+        &prepare.id,
+        "prepare: `exit 1` exited with status 1",
+        &JobDiagnosticSubject::Other {
+            kind: "hooks".to_owned(),
+            scope,
+        },
+    )?;
+    assert_eq!(database.unresolved_job_failures()?.len(), 1);
+    database.link_discovered_project(discovered_input(
+        &source,
+        temporary.path(),
+        "tree",
+        "tree",
+        ProjectMode::ResourceOnly,
+    ))?;
+    assert!(database.unresolved_job_failures()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn hook_approvals_match_exact_commands_per_folder() -> Result<()> {
+    let temporary = tempdir()?;
+    let paths = PvPaths::for_home(temporary.path());
+    let mut database = Database::open(&paths)?;
+    let acme = temporary.path().join("acme");
+    let other = temporary.path().join("other");
+    let commands = [
+        "composer install".to_string(),
+        "pnpm build".to_string(),
+        "composer install".to_string(),
+    ];
+    assert_eq!(
+        database.unapproved_hook_commands(&acme, &commands)?,
+        ["composer install", "pnpm build"]
+    );
+    database.approve_hook_commands(&acme, &commands[..1])?;
+    assert_eq!(
+        database.unapproved_hook_commands(&acme, &commands)?,
+        ["pnpm build"]
+    );
+    // A changed command and another folder each need their own approval.
+    assert_eq!(
+        database.unapproved_hook_commands(&acme, &["composer install --no-dev".to_string()])?,
+        ["composer install --no-dev"]
+    );
+    assert_eq!(
+        database.unapproved_hook_commands(&other, &commands)?,
+        ["composer install", "pnpm build"]
+    );
+    Ok(())
+}
+
+#[test]
+fn hook_failures_keep_queued_log_paths_and_ignore_unlinked_subjects() -> Result<()> {
+    let temporary = tempdir()?;
+    let paths = PvPaths::for_home(temporary.path());
+    let mut database = Database::open(&paths)?;
+    let source = link_test_project(&mut database, temporary.path(), "source", "source.test")?;
+    let project_scope = format!("project:{}", source.id);
+    let worktree_scope = format!("worktree:{}:tree", source.id);
+    let project = database.start_job_with_summary(
+        "hooks",
+        &project_scope,
+        Some("setup hooks queued (log: <project-log>)"),
+    )?;
+    let worktree = database.start_job_with_summary(
+        "hooks",
+        &worktree_scope,
+        Some("prepare hooks queued (log: <worktree-log>)"),
+    )?;
+    let absent = database.start_job("hooks", "project:absent")?;
+    database.fail_running_jobs("daemon interrupted")?;
+    assert_eq!(
+        database.job(&absent.id)?.map(|job| job.status),
+        Some(JobStatus::Failed)
+    );
+    let before = database
+        .unresolved_job_failures()?
+        .into_iter()
+        .map(|failure| (failure.job.kind, failure.job.error))
+        .collect::<Vec<_>>();
+    let success = database.start_job("hooks", &project_scope)?;
+    database.complete_job_with_coverage(
+        &success.id,
+        "hooks completed",
+        &[JobDiagnosticSubject::Other {
+            kind: "hooks".to_owned(),
+            scope: project_scope,
+        }],
+    )?;
+    assert_eq!(database.unresolved_job_failures()?.len(), 1);
+    database.unlink_project(&source.id)?;
+    assert!(database.unresolved_job_failures()?.is_empty());
+    assert!(database.job(&project.id)?.is_some());
+    assert!(database.job(&worktree.id)?.is_some());
+    assert_debug_snapshot!(before, @r#"
+    [
+        (
+            "hooks",
+            Some(
+                "daemon interrupted; prepare hooks queued (log: <worktree-log>)",
+            ),
+        ),
+        (
+            "hooks",
+            Some(
+                "daemon interrupted; setup hooks queued (log: <project-log>)",
+            ),
+        ),
+    ]
+    "#);
+    Ok(())
+}
+
+#[test]
+fn job_insertions_wait_for_a_writer_before_reading_the_next_id() -> Result<()> {
+    let temporary = tempdir()?;
+    let paths = PvPaths::for_home(temporary.path());
+    let mut jobs = Vec::new();
+    for finished in [false, true] {
+        let mut database = Database::open(&paths)?;
+        let existing_job = database.start_job("reconcile", "system")?;
+        let mut connection = Connection::open(paths.db())?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "UPDATE jobs SET summary = 'held' WHERE id = ?1",
+            params![existing_job.id],
+        )?;
+        let (started, ready) = mpsc::channel();
+        let job = thread::scope(|scope| -> Result<_> {
+            let writer = scope.spawn(move || -> Result<_> {
+                started.send(())?;
+                if finished {
+                    Ok(database.record_finished_job(
+                        "hooks",
+                        "project:fixture",
+                        Ok("finished"),
+                        &[],
+                    )?)
+                } else {
+                    Ok(database.start_job("reconcile", "system")?)
+                }
+            });
+            ready.recv_timeout(Duration::from_secs(5))?;
+            thread::sleep(Duration::from_millis(25));
+            transaction.commit()?;
+            writer
+                .join()
+                .map_err(|_| anyhow!("job writer thread panicked"))?
+        })?;
+        jobs.push((job.id, job.status));
+    }
+    assert_debug_snapshot!(jobs, @r#"
+    [
+        (
+            "job_000002",
+            Running,
+        ),
+        (
+            "job_000004",
+            Succeeded,
+        ),
+    ]
+    "#);
+    Ok(())
+}
 
 #[test]
 fn paths_are_derived_from_an_injected_home() -> Result<()> {
@@ -2587,21 +2921,24 @@ fn held_worktrees_demand_no_php_worker_until_their_first_reconciliation() -> Res
         database.php_runtime_is_demanded("8.4")?,
     );
 
-    for _reconciliation in 0..2 {
-        database.finalize_project_reconciliation(ProjectReconciliationStateInput {
-            project_id: worktree.id.clone(),
-            link: link.clone(),
-            mode: ProjectMode::Served,
-            php_runtime: Some(ProjectPhpRuntimeInput {
-                track: "8.4".to_string(),
-                requested_extensions: Vec::new(),
-                loaded_extensions: Vec::new(),
-                ignored_extensions: Vec::new(),
-            }),
-            env_status: ProjectEnvObservedStatus::Rendered,
-            env_message: None,
-            env_warnings: Vec::new(),
-        })?;
+    for _ in 0..2 {
+        let (_project, setup_job) =
+            database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+                setup_hook_log: None,
+                project_id: worktree.id.clone(),
+                link: link.clone(),
+                mode: ProjectMode::Served,
+                php_runtime: Some(ProjectPhpRuntimeInput {
+                    track: "8.4".to_string(),
+                    requested_extensions: Vec::new(),
+                    loaded_extensions: Vec::new(),
+                    ignored_extensions: Vec::new(),
+                }),
+                env_status: ProjectEnvObservedStatus::Rendered,
+                env_message: None,
+                env_warnings: Vec::new(),
+            })?;
+        assert!(setup_job.is_none());
     }
     let released = (
         database.held_project_ids()?,
@@ -3279,7 +3616,7 @@ fn linked_projects_assign_immutable_slugs_and_persist_serving_mode() -> Result<(
     assert_eq!(second_relinked.project.slug, second.project.slug);
     assert_eq!(
         database.project_by_slug("appointment-1")?,
-        Some(second.project.clone())
+        Some(second_relinked.project.clone())
     );
     assert!(
         database
@@ -3401,6 +3738,7 @@ fn project_reconciliation_finalization_rolls_back_gateway_state_on_failure() -> 
     })?;
 
     let result = database.finalize_project_reconciliation(state::ProjectReconciliationStateInput {
+        setup_hook_log: None,
         project_id: project.id.clone(),
         link: state::LinkProjectInput {
             path: project.path.clone(),

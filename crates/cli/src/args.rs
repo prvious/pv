@@ -477,6 +477,9 @@ pub(crate) struct LinkArgs {
 
     #[arg(long, value_name = "hostname", help = "Primary .test hostname")]
     pub(crate) hostname: Option<String>,
+
+    #[arg(long, help = "Skip Project prepare and setup hooks")]
+    pub(crate) skip_hooks: bool,
 }
 
 #[derive(Debug, clap::Args)]

@@ -5,6 +5,7 @@ mod error;
 pub mod gateway;
 pub mod gateway_config;
 mod health;
+mod hooks;
 mod ipc;
 mod jobs;
 mod managed_resources;
@@ -39,7 +40,7 @@ pub use caddy_admin::{
 pub use client::{
     CompletedJob, JobDownloadProgress, JobEventHandler, SubmittedJob, health_blocking,
     managed_resource_update_check_blocking, run_job_blocking, run_job_with_events_blocking,
-    submit_job_blocking, wait_until_healthy_allowing_protocol_mismatch_blocking,
+    submit_job, submit_job_blocking, wait_until_healthy_allowing_protocol_mismatch_blocking,
     wait_until_healthy_blocking,
 };
 pub use dns::{dns_port_available, response_bytes};
@@ -62,6 +63,7 @@ pub use supervisor::{
     AdoptedProcess, ManagedProcess, OwnedRuntime, ProcessSpec, ProcessSupervisor, ReadinessCheck,
     StopSignal, wait_for_custom_readiness, wait_for_readiness,
 };
+pub use worktrees::hook_approval_folder;
 
 #[derive(Debug)]
 pub struct RunningDaemon {

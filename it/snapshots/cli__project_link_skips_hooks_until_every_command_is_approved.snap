@@ -1,0 +1,20 @@
+---
+source: it/cli.rs
+expression: "(unapproved, changed)"
+---
+(
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Linked acme (resource-only) -> <tempdir>/acme\n",
+        stderr: "Hook commands not approved for <tempdir>/acme\n  prepare  touch prepared\nwarning: Hooks skipped because they aren't approved; run `pv link` here in a terminal to review them\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Already linked acme (resource-only) -> <tempdir>/acme\n",
+        stderr: "Hook commands not approved for <tempdir>/acme\n  setup    touch set-up\nwarning: Hooks skipped because they aren't approved; run `pv link` here in a terminal to review them\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+    },
+)

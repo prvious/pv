@@ -1,0 +1,37 @@
+---
+source: it/cli.rs
+expression: "(output, jobs, &failure.error)"
+---
+(
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "Running prepare: printf prepared > prepared\nAlready linked acme (resource-only) -> <tempdir>/acme\n",
+        stderr: "warning: PV daemon is not running; reconciliation will run after `pv setup` starts it\nwarning: Setup hooks skipped; run `pv link` again after `pv setup`\n",
+    },
+    [
+        (
+            "hooks",
+            Succeeded,
+            Some(
+                "Prepare hooks completed; setup skipped",
+            ),
+        ),
+        (
+            "hooks",
+            Failed,
+            None,
+        ),
+        (
+            "reconcile",
+            Succeeded,
+            Some(
+                "reconciled",
+            ),
+        ),
+    ],
+    Some(
+        "setup: hook command `exit 9` exited with exit status: 9",
+    ),
+)
