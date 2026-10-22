@@ -486,6 +486,11 @@ fn assert_screen_snapshot(name: &str, tempdir: &Utf8Path, session: &Session) {
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
+    // The host's temporary path length decides whether the approval folder wraps.
+    settings.add_filter(
+        r"(Hook commands not approved for)\s+(<tempdir>[^\n]+)",
+        "$1\n   $2",
+    );
     settings.bind(|| assert_snapshot!(name, session.screen()));
 }
 
