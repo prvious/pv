@@ -38,6 +38,11 @@ impl<'a> LinkHookRun<'a> {
         })
     }
 
+    /// `pv link` adopts a worktree that discovery linked while prepare ran.
+    pub(super) fn set_source_path(&mut self, source_path: Option<Utf8PathBuf>) {
+        self.source_path = source_path;
+    }
+
     pub(super) fn run(
         &mut self,
         phase: &'static str,

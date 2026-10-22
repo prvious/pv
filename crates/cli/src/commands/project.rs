@@ -40,23 +40,12 @@ pub(crate) fn link(
     let database = Database::open(&paths)?;
     let existing = database.project_by_path(&project_path)?;
     let hooks_enabled = !args.skip_hooks && !config_file.config.hooks.is_empty();
-    let discovered = database
-        .discovered_projects()?
-        .into_iter()
-        .find(|discovered| {
-            existing
-                .as_ref()
-                .is_some_and(|project| project.id == discovered.project_id)
-        });
     if hooks_enabled && let Some(project) = &existing {
         refuse_concurrent_hooks(&database, project)?;
     }
-    let source_path = if let Some(discovered) = &discovered {
-        database
-            .project_by_id(&discovered.source_project_id)?
-            .map(|source| source.path)
-    } else {
-        None
+    let source_path = match &existing {
+        Some(project) => discovered_source_path(&database, project)?,
+        None => None,
     };
     let mode = if config_file.config.serve {
         ProjectMode::Served
@@ -101,6 +90,7 @@ pub(crate) fn link(
         if explicit_hostname.is_none() {
             primary_hostname = linked_hostname(&project);
         }
+        hook_run.set_source_path(discovered_source_path(&database, &project)?);
     }
     let result = database.link_project_with_mode(
         LinkProjectInput {
@@ -202,6 +192,23 @@ fn refuse_concurrent_hooks(
         return Err(CliError::ProjectHooksInProgress { job_id: job.id }.into());
     }
     Ok(())
+}
+
+/// Hooks in a discovered worktree get its source Project's path as `PV_SOURCE_PATH`.
+fn discovered_source_path(
+    database: &Database,
+    project: &ProjectRecord,
+) -> Result<Option<Utf8PathBuf>, ExecuteError> {
+    let Some(discovered) = database
+        .discovered_projects()?
+        .into_iter()
+        .find(|discovered| discovered.project_id == project.id)
+    else {
+        return Ok(None);
+    };
+    Ok(database
+        .project_by_id(&discovered.source_project_id)?
+        .map(|source| source.path))
 }
 
 fn linked_hostname(project: &ProjectRecord) -> String {

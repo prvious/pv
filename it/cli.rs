@@ -1062,6 +1062,62 @@ fn project_link_keeps_a_worktree_that_discovery_links_during_prepare() -> Result
 
 #[cfg(target_os = "macos")]
 #[test]
+fn project_link_gives_an_adopted_worktree_its_source_path() -> Result<()> {
+    let directory = tempdir()?;
+    let home = directory.path().join("home");
+    let source = directory.path().join("source");
+    let project = directory.path().join("worktree");
+    create_dir(&source)?;
+    create_dir(&project)?;
+    write_file(&source.join("pv.yml"), "serve: false\n")?;
+    write_file(
+        &project.join("pv.yml"),
+        "serve: false\nhooks:\n  prepare:\n    - touch started; count=0; while test ! -f continue && test \"$count\" -lt 1500; do sleep 0.1; count=$((count + 1)); done\n  setup:\n    - printf '%s' \"$PV_SOURCE_PATH\" > source-path\n",
+    )?;
+    run_hook_pv(&["link", "--skip-hooks"], &source, &home)?;
+    let task_home = home.clone();
+    let task_project = project.clone();
+    let command = thread::Builder::new()
+        .name("link-adopts-worktree".to_string())
+        .spawn(move || run_hook_pv(&["link"], &task_project, &task_home))?;
+    wait_for_hook_fixture(&project.join("started"))?;
+    // Discovery links the worktree and finishes its daemon work while the terminal prepare runs.
+    let paths = PvPaths::for_home(&home);
+    let mut database = Database::open(&paths)?;
+    let source = database.projects()?.remove(0);
+    let linked = database.link_discovered_project(LinkDiscoveredProjectInput {
+        source_project_id: source.id,
+        worktree_id: "adopted".to_string(),
+        worktree_name: "worktree".to_string(),
+        path: state::fs::canonicalize(&project)?,
+        config_path: state::fs::canonicalize(&project)?.join("pv.yml"),
+        mode: ProjectMode::ResourceOnly,
+    })?;
+    state::testing::transaction(&mut database, |transaction| {
+        transaction.execute(
+            "UPDATE projects SET first_reconciled_at = '2026-01-01T00:00:00Z' WHERE id = ?1",
+            [&linked.id],
+        )?;
+        Ok(())
+    })?;
+    let server = fake_link_reconciliation(&paths, &project, LinkJobOutcome::Succeeded)?;
+    write_file(&project.join("continue"), "go")?;
+    let output = command
+        .join()
+        .map_err(|_| anyhow::anyhow!("fixture CLI panicked"))??;
+    server
+        .join()
+        .map_err(|_| anyhow::anyhow!("fixture daemon panicked"))??;
+    assert_eq!(output.code, Some(0), "{output:?}");
+    assert_eq!(
+        state::fs::read_to_string(&project.join("source-path"))?,
+        state::fs::canonicalize(&source.path)?.as_str()
+    );
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn project_link_reports_an_unknown_outcome_when_the_accepted_job_is_missing() -> Result<()> {
     let directory = tempdir()?;
     let home = directory.path().join("home");
