@@ -1003,14 +1003,22 @@ fn reject_link_reconciliations(
             anyhow::ensure!(Instant::now() < deadline, "retry fixture timed out");
             match listener.accept() {
                 Ok((mut socket, _)) => {
-                    socket.set_nonblocking(false)?;
-                    socket.set_read_timeout(Some(Duration::from_secs(5)))?;
-                    socket.set_write_timeout(Some(Duration::from_secs(5)))?;
-                    let mut line = String::new();
-                    BufReader::new(socket.try_clone()?).read_line(&mut line)?;
-                    let request: Value = serde_json::from_str(&line)?;
-                    writeln!(socket, "{}", json!({ "type": "response", "protocol_version": request["protocol_version"], "status": "error", "message": format!("coordination lock held: {}", paths.jobs_lock()) }))?;
-                    responses += 1;
+                    // The test interrupts the CLI while it retries, so a later connection may hang
+                    // up mid-request; macOS then rejects socket options with EINVAL. Only answered
+                    // requests count.
+                    let answered = (|| -> Result<()> {
+                        socket.set_nonblocking(false)?;
+                        socket.set_read_timeout(Some(Duration::from_secs(5)))?;
+                        socket.set_write_timeout(Some(Duration::from_secs(5)))?;
+                        let mut line = String::new();
+                        BufReader::new(socket.try_clone()?).read_line(&mut line)?;
+                        let request: Value = serde_json::from_str(&line)?;
+                        writeln!(socket, "{}", json!({ "type": "response", "protocol_version": request["protocol_version"], "status": "error", "message": format!("coordination lock held: {}", paths.jobs_lock()) }))?;
+                        Ok(())
+                    })();
+                    if answered.is_ok() {
+                        responses += 1;
+                    }
                     // A second request proves the CLI consumed the first rejection and printed
                     // its warning before the test interrupts the next retry.
                     if responses >= 2 {
