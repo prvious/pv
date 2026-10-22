@@ -1270,6 +1270,24 @@ fn project_link_gives_an_adopted_worktree_its_source_path() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn project_link_shows_hidden_characters_in_unapproved_commands() -> Result<()> {
+    let directory = tempdir()?;
+    let home = directory.path().join("home");
+    let project = directory.path().join("acme");
+    create_dir(&project)?;
+    // On a terminal, the carriage return and erase-line sequence would hide the real command.
+    write_file(
+        &project.join("pv.yml"),
+        "serve: false\nhooks:\n  prepare:\n    - \"touch hidden # \\e[2K\\recho safe-looking-hook\"\n",
+    )?;
+    let output = run_unapproved_hook_pv(&["link"], &project, &home)?;
+    assert!(!project.join("hidden").exists());
+    hook_snapshot(directory.path(), || assert_debug_snapshot!(output));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn project_link_skips_hooks_until_every_command_is_approved() -> Result<()> {
     let directory = tempdir()?;
     let home = directory.path().join("home");

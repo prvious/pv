@@ -211,14 +211,11 @@ fn approve_hooks(
     if unapproved.is_empty() {
         return Ok(true);
     }
-    let output = if streams.interactive {
-        &mut streams.out
-    } else {
-        &mut streams.err
-    };
+    // The prompt draws on stderr, so the commands it asks about go there too.
+    let output = &mut streams.err;
     output.status(
         Mark::Warning,
-        Line::field("Hook commands not approved for ", folder.as_str()),
+        Line::field("Hook commands not approved for ", visible(folder.as_str())),
     )?;
     for command in &unapproved {
         let phase = if hooks.prepare.contains(command) {
@@ -226,7 +223,11 @@ fn approve_hooks(
         } else {
             "setup"
         };
-        output.detail(Line::default().text(format!("{phase:<8} ")).value(command))?;
+        output.detail(
+            Line::default()
+                .text(format!("{phase:<8} "))
+                .value(visible(command)),
+        )?;
     }
     if streams.interactive
         && prompt::confirm(
@@ -244,6 +245,25 @@ fn approve_hooks(
     )?;
 
     Ok(false)
+}
+
+/// Shows branch-controlled text so it can't hide part of itself: control characters and Unicode
+/// direction marks appear as escapes such as `\u{1b}`. The exact text is still what's approved.
+fn visible(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character.is_control()
+                || matches!(
+                    character,
+                    '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+                )
+            {
+                character.escape_unicode().to_string()
+            } else {
+                character.to_string()
+            }
+        })
+        .collect()
 }
 
 /// Terminal hooks wait while the daemon owns this Project's hooks.

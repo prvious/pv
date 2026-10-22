@@ -177,6 +177,31 @@ fn prune_confirmation_declines_with_n_or_the_default_answer() -> Result<()> {
 }
 
 #[test]
+fn link_shows_hooks_to_approve_when_stdout_is_redirected() -> Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project = tempdir.path().join("acme");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "serve: false\nhooks:\n  prepare:\n    - touch prepared\n",
+    )?;
+    let mut command = CommandBuilder::new("/bin/sh");
+    command.args(["-c", "exec \"$0\" link > out.log", env!("CARGO_BIN_EXE_pv")]);
+    let mut session = Session::spawn_command(command, &project, &home)?;
+
+    session.wait_for(CONFIRM_HINT)?;
+    // The list is on the prompt's terminal, not in the redirected output.
+    assert!(session.contents().contains("prepare  touch prepared"));
+    session.press("n")?;
+
+    assert_eq!(session.wait_for_exit()?, 0);
+    assert!(!project.join("prepared").exists());
+
+    Ok(())
+}
+
+#[test]
 fn link_asks_once_to_approve_hooks_and_remembers_the_answer() -> Result<()> {
     for (key, approved) in [("y", true), ("n", false)] {
         let tempdir = tempdir()?;
@@ -320,14 +345,22 @@ struct Session {
 
 impl Session {
     fn spawn(args: &[&str], current_dir: &Utf8Path, home: &Utf8Path) -> Result<Self> {
+        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pv"));
+        command.args(args);
+        Self::spawn_command(command, current_dir, home)
+    }
+
+    fn spawn_command(
+        mut command: CommandBuilder,
+        current_dir: &Utf8Path,
+        home: &Utf8Path,
+    ) -> Result<Self> {
         let pair = native_pty_system().openpty(PtySize {
             rows: ROWS,
             cols: COLUMNS,
             pixel_width: 0,
             pixel_height: 0,
         })?;
-        let mut command = CommandBuilder::new(env!("CARGO_BIN_EXE_pv"));
-        command.args(args);
         command.cwd(current_dir.as_std_path());
         command.env("HOME", home.as_str());
         command.env("TERM", "xterm-256color");

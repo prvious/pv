@@ -361,6 +361,12 @@ fn linked_worktree_main_folder(path: &Utf8Path) -> Option<Utf8PathBuf> {
     if common_dir.file_name() != Some(".git") {
         return None;
     }
+    // Git keeps the entry inside that repository; a folder elsewhere could name any repository.
+    if state::fs::canonicalize(&entry_dir).ok()?.parent()
+        != Some(common_dir.join("worktrees").as_path())
+    {
+        return None;
+    }
 
     Some(common_dir.parent()?.join(path.strip_prefix(checkout).ok()?))
 }

@@ -600,5 +600,13 @@ fn hook_approvals_use_the_folder_in_the_main_checkout() -> Result<()> {
     let impostor = fixture.root.join("impostor");
     state::fs::write_sensitive_file(&impostor.join(".git"), &format!("gitdir: {entry}\n"))?;
     assert_eq!(hook_approval_folder(&impostor), impostor);
+    // A forged entry outside the repository can't claim it, even when its back-reference matches
+    // and its `commondir` names the repository.
+    let forged = fixture.root.join("forged");
+    let forged_entry = fixture.root.join("forged-entry");
+    state::fs::write_sensitive_file(&forged.join(".git"), &format!("gitdir: {forged_entry}\n"))?;
+    state::fs::write_sensitive_file(&forged_entry.join("gitdir"), &format!("{forged}/.git\n"))?;
+    state::fs::write_sensitive_file(&forged_entry.join("commondir"), &format!("{repo}/.git\n"))?;
+    assert_eq!(hook_approval_folder(&forged), forged);
     Ok(())
 }

@@ -1426,7 +1426,6 @@ impl Database {
         Ok(())
     }
 
-    /// Allocation objects of removed worktree Projects that PV still has to delete.
     /// The commands not yet approved for `folder`, in their order and without repeats.
     pub fn unapproved_hook_commands(
         &self,
@@ -1448,6 +1447,7 @@ impl Database {
         Ok(unapproved)
     }
 
+    /// Records approval of each exact command for `folder`. Existing approvals are kept.
     pub fn approve_hook_commands(
         &mut self,
         folder: &Utf8Path,
@@ -1469,6 +1469,7 @@ impl Database {
         Ok(())
     }
 
+    /// Allocation objects of removed worktree Projects that PV still has to delete.
     pub fn pending_cleanups(&self) -> Result<Vec<PendingCleanupRecord>, StateError> {
         let mut statement = self.connection.prepare(
             "SELECT resource_name, track, generated_name, last_error

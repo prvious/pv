@@ -118,11 +118,11 @@ A discovered worktree uses only its own `pv.yml`, as today. Its hooks are the on
 
 PV runs a hook command only after the user has approved its exact text for the Project's folder. Approvals are stored in `pv.db`, outside any repository, so nothing committed on a branch can approve a command.
 
-- **Approval folder.** It is the Project's folder in the repository's main checkout. For a Project inside a linked Git worktree, PV reads the worktree's `.git` file and that entry's `commondir` to find the main checkout, and keeps the Project's path relative to the worktree, so `<worktree>/apps/web` uses `<main>/apps/web`. The entry's `gitdir` must point back at the worktree's `.git`. A worktree anywhere on disk therefore shares its main checkout's approvals. Anything else, including a submodule, a bare repository's worktree or an entry PV can't read, uses the Project's own folder, which means PV asks again.
+- **Approval folder.** It is the Project's folder in the repository's main checkout. For a Project inside a linked Git worktree, PV reads the worktree's `.git` file and that entry's `commondir` to find the main checkout, and keeps the Project's path relative to the worktree, so `<worktree>/apps/web` uses `<main>/apps/web`. The entry must sit inside that repository's `.git/worktrees/`, and its `gitdir` must point back at the worktree's `.git`, so a folder can't claim a repository it doesn't belong to. A worktree anywhere on disk therefore shares its main checkout's approvals. Anything else, including a submodule, a bare repository's worktree or an entry PV can't read, uses the Project's own folder, which means PV asks again.
 - **Exact commands.** Each approval is one command's exact text. A changed or new command needs approval; removing or reordering commands doesn't.
 - **All or nothing.** Hooks run only when every command in both lists is approved. Otherwise PV skips both lists.
 - **Linking never waits for approval.** A Project whose hooks aren't approved is linked and provisioned as if it had no hooks.
-- **Only `pv link` in a terminal approves.** It lists the unapproved commands with their phase and asks once. Yes approves them and runs the hooks. No, or no terminal, links the Project without hooks, warns which commands were skipped and that `pv link` in a terminal reviews them, and exits zero. There is no `--yes` and no separate approval command.
+- **Only `pv link` in a terminal approves.** It lists the unapproved commands with their phase on stderr, next to the prompt, showing control characters and Unicode direction marks as visible escapes such as `\u{1b}`, and asks once. The exact text is still what's approved and run. Yes approves them and runs the hooks. No, or no terminal, links the Project without hooks, warns which commands were skipped and that `pv link` in a terminal reviews them, and exits zero. There is no `--yes` and no separate approval command.
 - **The daemon never asks.** A discovered worktree whose hooks aren't all approved is linked without `prepare`, and its `setup` is skipped. Each skipped daemon run completes with a summary that names `pv link` in the worktree, and records no coverage, so it shows in `pv jobs` but not as a failure. After approving through `pv link` in the worktree, its hooks run there.
 - **Approval covers a command's text, not the files it runs.** An approved `./bin/setup` runs whatever that script contains.
 
@@ -136,7 +136,7 @@ PV runs a hook command only after the user has approved its exact text for the P
 | Editing `pv.yml`, any other reconciliation, daemon start, `pv setup`, `pv update`, `git worktree move` | No | No |
 | Projects already linked when this ships | No | No (see below for one exception) |
 
-PV keeps no persistent completed-hook marker to decide whether to rerun hooks. A Project that is already linked does not get them automatically, and running `pv link` again reruns them. Discovery remembers successful prepare runs in memory only until linking, as described below.
+PV keeps no persistent completed-hook marker to decide whether to rerun hooks. A Project that is already linked does not get them automatically, and running `pv link` again reruns them. Discovery remembers successful prepare runs in memory only until linking, as described below. In every row, hooks run only when all of the Project's hook commands are approved.
 
 Exception: a discovered Project linked before this change that has never finished its first reconciliation (`first_reconciled_at` is null) runs `setup` when it does. Such a Project was never usable, so this is the first link that counts.
 
@@ -194,7 +194,7 @@ Known limit: tools that load only after the first prompt (zinit turbo mode, lazy
 
 ### `pv link`
 
-1. **Read and validate Project config,** as today. If the Project declares hooks, is discovered and `first_reconciled_at` is still null, fail before running anything: PV runs this worktree's hooks automatically after its first successful reconciliation; check `pv jobs`, or pass `--skip-hooks` to link without terminal hooks. Otherwise, if the Project declares hooks and the daemon is running hooks for this linked Project (a queued or running `hooks` job for it), fail before running anything and say to wait for that job, or pass `--skip-hooks`. Two runs of `composer install` in one directory at once can break it.
+1. **Read and validate Project config,** as today. If the Project declares hooks, is discovered and `first_reconciled_at` is still null, fail before running anything: PV runs this worktree's hooks automatically after its first successful reconciliation; check `pv jobs`, or pass `--skip-hooks` to link without terminal hooks. Otherwise, if the Project declares hooks and the daemon is running hooks for this linked Project (a queued or running `hooks` job for it), fail before running anything and say to wait for that job, or pass `--skip-hooks`. Two runs of `composer install` in one directory at once can break it. Then, if any hook command isn't approved, ask once as described in Approving hook commands; when declined or without a terminal, continue without hooks, as with `--skip-hooks`.
 2. **Run `prepare`** in the terminal, unless `--skip-hooks` is passed or there is no `prepare` list. On failure:
    - Exit non-zero.
    - On a first link, nothing is recorded.
@@ -222,13 +222,13 @@ Details:
 
 For a newly found worktree (not opted out, its directory exists, its config can be read):
 1. **PV copies the source's env file** if the worktree has none, as today.
-2. **If the worktree's config has a `prepare` list,** PV doesn't link it yet:
+2. **If the worktree's config has a `prepare` list and all its hook commands are approved,** PV doesn't link it yet:
    - It hands the worktree to the hook runner, outside the job queue.
    - While that `prepare` is queued or running, discovery and the 30-second health scan leave that worktree alone.
    - When `prepare` succeeds, the runner adds the worktree ID to an in-memory prepared set and requests system reconciliation. Discovery and the health scan honour that set: discovery links the prepared worktree without another `prepare` and removes it from the set once linked. The set is empty after a daemon restart.
    - When `prepare` fails, the daemon remembers the worktree ID in memory. Discovery and the health scan skip the worktree until the daemon restarts. The failure says to fix the cause and run `pv daemon:restart`. Nothing is written to `worktree_opt_outs`, so the worktree stays a discovered worktree.
    - If the daemon restarts at any point before the worktree is linked, `prepare` runs again on the next discovery.
-3. **Without a `prepare` list,** discovery links the worktree straight away, as today.
+3. **Without a `prepare` list, or when a hook command isn't approved,** discovery links the worktree straight away, as today. A skipped `prepare` is recorded as described in Approving hook commands.
 4. **Run `setup`.** When a discovered Project's allocations and env first succeed (`first_reconciled_at` goes from null to set) and its applied config has a `setup` list, the existing finalization transaction also inserts the queued `hooks` job. The caller hands that job ID and the applied commands to the runner. Setup runs even if Gateway or another Project later fails the enclosing job, whoever requested reconciliation. A crash after commit leaves a queued job that startup marks failed.
 
 If the daemon stops while `setup` is queued or running, PV doesn't resume it. Startup marks the run's job failed, as it does for every job left running, so `pv status` shows it, and `pv link` in the worktree reruns the hooks.
@@ -239,6 +239,7 @@ The serving gate is unchanged. A worktree's route appears once its first reconci
 
 - Hook runs never hold `jobs.lock` and never enter the reconciliation queue. The daemon runs one job at a time, and a minutes-long `pnpm install` must not delay `pv php:install` or reconciliation.
 - Up to 4 runs at once, `prepare` and `setup` alike; the rest wait in arrival order.
+- Right before each run, the runner checks again that every hook command is approved for the Project's folder. If not, nothing runs: a skipped `prepare` lets discovery link the worktree without it, and the run's job completes as skipped.
 - The runner uses tokio child processes on the daemon's current-thread runtime, with the process-group and `kill_on_drop` pattern from `run_validation_command` (`crates/daemon/src/gateway.rs`).
 - **Stopping runs:**
   - Unlinking a Project, or unlinking a source and with it its discovered Projects, stops their queued and running hooks.
@@ -255,7 +256,7 @@ The serving gate is unchanged. A worktree's route appears once its first reconci
 - Today's `JobDiagnosticSubject::from_job_identity` already maps any non-`reconcile` kind to a subject per kind and scope, so the existing current-failure rules apply unchanged: a failure stays current until a newer success for the same subject.
 - `pv status` lists current hook failures, with the log path for daemon runs.
 - `pv status` ignores a hook failure whose Project, or for a `worktree:` scope whose source Project, is no longer linked. A `worktree:` failure also stops counting once that worktree is linked as a discovered Project: a pending `prepare` only matters while the worktree is blocked.
-- `pv jobs` lists hook runs like any other job, with the log path for daemon runs.
+- `pv jobs` lists hook runs like any other job, with the log path for daemon runs. Runs skipped for missing approval complete with a summary and no coverage, so they never count as failures.
 - The daemon creates the `hooks` job row when it queues a run, in the running state. Startup fails queued runs as well as active runs, so a lost queued `setup` is visible in `pv status`, and `pv link` can see queued daemon hooks. `pv link` inserts its run and terminal outcome atomically when it finishes, so a daemon restart cannot mistake an active terminal run for an interrupted daemon run.
 
 **Logs:**
