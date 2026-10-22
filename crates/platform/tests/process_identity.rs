@@ -439,7 +439,12 @@ fn wait_for_exit(watch: &mut ProcessExitWatch) -> Result<std::process::ExitStatu
 
 fn inspect_child(child: &mut ChildGuard) -> Result<platform::ProcessIdentity> {
     let pid = child.0.id();
-
+    for _attempt in 0..500 {
+        if let Ok(Some(identity)) = inspect_process_identity(pid) {
+            return Ok(identity);
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
     inspect_process_identity(pid)?.ok_or_else(|| anyhow!("process {pid} had no native identity"))
 }
 
