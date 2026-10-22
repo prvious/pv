@@ -347,10 +347,12 @@ fn linked_worktree_main_folder(path: &Utf8Path) -> Option<Utf8PathBuf> {
     // A main checkout's `.git` is a directory, which reads as an error here.
     let gitdir = state::fs::read_to_string(&git_file).ok()?;
     let entry_dir = normalize(&checkout.join(gitdir.trim().strip_prefix("gitdir:")?.trim()));
-    // Git's entry points back at the worktree it registered; a hand-made `.git` file doesn't.
+    // Git's entry names the checkout it registered. Comparing checkout folders, not `.git` files,
+    // rejects a hand-made `.git` file and a `.git` symlinked to a registered worktree's.
     let registered = state::fs::read_to_string(&entry_dir.join("gitdir")).ok()?;
-    if state::fs::canonicalize(&normalize(&entry_dir.join(registered.trim()))).ok()?
-        != state::fs::canonicalize(&git_file).ok()?
+    let registered_git = normalize(&entry_dir.join(registered.trim()));
+    if state::fs::canonicalize(registered_git.parent()?).ok()?
+        != state::fs::canonicalize(checkout).ok()?
     {
         return None;
     }

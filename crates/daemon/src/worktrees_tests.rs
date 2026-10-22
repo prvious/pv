@@ -608,5 +608,13 @@ fn hook_approvals_use_the_folder_in_the_main_checkout() -> Result<()> {
     state::fs::write_sensitive_file(&forged_entry.join("gitdir"), &format!("{forged}/.git\n"))?;
     state::fs::write_sensitive_file(&forged_entry.join("commondir"), &format!("{repo}/.git\n"))?;
     assert_eq!(hook_approval_folder(&forged), forged);
+    // A folder whose `.git` is a symlink to a registered worktree's `.git` isn't that worktree.
+    let symlinked = fixture.root.join("symlinked");
+    state::fs::ensure_user_dir(&symlinked)?;
+    state::fs::symlink_file(
+        &fixture.root.join("elsewhere/feat/.git"),
+        &symlinked.join(".git"),
+    )?;
+    assert_eq!(hook_approval_folder(&symlinked), symlinked);
     Ok(())
 }
