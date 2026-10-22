@@ -1018,6 +1018,50 @@ fn project_link_refuses_a_discovered_project_until_its_first_apply_without_readi
 
 #[cfg(target_os = "macos")]
 #[test]
+fn project_link_keeps_a_worktree_that_discovery_links_during_prepare() -> Result<()> {
+    let directory = tempdir()?;
+    let home = directory.path().join("home");
+    let source = directory.path().join("source");
+    let project = directory.path().join("worktree");
+    create_dir(&source)?;
+    create_dir(&project)?;
+    write_file(&source.join("pv.yml"), "serve: false\n")?;
+    write_file(
+        &project.join("pv.yml"),
+        "hooks:\n  prepare:\n    - touch started; count=0; while test ! -f continue && test \"$count\" -lt 1500; do sleep 0.1; count=$((count + 1)); done\n  setup:\n    - touch unexpected-setup\n",
+    )?;
+    run_hook_pv(&["link", "--skip-hooks"], &source, &home)?;
+    let task_home = home.clone();
+    let task_project = project.clone();
+    let command = thread::Builder::new()
+        .name("link-during-discovery".to_string())
+        .spawn(move || run_hook_pv(&["link"], &task_project, &task_home))?;
+    wait_for_hook_fixture(&project.join("started"))?;
+    // Discovery links the worktree while the terminal prepare is still running.
+    let paths = PvPaths::for_home(&home);
+    let mut database = Database::open(&paths)?;
+    let source = database.projects()?.remove(0);
+    let linked = database.link_discovered_project(LinkDiscoveredProjectInput {
+        source_project_id: source.id,
+        worktree_id: "racetree".to_string(),
+        worktree_name: "worktree".to_string(),
+        path: state::fs::canonicalize(&project)?,
+        config_path: state::fs::canonicalize(&project)?.join("pv.yml"),
+        mode: ProjectMode::Served,
+    })?;
+    write_file(&project.join("continue"), "go")?;
+    let refused = command
+        .join()
+        .map_err(|_| anyhow::anyhow!("fixture CLI panicked"))??;
+    assert_ne!(refused.code, Some(0));
+    assert_eq!(database.project_by_id(&linked.id)?, Some(linked));
+    assert!(!project.join("unexpected-setup").exists());
+    hook_snapshot(directory.path(), || assert_debug_snapshot!(refused));
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn project_link_reports_an_unknown_outcome_when_the_accepted_job_is_missing() -> Result<()> {
     let directory = tempdir()?;
     let home = directory.path().join("home");

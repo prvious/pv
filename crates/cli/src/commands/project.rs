@@ -25,7 +25,6 @@ pub(crate) fn link(
     mut runtime_lifecycle_lock: Option<RuntimeLifecycleLock>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let database_existed = state::fs::path_entry_exists(paths.db())?;
     let original_project_path = resolve_project_path(args.path.as_deref(), environment)?;
     let config_file = ProjectConfigFile::read_from_root(&original_project_path)?;
     config::validate_project_env_shape(&config_file.config)?;
@@ -49,17 +48,8 @@ pub(crate) fn link(
                 .as_ref()
                 .is_some_and(|project| project.id == discovered.project_id)
         });
-    if hooks_enabled
-        && let Some(project) = &existing
-        && database.held_project_ids()?.contains(&project.id)
-    {
-        return Err(CliError::ProjectFirstReconciliationPending.into());
-    }
-    if hooks_enabled
-        && let Some(project) = &existing
-        && let Some(job) = database.active_hook_job(&format!("project:{}", project.id))?
-    {
-        return Err(CliError::ProjectHooksInProgress { job_id: job.id }.into());
+    if hooks_enabled && let Some(project) = &existing {
+        refuse_concurrent_hooks(&database, project)?;
     }
     let source_path = if let Some(discovered) = &discovered {
         database
@@ -73,19 +63,14 @@ pub(crate) fn link(
     } else {
         ProjectMode::ResourceOnly
     };
-    let primary_hostname = match (
-        config_file.config.serve.then_some(args.hostname).flatten(),
-        existing.as_ref(),
-    ) {
-        (Some(hostname), _) => config::normalize_primary_hostname(&hostname)?,
-        (None, Some(project)) => project
-            .primary_hostname
-            .clone()
-            .unwrap_or_else(|| format!("{}.test", project.slug)),
+    let explicit_hostname = config_file.config.serve.then_some(args.hostname).flatten();
+    let mut primary_hostname = match (explicit_hostname.as_deref(), existing.as_ref()) {
+        (Some(hostname), _) => config::normalize_primary_hostname(hostname)?,
+        (None, Some(project)) => linked_hostname(project),
         (None, None) => config::hostname_from_project_path(&project_path)?,
     };
     drop(database);
-    let mut hook_run = LinkHookRun::new(&paths, &project_path, source_path, database_existed)?;
+    let mut hook_run = LinkHookRun::new(&paths, &project_path, source_path)?;
     let mut hooks_attempted = false;
     if hooks_enabled && !config_file.config.hooks.prepare.is_empty() {
         hooks_attempted = true;
@@ -105,6 +90,18 @@ pub(crate) fn link(
         }
     }
     let mut database = Database::open(&paths)?;
+    // Discovery may have linked this worktree while prepare ran. Keep its name, and don't run
+    // terminal hooks alongside the daemon's.
+    if existing.is_none()
+        && let Some(project) = database.project_by_path(&project_path)?
+    {
+        if hooks_enabled {
+            refuse_concurrent_hooks(&database, &project)?;
+        }
+        if explicit_hostname.is_none() {
+            primary_hostname = linked_hostname(&project);
+        }
+    }
     let result = database.link_project_with_mode(
         LinkProjectInput {
             path: project_path.clone(),
@@ -191,6 +188,27 @@ pub(crate) fn link(
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Terminal hooks wait while the daemon owns this Project's hooks.
+fn refuse_concurrent_hooks(
+    database: &Database,
+    project: &ProjectRecord,
+) -> Result<(), ExecuteError> {
+    if database.held_project_ids()?.contains(&project.id) {
+        return Err(CliError::ProjectFirstReconciliationPending.into());
+    }
+    if let Some(job) = database.active_hook_job(&format!("project:{}", project.id))? {
+        return Err(CliError::ProjectHooksInProgress { job_id: job.id }.into());
+    }
+    Ok(())
+}
+
+fn linked_hostname(project: &ProjectRecord) -> String {
+    project
+        .primary_hostname
+        .clone()
+        .unwrap_or_else(|| format!("{}.test", project.slug))
 }
 
 fn resolved_project_php_track(

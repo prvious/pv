@@ -18,7 +18,6 @@ pub(super) struct LinkHookRun<'a> {
     project_path: &'a Utf8Path,
     source_path: Option<Utf8PathBuf>,
     captured: Option<HookEnvironment>,
-    database_existed: bool,
     runtime: tokio::runtime::Runtime,
 }
 
@@ -27,14 +26,12 @@ impl<'a> LinkHookRun<'a> {
         paths: &'a PvPaths,
         project_path: &'a Utf8Path,
         source_path: Option<Utf8PathBuf>,
-        database_existed: bool,
     ) -> Result<Self, ExecuteError> {
         Ok(Self {
             paths,
             project_path,
             source_path,
             captured: None,
-            database_existed,
             runtime: tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?,
@@ -162,7 +159,8 @@ pub(super) fn run_with_admission(
         Ok(())
     }
     .and_then(|()| {
-        if run.database_existed && !state::fs::path_entry_exists(run.paths.db())? {
+        // `pv link` opened pv.db before any hook ran, so a missing file means it was pruned.
+        if !state::fs::path_entry_exists(run.paths.db())? {
             return Err(CliError::LinkDatabaseRemoved.into());
         }
         Ok(())
