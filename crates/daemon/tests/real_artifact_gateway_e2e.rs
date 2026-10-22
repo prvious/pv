@@ -83,6 +83,8 @@ async fn verify_wildcard_routing(
     // Project's fragment Caddy imports first.
     for (laravel, api) in [("parent", "child"), ("child", "parent")] {
         if laravel == "child" {
+            // Each fragment ordering gets its own cold start.
+            daemon::stop_recorded_runtimes(paths.clone()).await?;
             let mut database = Database::open(paths)?;
             link_project(&mut database, parent, "swap.test")?;
             link_project(&mut database, child, "laravel.test")?;
