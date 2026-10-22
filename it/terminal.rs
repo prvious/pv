@@ -255,6 +255,7 @@ fn open_picker_lists_served_projects_and_escape_cancels() -> Result<()> {
     session.wait_for(SELECT_HINT)?;
     session.press("j")?;
     session.wait_for("● zeta.test")?;
+    session.wait_for(SELECT_HINT)?;
     assert_screen_snapshot("open_picker_active", tempdir.path(), &session);
 
     session.press(ESCAPE)?;
