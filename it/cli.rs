@@ -7,9 +7,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
-use std::process::{ExitCode, ExitStatus};
 #[cfg(unix)]
 use std::process::{Child, Stdio};
+use std::process::{ExitCode, ExitStatus};
 #[cfg(unix)]
 use std::sync::{
     Arc,
