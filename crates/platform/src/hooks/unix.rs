@@ -12,7 +12,7 @@ use nix::libc;
 use nix::unistd::{Uid, User};
 use rustix::fs::{Mode, OFlags, open};
 use rustix::process::{Pid, Signal, kill_process_group};
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader, copy, sink};
 use tokio::process::Child;
 use tokio::sync::watch;
 use tokio::time::{Instant, sleep, timeout};
@@ -73,7 +73,19 @@ pub async fn capture_environment(
         let capture = async {
             let capture = async {
                 read_environment_output(&mut stdout, &mut stdout_bytes).await?;
-                process.wait().await
+                // Discard exit-time output so the shell never blocks on a full pipe, but don't
+                // wait for end-of-file: a background job may keep stdout open.
+                let mut discard = sink();
+                let mut drained = false;
+                loop {
+                    tokio::select! {
+                        status = process.wait() => break status,
+                        result = copy(&mut stdout, &mut discard), if !drained => {
+                            result?;
+                            drained = true;
+                        }
+                    }
+                }
             };
             tokio::pin!(capture);
             tokio::select! {

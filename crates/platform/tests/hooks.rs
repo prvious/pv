@@ -165,6 +165,28 @@ async fn hook_capture_does_not_wait_for_background_jobs_holding_output() -> Resu
 }
 
 #[tokio::test]
+async fn hook_capture_discards_output_written_after_the_end_marker() -> Result<()> {
+    let temporary = tempdir()?;
+    // More than a pipe buffer after the marker, like a verbose exit hook.
+    let shell = fake_shell(
+        temporary.path(),
+        r#"/bin/sh -c "$4" || exit; /bin/dd if=/dev/zero bs=65536 count=4 2>/dev/null"#,
+    )?;
+    let (_sender, mut shutdown) = watch::channel(false);
+    timeout(
+        Duration::from_secs(5),
+        capture_environment(
+            shell.as_std_path(),
+            temporary.path(),
+            temporary.path(),
+            &mut shutdown,
+        ),
+    )
+    .await??;
+    Ok(())
+}
+
+#[tokio::test]
 async fn hook_capture_rejects_nonzero_exit_and_missing_markers() -> Result<()> {
     let temporary = tempdir()?;
     let (_sender, mut shutdown) = watch::channel(false);
