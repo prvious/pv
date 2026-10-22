@@ -1,6 +1,6 @@
 # Project Hooks Design
 
-Status: proposed 2026-10-18. The owner decided D1–D13 between 2026-10-16 and 2026-10-18; D14 follows from D4.
+Status: proposed 2026-10-18. The owner decided D1–D13 between 2026-10-16 and 2026-10-18; D14 follows from D4. On 2026-10-22 the owner added D15, which replaces D2.
 
 ## Summary
 
@@ -45,7 +45,8 @@ hooks:
 - Long-running Project processes. `pnpm dev`, queues, Horizon and similar stay excluded (DESIGN.md: "PV v1 does not manage Project background processes"). `pnpm build` gives a page that works, frozen at the time the hook ran.
 - Holding a discovered worktree's route until `setup` finishes. The serving gate stays as it is, so a page may fail while `setup` is still running.
 - Running hooks for Projects that are already linked when this ships.
-- Deciding whether a command is safe or needed. There is no trust gate, no allow-list and no idempotency tracking. What the commands do is the user's business.
+- Deciding whether a command is safe or needed. PV only checks that the user approved its exact text (D15); there is no list of known-safe commands and no idempotency tracking.
+- `--yes`, a separate approval command, revoking approvals, or a machine-wide switch to trust every hook. A machine-wide switch is the shape to add if an unattended server ever needs one.
 - Running a Project's commands in parallel. They run in order; a hook can start parallel work with shell syntax.
 - Hooks on unlink, on cleanup or after the Project is reachable (`cleanup` and `ready` in IDEAS.md).
 - `pv init` writing hooks.
@@ -57,7 +58,7 @@ hooks:
 | | Decision | Outcome |
 |---|---|---|
 | D1 | Should PV run Project-declared commands at all? | Yes. PV still never decides to run `composer install` or migrations; it runs what the Project's config declares (owner, 2026-10-16) |
-| D2 | Trust gate for commands from a branch's `pv.yml` | None. A discovered worktree runs what its own `pv.yml` declares (owner, 2026-10-16) |
+| D2 | Trust gate for commands from a branch's `pv.yml` | None. A discovered worktree runs what its own `pv.yml` declares (owner, 2026-10-16). Replaced by D15 (2026-10-22) |
 | D3 | Environment for hook commands | The user's login-shell environment, captured fresh for every run and never saved (owner, 2026-10-16) |
 | D4 | What triggers hooks | Linking only: every `pv link`, and discovery linking a new worktree. PV keeps no "hooks ran" record to decide whether to run them (owner, 2026-10-16) |
 | D5 | Concurrency | Commands within a Project run in order. The daemon runs up to 4 Projects at once, like `MAX_PARALLEL_ARTIFACT_DOWNLOADS` (owner, 2026-10-16) |
@@ -70,6 +71,7 @@ hooks:
 | D12 | Main checkout path for worktree hooks | `PV_SOURCE_PATH` (owner, 2026-10-18) |
 | D13 | A failed `prepare` on a discovered worktree | Remembered in daemon memory; retried after the daemon restarts. Not an opt-out, because `pv link` on an opted-out worktree would make it an ordinary Project (owner, 2026-10-18) |
 | D14 | `pv link` before `pv setup` | `prepare` runs; `setup` is skipped with a warning to run `pv link` again after `pv setup`. No deferred-hook marker (follows D4) |
+| D15 | Approving hook commands | Each command's exact text is approved per Project folder, worktrees use their main checkout's folder, and approvals live in `pv.db`. Hooks run only when every command is approved; otherwise linking proceeds without hooks. Only `pv link` in a terminal approves; no `--yes`, no separate command (owner, 2026-10-22) |
 
 D2 accepts credential exposure as well as command execution: branch hooks receive the whole login-shell environment and can read and send away credentials such as `COMPOSER_AUTH`. Branch code PV serves and Composer/pnpm scripts already run as the user and can read those same secrets from files.
 
@@ -111,6 +113,18 @@ These amendments override the original design where they differ.
 `hooks` is part of `ProjectConfig`, so PV keeps it when it rewrites `pv.yml`. `pv php:use` serializes the whole model through `write_project_config`, so a key outside the model would be lost.
 
 A discovered worktree uses only its own `pv.yml`, as today. Its hooks are the ones committed on its branch.
+
+### Approving hook commands
+
+PV runs a hook command only after the user has approved its exact text for the Project's folder. Approvals are stored in `pv.db`, outside any repository, so nothing committed on a branch can approve a command.
+
+- **Approval folder.** It is the Project's folder in the repository's main checkout. For a Project inside a linked Git worktree, PV reads the worktree's `.git` file and that entry's `commondir` to find the main checkout, and keeps the Project's path relative to the worktree, so `<worktree>/apps/web` uses `<main>/apps/web`. The entry's `gitdir` must point back at the worktree's `.git`. A worktree anywhere on disk therefore shares its main checkout's approvals. Anything else, including a submodule, a bare repository's worktree or an entry PV can't read, uses the Project's own folder, which means PV asks again.
+- **Exact commands.** Each approval is one command's exact text. A changed or new command needs approval; removing or reordering commands doesn't.
+- **All or nothing.** Hooks run only when every command in both lists is approved. Otherwise PV skips both lists.
+- **Linking never waits for approval.** A Project whose hooks aren't approved is linked and provisioned as if it had no hooks.
+- **Only `pv link` in a terminal approves.** It lists the unapproved commands with their phase and asks once. Yes approves them and runs the hooks. No, or no terminal, links the Project without hooks, warns which commands were skipped and that `pv link` in a terminal reviews them, and exits zero. There is no `--yes` and no separate approval command.
+- **The daemon never asks.** A discovered worktree whose hooks aren't all approved is linked without `prepare`, and its `setup` is skipped. Each skipped daemon run completes with a summary that names `pv link` in the worktree, and records no coverage, so it shows in `pv jobs` but not as a failure. After approving through `pv link` in the worktree, its hooks run there.
+- **Approval covers a command's text, not the files it runs.** An approved `./bin/setup` runs whatever that script contains.
 
 ### When hooks run
 
@@ -337,7 +351,10 @@ For the stack, on the owner's laptop with many worktrees:
 - **Replacing the built-in env copy with `prepare`.** Every Project would need the same command, plus a way to find the main checkout (D7).
 - **Running hooks inside daemon jobs.** One job runs at a time under `jobs.lock`, so a long install would block every other mutation.
 - **Holding the route until `setup` finishes.** It needs persisted "setup finished" state, and an unknown-hostname page isn't better than the app's own error while `setup` runs.
-- **A trust gate.** Serving a worktree already runs its code, and `composer install` and `pnpm install` run repository scripts anyway (D2).
+- **A `--yes` flag.** Agents would add it to every call and approval would stop meaning anything; `pv link` in a terminal already approves (D15).
+- **Approving the whole hooks block as one hash.** Any edit would ask about everything, and the prompt couldn't show what changed.
+- **Global approvals.** `pv link` in a freshly cloned repository would silently run its `./bin/setup` because the same text was approved elsewhere.
+- **Holding a worktree until its hooks are approved.** A Project whose owner skips hooks on purpose would never get its worktrees provisioned.
 
 ## Out Of Scope, Noticed
 
