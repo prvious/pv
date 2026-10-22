@@ -1,5 +1,5 @@
 //! Bind-conflict acceptance tests observe a separate process, regardless of signing ancestry.
-#![cfg(target_os = "macos")]
+#![cfg(unix)]
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};

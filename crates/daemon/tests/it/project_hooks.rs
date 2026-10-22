@@ -1,4 +1,4 @@
-#![cfg(target_os = "macos")]
+#![cfg(unix)]
 
 use std::fs::symlink_metadata;
 use std::future::Future;
