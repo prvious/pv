@@ -248,11 +248,14 @@ fn approve_hooks(
 }
 
 /// Shows branch-controlled text so it can't hide part of itself: control characters and Unicode
-/// direction marks appear as escapes such as `\u{1b}`. The exact text is still what's approved.
+/// direction marks appear as escapes such as `\u{1b}`. Backslashes appear doubled, so a literal
+/// `\u{a}` never looks like a real newline. The exact text is still what's approved.
 fn visible(text: &str) -> String {
     text.chars()
         .map(|character| {
-            if character.is_control()
+            if character == '\\' {
+                "\\\\".to_owned()
+            } else if character.is_control()
                 || matches!(
                     character,
                     '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'

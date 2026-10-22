@@ -7,5 +7,5 @@ CommandOutput {
         0,
     ),
     stdout: "Linked acme (resource-only) -> <tempdir>/acme\n",
-    stderr: "Hook commands not approved for <tempdir>/acme\n  prepare  touch hidden # \\u{1b}[2K\\u{d}echo safe-looking-hook\nwarning: Hooks skipped because they aren't approved; run `pv link` here in a terminal to review them\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
+    stderr: "Hook commands not approved for <tempdir>/acme\n  prepare  touch hidden # \\u{1b}[2K\\u{d}echo safe-looking-hook\n  prepare  true # \\\\u{a}exit 73\n  prepare  true # \\u{a}exit 73\nwarning: Hooks skipped because they aren't approved; run `pv link` here in a terminal to review them\nwarning: PV daemon is not running; reconciliation will run after `pv setup` starts it\n",
 }
