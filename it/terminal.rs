@@ -11,7 +11,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use insta::assert_snapshot;
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
-use support::{create_dir, create_laravel_init_fixture, run_pv_in};
+use support::{create_dir, create_laravel_init_fixture, run_pv_in, write_file};
 
 mod support;
 
@@ -171,6 +171,39 @@ fn prune_confirmation_declines_with_n_or_the_default_answer() -> Result<()> {
         assert_eq!(exit_code, 0);
         assert!(session.cursor_visible());
         assert_screen_snapshot(snapshot, tempdir.path(), &session);
+    }
+
+    Ok(())
+}
+
+#[test]
+fn link_asks_once_to_approve_hooks_and_remembers_the_answer() -> Result<()> {
+    for (key, approved) in [("y", true), ("n", false)] {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let project = tempdir.path().join("acme");
+        create_dir(&project)?;
+        write_file(
+            &project.join("pv.yml"),
+            "serve: false\nhooks:\n  prepare:\n    - touch prepared\n",
+        )?;
+        let mut session = Session::spawn(&["link"], &project, &home)?;
+
+        session.wait_for(CONFIRM_HINT)?;
+        if approved {
+            assert_screen_snapshot("link_hook_approval_prompt", tempdir.path(), &session);
+        }
+        session.press(key)?;
+
+        assert_eq!(session.wait_for_exit()?, 0);
+        assert_eq!(project.join("prepared").exists(), approved);
+        // Without a terminal, an approved command runs and a declined one is skipped again.
+        let relink = run_pv_in(&["link"], &project, &home)?;
+        assert!(relink.status.success());
+        assert_eq!(
+            String::from_utf8(relink.stdout)?.contains("Running prepare: touch prepared"),
+            approved
+        );
     }
 
     Ok(())

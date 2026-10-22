@@ -331,6 +331,40 @@ pub(crate) fn main_checkout(
     Ok(None)
 }
 
+/// The folder whose hook approvals cover a Project at `path`: the same folder in the
+/// repository's main checkout, wherever a registered linked worktree lives on disk. Anything PV
+/// can't confirm, such as a submodule, a bare repository's worktree or an unreadable entry, keeps
+/// `path`, so PV asks again instead of borrowing another folder's approvals.
+pub fn hook_approval_folder(path: &Utf8Path) -> Utf8PathBuf {
+    linked_worktree_main_folder(path).unwrap_or_else(|| path.to_owned())
+}
+
+fn linked_worktree_main_folder(path: &Utf8Path) -> Option<Utf8PathBuf> {
+    let checkout = path
+        .ancestors()
+        .find(|ancestor| state::fs::path_entry_exists(&ancestor.join(".git")).unwrap_or(false))?;
+    let git_file = checkout.join(".git");
+    // A main checkout's `.git` is a directory, which reads as an error here.
+    let gitdir = state::fs::read_to_string(&git_file).ok()?;
+    let entry_dir = normalize(&checkout.join(gitdir.trim().strip_prefix("gitdir:")?.trim()));
+    // Git's entry points back at the worktree it registered; a hand-made `.git` file doesn't.
+    let registered = state::fs::read_to_string(&entry_dir.join("gitdir")).ok()?;
+    if state::fs::canonicalize(&normalize(&entry_dir.join(registered.trim()))).ok()?
+        != state::fs::canonicalize(&git_file).ok()?
+    {
+        return None;
+    }
+    let common_dir = state::fs::read_to_string(&entry_dir.join("commondir")).ok()?;
+    let common_dir =
+        state::fs::canonicalize(&normalize(&entry_dir.join(common_dir.trim()))).ok()?;
+    // A bare repository has no main checkout.
+    if common_dir.file_name() != Some(".git") {
+        return None;
+    }
+
+    Some(common_dir.parent()?.join(path.strip_prefix(checkout).ok()?))
+}
+
 fn read_worktree_id(entry_dir: &Utf8Path) -> Result<Option<String>, DaemonError> {
     let path = entry_dir.join(WORKTREE_ID_FILE);
     if !state::fs::path_entry_exists(&path)? {
@@ -380,7 +414,14 @@ fn apply_change(
             // If either can't be read, the worktree waits for the next scan.
             let config_file = ProjectConfigFile::read_from_root(&path)?;
             copy_source_env_file(database, &source_project_id, &path, &config_file)?;
+            // Linking never waits for approval: unapproved hooks are skipped, not the worktree.
+            let hooks_approved = crate::hooks::hooks_approved(
+                database,
+                &path,
+                &crate::hooks::all_hook_commands(&config_file.config.hooks),
+            )?;
             if let Some(hooks) = hooks
+                && hooks_approved
                 && !config_file.config.hooks.prepare.is_empty()
                 && !hooks.is_prepared(&source_project_id, &worktree_id)
             {
@@ -388,16 +429,19 @@ fn apply_change(
                     &source_project_id,
                     &worktree_id,
                     &path,
-                    config_file.config.hooks.prepare,
+                    &config_file.config.hooks,
                 )?;
                 return Ok(());
             }
+            let skipped_prepare =
+                hooks.is_some() && !hooks_approved && !config_file.config.hooks.prepare.is_empty();
+            let skipped_path = path.clone();
             let mode = if config_file.config.serve {
                 ProjectMode::Served
             } else {
                 ProjectMode::ResourceOnly
             };
-            database.link_discovered_project(LinkDiscoveredProjectInput {
+            let linked = database.link_discovered_project(LinkDiscoveredProjectInput {
                 source_project_id: source_project_id.clone(),
                 worktree_id: worktree_id.clone(),
                 worktree_name,
@@ -405,6 +449,16 @@ fn apply_change(
                 config_path: config_file.path,
                 mode,
             })?;
+            if skipped_prepare {
+                database.record_finished_job(
+                    "hooks",
+                    &format!("project:{}", linked.id),
+                    Ok(&format!(
+                        "prepare skipped: hook commands aren't approved; run `pv link` in {skipped_path} to review them"
+                    )),
+                    &[],
+                )?;
+            }
             if let Some(hooks) = hooks {
                 hooks.forget_prepare(&source_project_id, &worktree_id);
             }

@@ -837,7 +837,7 @@ async fn reconcile_loaded_project(
     if let Some(job_id) = setup_job
         && let Some(hooks) = hooks
     {
-        hooks.queue_setup(&project.id, &job_id, config_file.config.hooks.setup)?;
+        hooks.queue_setup(&project.id, &job_id, &config_file.config.hooks)?;
     }
 
     Ok(ReconciliationOutcome::Completed(

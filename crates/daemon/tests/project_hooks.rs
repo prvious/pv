@@ -82,6 +82,7 @@ impl Fixture {
         let path = self.root.join(name);
         let entry = self.source.path.join(".git/worktrees").join(name);
         state::fs::write_sensitive_file(&entry.join("gitdir"), &format!("{path}/.git\n"))?;
+        state::fs::write_sensitive_file(&entry.join("commondir"), "../..\n")?;
         state::fs::write_sensitive_file(&path.join(".git"), &format!("gitdir: {entry}\n"))?;
         let mut config = "serve: false\nenv:\n  READY: ready\nhooks:\n".to_owned();
         for (phase, command) in [("prepare", prepare), ("setup", setup)] {
@@ -93,6 +94,14 @@ impl Fixture {
             }
         }
         state::fs::write_sensitive_file(&path.join("pv.yml"), &config)?;
+        // The user approved these commands once, as `pv link` in a terminal would.
+        let commands = [prepare, setup]
+            .into_iter()
+            .flatten()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        Database::open(&self.paths)?
+            .approve_hook_commands(&daemon::hook_approval_folder(&path), &commands)?;
         Ok(path)
     }
 
@@ -328,6 +337,50 @@ async fn hooks_run_four_at_a_time_in_fifo_order_and_prepared_worktrees_link_once
             0o700
         );
         assert_debug_snapshot!((discovered.len(), fixture.hook_jobs()?.len(), runs));
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn unapproved_hooks_are_skipped_and_the_worktree_is_still_provisioned() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let path = fixture.worktree("changed", Some("touch prepared"), Some("touch set-up"))?;
+    // The branch changed a command after the user approved the originals.
+    let config = state::fs::read_to_string(&path.join("pv.yml"))?
+        .replace("touch set-up", "touch changed-set-up");
+    state::fs::write_sensitive_file(&path.join("pv.yml"), &config)?;
+    let daemon = fixture.start().await?;
+    shutdown_after(daemon, &fixture.paths, async {
+        let skipped = eventually(|| {
+            let jobs = fixture.hook_jobs()?;
+            Ok(
+                (jobs.len() == 2 && jobs.iter().all(|job| job.status == JobStatus::Succeeded))
+                    .then_some(jobs),
+            )
+        })
+        .await?;
+        // Linking didn't wait, and neither list ran.
+        assert_eq!(
+            Database::open(&fixture.paths)?.discovered_projects()?.len(),
+            1
+        );
+        assert!(!path.join("prepared").exists());
+        assert!(!path.join("changed-set-up").exists());
+        let mut phases = skipped
+            .iter()
+            .filter_map(|job| job.summary.as_deref())
+            .filter_map(|summary| summary.split_once(" skipped: hook commands aren't approved"))
+            .map(|(phase, _)| phase)
+            .collect::<Vec<_>>();
+        phases.sort_unstable();
+        assert_eq!(phases, ["prepare", "setup"]);
+        assert!(
+            Database::open(&fixture.paths)?
+                .unresolved_job_failures()?
+                .iter()
+                .all(|failure| failure.job.kind != "hooks")
+        );
         Ok(())
     })
     .await

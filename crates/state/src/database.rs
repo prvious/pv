@@ -1427,6 +1427,48 @@ impl Database {
     }
 
     /// Allocation objects of removed worktree Projects that PV still has to delete.
+    /// The commands not yet approved for `folder`, in their order and without repeats.
+    pub fn unapproved_hook_commands(
+        &self,
+        folder: &Utf8Path,
+        commands: &[String],
+    ) -> Result<Vec<String>, StateError> {
+        let mut approved = self
+            .connection
+            .prepare("SELECT 1 FROM hook_approvals WHERE folder = ?1 AND command = ?2")?;
+        let mut unapproved = Vec::new();
+        for command in commands {
+            if !unapproved.contains(command)
+                && !approved.exists(params![folder.as_str(), command])?
+            {
+                unapproved.push(command.clone());
+            }
+        }
+
+        Ok(unapproved)
+    }
+
+    pub fn approve_hook_commands(
+        &mut self,
+        folder: &Utf8Path,
+        commands: &[String],
+    ) -> Result<(), StateError> {
+        let approved_at = timestamp()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for command in commands {
+            transaction.execute(
+                "INSERT OR IGNORE INTO hook_approvals (folder, command, approved_at)
+                VALUES (?1, ?2, ?3)",
+                params![folder.as_str(), command, approved_at],
+            )?;
+        }
+        transaction.commit()?;
+
+        Ok(())
+    }
+
     pub fn pending_cleanups(&self) -> Result<Vec<PendingCleanupRecord>, StateError> {
         let mut statement = self.connection.prepare(
             "SELECT resource_name, track, generated_name, last_error

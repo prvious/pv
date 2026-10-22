@@ -7,7 +7,9 @@ use state::{Database, LinkProjectInput, ProjectRecord, PvPaths};
 use crate::hooks::DaemonHooks;
 #[cfg(target_os = "macos")]
 use crate::worktrees::discover_worktrees_with_hooks;
-use crate::worktrees::{WorktreeChange, discover_worktrees, plan_worktree_changes};
+use crate::worktrees::{
+    WorktreeChange, discover_worktrees, hook_approval_folder, plan_worktree_changes,
+};
 
 /// A discovered Project's worktree ID, slug, hostname, and path under the fixture root.
 type Discovered = (String, String, Option<String>, String);
@@ -49,6 +51,7 @@ impl Fixture {
         let entry_dir = main.join(".git/worktrees").join(entry);
         let checkout = self.root.join(checkout);
         state::fs::write_sensitive_file(&entry_dir.join("gitdir"), &format!("{checkout}/.git\n"))?;
+        state::fs::write_sensitive_file(&entry_dir.join("commondir"), "../..\n")?;
         state::fs::write_sensitive_file(&checkout.join(".git"), &format!("gitdir: {entry_dir}\n"))?;
 
         Ok(entry_dir)
@@ -542,6 +545,10 @@ async fn the_health_scan_leaves_pending_prepares_alone_and_ordinary_links_forget
         &fixture.root.join("worktrees/feat/pv.yml"),
         "serve: false\nhooks:\n  prepare:\n    - echo pending\n",
     )?;
+    Database::open(&fixture.paths)?.approve_hook_commands(
+        &hook_approval_folder(&fixture.root.join("worktrees/feat")),
+        &["echo pending".to_owned()],
+    )?;
     let hooks = DaemonHooks::new(fixture.paths.clone());
     discover_worktrees_with_hooks(&fixture.paths, Some(&hooks))?;
     let worktree = worktree_id(&entry)?;
@@ -566,5 +573,32 @@ async fn the_health_scan_leaves_pending_prepares_alone_and_ordinary_links_forget
     assert!(!hooks.prepare_is_blocked(&source.id, &worktree));
     assert!(!hooks.is_prepared(&source.id, &worktree));
     assert!(fixture.discovered()?.is_empty());
+    Ok(())
+}
+
+#[test]
+fn hook_approvals_use_the_folder_in_the_main_checkout() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let repo = fixture.main_checkout("repo")?;
+    state::fs::ensure_user_dir(&repo.join("apps/web"))?;
+    // A main checkout and a folder outside Git keep their own folder.
+    assert_eq!(
+        hook_approval_folder(&repo.join("apps/web")),
+        repo.join("apps/web")
+    );
+    let plain = fixture.root.join("plain");
+    assert_eq!(hook_approval_folder(&plain), plain);
+    // A worktree outside the main checkout maps back to it, keeping the subfolder.
+    let entry = fixture.add_worktree(&repo, "feat", "elsewhere/feat")?;
+    let worktree_web = fixture.root.join("elsewhere/feat/apps/web");
+    state::fs::ensure_user_dir(&worktree_web)?;
+    assert_eq!(
+        hook_approval_folder(&worktree_web),
+        state::fs::canonicalize(&repo)?.join("apps/web")
+    );
+    // A hand-made `.git` file that Git's entry doesn't point back at keeps its own folder.
+    let impostor = fixture.root.join("impostor");
+    state::fs::write_sensitive_file(&impostor.join(".git"), &format!("gitdir: {entry}\n"))?;
+    assert_eq!(hook_approval_folder(&impostor), impostor);
     Ok(())
 }

@@ -114,6 +114,7 @@ anyhow = { workspace = true }
 assert_cmd = { workspace = true }
 camino = { workspace = true }
 camino-tempfile = { workspace = true }
+config = { path = "crates/config" }
 daemon = { path = "crates/daemon" }
 insta = { workspace = true }
 portable-pty = { workspace = true }

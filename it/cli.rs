@@ -22,6 +22,8 @@ use assert_cmd::Command;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 #[cfg(target_os = "macos")]
+use config::ProjectConfigFile;
+#[cfg(target_os = "macos")]
 use daemon::{MonitorCleanup, MonitorExit, MonitorStart, MonitorStop, StopSignal};
 use insta::{assert_debug_snapshot, assert_snapshot};
 #[cfg(target_os = "macos")]
@@ -643,6 +645,7 @@ async fn project_link_during_daemon_prepare_stays_ordinary_after_prepare_finishe
         )?
         .project;
     write_file(&entry.join("gitdir"), &format!("{project}/.git\n"))?;
+    write_file(&entry.join("commondir"), "../..\n")?;
     write_file(&project.join(".git"), &format!("gitdir: {entry}\n"))?;
     let prepare = "if [ -n \"${PV_SOURCE_PATH:-}\" ]; then touch daemon-started; attempt=0; while [ ! -f release ]; do [ \"$attempt\" -lt 1500 ] || exit 91; attempt=$((attempt + 1)); sleep 0.1; done; else printf terminal > terminal-prepare; fi";
     write_file(
@@ -652,6 +655,7 @@ async fn project_link_during_daemon_prepare_stays_ordinary_after_prepare_finishe
             serde_json::to_string(prepare)?
         ),
     )?;
+    approve_project_hooks(&project, &home)?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
@@ -881,6 +885,7 @@ fn project_link_records_ctrl_c_during_prepare_and_reconciliation_retries() -> Re
             format!("serve: false\nhooks:\n  prepare:\n    - {command}\n")
         };
         write_file(&project.join("pv.yml"), &hooks)?;
+        approve_project_hooks(&project, &home)?;
         let paths = PvPaths::for_home(&home);
         let retry_server = if phase != "prepare" {
             Some(reject_link_reconciliations(&paths, &project.join("ready"))?)
@@ -1265,6 +1270,40 @@ fn project_link_gives_an_adopted_worktree_its_source_path() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 #[test]
+fn project_link_skips_hooks_until_every_command_is_approved() -> Result<()> {
+    let directory = tempdir()?;
+    let home = directory.path().join("home");
+    let project = directory.path().join("acme");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "serve: false\nhooks:\n  prepare:\n    - touch prepared\n",
+    )?;
+    // Without a terminal nothing is approved, but linking doesn't wait.
+    let unapproved = run_unapproved_hook_pv(&["link"], &project, &home)?;
+    assert_eq!(unapproved.code, Some(0));
+    assert!(!project.join("prepared").exists());
+    assert_eq!(
+        Database::open(&PvPaths::for_home(&home))?.projects()?.len(),
+        1
+    );
+    approve_project_hooks(&project, &home)?;
+    // One new command keeps both lists from running, and only it is listed.
+    write_file(
+        &project.join("pv.yml"),
+        "serve: false\nhooks:\n  prepare:\n    - touch prepared\n  setup:\n    - touch set-up\n",
+    )?;
+    let changed = run_unapproved_hook_pv(&["link"], &project, &home)?;
+    assert_eq!(changed.code, Some(0));
+    assert!(!project.join("prepared").exists());
+    hook_snapshot(directory.path(), || {
+        assert_debug_snapshot!((unapproved, changed))
+    });
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn project_link_reports_an_unknown_outcome_when_the_accepted_job_is_missing() -> Result<()> {
     let directory = tempdir()?;
     let home = directory.path().join("home");
@@ -1538,8 +1577,36 @@ async fn wait_for_finished_hook_fixture_job(paths: &PvPaths, id: &str) -> Result
     .await?
 }
 
+/// Runs `pv` after approving the Project's hook commands, as `pv link` in a terminal would.
 #[cfg(target_os = "macos")]
 fn run_hook_pv(args: &[&str], project: &Utf8Path, home: &Utf8Path) -> Result<CommandOutput> {
+    approve_project_hooks(project, home)?;
+    run_unapproved_hook_pv(args, project, home)
+}
+
+/// Approves the hook commands in `project`'s config once, as the user would in a terminal.
+#[cfg(target_os = "macos")]
+fn approve_project_hooks(project: &Utf8Path, home: &Utf8Path) -> Result<()> {
+    if let Ok(config_file) = ProjectConfigFile::read_from_root(project) {
+        let hooks = &config_file.config.hooks;
+        let commands = hooks
+            .prepare
+            .iter()
+            .chain(&hooks.setup)
+            .cloned()
+            .collect::<Vec<_>>();
+        let folder = daemon::hook_approval_folder(&state::fs::canonicalize(project)?);
+        Database::open(&PvPaths::for_home(home))?.approve_hook_commands(&folder, &commands)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn run_unapproved_hook_pv(
+    args: &[&str],
+    project: &Utf8Path,
+    home: &Utf8Path,
+) -> Result<CommandOutput> {
     let output = Command::cargo_bin("pv")?
         .env("HOME", home)
         .env_remove("NO_COLOR")

@@ -63,6 +63,7 @@ pub use supervisor::{
     AdoptedProcess, ManagedProcess, OwnedRuntime, ProcessSpec, ProcessSupervisor, ReadinessCheck,
     StopSignal, wait_for_custom_readiness, wait_for_readiness,
 };
+pub use worktrees::hook_approval_folder;
 
 #[derive(Debug)]
 pub struct RunningDaemon {

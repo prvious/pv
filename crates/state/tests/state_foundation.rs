@@ -210,6 +210,39 @@ fn worktree_prepare_failures_stop_counting_once_the_worktree_is_linked() -> Resu
 }
 
 #[test]
+fn hook_approvals_match_exact_commands_per_folder() -> Result<()> {
+    let temporary = tempdir()?;
+    let paths = PvPaths::for_home(temporary.path());
+    let mut database = Database::open(&paths)?;
+    let acme = temporary.path().join("acme");
+    let other = temporary.path().join("other");
+    let commands = [
+        "composer install".to_string(),
+        "pnpm build".to_string(),
+        "composer install".to_string(),
+    ];
+    assert_eq!(
+        database.unapproved_hook_commands(&acme, &commands)?,
+        ["composer install", "pnpm build"]
+    );
+    database.approve_hook_commands(&acme, &commands[..1])?;
+    assert_eq!(
+        database.unapproved_hook_commands(&acme, &commands)?,
+        ["pnpm build"]
+    );
+    // A changed command and another folder each need their own approval.
+    assert_eq!(
+        database.unapproved_hook_commands(&acme, &["composer install --no-dev".to_string()])?,
+        ["composer install --no-dev"]
+    );
+    assert_eq!(
+        database.unapproved_hook_commands(&other, &commands)?,
+        ["composer install", "pnpm build"]
+    );
+    Ok(())
+}
+
+#[test]
 fn hook_failures_keep_queued_log_paths_and_ignore_unlinked_subjects() -> Result<()> {
     let temporary = tempdir()?;
     let paths = PvPaths::for_home(temporary.path());

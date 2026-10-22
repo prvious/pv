@@ -3087,6 +3087,7 @@ dependencies = [
  "camino",
  "camino-tempfile",
  "cli",
+ "config",
  "daemon",
  "insta",
  "portable-pty",

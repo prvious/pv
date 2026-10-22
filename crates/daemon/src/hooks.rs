@@ -5,6 +5,7 @@ use std::io;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use camino::{Utf8Path, Utf8PathBuf};
+use config::ProjectHooks;
 use platform::hooks::{self, HookCommandContext, HookError, HookOutput};
 use state::{Database, JobDiagnosticSubject, PvPaths};
 use tokio::sync::{Notify, watch};
@@ -56,6 +57,8 @@ struct HookRun {
     scope: String,
     phase: &'static str,
     commands: Vec<String>,
+    /// Every command in both lists; the run needs all of them approved.
+    approval_commands: Vec<String>,
     project_path: Utf8PathBuf,
     source_path: Utf8PathBuf,
     log: Utf8PathBuf,
@@ -110,7 +113,7 @@ impl DaemonHooks {
         source_project_id: &str,
         worktree_id: &str,
         project_path: &Utf8Path,
-        commands: Vec<String>,
+        hooks: &ProjectHooks,
     ) -> Result<(), DaemonError> {
         let mut database = Database::open(&self.paths)?;
         let source = database.project_by_id(source_project_id)?.ok_or_else(|| {
@@ -145,7 +148,8 @@ impl DaemonHooks {
             job_id: job.id,
             scope,
             phase: "prepare",
-            commands,
+            commands: hooks.prepare.clone(),
+            approval_commands: all_hook_commands(hooks),
             project_path: project_path.to_owned(),
             source_path: source.path,
             log,
@@ -166,7 +170,7 @@ impl DaemonHooks {
         &self,
         project_id: &str,
         job_id: &str,
-        commands: Vec<String>,
+        hooks: &ProjectHooks,
     ) -> Result<(), DaemonError> {
         let mut database = Database::open(&self.paths)?;
         let discovered = database
@@ -197,7 +201,8 @@ impl DaemonHooks {
             job_id: job_id.to_string(),
             scope,
             phase: "setup",
-            commands,
+            commands: hooks.setup.clone(),
+            approval_commands: all_hook_commands(hooks),
             project_path: project.path,
             source_path: source.path,
             log,
@@ -347,7 +352,20 @@ impl DaemonHooks {
         let summary = if let Some(path) = current {
             run.project_path = path;
             if run.project_id.is_some() || database.project_by_path(&run.project_path)?.is_none() {
-                return Ok(true);
+                if hooks_approved(&database, &run.project_path, &run.approval_commands)? {
+                    return Ok(true);
+                }
+                // A setup's commands come from the config applied at first success, which can
+                // differ from what discovery checked. Discovery links a skipped prepare's worktree.
+                database.complete_job(
+                    &run.job_id,
+                    &format!(
+                        "{} skipped: hook commands aren't approved; run `pv link` in {} to review them",
+                        run.phase, run.project_path
+                    ),
+                )?;
+                self.state().prepares.remove(&run.scope);
+                return Ok(false);
             }
             "prepare skipped: linked as an ordinary Project"
         } else {
@@ -541,6 +559,24 @@ impl DaemonHooks {
     }
 }
 
+/// Every command a Project's hooks declare, in order.
+pub(crate) fn all_hook_commands(hooks: &ProjectHooks) -> Vec<String> {
+    hooks.prepare.iter().chain(&hooks.setup).cloned().collect()
+}
+
+/// Hooks run only when every one of their commands is approved for the Project's folder.
+pub(crate) fn hooks_approved(
+    database: &Database,
+    project_path: &Utf8Path,
+    commands: &[String],
+) -> Result<bool, DaemonError> {
+    let folder = worktrees::hook_approval_folder(project_path);
+
+    Ok(database
+        .unapproved_hook_commands(&folder, commands)?
+        .is_empty())
+}
+
 fn worktree_scope(source: &str, worktree: &str) -> String {
     format!("worktree:{source}:{worktree}")
 }
@@ -621,6 +657,7 @@ mod tests {
             scope: scope.to_owned(),
             phase: "prepare",
             commands: Vec::new(),
+            approval_commands: Vec::new(),
             project_path: paths.home().to_owned(),
             source_path: paths.home().to_owned(),
             log: paths.worktree_hook_log("project_fixture", "tree"),
@@ -662,6 +699,10 @@ mod tests {
             "serve: false\nhooks:\n  setup:\n    - touch setup-ran\n",
         )?;
         let mut database = Database::open(&paths)?;
+        database.approve_hook_commands(
+            &crate::worktrees::hook_approval_folder(&project_path),
+            &["touch setup-ran".to_owned()],
+        )?;
         let source = database
             .link_project_with_mode(
                 LinkProjectInput {

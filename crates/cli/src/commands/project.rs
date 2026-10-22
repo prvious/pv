@@ -2,7 +2,9 @@ use std::io;
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use config::{AllocationEnvContext, ProjectConfigFile, ProjectEnvContext, ResourceEnvContext};
+use config::{
+    AllocationEnvContext, ProjectConfigFile, ProjectEnvContext, ProjectHooks, ResourceEnvContext,
+};
 use resources::{ArtifactManifestCache, ConcreteTrackName, ResourceName, TrackSelector};
 use serde::Serialize;
 use state::{
@@ -37,11 +39,20 @@ pub(crate) fn link(
             .as_ref()
             .and_then(|php| php.version_selector()),
     )?;
-    let database = Database::open(&paths)?;
+    let mut database = Database::open(&paths)?;
     let existing = database.project_by_path(&project_path)?;
-    let hooks_enabled = !args.skip_hooks && !config_file.config.hooks.is_empty();
+    let mut hooks_enabled = !args.skip_hooks && !config_file.config.hooks.is_empty();
     if hooks_enabled && let Some(project) = &existing {
         refuse_concurrent_hooks(&database, project)?;
+    }
+    if hooks_enabled {
+        hooks_enabled = approve_hooks(
+            &mut database,
+            &config_file.config.hooks,
+            &project_path,
+            environment,
+            streams,
+        )?;
     }
     let source_path = match &existing {
         Some(project) => discovered_source_path(&database, project)?,
@@ -178,6 +189,61 @@ pub(crate) fn link(
     }
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Hooks run only when every command is approved for the Project's folder. Approving needs a
+/// terminal; without one, or when the user declines, the Project is linked without hooks.
+fn approve_hooks(
+    database: &mut Database,
+    hooks: &ProjectHooks,
+    project_path: &Utf8Path,
+    environment: &impl Environment,
+    streams: &mut Streams<'_>,
+) -> Result<bool, ExecuteError> {
+    let folder = daemon::hook_approval_folder(project_path);
+    let commands = hooks
+        .prepare
+        .iter()
+        .chain(&hooks.setup)
+        .cloned()
+        .collect::<Vec<_>>();
+    let unapproved = database.unapproved_hook_commands(&folder, &commands)?;
+    if unapproved.is_empty() {
+        return Ok(true);
+    }
+    let output = if streams.interactive {
+        &mut streams.out
+    } else {
+        &mut streams.err
+    };
+    output.status(
+        Mark::Warning,
+        Line::field("Hook commands not approved for ", folder.as_str()),
+    )?;
+    for command in &unapproved {
+        let phase = if hooks.prepare.contains(command) {
+            "prepare"
+        } else {
+            "setup"
+        };
+        output.detail(Line::default().text(format!("{phase:<8} ")).value(command))?;
+    }
+    if streams.interactive
+        && prompt::confirm(
+            environment,
+            &streams.out,
+            "Run them and remember the approval?",
+            false,
+        )?
+    {
+        database.approve_hook_commands(&folder, &unapproved)?;
+        return Ok(true);
+    }
+    streams.err.warning(
+        "Hooks skipped because they aren't approved; run `pv link` here in a terminal to review them",
+    )?;
+
+    Ok(false)
 }
 
 /// Terminal hooks wait while the daemon owns this Project's hooks.
