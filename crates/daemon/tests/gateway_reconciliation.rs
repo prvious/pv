@@ -3679,7 +3679,7 @@ async fn frankenphp_config_validation_timeout_stops_validator_process_group() ->
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[tokio::test]
 async fn config_validation_stops_descendant_that_retains_output_after_leader_exit() -> Result<()> {
     let tempdir = tempdir()?;
