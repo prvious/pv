@@ -560,6 +560,8 @@ async fn the_health_scan_leaves_pending_prepares_alone_and_ordinary_links_forget
             .contains(&crate::ReconciliationScope::System)
     );
     fixture.link("worktrees/feat", "ordinary.test")?;
+    // System reconciliation stops obsolete hook runs before discovery.
+    hooks.stop_obsolete().await?;
     discover_worktrees_with_hooks(&fixture.paths, Some(&hooks))?;
     assert!(!hooks.prepare_is_blocked(&source.id, &worktree));
     assert!(!hooks.is_prepared(&source.id, &worktree));

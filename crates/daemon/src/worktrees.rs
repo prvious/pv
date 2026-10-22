@@ -141,9 +141,6 @@ pub(crate) fn discover_worktrees_with_hooks(
     hooks: Option<&DaemonHooks>,
 ) -> Result<(), DaemonError> {
     let mut database = Database::open(paths)?;
-    if let Some(hooks) = hooks {
-        hooks.forget_linked_prepares(&mut database)?;
-    }
     // The health scan reports skipped sources every 30 seconds.
     let plan = plan_worktree_changes_with_hooks(&database, hooks)?;
     for change in plan.changes {

@@ -89,7 +89,7 @@ pub(crate) async fn serve(
         tokio::select! {
             outcome = &mut hook_task => {
                 hook_task_finished = true;
-                break outcome.map_err(DaemonError::from).and_then(|result| result);
+                break outcome.map_err(DaemonError::from);
             }
             _ = &mut shutdown => {
                 break Ok(());
@@ -320,10 +320,7 @@ pub(crate) async fn serve(
     let hook_result = if hook_task_finished {
         Ok(())
     } else {
-        match hook_task.await {
-            Ok(result) => result,
-            Err(error) => Err(error.into()),
-        }
+        hook_task.await.map_err(DaemonError::from)
     };
 
     let mut result = result;

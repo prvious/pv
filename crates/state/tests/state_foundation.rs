@@ -182,6 +182,34 @@ fn finished_foreground_jobs_are_atomic_with_their_diagnostic_outcomes() -> Resul
 }
 
 #[test]
+fn worktree_prepare_failures_stop_counting_once_the_worktree_is_linked() -> Result<()> {
+    let temporary = tempdir()?;
+    let paths = PvPaths::for_home(temporary.path());
+    let mut database = Database::open(&paths)?;
+    let source = link_test_project(&mut database, temporary.path(), "source", "source.test")?;
+    let scope = format!("worktree:{}:tree", source.id);
+    let prepare = database.start_job("hooks", &scope)?;
+    database.fail_job_with_subject(
+        &prepare.id,
+        "prepare: `exit 1` exited with status 1",
+        &JobDiagnosticSubject::Other {
+            kind: "hooks".to_owned(),
+            scope,
+        },
+    )?;
+    assert_eq!(database.unresolved_job_failures()?.len(), 1);
+    database.link_discovered_project(discovered_input(
+        &source,
+        temporary.path(),
+        "tree",
+        "tree",
+        ProjectMode::ResourceOnly,
+    ))?;
+    assert!(database.unresolved_job_failures()?.is_empty());
+    Ok(())
+}
+
+#[test]
 fn hook_failures_keep_queued_log_paths_and_ignore_unlinked_subjects() -> Result<()> {
     let temporary = tempdir()?;
     let paths = PvPaths::for_home(temporary.path());

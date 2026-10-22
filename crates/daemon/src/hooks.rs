@@ -3,7 +3,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use platform::hooks::{self, HookCommandContext, HookError, HookOutput};
@@ -16,7 +15,6 @@ use crate::reconciliation::ReconciliationDebouncer;
 use crate::{structured_log, worktrees};
 
 const CONCURRENCY: usize = 4;
-const CANCELLATION_WAIT: Duration = Duration::from_millis(100);
 
 #[derive(Clone)]
 pub(crate) struct DaemonHooks {
@@ -107,31 +105,6 @@ impl DaemonHooks {
             .remove(&worktree_scope(source, worktree));
     }
 
-    /// An ordinary `pv link` takes ownership of this path. An already executing prepare may
-    /// finish, but its result must never put the path back into discovery's transient sets.
-    pub(crate) fn forget_linked_prepares(
-        &self,
-        database: &mut Database,
-    ) -> Result<(), DaemonError> {
-        let projects = database.projects()?;
-        let mut state = self.state();
-        let scopes = state
-            .prepares
-            .iter()
-            .filter(|(_, prepare)| projects.iter().any(|project| project.path == prepare.path))
-            .map(|(scope, _)| scope.clone())
-            .collect::<Vec<_>>();
-        for scope in scopes {
-            self.discard_prepare(
-                &mut state,
-                database,
-                &scope,
-                "prepare skipped: linked as an ordinary Project",
-            )?;
-        }
-        Ok(())
-    }
-
     pub(crate) fn queue_prepare(
         &self,
         source_project_id: &str,
@@ -220,14 +193,6 @@ impl DaemonHooks {
             return Ok(());
         };
         let mut state = self.state();
-        if state
-            .active
-            .values()
-            .any(|active| active.run.job_id == job_id)
-            || state.queued.iter().any(|run| run.job_id == job_id)
-        {
-            return Ok(());
-        }
         let run = HookRun {
             job_id: job_id.to_string(),
             scope,
@@ -257,10 +222,7 @@ impl DaemonHooks {
             if !pending {
                 return Ok(());
             }
-            tokio::select! {
-                _ = notified => {}
-                _ = tokio::time::sleep(CANCELLATION_WAIT) => {}
-            }
+            notified.await;
         }
     }
 
@@ -299,6 +261,7 @@ impl DaemonHooks {
             .iter()
             .chain(state.active.values().map(|active| &active.run))
         {
+            // Stop a removed worktree's setup at the first barrier, before discovery removes it.
             if let Some(project_id) = &run.project_id {
                 let source = database.project_by_id(&run.source_project_id)?;
                 if database.project_by_id(project_id)?.is_none()
@@ -373,9 +336,8 @@ impl DaemonHooks {
             database
                 .project_by_id(&run.source_project_id)?
                 .and_then(|source| {
-                    run.source_path = source.path;
                     self.registered_path(
-                        &run.source_path,
+                        &source.path,
                         &run.project_path,
                         &run.worktree_id,
                         &run.scope,
@@ -385,9 +347,6 @@ impl DaemonHooks {
         let summary = if let Some(path) = current {
             run.project_path = path;
             if run.project_id.is_some() || database.project_by_path(&run.project_path)?.is_none() {
-                if let Some(prepare) = self.state().prepares.get_mut(&run.scope) {
-                    prepare.path = run.project_path.clone();
-                }
                 return Ok(true);
             }
             "prepare skipped: linked as an ordinary Project"
@@ -424,7 +383,7 @@ impl DaemonHooks {
         &self,
         debouncer: ReconciliationDebouncer,
         mut shutdown: watch::Receiver<bool>,
-    ) -> Result<(), DaemonError> {
+    ) {
         let mut tasks = JoinSet::new();
         loop {
             while tasks.len() < CONCURRENCY && !*shutdown.borrow() {
@@ -492,7 +451,6 @@ impl DaemonHooks {
         }
         self.state().active.clear();
         self.changed.notify_waiters();
-        Ok(())
     }
 
     fn complete(&self, run: &HookRun, outcome: &Result<(), HookError>) {
@@ -762,7 +720,7 @@ mod tests {
         })
         .await;
         shutdown.send_replace(true);
-        task.await??;
+        task.await?;
         let completed = completed??;
         anyhow::ensure!(
             completed.status == JobStatus::Succeeded,

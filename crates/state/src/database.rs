@@ -1037,12 +1037,17 @@ impl Database {
             && kind == "hooks"
         {
             let components = scope.split(':').collect::<Vec<_>>();
-            let project_id = match components.as_slice() {
-                ["project", project_id] | ["worktree", project_id, _] => Some(*project_id),
-                _ => None,
-            };
-            if let Some(project_id) = project_id {
-                return Ok(self.project_by_id(project_id)?.is_some());
+            match components.as_slice() {
+                ["project", project_id] => return Ok(self.project_by_id(project_id)?.is_some()),
+                // A pre-link prepare failure only matters while its worktree waits to be linked.
+                ["worktree", source_project_id, worktree_id] => {
+                    let linked = self.discovered_projects()?.into_iter().any(|project| {
+                        project.source_project_id == *source_project_id
+                            && project.worktree_id == *worktree_id
+                    });
+                    return Ok(!linked && self.project_by_id(source_project_id)?.is_some());
+                }
+                _ => {}
             }
         }
         Ok(true)
