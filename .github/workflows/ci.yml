@@ -278,6 +278,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          sudo -n ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
           for test_case in \
             systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes \
             dns_system::systemd_dns_routes_test_reapplies_after_restart_changes_port_and_refuses_conflicts
