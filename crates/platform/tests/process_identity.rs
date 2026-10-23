@@ -34,6 +34,11 @@ type TestCommand = std::process::Command;
 #[test]
 fn native_process_identity_reports_direct_executable_and_ordered_arguments() -> Result<()> {
     let mut child = ChildGuard(TestCommand::new("/bin/sleep").arg("30").spawn()?);
+    #[cfg(target_os = "linux")]
+    wait_for_executable(
+        child.0.id(),
+        &fs::canonicalize(Utf8Path::new("/bin/sleep"))?,
+    )?;
     let identity = inspect_child(&mut child)?;
 
     assert_eq!(
@@ -226,6 +231,7 @@ fn process_identity_preserves_empty_arguments() -> Result<()> {
             .stdin(Stdio::piped())
             .spawn()?,
     );
+    wait_for_executable(child.0.id(), &fs::canonicalize(Utf8Path::new("/bin/bash"))?)?;
     assert_eq!(
         inspect_child(&mut child)?.arguments,
         ["-c", "read line", "", "one two", ""]
