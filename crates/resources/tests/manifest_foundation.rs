@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use insta::assert_debug_snapshot;
 use resources::ArtifactManifest;
 use resources::ManifestSelection;
@@ -105,8 +105,14 @@ fn platform_matching_prefers_exact_matches_over_any() -> Result<()> {
     assert!(ArtifactPlatform::new("darwin-arm64")?.matches(target));
     assert!(ArtifactPlatform::new("any")?.matches(target));
     assert!(!ArtifactPlatform::new("darwin-amd64")?.matches(target));
-    assert!(ArtifactPlatform::new("linux-amd64").is_err());
-    assert!(TargetPlatform::new("linux-amd64").is_err());
+    for platform in ["linux-amd64", "linux-arm64"] {
+        let linux = TargetPlatform::new(platform)?;
+        assert!(ArtifactPlatform::new(platform)?.matches(linux));
+        assert!(ArtifactPlatform::Any.matches(linux));
+        assert!(!ArtifactPlatform::new(platform)?.matches(target));
+    }
+    assert!(ArtifactPlatform::new("windows-amd64").is_err());
+    assert!(TargetPlatform::new("windows-amd64").is_err());
 
     Ok(())
 }
@@ -439,6 +445,23 @@ fn manifest_rejects_ambiguous_published_at_candidates() -> Result<()> {
 }
 
 #[test]
+fn manifest_rejects_ambiguous_linux_published_at_candidates() -> Result<()> {
+    let errors = ["linux-amd64", "linux-arm64"]
+        .into_iter()
+        .map(|platform| {
+            let ambiguous = SELECTION_MANIFEST
+                .replace("darwin-arm64", platform)
+                .replacen("2026-05-25T14:30:00Z", "2026-05-26T14:30:00Z", 1);
+            Ok((platform, parse_manifest_error(&ambiguous)?))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    assert_debug_snapshot!(errors);
+
+    Ok(())
+}
+
+#[test]
 fn manifest_rejects_revoked_ambiguous_published_at_candidates() -> Result<()> {
     let ambiguous = REVOKED_SELECTION_MANIFEST.replacen(
         "{\n              \"artifact_version\": \"7.2.6-pv1\"",
@@ -485,7 +508,7 @@ fn manifest_rejects_invalid_checksum_and_published_at() -> Result<()> {
     let published_at_manifest = VALID_MANIFEST.replacen("2026-05-26T14:30:00Z", "not-a-date", 1);
     let platform_manifest = VALID_MANIFEST.replacen(
         "\"platform\": \"darwin-arm64\"",
-        "\"platform\": \"linux-amd64\"",
+        "\"platform\": \"windows-amd64\"",
         1,
     );
 
@@ -610,6 +633,38 @@ fn manifest_allows_same_version_exact_artifacts_for_different_targets() -> Resul
 
     assert_eq!(arm64.artifact().platform(), ArtifactPlatform::DarwinArm64);
     assert_eq!(amd64.artifact().platform(), ArtifactPlatform::DarwinAmd64);
+
+    Ok(())
+}
+
+#[test]
+fn manifest_selects_native_and_portable_artifacts_across_macos_and_linux() -> Result<()> {
+    let mut raw: serde_json::Value = serde_json::from_str(VALID_MANIFEST)?;
+    let artifacts = raw["resources"][0]["tracks"][0]["artifacts"]
+        .as_array_mut()
+        .context("fixture must contain Redis artifacts")?;
+    let template = artifacts[0].clone();
+    for platform in ["darwin-amd64", "linux-amd64", "linux-arm64"] {
+        let mut artifact = template.clone();
+        artifact["platform"] = platform.into();
+        artifact["url"] =
+            format!("https://artifacts.example.test/redis-7.2.5-pv1-{platform}.tar.gz").into();
+        artifacts.push(artifact);
+    }
+    let manifest = ArtifactManifest::parse(&raw.to_string())?;
+
+    for platform in ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"] {
+        let target = TargetPlatform::new(platform)?;
+        let native =
+            manifest.select_latest(&ResourceName::new("redis")?, &TrackName::new("7")?, target)?;
+        assert_eq!(native.artifact().platform().as_str(), platform);
+        let portable = manifest.select_latest(
+            &ResourceName::new("composer")?,
+            &TrackName::new("2")?,
+            target,
+        )?;
+        assert_eq!(portable.artifact().platform(), ArtifactPlatform::Any);
+    }
 
     Ok(())
 }

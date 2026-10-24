@@ -3,6 +3,7 @@ use std::io;
 #[cfg(test)]
 use std::time::Duration;
 
+use resources::TargetPlatform;
 use sha2::{Digest, Sha256};
 use state::{EnvContextValues, PostgresPreloadLibrary, PvPaths, ResourceAllocationRecord};
 
@@ -23,21 +24,29 @@ const POSTGRES_PORTS: &[ManagedResourcePortSpec] = &[ManagedResourcePortSpec {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PostgresRuntimeAdapter {
+    target_platform: TargetPlatform,
     #[cfg(test)]
     readiness_timeout: Duration,
 }
 
 impl PostgresRuntimeAdapter {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(target_platform: TargetPlatform) -> Self {
         Self {
+            target_platform,
             #[cfg(test)]
             readiness_timeout: super::RESOURCE_READINESS_TIMEOUT,
         }
     }
 
     #[cfg(test)]
-    pub(crate) fn with_readiness_timeout(readiness_timeout: Duration) -> Self {
-        Self { readiness_timeout }
+    pub(crate) fn with_readiness_timeout(
+        target_platform: TargetPlatform,
+        readiness_timeout: Duration,
+    ) -> Self {
+        Self {
+            target_platform,
+            readiness_timeout,
+        }
     }
 }
 
@@ -47,7 +56,7 @@ impl ManagedResourceRuntimeAdapter for PostgresRuntimeAdapter {
     }
 
     fn artifact_adapter(&self) -> Result<resources::RuntimeArtifactAdapter, DaemonError> {
-        resources::postgres_adapter().map_err(Into::into)
+        resources::postgres_adapter(self.target_platform).map_err(Into::into)
     }
 
     fn port_specs(&self) -> &'static [ManagedResourcePortSpec] {
@@ -62,10 +71,11 @@ impl ManagedResourceRuntimeAdapter for PostgresRuntimeAdapter {
         Box::pin(async move {
             let paths = paths.clone();
             let context = context.clone();
+            let target_platform = self.target_platform;
             spawn_postgres_preparation(move || {
                 let port = required_port(&context)?;
                 let config = postgres_config(&context, port)?;
-                validate_preload_library_files(&context)?;
+                validate_preload_library_files(&context, target_platform)?;
                 let admin = admin_context(&context)?;
                 initialize_data_dir_if_missing(&paths, &context, &admin)?;
                 write_postgres_config(&paths, &context, &config)
@@ -333,11 +343,14 @@ fn postgres_config(
 
 fn validate_preload_library_files(
     context: &ManagedResourceRuntimeContext,
+    target_platform: TargetPlatform,
 ) -> Result<(), DaemonError> {
     for library in &context.postgres_preload_libraries {
-        let module_path = context
-            .artifact_path
-            .join(format!("lib/postgresql/{}.dylib", library.as_str()));
+        let module_path = context.artifact_path.join(format!(
+            "lib/postgresql/{}{}",
+            library.as_str(),
+            target_platform.shared_library_suffix()
+        ));
         if !state::fs::path_is_file(&module_path)? {
             return Err(DaemonError::PostgresPreloadLibraryMissing {
                 track: context.track.clone(),
@@ -422,12 +435,58 @@ fn delete_optional_file(path: &camino::Utf8Path) -> Result<(), DaemonError> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use anyhow::Result;
+    use anyhow::{Result, bail};
+    use camino_tempfile::tempdir;
+    use resources::TargetPlatform;
+    use state::{PostgresPreloadLibrary, fs};
 
-    use super::spawn_postgres_preparation;
+    use super::{spawn_postgres_preparation, validate_preload_library_files};
+    use crate::DaemonError;
+    use crate::managed_resources::ManagedResourceRuntimeContext;
+
+    #[test]
+    fn postgres_preload_validation_uses_the_selected_target_library_name() -> Result<()> {
+        for (target, expected, foreign) in [
+            (TargetPlatform::DarwinArm64, "pg_cron.dylib", "pg_cron.so"),
+            (TargetPlatform::DarwinAmd64, "pg_cron.dylib", "pg_cron.so"),
+            (TargetPlatform::LinuxAmd64, "pg_cron.so", "pg_cron.dylib"),
+            (TargetPlatform::LinuxArm64, "pg_cron.so", "pg_cron.dylib"),
+        ] {
+            let tempdir = tempdir()?;
+            let context = ManagedResourceRuntimeContext {
+                resource_name: "postgres".to_string(),
+                track: "18".to_string(),
+                artifact_path: tempdir.path().join("release"),
+                data_dir: tempdir.path().join("data"),
+                ports: BTreeMap::new(),
+                env: BTreeMap::new(),
+                postgres_preload_libraries: vec![PostgresPreloadLibrary::PgCron],
+            };
+            let modules = context.artifact_path.join("lib/postgresql");
+            fs::write_sensitive_file(&modules.join(foreign), "foreign library")?;
+            let Err(DaemonError::PostgresPreloadLibraryMissing {
+                track,
+                library,
+                path,
+            }) = validate_preload_library_files(&context, target)
+            else {
+                bail!("expected a missing preload library for {target}");
+            };
+            assert_eq!(track, "18");
+            assert_eq!(library, "pg_cron");
+            assert_eq!(path, modules.join(expected));
+
+            fs::remove_file(&modules.join(foreign))?;
+            fs::write_sensitive_file(&modules.join(expected), "native library")?;
+            validate_preload_library_files(&context, target)?;
+        }
+
+        Ok(())
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn postgres_preparation_does_not_block_the_async_executor() -> Result<()> {

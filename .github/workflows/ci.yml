@@ -36,7 +36,7 @@ jobs:
             macos_major: "27"
             architecture: arm64
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.runner == 'macos-15-intel' && 45 || 30 }}
 
     steps:
       - name: Checkout
