@@ -6,6 +6,8 @@ use hickory_proto::rr::rdata::A;
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::serialize::binary::BinEncodable;
 use insta::{Settings, assert_debug_snapshot};
+#[cfg(target_os = "linux")]
+use platform::PlatformTarget;
 use platform::loopback_tcp_port_available;
 use pv_fake::{EventKind, FakeSettings, InstalledFake, Pause, Persona};
 use rusqlite::{Connection, params};
@@ -3540,7 +3542,7 @@ async fn daemon_process_identity_is_scoped_to_the_current_boot() -> Result<()> {
             Err(error) => return Err(error.into()),
             Ok(Some(_)) => bail!("captured the foreign test process as the daemon"),
         };
-        let wait_complete = match process.wait_for_exit(Duration::ZERO) {
+        let wait_complete = match process.wait_for_exit(Duration::ZERO, PlatformTarget::Linux) {
             Ok(()) => true,
             Err(daemon::DaemonError::RuntimeCleanupUnproven {
                 pid: recorded_pid, ..

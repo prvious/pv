@@ -1,0 +1,90 @@
+---
+source: crates/cli/tests/linux_daemon_registration.rs
+expression: "serde_json::to_string_pretty(&observed)?"
+---
+[
+  {
+    "case": "double quoted",
+    "distribution": {
+      "pretty_name": "Étoile \"LTS\" $HOME $(printf expanded) `printf expanded`",
+      "support": "untested"
+    }
+  },
+  {
+    "case": "single quoted",
+    "distribution": {
+      "pretty_name": "Debian \"Linux\" 13",
+      "support": "untested"
+    }
+  },
+  {
+    "case": "last assignment",
+    "distribution": {
+      "pretty_name": "Last",
+      "support": "untested"
+    }
+  },
+  {
+    "case": "malformed last",
+    "distribution": {
+      "pretty_name": "Linux",
+      "support": "untested"
+    }
+  },
+  {
+    "case": "empty last",
+    "distribution": {
+      "pretty_name": "Linux",
+      "support": "untested"
+    }
+  },
+  {
+    "case": "unset",
+    "distribution": {
+      "pretty_name": "Linux",
+      "support": "untested"
+    }
+  },
+  {
+    "case": "multiple words",
+    "distribution": {
+      "pretty_name": "Linux",
+      "support": "untested"
+    }
+  },
+  {
+    "case": "control character",
+    "distribution": {
+      "pretty_name": "Linux",
+      "support": "untested"
+    }
+  },
+  {
+    "case": "missing",
+    "distribution": {
+      "pretty_name": "Linux",
+      "support": "untested"
+    }
+  },
+  {
+    "case": "directory",
+    "distribution": {
+      "pretty_name": "Linux",
+      "support": "untested"
+    }
+  },
+  {
+    "case": "invalid UTF-8",
+    "distribution": {
+      "pretty_name": "Linux",
+      "support": "untested"
+    }
+  },
+  {
+    "case": "symlink",
+    "distribution": {
+      "pretty_name": "Ubuntu 22.04.5 LTS",
+      "support": "untested"
+    }
+  }
+]

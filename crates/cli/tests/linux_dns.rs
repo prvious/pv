@@ -17,7 +17,7 @@ use daemon_health::DaemonFixture;
 use insta::{Settings, assert_debug_snapshot};
 use platform::{
     ActivePfRedirectInspection, DaemonRegistrationStatus, KeychainCertificate, LowPortInspection,
-    PlatformError, PrivilegedHelperStatus, ResolverConfig, ResolverFileState,
+    PlatformError, PlatformTarget, PrivilegedHelperStatus, ResolverConfig, ResolverFileState,
     SYSTEM_RESOLVER_TEST_PATH,
 };
 use serde_json::{Value, json};
@@ -31,6 +31,7 @@ enum Operation {
 
 struct TestEnvironment {
     home: Utf8PathBuf,
+    target: PlatformTarget,
     resolver: RefCell<ResolverFileState>,
     apply_error: RefCell<Option<PlatformError>>,
     remove_error: RefCell<Option<PlatformError>>,
@@ -41,6 +42,7 @@ impl TestEnvironment {
     fn new(home: &Utf8Path) -> Self {
         Self {
             home: home.to_owned(),
+            target: PlatformTarget::Linux,
             resolver: RefCell::new(ResolverFileState::Missing {
                 path: SYSTEM_RESOLVER_TEST_PATH.into(),
             }),
@@ -56,6 +58,10 @@ impl TestEnvironment {
 }
 
 impl Environment for TestEnvironment {
+    fn platform_target(&self) -> Result<PlatformTarget, PlatformError> {
+        Ok(self.target)
+    }
+
     fn var_os(&self, _key: &str) -> Option<OsString> {
         None
     }
@@ -250,7 +256,7 @@ fn linux_dns_install_releases_a_new_port_after_an_unavailable_or_rejecting_helpe
 }
 
 #[test]
-fn linux_dns_uninstall_waits_for_removal_even_when_inspection_is_missing() -> Result<()> {
+fn linux_dns_uninstall_skips_the_helper_when_native_configuration_is_absent() -> Result<()> {
     let directory = tempdir()?;
     let environment = TestEnvironment::new(&directory.path().join("home"));
     let paths = environment.paths();
@@ -259,19 +265,13 @@ fn linux_dns_uninstall_waits_for_removal_even_when_inspection_is_missing() -> Re
         &paths.resolver_config(),
         &ResolverConfig::new(port).render(),
     )?;
-    *environment.remove_error.borrow_mut() = Some(unknown_outcome("remove"));
-    let first = run_pv(&["dns:uninstall"], &environment)?;
-    assert_eq!(first.exit_code, ExitCode::FAILURE);
-    assert_eq!(dns_port(&paths)?, Some(port));
-    let retry = run_pv(&["dns:uninstall"], &environment)?;
-    assert_eq!(retry.exit_code, ExitCode::SUCCESS);
+    *environment.remove_error.borrow_mut() = Some(PlatformError::PrivilegedHelperUnavailable);
+    let output = run_pv(&["dns:uninstall"], &environment)?;
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert_eq!(dns_port(&paths)?, None);
-    assert_eq!(
-        *environment.operations.borrow(),
-        vec![Operation::Remove, Operation::Remove]
-    );
+    assert!(environment.operations.borrow().is_empty());
     assert!(!paths.resolver_config().exists());
-    snapshot_settings(directory.path(), &[port]).bind(|| assert_debug_snapshot!((first, retry)));
+    snapshot_settings(directory.path(), &[port]).bind(|| assert_debug_snapshot!(output));
     Ok(())
 }
 
@@ -340,6 +340,46 @@ fn linux_dns_status_and_doctor_consume_native_states_without_mutation() -> Resul
 }
 
 #[test]
+fn linux_dns_conflict_diagnostics_use_the_injected_platform() -> Result<()> {
+    let directory = tempdir()?;
+    let mut environment = TestEnvironment::new(&directory.path().join("home"));
+    let paths = environment.paths();
+    let port = pv_fake::seed_dns_port(&paths)?;
+    let prepared = ResolverConfig::new(port).render();
+    fs::write_sensitive_file(&paths.resolver_config(), &prepared)?;
+    let conflict = ResolverFileState::Conflict {
+        path: SYSTEM_RESOLVER_TEST_PATH.into(),
+    };
+    *environment.resolver.borrow_mut() = conflict.clone();
+    let mut observed = Vec::new();
+    for target in [PlatformTarget::Macos, PlatformTarget::Linux] {
+        environment.target = target;
+        let dns = run_pv(&["dns:status"], &environment)?;
+        let install = run_pv(&["dns:install"], &environment)?;
+        let doctor = run_pv(&["doctor", "--json"], &environment)?;
+        assert_eq!(dns.exit_code, ExitCode::SUCCESS);
+        assert_eq!(install.exit_code, ExitCode::FAILURE);
+        assert_eq!(doctor.exit_code, ExitCode::FAILURE);
+        assert!(dns.stderr.is_empty() && install.stderr.is_empty() && doctor.stderr.is_empty());
+        assert!(environment.operations.borrow().is_empty());
+        assert_eq!(*environment.resolver.borrow(), conflict);
+        assert_eq!(dns_port(&paths)?, Some(port));
+        assert_eq!(fs::read_to_string(&paths.resolver_config())?, prepared);
+        let doctor: Value = serde_json::from_str(&doctor.stdout)?;
+        let check = doctor["sections"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|section| section["checks"].as_array().into_iter().flatten())
+            .find(|check| check["name"] == "DNS config")
+            .ok_or_else(|| anyhow!("DNS doctor check missing"))?;
+        observed.push(json!({ "target": format!("{target:?}"), "dns": dns.stdout, "install": install.stdout, "doctor": check }));
+    }
+    snapshot_settings(directory.path(), &[port]).bind(|| assert_debug_snapshot!(observed));
+    Ok(())
+}
+
+#[test]
 fn linux_dns_conflicts_require_manual_repair_and_do_not_mutate_system_state() -> Result<()> {
     let directory = tempdir()?;
     let environment = TestEnvironment::new(&directory.path().join("home"));
@@ -365,47 +405,52 @@ fn linux_dns_conflicts_require_manual_repair_and_do_not_mutate_system_state() ->
 #[test]
 fn linux_dns_uninstall_delegates_uncertain_inspection_and_releases_only_after_success() -> Result<()>
 {
-    let directory = tempdir()?;
-    for unreadable in [false, true] {
-        for accepted in [false, true] {
-            let case = format!(
-                "{}-{}",
-                if unreadable { "unreadable" } else { "conflict" },
-                if accepted { "accepted" } else { "rejected" }
-            );
-            let environment = TestEnvironment::new(&directory.path().join(&case));
-            let paths = environment.paths();
-            let port = pv_fake::seed_dns_port(&paths)?;
-            *environment.resolver.borrow_mut() = if unreadable {
-                ResolverFileState::Unreadable {
-                    path: SYSTEM_RESOLVER_TEST_PATH.into(),
-                    message: "fixture resolved unavailable".to_owned(),
-                }
-            } else {
-                ResolverFileState::Conflict {
-                    path: SYSTEM_RESOLVER_TEST_PATH.into(),
-                }
-            };
-            if !accepted {
-                *environment.remove_error.borrow_mut() =
-                    Some(PlatformError::PrivilegedHelperRejected {
-                        message: "fixture refused unsafe DNS removal".to_owned(),
-                    });
-            }
-            let output = run_pv(&["dns:uninstall"], &environment)?;
-            assert_eq!(
-                output.exit_code,
-                if accepted {
-                    ExitCode::SUCCESS
+    for target in [PlatformTarget::Macos, PlatformTarget::Linux] {
+        let directory = tempdir()?;
+        for unreadable in [false, true] {
+            for accepted in [false, true] {
+                let case = format!(
+                    "{}-{}",
+                    if unreadable { "unreadable" } else { "conflict" },
+                    if accepted { "accepted" } else { "rejected" }
+                );
+                let mut environment = TestEnvironment::new(&directory.path().join(&case));
+                environment.target = target;
+                let paths = environment.paths();
+                let port = pv_fake::seed_dns_port(&paths)?;
+                *environment.resolver.borrow_mut() = if unreadable {
+                    ResolverFileState::Unreadable {
+                        path: SYSTEM_RESOLVER_TEST_PATH.into(),
+                        message: "fixture resolved unavailable".to_owned(),
+                    }
                 } else {
-                    ExitCode::FAILURE
+                    ResolverFileState::Conflict {
+                        path: SYSTEM_RESOLVER_TEST_PATH.into(),
+                    }
+                };
+                if !accepted {
+                    *environment.remove_error.borrow_mut() =
+                        Some(PlatformError::PrivilegedHelperRejected {
+                            message: "fixture refused unsafe DNS removal".to_owned(),
+                        });
                 }
-            );
-            assert_eq!(dns_port(&paths)?, (!accepted).then_some(port));
-            assert_eq!(*environment.operations.borrow(), [Operation::Remove]);
-            let mut settings = snapshot_settings(directory.path(), &[port]);
-            settings.set_snapshot_suffix(case);
-            settings.bind(|| assert_debug_snapshot!(output));
+                let output = run_pv(&["dns:uninstall"], &environment)?;
+                assert_eq!(
+                    output.exit_code,
+                    if accepted {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::FAILURE
+                    }
+                );
+                assert_eq!(dns_port(&paths)?, (!accepted).then_some(port));
+                assert_eq!(*environment.operations.borrow(), [Operation::Remove]);
+                if target == PlatformTarget::Linux {
+                    let mut settings = snapshot_settings(directory.path(), &[port]);
+                    settings.set_snapshot_suffix(case);
+                    settings.bind(|| assert_debug_snapshot!(output));
+                }
+            }
         }
     }
     Ok(())

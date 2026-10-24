@@ -1,0 +1,9 @@
+---
+source: it/cli.rs
+expression: linux_integration_descriptions(&output.stdout)
+---
+complete -c pv -n "__fish_pv_needs_command" -f -a "ports:status" -d 'Show PV socket proxy status'
+complete -c pv -n "__fish_pv_needs_command" -f -a "ports:install" -d 'Install or repair PV socket proxies'
+complete -c pv -n "__fish_pv_needs_command" -f -a "ports:uninstall" -d 'Remove PV socket proxies'
+complete -c pv -n "__fish_pv_needs_command" -f -a "ca:trust" -d 'Trust PV local CA in the system and browser trust stores'
+complete -c pv -n "__fish_pv_using_subcommand ports:status" -l json -d 'Print socket proxy status as JSON'

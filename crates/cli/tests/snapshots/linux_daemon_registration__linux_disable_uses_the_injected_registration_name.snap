@@ -1,0 +1,30 @@
+---
+source: crates/cli/tests/linux_daemon_registration.rs
+expression: outputs
+---
+[
+    (
+        Macos,
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "LaunchAgent already absent\n",
+            stderr: "",
+        },
+    ),
+    (
+        Linux,
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "systemd user service already absent\n",
+            stderr: "",
+        },
+    ),
+]

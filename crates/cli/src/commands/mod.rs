@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use camino::Utf8PathBuf;
 use platform::PlatformCapability;
+#[cfg(target_os = "linux")]
+use platform::PlatformTarget;
 use state::{PvPaths, RuntimeObservedStatus, StateError};
 
 use crate::args::{Cli, Command};
@@ -21,6 +23,7 @@ mod doctor;
 mod env;
 mod init;
 mod jobs;
+mod linux_distribution;
 mod logs;
 mod mailpit;
 mod mysql;
@@ -58,6 +61,12 @@ where
     for &capability in required_capabilities(&cli.command) {
         capability_check(capability)?;
     }
+    #[cfg(target_os = "linux")]
+    if matches!(cli.command, Command::Setup(_))
+        && environment.platform_target()? == PlatformTarget::Linux
+    {
+        environment.check_linux_setup_host()?;
+    }
     let runtime_lifecycle_lock = acquire_runtime_lifecycle(&cli.command, environment)?;
     require_no_update_in_progress(&cli.command, environment)?;
     #[cfg(target_os = "linux")]
@@ -77,7 +86,7 @@ where
 
     match cli.command {
         Command::Env(args) => env::run(args, environment, streams),
-        Command::Completions(args) => Ok(completions::run(args, streams)),
+        Command::Completions(args) => completions::run(args, environment, streams),
         Command::Setup(args) => setup::setup(args, environment, streams),
         Command::Uninstall(args) => setup::uninstall(args, environment, streams),
         Command::DaemonEnable => daemon::enable(environment, streams),

@@ -5,6 +5,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use platform::PlatformTarget;
 #[cfg(target_os = "linux")]
 use platform::{BootSessionId, current_boot_session_id};
 use serde::{Deserialize, Serialize};
@@ -23,13 +24,26 @@ pub struct DaemonProcess {
 }
 
 impl DaemonProcess {
-    pub fn wait_for_exit(&self, grace: Duration) -> Result<(), DaemonError> {
+    pub fn wait_for_exit(
+        &self,
+        grace: Duration,
+        target: PlatformTarget,
+    ) -> Result<(), DaemonError> {
         let deadline = Instant::now() + grace;
         while self.matches_current_process()? && !platform::process_is_zombie(self.pid)? {
             if Instant::now() >= deadline {
                 return Err(DaemonError::RuntimeCleanupUnproven {
                     pid: self.pid,
-                    reason: "daemon is still running after LaunchAgent unload".to_owned(),
+                    reason: match target {
+                        PlatformTarget::Macos => "daemon is still running after LaunchAgent unload",
+                        PlatformTarget::Linux => {
+                            "daemon is still running after stopping the systemd user service"
+                        }
+                        PlatformTarget::Windows => {
+                            "daemon is still running after stopping daemon registration"
+                        }
+                    }
+                    .to_owned(),
                 });
             }
             thread::sleep(Duration::from_millis(25));
@@ -281,17 +295,17 @@ mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use anyhow::{Result, ensure};
+    use anyhow::{Result, bail, ensure};
     use camino_tempfile::tempdir;
+    use platform::PlatformTarget;
     use pv_fake::{EventKind, Persona, install};
     #[cfg(target_os = "linux")]
     use serde_json::{Value, json};
     use state::{PvPaths, fs};
 
-    use super::verify_daemon_process;
     #[cfg(target_os = "linux")]
-    use super::{DaemonProcess, daemon_process_for_stop, record_daemon_process};
-    #[cfg(target_os = "linux")]
+    use super::{DaemonProcess, daemon_process_for_stop};
+    use super::{record_daemon_process, verify_daemon_process};
     use crate::DaemonError;
 
     #[expect(
@@ -307,6 +321,46 @@ mod tests {
             let _kill_result = self.0.kill();
             let _wait_result = self.0.wait();
         }
+    }
+
+    #[test]
+    fn daemon_stop_timeout_uses_the_requested_platform_wording() -> Result<()> {
+        let directory = tempdir()?;
+        let paths = PvPaths::for_home(directory.path());
+        fs::ensure_layout(&paths)?;
+        let process = record_daemon_process(&paths)?;
+        let record = fs::read_to_string(&paths.daemon_process_record())?;
+        let mut reasons = Vec::new();
+
+        for target in [PlatformTarget::Macos, PlatformTarget::Linux] {
+            match process.wait_for_exit(Duration::ZERO, target) {
+                Err(DaemonError::RuntimeCleanupUnproven { pid, reason }) => {
+                    assert_eq!(pid, std::process::id());
+                    reasons.push((target, reason));
+                }
+                result => bail!("expected a live daemon timeout, got {result:?}"),
+            }
+        }
+
+        assert_eq!(fs::read_to_string(&paths.daemon_process_record())?, record);
+        assert_eq!(
+            platform::inspect_process_start_identity(process.pid)?,
+            Some(process.start_identity)
+        );
+        assert!(!platform::process_is_zombie(process.pid)?);
+        insta::assert_debug_snapshot!(reasons, @r#"
+        [
+            (
+                Macos,
+                "daemon is still running after LaunchAgent unload",
+            ),
+            (
+                Linux,
+                "daemon is still running after stopping the systemd user service",
+            ),
+        ]
+        "#);
+        Ok(())
     }
 
     #[test]

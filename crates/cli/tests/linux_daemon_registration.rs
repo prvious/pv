@@ -2,7 +2,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::ffi::OsString;
-use std::io;
+use std::io::{self, Write as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -12,7 +12,8 @@ use cli::{Environment, run_with_environment};
 use insta::{Settings, assert_debug_snapshot, assert_snapshot};
 use platform::{
     ActivePfRedirectInspection, DaemonRegistrationConfig, DaemonRegistrationFileState,
-    DaemonRegistrationStatus, LocalCaMetadata, PlatformError, TrustDomainState, generate_local_ca,
+    DaemonRegistrationStatus, HELPER_PROTOCOL_VERSION, LocalCaMetadata, PRIVILEGED_HELPER_VERSION,
+    PlatformError, PlatformTarget, TrustDomainState, generate_local_ca,
     inspect_daemon_registration_file,
 };
 use serde_json::{Value, json};
@@ -26,6 +27,9 @@ struct TestEnvironment {
     registration_status: Option<DaemonRegistrationStatus>,
     registration_conflict: Option<Utf8PathBuf>,
     registration_unloaded: bool,
+    platform_target: PlatformTarget,
+    helper_authentication_error: bool,
+    terminal_width: Option<usize>,
 }
 
 impl TestEnvironment {
@@ -38,6 +42,9 @@ impl TestEnvironment {
             registration_status: None,
             registration_conflict: None,
             registration_unloaded: false,
+            platform_target: PlatformTarget::Linux,
+            helper_authentication_error: false,
+            terminal_width: None,
         }
     }
 
@@ -108,6 +115,14 @@ impl Environment for TestEnvironment {
         false
     }
 
+    fn stdout_is_terminal(&self) -> bool {
+        self.terminal_width.is_some()
+    }
+
+    fn terminal_width(&self) -> Option<usize> {
+        self.terminal_width
+    }
+
     fn open_url(&self, _url: &str) -> io::Result<()> {
         Ok(())
     }
@@ -167,6 +182,10 @@ impl Environment for TestEnvironment {
         self.home.join("etc/resolver/test").into_std_path_buf()
     }
 
+    fn os_release_path(&self) -> PathBuf {
+        self.home.join("etc/os-release").into_std_path_buf()
+    }
+
     fn pf_anchor_path(&self) -> PathBuf {
         self.home
             .join("etc/pf.anchors/com.prvious.pv")
@@ -192,7 +211,16 @@ impl Environment for TestEnvironment {
     }
 
     fn privileged_helper_status(&self) -> Result<platform::PrivilegedHelperStatus, PlatformError> {
+        if self.helper_authentication_error {
+            return Err(PlatformError::PrivilegedHelperAuthentication(
+                "fixture helper belongs to another account".to_owned(),
+            ));
+        }
         Err(PlatformError::PrivilegedHelperUnavailable)
+    }
+
+    fn platform_target(&self) -> Result<PlatformTarget, PlatformError> {
+        Ok(self.platform_target)
     }
 
     fn trusted_ca_certificates(&self) -> Result<Vec<platform::KeychainCertificate>, PlatformError> {
@@ -234,6 +262,231 @@ fn linux_disable_stops_then_removes_the_registration_through_the_environment() -
 }
 
 #[test]
+fn linux_disable_uses_the_injected_registration_name() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let mut outputs = Vec::new();
+    for target in [PlatformTarget::Macos, PlatformTarget::Linux] {
+        let home = tempdir.path().join(format!("{target:?}"));
+        let mut environment = TestEnvironment::new(&home);
+        environment.platform_target = target;
+        fs::ensure_layout(&PvPaths::for_home(&home))?;
+        let output = run_pv(&["daemon:disable"], &environment)?;
+        assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert!(output.stderr.is_empty());
+        assert_eq!(*environment.operations.borrow(), ["stop"]);
+        assert!(!environment.unit_path().exists());
+        outputs.push((target, output));
+    }
+    assert_debug_snapshot!(outputs);
+    Ok(())
+}
+
+#[test]
+fn linux_doctor_registration_uses_the_injected_platform() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let mut checks = Vec::new();
+    for target in [PlatformTarget::Macos, PlatformTarget::Linux] {
+        for case in ["missing", "current", "stale", "conflict", "unreadable"] {
+            let home = tempdir.path().join(format!("{target:?}-{case}"));
+            let mut environment = TestEnvironment::new(&home);
+            environment.platform_target = target;
+            fs::ensure_layout(&PvPaths::for_home(&home))?;
+            let path = environment.unit_path();
+            match case {
+                "current" => environment.write_unit()?,
+                "stale" => {
+                    environment.write_unit()?;
+                    let content =
+                        fs::read_to_string(&path)?.replace("ExecStart=", "InvalidExecStart=");
+                    fs::write_sensitive_file(&path, &content)?;
+                }
+                "conflict" => fs::write_sensitive_file(&path, "foreign unit\n")?,
+                "unreadable" => fs::ensure_user_dir(&path)?,
+                _ => {}
+            }
+            let actual_case = match inspect_daemon_registration_file(&path, None) {
+                DaemonRegistrationFileState::Missing { .. } => "missing",
+                DaemonRegistrationFileState::Current { .. } => "current",
+                DaemonRegistrationFileState::Stale { .. } => "stale",
+                DaemonRegistrationFileState::Conflict { .. } => "conflict",
+                DaemonRegistrationFileState::Unreadable { .. } => "unreadable",
+            };
+            assert_eq!(actual_case, case);
+            let output = run_pv(&["doctor", "--json"], &environment)?;
+            assert_eq!(output.exit_code, ExitCode::FAILURE);
+            assert!(output.stderr.is_empty());
+            assert!(environment.operations.borrow().is_empty());
+            let report: Value = serde_json::from_str(&output.stdout)?;
+            let check = report["sections"]
+                .as_array()
+                .and_then(|sections| {
+                    sections
+                        .iter()
+                        .find(|section| section["title"] == "Daemon & jobs")
+                })
+                .and_then(|section| section["checks"].as_array())
+                .and_then(|checks| checks.first())
+                .ok_or_else(|| anyhow::anyhow!("missing daemon registration diagnostic"))?;
+            checks.push((target, case, check.clone()));
+        }
+    }
+    snapshot_settings(tempdir.path()).bind(|| {
+        assert_debug_snapshot!(checks);
+    });
+    Ok(())
+}
+
+#[test]
+fn linux_distribution_is_informational_in_doctor_and_status() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let mut environment = TestEnvironment::new(&tempdir.path().join("home"));
+    fs::ensure_layout(&PvPaths::for_home(&environment.home))?;
+    let path = environment.home.join("etc/os-release");
+    let baseline = run_pv(&["doctor", "--json"], &environment)?;
+    let baseline_report: Value = serde_json::from_str(&baseline.stdout)?;
+    let baseline_doctor_state = diagnostics_without_distribution(&baseline_report)?;
+    let baseline_status = run_pv(&["status", "--json"], &environment)?;
+    let baseline_status_report: Value = serde_json::from_str(&baseline_status.stdout)?;
+    let baseline_status_state = diagnostics_without_distribution(&baseline_status_report)?;
+    let mut observed = Vec::new();
+    for (case, content) in [
+        (
+            "double quoted",
+            Some(r#"PRETTY_NAME="Étoile \"LTS\" $HOME $(printf expanded) `printf expanded`""#),
+        ),
+        ("single quoted", Some("PRETTY_NAME='Debian \"Linux\" 13'")),
+        (
+            "last assignment",
+            Some("PRETTY_NAME=Earlier\nPRETTY_NAME=Last"),
+        ),
+        (
+            "malformed last",
+            Some("PRETTY_NAME=Earlier\nPRETTY_NAME=\"broken"),
+        ),
+        ("empty last", Some("PRETTY_NAME=Earlier\nPRETTY_NAME=\"\"")),
+        (
+            "unset",
+            Some(
+                "NAME=Linux\n# PRETTY_NAME=Ignored\nOTHER_PRETTY_NAME=Ignored\nPRETTY_NAME_SUFFIX=Ignored",
+            ),
+        ),
+        ("multiple words", Some("PRETTY_NAME=Two Words")),
+        ("control character", Some("PRETTY_NAME='Unsafe\u{1b}[31m'")),
+        ("missing", None),
+        ("directory", None),
+        ("invalid UTF-8", None),
+        ("symlink", Some("PRETTY_NAME='Ubuntu 22.04.5 LTS'")),
+    ] {
+        if case == "directory" {
+            fs::ensure_user_dir(&path)?;
+        } else if case == "invalid UTF-8" {
+            fs::create_new_file(&path)?.write_all(b"PRETTY_NAME=\xff\n")?;
+        } else if let Some(content) = content {
+            if case == "symlink" {
+                let target = environment.home.join("os-release-target");
+                fs::write_sensitive_file(&target, content)?;
+                fs::symlink_file(&target, &path)?;
+            } else {
+                fs::write_sensitive_file(&path, content)?;
+            }
+        }
+        let output = run_pv(&["doctor", "--json"], &environment)?;
+        let report: Value = serde_json::from_str(&output.stdout)?;
+        let status = run_pv(&["status", "--json"], &environment)?;
+        let status_report: Value = serde_json::from_str(&status.stdout)?;
+        assert_eq!(output.exit_code, baseline.exit_code, "{case}");
+        assert_eq!(status.exit_code, baseline_status.exit_code, "{case}");
+        assert!(output.stderr.is_empty(), "{case}");
+        assert!(status.stderr.is_empty(), "{case}");
+        assert!(environment.operations.borrow().is_empty(), "{case}");
+        assert_eq!(
+            diagnostics_without_distribution(&report)?,
+            baseline_doctor_state,
+            "{case}"
+        );
+        assert_eq!(
+            diagnostics_without_distribution(&status_report)?,
+            baseline_status_state,
+            "{case}"
+        );
+        assert_eq!(
+            status_report["linux_distribution"], report["linux_distribution"],
+            "{case}"
+        );
+        observed.push(json!({"case": case, "distribution": report["linux_distribution"]}));
+        if case == "directory" {
+            fs::delete_dir_all(&path)?;
+        } else if case != "missing" {
+            fs::delete_file(&path)?;
+        }
+    }
+    assert_snapshot!(serde_json::to_string_pretty(&observed)?);
+
+    environment.platform_target = PlatformTarget::Macos;
+    fs::write_sensitive_file(&path, "PRETTY_NAME=LinuxFixture")?;
+    for (command, exit_code) in [
+        ("doctor", baseline.exit_code),
+        ("status", baseline_status.exit_code),
+    ] {
+        let output = run_pv(&[command, "--json"], &environment)?;
+        let report: Value = serde_json::from_str(&output.stdout)?;
+        assert!(report.get("linux_distribution").is_none(), "{command}");
+        assert_eq!(output.exit_code, exit_code, "{command}");
+        assert!(output.stderr.is_empty(), "{command}");
+        assert!(environment.operations.borrow().is_empty(), "{command}");
+    }
+    Ok(())
+}
+
+#[test]
+fn linux_distribution_follows_the_doctor_and_status_headings() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let mut environment = TestEnvironment::new(&tempdir.path().join("home"));
+    fs::ensure_layout(&PvPaths::for_home(&environment.home))?;
+    fs::write_sensitive_file(
+        &environment.home.join("etc/os-release"),
+        "PRETTY_NAME=\"Ubuntu 22.04.5 LTS\"\n",
+    )?;
+    let mut observed = Vec::new();
+    for command in ["doctor", "status"] {
+        let baseline = run_pv(&[command, "--json"], &environment)?;
+        for (width, lines) in [(None, 2), (Some(72), 3)] {
+            environment.terminal_width = width;
+            let output = run_pv(&["--no-color", command], &environment)?;
+            assert_eq!(output.exit_code, baseline.exit_code);
+            assert!(output.stderr.is_empty());
+            assert!(environment.operations.borrow().is_empty());
+            observed.push(
+                output
+                    .stdout
+                    .lines()
+                    .take(lines)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            );
+        }
+    }
+    assert_debug_snapshot!(observed);
+    Ok(())
+}
+
+fn diagnostics_without_distribution(report: &Value) -> anyhow::Result<String> {
+    let timestamp = if report.get("sections").is_some() {
+        &doctor_check(report, "Port redirect config")?["routing"]["observed_at"]
+    } else {
+        &report["integrations"]["ports"]["observed_at"]
+    }
+    .as_str()
+    .ok_or_else(|| anyhow::anyhow!("missing routing observation time"))?;
+    let mut state = report.clone();
+    state
+        .as_object_mut()
+        .ok_or_else(|| anyhow::anyhow!("diagnostic report is not an object"))?
+        .remove("linux_distribution");
+    Ok(serde_json::to_string(&state)?.replace(timestamp, "<timestamp>"))
+}
+
+#[test]
 fn linux_restart_restores_persistent_enablement_before_starting_the_daemon() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let environment = TestEnvironment::new(&tempdir.path().join("home"));
@@ -271,7 +524,7 @@ fn linux_status_and_doctor_report_an_unavailable_manager_and_keep_other_checks()
     let doctor: Value = serde_json::from_str(&doctor.stdout)?;
     let observed = json!({
         "daemon": status["daemon"],
-        "manager": manager_check(&doctor)?,
+        "manager": doctor_check(&doctor, "Systemd user manager")?,
         "sections": doctor["sections"].as_array().map(|sections| sections.iter().map(|section| section["title"].clone()).collect::<Vec<_>>()),
     });
     assert_snapshot!(serde_json::to_string_pretty(&observed)?);
@@ -311,7 +564,7 @@ fn linux_status_and_doctor_show_native_properties_and_reject_a_foreign_loaded_un
         let doctor: Value = serde_json::from_str(&doctor.stdout)?;
         observed.push(json!({
             "daemon": status["daemon"],
-            "manager": manager_check(&doctor)?,
+            "manager": doctor_check(&doctor, "Systemd user manager")?,
             "plain_status": plain_status.stdout,
         }));
     }
@@ -346,7 +599,7 @@ fn linux_doctor_rejects_an_owned_daemon_that_is_not_loaded_and_running() -> anyh
         });
         let output = run_pv(&["doctor", "--json"], &environment)?;
         let report: Value = serde_json::from_str(&output.stdout)?;
-        let check = manager_check(&report)?;
+        let check = doctor_check(&report, "Systemd user manager")?;
         assert_eq!(check["status"], "fail");
         observed.push(check.clone());
     }
@@ -379,7 +632,7 @@ fn linux_doctor_rejects_a_configured_service_that_is_not_loaded() -> anyhow::Res
         }
         let output = run_pv(&["doctor", "--json"], &environment)?;
         let report: Value = serde_json::from_str(&output.stdout)?;
-        let check = manager_check(&report)?;
+        let check = doctor_check(&report, "Systemd user manager")?;
         assert_eq!(check["status"], expected_status);
         observed.push((state, check.clone()));
     }
@@ -402,21 +655,54 @@ fn linux_doctor_reports_configuration_repair_for_a_foreign_drop_in() -> anyhow::
     );
     let output = run_pv(&["doctor", "--json"], &environment)?;
     let report: Value = serde_json::from_str(&output.stdout)?;
-    let check = manager_check(&report)?;
+    let check = doctor_check(&report, "Systemd user manager")?;
     snapshot_settings(tempdir.path()).bind(|| {
         assert_debug_snapshot!(check);
     });
     Ok(())
 }
 
-fn manager_check(report: &Value) -> anyhow::Result<&Value> {
+#[test]
+fn linux_doctor_uses_the_injected_platform_for_cross_account_helper_recovery() -> anyhow::Result<()>
+{
+    let tempdir = tempdir()?;
+    let mut environment = TestEnvironment::new(&tempdir.path().join("home"));
+    environment.helper_authentication_error = true;
+    let paths = PvPaths::for_home(&environment.home);
+    fs::write_sensitive_file(
+        &paths
+            .app_release_helper(env!("CARGO_PKG_VERSION"))
+            .with_file_name("pv-helper.json"),
+        &serde_json::to_string(&json!({
+            "version": PRIVILEGED_HELPER_VERSION,
+            "protocol_version": HELPER_PROTOCOL_VERSION,
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        }))?,
+    )?;
+    let mut observed = Vec::new();
+    for target in [PlatformTarget::Macos, PlatformTarget::Linux] {
+        environment.platform_target = target;
+        let output = run_pv(&["doctor", "--json"], &environment)?;
+        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert!(output.stderr.is_empty());
+        let report: Value = serde_json::from_str(&output.stdout)?;
+        let check = doctor_check(&report, "Privileged helper")?;
+        assert_eq!(check["status"], "fail");
+        observed.push(json!({ "target": target.as_str(), "check": check }));
+    }
+    assert!(environment.operations.borrow().is_empty());
+    assert_snapshot!(serde_json::to_string_pretty(&observed)?);
+    Ok(())
+}
+
+fn doctor_check<'a>(report: &'a Value, name: &str) -> anyhow::Result<&'a Value> {
     report["sections"]
         .as_array()
         .into_iter()
         .flatten()
         .flat_map(|section| section["checks"].as_array().into_iter().flatten())
-        .find(|check| check["name"] == "Systemd user manager")
-        .ok_or_else(|| anyhow::anyhow!("missing systemd manager diagnostic"))
+        .find(|check| check["name"] == name)
+        .ok_or_else(|| anyhow::anyhow!("missing {name} diagnostic"))
 }
 
 fn snapshot_settings(tempdir: &Utf8Path) -> Settings {

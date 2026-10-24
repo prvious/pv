@@ -87,12 +87,20 @@ pub(crate) fn setup(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
+    let linux = environment.platform_target()? == PlatformTarget::Linux;
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
+    let authentication = if linux { "sudo" } else { "macOS" };
 
-    streams
-        .out
-        .flow_start("setup", "PV setup", Some("macOS integration"))?;
+    streams.out.flow_start(
+        "setup",
+        "PV setup",
+        Some(if linux {
+            "Linux integration"
+        } else {
+            "macOS integration"
+        }),
+    )?;
     streams.out.flow_step(
         Mark::Done,
         Line::field("Ensured PV state layout: ", paths.root()),
@@ -104,7 +112,7 @@ pub(crate) fn setup(
     let helper_installation_required =
         privileged_helper_installation_required(environment, &helper_candidate)?;
     if args.non_interactive && helper_installation_required {
-        return Err(CliError::SetupHelperRequiresAuthentication.into());
+        return Err(CliError::SetupHelperRequiresAuthentication { authentication }.into());
     }
     if helper_installation_required
         && !args.yes
@@ -112,7 +120,9 @@ pub(crate) fn setup(
             environment,
             streams,
             CliError::HelperConfirmationRequired,
-            "Allow PV to configure local HTTPS and .test domains?\nInstalls PV's administrator helper. macOS will ask for your password.",
+            &format!(
+                "Allow PV to configure local HTTPS and .test domains?\nInstalls PV's administrator helper. {authentication} will ask for your password."
+            ),
             true,
         )?
     {
@@ -139,7 +149,11 @@ pub(crate) fn setup(
         return Ok(ExitCode::FAILURE);
     }
     if !run_required_step(
-        "port redirect setup",
+        if linux {
+            "socket proxy setup"
+        } else {
+            "port redirect setup"
+        },
         streams,
         &mut replay_error,
         |streams| ports::install(environment, streams),
@@ -164,6 +178,39 @@ pub(crate) fn setup(
     let completed =
         ::daemon::run_job_with_events_blocking(paths, "reconcile", "system", &mut progress)?;
     drop(progress);
+    finish_setup(
+        &completed.summary,
+        &default_resource_plan.failures,
+        environment,
+        streams,
+        replay_error,
+    )
+}
+
+fn finish_setup(
+    summary: &str,
+    resource_failures: &[String],
+    environment: &impl Environment,
+    streams: &mut Streams<'_>,
+    replay_error: Option<io::Error>,
+) -> Result<ExitCode, ExecuteError> {
+    let linux = environment.platform_target()? == PlatformTarget::Linux;
+    #[cfg(target_os = "linux")]
+    let mut replay_error = replay_error;
+    #[cfg(target_os = "linux")]
+    if linux
+        && !run_required_step(
+            ".test DNS verification",
+            streams,
+            &mut replay_error,
+            |_streams| {
+                environment.check_linux_setup_dns()?;
+                Ok(ExitCode::SUCCESS)
+            },
+        )?
+    {
+        return Ok(ExitCode::FAILURE);
+    }
     let output = &mut streams.out;
 
     if output.surface().decorated() {
@@ -171,18 +218,22 @@ pub(crate) fn setup(
             Mark::Success,
             "Local HTTPS, .test domains and startup configured",
         )?;
-        output.detail("DNS resolver · port redirect · CA trust · daemon registration")?;
+        output.detail(if linux {
+            "DNS resolver · socket proxy · CA trust · daemon registration"
+        } else {
+            "DNS resolver · port redirect · CA trust · daemon registration"
+        })?;
     }
 
     let summary = Line::from("System reconciliation completed: ")
-        .prose_with_quoted_values(&completed.summary, Tone::Value);
+        .prose_with_quoted_values(summary, Tone::Value);
     output.flow_step(Mark::Done, summary)?;
-    if !default_resource_plan.failures.is_empty() {
+    if !resource_failures.is_empty() {
         output.flow_step(
             Mark::Failure,
             "Default Managed Resource planning failed for some defaults:",
         )?;
-        for failure in &default_resource_plan.failures {
+        for failure in resource_failures {
             output.detail(format!("- {failure}"))?;
         }
         output.follow_up("PV setup completed core integrations; rerun `pv setup` after fixing the default Managed Resource manifest.")?;
@@ -374,8 +425,11 @@ pub(crate) fn uninstall(
 
     let _runtime_lifecycle_lock = state::RuntimeLifecycleLock::acquire_exclusive(&paths)
         .map_err(super::coordination_lock_error)?;
+    let linux = environment.platform_target()? == PlatformTarget::Linux;
     let subtitle = if args.prune {
         "--prune"
+    } else if linux {
+        "Linux integration"
     } else {
         "macOS integration"
     };
@@ -402,7 +456,11 @@ pub(crate) fn uninstall(
     // listens on it. The daemon is stopped by now, so the port can go.
     Database::open(&paths)?.release_port(PortOwner::Dns)?;
     if !run_required_step(
-        "port redirect removal",
+        if linux {
+            "socket proxy removal"
+        } else {
+            "port redirect removal"
+        },
         streams,
         &mut replay_error,
         |streams| ports::uninstall(environment, streams),
@@ -462,7 +520,7 @@ fn run_required_step(
     command: impl FnOnce(&mut Streams<'_>) -> Result<ExitCode, ExecuteError>,
 ) -> Result<bool, ExecuteError> {
     let active_label = match label {
-        "port redirect setup" => "Configuring local HTTP and HTTPS",
+        "port redirect setup" | "socket proxy setup" => "Configuring local HTTP and HTTPS",
         "CA trust setup" => "Trust local HTTPS certificates",
         "daemon registration" => "Start PV at login",
         _ => label,
@@ -494,7 +552,7 @@ fn run_required_step(
     let displayed_label = if succeeded {
         match label {
             "DNS resolver setup" => ".test domains configured",
-            "port redirect setup" => "Local HTTP and HTTPS configured",
+            "port redirect setup" | "socket proxy setup" => "Local HTTP and HTTPS configured",
             "CA trust setup" => "Local HTTPS certificates trusted",
             "daemon registration" => "PV starts at login",
             _ => label,
@@ -710,7 +768,7 @@ fn configure_shell_integration(
         return Ok(ExitCode::SUCCESS);
     };
 
-    let profile_path = shell_profile_path(paths.home(), shell);
+    let profile_path = shell_profile_path(paths.home(), shell, environment.platform_target()?);
     let block = shell_profile_block(shell);
     let existing = read_user_file(&profile_path)?;
     let (next_content, action) = match existing.as_deref() {
@@ -828,7 +886,7 @@ fn remove_shell_integration(
         return Ok(ExitCode::SUCCESS);
     };
 
-    let profile_path = shell_profile_path(paths.home(), shell);
+    let profile_path = shell_profile_path(paths.home(), shell, environment.platform_target()?);
     let Some(content) = read_user_file(&profile_path)? else {
         output.flow_step(
             Mark::Idle,
@@ -969,8 +1027,10 @@ fn delete_optional_dir(path: &Utf8Path) -> Result<bool, ExecuteError> {
     }
 }
 
-fn shell_profile_path(home: &Utf8Path, shell: Shell) -> Utf8PathBuf {
+fn shell_profile_path(home: &Utf8Path, shell: Shell, target: PlatformTarget) -> Utf8PathBuf {
     match shell {
+        Shell::Bash if target == PlatformTarget::Linux => home.join(".bashrc"),
+        Shell::Zsh if target == PlatformTarget::Linux => home.join(".zshrc"),
         Shell::Bash => home.join(".bash_profile"),
         Shell::Fish => home.join(".config/fish/config.fish"),
         Shell::Zsh => home.join(".zprofile"),
@@ -1205,10 +1265,455 @@ fn shell_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::RefCell;
+    use std::ffi::OsString;
     use std::io::{self, Write};
+    use std::path::PathBuf;
+    use std::process::ExitCode;
 
-    use super::run_required_step;
+    use anyhow::Context;
+    use camino_tempfile::tempdir;
+    use daemon::{DaemonError, DaemonProcess};
+    use insta::assert_snapshot;
+    use platform::{LowPortInspection, PlatformError, PlatformTarget};
+    use resources::{ResourceHttpClient, ResourcesError};
+    use state::{PvPaths, fs};
+
+    #[cfg(target_os = "linux")]
+    use super::finish_setup;
+    use super::{configure_shell_integration, remove_shell_integration, run_required_step};
+    #[cfg(unix)]
+    use super::{setup, uninstall};
+    use crate::args::SetupArgs;
+    #[cfg(unix)]
+    use crate::args::UninstallArgs;
+    use crate::environment::Environment;
+    #[cfg(unix)]
+    use crate::error::ExecuteError;
     use crate::output::{Presentation, Streams};
+    #[cfg(target_os = "linux")]
+    use crate::run_with_environment;
+
+    #[derive(Default)]
+    struct SetupEnvironment {
+        shell: &'static str,
+        home: PathBuf,
+        manifest_available: bool,
+        target: Option<PlatformTarget>,
+        #[cfg(target_os = "linux")]
+        final_dns_ready: bool,
+        operations: RefCell<Vec<&'static str>>,
+    }
+
+    impl Environment for SetupEnvironment {
+        fn var_os(&self, key: &str) -> Option<OsString> {
+            (key == "SHELL").then(|| self.shell.into())
+        }
+
+        fn home_dir(&self) -> Option<PathBuf> {
+            Some(self.home.clone())
+        }
+
+        fn current_dir(&self) -> io::Result<PathBuf> {
+            Err(io::Error::other("unexpected current directory query"))
+        }
+
+        fn current_exe(&self) -> io::Result<PathBuf> {
+            self.operations.borrow_mut().push("executable");
+            Ok(self.home.join("pv-fixture"))
+        }
+
+        fn stdin_is_terminal(&self) -> bool {
+            false
+        }
+
+        fn stdout_is_terminal(&self) -> bool {
+            true
+        }
+
+        fn terminal_width(&self) -> Option<usize> {
+            Some(200)
+        }
+
+        fn open_url(&self, _url: &str) -> io::Result<()> {
+            Err(io::Error::other("unexpected browser handoff"))
+        }
+
+        fn platform_target(&self) -> Result<PlatformTarget, PlatformError> {
+            Ok(self.target.unwrap_or(PlatformTarget::Linux))
+        }
+
+        #[cfg(target_os = "linux")]
+        fn check_linux_setup_host(&self) -> Result<(), PlatformError> {
+            self.operations.borrow_mut().push("host check");
+            Err(PlatformError::SystemIntegration(
+                "fixture Linux host prerequisite refused".to_owned(),
+            ))
+        }
+
+        #[cfg(target_os = "linux")]
+        fn check_linux_setup_dns(&self) -> Result<(), PlatformError> {
+            self.operations.borrow_mut().push("final DNS check");
+            if self.final_dns_ready {
+                Ok(())
+            } else {
+                Err(PlatformError::SystemIntegration(
+                    "fixture .test DNS failed".to_owned(),
+                ))
+            }
+        }
+
+        fn daemon_registration_path(&self) -> PathBuf {
+            self.home.join("pv-daemon.service")
+        }
+
+        fn daemon_process_for_stop(
+            &self,
+            _paths: &PvPaths,
+        ) -> Result<Option<DaemonProcess>, DaemonError> {
+            Err(DaemonError::Io(io::Error::other(
+                "fixture daemon stop refused",
+            )))
+        }
+
+        fn artifact_manifest_url(&self) -> Option<String> {
+            Some("https://artifacts.example.test/manifest.json".to_owned())
+        }
+
+        fn resource_http_client(&self) -> Option<&dyn ResourceHttpClient> {
+            Some(self)
+        }
+
+        fn inspect_low_ports(&self) -> Result<LowPortInspection, PlatformError> {
+            Err(PlatformError::SystemIntegration(
+                "unexpected low-port inspection".to_owned(),
+            ))
+        }
+    }
+
+    impl ResourceHttpClient for SetupEnvironment {
+        fn get_text(&self, url: &str) -> resources::Result<String> {
+            self.operations.borrow_mut().push("manifest");
+            if self.manifest_available {
+                return Ok(
+                    r#"{"schema_version":1,"minimum_pv_version":"0.1.0","resources":[]}"#
+                        .to_owned(),
+                );
+            }
+            Err(ResourcesError::HttpRequestFailed {
+                url: url.to_owned(),
+                reason: "fixture manifest unavailable".to_owned(),
+            })
+        }
+
+        fn download(&self, url: &str, _writer: &mut dyn Write) -> resources::Result<()> {
+            Err(ResourcesError::HttpRequestFailed {
+                url: url.to_owned(),
+                reason: "unexpected archive download".to_owned(),
+            })
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn linux_setup_and_uninstall_use_the_injected_platform_for_flow_headers() -> anyhow::Result<()>
+    {
+        let directory = tempdir()?;
+        let environment = SetupEnvironment {
+            shell: "/bin/bash",
+            home: directory.path().as_std_path().to_path_buf(),
+            ..Default::default()
+        };
+        let presentation = Presentation::detect(&["--no-color".into()], &environment);
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut streams = Streams::new(&mut stdout, &mut stderr, presentation);
+        assert!(matches!(
+            setup(
+                SetupArgs {
+                    yes: true,
+                    non_interactive: false,
+                    no_path: true
+                },
+                &environment,
+                &mut streams,
+            ),
+            Err(ExecuteError::Resources(
+                ResourcesError::ManifestUnavailable { .. }
+            ))
+        ));
+        let setup_output = String::from_utf8(stdout)?;
+        let mut stdout = Vec::new();
+        let mut streams = Streams::new(&mut stdout, &mut stderr, presentation);
+        assert!(matches!(
+            uninstall(
+                UninstallArgs { prune: false, force: false },
+                &environment,
+                &mut streams,
+            ),
+            Err(ExecuteError::Daemon(DaemonError::Io(source)))
+                if source.to_string() == "fixture daemon stop refused"
+        ));
+        let uninstall_output = String::from_utf8(stdout)?;
+        let observed = format!("setup:\n{setup_output}\nuninstall:\n{uninstall_output}")
+            .replace(directory.path().as_str(), "<home>");
+        assert_snapshot!(observed, @r#"
+        setup:
+        [pv] setup
+
+        ┌  PV setup  ·  Linux integration
+        │
+        ◇  Ensured PV state layout: <home>/.pv
+
+        uninstall:
+        [pv] uninstall
+
+        ┌  PV uninstall  ·  Linux integration
+        │
+        ✗  daemon removal
+        │
+        └  ✗ PV stopped during daemon removal.
+        "#);
+        Ok(())
+    }
+
+    #[test]
+    fn linux_shell_profiles_round_trip_without_editing_other_startup_files() -> anyhow::Result<()> {
+        let mut observations = Vec::new();
+        for (shell, profile_name) in [("/bin/bash", ".bashrc"), ("/bin/zsh", ".zshrc")] {
+            let directory = tempdir()?;
+            let paths = PvPaths::for_home(directory.path());
+            let environment = SetupEnvironment {
+                shell,
+                home: directory.path().as_std_path().to_path_buf(),
+                ..Default::default()
+            };
+            let profile = paths.home().join(profile_name);
+            let startup_files = [
+                ".bashrc",
+                ".zshrc",
+                ".bash_profile",
+                ".zprofile",
+                ".profile",
+            ];
+            for name in startup_files {
+                fs::write_sensitive_file(
+                    &paths.home().join(name),
+                    &format!("# {name} before PV\n\n"),
+                )?;
+            }
+            let original = fs::read_to_string(&profile)?;
+            let args = SetupArgs {
+                yes: true,
+                non_interactive: false,
+                no_path: false,
+            };
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            let mut streams = Streams::new(&mut stdout, &mut stderr, Presentation::plain());
+            assert_eq!(
+                configure_shell_integration(&args, &environment, &paths, &mut streams)?,
+                ExitCode::SUCCESS
+            );
+            let current = fs::read_to_string(&profile)?;
+            for name in startup_files
+                .into_iter()
+                .filter(|name| *name != profile_name)
+            {
+                assert_eq!(
+                    fs::read_to_string(&paths.home().join(name))?,
+                    format!("# {name} before PV\n\n")
+                );
+            }
+            let prefix = format!("{profile_name}.");
+            let backups = fs::read_dir_paths(paths.home())?
+                .into_iter()
+                .filter(|path| {
+                    path.file_name()
+                        .is_some_and(|name| name.starts_with(&prefix) && name.ends_with(".pv.bak"))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(backups.len(), 1);
+            let backup = backups.first().context("profile backup is missing")?;
+            assert_eq!(fs::read_to_string(backup)?, original);
+            let retry = SetupArgs {
+                non_interactive: true,
+                ..args
+            };
+            assert_eq!(
+                configure_shell_integration(&retry, &environment, &paths, &mut streams)?,
+                ExitCode::SUCCESS
+            );
+            assert_eq!(fs::read_to_string(&profile)?, current);
+            assert_eq!(fs::read_to_string(backup)?, original);
+            assert_eq!(
+                remove_shell_integration(&environment, &paths, &mut streams)?,
+                ExitCode::SUCCESS
+            );
+            assert_eq!(fs::read_to_string(&profile)?, original);
+            observations.push(format!("{profile_name}:\n{current}"));
+        }
+        assert_snapshot!(observations.join("\n"), @r#"
+        .bashrc:
+        # .bashrc before PV
+
+        # >>> PV ENV
+        if [ -x "$HOME/.pv/bin/pv" ]; then
+          eval "$("$HOME/.pv/bin/pv" env --shell bash)"
+        fi
+        # <<< PV ENV
+
+        .zshrc:
+        # .zshrc before PV
+
+        # >>> PV ENV
+        if [ -x "$HOME/.pv/bin/pv" ]; then
+          eval "$("$HOME/.pv/bin/pv" env --shell zsh)"
+        fi
+        # <<< PV ENV
+        "#);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_setup_checks_the_host_before_touching_pv_state() -> anyhow::Result<()> {
+        let directory = tempdir()?;
+        let environment = SetupEnvironment {
+            shell: "/bin/bash",
+            home: directory.path().as_std_path().to_path_buf(),
+            manifest_available: true,
+            ..Default::default()
+        };
+        let paths = PvPaths::for_home(directory.path());
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let code = run_with_environment(
+            ["pv", "setup", "--yes", "--no-path"],
+            &environment,
+            &mut stdout,
+            &mut stderr,
+        )?;
+        assert_eq!(code, ExitCode::FAILURE);
+        assert!(!fs::path_entry_exists(paths.root())?);
+        assert!(stdout.is_empty());
+        assert_snapshot!(format!("{}{:?}", String::from_utf8(stderr)?, environment.operations.borrow()), @r#"
+        error: system integration operation failed: fixture Linux host prerequisite refused
+        ["host check"]
+        "#);
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_setup_completion_requires_test_dns_before_reporting_success() -> anyhow::Result<()> {
+        let mut observations = Vec::new();
+        for (surface, decorated) in [("plain", false), ("decorated", true)] {
+            for (name, target, final_dns_ready) in [
+                ("Linux failure", PlatformTarget::Linux, false),
+                ("Linux success", PlatformTarget::Linux, true),
+                ("macOS skip", PlatformTarget::Macos, false),
+            ] {
+                let environment = SetupEnvironment {
+                    target: Some(target),
+                    final_dns_ready,
+                    ..Default::default()
+                };
+                let presentation = if decorated {
+                    Presentation::detect(&["--no-color".into()], &environment)
+                } else {
+                    Presentation::plain()
+                };
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                let mut streams = Streams::new(&mut stdout, &mut stderr, presentation);
+                streams.out.flow_resume("PV setup");
+                let outcome =
+                    match finish_setup("fixture reconciled", &[], &environment, &mut streams, None)
+                    {
+                        Ok(code) if code == ExitCode::SUCCESS => {
+                            assert!(target != PlatformTarget::Linux || final_dns_ready);
+                            "success".to_owned()
+                        }
+                        Err(ExecuteError::Platform(PlatformError::SystemIntegration(message)))
+                            if target == PlatformTarget::Linux && !final_dns_ready =>
+                        {
+                            format!("failed: {message}")
+                        }
+                        result => anyhow::bail!("unexpected completion result: {result:?}"),
+                    };
+                observations.push(format!(
+                    "{surface} {name}\nresult: {outcome}\noperations: {:?}\nstdout:\n{}stderr:\n{}",
+                    environment.operations.borrow(),
+                    String::from_utf8(stdout)?,
+                    String::from_utf8(stderr)?,
+                ));
+            }
+        }
+        assert_snapshot!(observations.join("\n"), @r#"
+        plain Linux failure
+        result: failed: fixture .test DNS failed
+        operations: ["final DNS check"]
+        stdout:
+        PV stopped during .test DNS verification.
+        stderr:
+
+        plain Linux success
+        result: success
+        operations: ["final DNS check"]
+        stdout:
+        System reconciliation completed: fixture reconciled
+        PV setup complete
+        stderr:
+
+        plain macOS skip
+        result: success
+        operations: []
+        stdout:
+        System reconciliation completed: fixture reconciled
+        PV setup complete
+        stderr:
+
+        decorated Linux failure
+        result: failed: fixture .test DNS failed
+        operations: ["final DNS check"]
+        stdout:
+        │
+        ✗  .test DNS verification
+        │
+        └  ✗ PV stopped during .test DNS verification.
+        stderr:
+
+        decorated Linux success
+        result: success
+        operations: ["final DNS check"]
+        stdout:
+        │
+        ✓  .test DNS verification
+        │
+        ✓  Local HTTPS, .test domains and startup configured
+        │  DNS resolver · socket proxy · CA trust · daemon registration
+        │
+        ◇  System reconciliation completed: fixture reconciled
+        │
+        └  PV setup complete
+        stderr:
+
+        decorated macOS skip
+        result: success
+        operations: []
+        stdout:
+        │
+        ✓  Local HTTPS, .test domains and startup configured
+        │  DNS resolver · port redirect · CA trust · daemon registration
+        │
+        ◇  System reconciliation completed: fixture reconciled
+        │
+        └  PV setup complete
+        stderr:
+        "#);
+        Ok(())
+    }
 
     #[test]
     fn plain_required_step_reports_stop_before_returning_error() -> anyhow::Result<()> {

@@ -1,0 +1,9 @@
+---
+source: it/cli.rs
+expression: linux_integration_descriptions(&output.stdout)
+---
+'--json[Print socket proxy status as JSON]' \
+'ports:status:Show PV socket proxy status' \
+'ports:install:Install or repair PV socket proxies' \
+'ports:uninstall:Remove PV socket proxies' \
+'ca:trust:Trust PV local CA in the system and browser trust stores' \

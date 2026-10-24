@@ -2,8 +2,8 @@ use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
 use platform::{
-    CaFileState, DAEMON_REGISTRATION_NAME, DaemonRegistrationFileState, LocalCaMetadata,
-    PlatformTarget, ResolverConfig, ResolverFileState, TrustDomainState,
+    CaFileState, DaemonRegistrationFileState, LocalCaMetadata, PlatformTarget, ResolverConfig,
+    ResolverFileState, TrustDomainState, daemon_registration_name,
 };
 use self_update::AppUpdateVersion;
 use serde::Serialize;
@@ -16,6 +16,7 @@ use crate::error::ExecuteError;
 use crate::helper_release::HelperReleaseMetadata;
 use crate::output::{Line, Mark, Output, Streams, Tone};
 
+use super::linux_distribution::LinuxDistribution;
 use super::pf_diagnostics::{PfRoutingDiagnostic, PfRoutingState};
 
 pub(crate) fn run(
@@ -39,9 +40,11 @@ pub(crate) fn run(
     Ok(exit_code)
 }
 
-/// The checks grouped for every output surface.
+/// Read-only diagnostics shared by every output surface.
 #[derive(Serialize)]
 struct DoctorReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    linux_distribution: Option<LinuxDistribution>,
     sections: [DoctorSection; 3],
 }
 
@@ -65,13 +68,13 @@ impl DoctorReport {
                 checks: vec![
                     layout_check(&paths),
                     database_check(&paths, database.as_ref()),
-                    privileged_helper_check(environment, &paths),
+                    privileged_helper_check(environment, &paths, target),
                 ],
             },
             DoctorSection {
                 title: "Routing",
                 checks: vec![
-                    dns_check(environment, &paths)?,
+                    dns_check(environment, &paths, target)?,
                     ports_check(environment, &paths, database.as_ref())?,
                     ca_check(environment, &paths, target),
                 ],
@@ -79,7 +82,7 @@ impl DoctorReport {
             DoctorSection {
                 title: "Daemon & jobs",
                 checks: vec![
-                    daemon_registration_check(&registration),
+                    daemon_registration_check(&registration, target),
                     #[cfg(target_os = "linux")]
                     daemon_registration_manager_check(environment, &registration),
                     daemon_socket_check(&paths, &registration),
@@ -117,7 +120,11 @@ impl DoctorReport {
             }
         }
 
-        Ok(Self { sections })
+        Ok(Self {
+            linux_distribution: (target == PlatformTarget::Linux)
+                .then(|| LinuxDistribution::read(environment)),
+            sections,
+        })
     }
 
     fn checks(&self) -> impl Iterator<Item = &DoctorCheck> {
@@ -142,6 +149,9 @@ impl DoctorReport {
             .max()
             .unwrap_or(0);
         output.report_heading("doctor", Some("PV doctor"))?;
+        if let Some(distribution) = &self.linux_distribution {
+            distribution.write(output)?;
+        }
         for section in &self.sections {
             if decorated {
                 output.section(section.title)?;
@@ -204,7 +214,11 @@ impl DoctorReport {
     }
 }
 
-fn privileged_helper_check(environment: &impl Environment, paths: &PvPaths) -> DoctorCheck {
+fn privileged_helper_check(
+    environment: &impl Environment,
+    paths: &PvPaths,
+    target: PlatformTarget,
+) -> DoctorCheck {
     let version = match AppUpdateVersion::current() {
         Ok(version) => version,
         Err(error) => {
@@ -251,7 +265,11 @@ fn privileged_helper_check(environment: &impl Environment, paths: &PvPaths) -> D
         Err(platform::PlatformError::PrivilegedHelperAuthentication(message)) => {
             DoctorCheck::fail(
                 "Privileged helper",
-                "helper belongs to a different macOS account",
+                if target == PlatformTarget::Linux {
+                    "helper belongs to a different Linux account"
+                } else {
+                    "helper belongs to a different macOS account"
+                },
                 "use the original installing account to run pv uninstall; otherwise perform manual administrator recovery",
             )
             .with_detail(message)
@@ -390,39 +408,41 @@ fn database_check(paths: &PvPaths, database: Option<&Database>) -> DoctorCheck {
     }
 }
 
-fn daemon_registration_check(state: &DaemonRegistrationFileState) -> DoctorCheck {
-    let name = if cfg!(target_os = "linux") {
-        "Daemon service"
-    } else {
-        "Daemon LaunchAgent"
+fn daemon_registration_check(
+    state: &DaemonRegistrationFileState,
+    target: PlatformTarget,
+) -> DoctorCheck {
+    let registration_name = daemon_registration_name(target);
+    let name = match target {
+        PlatformTarget::Linux => "Daemon service",
+        _ => "Daemon LaunchAgent",
     };
     match state {
-        DaemonRegistrationFileState::Current { path, .. } => DoctorCheck::pass(
-            name,
-            format!("PV-owned {DAEMON_REGISTRATION_NAME} is installed"),
-        )
-        .with_detail(format!("path: {path}")),
+        DaemonRegistrationFileState::Current { path, .. } => {
+            DoctorCheck::pass(name, format!("PV-owned {registration_name} is installed"))
+                .with_detail(format!("path: {path}"))
+        }
         DaemonRegistrationFileState::Missing { path } => DoctorCheck::fail(
             name,
-            format!("{DAEMON_REGISTRATION_NAME} is missing"),
+            format!("{registration_name} is missing"),
             "pv daemon:enable",
         )
         .with_detail(format!("path: {path}")),
         DaemonRegistrationFileState::Stale { path, .. } => DoctorCheck::fail(
             name,
-            format!("{DAEMON_REGISTRATION_NAME} is PV-owned but stale"),
+            format!("{registration_name} is PV-owned but stale"),
             "pv daemon:restart",
         )
         .with_detail(format!("path: {path}")),
         DaemonRegistrationFileState::Conflict { path } => DoctorCheck::fail(
             name,
-            format!("{DAEMON_REGISTRATION_NAME} file is not PV-owned"),
+            format!("{registration_name} file is not PV-owned"),
             "pv daemon:enable",
         )
         .with_detail(format!("path: {path}")),
         DaemonRegistrationFileState::Unreadable { path, message } => DoctorCheck::fail(
             name,
-            format!("{DAEMON_REGISTRATION_NAME} file could not be inspected"),
+            format!("{registration_name} file could not be inspected"),
             "pv daemon:enable",
         )
         .with_detail(format!("{path}: {message}")),
@@ -529,7 +549,11 @@ fn daemon_socket_check(paths: &PvPaths, registration: &DaemonRegistrationFileSta
     }
 }
 
-fn dns_check(environment: &impl Environment, paths: &PvPaths) -> Result<DoctorCheck, ExecuteError> {
+fn dns_check(
+    environment: &impl Environment,
+    paths: &PvPaths,
+    target: PlatformTarget,
+) -> Result<DoctorCheck, ExecuteError> {
     let prepared = platform::inspect_resolver_file(&paths.resolver_config(), None);
     let expected = resolver_config_from_state(&prepared);
     let system_path = resolver_test_path(environment)?;
@@ -558,20 +582,20 @@ fn dns_check(environment: &impl Environment, paths: &PvPaths) -> Result<DoctorCh
         (ResolverFileState::Current { .. }, ResolverFileState::Conflict { path }) => {
             let check = DoctorCheck::fail(
                 "DNS config",
-                if cfg!(target_os = "linux") {
+                if target == PlatformTarget::Linux {
                     "system DNS routing conflicts with existing configuration"
                 } else {
                     "system resolver config is not PV-owned"
                 },
                 "pv dns:install",
             );
-            #[cfg(target_os = "linux")]
-            return Ok(check.with_detail(format!(
-                "path: {path}; {}",
-                super::dns::RESOLVER_CONFLICT_GUIDANCE
-            )));
-            #[cfg(not(target_os = "linux"))]
-            check.with_detail(format!("path: {path}"))
+            let detail = match target {
+                PlatformTarget::Linux => {
+                    format!("path: {path}; {}", super::dns::RESOLVER_CONFLICT_GUIDANCE)
+                }
+                _ => format!("path: {path}"),
+            };
+            check.with_detail(detail)
         }
         (ResolverFileState::Current { .. }, ResolverFileState::Unreadable { path, message }) => {
             DoctorCheck::fail(

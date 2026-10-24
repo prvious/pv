@@ -2,8 +2,8 @@ use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
 use platform::{
-    CaFileState, DAEMON_REGISTRATION_NAME, DaemonRegistrationFileState, LocalCaMetadata,
-    ResolverConfig, ResolverFileState, TrustDomainState,
+    CaFileState, DaemonRegistrationFileState, LocalCaMetadata, PlatformTarget, ResolverConfig,
+    ResolverFileState, TrustDomainState, daemon_registration_name,
 };
 use serde::Serialize;
 use state::{
@@ -17,6 +17,7 @@ use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Line, Mark, Output, Streams, Table, Tone};
 
+use super::linux_distribution::LinuxDistribution;
 use super::pf_diagnostics::{PfRoutingDiagnostic, PfRoutingState};
 
 pub(crate) fn run(
@@ -44,7 +45,11 @@ pub(crate) fn run(
 
 #[derive(Serialize)]
 struct StatusSnapshot {
+    #[serde(skip)]
+    target: PlatformTarget,
     overall: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    linux_distribution: Option<LinuxDistribution>,
     #[serde(skip)]
     system_failure: bool,
     daemon: DaemonStatus,
@@ -120,9 +125,13 @@ impl StatusSnapshot {
         let has_failure =
             system_failure || projects.iter().any(|project| project.mark == Mark::Failure);
         let overall = if has_failure { "failed" } else { "ok" };
+        let target = environment.platform_target()?;
 
         Ok(Self {
+            target,
             overall,
+            linux_distribution: (target == PlatformTarget::Linux)
+                .then(|| LinuxDistribution::read(environment)),
             system_failure,
             daemon,
             integrations,
@@ -143,11 +152,15 @@ impl StatusSnapshot {
         if output.surface().decorated() {
             return self.write_decorated(output);
         }
+        let registration_name = daemon_registration_name(self.target);
         output.line("PV status")?;
+        if let Some(distribution) = &self.linux_distribution {
+            distribution.write(output)?;
+        }
         output.line(&format!("Overall: {}", self.overall))?;
         output.line(&format!("Daemon: {}", self.daemon.state))?;
         output.line(&format!(
-            "  {DAEMON_REGISTRATION_NAME}: {}",
+            "  {registration_name}: {}",
             self.daemon.registration
         ))?;
         output.line(&format!("  Socket: {}", self.daemon.socket))?;
@@ -252,7 +265,11 @@ impl StatusSnapshot {
     /// The terminal report: the daemon, then one section per area, then the
     /// overall outcome. It carries the same facts as the plain report.
     fn write_decorated(&self, output: &mut Output<'_>) -> Result<(), ExecuteError> {
+        let registration_name = daemon_registration_name(self.target);
         output.report_heading("status", None)?;
+        if let Some(distribution) = &self.linux_distribution {
+            distribution.write(output)?;
+        }
         output.line("")?;
         let project_attention = self
             .projects
@@ -304,12 +321,9 @@ impl StatusSnapshot {
             output.detail(message)?;
         }
         output.detail(
-            Line::field(
-                &format!("{DAEMON_REGISTRATION_NAME} "),
-                self.daemon.registration,
-            )
-            .text("  ·  Socket ")
-            .value(self.daemon.socket),
+            Line::field(&format!("{registration_name} "), self.daemon.registration)
+                .text("  ·  Socket ")
+                .value(self.daemon.socket),
         )?;
         #[cfg(target_os = "linux")]
         if let Some(detail) = self.daemon.registration_detail() {
@@ -984,11 +998,10 @@ mod tests {
 
     #[test]
     fn running_status_shows_gateway_ports_and_project_attention() -> anyhow::Result<()> {
-        let mut settings = insta::Settings::clone_current();
-        settings.add_filter(DAEMON_REGISTRATION_NAME, "LaunchAgent");
-        let _settings = settings.bind_to_scope();
         let mut snapshot = StatusSnapshot {
+            target: PlatformTarget::Macos,
             overall: "ok",
+            linux_distribution: None,
             system_failure: false,
             daemon: DaemonStatus {
                 state: "running",
@@ -1069,6 +1082,21 @@ mod tests {
             "running_status_shows_active_ports_in_plain_output",
             String::from_utf8(bytes)?
         );
+
+        snapshot.target = PlatformTarget::Linux;
+        let mut bytes = Vec::new();
+        snapshot.write(&mut Output::new(&mut bytes, Surface::terminal(false, 100)))?;
+        assert_snapshot!(
+            "linux_status_shows_registration_in_decorated_output",
+            String::from_utf8(bytes)?
+        );
+        let mut bytes = Vec::new();
+        snapshot.write(&mut Output::new(&mut bytes, Surface::plain()))?;
+        assert_snapshot!(
+            "linux_status_shows_registration_in_plain_output",
+            String::from_utf8(bytes)?
+        );
+        snapshot.target = PlatformTarget::Macos;
 
         snapshot.overall = "failed";
         snapshot.system_failure = true;

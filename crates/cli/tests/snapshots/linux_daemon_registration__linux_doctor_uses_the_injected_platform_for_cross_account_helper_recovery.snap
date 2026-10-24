@@ -1,0 +1,26 @@
+---
+source: crates/cli/tests/linux_daemon_registration.rs
+expression: serde_json::to_string_pretty(&observed)?
+---
+[
+  {
+    "check": {
+      "detail": "fixture helper belongs to another account",
+      "message": "helper belongs to a different macOS account",
+      "name": "Privileged helper",
+      "repair": "use the original installing account to run pv uninstall; otherwise perform manual administrator recovery",
+      "status": "fail"
+    },
+    "target": "macos"
+  },
+  {
+    "check": {
+      "detail": "fixture helper belongs to another account",
+      "message": "helper belongs to a different Linux account",
+      "name": "Privileged helper",
+      "repair": "use the original installing account to run pv uninstall; otherwise perform manual administrator recovery",
+      "status": "fail"
+    },
+    "target": "linux"
+  }
+]

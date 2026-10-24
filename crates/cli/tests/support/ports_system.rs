@@ -14,6 +14,7 @@ use insta::assert_snapshot;
 use platform::{
     LowPortInspection, PfRedirectConfig, PlatformError, PrivilegedHelperClient,
     SYSTEM_SOCKET_PROXY_DIRECTORY, render_socket_proxy_units, socket_proxy_unit_names,
+    socket_proxy_units_absent,
 };
 use pv_fake::Persona;
 use serde_json::Value;
@@ -116,6 +117,7 @@ fn socket_target_dependencies() -> Result<String> {
 
 fn exercise_ports(helper_fixture: &mut HelperFixture, helper: &Utf8Path) -> Result<()> {
     require_absent()?;
+    ensure!(socket_proxy_units_absent()?);
     ensure!(!fs::path_entry_exists(Utf8Path::new(CONTROL))?);
     require_units_absent(&[
         "pv-ports-system-cleanup.timer",
@@ -228,6 +230,7 @@ impl PortsFixture {
         self.start_gateway(&config)?;
         self.command("ports:install")?;
         self.require_active(&config)?;
+        ensure!(!socket_proxy_units_absent()?);
         assert_snapshot!(socket_target_dependencies()?, @r"
         pv-http.socket
         pv-https.socket

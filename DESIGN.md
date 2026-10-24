@@ -104,7 +104,7 @@ Setup detects the user's shell from `$SHELL`. If `$SHELL` is missing or unsuppor
 
 Shell profile backups created by setup append a timestamp and `.pv.bak`, such as `~/.zprofile.20260522-143012.pv.bak`.
 
-Setup edits only the detected shell's profile file for PATH setup: `~/.zprofile` for zsh, `~/.bash_profile` for bash, and `~/.config/fish/config.fish` for fish. It does not edit multiple shell profile files at once.
+Setup edits only the detected shell's profile file for PATH setup. macOS uses `~/.zprofile` for zsh and `~/.bash_profile` for bash; Linux uses the interactive `~/.zshrc` and `~/.bashrc` files. Both use `~/.config/fish/config.fish` for fish. Setup and uninstall select the file from the platform reported through the CLI environment. They do not edit multiple shell profile files at once.
 
 If the detected shell profile file does not exist, setup may create it with only the `PV ENV` block after confirmation. No backup is needed when creating a new file, but the action is reported.
 
@@ -142,7 +142,7 @@ PV marks `/etc/resolver/test` with a clear ownership comment such as `# Managed 
 
 On Linux, PV configures a root-owned `pv-dns.service` and a dummy link named `pv0`, marked with the alias `Managed by PV`. Installed DNS unit inspection requires a root-owned, mode-0644 regular file with one link. PV assigns the dummy link alias by index only after exclusive native creation succeeds; pre-existing unmarked links remain conflicts. The unit applies per-link systemd-resolved settings for `~test`, pointing only at PV's high loopback DNS port with default DNS routing, DNSSEC, DNS-over-TLS, LLMNR and multicast DNS disabled on that link. PV checks the unit's ownership, loaded fragment and overrides, and the dummy link's identity before changing or removing those resources. Before applying routing, it also rejects competing `test` search or routing domains, including subdomains, on other links or the global scope. Those conflicts can also prevent boot-time or restart activation. Removal preserves foreign domains and verifies only PV's owned resources are absent. Foreign ownership conflicts require manual administrator repair. A current DNS installation must also be persistently enabled; inspection reads enablement through the systemd manager so an earlier cached unit property cannot hide a disable or repair.
 
-A Linux DNS helper request may remain queued or in progress after its client loses the response. PV keeps the selected DNS port reserved after an uncertain or partial apply failure, so accepted helper work cannot later point at a released port. Retrying uses that same reservation. Standalone Linux DNS install and removal hold the existing per-account helper lifecycle lock through preparation, helper completion and reservation changes. Removal disables both enablement scopes and reloads dependencies before stopping the owned unit; it clears retained failure state before deleting ownership evidence. A retained owned link can be removed while resolved is absent; when resolved has a bus owner, PV reverts its per-link settings before deleting the link. Linux DNS removal delegates final ownership checks to the helper and waits for verified removal before releasing the port, including when initial inspection reports missing, conflicting or unreadable configuration. Interrupted teardown retries keep strict ownership checks; externally pinned cached units can require an administrator daemon reload.
+A Linux DNS helper request may remain queued or in progress after its client loses the response. PV keeps the selected DNS port reserved after an uncertain or partial apply failure, so accepted helper work cannot later point at a released port. Retrying uses that same reservation. Standalone Linux DNS install and removal hold the existing per-account helper lifecycle lock through preparation, helper completion and reservation changes. Removal disables both enablement scopes and reloads dependencies before stopping the owned unit; it clears retained failure state before deleting ownership evidence. A retained owned link can be removed while resolved is absent; when resolved has a bus owner, PV reverts its per-link settings before deleting the link. Linux DNS removal releases the port without a helper request when native inspection verifies the unit and link are absent. Otherwise it delegates final ownership checks to the helper and waits for verified removal, including when initial inspection reports conflicting or unreadable configuration. Interrupted teardown retries keep strict ownership checks; externally pinned cached units can require an administrator daemon reload.
 
 The internal DNS resolver supports both UDP and TCP DNS on the chosen DNS port.
 
@@ -180,7 +180,7 @@ Systemd's loaded `Listen` describes configuration and can report the expected ad
 
 Linux prepared socket-proxy copies use `~/.pv/config/ports/`. Current installed copies additionally require root:root ownership, mode 0644 and exactly one link; prepared copies remain ordinary user files. The helper renders the same four fixed unit definitions under `/etc/systemd/system/`, using distinct high loopback backend ports. Mutations hold the helper lifecycle lock and verify PV ownership, selected fragments and overrides before stopping units. Apply stops owned units, repeats the root low-port bind probe, backs up existing files, replaces them atomically, reloads systemd, and enables and restarts the units. Failure attempts to restore the verified previous files, enablement and activity. Rollback cannot stop or reactivate units whose ownership is uncertain, and any restoration error blocks reactivation. Retained candidates or rollback files require administrator inspection before retrying. A lost helper response reports that queued or ongoing work may still complete.
 
-Linux `pv ports:uninstall` waits for the helper to verify removal even when initial inspection finds no installed unit files. It deletes prepared copies only after that acknowledgment. Removing the proxies preserves the Gateway's stored backend ports because the Gateway remains desired and may still be running.
+Linux `pv ports:uninstall` skips the helper when all four installed files and native systemd units are absent. Otherwise it waits for the helper to verify removal. It deletes prepared copies after verified absence or removal. Removing the proxies preserves the Gateway's stored backend ports because the Gateway remains desired and may still be running.
 
 Linux `pv ports:install` checks all four installed unit files before preparation. A busy public port permits a repair attempt only when the fixed PV socket and service files and their loaded fragments and overrides establish ownership, and the socket is active. This does not prove which kernel listener holds the port; the helper revalidates ownership and bind availability. Foreground repair reapplies the units rather than skipping based on files or cached loaded properties. PV retains newly selected backend assignments after an uncertain or partial helper apply, so queued work cannot later route to a released port. Known pre-mutation failures release only new assignments. Existing Gateway ports remain unchanged. If reservation cleanup also fails, the CLI reports both causes. Successful Gateway identity probes record healthy readiness; otherwise only low-port-derived degradation becomes pending and reconciliation is requested.
 
@@ -203,6 +203,8 @@ macOS updates or restarts may unload active rules while leaving PV-owned prepare
 A friendly browser page for unknown Project hostnames is useful, but is post-v1 polish rather than required v1 scope.
 
 ## Setup
+
+Linux host prerequisites run before helper inspection. The resolved check observes the loaded active service without activating it, requires `/etc/resolv.conf` to select only `127.0.0.53`, and validates a fresh A query for a nonce name under `.localhost` through that endpoint. It uses UDP unless `options use-vc` selects TCP, with one total exchange deadline. After reconciliation, Linux setup must also validate a fresh `.test` A query before reporting success. These checks establish working DNS responses at observation time; they do not authenticate the answering process or prove the request traversed `pv0`.
 
 `pv setup` performs PV's required macOS bootstrap steps:
 
@@ -1691,6 +1693,8 @@ The serving gate is unchanged. A worktree's route appears once its first reconci
 
 `pv open [hostname]` opens a served Project hostname in the user's browser from desired state. It does not require observed state to confirm that the Project is currently reachable.
 
+Foreground CLI commands use the `webbrowser` crate for browser handoff on macOS and Linux. Errors returned by the handoff propagate to the command's error output.
+
 With a hostname argument, `pv open <hostname>` opens that Project directly. With no argument, it opens the current Project or falls back to the picker.
 
 PV opens the Project's primary hostname.
@@ -1798,6 +1802,8 @@ If `pv logs --resource <name>` is used without `--track`, PV infers the track on
 `pv logs --resource` accepts the same aliases as resource command namespaces, such as `pg`, `mail`, and `s3`, and normalizes them internally to canonical names: `postgres`, `mailpit`, and `rustfs`.
 
 `pv doctor` is a deeper read-only diagnostic than `pv status`. It checks expected files, permissions, ports, resolver behavior, `pf` rules, LaunchAgent registration, manifest cache, and common conflicts, then suggests repair commands. Failed checks should prefer one focused repair command where a command exists, such as `pv daemon:enable`, `pv daemon:restart`, `pv dns:install`, `pv ports:install`, or `pv ca:trust`; otherwise PV may suggest `pv setup` as the broad repair.
+
+On Linux, `pv doctor` and `pv status` report `Linux distribution: <PRETTY_NAME> (untested)` from `/etc/os-release` as information outside health checks. Their JSON reports include the same name and support label. Missing, unreadable or malformed names fall back to `Linux` without changing health counts, overall status or exit status. Distribution and architecture support remains gated by artifact and system acceptance.
 
 `pv jobs` is a read-only diagnostic command that lists recent daemon jobs, including setup, install, update, restart, and reconciliation jobs. It shows status, scope, start/end time, and failure summary. Live progress remains attached to the command that started the job.
 
