@@ -95,7 +95,7 @@ mod tests {
     }
 
     #[test]
-    fn capability_check_accepts_macos_and_rejects_windows() {
+    fn capability_check_supports_only_implemented_host_boundaries() {
         assert!(
             require_capability_for(PlatformTarget::Macos, PlatformCapability::TrustStore,).is_ok()
         );
@@ -106,6 +106,20 @@ mod tests {
             Err(PlatformError::Unsupported {
                 capability: PlatformCapability::TrustStore,
                 target: PlatformTarget::Windows,
+            })
+        ));
+        assert!(
+            require_capability_for(PlatformTarget::Linux, PlatformCapability::ProcessInspection)
+                .is_ok()
+        );
+        assert!(matches!(
+            require_capability_for(
+                PlatformTarget::Linux,
+                PlatformCapability::ProcessContainment
+            ),
+            Err(PlatformError::Unsupported {
+                capability: PlatformCapability::ProcessContainment,
+                target: PlatformTarget::Linux
             })
         ));
     }

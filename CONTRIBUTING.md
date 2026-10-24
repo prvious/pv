@@ -181,7 +181,8 @@ Do not add broad Clippy ignores for convenience.
 ## Linux development
 
 Linux system integration is being implemented in ordered slices. The Linux CI
-lanes currently run the portable suites and explicit unsupported boundaries;
+lanes currently run the portable suites, native process inspection, and explicit
+unsupported boundaries;
 the full workspace suite will be enabled with Linux monitors and daemon IPC.
 Linux Clippy already covers every target and feature. macOS behavior remains
 covered by the existing native matrix.

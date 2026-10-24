@@ -14,7 +14,10 @@ use std::os::unix::process::CommandExt;
 mod implementation;
 
 pub use implementation::ProcessExitWatch;
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+#[path = "process/linux.rs"]
+mod implementation;
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 #[path = "process/unsupported.rs"]
 mod implementation;
 
@@ -26,19 +29,25 @@ type StdCommand = std::process::Command;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProcessIdentity {
+    /// On Linux, the unmodified UTF-8 procfs executable-link spelling. A trailing
+    /// ` (deleted)` can be literal or kernel-added; the value need not resolve to
+    /// the running image or prove the pathname used at execution.
     pub executable: Utf8PathBuf,
     pub argument_zero: String,
     pub arguments: Vec<String>,
     pub start_identity: ProcessStartIdentity,
 }
 
+/// A process birth token, meaningful only together with its [`BootSessionId`].
+/// Linux measures it since boot; it is not a portable wall-clock timestamp.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ProcessStartIdentity {
     pub seconds: u64,
     pub microseconds: u64,
 }
 
-/// What a watched process did since [`ProcessExitWatch::try_events`] last collected its events.
+/// Events observed by [`ProcessExitWatch::try_events`]. Linux observes exits only;
+/// exec confirmation belongs to the monitor's gate protocol.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ProcessEvents {
     /// The process replaced its program with `exec`. Its pid and birth identity are unchanged.
@@ -95,14 +104,14 @@ pub fn inspect_process_start_identity(
     implementation::inspect_process_start_identity(pid)
 }
 
-/// Whether `pid` has exited and is waiting for its parent to reap it. `false` for a running
-/// process, one still exiting, or none at all.
+/// Whether the whole process exited and is waiting to be reaped, or is in Linux's dead state.
+/// Returns `false` for a live or absent process.
 pub fn process_is_zombie(pid: u32) -> Result<bool, crate::PlatformError> {
     implementation::process_is_zombie(pid)
 }
 
 /// Whether a process group contains a member that can still run. Inspection failures are
-/// errors, not evidence that the group has stopped. Zombies cannot run or retain listeners.
+/// errors, not evidence that the group has stopped. A zombie leader can still have live threads.
 pub fn process_group_has_live_members(process_group: u32) -> Result<bool, crate::PlatformError> {
     implementation::process_group_has_live_members(process_group)
 }
