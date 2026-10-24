@@ -43,14 +43,13 @@ listenfd = "1.0.2"
 procfs = { version = "0.18.0", default-features = false }
 rtnetlink = "0.23.0"
 rustix = { workspace = true, features = ["net", "thread"] }
-tokio = { workspace = true }
 zbus = "5.19.0"
 
 [dev-dependencies]
 anyhow = { workspace = true }
 camino-tempfile = { workspace = true }
 insta = { workspace = true }
+pv-fake = { path = "../pv-fake" }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 portable-pty = { workspace = true }
-pv-fake = { path = "../pv-fake" }

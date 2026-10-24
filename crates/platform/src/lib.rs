@@ -1,6 +1,7 @@
 mod browser;
 mod ca;
 mod capability;
+#[cfg(any(target_os = "macos", target_os = "linux", all(test, unix)))]
 mod command;
 mod daemon_registration;
 
@@ -59,6 +60,11 @@ pub use pf::{
     SYSTEM_PF_ANCHOR_PATH, SYSTEM_PF_CONF_PATH, active_pf_redirect_config,
     inspect_active_pf_redirects_unprivileged, inspect_pf_anchor_file, inspect_pf_conf_reference,
     install_pf_redirects, remove_pf_redirects,
+};
+#[cfg(target_os = "linux")]
+pub use pf::{
+    SYSTEM_SOCKET_PROXY_DIRECTORY, inspect_socket_proxy_unit, render_socket_proxy_units,
+    repairable_socket_proxy_ports, socket_proxy_files_current, socket_proxy_unit_names,
 };
 pub use port::loopback_tcp_port_available;
 pub use process::{
@@ -161,6 +167,10 @@ mod tests {
                 PlatformCapability::ResolverIntegration
             )
             .is_ok()
+        );
+        assert!(
+            require_capability_for(PlatformTarget::Linux, PlatformCapability::LowPortFrontend)
+                .is_ok()
         );
     }
 }
