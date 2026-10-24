@@ -1,0 +1,522 @@
+use std::io::{self, Write as _};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, ensure};
+use camino::Utf8Path;
+use daemon::RunningDaemon;
+use platform::{
+    PlatformError, PrivilegedHelperClient, ResolverConfig, ResolverFileState,
+    SYSTEM_RESOLVER_TEST_PATH,
+};
+use serde_json::Value;
+use state::{Database, PortOwner, PvPaths, fs};
+use tokio::runtime::{Builder, Runtime};
+
+use super::{
+    HelperFixture, checked, checksum, require_units_absent, root, root_text, service_property,
+    text, with_helper_fixture,
+};
+
+const CONTROL: &str = "/run/pv-dns-system-test";
+const CLEANUP_UNIT: &str = "pv-dns-system-cleanup";
+const FOREIGN_LINK: &str = "pv-dns-foreign";
+const DNS_PATHS: [&str; 5] = [
+    SYSTEM_RESOLVER_TEST_PATH,
+    "/etc/systemd/system/pv-dns.service.candidate",
+    "/etc/systemd/system/pv-dns.service.d",
+    "/etc/systemd/system/systemd-resolved.service.wants/pv-dns.service",
+    "/run/systemd/system/systemd-resolved.service.wants/pv-dns.service",
+];
+
+// Both callers own only paths and link names proven absent before the timer is armed.
+// The timer first stops the test cgroup; both paths stop the helper so queued work
+// cannot recreate DNS state while administrative fixture cleanup is in progress.
+const CLEANUP_SCRIPT: &str = r#"set -eu
+stop_units() {
+    /usr/bin/systemctl --no-block stop "$@" || :
+    /usr/bin/systemctl kill --kill-who=all --signal=KILL "$@" || :
+    stopped=false
+    for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        remaining=$(/usr/bin/systemctl list-units --all --no-legend --no-pager --plain \
+            --state=active,activating,deactivating,reloading "$@") || return 1
+        if [ -z "$remaining" ]; then stopped=true; break; fi
+        sleep 0.5
+    done
+    [ "$stopped" = true ]
+}
+if [ "${1-}" = orphan ]; then
+    stop_units pv-helper-system-test.service
+fi
+stop_units pv-helper.socket pv-helper.service
+stop_units pv-dns.service
+failed=$(/usr/bin/systemctl list-units --all --no-legend --no-pager --plain \
+    --state=failed pv-dns.service)
+if [ -n "$failed" ]; then
+    /usr/bin/systemctl reset-failed pv-dns.service
+fi
+for link in pv0 pv-dns-foreign; do
+    if /usr/sbin/ip link show dev "$link" >/dev/null 2>&1; then
+        /usr/sbin/ip link delete dev "$link"
+    fi
+done
+rm -f -- /etc/systemd/system/pv-dns.service /etc/systemd/system/pv-dns.service.candidate \
+    /etc/systemd/system/systemd-resolved.service.wants/pv-dns.service \
+    /run/systemd/system/systemd-resolved.service.wants/pv-dns.service
+rm -rf -- /etc/systemd/system/pv-dns.service.d
+/usr/bin/systemctl daemon-reload
+/usr/bin/systemctl reset-failed systemd-resolved.service
+/usr/bin/systemctl restart systemd-resolved.service
+# Retain the root-owned control directory and timer journal for failure diagnostics.
+"#;
+
+#[test]
+#[ignore = "requires PV_LINUX_SYSTEM_TESTS=1, the built helper and a disposable bounded systemd service with resolved and dummy links"]
+fn systemd_dns_routes_test_reapplies_after_restart_changes_port_and_refuses_conflicts() -> Result<()>
+{
+    with_helper_fixture(with_dns_fixture)
+}
+
+fn with_dns_fixture(helper_fixture: &mut HelperFixture, helper: &Utf8Path) -> Result<()> {
+    preflight()?;
+    let paths = PvPaths::for_home(helper_fixture.scratch.path().join("dns-home"));
+    let mut fixture = DnsFixture {
+        paths,
+        runtime: Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()?,
+        daemon: None,
+        control_created: false,
+        timer_attempted: false,
+        cleaned: false,
+    };
+    let result = fixture.exercise(helper_fixture, helper).map_err(|error| {
+        let journal = root_text(&[
+            "/usr/bin/timeout",
+            "5s",
+            "/usr/bin/journalctl",
+            "--no-pager",
+            "--lines=40",
+            "--unit=pv-dns.service",
+            "--unit=systemd-resolved.service",
+        ]);
+        let address = root_text(&[
+            "/usr/bin/timeout",
+            "5s",
+            "/usr/sbin/ip",
+            "-j",
+            "address",
+            "show",
+            "dev",
+            "pv0",
+        ]);
+        let resolved = link("pv0").ok().flatten().and_then(|link| {
+            let index = link["ifindex"].as_u64()?;
+            Some(root_text(&[
+                "/usr/bin/timeout",
+                "5s",
+                "/usr/bin/busctl",
+                "introspect",
+                "org.freedesktop.resolve1",
+                &format!("/org/freedesktop/resolve1/link/_{index}"),
+                "org.freedesktop.resolve1.Link",
+            ]))
+        });
+        let network = root_text(&[
+            "/usr/bin/timeout",
+            "5s",
+            "/usr/bin/networkctl",
+            "--no-pager",
+            "status",
+            "pv0",
+        ]);
+        error.context(format!(
+            "DNS state before fixture cleanup: addresses={address:?}; resolved={resolved:?}; network={network:?}; journal={journal:?}"
+        ))
+    });
+    let cleanup = fixture.cleanup();
+    match (result, cleanup) {
+        (Err(error), Err(cleanup)) => {
+            Err(error.context(format!("cleanup also failed: {cleanup:#}")))
+        }
+        (Err(error), _) | (_, Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
+fn preflight() -> Result<()> {
+    for path in DNS_PATHS.into_iter().chain([CONTROL]) {
+        ensure!(
+            !fs::path_entry_exists(Utf8Path::new(path))?,
+            "refusing existing DNS path {path}"
+        );
+    }
+    let links = links()?;
+    ensure!(
+        !links
+            .iter()
+            .any(|link| matches!(link["ifname"].as_str(), Some("pv0" | FOREIGN_LINK))),
+        "refusing existing fixture link"
+    );
+    assert_eq!(
+        service_property("systemd-resolved.service", "ActiveState")?,
+        "active"
+    );
+    ensure!(
+        matches!(
+            platform::inspect_resolver_file(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH), None),
+            ResolverFileState::Missing { .. }
+        ),
+        "DNS routing must initially be missing without conflicts"
+    );
+    let nameservers: Vec<_> = fs::read_to_string(Utf8Path::new("/etc/resolv.conf"))?
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.split_whitespace();
+            (words.next() == Some("nameserver"))
+                .then(|| words.next().map(str::to_owned))
+                .flatten()
+        })
+        .collect();
+    ensure!(
+        nameservers == ["127.0.0.53"],
+        "the disposable machine must use only resolved's stub nameserver"
+    );
+    let os_release = fs::read_to_string(Utf8Path::new("/etc/os-release"))?;
+    if os_release
+        .lines()
+        .any(|line| matches!(line, "ID=fedora" | "ID=\"fedora\""))
+    {
+        ensure!(
+            service_property("NetworkManager.service", "ActiveState")? == "active",
+            "start NetworkManager before running the Fedora DNS test"
+        );
+    }
+    require_units_absent(&[
+        "pv-dns.service",
+        "pv-dns-system-cleanup.timer",
+        "pv-dns-system-cleanup.service",
+    ])?;
+    Ok(())
+}
+
+struct DnsFixture {
+    paths: PvPaths,
+    runtime: Runtime,
+    daemon: Option<RunningDaemon>,
+    control_created: bool,
+    timer_attempted: bool,
+    cleaned: bool,
+}
+
+impl DnsFixture {
+    fn exercise(&mut self, helper_fixture: &mut HelperFixture, helper: &Utf8Path) -> Result<()> {
+        self.arm_cleanup(helper_fixture)?;
+        helper_fixture.arm_cleanup()?;
+        helper_fixture.install(helper, &checksum(helper)?)?;
+        helper_fixture.capture_process()?;
+        let first_port = pv_fake::seed_dns_port(&self.paths)?;
+        let suffix = helper_fixture
+            .scratch
+            .path()
+            .file_name()
+            .context("fixture directory name missing")?
+            .trim_start_matches('.');
+        self.start_daemon()?;
+        PrivilegedHelperClient.apply_dns(&ResolverConfig::new(first_port))?;
+        require_current(first_port)?;
+        require_lookup(&format!("initial.{suffix}.pv-dns-system.test"))?;
+        assert_eq!(
+            fs::read_link(Utf8Path::new(DNS_PATHS[3]))?,
+            Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH)
+        );
+        assert_eq!(
+            root_text(&["/usr/bin/stat", "-c", "%u:%g:%a", SYSTEM_RESOLVER_TEST_PATH])?.trim(),
+            "0:0:644"
+        );
+        root(&["/usr/bin/systemctl", "restart", "systemd-resolved.service"])?;
+        wait_until_current(first_port)?;
+        require_lookup(&format!("restarted.{suffix}.pv-dns-system.test"))?;
+
+        self.stop_daemon()?;
+        Database::open(&self.paths)?.release_port(PortOwner::Dns)?;
+        let second_port = pv_fake::seed_dns_port(&self.paths)?;
+        assert_ne!(second_port, first_port);
+        self.start_daemon()?;
+        PrivilegedHelperClient.apply_dns(&ResolverConfig::new(second_port))?;
+        require_current(second_port)?;
+        require_lookup(&format!("changed.{suffix}.pv-dns-system.test"))?;
+        PrivilegedHelperClient.remove_dns()?;
+        PrivilegedHelperClient.remove_dns()?;
+        require_missing()?;
+
+        let foreign_unit =
+            "[Service]\nType=oneshot\nExecStart=/usr/bin/true\nRemainAfterExit=yes\n";
+        helper_fixture.root_file(
+            "foreign-dns.service",
+            foreign_unit,
+            SYSTEM_RESOLVER_TEST_PATH,
+            "0644",
+        )?;
+        require_conflict(second_port)?;
+        assert_eq!(
+            fs::read_to_string(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH))?,
+            foreign_unit
+        );
+        root(&["/usr/bin/rm", "--", SYSTEM_RESOLVER_TEST_PATH])?;
+        root(&["/usr/bin/systemctl", "daemon-reload"])?;
+
+        root(&[
+            "/usr/sbin/ip",
+            "link",
+            "add",
+            "name",
+            "pv0",
+            "type",
+            "dummy",
+        ])?;
+        let before = link("pv0")?.context("foreign pv0 missing")?;
+        require_conflict(second_port)?;
+        let after = link("pv0")?.context("foreign pv0 was removed")?;
+        assert_eq!(after["ifindex"], before["ifindex"]);
+        assert_eq!(after["ifalias"], before["ifalias"]);
+        root(&["/usr/sbin/ip", "link", "delete", "dev", "pv0"])?;
+
+        root(&[
+            "/usr/sbin/ip",
+            "link",
+            "add",
+            "name",
+            FOREIGN_LINK,
+            "type",
+            "dummy",
+        ])?;
+        root(&["/usr/sbin/ip", "link", "set", "dev", FOREIGN_LINK, "up"])?;
+        wait_for_resolved_link(FOREIGN_LINK)?;
+        let config = ResolverConfig::new(second_port);
+        PrivilegedHelperClient.apply_dns(&config)?;
+        root(&["/usr/bin/resolvectl", "domain", FOREIGN_LINK, "~test"])?;
+        let domains = text(checked("/usr/bin/resolvectl", &["domain", FOREIGN_LINK])?)?;
+        assert!(matches!(
+            platform::inspect_resolver_file(
+                Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH),
+                Some(&config)
+            ),
+            ResolverFileState::Conflict { .. }
+        ));
+        assert!(matches!(
+            PrivilegedHelperClient.apply_dns(&config),
+            Err(PlatformError::SystemIntegration(_))
+        ));
+        PrivilegedHelperClient.remove_dns()?;
+        require_owned_resources_removed()?;
+        assert_eq!(
+            text(checked("/usr/bin/resolvectl", &["domain", FOREIGN_LINK])?)?,
+            domains
+        );
+        root(&["/usr/bin/resolvectl", "revert", FOREIGN_LINK])?;
+        root(&["/usr/sbin/ip", "link", "delete", "dev", FOREIGN_LINK])?;
+        require_missing()?;
+        Ok(())
+    }
+
+    fn arm_cleanup(&mut self, helper_fixture: &HelperFixture) -> Result<()> {
+        root(&["/usr/bin/install", "-d", "-m", "0700", CONTROL])?;
+        self.control_created = true;
+        helper_fixture.root_file(
+            "dns-cleanup.sh",
+            CLEANUP_SCRIPT,
+            &format!("{CONTROL}/cleanup.sh"),
+            "0700",
+        )?;
+        self.timer_attempted = true;
+        root(&[
+            "/usr/bin/systemd-run",
+            "--collect",
+            "--on-active=140s",
+            "--unit",
+            CLEANUP_UNIT,
+            "--property=RuntimeMaxSec=30s",
+            "/bin/sh",
+            &format!("{CONTROL}/cleanup.sh"),
+            "orphan",
+        ])?;
+        Ok(())
+    }
+
+    fn start_daemon(&mut self) -> Result<()> {
+        self.daemon = Some(self.runtime.block_on(
+            RunningDaemon::start_without_managed_resource_adapters(self.paths.clone()),
+        )?);
+        Ok(())
+    }
+
+    fn stop_daemon(&mut self) -> Result<()> {
+        if let Some(daemon) = self.daemon.take() {
+            self.runtime.block_on(async {
+                tokio::time::timeout(Duration::from_secs(3), daemon.shutdown()).await
+            })??;
+        }
+        Ok(())
+    }
+
+    fn cleanup(&mut self) -> Result<()> {
+        let daemon = self.stop_daemon();
+        let system = self.cleanup_system();
+        match (daemon, system) {
+            (Err(error), Err(cleanup)) => {
+                Err(error.context(format!("system cleanup also failed: {cleanup:#}")))
+            }
+            (Err(error), _) | (_, Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        }
+    }
+
+    fn cleanup_system(&mut self) -> Result<()> {
+        if self.cleaned || !self.control_created {
+            return Ok(());
+        }
+        if self.timer_attempted {
+            root(&["/bin/sh", &format!("{CONTROL}/cleanup.sh")])?;
+            require_missing()?;
+            ensure!(
+                !links()?.iter().any(|link| link["ifname"] == FOREIGN_LINK),
+                "foreign fixture link remains"
+            );
+            for path in DNS_PATHS {
+                ensure!(
+                    !fs::path_entry_exists(Utf8Path::new(path))?,
+                    "DNS fixture path remains: {path}"
+                );
+            }
+            root(&[
+                "/usr/bin/systemctl",
+                "stop",
+                &format!("{CLEANUP_UNIT}.timer"),
+            ])?;
+        }
+        root(&["/usr/bin/rm", "-rf", "--", CONTROL])?;
+        self.cleaned = true;
+        Ok(())
+    }
+}
+
+impl Drop for DnsFixture {
+    fn drop(&mut self) {
+        if let Err(error) = self.cleanup() {
+            let _reported = writeln!(
+                io::stderr().lock(),
+                "DNS system fixture cleanup failed: {error:#}"
+            );
+        }
+    }
+}
+
+fn require_current(port: u16) -> Result<()> {
+    let expected = ResolverConfig::new(port);
+    let state =
+        platform::inspect_resolver_file(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH), Some(&expected));
+    ensure!(
+        matches!(state, ResolverFileState::Current { port: observed, .. } if observed == port),
+        "{state:?}"
+    );
+    assert_eq!(PrivilegedHelperClient.inspect_dns(Some(&expected))?, state);
+    Ok(())
+}
+
+fn require_owned_resources_removed() -> Result<()> {
+    for path in DNS_PATHS {
+        ensure!(
+            !fs::path_entry_exists(Utf8Path::new(path))?,
+            "PV DNS path remains: {path}"
+        );
+    }
+    assert!(link("pv0")?.is_none());
+    require_units_absent(&["pv-dns.service"])
+}
+
+fn wait_until_current(port: u16) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match require_current(port) {
+            Ok(()) => return Ok(()),
+            Err(error) if Instant::now() >= deadline => return Err(error),
+            Err(_) => thread::sleep(Duration::from_millis(25)),
+        }
+    }
+}
+
+fn require_missing() -> Result<()> {
+    let state = platform::inspect_resolver_file(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH), None);
+    ensure!(
+        matches!(state, ResolverFileState::Missing { .. }),
+        "{state:?}"
+    );
+    for path in DNS_PATHS {
+        ensure!(
+            !fs::path_entry_exists(Utf8Path::new(path))?,
+            "DNS integration path remains after removal: {path}"
+        );
+    }
+    Ok(())
+}
+
+fn require_conflict(port: u16) -> Result<()> {
+    let config = ResolverConfig::new(port);
+    let state =
+        platform::inspect_resolver_file(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH), Some(&config));
+    ensure!(
+        matches!(state, ResolverFileState::Conflict { .. }),
+        "{state:?}"
+    );
+    for result in [
+        PrivilegedHelperClient.apply_dns(&config),
+        PrivilegedHelperClient.remove_dns(),
+    ] {
+        ensure!(
+            matches!(result, Err(PlatformError::SystemIntegration(_))),
+            "mutation did not reject the native conflict: {result:?}"
+        );
+    }
+    Ok(())
+}
+
+fn require_lookup(hostname: &str) -> Result<()> {
+    let expected = "127.0.0.1";
+    let output = checked(
+        "/usr/bin/timeout",
+        &[
+            "5s",
+            "/usr/bin/python3",
+            "-c",
+            "import socket,sys; print(','.join(sorted({result[4][0] for result in socket.getaddrinfo(sys.argv[1], None, socket.AF_INET)})))",
+            hostname,
+        ],
+    )?;
+    assert_eq!(text(output)?.trim(), expected);
+    Ok(())
+}
+
+fn links() -> Result<Vec<Value>> {
+    Ok(serde_json::from_slice(
+        &checked("/usr/sbin/ip", &["-json", "link", "show"])?.stdout,
+    )?)
+}
+
+fn link(name: &str) -> Result<Option<Value>> {
+    Ok(links()?.into_iter().find(|link| link["ifname"] == name))
+}
+
+fn wait_for_resolved_link(link: &str) -> Result<()> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match checked("/usr/bin/resolvectl", &["status", link]) {
+            Ok(_) => return Ok(()),
+            Err(error) if Instant::now() >= deadline => {
+                return Err(error.context("resolved did not observe the fixture link"));
+            }
+            Err(_) => thread::sleep(Duration::from_millis(25)),
+        }
+    }
+}

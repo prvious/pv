@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/linux_dns.rs
+expression: output
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "Prepared DNS resolver config already absent: <tempdir>/conflict-rejected/.pv/config/resolver/test\n",
+    stderr: "error: PV privileged helper rejected the request: fixture refused unsafe DNS removal\n",
+}

@@ -1,0 +1,24 @@
+---
+source: crates/cli/tests/linux_dns.rs
+expression: "(install, uninstall)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nSystem DNS routing conflicts with existing configuration: /etc/systemd/system/pv-dns.service\n  Leaving it in place.\n  Ask an administrator to inspect pv-dns.service and its overrides, pv0 ownership, and competing test search or routing domains, including subdomains. Repair conflicts before retrying `pv dns:install`; `pv dns:uninstall` removes only PV-owned configuration. For a retained unit cache, run `sudo systemctl daemon-reload` before retrying.\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "Deleted prepared DNS resolver config: <tempdir>/home/.pv/config/resolver/test\n",
+        stderr: "error: PV privileged helper rejected the request: fixture refused foreign DNS ownership\n",
+    },
+)

@@ -532,8 +532,15 @@ mod tests {
                     }
                 )
         ));
+        let address = if cfg!(target_os = "linux") {
+            "127.0.0.2"
+        } else {
+            "127.0.0.1"
+        };
         assert!(
-            message.starts_with("DNS resolver failed to bind UDP on 127.0.0.1:5353"),
+            message.starts_with(&format!(
+                "DNS resolver failed to bind UDP on {address}:5353"
+            )),
             "{message}"
         );
         assert!(message.contains("socket cleanup failed"), "{message}");

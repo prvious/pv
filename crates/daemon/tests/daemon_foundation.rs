@@ -3884,9 +3884,17 @@ async fn dns_resolver_answers_udp_a_and_nodata_for_aaaa() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
-    let port = dns_port(&paths)?;
+    let responses = async {
+        let port = dns_port(&paths)?;
+        let a_response = udp_dns_query(port, &dns_query("acme.test.", RecordType::A)?).await?;
+        let aaaa_response =
+            udp_dns_query(port, &dns_query("acme.test.", RecordType::AAAA)?).await?;
+        Ok((a_response, aaaa_response))
+    }
+    .await;
+    let cleanup = daemon.shutdown().await.map_err(Into::into);
+    let (a_response, aaaa_response) = propagate_after_cleanup(responses, cleanup)?;
 
-    let a_response = udp_dns_query(port, &dns_query("acme.test.", RecordType::A)?).await?;
     assert_common_dns_response(&a_response, "acme.test.", RecordType::A)?;
     assert_loopback_answer(
         &a_response,
@@ -3895,11 +3903,8 @@ async fn dns_resolver_answers_udp_a_and_nodata_for_aaaa() -> Result<()> {
         RData::A(A::new(127, 0, 0, 1)),
     )?;
 
-    let aaaa_response = udp_dns_query(port, &dns_query("acme.test.", RecordType::AAAA)?).await?;
     assert_common_dns_response(&aaaa_response, "acme.test.", RecordType::AAAA)?;
     assert_nodata_soa(&aaaa_response)?;
-
-    daemon.shutdown().await?;
 
     Ok(())
 }
@@ -3910,22 +3915,27 @@ async fn dns_resolver_returns_nodata_and_survives_malformed_udp() -> Result<()> 
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
-    let port = dns_port(&paths)?;
-    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    socket
-        .send_to(b"not-a-dns-query", dns_address(port))
-        .await?;
+    let responses = async {
+        let port = dns_port(&paths)?;
+        let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+        socket
+            .send_to(b"not-a-dns-query", dns_address(port))
+            .await?;
+        let mx_response = udp_dns_query(port, &dns_query("acme.test.", RecordType::MX)?).await?;
+        let external_response =
+            udp_dns_query(port, &dns_query("example.com.", RecordType::A)?).await?;
+        Ok((mx_response, external_response))
+    }
+    .await;
+    let cleanup = daemon.shutdown().await.map_err(Into::into);
+    let (mx_response, external_response) = propagate_after_cleanup(responses, cleanup)?;
 
-    let mx_response = udp_dns_query(port, &dns_query("acme.test.", RecordType::MX)?).await?;
     assert_common_dns_response(&mx_response, "acme.test.", RecordType::MX)?;
     assert_nodata_soa(&mx_response)?;
 
-    let external_response = udp_dns_query(port, &dns_query("example.com.", RecordType::A)?).await?;
     assert_common_dns_response(&external_response, "example.com.", RecordType::A)?;
     assert!(external_response.answers.is_empty());
     assert!(external_response.authorities.is_empty());
-
-    daemon.shutdown().await?;
 
     Ok(())
 }
@@ -3936,9 +3946,18 @@ async fn dns_resolver_answers_tcp_queries() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
-    let port = dns_port(&paths)?;
+    let responses = async {
+        let port = dns_port(&paths)?;
+        let response = tcp_dns_query(port, &dns_query("acme.test.", RecordType::A)?).await?;
+        let aaaa_response =
+            tcp_dns_query(port, &dns_query("acme.test.", RecordType::AAAA)?).await?;
+        let soa_response = tcp_dns_query(port, &dns_query("test.", RecordType::SOA)?).await?;
+        Ok((response, aaaa_response, soa_response))
+    }
+    .await;
+    let cleanup = daemon.shutdown().await.map_err(Into::into);
+    let (response, aaaa_response, soa_response) = propagate_after_cleanup(responses, cleanup)?;
 
-    let response = tcp_dns_query(port, &dns_query("acme.test.", RecordType::A)?).await?;
     assert_common_dns_response(&response, "acme.test.", RecordType::A)?;
     assert_loopback_answer(
         &response,
@@ -3947,15 +3966,11 @@ async fn dns_resolver_answers_tcp_queries() -> Result<()> {
         RData::A(A::new(127, 0, 0, 1)),
     )?;
 
-    let aaaa_response = tcp_dns_query(port, &dns_query("acme.test.", RecordType::AAAA)?).await?;
     assert_common_dns_response(&aaaa_response, "acme.test.", RecordType::AAAA)?;
     assert_nodata_soa(&aaaa_response)?;
-    let soa_response = tcp_dns_query(port, &dns_query("test.", RecordType::SOA)?).await?;
     assert_common_dns_response(&soa_response, "test.", RecordType::SOA)?;
     assert_eq!(soa_response.answers, aaaa_response.authorities);
     assert!(soa_response.authorities.is_empty());
-
-    daemon.shutdown().await?;
 
     Ok(())
 }
@@ -3983,38 +3998,73 @@ async fn dns_resolver_falls_back_when_preferred_port_is_unavailable() -> Result<
 
 #[tokio::test]
 async fn dns_resolver_start_does_not_reassign_persisted_port_on_bind_conflict() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let (bound_dns_port, _tcp_listener, _udp_socket) = bind_loopback_tcp_udp_pair()?;
-    let mut database = Database::open(&paths)?;
-    database.assign_port(
-        PortRequest::dns(bound_dns_port, bound_dns_port, bound_dns_port),
-        |candidate| candidate == bound_dns_port,
-    )?;
-    drop(database);
+    for protocol in ["UDP", "TCP"] {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let bound_dns_port = pv_fake::port()?;
+        let _udp_socket = if protocol == "UDP" {
+            Some(StdUdpSocket::bind(dns_address(bound_dns_port))?)
+        } else {
+            None
+        };
+        let _tcp_listener = if protocol == "TCP" {
+            Some(StdTcpListener::bind(dns_address(bound_dns_port))?)
+        } else {
+            None
+        };
+        let mut database = Database::open(&paths)?;
+        database.assign_port(
+            PortRequest::dns(bound_dns_port, bound_dns_port, bound_dns_port),
+            |candidate| candidate == bound_dns_port,
+        )?;
+        drop(database);
 
-    let result = daemon::RunningDaemon::start(paths.clone()).await;
-    if let Ok(daemon) = result {
-        daemon.shutdown().await?;
-        return Err(anyhow!(
-            "daemon started after persisted DNS port bind conflict"
+        let result = daemon::RunningDaemon::start(paths.clone()).await;
+        if let Ok(daemon) = result {
+            daemon.shutdown().await?;
+            return Err(anyhow!(
+                "daemon started after persisted DNS port bind conflict"
+            ));
+        }
+        let error = result
+            .err()
+            .ok_or_else(|| anyhow!("missing daemon error"))?;
+        let persisted_port = dns_port(&paths)?;
+
+        assert!(matches!(
+            error,
+            daemon::DaemonError::DnsBind {
+                port,
+                protocol: bound_protocol,
+                source,
+            } if port == bound_dns_port && bound_protocol == protocol && source.kind() == ErrorKind::AddrInUse
         ));
+        assert_eq!(persisted_port, bound_dns_port);
+        assert!(!state::fs::path_entry_exists(&paths.daemon_socket())?);
     }
-    let error = result
-        .err()
-        .ok_or_else(|| anyhow!("missing daemon error"))?;
-    let persisted_port = dns_port(&paths)?;
 
-    assert!(matches!(
-        error,
-        daemon::DaemonError::DnsBind {
-            port,
-            ..
-        } if port == bound_dns_port
-    ));
-    assert_eq!(persisted_port, bound_dns_port);
-    assert!(!state::fs::path_entry_exists(&paths.daemon_socket())?);
+    Ok(())
+}
 
+#[test]
+fn dns_port_availability_checks_separate_transports_and_wildcard_listeners() -> Result<()> {
+    let port = pv_fake::port()?;
+    assert!(daemon::dns_port_available(port));
+
+    let udp_socket = StdUdpSocket::bind(dns_address(port))?;
+    assert!(!daemon::dns_port_available(port));
+    drop(udp_socket);
+
+    let tcp_listener = StdTcpListener::bind(dns_address(port))?;
+    assert!(!daemon::dns_port_available(port));
+    drop(tcp_listener);
+
+    let udp_socket = StdUdpSocket::bind((Ipv4Addr::UNSPECIFIED, port))?;
+    assert!(!daemon::dns_port_available(port));
+    drop(udp_socket);
+
+    let _tcp_listener = StdTcpListener::bind((Ipv4Addr::UNSPECIFIED, port))?;
+    assert!(!daemon::dns_port_available(port));
     Ok(())
 }
 
@@ -4404,7 +4454,12 @@ async fn tcp_dns_query(port: u16, query: &[u8]) -> Result<Message> {
 }
 
 fn dns_address(port: u16) -> SocketAddr {
-    SocketAddr::from((Ipv4Addr::LOCALHOST, port))
+    let address = if cfg!(target_os = "linux") {
+        Ipv4Addr::new(127, 0, 0, 2)
+    } else {
+        Ipv4Addr::LOCALHOST
+    };
+    SocketAddr::from((address, port))
 }
 
 async fn bind_preferred_dns_port_pair() -> Result<Option<(StdTcpListener, StdUdpSocket)>> {
@@ -4428,20 +4483,10 @@ async fn bind_preferred_dns_port_pair() -> Result<Option<(StdTcpListener, StdUdp
 }
 
 fn bind_loopback_tcp_udp_at(port: u16) -> io::Result<(StdTcpListener, StdUdpSocket)> {
-    let tcp_listener = StdTcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
-    let udp_socket = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, port))?;
+    let tcp_listener = StdTcpListener::bind(dns_address(port))?;
+    let udp_socket = StdUdpSocket::bind(dns_address(port))?;
 
     Ok((tcp_listener, udp_socket))
-}
-
-fn bind_loopback_tcp_udp_pair() -> Result<(u16, StdTcpListener, StdUdpSocket)> {
-    let port = pv_fake::port()?;
-
-    Ok((
-        port,
-        StdTcpListener::bind((Ipv4Addr::LOCALHOST, port))?,
-        StdUdpSocket::bind((Ipv4Addr::LOCALHOST, port))?,
-    ))
 }
 
 fn assert_common_dns_response(

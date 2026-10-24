@@ -141,7 +141,7 @@ fn open_lock_file(path: &Utf8Path) -> Result<std::fs::File> {
 }
 
 /// Whether nothing uses `port` for TCP on loopback or the wildcard address, or for UDP on
-/// loopback. The TCP probe binds without `SO_REUSEADDR`, so a port that an earlier test left with
+/// any IPv4 address. The TCP probe binds without `SO_REUSEADDR`, so a port that an earlier test left with
 /// closing connections (`TIME_WAIT`) counts as busy: a fixture that binds without `SO_REUSEADDR`
 /// could not take it, while a fresh `bind` to port 0 never returns one.
 /// Only a port in use counts as busy: any other failure, such as a sandbox refusing to bind, is an
@@ -155,7 +155,7 @@ fn is_free(port: u16) -> io::Result<bool> {
     }
 
     Ok(!in_use(
-        UdpSocket::bind((Ipv4Addr::LOCALHOST, port)).map(drop),
+        UdpSocket::bind((Ipv4Addr::UNSPECIFIED, port)).map(drop),
     )?)
 }
 
@@ -172,6 +172,8 @@ fn in_use(bind: io::Result<()>) -> io::Result<bool> {
 mod tests {
     use std::collections::BTreeSet;
     use std::io::{self, BufRead, BufReader, Read, Write};
+    #[cfg(target_os = "linux")]
+    use std::net::{Ipv4Addr, UdpSocket};
     use std::net::{TcpListener, TcpStream};
     use std::process::Stdio;
     use std::thread;
@@ -247,6 +249,16 @@ mod tests {
 
         assert!(!is_free(port)?);
 
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_udp_listener_on_another_loopback_address_is_not_free() -> Result<()> {
+        let port = port()?;
+        let _socket = UdpSocket::bind((Ipv4Addr::new(127, 0, 0, 2), port))?;
+
+        assert!(!is_free(port)?);
         Ok(())
     }
 

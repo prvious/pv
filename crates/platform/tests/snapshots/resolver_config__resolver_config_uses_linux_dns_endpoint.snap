@@ -1,0 +1,5 @@
+---
+source: crates/platform/tests/resolver_config.rs
+expression: "&rendered"
+---
+"# Managed by PV\n# Source: PV prepared resolver configuration\nnameserver 127.0.0.2\nport 35353\n"
