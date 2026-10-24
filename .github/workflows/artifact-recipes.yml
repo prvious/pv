@@ -100,6 +100,7 @@ jobs:
                      "runner": "ubuntu-24.04-arm" if cpu == "linux-arm64" else "ubuntu-24.04"}
                     for resource, versions in tracks.items() for track in versions for cpu in platforms
                     if cpu.startswith("linux-")
+                    and not (resource == "composer" and platform == "all-linux" and cpu == "linux-arm64")
                     and os.environ["PV_RECIPE_RESOURCE"] in ("all", resource)
                     and os.environ["PV_RECIPE_TRACK"] in ("all", track)]
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:

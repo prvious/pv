@@ -1,4 +1,7 @@
 #[cfg(unix)]
+use std::collections::BTreeSet;
+
+#[cfg(unix)]
 use anyhow::Context;
 use anyhow::Result;
 use camino::Utf8Path;
@@ -41,8 +44,11 @@ fn artifact_recipes_selects_requested_tracks_on_native_linux_runners() -> Result
         .join("\n");
     let mut rows = Vec::new();
     for (resource, track, platform, expected) in [
-        ("all", "all", "all-linux", 26),
+        ("all", "all", "all-linux", 25),
         ("mysql", "8.4", "all-linux", 2),
+        ("composer", "2", "all-linux", 1),
+        ("composer", "2", "linux-amd64", 1),
+        ("composer", "2", "linux-arm64", 1),
         ("php", "8.5", "linux-amd64", 1),
         ("all", "all", "all", 0),
     ] {
@@ -65,7 +71,18 @@ fn artifact_recipes_selects_requested_tracks_on_native_linux_runners() -> Result
         )?;
         let builds = matrix["include"].as_array().context("missing builds")?;
         assert_eq!(builds.len(), expected);
+        let mut identities = BTreeSet::new();
         for build in builds {
+            let artifact_platform = if build["resource"] == "composer" {
+                "any"
+            } else {
+                build["platform"].as_str().context("missing platform")?
+            };
+            assert!(identities.insert((
+                build["resource"].as_str().context("missing resource")?,
+                build["track"].as_str().context("missing track")?,
+                artifact_platform,
+            )));
             let runner = match build["platform"].as_str() {
                 Some("linux-amd64") => "ubuntu-24.04",
                 Some("linux-arm64") => "ubuntu-24.04-arm",
@@ -85,8 +102,11 @@ fn artifact_recipes_selects_requested_tracks_on_native_linux_runners() -> Result
         ));
     }
     assert_snapshot!(rows.join("\n"), @"
-    all/all/all-linux: 26 builds
+    all/all/all-linux: 25 builds
     mysql/8.4/all-linux: 2 builds
+    composer/2/all-linux: 1 builds
+    composer/2/linux-amd64: 1 builds
+    composer/2/linux-arm64: 1 builds
     php/8.5/linux-amd64: 1 builds
     all/all/all: 0 builds
     ");

@@ -41,13 +41,16 @@ cleanup() {
 }
 
 wait_for_stop() {
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
+  remaining=10
+  [ "$(uname -s)" != Linux ] || remaining=100
+  while [ "$remaining" -gt 0 ]; do
     if ! kill -0 "$pid" 2>/dev/null; then
       wait "$pid" 2>/dev/null || true
       pid=
       return 0
     fi
     sleep 0.1
+    remaining=$((remaining - 1))
   done
   return 1
 }

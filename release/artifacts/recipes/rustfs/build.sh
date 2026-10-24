@@ -16,13 +16,23 @@ recipe_dir="$ROOT/release/artifacts/recipes/rustfs"
 
 need awk
 need cargo
-need codesign
 need curl
 need git
-need lipo
-need otool
 need unzip
 need tar
+
+case "$PLATFORM" in
+  darwin-arm64 | darwin-amd64)
+    need codesign
+    need lipo
+    need otool
+    ;;
+  linux-amd64 | linux-arm64)
+    need file
+    need readelf
+    ;;
+  *) die "unsupported RustFS artifact platform: $PLATFORM" ;;
+esac
 
 if [ -z "$PV_COMMIT" ]; then
   PV_COMMIT=$(git -C "$ROOT" rev-parse HEAD)
@@ -61,8 +71,13 @@ unzip -q "$source_archive" -d "$extract_dir"
 [ -f "$extract_dir/rustfs" ] || die "RustFS upstream archive did not contain rustfs"
 cp "$extract_dir/rustfs" "$root_dir/bin/rustfs"
 chmod 755 "$root_dir/bin/rustfs"
-validate_macho_binary "$root_dir/bin/rustfs" "$PV_PLATFORM" "$RUSTFS_DEPLOYMENT_TARGET"
-pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
+case "$PV_PLATFORM" in
+  darwin-arm64 | darwin-amd64)
+    validate_macho_binary "$root_dir/bin/rustfs" "$PV_PLATFORM" "$RUSTFS_DEPLOYMENT_TARGET"
+    pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
+    ;;
+  linux-amd64 | linux-arm64) pv_recipe_validate_elf_tree "$root_dir" "$PV_PLATFORM" ;;
+esac
 cp "$recipe_dir/LICENSE" "$root_dir/LICENSE"
 {
   cat "$recipe_dir/NOTICE"

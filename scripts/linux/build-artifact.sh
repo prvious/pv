@@ -30,6 +30,12 @@ if [ "$PV_RECIPE_RESOURCE" = php ]; then
   spc build:php --help | grep -- '--dl-custom-local' >/dev/null
 fi
 
+if [ "$PV_RECIPE_RESOURCE" = composer ]; then
+  PV_RECIPE_PLATFORM=any
+  PV_COMPOSER_SMOKE_PHP=$(command -v php)
+  export PV_RECIPE_PLATFORM PV_COMPOSER_SMOKE_PHP
+fi
+
 "release/artifacts/recipes/$PV_RECIPE_RESOURCE/build.sh"
 
 defaults="$PV_ARTIFACT_OUT_DIR/defaults.toml"
