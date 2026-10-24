@@ -227,6 +227,23 @@ jobs:
           name: nextest-run-${{ matrix.runner }}
           path: ${{ runner.temp }}/nextest-run.zip
 
+      - name: Check MySQL packaging in the baseline builder
+        if: ${{ matrix.runner == 'ubuntu-22.04' || matrix.runner == 'ubuntu-24.04-arm' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -h /
+          docker build -f scripts/linux/builder.Dockerfile --build-arg BUILDER_UID="$(id -u)" -t pv-linux-builder .
+          docker run --rm --init --user "$(id -u):$(id -g)" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=$GITHUB_WORKSPACE,readonly" \
+            --mount "type=bind,src=$GITHUB_WORKSPACE/target,dst=$GITHUB_WORKSPACE/target" \
+            --mount "type=bind,src=$HOME/.cargo,dst=$HOME/.cargo" \
+            --workdir "$GITHUB_WORKSPACE" --env "CARGO_HOME=$HOME/.cargo" \
+            --env "CARGO_TARGET_DIR=$GITHUB_WORKSPACE/target/linux-baseline" --env CARGO_BUILD_JOBS \
+            --env CARGO_PROFILE_DEV_DEBUG --env CARGO_INCREMENTAL pv-linux-builder \
+            cargo nextest run --profile ci --locked -p pv-release --all-features --run-ignored only \
+              -E 'test(=mysql_linux_build_packages_relocatable_elf_and_rejects_newer_glibc)'
+
       - name: Prepare native Linux daemon registration test
         shell: bash
         run: |
