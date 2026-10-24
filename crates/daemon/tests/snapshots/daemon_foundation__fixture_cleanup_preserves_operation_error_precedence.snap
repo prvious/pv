@@ -15,4 +15,10 @@ expression: outcomes
     Err(
         "operation failed: operation sentinel; fixture cleanup failed: cleanup sentinel",
     ),
+    Err(
+        "operation failed: operation context: operation cause; fixture cleanup failed: daemon shutdown failed: shutdown context: shutdown cause; runtime cleanup failed: runtime cleanup context: runtime cleanup cause",
+    ),
+    Err(
+        "daemon shutdown failed: shutdown context: shutdown cause",
+    ),
 ]

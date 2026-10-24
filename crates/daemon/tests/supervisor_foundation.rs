@@ -13,7 +13,7 @@ use daemon::{
     wait_for_readiness,
 };
 use insta::{Settings, assert_debug_snapshot};
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use pv_fake::{EventKind, InstalledFake, Persona};
 use rustix::process::{Pid, test_kill_process};
 use rustls::pki_types::PrivateKeyDer;
@@ -97,13 +97,16 @@ async fn readiness_timeout_reports_the_last_probe_failure() -> Result<()> {
     )
     .await;
 
-    assert!(matches!(
-        result,
-        Err(daemon::DaemonError::ReadinessTimedOut {
-            last_error: Some(reason),
-            ..
-        }) if reason.contains("HTTP readiness returned non-success status")
-    ));
+    assert!(
+        matches!(
+            &result,
+            Err(daemon::DaemonError::ReadinessTimedOut {
+                last_error: Some(reason),
+                ..
+            }) if reason.contains("HTTP readiness returned non-success status")
+        ),
+        "unexpected readiness result: {result:?}"
+    );
     server.abort();
 
     Ok(())
@@ -698,7 +701,7 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[tokio::test]
 async fn supervisor_owns_pv_fake_by_direct_identity_with_an_armed_lifeline() -> Result<()> {
     let tempdir = tempdir()?;
@@ -839,7 +842,7 @@ async fn supervisor_stop_waits_for_process_group_descendants() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[tokio::test]
 async fn adopted_stop_accepts_runtime_already_stopped_by_its_owner() -> Result<()> {
     let tempdir = tempdir()?;
@@ -909,7 +912,7 @@ async fn wait_for_process_exit(pid: u32) -> Result<()> {
 }
 
 /// Waits for the fake's `started` event and returns whether its lifeline is armed.
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 async fn wait_for_fake_start(fake: &InstalledFake) -> Result<bool> {
     for _attempt in 0..50 {
         let started = fake

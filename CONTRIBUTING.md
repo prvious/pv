@@ -181,9 +181,8 @@ Do not add broad Clippy ignores for convenience.
 ## Linux development
 
 Linux system integration is being implemented in ordered slices. The Linux CI
-lanes currently run the portable suites, native process inspection, and explicit
-unsupported boundaries;
-the full workspace suite will be enabled with Linux monitors and daemon IPC.
+lanes run the full workspace suite, including native process inspection,
+monitors, and daemon IPC.
 Linux Clippy already covers every target and feature. macOS behavior remains
 covered by the existing native matrix.
 
@@ -193,10 +192,11 @@ Build the Ubuntu 22.04 development image on the host's native architecture:
 df -h /
 docker build -f scripts/linux/builder.Dockerfile -t pv-linux-builder .
 pv_mount_source=${PWD//\"/\"\"}
-docker run --rm --mount "type=bind,\"src=$pv_mount_source\",dst=/src,readonly" \
+docker run --rm --init --mount "type=bind,\"src=$pv_mount_source\",dst=/src,readonly" \
   --mount type=volume,src=pv-linux-target,dst=/target \
-  --env CARGO_TARGET_DIR=/target --env CARGO_BUILD_JOBS=1 --workdir /src pv-linux-builder \
-  cargo nextest run --profile ci --locked -p resources -p self-update
+  --env CARGO_TARGET_DIR=/target --env CARGO_BUILD_JOBS=1 \
+  --env CARGO_PROFILE_DEV_DEBUG=0 --env CARGO_INCREMENTAL=0 --workdir /src pv-linux-builder \
+  cargo nextest run --profile ci --workspace --all-features --locked
 ```
 
 The builder runs tests as an ordinary user so filesystem permission checks
@@ -204,6 +204,12 @@ remain meaningful. It includes stable Rust, Clippy, rustfmt, nextest 0.9.146,
 cargo-shear, shellcheck, and the native build tools. Its Ubuntu base is pinned
 by digest and supplies the glibc 2.35 baseline for Linux artifacts. Local Apple
 Silicon runs are ARM64 only; use native GitHub runners for amd64.
+
+Use Docker's `--init` for ordinary builder test runs so orphaned children are
+reaped, as they are by init on a normal host. The systemd test containers below
+already run their own init.
+Linux CI and this command omit debug symbols and incremental build caches to
+keep the full workspace build within runner disk space; debug assertions stay enabled.
 
 System integration needs a separate disposable container with systemd as PID 1:
 

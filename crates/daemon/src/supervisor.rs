@@ -6,7 +6,7 @@ use std::{fmt, future::Future, io};
 use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::{Stream, StreamExt, stream};
 use platform::PlatformCapability;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use rustix::process::{Pid, Signal, WaitOptions, kill_process_group, waitpid};
 use rustls::pki_types::ServerName;
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,9 @@ const READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const MONITOR_STOP_MARGIN: Duration = Duration::from_secs(5);
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
+#[cfg(target_os = "linux")]
+const POSTGRES_RECOVERY: &str = "Restart your computer, then run this command again.";
+#[cfg(not(target_os = "linux"))]
 const POSTGRES_RECOVERY: &str = "Restart your Mac, then run this command again.";
 pub(crate) const RUNTIME_READINESS_CONCURRENCY_LIMIT: usize = 4;
 
@@ -44,7 +47,7 @@ pub enum StopSignal {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProcessSignal {
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     Stop(StopSignal),
     Kill,
 }
@@ -547,14 +550,17 @@ impl ManagedProcess {
         &self.metadata_path
     }
 
-    /// Whether the runtime has exited. An identity lookup never finds an exited process, so a
-    /// changed identity is enough; the monitor keeps the exit status.
+    /// Whether the runtime has exited. Linux retains the identity of an unreaped zombie;
+    /// the monitor keeps the exit status on both platforms.
     pub fn has_exited(&mut self) -> Result<bool, DaemonError> {
         let Some(start_identity) = self.start_identity else {
             return Ok(true);
         };
 
-        Ok(platform::inspect_process_start_identity(self.pid)? != Some(start_identity))
+        Ok(
+            platform::inspect_process_start_identity(self.pid)? != Some(start_identity)
+                || platform::process_is_zombie(self.pid)?,
+        )
     }
 
     pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
@@ -1010,7 +1016,7 @@ fn require_process_containment() -> Result<(), DaemonError> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn process_group_pid(pid: u32) -> Result<Pid, DaemonError> {
     let raw_pid =
         i32::try_from(pid).map_err(|source| io::Error::new(io::ErrorKind::InvalidInput, source))?;
@@ -1023,7 +1029,7 @@ fn process_group_pid(pid: u32) -> Result<Pid, DaemonError> {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn signal_process_group(pid: u32, signal: ProcessSignal) -> Result<(), DaemonError> {
     let process_group = process_group_pid(pid)?;
     let signal = match signal {
@@ -1032,23 +1038,37 @@ fn signal_process_group(pid: u32, signal: ProcessSignal) -> Result<(), DaemonErr
         ProcessSignal::Kill => Signal::KILL,
     };
 
+    // ponytail: Linux contains runtimes with process groups only, the same as macOS.
+    // The original plan (2026-09-29, step 8) was a child subreaper plus cgroups:
+    // - prctl(PR_SET_CHILD_SUBREAPER) in `pv monitor:run`, so descendants that
+    //   leave the group (Postgres backends call setsid(), double-forked daemons)
+    //   re-parent to the monitor instead of systemd/init. The monitor would then
+    //   have to reap them and SIGKILL any survivors after the group kill. "No
+    //   children left" (waitpid ECHILD) would prove the whole tree is gone.
+    // - One cgroup v2 leaf per runtime under a delegated subtree: either
+    //   `Delegate=yes` on pv-daemon.service, or one `systemd-run --user --scope`
+    //   per monitor. `cgroup.kill` (kernel >= 5.14) is an atomic force-kill of
+    //   every descendant, and `cgroup.events` `populated 0` proves the tree is
+    //   empty even after the monitor dies. This interacts with
+    //   `KillMode=process` (D18): a delegated subtree under pv-daemon.service
+    //   is still inside the service's cgroup.
+    // Revisit if any of these show up on Linux:
+    // - processes survive `pv daemon:disable` / `pv uninstall`
+    // - Postgres backends or MySQL helpers outlive a reported stop
+    // - a port is still held after a stop reported success
+    // - "cleanup unproven" errors appear
+    // - a logout leaves Postgres monitor records that only a reboot clears (spec O1)
     match kill_process_group(process_group, signal) {
-        Ok(()) => Ok(()),
-        Err(source) => {
-            let error = io::Error::from(source);
-            // macOS answers EPERM, not ESRCH, when no member can take a signal: each is an
-            // unreaped zombie or already exiting, as a killed runtime's children briefly are.
-            // Every caller then waits for the group to end, which decides the stop.
-            if process_not_found(&error) || error.kind() == io::ErrorKind::PermissionDenied {
-                return Ok(());
-            }
-
-            Err(error.into())
-        }
+        Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
+        // macOS answers EPERM when only unreaped zombies or exiting members remain.
+        // Linux EPERM is a real error; its live-member scan handles zombie-only groups.
+        #[cfg(target_os = "macos")]
+        Err(rustix::io::Errno::PERM) => Ok(()),
+        Err(error) => Err(io::Error::from(error).into()),
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(not(unix))]
 fn signal_process_group(_pid: u32, _signal: ProcessSignal) -> Result<(), DaemonError> {
     require_process_containment()
 }
@@ -1056,7 +1076,7 @@ fn signal_process_group(_pid: u32, _signal: ProcessSignal) -> Result<(), DaemonE
 /// Signals `pid`'s process group with `signal`, then SIGKILL once `grace_period` passes, and
 /// waits until no live member remains. Escalates only while `leader_still_owned` proves the
 /// group still belongs to the runtime.
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 pub(crate) async fn stop_process_group(
     pid: u32,
     signal: StopSignal,
@@ -1089,7 +1109,7 @@ pub(crate) async fn stop_process_group(
     .into())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 pub(crate) async fn wait_for_process_group_exit(
     pid: u32,
     readiness_timeout: Duration,
@@ -1291,12 +1311,12 @@ fn read_optional_file(path: &Utf8Path) -> Result<Option<String>, DaemonError> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn process_group_has_exited(pid: u32) -> Result<bool, DaemonError> {
     Ok(!platform::process_group_has_live_members(pid)?)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 pub(crate) fn reap_process_if_child(pid: u32) -> Result<(), DaemonError> {
     let process = process_group_pid(pid)?;
     match waitpid(Some(process), WaitOptions::NOHANG) {
@@ -1305,16 +1325,11 @@ pub(crate) fn reap_process_if_child(pid: u32) -> Result<(), DaemonError> {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(not(unix))]
 fn process_group_has_exited(_pid: u32) -> Result<bool, DaemonError> {
     require_process_containment()?;
 
     Ok(true)
-}
-
-#[cfg(target_os = "macos")]
-fn process_not_found(error: &io::Error) -> bool {
-    error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(3)
 }
 
 impl RuntimeMetadata {
@@ -1456,7 +1471,7 @@ mod bounded_readiness_tests {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, unix))]
 mod tests {
     use std::net::TcpListener;
     use std::time::Duration;

@@ -110,6 +110,13 @@ pub fn process_is_zombie(pid: u32) -> Result<bool, crate::PlatformError> {
     implementation::process_is_zombie(pid)
 }
 
+/// Linux's kernel command name, retained for an unreaped process. This is a
+/// truncated name, not an executable path or proof of process ownership.
+#[cfg(target_os = "linux")]
+pub fn inspect_process_comm(pid: u32) -> Result<Option<String>, crate::PlatformError> {
+    implementation::inspect_process_comm(pid)
+}
+
 /// Whether a process group contains a member that can still run. Inspection failures are
 /// errors, not evidence that the group has stopped. A zombie leader can still have live threads.
 pub fn process_group_has_live_members(process_group: u32) -> Result<bool, crate::PlatformError> {
