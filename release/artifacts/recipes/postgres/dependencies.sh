@@ -34,7 +34,6 @@ need mv
 need otool
 need perl
 need sed
-need shasum
 need tar
 need uname
 need xcrun

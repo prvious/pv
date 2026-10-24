@@ -7,7 +7,7 @@ ENV CARGO_HOME=/opt/cargo \
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        bison build-essential ca-certificates cmake curl git libaio-dev \
+        bison build-essential ca-certificates cmake curl file git libaio-dev \
         patchelf pkg-config python3 unzip xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
@@ -38,7 +38,8 @@ RUN case "$TARGETARCH" in \
     && install /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck \
     && rm -rf /tmp/shellcheck.tar.xz /tmp/shellcheck-v0.11.0
 
-RUN useradd --create-home --uid 1000 dev \
+ARG BUILDER_UID=1000
+RUN useradd --create-home --uid "$BUILDER_UID" dev \
     && mkdir /work /target \
     && chown -R dev:dev /opt/cargo /work /target
 USER dev

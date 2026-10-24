@@ -1,0 +1,8 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: "String::from_utf8(output.stdout)?"
+---
+darwin-arm64=arm64
+darwin-amd64=x86_64
+linux-amd64=x86_64
+linux-arm64=aarch64
