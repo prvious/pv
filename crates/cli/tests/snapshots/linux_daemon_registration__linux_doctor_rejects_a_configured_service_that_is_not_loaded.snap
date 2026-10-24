@@ -1,0 +1,36 @@
+---
+source: crates/cli/tests/linux_daemon_registration.rs
+expression: observed
+---
+[
+    (
+        "missing",
+        Object {
+            "detail": Null,
+            "message": String("reachable; daemon unit is not loaded"),
+            "name": String("Systemd user manager"),
+            "repair": Null,
+            "status": String("pass"),
+        },
+    ),
+    (
+        "current",
+        Object {
+            "detail": Null,
+            "message": String("daemon service is not loaded"),
+            "name": String("Systemd user manager"),
+            "repair": String("pv daemon:enable"),
+            "status": String("fail"),
+        },
+    ),
+    (
+        "stale",
+        Object {
+            "detail": Null,
+            "message": String("daemon service is not loaded"),
+            "name": String("Systemd user manager"),
+            "repair": String("pv daemon:enable"),
+            "status": String("fail"),
+        },
+    ),
+]

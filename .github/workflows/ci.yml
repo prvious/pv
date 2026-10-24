@@ -227,6 +227,43 @@ jobs:
           name: nextest-run-${{ matrix.runner }}
           path: ${{ runner.temp }}/nextest-run.zip
 
+      - name: Prepare native Linux daemon registration test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --all-features -p pv -p daemon --examples --bins
+          runner_account=$(id -un)
+          runner_uid=$(id -u)
+          sudo -n loginctl enable-linger "$runner_account"
+          sudo -n systemctl start "user@${runner_uid}.service"
+          nextest_state_directory=$(mktemp -d "$RUNNER_TEMP/nextest-system-state.XXXXXX")
+          {
+            printf 'XDG_RUNTIME_DIR=/run/user/%s\n' "$runner_uid"
+            printf 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$runner_uid"
+            printf 'NEXTEST_STATE_DIR=%s\n' "$nextest_state_directory"
+          } >> "$GITHUB_ENV"
+
+      - name: Run native Linux daemon registration test
+        id: linux_system_tests
+        env:
+          PV_LINUX_SYSTEM_TESTS: "1"
+          PV_LINUX_SYSTEM_PV: ${{ github.workspace }}/target/debug/pv
+        run: |
+          cargo nextest run --profile ci --user-config-file "$RUNNER_TEMP/nextest-user.toml" \
+            --run-ignored only -p cli -p daemon --all-features --locked \
+            -E 'binary(=linux_daemon_registration_system)'
+
+      - name: Export Linux system test recording
+        if: ${{ !cancelled() && steps.linux_system_tests.outcome != 'skipped' }}
+        run: cargo nextest store export latest --archive-file "$RUNNER_TEMP/nextest-system-run.zip"
+
+      - name: Upload Linux system test recording
+        if: ${{ !cancelled() && steps.linux_system_tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nextest-system-run-${{ matrix.runner }}
+          path: ${{ runner.temp }}/nextest-system-run.zip
+
   runtime-portability:
     name: Runtime (${{ matrix.target }})
     strategy:
@@ -299,6 +336,7 @@ jobs:
           test ! -e "$pv_smoke_home/.pv"
 
       - name: Smoke unsupported host capability
+        if: matrix.target == 'windows'
         shell: bash
         env:
           EXPECTED_TARGET: ${{ matrix.target }}

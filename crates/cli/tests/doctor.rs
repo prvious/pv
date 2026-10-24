@@ -14,9 +14,9 @@ use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::{Settings, assert_debug_snapshot, assert_snapshot};
 use platform::{
-    ActivePfRedirectInspection, HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult,
-    LaunchAgentConfig, PRIVILEGED_HELPER_VERSION, PfConfReference, PfRedirectConfig,
-    PrivilegedHelperStatus, ResolverConfig,
+    ActivePfRedirectInspection, DaemonRegistrationConfig, HELPER_PROTOCOL_VERSION,
+    KeychainCertificate, KeychainTrustResult, PRIVILEGED_HELPER_VERSION, PfConfReference,
+    PfRedirectConfig, PrivilegedHelperStatus, ResolverConfig,
 };
 use state::{
     Database, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, JobDiagnosticSubject,
@@ -27,7 +27,7 @@ use state::{
 struct TestEnvironment {
     home: PathBuf,
     current_dir: PathBuf,
-    launch_agent_path: PathBuf,
+    daemon_registration_path: PathBuf,
     resolver_path: PathBuf,
     pf_anchor_path: PathBuf,
     pf_conf_path: PathBuf,
@@ -43,7 +43,7 @@ impl TestEnvironment {
         Self {
             home: home.as_std_path().to_path_buf(),
             current_dir: home.as_std_path().to_path_buf(),
-            launch_agent_path: home
+            daemon_registration_path: home
                 .join("Library/LaunchAgents/com.prvious.pv.daemon.plist")
                 .as_std_path()
                 .to_path_buf(),
@@ -66,7 +66,7 @@ impl TestEnvironment {
     }
 
     fn launch_agent_path_utf8(&self) -> anyhow::Result<camino::Utf8PathBuf> {
-        camino::Utf8PathBuf::from_path_buf(self.launch_agent_path.clone())
+        camino::Utf8PathBuf::from_path_buf(self.daemon_registration_path.clone())
             .map_err(|path| anyhow::anyhow!("launch agent path is not UTF-8: {}", path.display()))
     }
 
@@ -136,8 +136,8 @@ impl Environment for TestEnvironment {
         Ok(())
     }
 
-    fn launch_agent_path(&self) -> PathBuf {
-        self.launch_agent_path.clone()
+    fn daemon_registration_path(&self) -> PathBuf {
+        self.daemon_registration_path.clone()
     }
 
     fn resolver_test_path(&self) -> PathBuf {
@@ -575,12 +575,15 @@ fn seed_required_checks(
         port == GATEWAY_HTTP_PREFERRED_PORT || port == GATEWAY_HTTPS_PREFERRED_PORT
     })?;
 
-    let launch_agent = LaunchAgentConfig::new(
+    let launch_agent = DaemonRegistrationConfig::new(
         "/bin/pv",
-        paths.launchd_stdout_log(),
-        paths.launchd_stderr_log(),
+        paths.daemon_registration_stdout_log(),
+        paths.daemon_registration_stderr_log(),
     );
-    platform::write_launch_agent_file(&environment.launch_agent_path_utf8()?, &launch_agent)?;
+    platform::write_daemon_registration_file(
+        &environment.launch_agent_path_utf8()?,
+        &launch_agent,
+    )?;
     state::fs::write_sensitive_file(
         &paths.resolver_config(),
         &ResolverConfig::new(35353).render(),

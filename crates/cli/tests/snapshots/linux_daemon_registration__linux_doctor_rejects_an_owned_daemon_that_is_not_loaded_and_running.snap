@@ -1,0 +1,55 @@
+---
+source: crates/cli/tests/linux_daemon_registration.rs
+expression: observed
+---
+[
+    Object {
+        "detail": String("load=loaded enablement=enabled state=inactive/dead pid=0 fragment=<tempdir>/home/.config/systemd/user/pv-daemon.service"),
+        "message": String("daemon service is not healthy"),
+        "name": String("Systemd user manager"),
+        "repair": String("pv daemon:restart"),
+        "status": String("fail"),
+    },
+    Object {
+        "detail": String("load=loaded enablement=enabled state=failed/failed pid=0 fragment=<tempdir>/home/.config/systemd/user/pv-daemon.service"),
+        "message": String("daemon service is not healthy"),
+        "name": String("Systemd user manager"),
+        "repair": String("pv daemon:restart"),
+        "status": String("fail"),
+    },
+    Object {
+        "detail": String("load=loaded enablement=enabled state=deactivating/stop-sigterm pid=42 fragment=<tempdir>/home/.config/systemd/user/pv-daemon.service"),
+        "message": String("daemon service is not healthy"),
+        "name": String("Systemd user manager"),
+        "repair": String("pv daemon:restart"),
+        "status": String("fail"),
+    },
+    Object {
+        "detail": String("load=loaded enablement=enabled state=active/running pid=0 fragment=<tempdir>/home/.config/systemd/user/pv-daemon.service"),
+        "message": String("daemon service is not healthy"),
+        "name": String("Systemd user manager"),
+        "repair": String("pv daemon:restart"),
+        "status": String("fail"),
+    },
+    Object {
+        "detail": String("load=error enablement=enabled state=active/running pid=42 fragment=<tempdir>/home/.config/systemd/user/pv-daemon.service"),
+        "message": String("daemon service is not healthy"),
+        "name": String("Systemd user manager"),
+        "repair": String("pv daemon:restart"),
+        "status": String("fail"),
+    },
+    Object {
+        "detail": String("load=loaded enablement=disabled state=active/running pid=42 fragment=<tempdir>/home/.config/systemd/user/pv-daemon.service"),
+        "message": String("daemon service is not persistently enabled"),
+        "name": String("Systemd user manager"),
+        "repair": String("pv daemon:enable"),
+        "status": String("fail"),
+    },
+    Object {
+        "detail": String("load=loaded enablement=enabled-runtime state=active/running pid=42 fragment=<tempdir>/home/.config/systemd/user/pv-daemon.service"),
+        "message": String("daemon service is not persistently enabled"),
+        "name": String("Systemd user manager"),
+        "repair": String("pv daemon:enable"),
+        "status": String("fail"),
+    },
+]

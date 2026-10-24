@@ -2,10 +2,15 @@ mod browser;
 mod ca;
 mod capability;
 mod command;
+mod daemon_registration;
+
+#[cfg(target_os = "linux")]
+pub use daemon_registration::{
+    DaemonRegistrationStatus, daemon_registration_session_address, inspect_daemon_registration,
+};
 mod error;
 mod helper;
 pub mod hooks;
-mod launch_agent;
 mod low_port;
 mod pf;
 mod port;
@@ -17,6 +22,9 @@ mod trust;
 #[cfg(target_os = "linux")]
 pub use process::inspect_process_comm;
 
+#[cfg(target_os = "linux")]
+pub use daemon_registration::reload_daemon_registration;
+
 pub use browser::open_url;
 pub use ca::{
     CaFileState, CaRepairReason, GeneratedLocalCa, GeneratedProjectCertificate, LocalCaMetadata,
@@ -24,17 +32,18 @@ pub use ca::{
     project_certificate_matches,
 };
 pub use capability::{PlatformCapability, require_capability};
+pub use daemon_registration::{
+    DAEMON_REGISTRATION_FILE_NAME, DAEMON_REGISTRATION_LABEL, DAEMON_REGISTRATION_NAME,
+    DaemonRegistrationConfig, DaemonRegistrationFileState, daemon_registration_path,
+    enable_daemon_registration, inspect_daemon_registration_file, remove_daemon_registration,
+    restart_daemon_registration, stop_daemon_registration, write_daemon_registration_file,
+};
 pub use error::PlatformError;
 pub use helper::{
     HELPER_EXECUTABLE_PATH, HELPER_LAUNCH_DAEMON_PATH, HELPER_METADATA_PATH,
     HELPER_PROTOCOL_VERSION, HELPER_SOCKET_PATH, PRIVILEGED_HELPER_VERSION, PrivilegedHelperClient,
     PrivilegedHelperInstallOutcome, PrivilegedHelperStatus, install_privileged_helper,
     remove_privileged_helper, serve_privileged_helper,
-};
-pub use launch_agent::{
-    LAUNCH_AGENT_FILE_NAME, LAUNCH_AGENT_LABEL, LaunchAgentConfig, LaunchAgentFileState,
-    bootout_launch_agent, bootstrap_launch_agent, inspect_launch_agent_file,
-    kickstart_launch_agent, launch_agent_path, remove_launch_agent_file, write_launch_agent_file,
 };
 pub use low_port::{LowPortInspection, LowPortState, PortOwner};
 pub use pf::{
@@ -81,19 +90,19 @@ mod tests {
     fn unsupported_error_names_capability_and_target() {
         let error = PlatformError::Unsupported {
             capability: PlatformCapability::DaemonRegistration,
-            target: PlatformTarget::Linux,
+            target: PlatformTarget::Windows,
         };
 
         assert!(matches!(
             &error,
             PlatformError::Unsupported {
                 capability: PlatformCapability::DaemonRegistration,
-                target: PlatformTarget::Linux,
+                target: PlatformTarget::Windows,
             }
         ));
         assert_eq!(
             error.to_string(),
-            "daemon registration is unsupported on linux"
+            "daemon registration is unsupported on windows"
         );
     }
 
@@ -125,15 +134,12 @@ mod tests {
         assert!(
             require_capability_for(PlatformTarget::Linux, PlatformCapability::DaemonIpc).is_ok()
         );
-        assert!(matches!(
+        assert!(
             require_capability_for(
                 PlatformTarget::Linux,
                 PlatformCapability::DaemonRegistration
-            ),
-            Err(PlatformError::Unsupported {
-                capability: PlatformCapability::DaemonRegistration,
-                target: PlatformTarget::Linux
-            })
-        ));
+            )
+            .is_ok()
+        );
     }
 }

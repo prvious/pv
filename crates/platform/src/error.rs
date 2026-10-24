@@ -71,6 +71,36 @@ pub enum PlatformError {
     #[error("LaunchAgent command `{command}` exited with {status}")]
     LaunchAgentCommandStatus { command: String, status: String },
 
+    #[error("daemon registration file operation failed: {0}")]
+    DaemonRegistrationFile(#[source] state::StateError),
+
+    #[error("daemon registration file is not PV-owned: {path}")]
+    DaemonRegistrationConflict { path: Utf8PathBuf },
+
+    #[error("daemon registration file could not be read at {path}: {message}")]
+    DaemonRegistrationUnreadable { path: Utf8PathBuf, message: String },
+
+    #[cfg(target_os = "linux")]
+    #[error(
+        "systemd user manager unavailable: DBUS_SESSION_BUS_ADDRESS and a valid XDG_RUNTIME_DIR are missing"
+    )]
+    UserManagerSessionEnvironment,
+
+    #[cfg(target_os = "linux")]
+    #[error("systemd user manager unavailable: {0}")]
+    UserManagerUnavailable(#[source] Box<zbus::Error>),
+
+    #[cfg(target_os = "linux")]
+    #[error("daemon registration D-Bus operation failed: {0}")]
+    DaemonRegistrationBus(#[source] Box<zbus::Error>),
+
+    #[cfg(target_os = "linux")]
+    #[error("daemon registration {operation} failed: {message}")]
+    DaemonRegistrationState {
+        operation: &'static str,
+        message: String,
+    },
+
     #[error("system integration operation failed: {0}")]
     SystemIntegration(String),
 
@@ -116,4 +146,11 @@ pub enum PlatformError {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+}
+
+#[cfg(target_os = "linux")]
+impl From<zbus::Error> for PlatformError {
+    fn from(error: zbus::Error) -> Self {
+        Self::DaemonRegistrationBus(Box::new(error))
+    }
 }

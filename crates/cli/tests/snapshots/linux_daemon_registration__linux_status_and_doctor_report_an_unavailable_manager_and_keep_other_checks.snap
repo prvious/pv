@@ -1,0 +1,25 @@
+---
+source: crates/cli/tests/linux_daemon_registration.rs
+expression: serde_json::to_string_pretty(&observed)?
+---
+{
+  "daemon": {
+    "failure": true,
+    "registration": "current",
+    "registration_error": "systemd user manager unavailable: DBUS_SESSION_BUS_ADDRESS and a valid XDG_RUNTIME_DIR are missing",
+    "socket": "missing",
+    "state": "unknown"
+  },
+  "manager": {
+    "detail": null,
+    "message": "systemd user manager unavailable: DBUS_SESSION_BUS_ADDRESS and a valid XDG_RUNTIME_DIR are missing",
+    "name": "Systemd user manager",
+    "repair": "run PV from a logged-in user session",
+    "status": "fail"
+  },
+  "sections": [
+    "System",
+    "Routing",
+    "Daemon & jobs"
+  ]
+}
