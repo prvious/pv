@@ -179,7 +179,6 @@ pub(crate) fn uninstall(
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let mut database = Database::open(&paths)?;
     let prepared_path = paths.resolver_config();
     let system_path = resolver_test_path(environment)?;
     let deleted_prepared = delete_optional_file(&prepared_path)?;
@@ -204,7 +203,6 @@ pub(crate) fn uninstall(
                 "System resolver config already absent: ",
                 &path,
             ))?;
-            database.release_port(PortOwner::Dns)?;
 
             Ok(ExitCode::SUCCESS)
         }
@@ -229,7 +227,6 @@ pub(crate) fn uninstall(
                     &path,
                 ))?;
             }
-            database.release_port(PortOwner::Dns)?;
 
             Ok(ExitCode::SUCCESS)
         }
