@@ -30,6 +30,18 @@ AMD64_SIZE=@@AMD64_SIZE@@
 AMD64_HELPER_URL=@@AMD64_HELPER_URL@@
 AMD64_HELPER_SHA256=@@AMD64_HELPER_SHA256@@
 AMD64_HELPER_SIZE=@@AMD64_HELPER_SIZE@@
+LINUX_ARM64_URL=@@LINUX_ARM64_URL@@
+LINUX_ARM64_SHA256=@@LINUX_ARM64_SHA256@@
+LINUX_ARM64_SIZE=@@LINUX_ARM64_SIZE@@
+LINUX_ARM64_HELPER_URL=@@LINUX_ARM64_HELPER_URL@@
+LINUX_ARM64_HELPER_SHA256=@@LINUX_ARM64_HELPER_SHA256@@
+LINUX_ARM64_HELPER_SIZE=@@LINUX_ARM64_HELPER_SIZE@@
+LINUX_AMD64_URL=@@LINUX_AMD64_URL@@
+LINUX_AMD64_SHA256=@@LINUX_AMD64_SHA256@@
+LINUX_AMD64_SIZE=@@LINUX_AMD64_SIZE@@
+LINUX_AMD64_HELPER_URL=@@LINUX_AMD64_HELPER_URL@@
+LINUX_AMD64_HELPER_SHA256=@@LINUX_AMD64_HELPER_SHA256@@
+LINUX_AMD64_HELPER_SIZE=@@LINUX_AMD64_HELPER_SIZE@@
 
 YES=0
 NON_INTERACTIVE=0
@@ -46,7 +58,7 @@ TMP_DIR=
 
 usage() {
   cat <<'USAGE'
-PV macOS installer
+PV installer
 
 Usage: install.sh [OPTIONS]
 
@@ -111,27 +123,46 @@ is_rosetta() {
 }
 
 select_asset() {
-  local os machine platform
+  local os machine platform libc
 
   os="$(uname -s)"
-  if [ "${os}" != "Darwin" ]; then
-    die "macOS is required; found ${os}"
-  fi
-
   machine="$(uname -m)"
-  case "${machine}" in
-    arm64|aarch64)
-      platform="darwin-arm64"
+  case "${os}" in
+    Darwin)
+      case "${machine}" in
+        arm64|aarch64) platform="darwin-arm64" ;;
+        x86_64|amd64)
+          if is_rosetta; then
+            platform="darwin-arm64"
+          else
+            platform="darwin-amd64"
+          fi
+          ;;
+        *) die "unsupported macOS architecture: ${machine}" ;;
+      esac
       ;;
-    x86_64|amd64)
-      if is_rosetta; then
-        platform="darwin-arm64"
-      else
-        platform="darwin-amd64"
+    Linux)
+      case "${machine}" in
+        aarch64|arm64) platform="linux-arm64" ;;
+        x86_64) platform="linux-amd64" ;;
+        *) die "unsupported Linux architecture: ${machine}" ;;
+      esac
+      if ! libc="$(getconf GNU_LIBC_VERSION 2>/dev/null)" || \
+         [[ ! "$libc" =~ ^glibc\ ([0-9]+)\.([0-9]+)(\.[0-9]+)*$ ]]; then
+        die "PV needs a glibc-based Linux distribution"
       fi
+      if (( 10#${BASH_REMATCH[1]} < 2 || (10#${BASH_REMATCH[1]} == 2 && 10#${BASH_REMATCH[2]} < 35) )); then
+        die "PV needs glibc 2.35 or newer; found ${libc}"
+      fi
+      [ -d /run/systemd/system ] || die "PV needs systemd running"
+      if [ -r /etc/os-release ]; then
+        # shellcheck source=/dev/null
+        . /etc/os-release
+      fi
+      warn "Linux distribution: ${PRETTY_NAME:-Linux} (untested)"
       ;;
     *)
-      die "unsupported macOS architecture: ${machine}"
+      die "macOS or Linux is required; found ${os}"
       ;;
   esac
 
@@ -152,6 +183,22 @@ select_asset() {
       HELPER_SHA256="${AMD64_HELPER_SHA256}"
       HELPER_SIZE="${AMD64_HELPER_SIZE}"
       ;;
+    linux-arm64)
+      ASSET_URL="${LINUX_ARM64_URL}"
+      EXPECTED_SHA256="${LINUX_ARM64_SHA256}"
+      EXPECTED_SIZE="${LINUX_ARM64_SIZE}"
+      HELPER_URL="${LINUX_ARM64_HELPER_URL}"
+      HELPER_SHA256="${LINUX_ARM64_HELPER_SHA256}"
+      HELPER_SIZE="${LINUX_ARM64_HELPER_SIZE}"
+      ;;
+    linux-amd64)
+      ASSET_URL="${LINUX_AMD64_URL}"
+      EXPECTED_SHA256="${LINUX_AMD64_SHA256}"
+      EXPECTED_SIZE="${LINUX_AMD64_SIZE}"
+      HELPER_URL="${LINUX_AMD64_HELPER_URL}"
+      HELPER_SHA256="${LINUX_AMD64_HELPER_SHA256}"
+      HELPER_SIZE="${LINUX_AMD64_HELPER_SIZE}"
+      ;;
     *)
       die "unsupported PV installer platform: ${platform}"
       ;;
@@ -167,7 +214,10 @@ sha256_file() {
   local path
 
   path="$1"
-  if command -v shasum >/dev/null 2>&1; then
+  if [ "$(uname -s)" = Linux ]; then
+    command -v sha256sum >/dev/null 2>&1 || die "sha256sum is required for checksum verification"
+    sha256sum "${path}" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "${path}" | awk '{print $1}'
   elif command -v sha256sum >/dev/null 2>&1; then
     sha256sum "${path}" | awk '{print $1}'
@@ -270,7 +320,7 @@ confirm_installation() {
     die "setup confirmation requires a controlling terminal; rerun with --yes or --no-setup"
   fi
 
-  printf 'pv installer: Install PV and run setup? This may update your shell profile and request macOS administrator authentication. [y/N] ' >/dev/tty
+  printf 'pv installer: Install PV and run setup? This may update your shell profile and request administrator authentication. [y/N] ' >/dev/tty
   if ! IFS= read -r reply </dev/tty; then
     die "could not read setup confirmation; rerun with --yes or --no-setup"
   fi
@@ -803,10 +853,7 @@ pub fn generate_app_installer_script(
     validate_app_record_group(first_record, remaining_records, &mut seen_platforms)?;
     generate_app_manifest_json(records, base_url)?;
 
-    let arm64 = installer_asset(records, AppUpdatePlatform::DarwinArm64, base_url);
-    let amd64 = installer_asset(records, AppUpdatePlatform::DarwinAmd64, base_url);
-
-    Ok(APP_INSTALLER_TEMPLATE
+    let mut installer = APP_INSTALLER_TEMPLATE
         .replace("@@PV_VERSION@@", &shell_quote(first_record.version()))
         .replace(
             "@@HELPER_VERSION@@",
@@ -815,31 +862,26 @@ pub fn generate_app_installer_script(
         .replace(
             "@@HELPER_PROTOCOL_VERSION@@",
             &shell_quote(&first_record.helper().protocol_version().to_string()),
-        )
-        .replace("@@ARM64_URL@@", &shell_quote(&arm64.url))
-        .replace("@@ARM64_SHA256@@", &shell_quote(&arm64.sha256))
-        .replace("@@ARM64_SIZE@@", &shell_quote(&arm64.size.to_string()))
-        .replace("@@ARM64_HELPER_URL@@", &shell_quote(&arm64.helper_url))
-        .replace(
-            "@@ARM64_HELPER_SHA256@@",
-            &shell_quote(&arm64.helper_sha256),
-        )
-        .replace(
-            "@@ARM64_HELPER_SIZE@@",
-            &shell_quote(&arm64.helper_size.to_string()),
-        )
-        .replace("@@AMD64_URL@@", &shell_quote(&amd64.url))
-        .replace("@@AMD64_SHA256@@", &shell_quote(&amd64.sha256))
-        .replace("@@AMD64_SIZE@@", &shell_quote(&amd64.size.to_string()))
-        .replace("@@AMD64_HELPER_URL@@", &shell_quote(&amd64.helper_url))
-        .replace(
-            "@@AMD64_HELPER_SHA256@@",
-            &shell_quote(&amd64.helper_sha256),
-        )
-        .replace(
-            "@@AMD64_HELPER_SIZE@@",
-            &shell_quote(&amd64.helper_size.to_string()),
-        ))
+        );
+    for (prefix, platform) in [
+        ("ARM64", AppUpdatePlatform::DarwinArm64),
+        ("AMD64", AppUpdatePlatform::DarwinAmd64),
+        ("LINUX_ARM64", AppUpdatePlatform::LinuxArm64),
+        ("LINUX_AMD64", AppUpdatePlatform::LinuxAmd64),
+    ] {
+        let asset = installer_asset(records, platform, base_url);
+        for (field, value) in [
+            ("URL", asset.url),
+            ("SHA256", asset.sha256),
+            ("SIZE", asset.size.to_string()),
+            ("HELPER_URL", asset.helper_url),
+            ("HELPER_SHA256", asset.helper_sha256),
+            ("HELPER_SIZE", asset.helper_size.to_string()),
+        ] {
+            installer = installer.replace(&format!("@@{prefix}_{field}@@"), &shell_quote(&value));
+        }
+    }
+    Ok(installer)
 }
 
 pub fn load_app_release_records(root: &Utf8Path) -> crate::Result<Vec<AppReleaseRecord>> {

@@ -497,7 +497,7 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
     release_name=PV App Release
     jobs=["prepare-release", "build-app", "generate-release"]
     app_platforms_default=darwin-arm64
-    platform_matrices=["platform: [darwin-arm64, darwin-amd64]"]
+    platform_matrices=["platform: [darwin-arm64, darwin-amd64, linux-amd64, linux-arm64]"]
     uses_native_macos_runners=true
     build_app_platform_gate=true
     generate_uses_selected_platforms=true
@@ -626,7 +626,7 @@ fn app_publication_writes_app_stable_entrypoints() -> Result<()> {
     let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
     let publication_workflow = publication.as_deref().unwrap_or("");
     let summary = format!(
-        "publication_workflow_exists={}\nstable_app_manifest_key_present={}\nstable_installer_key_present={}\npublishes_manifest_before_installer={}\nrequires_arm64_handoff={}\nallows_amd64_to_be_absent={}\nmanaged_resource_key_references={:?}",
+        "publication_workflow_exists={}\nstable_app_manifest_key_present={}\nstable_installer_key_present={}\npublishes_manifest_before_installer={}\nrequires_arm64_handoff={}\nallows_amd64_to_be_absent={}\ncollects_all_native_app_records={}\nmanaged_resource_key_references={:?}",
         publication.is_some(),
         stable_key_reference_present(publication_workflow, "pv-app-manifest.json"),
         stable_key_reference_present(publication_workflow, "install.sh"),
@@ -634,10 +634,9 @@ fn app_publication_writes_app_stable_entrypoints() -> Result<()> {
             < publication_workflow.find("- name: Publish stable installer"),
         publication_workflow.contains("for platform in darwin-arm64; do")
             && publication_workflow.contains("missing required app binary for $binary_name"),
-        !publication_workflow.contains("for platform in darwin-arm64 darwin-amd64; do")
-            && publication_workflow.contains(
-                "find \"$handoff_dir\" -type f -path \"*/pv/records/*/pv-darwin-*.json\""
-            ),
+        !publication_workflow.contains("for platform in darwin-arm64 darwin-amd64; do"),
+        publication_workflow
+            .contains("find \"$handoff_dir\" -type f -path \"*/pv/records/*/pv-*.json\""),
         managed_resource_key_references(publication_workflow),
     );
 
@@ -648,6 +647,7 @@ fn app_publication_writes_app_stable_entrypoints() -> Result<()> {
     publishes_manifest_before_installer=true
     requires_arm64_handoff=true
     allows_amd64_to_be_absent=true
+    collects_all_native_app_records=true
     managed_resource_key_references=[]
     "#);
 

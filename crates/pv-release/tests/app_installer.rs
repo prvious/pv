@@ -20,8 +20,6 @@ const APP_VERSION: &str = "0.9.0";
 const STAGING_BASE_URL: &str = "https://artifacts-staging.pv.prvious.dev";
 const ARM64_OBJECT_KEY: &str = "pv/0.9.0/pv-darwin-arm64";
 const AMD64_OBJECT_KEY: &str = "pv/0.9.0/pv-darwin-amd64";
-const ARM64_HELPER_OBJECT_KEY: &str = "pv/0.9.0/pv-helper-1.0.0-darwin-arm64";
-const AMD64_HELPER_OBJECT_KEY: &str = "pv/0.9.0/pv-helper-1.0.0-darwin-amd64";
 
 #[test]
 fn generated_app_installer_embeds_staging_assets_and_contract() -> Result<()> {
@@ -79,6 +77,100 @@ fn generated_app_installer_allows_arm64_only_preview_assets() -> Result<()> {
     unsupported_platform_guard=true
     "#);
 
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn linux_installer_selects_native_assets_and_installs_the_app_helper_pair() -> Result<()> {
+    let mut summaries = Vec::new();
+    for (machine, libc) in [
+        ("x86_64", "glibc 2.35"),
+        ("aarch64", "glibc 2.100"),
+        ("arm64", "glibc 3.0"),
+    ] {
+        let fixture = InstallerExecutionFixture::new()?;
+        let output = fixture.run_host_installer("Linux", machine, Some(libc), true)?;
+        assert!(
+            output.status.success(),
+            "{}",
+            command_output_summary(&output)
+        );
+        assert_eq!(read_file(&fixture.release_binary())?, fake_pv_binary());
+        assert_eq!(read_file(&fixture.release_helper())?, fake_helper_binary());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&read_file(
+                &fixture.release_helper_metadata()
+            )?)?,
+            json!({"version": "1.0.0", "protocol_version": 1, "sha256": helper_sha256()})
+        );
+        assert!(active_pv_symlink_points_to_release(
+            &fixture.active_binary(),
+            &fixture.release_binary()
+        )?);
+        let checksum_log = read_file(&fixture.checksum_log)?;
+        let checksum_tools = checksum_log
+            .lines()
+            .filter_map(|line| line.split_whitespace().next())
+            .collect::<Vec<_>>();
+        summaries.push(format!(
+            "machine={machine} libc={libc}\nchecksum_tools={checksum_tools:?}\nstderr:\n{}\n{}",
+            normalize_output(&String::from_utf8(output.stderr)?, &fixture),
+            fixture.command_logs()?
+        ));
+    }
+    assert_snapshot!(summaries.join("\n\n"));
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn linux_installer_refuses_incompatible_hosts_before_download_or_installation() -> Result<()> {
+    let mut summaries = Vec::new();
+    for (name, os, machine, libc, systemd) in [
+        ("missing glibc", "Linux", "x86_64", None, true),
+        ("musl", "Linux", "aarch64", Some("musl 1.2.5"), true),
+        ("old glibc", "Linux", "x86_64", Some("glibc 2.34"), true),
+        (
+            "single-digit minor",
+            "Linux",
+            "x86_64",
+            Some("glibc 2.9"),
+            true,
+        ),
+        ("no systemd", "Linux", "aarch64", Some("glibc 2.35"), false),
+        (
+            "unsupported CPU",
+            "Linux",
+            "riscv64",
+            Some("glibc 2.35"),
+            true,
+        ),
+        (
+            "unsupported OS",
+            "FreeBSD",
+            "x86_64",
+            Some("glibc 2.35"),
+            true,
+        ),
+    ] {
+        let fixture = InstallerExecutionFixture::new()?;
+        let output = fixture.run_host_installer(os, machine, libc, systemd)?;
+        assert!(
+            !output.status.success(),
+            "{name}: {}",
+            command_output_summary(&output)
+        );
+        assert!(!path_exists(&fixture.home.join(".pv")));
+        assert!(!path_exists(&fixture.curl_log));
+        assert!(!path_exists(&fixture.checksum_log));
+        assert!(!path_exists(&fixture.pv_log));
+        summaries.push(format!(
+            "{name}:\n{}",
+            normalize_output(&command_output_summary(&output), &fixture)
+        ));
+    }
+    assert_snapshot!(summaries.join("\n\n"));
     Ok(())
 }
 
@@ -462,6 +554,22 @@ impl AppInstallerFixture {
         Ok(fixture)
     }
 
+    fn add_linux_records(&self) -> Result<()> {
+        let (sha256, size) = digest_and_size(fake_pv_binary().as_bytes());
+        for platform in ["linux-amd64", "linux-arm64"] {
+            write_app_record(
+                &self
+                    .records
+                    .join(format!("pv-{APP_VERSION}-{platform}.json")),
+                platform,
+                &format!("pv/{APP_VERSION}/pv-{platform}"),
+                &sha256,
+                size,
+            )?;
+        }
+        Ok(())
+    }
+
     fn generate_installer(&self) -> Result<String> {
         let output = run_pv_release([
             "generate-app-installer",
@@ -524,6 +632,10 @@ impl InstallerExecutionFixture {
         write_fake_checksum_tool(&fake_bin.join("sha256sum"))?;
         write_fake_uname(&fake_bin.join("uname"))?;
         write_fake_sysctl(&fake_bin.join("sysctl"))?;
+        write_executable(
+            &fake_bin.join("getconf"),
+            "#!/bin/sh\n[ \"$*\" = GNU_LIBC_VERSION ] || exit 2\n[ -n \"${PV_TEST_GLIBC:-}\" ] || exit 1\nprintf '%s\\n' \"$PV_TEST_GLIBC\"\n",
+        )?;
 
         Ok(Self {
             app,
@@ -547,14 +659,16 @@ impl InstallerExecutionFixture {
         args: &[&str],
         checksum_mode: ChecksumMode,
     ) -> Result<Output> {
-        self.run_installer_command(
-            args,
-            checksum_mode,
-            "/bin/pv-unsupported-shell",
-            "arm64",
-            false,
-            true,
-        )
+        Ok(self
+            .installer_command(
+                args,
+                checksum_mode,
+                "/bin/pv-unsupported-shell",
+                "arm64",
+                false,
+                true,
+            )?
+            .output()?)
     }
 
     fn run_installer_with_shell(
@@ -574,10 +688,50 @@ impl InstallerExecutionFixture {
         machine: &str,
         translated: bool,
     ) -> Result<Output> {
-        self.run_installer_command(args, checksum_mode, shell, machine, translated, false)
+        Ok(self
+            .installer_command(args, checksum_mode, shell, machine, translated, false)?
+            .output()?)
     }
 
-    fn run_installer_command(
+    fn run_host_installer(
+        &self,
+        os: &str,
+        machine: &str,
+        libc: Option<&str>,
+        systemd: bool,
+    ) -> Result<Output> {
+        self.app.add_linux_records()?;
+        let mut command = self.installer_command(
+            &["--yes"],
+            ChecksumMode::Match,
+            "/bin/bash",
+            machine,
+            true,
+            false,
+        )?;
+        let systemd_dir = self.app.tempdir.path().join("systemd");
+        if systemd {
+            create_dir_all(&systemd_dir)?;
+        }
+        let os_release = self.app.tempdir.path().join("os-release");
+        write_file(
+            &os_release,
+            "ID=example\nPRETTY_NAME='Fixture Linux'\nVERSION_ID=1\n",
+        )?;
+        let installer = read_file(&self.app.output)?;
+        assert!(installer.contains("/run/systemd/system"));
+        assert!(installer.contains("/etc/os-release"));
+        let installer = installer
+            .replace("/run/systemd/system", systemd_dir.as_str())
+            .replace("/etc/os-release", os_release.as_str());
+        write_executable(&self.app.output, &installer)?;
+        command
+            .env("PV_TEST_UNAME_OS", os)
+            .env("PV_TEST_GLIBC", libc.unwrap_or_default());
+        Ok(command.output()?)
+    }
+
+    fn installer_command(
         &self,
         args: &[&str],
         checksum_mode: ChecksumMode,
@@ -585,7 +739,7 @@ impl InstallerExecutionFixture {
         machine: &str,
         translated: bool,
         detach_controlling_terminal: bool,
-    ) -> Result<Output> {
+    ) -> Result<StdCommand> {
         let installer = self.app.generate_installer()?;
         write_executable(&self.app.output, &installer)?;
 
@@ -637,7 +791,7 @@ os.execv(sys.argv[1], sys.argv[1:])"#,
                 if translated { "1" } else { "0" },
             );
 
-        Ok(command.output()?)
+        Ok(command)
     }
 
     fn home(&self) -> &Utf8Path {
@@ -794,11 +948,7 @@ fn write_app_record(
     sha256: &str,
     size: u64,
 ) -> Result<()> {
-    let helper_object_key = if platform == "darwin-arm64" {
-        ARM64_HELPER_OBJECT_KEY
-    } else {
-        AMD64_HELPER_OBJECT_KEY
-    };
+    let helper_object_key = format!("pv/{APP_VERSION}/pv-helper-1.0.0-{platform}");
     let (helper_sha256, helper_size) = digest_and_size(fake_helper_binary().as_bytes());
     let record = json!({
         "schema_version": 2,
@@ -973,7 +1123,7 @@ fn write_fake_uname(path: &Utf8Path) -> Result<()> {
 set -eu
 case "${1:-}" in
   -s)
-    printf '%s\n' Darwin
+    printf '%s\n' "${PV_TEST_UNAME_OS:-Darwin}"
     ;;
   -m)
     printf '%s\n' "${PV_TEST_UNAME_MACHINE:-arm64}"

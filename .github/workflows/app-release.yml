@@ -82,7 +82,7 @@ jobs:
           normalized_platforms=
           for platform in "${requested_platforms[@]}"; do
             case "$platform" in
-              darwin-arm64|darwin-amd64) ;;
+              darwin-arm64|darwin-amd64|linux-amd64|linux-arm64) ;;
               "")
                 printf '%s\n' "app_platforms entries must be non-empty" >&2
                 exit 1
@@ -172,7 +172,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [darwin-arm64, darwin-amd64]
+        platform: [darwin-arm64, darwin-amd64, linux-amd64, linux-arm64]
         include:
           - platform: darwin-arm64
             runner: macos-14
@@ -180,6 +180,12 @@ jobs:
           - platform: darwin-amd64
             runner: macos-15-intel
             rust_target: x86_64-apple-darwin
+          - platform: linux-amd64
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
 
     steps:
       - name: Checkout
@@ -194,6 +200,12 @@ jobs:
         with:
           targets: ${{ matrix.rust_target }}
 
+      - name: Build Ubuntu 22.04 builder locally
+        if: ${{ startsWith(matrix.platform, 'linux-') && contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform)) }}
+        run: |
+          df -h /
+          docker build -f scripts/linux/builder.Dockerfile --build-arg BUILDER_UID="$(id -u)" -t pv-linux-builder .
+
       - name: Build app and privileged helper binaries
         if: ${{ contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform)) }}
         env:
@@ -205,6 +217,21 @@ jobs:
           R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
         run: |
           set -euo pipefail
+
+          linux_build() {
+            mkdir -p "$GITHUB_WORKSPACE/target"
+            docker run --rm --init --user "$(id -u):$(id -g)" \
+              --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/src,readonly" \
+              --mount "type=bind,src=$GITHUB_WORKSPACE/target,dst=/src/target" \
+              --mount "type=bind,src=$RUNNER_TEMP,dst=/work" --workdir /src \
+              --env HOME=/work/home --env CARGO_HOME=/work/cargo \
+              --env CARGO_BUILD_JOBS=2 --env PV_DEFAULT_APP_UPDATE_MANIFEST_URL \
+              --env PV_DEFAULT_ARTIFACT_MANIFEST_URL pv-linux-builder \
+              cargo build --locked --release --package "$1" --bin "$2" --target "${{ matrix.rust_target }}"
+          }
+          file_size() {
+            if [ "$(uname -s)" = Linux ]; then stat -c '%s' "$1"; else stat -f '%z' "$1"; fi
+          }
 
           mkdir -p "$(dirname "$PV_APP_BINARY")"
           current_manifest="$RUNNER_TEMP/current-pv-app-manifest.json"
@@ -273,15 +300,19 @@ jobs:
               --retry 3 --retry-delay 2 --retry-all-errors \
               --output "$PV_HELPER_BINARY" "$helper_url"
             actual_helper_sha256=$(shasum -a 256 "$PV_HELPER_BINARY" | awk '{print $1}')
-            actual_helper_size=$(stat -f '%z' "$PV_HELPER_BINARY")
+            actual_helper_size=$(file_size "$PV_HELPER_BINARY")
             if [ "$actual_helper_sha256" != "$helper_sha256" ] || [ "$actual_helper_size" != "$helper_size" ]; then
               printf '%s\n' "current stable helper asset failed app-only reuse verification" >&2
               exit 1
             fi
             chmod 755 "$PV_HELPER_BINARY"
           else
-            cargo build --locked --release --package pv-privileged-helper --bin pv-helper --target "${{ matrix.rust_target }}"
-            codesign --force --sign - "target/${{ matrix.rust_target }}/release/pv-helper"
+            if [ "$(uname -s)" = Linux ]; then
+              linux_build pv-privileged-helper pv-helper
+            else
+              cargo build --locked --release --package pv-privileged-helper --bin pv-helper --target "${{ matrix.rust_target }}"
+              codesign --force --sign - "target/${{ matrix.rust_target }}/release/pv-helper"
+            fi
             helper_sha256=$(shasum -a 256 "target/${{ matrix.rust_target }}/release/pv-helper" | awk '{print $1}')
             case "$helper_sha256" in
               (*[!0-9a-f]*|"")
@@ -314,15 +345,26 @@ jobs:
               --retry 3 --retry-delay 2 --retry-all-errors \
               --output "$PV_APP_BINARY" "$app_url"
             actual_app_sha256=$(shasum -a 256 "$PV_APP_BINARY" | awk '{print $1}')
-            actual_app_size=$(stat -f '%z' "$PV_APP_BINARY")
+            actual_app_size=$(file_size "$PV_APP_BINARY")
             if [ "$actual_app_sha256" != "$app_sha256" ] || [ "$actual_app_size" != "$app_size" ]; then
               printf '%s\n' "current stable app asset failed helper-only reuse verification" >&2
               exit 1
             fi
             chmod 755 "$PV_APP_BINARY"
           else
-            cargo build --locked --release --package pv --bin pv --target "${{ matrix.rust_target }}"
+            if [ "$(uname -s)" = Linux ]; then
+              linux_build pv pv
+            else
+              cargo build --locked --release --package pv --bin pv --target "${{ matrix.rust_target }}"
+            fi
             install -m 755 "target/${{ matrix.rust_target }}/release/pv" "$PV_APP_BINARY"
+          fi
+          if [ "$(uname -s)" = Linux ]; then
+            docker run --rm --init --user "$(id -u):$(id -g)" \
+              --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/src,readonly" \
+              --mount "type=bind,src=$RUNNER_TEMP/pv-app-stage,dst=/artifacts,readonly" \
+              --workdir /src --env PV_PLATFORM="${{ matrix.platform }}" pv-linux-builder sh -c \
+              '. release/artifacts/recipes/common.sh; pv_recipe_validate_elf_tree /artifacts "$PV_PLATFORM"'
           fi
 
       - name: Write app release record
