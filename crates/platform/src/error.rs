@@ -95,6 +95,10 @@ pub enum PlatformError {
     DaemonRegistrationBus(#[source] Box<zbus::Error>),
 
     #[cfg(target_os = "linux")]
+    #[error("privileged helper systemd operation failed: {0}")]
+    PrivilegedHelperBus(#[source] Box<zbus::Error>),
+
+    #[cfg(target_os = "linux")]
     #[error("daemon registration {operation} failed: {message}")]
     DaemonRegistrationState {
         operation: &'static str,
@@ -136,6 +140,14 @@ pub enum PlatformError {
 
     #[error("PV privileged helper installation failed: {0}")]
     PrivilegedHelperInstallation(String),
+
+    #[cfg(target_os = "linux")]
+    #[error("{source}; cleanup warning: {cleanup_warning}")]
+    PrivilegedHelperVerification {
+        #[source]
+        source: Box<PlatformError>,
+        cleanup_warning: String,
+    },
 
     #[error("PV privileged helper authentication failed: {0}")]
     PrivilegedHelperAuthentication(String),

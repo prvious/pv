@@ -264,6 +264,51 @@ jobs:
           name: nextest-system-run-${{ matrix.runner }}
           path: ${{ runner.temp }}/nextest-system-run.zip
 
+      - name: Prepare native Linux helper lifecycle test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --all-features -p pv-privileged-helper
+          cargo nextest list --locked --all-features -p cli --run-ignored only \
+            -E 'binary(=linux_helper_system) and test(=systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes)'
+          nextest_state_directory=$(mktemp -d "$RUNNER_TEMP/nextest-helper-state.XXXXXX")
+          printf 'NEXTEST_STATE_DIR=%s\n' "$nextest_state_directory" >> "$GITHUB_ENV"
+
+      - name: Run native Linux helper lifecycle test
+        id: linux_helper_tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo -n systemd-run --wait --pipe --collect --unit=pv-helper-system-test \
+            --uid="$(id -u)" --property=KillMode=control-group \
+            --property=RuntimeMaxSec=120s --property=TimeoutStopSec=5s \
+            --working-directory="$PWD" --setenv="HOME=$HOME" --setenv="PATH=$PATH" \
+            --setenv="CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
+            --setenv="RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
+            --setenv="CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS" \
+            --setenv="CARGO_PROFILE_DEV_DEBUG=$CARGO_PROFILE_DEV_DEBUG" \
+            --setenv="CARGO_INCREMENTAL=$CARGO_INCREMENTAL" \
+            --setenv="NEXTEST_STATE_DIR=$NEXTEST_STATE_DIR" --setenv=INSTA_UPDATE=no \
+            --setenv=PV_LINUX_SYSTEM_TESTS=1 \
+            --setenv="PV_LINUX_SYSTEM_HELPER=$PWD/target/debug/pv-helper" \
+            "$(command -v cargo)" nextest run --profile ci \
+            --user-config-file "$RUNNER_TEMP/nextest-user.toml" \
+            --run-ignored only -p cli --all-features --locked \
+            -E 'binary(=linux_helper_system) and test(=systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes)'
+
+      - name: Export Linux helper test recording
+        id: export_linux_helper_recording
+        if: ${{ !cancelled() && steps.linux_helper_tests.outcome != 'skipped' }}
+        run: cargo nextest store export latest --archive-file "$RUNNER_TEMP/nextest-helper-run.zip"
+
+      - name: Upload Linux helper test recording
+        if: ${{ !cancelled() && steps.export_linux_helper_recording.outcome == 'success' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nextest-helper-run-${{ matrix.runner }}
+          path: ${{ runner.temp }}/nextest-helper-run.zip
+          if-no-files-found: error
+
   runtime-portability:
     name: Runtime (${{ matrix.target }})
     strategy:

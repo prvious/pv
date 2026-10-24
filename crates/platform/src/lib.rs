@@ -16,6 +16,8 @@ mod pf;
 mod port;
 mod process;
 mod resolver;
+#[cfg(target_os = "linux")]
+mod systemd;
 mod target;
 mod trust;
 
@@ -39,6 +41,12 @@ pub use daemon_registration::{
     restart_daemon_registration, stop_daemon_registration, write_daemon_registration_file,
 };
 pub use error::PlatformError;
+#[cfg(target_os = "linux")]
+pub use helper::{
+    PrivilegedHelperLifecycleAction, installed_helper_artifacts_present,
+    run_privileged_helper_lifecycle,
+};
+
 pub use helper::{
     HELPER_EXECUTABLE_PATH, HELPER_LAUNCH_DAEMON_PATH, HELPER_METADATA_PATH,
     HELPER_PROTOCOL_VERSION, HELPER_SOCKET_PATH, PRIVILEGED_HELPER_VERSION, PrivilegedHelperClient,
@@ -140,6 +148,10 @@ mod tests {
                 PlatformCapability::DaemonRegistration
             )
             .is_ok()
+        );
+        assert!(
+            require_capability_for(PlatformTarget::Linux, PlatformCapability::PrivilegedHelper)
+                .is_ok()
         );
     }
 }
