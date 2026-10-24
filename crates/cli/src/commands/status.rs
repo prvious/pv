@@ -168,6 +168,16 @@ impl StatusSnapshot {
             output.line("    repair: pv ports:install")?;
         }
         output.line(&format!("  CA: {}", self.integrations.ca))?;
+        for report in &self.integrations.browser_ca {
+            output.line(&format!(
+                "  Browser CA: {} · {}",
+                report.database,
+                report.label()
+            ))?;
+            if let Some(detail) = report.detail() {
+                output.line(&format!("    {detail}"))?;
+            }
+        }
         output.line(&format!("Logs: {}", self.log_directory))?;
         output.line("Managed Resources:")?;
         if self.managed_resources.is_empty() {
@@ -333,6 +343,21 @@ impl StatusSnapshot {
             self.integrations.ca_mark,
             integration("CA", self.integrations.ca),
         )?;
+
+        for report in &self.integrations.browser_ca {
+            output.status(
+                if report.current() {
+                    Mark::Success
+                } else {
+                    Mark::Failure
+                },
+                Line::field("Browser CA: ", &report.database)
+                    .text(format!(" · {}", report.label())),
+            )?;
+            if let Some(detail) = report.detail() {
+                output.detail(detail)?;
+            }
+        }
 
         output.section("Managed Resources")?;
         if self.managed_resources.is_empty() {
@@ -549,6 +574,8 @@ struct IntegrationStatuses {
     dns: &'static str,
     ports: PfRoutingDiagnostic,
     ca: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    browser_ca: Vec<super::ca::BrowserCaReport>,
     #[serde(skip)]
     failure: bool,
     #[serde(skip)]
@@ -586,12 +613,18 @@ impl IntegrationStatuses {
             platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
         let local_metadata = metadata_from_local_ca(&local_ca);
         let trust = ca_trust_state(environment, local_metadata.as_ref());
-        let (ca, ca_mark) = ca_status(&local_ca, &trust);
+        let (ca, mut ca_mark) = ca_status(&local_ca, &trust);
+        let browser_ca =
+            super::ca::browser_ca_reports(environment, paths, local_metadata.as_ref())?;
+        if browser_ca.iter().any(|report| !report.current()) {
+            ca_mark = Mark::Failure;
+        }
 
         Ok(Self {
             dns,
             ports,
             ca,
+            browser_ca,
             failure: [dns_mark, ports_mark, ca_mark].contains(&Mark::Failure),
             dns_mark,
             ports_mark,
@@ -980,6 +1013,7 @@ mod tests {
                     observed_at: "2026-09-26T12:00:00Z".to_string(),
                 },
                 ca: "trusted",
+                browser_ca: Vec::new(),
                 failure: false,
                 dns_mark: Mark::Success,
                 ports_mark: Mark::Success,

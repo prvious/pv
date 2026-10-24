@@ -12,13 +12,15 @@ use cli::{Environment, run_with_environment};
 use insta::{Settings, assert_debug_snapshot, assert_snapshot};
 use platform::{
     ActivePfRedirectInspection, DaemonRegistrationConfig, DaemonRegistrationFileState,
-    DaemonRegistrationStatus, PlatformError, inspect_daemon_registration_file,
+    DaemonRegistrationStatus, LocalCaMetadata, PlatformError, TrustDomainState, generate_local_ca,
+    inspect_daemon_registration_file,
 };
 use serde_json::{Value, json};
 use state::{PvPaths, fs};
 
 struct TestEnvironment {
     home: Utf8PathBuf,
+    browser_ca: Vec<(Utf8PathBuf, bool)>,
     operations: RefCell<Vec<&'static str>>,
     fail_next_enable: Cell<bool>,
     registration_status: Option<DaemonRegistrationStatus>,
@@ -30,6 +32,7 @@ impl TestEnvironment {
     fn new(home: &Utf8Path) -> Self {
         Self {
             home: home.to_owned(),
+            browser_ca: Vec::new(),
             operations: RefCell::new(Vec::new()),
             fail_next_enable: Cell::new(false),
             registration_status: None,
@@ -50,6 +53,39 @@ impl TestEnvironment {
 }
 
 impl Environment for TestEnvironment {
+    fn browser_ca_databases(&self, _home: &Utf8Path) -> Result<Vec<Utf8PathBuf>, PlatformError> {
+        Ok(self
+            .browser_ca
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect())
+    }
+
+    fn inspect_browser_ca_trust(
+        &self,
+        database: &Utf8Path,
+        metadata: Option<&LocalCaMetadata>,
+    ) -> TrustDomainState {
+        let Some(metadata) = metadata else {
+            return TrustDomainState::Unknown {
+                reason: "local CA is unavailable".to_owned(),
+            };
+        };
+        if self
+            .browser_ca
+            .iter()
+            .any(|(path, trusted)| path == database && *trusted)
+        {
+            TrustDomainState::Current {
+                fingerprint: metadata.fingerprint.clone(),
+            }
+        } else {
+            TrustDomainState::NotTrusted {
+                fingerprint: metadata.fingerprint.clone(),
+            }
+        }
+    }
+
     fn var_os(&self, _key: &str) -> Option<OsString> {
         None
     }
@@ -406,4 +442,59 @@ fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOu
         stdout: String::from_utf8(stdout)?,
         stderr: String::from_utf8(stderr)?,
     })
+}
+
+#[test]
+fn linux_browser_ca_diagnostics_report_each_database() -> anyhow::Result<()> {
+    let directory = tempdir()?;
+    let home = directory.path().join("home");
+    let paths = PvPaths::for_home(&home);
+    let generated = generate_local_ca()?;
+    fs::write_sensitive_file(&paths.ca_certificate(), &generated.certificate_pem)?;
+    fs::write_sensitive_file(&paths.ca_private_key(), &generated.private_key_pem)?;
+    let mut environment = TestEnvironment::new(&home);
+    environment.browser_ca = vec![
+        (home.join(".pki/nssdb"), true),
+        (home.join(".mozilla/firefox/default"), false),
+    ];
+    let doctor = run_pv(&["doctor", "--json"], &environment)?;
+    let report: Value = serde_json::from_str(&doctor.stdout)?;
+    let sections = report["sections"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("missing doctor sections"))?;
+    let checks = sections
+        .iter()
+        .filter_map(|section| section["checks"].as_array())
+        .flatten()
+        .filter(|check| check["name"] == "Browser CA trust")
+        .collect::<Vec<_>>();
+    assert_eq!(checks.len(), 2);
+    assert_eq!(checks[0]["status"], "pass");
+    assert_eq!(checks[1]["status"], "fail");
+    let status = run_pv(&["status", "--json"], &environment)?;
+    let status_report: Value = serde_json::from_str(&status.stdout)?;
+    let browsers = status_report["integrations"]["browser_ca"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("missing browser CA status"))?;
+    assert_eq!(browsers.len(), 2);
+    assert_eq!(
+        browsers[0]["database"],
+        environment.browser_ca[0].0.as_str()
+    );
+    assert_eq!(
+        browsers[1]["database"],
+        environment.browser_ca[1].0.as_str()
+    );
+    assert_eq!(
+        browsers[0]["state"]["Current"]["fingerprint"],
+        generated.metadata.fingerprint
+    );
+    assert_eq!(
+        browsers[1]["state"]["NotTrusted"]["fingerprint"],
+        generated.metadata.fingerprint
+    );
+    snapshot_settings(directory.path()).bind(|| {
+        assert_debug_snapshot!(checks);
+    });
+    Ok(())
 }

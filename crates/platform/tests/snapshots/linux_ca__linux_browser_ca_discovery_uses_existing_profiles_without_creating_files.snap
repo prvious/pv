@@ -1,0 +1,11 @@
+---
+source: crates/platform/tests/linux_ca.rs
+expression: names
+---
+[
+    ".local/share/pki/nssdb",
+    ".mozilla/firefox/default",
+    ".pki/nssdb",
+    "snap/chromium/current/.pki/nssdb",
+    "snap/firefox/common/.mozilla/firefox/default",
+]

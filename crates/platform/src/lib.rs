@@ -81,7 +81,8 @@ pub use resolver::{start_resolver_link, stop_resolver_link};
 pub use target::PlatformTarget;
 pub use trust::{
     KeychainCertificate, KeychainTrustResult, NativeSystemTrustInspector, SystemTrustInspector,
-    TrustDomainState, inspect_system_ca_trust, trust_system_ca, trusted_pv_ca_fingerprints,
+    TrustDomainState, browser_ca_databases, inspect_browser_ca_trust, inspect_system_ca_trust,
+    trust_browser_ca, trust_system_ca, trusted_pv_ca_fingerprints, untrust_browser_ca,
     untrust_system_ca,
 };
 

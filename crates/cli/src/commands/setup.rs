@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use platform::CaFileState;
+use platform::{CaFileState, PlatformTarget};
 use resources::{
     ArtifactManifest, ArtifactManifestCache, ArtifactManifestSource, ResourceHttpClient,
     ResourceName, TargetPlatform, TrackName, TrackSelector, UreqResourceHttpClient,
@@ -876,6 +876,9 @@ fn untrust_ca_for_uninstall(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
+    if environment.platform_target()? == PlatformTarget::Linux {
+        return ca::untrust(environment, streams);
+    }
     let paths = pv_paths(environment)?;
     let local_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());

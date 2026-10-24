@@ -1,15 +1,18 @@
+#[cfg(target_os = "linux")]
+pub(crate) mod linux;
+
 use std::collections::BTreeSet;
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::LocalCaMetadata;
 use crate::ca::is_pv_ca_metadata;
 use crate::error::PlatformError;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use crate::PlatformCapability;
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use crate::capability::unsupported;
 
 #[cfg(target_os = "macos")]
@@ -153,7 +156,7 @@ pub fn trusted_pv_ca_fingerprints(
 }
 
 pub fn trust_system_ca(certificate_path: &Utf8Path) -> Result<(), PlatformError> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         let certificate_pem = state::fs::read_to_string(certificate_path)
             .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
@@ -161,7 +164,7 @@ pub fn trust_system_ca(certificate_path: &Utf8Path) -> Result<(), PlatformError>
         crate::PrivilegedHelperClient.apply_ca(&metadata.fingerprint)
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = certificate_path;
         Err(unsupported(PlatformCapability::TrustStore)?)
@@ -169,12 +172,12 @@ pub fn trust_system_ca(certificate_path: &Utf8Path) -> Result<(), PlatformError>
 }
 
 pub fn untrust_system_ca(fingerprint: &str) -> Result<(), PlatformError> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         crate::PrivilegedHelperClient.remove_ca(fingerprint)
     }
 
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = fingerprint;
         Err(unsupported(PlatformCapability::TrustStore)?)
@@ -272,7 +275,12 @@ impl SystemTrustInspector for NativeSystemTrustInspector {
             Ok(certificates)
         }
 
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
+        {
+            linux::trusted_certificates()
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         {
             Err(unsupported(PlatformCapability::TrustStore)?)
         }
@@ -289,5 +297,62 @@ mod tests {
             certificate_sha1_fingerprint(b"abc"),
             "A9993E364706816ABA3E25717850C26C9CD0D89D"
         );
+    }
+}
+
+/// Browser certificate databases prescribed by the Linux integration.
+pub fn browser_ca_databases(home: &Utf8Path) -> Result<Vec<Utf8PathBuf>, PlatformError> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::browser_databases(home)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = home;
+        Ok(Vec::new())
+    }
+}
+
+pub fn inspect_browser_ca_trust(
+    database: &Utf8Path,
+    metadata: Option<&LocalCaMetadata>,
+) -> TrustDomainState {
+    #[cfg(target_os = "linux")]
+    {
+        linux::inspect_browser_ca(database, metadata)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (database, metadata);
+        TrustDomainState::Unknown {
+            reason: "browser trust uses the system store on this platform".to_owned(),
+        }
+    }
+}
+
+pub fn trust_browser_ca(database: &Utf8Path, certificate: &Utf8Path) -> Result<(), PlatformError> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::trust_browser_ca(database, certificate)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (database, certificate);
+        Ok(())
+    }
+}
+
+pub fn untrust_browser_ca(
+    database: &Utf8Path,
+    fingerprint: Option<&str>,
+) -> Result<(), PlatformError> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::untrust_browser_ca(database, fingerprint)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (database, fingerprint);
+        Ok(())
     }
 }
