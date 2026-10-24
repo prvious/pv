@@ -15,7 +15,7 @@ use super::{
     DaemonRegistrationFileState, delete_registration_file, inspect_daemon_registration_file,
 };
 use crate::PlatformError;
-use crate::systemd::{native_proxy, within};
+use crate::systemd::{is_vendor_service_drop_in, native_proxy, within};
 
 pub const DAEMON_REGISTRATION_LABEL: &str = "pv-daemon.service";
 pub const DAEMON_REGISTRATION_FILE_NAME: &str = DAEMON_REGISTRATION_LABEL;
@@ -154,7 +154,10 @@ async fn inspect(
     };
     let unit = native_proxy(manager.connection(), path.clone(), UNIT_INTERFACE).await?;
     let drop_ins: Vec<String> = unit.get_property("DropInPaths").await?;
-    if let Some(path) = drop_ins.first() {
+    if let Some(path) = drop_ins
+        .iter()
+        .find(|path| !is_vendor_service_drop_in(path, DAEMON_REGISTRATION_LABEL, "user"))
+    {
         return Err(PlatformError::DaemonRegistrationConflict {
             path: path.as_str().into(),
         });

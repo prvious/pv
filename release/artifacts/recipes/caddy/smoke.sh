@@ -129,6 +129,8 @@ write_config() {
 {
     admin 127.0.0.1:$admin_port
     persist_config off
+    auto_https disable_redirects
+    skip_install_trust
     storage file_system {
         root $storage_dir
     }

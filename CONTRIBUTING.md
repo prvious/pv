@@ -221,6 +221,33 @@ already run their own init.
 Linux CI and this command omit debug symbols and incremental build caches to
 keep the full workspace build within runner disk space; debug assertions stay enabled.
 
+Before seeding unpublished artifacts for Linux acceptance, run this check inside
+the builder. It verifies that the reserved `.invalid` manifest host produces a
+transport error and PV uses its cached manifest. It refuses proxy environments
+so a proxy connection failure cannot stand in for direct DNS resolution.
+
+```shell
+env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
+  cargo nextest run --profile ci --locked -p resources --all-features --run-ignored only \
+  -E 'test(=invalid_manifest_host_uses_transport_error_and_cached_manifest)'
+```
+
+Ignored daemon artifact contracts can use unpublished local inputs. Put the
+generated `manifest.json` and archives in one directory, named by the filenames
+in their URLs, then set `PV_E2E_ARTIFACT_DIR` for the test process:
+
+```shell
+PV_E2E_REAL_ARTIFACTS=1 PV_E2E_ARTIFACT_DIR=/path/to/local-artifacts \
+  PV_E2E_ARTIFACT_MANIFEST_URL=https://artifacts.pv-linux.invalid/manifest.json \
+  cargo nextest run --profile ci --locked -p daemon --all-features --run-ignored only \
+  -E 'test(=real_caddy_satisfies_the_gateway_contract)'
+```
+
+The test transport reads those files locally. Missing inputs fail without a
+network fallback; the normal downloader still checks archive SHA-256 hashes.
+Without `PV_E2E_ARTIFACT_DIR`, the contracts use their existing HTTP client.
+This environment variable is test-only and does not configure the installed app.
+
 System integration needs a separate disposable container with systemd as PID 1:
 
 ```shell
@@ -241,6 +268,25 @@ test user. It is never part of PV's installed daemon behavior.
 Run `python3 scripts/linux/test_container.py` and `shellcheck scripts/linux/*.sh`
 when changing the helper. Distro acceptance is a separate gate; a successful
 build or unit suite does not establish supported Linux distributions.
+
+For a complete Linux support run, first dispatch `artifact-recipes.yml` on the
+Linux branch with `resource=all`, `track=all`, and `platform=all-linux`. After
+that build completes, dispatch `linux-acceptance.yml` on the same stack with its
+`source_run_id`. Before that new workflow reaches the default branch, dispatch
+`artifact-recipes.yml` with `acceptance_source_run_id` instead; it calls the same
+acceptance workflow and skips resource builds. These workflows upload test outputs;
+they do not publish releases or push builder images to a registry. Acceptance
+checks all resource tracks on Ubuntu 22.04/24.04/26.04, Debian 12/13 and Fedora
+43/44 for both native CPUs, plus native Ubuntu and Alpine installer refusal.
+Each pair uploads its result and step logs. The acceptance script runs only as
+an ordinary user on an explicitly opted-in disposable machine, with its own
+user manager and no existing PV installation.
+
+Record passing pairs in `release/linux-supported-distributions.txt` as
+`ID:VERSION_ID:platform`, using `/etc/os-release` and PV's platform names. Both
+the generated installer and diagnostics embed this list. Add a pair only after
+its complete artifact and system acceptance gate passes.
+
 
 The daemon-registration system test requires a disposable user's real user
 manager and refuses an existing PV home, unit file, or loaded service. Build PV

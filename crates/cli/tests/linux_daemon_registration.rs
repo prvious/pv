@@ -351,6 +351,18 @@ fn linux_distribution_is_informational_in_doctor_and_status() -> anyhow::Result<
     let mut observed = Vec::new();
     for (case, content) in [
         (
+            "supported pair",
+            Some("ID=ubuntu\nVERSION_ID='22.04'\nPRETTY_NAME='Ubuntu 22.04.5 LTS'"),
+        ),
+        (
+            "untested version",
+            Some("ID=ubuntu\nVERSION_ID=99\nPRETTY_NAME='Ubuntu Future'"),
+        ),
+        (
+            "derivative",
+            Some("ID=example\nID_LIKE=ubuntu\nVERSION_ID=22.04\nPRETTY_NAME='Example Linux'"),
+        ),
+        (
             "double quoted",
             Some(r#"PRETTY_NAME="Étoile \"LTS\" $HOME $(printf expanded) `printf expanded`""#),
         ),

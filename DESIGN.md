@@ -24,21 +24,47 @@ Per-project versions are supported too — add a pv.yml file with php: "8.4" in 
 
 ## Platform Scope
 
-PV v1 supports macOS 14 and newer. Stabilizing the macOS application remains the immediate product priority.
+PV v1 supports macOS 14 and newer and the Linux distribution/CPU pairs below.
+
+| Linux distribution | Supported CPUs |
+| --- | --- |
+| Ubuntu 22.04 | amd64, arm64 |
+| Ubuntu 24.04 | amd64, arm64 |
+| Ubuntu 26.04 | amd64, arm64 |
+| Debian 12 | amd64, arm64 |
+| Debian 13 | amd64, arm64 |
+| Fedora 43 | amd64, arm64 |
+| Fedora 44 | amd64, arm64 |
+
+A Linux pair enters this list only after every Managed Resource artifact smoke
+and the full system acceptance journey pass. The same list is embedded from
+`release/linux-supported-distributions.txt` into installer warnings and
+informational diagnostics. Other glibc distributions may run PV but remain
+untested. Derivatives do not inherit support from their base distribution.
+
+Linux requires glibc 2.35 or newer, kernel 5.15 or newer, systemd as PID 1, a
+reachable per-user manager, systemd-resolved as the active stub resolver, sudo
+and NSS certutil. Setup reports missing prerequisites with repair guidance;
+PV does not install system packages. musl, non-systemd hosts, WSL and containers
+as installed PV hosts are unsupported. Disposable acceptance containers are
+test infrastructure.
+
+Linux's robustness bar is parity with macOS main. It does not add CA history,
+extra durability barriers or interruption guarantees beyond the macOS code.
 
 macOS 13 may continue to run PV when the application and Managed Resource binaries remain compatible, but it is untested and unsupported. Dropping support does not by itself require raising binary deployment targets or republishing otherwise compatible Managed Resource artifacts. Before PV deliberately ships an application binary that cannot run on macOS 13, the application update manifest and updater must prevent an incompatible update from being activated there.
 
 The full macOS CI quality and behavior suite covers every supported macOS major version and both supported architectures across a representative matrix rather than every version/architecture combination. The initial matrix is macOS 14 on Apple Silicon, macOS 15 on Intel, macOS 26 on Apple Silicon, and macOS 27 on Apple Silicon. Every use of an undocumented or private macOS interface fails closed: a result that cannot prove it saw other processes is an error, never an empty success. Acceptance tests for OS behavior PV relies on, such as bind conflict rules and process identity, observe a separate process and run in every matrix lane. Behavior that depends on root is tested as root. New supported macOS major versions must be added to the matrix before PV relies on behavior there.
 
-Linux and Windows are committed subsequent platforms. During macOS stabilization, the installed application and runtime crates compile natively on macOS, Linux, and Windows so new system boundaries do not create unnecessary portability blockers.
+Windows is a committed subsequent platform. The installed application and runtime crates compile natively on macOS, Linux, and Windows so new system boundaries do not create unnecessary portability blockers.
 
-Native compile support and explicit unsupported behavior do not make Linux or Windows supported distributions, add them to v1, or authorize publishing Linux or Windows binaries.
+Native Windows compile support and explicit unsupported behavior do not make Windows supported or authorize publishing Windows binaries. Linux implementation and acceptance do not authorize publication; the owner runs releases separately.
 
-Resource and application manifests recognize `linux-amd64` and `linux-arm64` alongside the two macOS platforms. This metadata foundation does not imply Linux system integration or a supported Linux distribution. Before any Linux entries are published, the macOS release that recognizes these platform names must be installed on both maintainer laptops; older clients reject manifests containing unknown platforms.
+Resource and application manifests recognize `linux-amd64` and `linux-arm64` alongside the two macOS platforms. Before any Linux entries are published, the macOS release that recognizes these platform names must be installed on both maintainer laptops; older clients reject manifests containing unknown platforms.
 
 The design may use macOS-specific primitives where they materially improve the v1 experience, including launch agents for daemon startup and the macOS System keychain for local CA trust.
 
-PV uses a host platform boundary in the Rust workspace. Application crates such as `cli`, `daemon`, `state`, `config`, and `resources` should not depend directly on macOS implementation APIs. The v1 concrete host platform implementation is macOS-only; unfinished Linux and Windows implementations return explicit unsupported results, and app-facing code should call the `platform` crate for host integration concerns. Composite setup and uninstall commands check every required host integration before accessing PV paths or changing installation state; enabling a standalone integration does not enable an unfinished composite workflow.
+PV uses a host platform boundary in the Rust workspace. Application crates such as `cli`, `daemon`, `state`, `config`, and `resources` should not depend directly on macOS implementation APIs. The concrete host implementations are macOS and Linux; unfinished Windows integrations return explicit unsupported results. App-facing code calls the `platform` crate for host integration concerns. Composite setup and uninstall commands check every required host integration before accessing PV paths or changing installation state.
 
 ## Implementation Language
 
@@ -141,6 +167,8 @@ PV configures macOS with `/etc/resolver/test`, pointing `.test` lookups at PV's 
 If `/etc/resolver/test` already exists and is not PV-owned, `pv dns:install` and `pv setup` fail safely, report the resolver conflict, and print manual repair instructions instead of overwriting it.
 
 PV marks `/etc/resolver/test` with a clear ownership comment such as `# Managed by PV`. PV only repairs or removes the resolver file when the ownership marker is present.
+
+Linux DNS, socket-proxy and daemon-registration inspection trusts distribution-wide `service.d/*.conf` defaults from the standard `/usr/lib/systemd` and `/lib/systemd` vendor directories in the corresponding system or user scope. Unit-specific, prefix, administrator, runtime and home overrides remain conflicts; socket overrides remain conflicts. This trusts the operating system’s defaults without parsing their contents.
 
 On Linux, PV configures a root-owned `pv-dns.service` and a dummy link named `pv0`, marked with the alias `Managed by PV`. Installed DNS unit inspection requires a root-owned, mode-0644 regular file with one link. PV assigns the dummy link alias by index only after exclusive native creation succeeds; pre-existing unmarked links remain conflicts. The unit applies per-link systemd-resolved settings for `~test`, pointing only at PV's high loopback DNS port with default DNS routing, DNSSEC, DNS-over-TLS, LLMNR and multicast DNS disabled on that link. PV checks the unit's ownership, loaded fragment and overrides, and the dummy link's identity before changing or removing those resources. Before applying routing, it also rejects competing `test` search or routing domains, including subdomains, on other links or the global scope. Those conflicts can also prevent boot-time or restart activation. Removal preserves foreign domains and verifies only PV's owned resources are absent. Foreign ownership conflicts require manual administrator repair. A current DNS installation must also be persistently enabled; inspection reads enablement through the systemd manager so an earlier cached unit property cannot hide a disable or repair.
 
@@ -448,7 +476,7 @@ When a matching PV-owned process exists, PV verifies ownership immediately befor
 
 When the client cannot determine whether a `POST /load` is still executing or was accepted, PV does not issue a competing compensating load because the final request ordering cannot be established. PV keeps the promoted desired root and fragments on disk, preserves the owned process, leaves its replacement-required marker and staged fingerprint set, and records the typed unknown-outcome failure without claiming which config is active. A later reconciliation never sends another load to that process: it stops the verified marked process, waits for its process group and pending handlers to exit, then starts a replacement from the latest desired config. The replacement establishes a new process epoch before reconciliation can report success, so an older unresolved load cannot overtake newer desired state.
 
-After a successful load, PV runs the existing runtime readiness checks. Caddy has already started the accepted config by then, so PV never sends the previous config back. If readiness fails, PV keeps the promoted desired files, leaves the replacement marker set and the applied fingerprint absent, and records the readiness failure. The next reconciliation stops that runtime and starts a replacement from the desired files, as it does after an unknown load outcome. If an ownership check immediately after a successful load or after readiness succeeds fails, PV keeps the promoted desired files without a compensating load. Every unproven outcome keeps the replacement marker set and the applied fingerprint absent. A PF `drifted` or `unknown` result handled by the existing `PreserveRuntime` policy is recorded as degraded routing state and keeps the accepted config and process without a replacement.
+After a successful load, PV runs the existing runtime readiness checks. Complete adapter warnings are accepted as a bare array or a single `warnings` array field; an API error following warnings remains a failure. Caddy has already started the accepted config by then, so PV never sends the previous config back. If readiness fails, PV keeps the promoted desired files, leaves the replacement marker set and the applied fingerprint absent, and records the readiness failure. The next reconciliation stops that runtime and starts a replacement from the desired files, as it does after an unknown load outcome. If an ownership check immediately after a successful load or after readiness succeeds fails, PV keeps the promoted desired files without a compensating load. Every unproven outcome keeps the replacement marker set and the applied fingerprint absent. A PF `drifted` or `unknown` result handled by the existing `PreserveRuntime` policy is recorded as degraded routing state and keeps the accepted config and process without a replacement.
 
 When PHP runtime worker config changes, PV uses this admin API contract for the matching worker; it does not fall back to a signal or restart. A worker for a new PHP runtime identity is started as a new process, and an obsolete worker is replaced through normal lifecycle reconciliation.
 
@@ -997,6 +1025,8 @@ Native recipe metadata requires `darwin-arm64`, `darwin-amd64`, `linux-amd64` an
 
 Linux artifacts are built separately for each CPU architecture in the digest-pinned Ubuntu 22.04 builder from `scripts/linux/builder.Dockerfile`. GitHub builds that image in a job step and runs the native recipe with Docker on `ubuntu-24.04` or `ubuntu-24.04-arm`; the image is never pushed to a registry. The workflow’s existing default selects macOS, while `all-linux` selects both Linux CPUs. Its glibc 2.35 baseline is the portability ceiling. Recipe validation inspects every ELF file with `readelf`: its machine must match the target, numeric `GLIBC` symbol versions may not exceed 2.35, and `GLIBC_ABI_DT_RELR` is rejected because it requires the 2.36 loader. Each `DT_NEEDED` library must be a bundled regular file or one of `libc.so.6`, `libm.so.6`, `libpthread.so.0`, `libdl.so.2`, `librt.so.1`, `libresolv.so.2`, `ld-linux-x86-64.so.2`, `ld-linux-aarch64.so.1`, `libgcc_s.so.1` or `libstdc++.so.6`. Library search paths contain only `$ORIGIN`-relative entries; shared libraries with a SONAME are regular files named by it. Archive validation rejects links. Linux binaries are not signed. Linux MySQL 9.7 uses upstream’s bundled static curl 8.14.1 to retain its server and client telemetry modules without external curl dependencies. macOS keeps its system curl selection. This is a narrow dependency-provider exception to shared build flags: Linux telemetry export uses HTTP/1.1 rather than HTTP/2. The artifact carries the bundled curl license, and its smoke test loads both telemetry modules.
 
+A Linux distribution/CPU pair is supported only after every resource archive passes its smoke hook on that pair and the Linux acceptance workflow passes installation, setup, system-trusted Project HTTPS, resource connectivity, daemon restart, logout recovery and complete uninstall. Acceptance uses candidate files from a completed build-only Artifact Recipes run, with a compile-time unreachable manifest URL and the existing download cache. Native app binaries and helper records are built from the same acceptance source checkout. Test installer asset URLs point at local files; production manifest selection is unchanged. Failed pairs retain their logs and remain unsupported.
+
 Artifact recipes prove portability through archive layout validation, adapter-required file checks, the platform-specific Mach-O or ELF checks, and target-platform smoke tests. Binary or string scans are not a substitute for these checks.
 
 For v1, PV ad-hoc signs Managed Resource Mach-O binaries in the release pipeline after any binary path fixes. Paid Developer ID signing and notarization for Managed Resource artifacts are deferred unless macOS Gatekeeper or quarantine behavior requires them for a reliable v1 install experience. Checksums are computed only after final signing and packaging. No correctness path may depend on the signing identity of PV or of any ancestor process.
@@ -1084,6 +1114,8 @@ Maintainer-local macOS artifact builds also run natively on macOS. Docker is not
 Linux artifact builds must use the shared builder definition under `scripts/linux/`, based on Ubuntu 22.04 pinned by digest, so glibc 2.35 is the runtime baseline for both `linux-amd64` and `linux-arm64`. Docker is the supported path for local Linux builds and tests. Each architecture builds and runs natively; Apple Silicon development uses ARM64 containers and amd64 validation uses native CI runners.
 
 Linux system integration tests use disposable systemd containers separately from the builder. Their source mount is read-only, their test user is unprivileged, and container lifecycle commands verify a worktree ownership label before execution or removal. Test-only linger does not change the installed daemon's login-session lifecycle. Container tests do not establish a supported distro until the artifact and system acceptance gates both pass.
+
+The Real Artifact E2E workflow runs its Gateway, resource-matrix and runtime-contract suites on a native runner for the selected macOS or Linux architecture, defaulting to `darwin-arm64`. Its optional privileged macOS RC remains a separate macOS workflow.
 
 Strict byte-for-byte reproducible Managed Resource builds are not a v1 requirement. Artifact recipes should still record provenance and pin source/dependency/tool inputs where practical, but v1 does not block publication on deterministic rebuild verification.
 
@@ -1809,7 +1841,7 @@ If `pv logs --resource <name>` is used without `--track`, PV infers the track on
 
 `pv doctor` is a deeper read-only diagnostic than `pv status`. It checks expected files, permissions, ports, resolver behavior, `pf` rules, LaunchAgent registration, manifest cache, and common conflicts, then suggests repair commands. Failed checks should prefer one focused repair command where a command exists, such as `pv daemon:enable`, `pv daemon:restart`, `pv dns:install`, `pv ports:install`, or `pv ca:trust`; otherwise PV may suggest `pv setup` as the broad repair.
 
-On Linux, `pv doctor` and `pv status` report `Linux distribution: <PRETTY_NAME> (untested)` from `/etc/os-release` as information outside health checks. Their JSON reports include the same name and support label. Missing, unreadable or malformed names fall back to `Linux` without changing health counts, overall status or exit status. Distribution and architecture support remains gated by artifact and system acceptance.
+On Linux, `pv doctor` and `pv status` report `Linux distribution: <PRETTY_NAME> (supported|untested)` from `/etc/os-release` as information outside health checks. Their JSON reports include the same name and support label, selected from the accepted distribution/CPU pairs in Platform Scope. Missing, unreadable or malformed names fall back to `Linux` without changing health counts, overall status or exit status. Distribution and architecture support remains gated by artifact and system acceptance.
 
 `pv jobs` is a read-only diagnostic command that lists recent daemon jobs, including setup, install, update, restart, and reconciliation jobs. It shows status, scope, start/end time, and failure summary. Live progress remains attached to the command that started the job.
 

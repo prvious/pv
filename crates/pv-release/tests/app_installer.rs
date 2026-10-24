@@ -84,13 +84,18 @@ fn generated_app_installer_allows_arm64_only_preview_assets() -> Result<()> {
 #[test]
 fn linux_installer_selects_native_assets_and_installs_the_app_helper_pair() -> Result<()> {
     let mut summaries = Vec::new();
-    for (machine, libc) in [
-        ("x86_64", "glibc 2.35"),
-        ("aarch64", "glibc 2.100"),
-        ("arm64", "glibc 3.0"),
+    for (machine, libc, distribution) in [
+        ("x86_64", "glibc 2.35", "ID=ubuntu\nVERSION_ID=22.04"),
+        ("aarch64", "glibc 2.100", "ID=ubuntu\nVERSION_ID=22.04"),
+        (
+            "arm64",
+            "glibc 3.0",
+            "ID=example\nID_LIKE=ubuntu\nVERSION_ID=22.04",
+        ),
     ] {
         let fixture = InstallerExecutionFixture::new()?;
-        let output = fixture.run_host_installer("Linux", machine, Some(libc), true)?;
+        let output =
+            fixture.run_host_installer("Linux", machine, Some(libc), true, distribution)?;
         assert!(
             output.status.success(),
             "{}",
@@ -155,7 +160,8 @@ fn linux_installer_refuses_incompatible_hosts_before_download_or_installation() 
         ),
     ] {
         let fixture = InstallerExecutionFixture::new()?;
-        let output = fixture.run_host_installer(os, machine, libc, systemd)?;
+        let output =
+            fixture.run_host_installer(os, machine, libc, systemd, "ID=example\nVERSION_ID=1")?;
         assert!(
             !output.status.success(),
             "{name}: {}",
@@ -699,6 +705,7 @@ impl InstallerExecutionFixture {
         machine: &str,
         libc: Option<&str>,
         systemd: bool,
+        distribution: &str,
     ) -> Result<Output> {
         self.app.add_linux_records()?;
         let mut command = self.installer_command(
@@ -716,7 +723,7 @@ impl InstallerExecutionFixture {
         let os_release = self.app.tempdir.path().join("os-release");
         write_file(
             &os_release,
-            "ID=example\nPRETTY_NAME='Fixture Linux'\nVERSION_ID=1\n",
+            &format!("{distribution}\nPRETTY_NAME='Fixture Linux'\n"),
         )?;
         let installer = read_file(&self.app.output)?;
         assert!(installer.contains("/run/systemd/system"));

@@ -4,6 +4,27 @@ expression: "serde_json::to_string_pretty(&observed)?"
 ---
 [
   {
+    "case": "supported pair",
+    "distribution": {
+      "pretty_name": "Ubuntu 22.04.5 LTS",
+      "support": "supported"
+    }
+  },
+  {
+    "case": "untested version",
+    "distribution": {
+      "pretty_name": "Ubuntu Future",
+      "support": "untested"
+    }
+  },
+  {
+    "case": "derivative",
+    "distribution": {
+      "pretty_name": "Example Linux",
+      "support": "untested"
+    }
+  },
+  {
     "case": "double quoted",
     "distribution": {
       "pretty_name": "Étoile \"LTS\" $HOME $(printf expanded) `printf expanded`",
