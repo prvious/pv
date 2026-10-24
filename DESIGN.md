@@ -306,6 +306,8 @@ PV's local CA files are user-specific and live under `~/.pv/certificates/`. Trus
 
 `pv dns:install` installs or repairs `/etc/resolver/test` and ensures the PV daemon is running so the resolver can answer `.test` lookups. If the LaunchAgent is not registered, it tells the user to run `pv setup` or `pv daemon:enable`.
 
+`pv dns:uninstall` keeps the DNS port stored in `pv.db`, because the running daemon still listens on it, so a later `pv dns:install` points `/etc/resolver/test` at the same port. `pv uninstall` releases the port after stopping the daemon.
+
 `pv ports:*` commands remain available as lower-level `pf` redirect inspection and repair commands even though `pv setup` handles first-time low-port routing.
 
 `pv ports:install` enables `pf` if needed and installs only PV-owned anchor/rules. `pv ports:uninstall` removes PV-owned rules but does not disable `pf` globally because other software may rely on it.

@@ -8,7 +8,7 @@ use resources::{
     ArtifactManifest, ArtifactManifestCache, ArtifactManifestSource, ResourceHttpClient,
     ResourceName, TargetPlatform, TrackName, TrackSelector, UreqResourceHttpClient,
 };
-use state::{Database, ManagedResourceDesiredState, PvPaths, StateError};
+use state::{Database, ManagedResourceDesiredState, PortOwner, PvPaths, StateError};
 
 use super::{ca, daemon as daemon_command, dns, ports};
 use crate::args::{SetupArgs, UninstallArgs};
@@ -398,6 +398,9 @@ pub(crate) fn uninstall(
     )? {
         return Ok(ExitCode::FAILURE);
     }
+    // `pv dns:uninstall` keeps the DNS port because a running daemon still
+    // listens on it. The daemon is stopped by now, so the port can go.
+    Database::open(&paths)?.release_port(PortOwner::Dns)?;
     if !run_required_step(
         "port redirect removal",
         streams,

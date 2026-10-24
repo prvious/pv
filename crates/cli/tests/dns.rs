@@ -410,9 +410,9 @@ fn dns_uninstall_removes_prepared_and_pv_owned_system_resolver_config() -> anyho
     assert!(prepared_after_uninstall.is_none());
     assert!(system_after_uninstall.is_none());
     assert!(
-        !assignments
+        assignments
             .iter()
-            .any(|assignment| assignment.owner == PortOwner::Dns)
+            .any(|assignment| assignment.owner == PortOwner::Dns && assignment.port == 35353)
     );
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -429,7 +429,7 @@ fn dns_uninstall_removes_prepared_and_pv_owned_system_resolver_config() -> anyho
 }
 
 #[test]
-fn dns_uninstall_releases_dns_port_when_system_resolver_config_is_absent() -> anyhow::Result<()> {
+fn dns_uninstall_keeps_dns_port_when_system_resolver_config_is_absent() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let current_dir = tempdir.path().join("work");
@@ -447,10 +447,63 @@ fn dns_uninstall_releases_dns_port_when_system_resolver_config_is_absent() -> an
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(
-        !assignments
+        assignments
             .iter()
-            .any(|assignment| assignment.owner == PortOwner::Dns)
+            .any(|assignment| assignment.owner == PortOwner::Dns && assignment.port == 35353)
     );
+
+    Ok(())
+}
+
+#[test]
+fn dns_install_after_uninstall_reuses_the_port_the_running_daemon_holds() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let current_dir = tempdir.path().join("work");
+    let system_resolver_path = tempdir.path().join("etc/resolver/test");
+    let environment = TestEnvironment::new(&home, &current_dir, &system_resolver_path);
+    let paths = pv_paths(&home);
+    // The running daemon binds its DNS port only at start, so it keeps holding
+    // this port across the uninstall and reinstall.
+    let (dns_port, _tcp_listener, _udp_socket) = bind_loopback_tcp_udp_pair()?;
+    let mut database = Database::open(&paths)?;
+    database.assign_port(
+        PortRequest::dns(dns_port, dns_port, dns_port),
+        |candidate| candidate == dns_port,
+    )?;
+    drop(database);
+    let daemon = DaemonFixture::start(&paths)?;
+    let install = run_pv(&["dns:install"], &environment)?;
+    daemon.finish()?;
+
+    let uninstall = run_pv(&["dns:uninstall"], &environment)?;
+    let daemon = DaemonFixture::start(&paths)?;
+    let reinstall = run_pv(&["dns:install"], &environment)?;
+    daemon.finish()?;
+    let system_resolver_config = read_required_file(&system_resolver_path)?;
+    let parsed_config = ResolverConfig::parse(&system_resolver_config)
+        .ok_or_else(|| anyhow::anyhow!("system resolver config did not parse"))?;
+    let dns_assignment = Database::open(&paths)?
+        .assigned_ports()?
+        .into_iter()
+        .find(|assignment| assignment.owner == PortOwner::Dns)
+        .ok_or_else(|| anyhow::anyhow!("missing DNS port assignment"))?;
+
+    assert_eq!(install.exit_code, ExitCode::SUCCESS);
+    assert_eq!(parsed_config.port, dns_port);
+    assert_eq!(dns_assignment.port, dns_port);
+    with_normalized_tempdir(tempdir.path(), || {
+        let mut settings = insta::Settings::clone_current();
+        settings.add_filter(&format!(r"\b{dns_port}\b"), "<dns-port>");
+        settings.bind(|| {
+            assert_debug_snapshot!((
+                uninstall,
+                reinstall,
+                system_resolver_config,
+                environment.operations.borrow().clone(),
+            ));
+        });
+    });
 
     Ok(())
 }

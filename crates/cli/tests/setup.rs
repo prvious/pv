@@ -1239,11 +1239,20 @@ fn uninstall_preserves_user_data_by_default() -> anyhow::Result<()> {
         &project_env_path,
         "APP_NAME=user-project\n# >>> PV MANAGED\nAPP_URL=https://project.test\n# <<< PV MANAGED\n",
     )?;
+    let dns_port_assigned = |paths: &PvPaths| -> anyhow::Result<bool> {
+        Ok(Database::open(paths)?
+            .assigned_ports()?
+            .iter()
+            .any(|assignment| assignment.owner == PortOwner::Dns))
+    };
+    let dns_port_assigned_after_setup = dns_port_assigned(&fixture.paths)?;
 
     let uninstall = run_pv(&["uninstall"], fixture.environment.as_ref())?;
 
     assert_eq!(setup.exit_code, ExitCode::SUCCESS);
     assert_eq!(uninstall.exit_code, ExitCode::SUCCESS);
+    assert!(dns_port_assigned_after_setup);
+    assert!(!dns_port_assigned(&fixture.paths)?);
     assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
     assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
     assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
