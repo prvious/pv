@@ -1,0 +1,22 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: "normalized.join(\"\\n\")"
+---
+format=1
+source_version=3.5.8
+source_url=https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz
+source_sha256=a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2
+platform=<native-platform>
+architecture=<native-arch>
+libc_version=<libc_version>
+compiler_path=<compiler_path>
+compiler_version=<compiler_version>
+configure_target=linux-<native-arch>
+configure_flags=no-tests --libdir=lib
+openssl_dir=/etc/ssl
+common_script_sha256=<common-script>
+dependencies_script_sha256=<dependencies-script>
+cflags=
+cppflags=
+ldflags=
+build_jobs=2

@@ -42,6 +42,16 @@ pv_recipe_openssl_configure_target_for_platform() {
   case "$1" in
     darwin-arm64) printf '%s\n' darwin64-arm64-cc ;;
     darwin-amd64) printf '%s\n' darwin64-x86_64-cc ;;
+    linux-amd64) printf '%s\n' linux-x86_64 ;;
+    linux-arm64) printf '%s\n' linux-aarch64 ;;
+    *) die "unsupported OpenSSL artifact platform: $1" ;;
+  esac
+}
+
+pv_recipe_openssl_library_names_for_platform() {
+  case "$1" in
+    darwin-arm64 | darwin-amd64) printf '%s\n' 'libssl.3.dylib libcrypto.3.dylib' ;;
+    linux-amd64 | linux-arm64) printf '%s\n' 'libssl.so.3 libcrypto.so.3' ;;
     *) die "unsupported OpenSSL artifact platform: $1" ;;
   esac
 }
@@ -52,11 +62,32 @@ pv_recipe_validate_openssl_prefix() (
   deployment_target=$3
 
   [ -f "$openssl_prefix/include/openssl/ssl.h" ] || die "OpenSSL headers not found under $openssl_prefix"
-  [ -f "$openssl_prefix/lib/libssl.3.dylib" ] || die "OpenSSL shared SSL library not found under $openssl_prefix"
-  [ -f "$openssl_prefix/lib/libcrypto.3.dylib" ] || die "OpenSSL shared crypto library not found under $openssl_prefix"
+  libraries=$(pv_recipe_openssl_library_names_for_platform "$platform")
+  for library_name in $libraries; do
+    [ -f "$openssl_prefix/lib/$library_name" ] || die "OpenSSL shared library $library_name not found under $openssl_prefix"
+  done
   [ -f "$openssl_prefix/LICENSE.txt" ] || die "OpenSSL license not found under $openssl_prefix"
 
-  for library in "$openssl_prefix/lib/libssl.3.dylib" "$openssl_prefix/lib/libcrypto.3.dylib"; do
+  case "$platform" in
+    linux-amd64 | linux-arm64)
+      [ ! -L "$openssl_prefix/lib" ] || die "OpenSSL library directory is a symlink: $openssl_prefix/lib"
+      need file
+      for library_name in $libraries; do
+        library="$openssl_prefix/lib/$library_name"
+        [ ! -L "$library" ] || die "OpenSSL SONAME library is a symlink: $library"
+        description=$(file -E -b -- "$library") || die "failed to inspect OpenSSL shared library $library"
+        case "$description" in
+          ELF\ *) ;;
+          *) die "OpenSSL shared library is not ELF: $library" ;;
+        esac
+      done
+      pv_recipe_validate_elf_tree "$openssl_prefix/lib" "$platform"
+      return
+      ;;
+  esac
+
+  for library_name in $libraries; do
+    library="$openssl_prefix/lib/$library_name"
     pv_recipe_validate_macho_architecture_and_target "$library" "$platform" "$deployment_target"
     linked_libraries=$(otool -L "$library") || die "failed to inspect OpenSSL linked libraries for $library"
     linked_library_paths=$(awk 'NR > 1 && NF > 0 { print $1 }' <<EOF
@@ -108,29 +139,45 @@ pv_recipe_build_openssl_dependency() (
 
   (
     cd "$openssl_source_dir"
-    MACOSX_DEPLOYMENT_TARGET="$deployment_target" \
-      perl ./Configure "$openssl_configure_target" no-tests \
+    set --
+    case "$platform" in
+      darwin-arm64 | darwin-amd64) export MACOSX_DEPLOYMENT_TARGET="$deployment_target" ;;
+      linux-amd64 | linux-arm64)
+        need patchelf
+        set -- --libdir=lib
+        ;;
+    esac
+    perl ./Configure "$openssl_configure_target" no-tests "$@" \
       --prefix="$openssl_prefix" \
       --openssldir="$openssl_dir"
-    MACOSX_DEPLOYMENT_TARGET="$deployment_target" make -j "$build_jobs"
-    MACOSX_DEPLOYMENT_TARGET="$deployment_target" make install_sw
+    make -j "$build_jobs"
+    make install_sw
   )
 
   cp "$openssl_source_dir/LICENSE.txt" "$openssl_prefix/LICENSE.txt"
+  case "$platform" in
+    linux-amd64 | linux-arm64)
+      libraries=$(pv_recipe_openssl_library_names_for_platform "$platform")
+      for library_name in $libraries; do
+        patchelf --set-rpath "\$ORIGIN" "$openssl_prefix/lib/$library_name"
+      done
+      ;;
+  esac
   pv_recipe_validate_openssl_prefix "$openssl_prefix" "$platform" "$deployment_target"
 )
 
-pv_recipe_macho_loader_prefix() {
+pv_recipe_library_loader_prefix() {
   root_dir=$1
-  macho=$2
+  binary=$2
+  loader_origin=$3
 
-  case "$macho" in
+  case "$binary" in
     "$root_dir"/lib/*)
-      relative=${macho#"$root_dir"/lib/}
+      relative=${binary#"$root_dir"/lib/}
       case "$relative" in
         */*)
           directory=${relative%/*}
-          loader_prefix="@loader_path"
+          loader_prefix=$loader_origin
           # Nested lib modules need enough ".." hops to resolve back to the artifact lib root.
           while :; do
             loader_prefix="$loader_prefix/.."
@@ -141,10 +188,10 @@ pv_recipe_macho_loader_prefix() {
           done
           printf '%s\n' "$loader_prefix"
           ;;
-        *) printf '%s\n' "@loader_path" ;;
+        *) printf '%s\n' "$loader_origin" ;;
       esac
       ;;
-    *) printf '%s\n' "@loader_path/../lib" ;;
+    *) printf '%s\n' "$loader_origin/../lib" ;;
   esac
 }
 
@@ -203,7 +250,7 @@ $1"
     [ -d "$macho_dir" ] || continue
     find "$macho_dir" -type f | while IFS= read -r macho; do
       pv_recipe_is_macho "$macho" || continue
-      loader_prefix=$(pv_recipe_macho_loader_prefix "$root_dir" "$macho")
+      loader_prefix=$(pv_recipe_library_loader_prefix "$root_dir" "$macho" @loader_path)
       otool -L "$macho" | while read -r linked _; do
         for install_root in "$@"; do
           case "$linked" in
