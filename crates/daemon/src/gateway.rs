@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::process::{ExitStatus, Stdio};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     mpsc,
 };
 use std::time::{Duration, Instant};
@@ -75,11 +75,14 @@ const PUBLIC_HTTPS_PORT: u16 = 443;
 /// Nothing listens on loopback port 9 and pf doesn't redirect it, so a probe there is refused at
 /// once, as on a machine without PV.
 const UNROUTED_PROBE_PORT: u16 = 9;
+const PUBLIC_PROBE_ROUTE_PUBLIC_PORTS: u8 = 0;
+const PUBLIC_PROBE_ROUTE_GATEWAY_PORTS: u8 = 1;
+const PUBLIC_PROBE_ROUTE_UNROUTED: u8 = 2;
 const GATEWAY_RUNTIME_RECONCILED: &str = "Gateway runtime reconciled";
 const RUNTIME_CONFIG_FINGERPRINT_SCHEME: &[u8] = b"pv-runtime-config:v1";
 pub(crate) const CADDY_NOT_INSTALLED: &str = "Gateway runtime skipped; Caddy is not installed";
 static CANDIDATE_CONFIG_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
-static UNROUTED_PUBLIC_PROBES: AtomicBool = AtomicBool::new(false);
+static PUBLIC_PROBE_ROUTE: AtomicU8 = AtomicU8::new(PUBLIC_PROBE_ROUTE_PUBLIC_PORTS);
 
 /// Result of reconciliation while the daemon's test-only fallback shutdown is armed.
 ///
@@ -1534,27 +1537,41 @@ struct GatewayReadinessPorts {
     https: u16,
 }
 
-/// Sends every later public readiness probe in this process to a port nothing listens on.
+/// Sends every later public readiness probe in this process to the Gateway's own ports, as a
+/// working pf redirect would.
 ///
 /// On a Mac with PV installed, pf redirects loopback ports `80` and `443` to that machine's real
-/// Gateway. A test that runs a fake Gateway calls this so its probes never reach the real one or
-/// fill pf's state table.
+/// Gateway. A test that runs a fake Gateway calls this so its probes reach the fake instead of the
+/// real one, and readiness doesn't wait out the bounded public probe on every start.
 #[doc(hidden)]
-pub fn use_unrouted_public_probe_ports_for_test() {
-    UNROUTED_PUBLIC_PROBES.store(true, Ordering::Relaxed);
+pub fn route_public_probes_to_gateway_for_test() {
+    PUBLIC_PROBE_ROUTE.store(PUBLIC_PROBE_ROUTE_GATEWAY_PORTS, Ordering::Relaxed);
 }
 
-fn public_probe_ports() -> GatewayReadinessPorts {
-    if UNROUTED_PUBLIC_PROBES.load(Ordering::Relaxed) {
-        return GatewayReadinessPorts {
+/// Sends every later public readiness probe in this process to a port nothing listens on, so the
+/// bounded public probe fails as it does when pf routing is broken.
+///
+/// Only tests of that failure call this; other tests that run a fake Gateway use
+/// [`route_public_probes_to_gateway_for_test`].
+#[doc(hidden)]
+pub fn use_unrouted_public_probe_ports_for_test() {
+    PUBLIC_PROBE_ROUTE.store(PUBLIC_PROBE_ROUTE_UNROUTED, Ordering::Relaxed);
+}
+
+fn public_probe_ports(gateway_http_port: u16, gateway_https_port: u16) -> GatewayReadinessPorts {
+    match PUBLIC_PROBE_ROUTE.load(Ordering::Relaxed) {
+        PUBLIC_PROBE_ROUTE_GATEWAY_PORTS => GatewayReadinessPorts {
+            http: gateway_http_port,
+            https: gateway_https_port,
+        },
+        PUBLIC_PROBE_ROUTE_UNROUTED => GatewayReadinessPorts {
             http: UNROUTED_PROBE_PORT,
             https: UNROUTED_PROBE_PORT,
-        };
-    }
-
-    GatewayReadinessPorts {
-        http: PUBLIC_HTTP_PORT,
-        https: PUBLIC_HTTPS_PORT,
+        },
+        _ => GatewayReadinessPorts {
+            http: PUBLIC_HTTP_PORT,
+            https: PUBLIC_HTTPS_PORT,
+        },
     }
 }
 
@@ -1564,7 +1581,7 @@ fn gateway_readiness_ports(
 ) -> GatewayReadinessPorts {
     // macOS pf can make direct connections to an active rdr target port hang.
     if pf_routing_state != GatewayPfRoutingState::Inactive {
-        return public_probe_ports();
+        return public_probe_ports(plan.gateway.http_port, plan.gateway.https_port);
     }
 
     GatewayReadinessPorts {
@@ -1629,7 +1646,7 @@ pub async fn persisted_gateway_is_ready_with_pf_state_for_test(
             https: https_port,
         }
     } else {
-        public_probe_ports()
+        public_probe_ports(http_port, https_port)
     };
     let check = gateway_identity_readiness_check(
         http_port,
