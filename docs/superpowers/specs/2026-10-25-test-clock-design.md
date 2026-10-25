@@ -1,6 +1,6 @@
 # Test Clock Design
 
-Status: proposed 2026-10-25, revised the same day. The owner decided D1 and D3 on 2026-10-25; D2 is open.
+Status: proposed 2026-10-25, revised the same day. The owner decided D1–D3 on 2026-10-25.
 
 ## Summary
 
@@ -116,7 +116,7 @@ The fake is about 150 lines. It holds a mutex over the virtual offset and a list
 3. **Poll ticks are explicit.** Real sleeps go through `poll`/`poll_blocking` and stay at 100 ms or less, so every real wait is deliberate.
 4. **No early advances.** Every advance goes through advance-when-waiting, with a real-time guard that fails loudly.
 5. **Test-only build.** The fake exists only with `test-support`; release builds can't contain it.
-6. **One clock.** A Clippy rule bans direct timers outside `platform::clock` (D2):
+6. **One clock.** From PR 4, a Clippy rule bans direct timers outside `platform::clock` in every crate (D2):
    - `std::thread::sleep`
    - `std::time::Instant::now`
    - `tokio::time::{sleep, sleep_until, timeout, interval}`
@@ -191,5 +191,5 @@ A stack, each PR verified with targeted runs, the full suite, and a comparison o
 ## Decisions
 
 - **D1 — process-wide fake, not an injected clock. Decided 2026-10-25.** A clock passed into each component stays the cleaner option if the daemon gets a context object; it isn't worth adding one for this.
-- **D2 — when the Clippy rule turns on. Open.** At the end of the stack (PR 4) for all crates, or earlier for the daemon only. Recommended: at the end.
+- **D2 — the Clippy rule turns on at the end of the stack. Decided 2026-10-25.** PR 4 enables it for all crates, once every limit and schedule goes through the clock.
 - **D3 — no new dependency. Decided 2026-10-25.** Production keeps tokio and std; PV owns the small fake.
