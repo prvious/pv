@@ -11591,6 +11591,7 @@ mod tests {
     }
 
     fn write_caddy_fixture(executable: &Utf8Path) -> anyhow::Result<()> {
+        crate::gateway::route_public_probes_to_gateway_for_test();
         pv_fake::install(executable, Persona::Caddy)?;
 
         Ok(())

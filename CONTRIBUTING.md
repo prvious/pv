@@ -77,8 +77,11 @@ with `pv_fake::write_gateway_control`, which rejects unknown keys.
 
 Tests must not reach the PV installed on the machine running them, whose pf rules
 send loopback ports `80` and `443` to its real Gateway. A fixture that installs
-a fake Caddy calls `daemon::gateway::use_unrouted_public_probe_ports_for_test()`
-first, so Gateway readiness never probes those ports. Daemons started with
+a fake Caddy calls `daemon::gateway::route_public_probes_to_gateway_for_test()`
+first, so Gateway readiness probes the fake Gateway's own ports, as a working
+redirect would, instead of those ports. A test of what PV does when the public
+probe fails calls `use_unrouted_public_probe_ports_for_test()` after its
+fixture instead. Daemons started with
 `RunningDaemon::start_without_managed_resource_adapters` fetch the artifact
 manifest from a closed loopback port, so the fetch fails at once.
 

@@ -4,8 +4,8 @@ use camino_tempfile::tempdir;
 use daemon::gateway::{
     CaddyCliCommand, GatewayPfRoutingState, build_runtime_plan, gateway_process_spec,
     promote_validated_config_for_test, reconcile_gateway_runtimes_with_pf_state_for_test,
-    reconcile_project_gateway_runtimes_for_test, use_unrouted_public_probe_ports_for_test,
-    validate_config, worker_process_spec,
+    reconcile_project_gateway_runtimes_for_test, route_public_probes_to_gateway_for_test,
+    use_unrouted_public_probe_ports_for_test, validate_config, worker_process_spec,
 };
 use daemon::{CaddyAdminError, CaddyAdminOperation, DaemonError, ProcessSupervisor, StopSignal};
 use insta::{Settings, allow_duplicates, assert_debug_snapshot};
@@ -204,7 +204,7 @@ async fn gateway_reconciliation_rolls_back_after_fresh_admin_startup_failure() -
     let fake_caddy = caddy_release.join("bin/caddy");
     let previous_root_config = "previous gateway config\n";
 
-    use_unrouted_public_probe_ports_for_test();
+    route_public_probes_to_gateway_for_test();
     pv_fake::install_with_settings(
         &fake_caddy,
         Persona::Caddy,
@@ -258,7 +258,7 @@ async fn gateway_reconciliation_rolls_back_after_fresh_service_readiness_failure
     let fake_caddy = caddy_release.join("bin/caddy");
     let previous_root_config = "previous gateway config\n";
 
-    use_unrouted_public_probe_ports_for_test();
+    route_public_probes_to_gateway_for_test();
     pv_fake::install_with_settings(
         &fake_caddy,
         Persona::Caddy,
@@ -1525,6 +1525,7 @@ async fn assert_uncertain_pf_state_preserves_gateway(
     seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
     drop(database);
     ensure_fake_caddy(&paths)?;
+    use_unrouted_public_probe_ports_for_test();
 
     let started_at = Instant::now();
     let summary = reconcile_gateway_runtimes_with_pf_state_for_test(
@@ -2291,6 +2292,7 @@ env:
 
     let loads_before_readiness_failure =
         fake_admin_load_bodies(&paths.gateway_root_config())?.len();
+    use_unrouted_public_probe_ports_for_test();
     reconcile_project_gateway_runtimes_for_test(
         &paths,
         &acme.id,
@@ -5438,6 +5440,7 @@ async fn gateway_reconciliation_preserves_accepted_config_for_pf_state(
     database.release_port(PortOwner::Gateway(GatewayPort::Https))?;
     seed_runtime_ports(&paths, &mut database, new_ports[0], new_ports[1], &[])?;
     drop(database);
+    use_unrouted_public_probe_ports_for_test();
 
     reconcile_gateway_runtimes_with_pf_state_for_test(
         &paths,
@@ -6520,7 +6523,7 @@ fn ensure_fake_caddy(paths: &PvPaths) -> Result<()> {
 }
 
 fn write_fake_caddy(path: &Utf8Path) -> Result<()> {
-    use_unrouted_public_probe_ports_for_test();
+    route_public_probes_to_gateway_for_test();
     pv_fake::install(path, Persona::Caddy)?;
 
     Ok(())

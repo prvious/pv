@@ -47,7 +47,7 @@ impl Fixture {
             .project;
         pv_fake::seed_dns_port(&paths)?;
         pv_fake::install_monitor(&paths)?;
-        daemon::gateway::use_unrouted_public_probe_ports_for_test();
+        daemon::gateway::route_public_probes_to_gateway_for_test();
         let release = paths.home().join("caddy-release");
         let caddy = pv_fake::install(&release.join("bin/caddy"), Persona::Caddy)?;
         let ca = platform::generate_local_ca()?;
