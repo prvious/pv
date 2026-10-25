@@ -15,12 +15,13 @@ use rustix::process::{Pid, Signal, kill_process_group};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader, copy, sink};
 use tokio::process::Child;
 use tokio::sync::watch;
-use tokio::time::{Instant, sleep, timeout};
 
 use super::{HookCommandContext, HookEnvironment, HookError, HookOutput, composer_env_overlay};
+use crate::clock::{self, Deadline, Limit};
 
-const CAPTURE_TIMEOUT: Duration = Duration::from_secs(10);
-const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a login shell gets to print its environment before PV stops it.
+pub const CAPTURE_TIMEOUT: Limit = Limit::new("hook environment capture", Duration::from_secs(10));
+const CLEANUP_TIMEOUT: Limit = Limit::new("hook process-group cleanup", Duration::from_secs(5));
 const STDERR_TAIL_LENGTH: usize = 2048;
 const START_MARKER: &[u8] = b"__PV_HOOK_ENV_START__\0";
 const END_MARKER: &[u8] = b"__PV_HOOK_ENV_END__\0";
@@ -98,10 +99,16 @@ pub async fn capture_environment(
             }
         };
         tokio::select! {
-            result = timeout(CAPTURE_TIMEOUT, capture) => match result {
+            result = clock::timeout(&CAPTURE_TIMEOUT, capture) => match result {
                 Ok(Ok(status)) => Ok(status),
                 Ok(Err(error)) => Err(HookError::Io(error)),
-                Err(_) => Err(environment_error("timed out after 10 seconds", &[])),
+                Err(_) => Err(environment_error(
+                    format!(
+                        "timed out after {} seconds",
+                        CAPTURE_TIMEOUT.duration().as_secs()
+                    ),
+                    &[],
+                )),
             },
             () = cancelled(shutdown) => Err(HookError::Interrupted),
         }
@@ -396,9 +403,9 @@ impl HookProcess {
             child.wait().await?;
         }
         self.anchor.wait().await?;
-        let deadline = Instant::now() + CLEANUP_TIMEOUT;
+        let deadline = Deadline::after(&CLEANUP_TIMEOUT);
         while group_is_running(self.group)? {
-            if Instant::now() >= deadline {
+            if deadline.is_expired() {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     format!(
@@ -407,7 +414,7 @@ impl HookProcess {
                     ),
                 ));
             }
-            sleep(Duration::from_millis(10)).await;
+            clock::poll(Duration::from_millis(10)).await;
         }
         Ok(())
     }

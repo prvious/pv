@@ -1,6 +1,6 @@
 # Test Clock Design
 
-Status: proposed 2026-10-25, revised the same day. The owner decided D1–D3 on 2026-10-25.
+Status: accepted 2026-10-25; the owner decided D1–D3. PR 1 adds the clock and revises this spec with the #460 review points: named limits, retried failures, and failing a blocked test.
 
 ## Summary
 
@@ -47,26 +47,32 @@ Failures that aren't freezes don't need the clock: pv-fake fails at once instead
 
 ## Two kinds of failure
 
-1. **A crash or an error.** PV notices at once: the process exits, a request fails, or a listener refuses.
-   - The test makes pv-fake fail immediately: `validate_exit_code`, `GatewayListeners`, `rustfs_reject_credentials`, or a Gateway control response.
+1. **A crash or an error PV gives up on at once.** The process exits, or a request fails in a way PV doesn't retry.
+   - The test makes pv-fake fail immediately: `validate_exit_code`, `rustfs_reject_credentials`, or a Gateway control response.
    - No limit is involved and the clock isn't used.
-2. **A freeze.** The process stays alive and silent, and only a limit expiring tells PV something is wrong.
-   - The test holds pv-fake: `validate_pause`/`run_pause` (`Pause { until }`), `TcpHolder`, or a fixture daemon that never exits.
-   - Once PV is waiting, the test moves PV's clock past the limit.
+2. **A freeze, or a failure PV retries until a limit.** Only a limit expiring tells PV to stop.
+   - **A freeze:** the process stays alive and silent. The test holds pv-fake with `validate_pause`/`run_pause` (`Pause { until }`), `TcpHolder`, or a fixture daemon that never exits.
+   - **A retried failure:** each attempt fails at once, but PV keeps retrying until its budget runs out. Examples:
+     - `GatewayListeners::Nothing` and `AdminOnly` make every readiness probe fail immediately;
+     - admin readiness and supervisor readiness retry those probes until the budget expires.
+   - Either way, once PV is waiting, the test moves PV's clock past the limit. Replacing a retried failure with a crash would test a different path.
 
 ## Design
 
 ### Production: tokio and std, unchanged
 
-A new `platform::clock` module exposes four things plus a real poll tick.
+A new `platform::clock` module exposes a few functions plus a real poll tick.
+
+- **Every limit is a named `Limit`,** for example `Limit::new("config validation", Duration::from_secs(10))`.
+- **The name is how a test picks the limit to advance past.** Durations alone can't: the client's write and response limits are both 3 s, and a daemon always has health timers pending.
 
 | Function | In production |
 |---|---|
 | `now() -> Instant` | `std::time::Instant::now()` |
-| `sleep(duration)` | `tokio::time::sleep(duration)` |
-| `timeout(duration, future)` | `tokio::time::timeout(duration, future)` |
-| `Deadline::after(duration)` with `is_expired()` / `remaining()` | `now()` arithmetic, for synchronous polling loops such as `DaemonProcess::wait_for_exit` |
-| `poll(duration)` / `poll_blocking(duration)` | `tokio::time::sleep` / `std::thread::sleep`, always real. Only for short ticks (≤ 100 ms) between checks of a real process. |
+| `sleep(&limit)` | `tokio::time::sleep(limit.duration())` (from PR 3, for schedules) |
+| `timeout(&limit, future)` | `tokio::time::timeout(limit.duration(), future)` |
+| `Deadline::after(&limit)` with `is_expired()` | `now()` arithmetic, for polling loops such as `DaemonProcess::wait_for_exit` |
+| `poll(duration)` / `poll_blocking(duration)` | `tokio::time::sleep` / `std::thread::sleep`, always real. Only for short ticks (≤ 100 ms) between checks of a real process. `poll_blocking` arrives in PR 2. |
 
 - **What goes through the clock:**
   - Every limit PV gives up on: config validation, hook environment capture, daemon exit, helper socket, client response, readiness budgets, cleanup grace.
@@ -86,28 +92,39 @@ The fake lives behind a new `test-support` feature on `platform`, which the dev-
   - `sleep`, `timeout` and `Deadline` register a pending limit with the fake. An advance fires every limit it passes; each sees the advanced `now()`.
   - Nothing advances on its own.
 - **Advance when waiting.** Advancing before PV starts waiting would leave the limit unfired and the test hung. So the only way to advance is to wait until PV is waiting on that limit, which is what Kubernetes' fake clock provides with `HasWaiters`:
-  - `FakeClock::advance_when_waiting(limit)` waits until PV has a pending limit of exactly that duration, then moves time forward by it.
-  - `advance_when_waiting_in_background(limit)` does the same from a helper thread, for synchronous code that blocks the test's own thread.
-  - If no matching limit appears within 30 s of real time, it fails with the list of pending limits. A mistake becomes a clear failure instead of a hang.
+  - **`FakeClock::advance_when_waiting(&limit)`.** Waits until PV has a pending limit with **that name**. Other pending limits don't count, even with the same duration. It then moves time to the moment that limit passes, which also fires anything else due by then.
+  - **`advance_when_waiting_in_background(&limit)`** (PR 2). Does the same from a helper thread, for synchronous code that blocks the test's own thread.
+  - **If the named limit doesn't appear within 30 s of real time,** the call fails with the list of pending limits. A mistake becomes a clear failure instead of a hang.
+- **A blocked test still fails.**
+  - An async test isn't blocked while it awaits `advance_when_waiting`, so the error returns to it.
+  - A synchronous test's own thread is stuck inside PV, so an error returned on the helper thread would never reach it. Instead, when the guard expires, the background helper writes the pending limits to stderr and exits the test process with a failure status.
+  - nextest runs each test in its own process, so that fails exactly this test, at once, with the diagnostics in its output.
+  - The helper is the one place tests start a thread directly; it carries a narrow `#[expect(clippy::disallowed_methods)]`.
 
 ```rust
-// Freeze: a validator that never exits.
-let time = platform::clock::install_fake_for_test();
-let validation = tokio::spawn(validate_config(...));
-// wait for pv-fake's `descendant_spawned` event, so the whole group exists
-time.advance_when_waiting(CONFIG_VALIDATION_TIMEOUT).await?;
-assert!(matches!(validation.await?, Err(DaemonError::ProtocolTimedOut { .. })));
+// Freeze: a validator that never exits (PR 1).
+let clock = platform::clock::install_fake_for_test();
+let (result, advanced) = tokio::join!(
+    validate_config(&command, &config_path, &environment),
+    async {
+        // the hung validator's child process must exist before the limit fires
+        wait_for_existing_path_count(slice::from_ref(&validator_child_pid), 1).await?;
+        clock.advance_when_waiting(&CONFIG_VALIDATION_TIMEOUT).await?;
+        Ok::<_, Error>(())
+    },
+);
+advanced?;
+assert!(matches!(result, Err(DaemonError::ProtocolTimedOut { .. })));
 ```
 
 ```rust
-// Synchronous: `pv daemon:disable` runs in-process and blocks the test thread.
-let time = platform::clock::install_fake_for_test();
-let advance = time.advance_when_waiting_in_background(DAEMON_EXIT_GRACE);
+// Synchronous: `pv daemon:disable` runs in-process and blocks the test thread (PR 2).
+let clock = platform::clock::install_fake_for_test();
+clock.advance_when_waiting_in_background(&DAEMON_EXIT_GRACE);
 let output = run_pv(&["daemon:disable"], &environment)?;
-advance.join()?;
 ```
 
-The fake is about 150 lines. It holds a mutex over the virtual offset and a list of pending limits with their wakers, plus a condition variable for `advance_when_waiting`. It gets its own tests.
+The fake holds a mutex over the virtual time and the pending limits with their wakers. It gets its own tests, including one where an unrelated limit with the same duration is already pending.
 
 ### Guardrails
 
@@ -171,16 +188,17 @@ Pause, advance, resume, then sleep:
 A stack, each PR verified with targeted runs, the full suite, and a comparison of CI recordings.
 
 1. **The clock.**
-   - Add `platform::clock`: the production functions, `poll`/`poll_blocking`, and the fake behind `test-support`, with its own tests.
-   - Convert the async limits and their tests: config validation, hook capture, supervisor probes.
-   - Each converted test finishes under 1 s.
+   - Add `platform::clock`: `Limit`, `now`, `timeout`, `Deadline` and `poll`, plus the fake behind `test-support`, with its own tests.
+   - Convert config validation and hook environment capture, including their cleanup limits, and their two tests. Each now finishes well under 1 s.
 2. **Synchronous limits and private runtimes.**
+   - Add `poll_blocking` and `advance_when_waiting_in_background`.
    - Convert `DaemonProcess::wait_for_exit`, the helper socket wait and the blocking client's response limit.
    - Name the CLI's inline 10 s grace as a constant.
    - Convert the CLI, platform and client tests.
 3. **Readiness budgets and schedules.**
-   - Route Gateway and worker readiness, health and retry schedules through the clock.
-   - Replace the short budgets in `gateway_reconciliation` with advances.
+   - Add `sleep`.
+   - Route Gateway, worker and supervisor readiness, health and retry schedules through the clock.
+   - Replace the short budgets in `gateway_reconciliation` and the three 1 s `supervisor_foundation` tests with advances.
    - Turn the pause/advance/resume tests into advances.
    - If the pf removal lands first, rebase onto it, since that work deletes part of the readiness code.
 4. **The rest and the lint.**

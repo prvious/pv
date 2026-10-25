@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use camino::{Utf8Path, Utf8PathBuf};
 use config::{ProjectConfig, ProjectConfigFile};
 use futures_util::StreamExt;
+use platform::clock::{self, Deadline, Limit};
 use platform::loopback_tcp_port_available;
 use resources::{ResourceAdapter, caddy_adapter, frankenphp_adapter};
 #[cfg(target_os = "macos")]
@@ -56,8 +57,11 @@ use crate::{
 type RuntimeProcessCommand = tokio::process::Command;
 
 const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
-const CONFIG_VALIDATION_TIMEOUT: Duration = Duration::from_secs(10);
-const CONFIG_VALIDATION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long Caddy or FrankenPHP gets to validate a config before PV stops the validator.
+pub const CONFIG_VALIDATION_TIMEOUT: Limit =
+    Limit::new("config validation", Duration::from_secs(10));
+const CONFIG_VALIDATION_CLEANUP_TIMEOUT: Limit =
+    Limit::new("config validation cleanup", Duration::from_secs(1));
 #[cfg(target_os = "macos")]
 const CONFIG_VALIDATION_GROUP_ANCHOR: &str = "while IFS= read -r _line; do :; done\nkill -KILL 0\n";
 /// How long a Gateway or worker gets to become ready after it starts. A first launch of a newly
@@ -2345,7 +2349,7 @@ async fn run_validation_command(
         fallback_reaper,
     );
     let status = match wait_for_transaction_step(
-        Box::pin(timeout(CONFIG_VALIDATION_TIMEOUT, process.wait())),
+        Box::pin(clock::timeout(&CONFIG_VALIDATION_TIMEOUT, process.wait())),
         shutdown,
     )
     .await
@@ -2384,7 +2388,7 @@ async fn cleanup_validation_process(
     mut stdout: JoinHandle<io::Result<Vec<u8>>>,
     mut stderr: JoinHandle<io::Result<Vec<u8>>>,
 ) -> Result<(Vec<u8>, Vec<u8>), DaemonError> {
-    let process_cleanup = timeout(CONFIG_VALIDATION_CLEANUP_TIMEOUT, process.terminate())
+    let process_cleanup = clock::timeout(&CONFIG_VALIDATION_CLEANUP_TIMEOUT, process.terminate())
         .await
         .map_err(|_| DaemonError::ProtocolTimedOut {
             phase: "config validation process cleanup",
@@ -2392,7 +2396,7 @@ async fn cleanup_validation_process(
         .and_then(|result| result);
     drop(process);
 
-    let output_cleanup = timeout(CONFIG_VALIDATION_CLEANUP_TIMEOUT, async {
+    let output_cleanup = clock::timeout(&CONFIG_VALIDATION_CLEANUP_TIMEOUT, async {
         let (stdout_result, stderr_result) = tokio::join!(&mut stdout, &mut stderr);
         let stdout_result = stdout_result
             .map_err(io::Error::other)
@@ -2509,14 +2513,14 @@ fn validation_process_group(pid: Option<i32>) -> Option<Pid> {
 }
 
 async fn wait_for_validation_process_group_exit(pid: Option<i32>) -> Result<(), DaemonError> {
-    let deadline = Instant::now() + CONFIG_VALIDATION_CLEANUP_TIMEOUT;
+    let deadline = Deadline::after(&CONFIG_VALIDATION_CLEANUP_TIMEOUT);
     while validation_process_group_exists(pid)? {
-        if Instant::now() >= deadline {
+        if deadline.is_expired() {
             return Err(DaemonError::ProtocolTimedOut {
                 phase: "config validation process-group cleanup",
             });
         }
-        sleep(OWNED_READINESS_POLL_INTERVAL).await;
+        clock::poll(OWNED_READINESS_POLL_INTERVAL).await;
     }
 
     Ok(())

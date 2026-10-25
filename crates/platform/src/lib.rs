@@ -1,6 +1,7 @@
 mod browser;
 mod ca;
 mod capability;
+pub mod clock;
 mod command;
 mod error;
 mod helper;

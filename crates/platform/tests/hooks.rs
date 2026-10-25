@@ -10,7 +10,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use insta::{assert_debug_snapshot, assert_snapshot};
 use platform::hooks::{
-    HookCommandContext, HookEnvironment, HookError, HookOutput, capture_environment, run_commands,
+    CAPTURE_TIMEOUT, HookCommandContext, HookEnvironment, HookError, HookOutput,
+    capture_environment, run_commands,
 };
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use state::{PvPaths, fs};
@@ -222,20 +223,26 @@ async fn hook_capture_times_out_shell_startup() -> Result<()> {
         r#"/bin/sleep 150 & descendant=$!; printf '%s' "$descendant" > "$PV_HOOK_PROJECT/pid.tmp"; mv "$PV_HOOK_PROJECT/pid.tmp" "$PV_HOOK_PROJECT/pid"; wait "$descendant""#,
     )?;
     let (_sender, mut shutdown) = watch::channel(false);
-    let started = Instant::now();
-    let result = capture_environment(
-        shell.as_std_path(),
-        temporary.path(),
-        temporary.path(),
-        &mut shutdown,
-    )
-    .await;
+    let clock = platform::clock::install_fake_for_test();
+    let (result, descendant) = tokio::join!(
+        capture_environment(
+            shell.as_std_path(),
+            temporary.path(),
+            temporary.path(),
+            &mut shutdown,
+        ),
+        async {
+            let descendant = wait_for_pid(&temporary.path().join("pid")).await?;
+            clock.advance_when_waiting(&CAPTURE_TIMEOUT).await?;
+            Ok::<_, anyhow::Error>(descendant)
+        },
+    );
+    let descendant = descendant?;
     let Err(error @ HookError::Environment { .. }) = result else {
         return Err(anyhow!("expected environment timeout"));
     };
     assert_snapshot!(error.to_string());
-    assert!(started.elapsed() < Duration::from_secs(20));
-    assert_stopped(fs::read_to_string(&temporary.path().join("pid"))?.parse::<u32>()?).await?;
+    assert_stopped(descendant).await?;
     Ok(())
 }
 

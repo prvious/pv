@@ -2885,6 +2885,7 @@ dependencies = [
  "insta",
  "libc",
  "nix 0.31.3",
+ "platform",
  "plist",
  "portable-pty",
  "pv-fake",
