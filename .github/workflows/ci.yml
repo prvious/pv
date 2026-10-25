@@ -12,7 +12,63 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Keeps file and line numbers in panics while shrinking build output and the Rust cache.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
 jobs:
+  lint:
+    name: Lint
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install cargo-shear
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-shear
+
+      - name: Install shellcheck
+        run: brew install shellcheck
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Check unused dependencies
+        run: cargo shear
+
+      - name: Enforce privileged-helper sudo boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo_references=$(git grep -n -F '"/usr/bin/sudo"' -- 'crates/**/*.rs')
+          printf '%s\n' "$sudo_references"
+          reference_count=$(printf '%s\n' "$sudo_references" | wc -l | tr -d '[:space:]')
+          test "$reference_count" = 1
+          case "$sudo_references" in
+            crates/platform/src/helper.rs:*) ;;
+            *) exit 1 ;;
+          esac
+
+      - name: Check artifact recipe scripts
+        run: shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh release/artifacts/recipes/redis/*.sh release/artifacts/recipes/mysql/*.sh release/artifacts/recipes/postgres/*.sh release/artifacts/recipes/mailpit/*.sh release/artifacts/recipes/rustfs/*.sh
+
   rust:
     name: Rust (${{ matrix.name }})
     strategy:
@@ -57,44 +113,14 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          key: ${{ matrix.runner }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest@0.9.146
-
-      - name: Install cargo-shear
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-shear
-
-      - name: Install shellcheck
-        run: brew install shellcheck
-
-      - name: Check formatting
-        run: cargo fmt --all --check
-
-      - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-
-      - name: Check unused dependencies
-        run: cargo shear
-
-      - name: Enforce privileged-helper sudo boundary
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo_references=$(git grep -n -F '"/usr/bin/sudo"' -- 'crates/**/*.rs')
-          printf '%s\n' "$sudo_references"
-          reference_count=$(printf '%s\n' "$sudo_references" | wc -l | tr -d '[:space:]')
-          test "$reference_count" = 1
-          case "$sudo_references" in
-            crates/platform/src/helper.rs:*) ;;
-            *) exit 1 ;;
-          esac
-
-      - name: Check artifact recipe scripts
-        run: shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh release/artifacts/recipes/redis/*.sh release/artifacts/recipes/mysql/*.sh release/artifacts/recipes/postgres/*.sh release/artifacts/recipes/mailpit/*.sh release/artifacts/recipes/rustfs/*.sh
 
       - name: Enable nextest run recording
         run: |
@@ -105,30 +131,6 @@ jobs:
           [record]
           enabled = true
           EOF
-
-      - name: Check root low-port conflicts against a separate process
-        timeout-minutes: 10
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --locked --all-features -p daemon --example pv-fake
-          cargo nextest list --locked --all-features -p platform --lib --run-ignored only \
-            -E 'test(=helper::tests::pf_apply_rejects_a_low_port_conflict_as_root)' \
-            --message-format json > "$RUNNER_TEMP/low-port-tests.json"
-          test_binary=$(python3 - "$RUNNER_TEMP/low-port-tests.json" <<'PY'
-          import json
-          import sys
-          with open(sys.argv[1]) as source:
-              tests = json.load(source)
-          suite = tests["rust-suites"]["platform"]
-          selected = [name for name, case in suite["testcases"].items()
-                      if case["filter-match"]["status"] == "matches"]
-          assert selected == ["helper::tests::pf_apply_rejects_a_low_port_conflict_as_root"], selected
-          assert suite["testcases"][selected[0]]["ignored"]
-          print(suite["binary-path"])
-          PY
-          )
-          sudo -n "$test_binary" --ignored --exact helper::tests::pf_apply_rejects_a_low_port_conflict_as_root
 
       - name: Run tests
         id: tests
@@ -144,6 +146,31 @@ jobs:
         with:
           name: nextest-run-${{ matrix.runner }}
           path: ${{ runner.temp }}/nextest-run.zip
+
+      - name: Check root low-port conflicts against a separate process
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The same selection as Run tests, so this reuses its binaries and pv-fake example.
+          cargo nextest list --locked --workspace --all-features --run-ignored only \
+            -E 'package(platform) & kind(lib) & test(=helper::tests::pf_apply_rejects_a_low_port_conflict_as_root)' \
+            --message-format json > "$RUNNER_TEMP/low-port-tests.json"
+          test_binary=$(python3 - "$RUNNER_TEMP/low-port-tests.json" <<'PY'
+          import json
+          import sys
+          with open(sys.argv[1]) as source:
+              tests = json.load(source)
+          suite = tests["rust-suites"]["platform"]
+          selected = [name for name, case in suite["testcases"].items()
+                      if case["filter-match"]["status"] == "matches"]
+          assert selected == ["helper::tests::pf_apply_rejects_a_low_port_conflict_as_root"], selected
+          assert suite["testcases"][selected[0]]["ignored"]
+          print(suite["binary-path"])
+          PY
+          )
+          sudo -n "$test_binary" --ignored --exact helper::tests::pf_apply_rejects_a_low_port_conflict_as_root
 
   runtime-portability:
     name: Runtime (${{ matrix.target }})
@@ -170,6 +197,8 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Compile installed runtime
         run: >-
