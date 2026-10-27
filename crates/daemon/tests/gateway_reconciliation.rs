@@ -3664,17 +3664,16 @@ async fn frankenphp_config_validation_timeout_stops_validator_process_group() ->
 
     let command = CaddyCliCommand::frankenphp(&validator);
     let environment = BTreeMap::new();
-    let (result, advanced) = tokio::join!(
-        validate_config(&command, &config_path, &environment),
+    let (result, ()) = tokio::try_join!(
+        async { Ok::<_, Error>(validate_config(&command, &config_path, &environment).await) },
         async {
             wait_for_existing_path_count(slice::from_ref(&validator_child_pid), 1).await?;
             clock
                 .advance_when_waiting(&CONFIG_VALIDATION_TIMEOUT)
                 .await?;
-            Ok::<_, Error>(())
+            Ok(())
         },
-    );
-    advanced?;
+    )?;
 
     assert!(matches!(
         result,
@@ -6489,13 +6488,15 @@ set -eu
 
 if [ "$1" = "validate" ]; then
   sleep 30 &
-  echo "$!" > {}
+  echo "$!" > {temporary}
+  mv {temporary} {published}
   wait "$!"
 fi
 
 exit 2
 "#,
-            shell_single_quoted(child_pid_path.as_str())
+            temporary = shell_single_quoted(&format!("{child_pid_path}.tmp")),
+            published = shell_single_quoted(child_pid_path.as_str()),
         ),
     )?;
     set_executable(path)?;

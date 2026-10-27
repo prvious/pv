@@ -224,20 +224,24 @@ async fn hook_capture_times_out_shell_startup() -> Result<()> {
     )?;
     let (_sender, mut shutdown) = watch::channel(false);
     let clock = platform::clock::install_fake_for_test();
-    let (result, descendant) = tokio::join!(
-        capture_environment(
-            shell.as_std_path(),
-            temporary.path(),
-            temporary.path(),
-            &mut shutdown,
-        ),
+    let (result, descendant) = tokio::try_join!(
+        async {
+            Ok::<_, anyhow::Error>(
+                capture_environment(
+                    shell.as_std_path(),
+                    temporary.path(),
+                    temporary.path(),
+                    &mut shutdown,
+                )
+                .await,
+            )
+        },
         async {
             let descendant = wait_for_pid(&temporary.path().join("pid")).await?;
             clock.advance_when_waiting(&CAPTURE_TIMEOUT).await?;
-            Ok::<_, anyhow::Error>(descendant)
+            Ok(descendant)
         },
-    );
-    let descendant = descendant?;
+    )?;
     let Err(error @ HookError::Environment { .. }) = result else {
         return Err(anyhow!("expected environment timeout"));
     };

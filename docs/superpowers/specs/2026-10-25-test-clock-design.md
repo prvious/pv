@@ -104,18 +104,21 @@ The fake lives behind a new `test-support` feature on `platform`, which the dev-
 ```rust
 // Freeze: a validator that never exits (PR 1).
 let clock = platform::clock::install_fake_for_test();
-let (result, advanced) = tokio::join!(
-    validate_config(&command, &config_path, &environment),
+// `try_join!`, not `join!`: a failure on the clock side fails the test at once and cancels the
+// operation, which is otherwise waiting on frozen time.
+let (result, ()) = tokio::try_join!(
+    async { Ok::<_, Error>(validate_config(&command, &config_path, &environment).await) },
     async {
         // the hung validator's child process must exist before the limit fires
         wait_for_existing_path_count(slice::from_ref(&validator_child_pid), 1).await?;
         clock.advance_when_waiting(&CONFIG_VALIDATION_TIMEOUT).await?;
-        Ok::<_, Error>(())
+        Ok(())
     },
-);
-advanced?;
+)?;
 assert!(matches!(result, Err(DaemonError::ProtocolTimedOut { .. })));
 ```
+
+A fixture that reports a PID the test waits on publishes it atomically (write a temporary file, then rename it), because the advance can stop the process right after the file appears.
 
 ```rust
 // Synchronous: `pv daemon:disable` runs in-process and blocks the test thread (PR 2).
