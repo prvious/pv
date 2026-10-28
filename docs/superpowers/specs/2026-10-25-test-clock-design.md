@@ -100,6 +100,7 @@ The fake lives behind a new `test-support` feature on `platform`, which the dev-
     - synchronous code on the test's own thread, such as the CLI run in-process;
     - a blocking thread, such as `spawn_blocking` around the blocking daemon client. Tokio waits for blocking threads when the test's runtime shuts down, so a stuck one would hang the test even after `try_join!` returned an error.
   - **If the named limit doesn't appear within 30 s of real time,** the call fails with the list of pending limits. A mistake becomes a clear failure instead of a hang.
+- **Waits in a row get their own names.** A started runtime's admin API wait and its readiness wait share a budget but not a name, so a test can advance past the readiness wait without catching the admin wait first.
 - **An attempt inside a budget uses `deadline.timeout`.** An advance can land between a loop checking its deadline and starting the next attempt. An attempt timed from `now()` would then be due after the advanced time, and nothing would advance it. `deadline.timeout` caps the attempt at the deadline under the fake's lock, so an attempt started after the deadline passed ends at once.
 - **A blocked test still fails.**
   - An async test isn't blocked while it awaits `advance_when_waiting`, so the error returns to it.

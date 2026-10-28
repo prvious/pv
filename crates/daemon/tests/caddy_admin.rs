@@ -1,15 +1,18 @@
 use std::io::{Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::thread;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Error, Result, anyhow, bail};
 use camino_tempfile::tempdir;
 use daemon::{
-    CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, CaddyAdminTimeouts,
-    MAX_RESPONSE_DETAIL_BYTES,
+    CADDY_ADMIN_REQUEST_TIMEOUT, CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError,
+    CaddyAdminOperation, MAX_RESPONSE_DETAIL_BYTES,
 };
+use platform::clock::Limit;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
+
+const READINESS: Limit = Limit::new("admin readiness", Duration::from_secs(5));
 
 #[test]
 fn transaction_errors_preserve_ownership_and_both_rollback_failures() -> Result<()> {
@@ -66,7 +69,9 @@ async fn load_caddyfile_sends_exact_request_and_accepts_success() -> Result<()> 
     apps {}
 }\n";
 
-    test_client().load_caddyfile(&endpoint, body).await?;
+    CaddyAdminClient::new()
+        .load_caddyfile(&endpoint, body)
+        .await?;
     let requests = server.await??;
     let request = requests
         .into_iter()
@@ -87,7 +92,7 @@ async fn load_caddyfile_accepts_complete_adapter_warnings() -> Result<()> {
     let warnings = br#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies"}]"#;
     let (endpoint, server) = spawn_response_server(vec![http_response(200, warnings)])?;
 
-    test_client()
+    CaddyAdminClient::new()
         .load_caddyfile(&endpoint, b"candidate\n")
         .await?;
     let requests = server.await??;
@@ -102,7 +107,7 @@ async fn load_caddyfile_rejects_error_reported_after_adapter_warnings() -> Resul
 "#;
     let (endpoint, server) = spawn_response_server(vec![http_response(200, body)])?;
 
-    let result = test_client()
+    let result = CaddyAdminClient::new()
         .load_caddyfile(&endpoint, b"candidate\n")
         .await;
     let requests = server.await??;
@@ -125,7 +130,7 @@ async fn load_caddyfile_rejects_error_reported_without_adapter_warnings() -> Res
 "#;
     let (endpoint, server) = spawn_response_server(vec![http_response(200, body)])?;
 
-    let result = test_client()
+    let result = CaddyAdminClient::new()
         .load_caddyfile(&endpoint, b"candidate\n")
         .await;
     let requests = server.await??;
@@ -147,7 +152,7 @@ async fn load_caddyfile_does_not_trust_an_error_before_the_complete_body() -> Re
     let body = br#"[{"message":"Caddyfile input is not formatted"}]{"error":"load failed"}garbage"#;
     let (endpoint, server) = spawn_response_server(vec![http_response(200, body)])?;
 
-    let result = test_client()
+    let result = CaddyAdminClient::new()
         .load_caddyfile(&endpoint, b"candidate\n")
         .await;
     let requests = server.await??;
@@ -173,14 +178,14 @@ async fn load_caddyfile_does_not_accept_an_incomplete_success_body() -> Result<(
         let _temp_dir = temp_dir;
         let (mut stream, _) = listener.accept()?;
         let _request = read_request(&mut stream)?;
+        // Hanging up before the promised 128 bytes leaves the body incomplete.
         stream
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 128\r\nConnection: close\r\n\r\n[")?;
-        thread::sleep(Duration::from_millis(250));
 
         Ok(())
     });
 
-    let result = test_client()
+    let result = CaddyAdminClient::new()
         .load_caddyfile(&endpoint, b"candidate\n")
         .await;
     server.await??;
@@ -200,7 +205,7 @@ async fn load_caddyfile_preserves_rejection_status_when_the_body_is_incomplete()
     let response = b"HTTP/1.1 422 Unprocessable Entity\r\nContent-Length: 128\r\nConnection: close\r\n\r\nrejected";
     let (endpoint, server) = spawn_response_server(vec![response.to_vec()])?;
 
-    let result = test_client()
+    let result = CaddyAdminClient::new()
         .load_caddyfile(&endpoint, b"candidate\n")
         .await;
     let requests = server.await??;
@@ -218,7 +223,7 @@ async fn load_caddyfile_maps_rejection_and_caps_response_detail() -> Result<()> 
     let response_body = vec![b'x'; MAX_RESPONSE_DETAIL_BYTES + 128];
     let (endpoint, server) = spawn_response_server(vec![http_response(422, &response_body)])?;
 
-    let result = test_client()
+    let result = CaddyAdminClient::new()
         .load_caddyfile(&endpoint, b"candidate\n")
         .await;
     let requests = server.await??;
@@ -239,7 +244,7 @@ async fn load_caddyfile_distinguishes_connection_failure() -> Result<()> {
     let temp_dir = tempdir()?;
     let endpoint = CaddyAdminEndpoint::new(temp_dir.path().join("missing.sock"));
 
-    let result = test_client()
+    let result = CaddyAdminClient::new()
         .load_caddyfile(&endpoint, b"candidate\n")
         .await;
 
@@ -266,24 +271,35 @@ async fn load_caddyfile_has_a_bounded_request_timeout() -> Result<()> {
     let socket_path = temp_dir.path().join("admin.sock");
     let listener = UnixListener::bind(&socket_path)?;
     let endpoint = CaddyAdminEndpoint::new(socket_path);
+    let (request_received, request_seen) = oneshot::channel();
     let server = tokio::task::spawn_blocking(move || -> Result<()> {
         let _temp_dir = temp_dir;
         let (mut stream, _) = listener.accept()?;
         let _request = read_request(&mut stream)?;
-        thread::sleep(Duration::from_millis(250));
-        let _result = stream.write_all(&http_response(200, b"ok"));
+        let _sent = request_received.send(());
+        // Never answers; returns once the client hangs up.
+        let _closed = stream.read(&mut [0_u8; 1]);
 
         Ok(())
     });
 
-    let client = CaddyAdminClient::with_timeouts(CaddyAdminTimeouts::new(
-        Duration::from_millis(50),
-        Duration::from_millis(50),
-        Duration::from_millis(50),
-        Duration::from_millis(75),
-        Duration::from_millis(5),
-    ));
-    let result = client.load_caddyfile(&endpoint, b"candidate\n").await;
+    let clock = platform::clock::install_fake_for_test();
+    let (result, ()) = tokio::try_join!(
+        async {
+            Ok::<_, Error>(
+                CaddyAdminClient::new()
+                    .load_caddyfile(&endpoint, b"candidate\n")
+                    .await,
+            )
+        },
+        async {
+            request_seen.await?;
+            clock
+                .advance_when_waiting(&CADDY_ADMIN_REQUEST_TIMEOUT)
+                .await?;
+            Ok(())
+        },
+    )?;
 
     let Err(CaddyAdminError::RequestOutcomeUnknown {
         endpoint: actual, ..
@@ -311,7 +327,7 @@ async fn load_caddyfile_maps_an_unclassified_transport_failure_to_unknown() -> R
         Ok(())
     });
 
-    let result = test_client()
+    let result = CaddyAdminClient::new()
         .load_caddyfile(&endpoint, b"candidate\n")
         .await;
     server.await??;
@@ -335,8 +351,8 @@ async fn wait_until_ready_uses_config_endpoint_until_admin_is_ready() -> Result<
         http_response(200, b"{}"),
     ])?;
 
-    test_client()
-        .wait_until_ready(&endpoint, Duration::from_millis(500))
+    CaddyAdminClient::new()
+        .wait_until_ready(&endpoint, &READINESS)
         .await?;
     let requests = server.await??;
 
@@ -355,10 +371,22 @@ async fn wait_until_ready_uses_config_endpoint_until_admin_is_ready() -> Result<
 async fn wait_until_ready_reports_a_bounded_readiness_timeout() -> Result<()> {
     let (endpoint, server) = spawn_response_server(vec![http_response(503, b"starting")])?;
 
-    let result = test_client()
-        .wait_until_ready(&endpoint, Duration::from_millis(80))
-        .await;
-    let requests = server.await??;
+    let clock = platform::clock::install_fake_for_test();
+    let (result, requests) = tokio::try_join!(
+        async {
+            Ok::<_, Error>(
+                CaddyAdminClient::new()
+                    .wait_until_ready(&endpoint, &READINESS)
+                    .await,
+            )
+        },
+        async {
+            // The fixture answers once; every later request fails to connect.
+            let requests = server.await??;
+            clock.advance_when_waiting(&READINESS).await?;
+            Ok(requests)
+        },
+    )?;
     assert_eq!(requests.len(), 1);
 
     let Err(CaddyAdminError::AdminReadinessTimedOut {
@@ -370,19 +398,9 @@ async fn wait_until_ready_reports_a_bounded_readiness_timeout() -> Result<()> {
         bail!("expected a typed readiness timeout, got {result:?}");
     };
     assert_eq!(actual, endpoint);
-    assert_eq!(timeout_ms, 80);
+    assert_eq!(timeout_ms, READINESS.duration().as_millis());
 
     Ok(())
-}
-
-fn test_client() -> CaddyAdminClient {
-    CaddyAdminClient::with_timeouts(CaddyAdminTimeouts::new(
-        Duration::from_millis(50),
-        Duration::from_millis(50),
-        Duration::from_millis(50),
-        Duration::from_millis(100),
-        Duration::from_millis(5),
-    ))
 }
 
 fn spawn_response_server(

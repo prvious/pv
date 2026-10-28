@@ -2,7 +2,9 @@ use anyhow::{Context, Error, Result, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use daemon::gateway::{
-    CONFIG_VALIDATION_TIMEOUT, CaddyCliCommand, GatewayPfRoutingState, build_runtime_plan,
+    CONFIG_VALIDATION_TIMEOUT, CaddyCliCommand, FOREIGN_LISTENER_PROBE_TIMEOUT,
+    GatewayPfRoutingState, PF_PUBLIC_READINESS_TIMEOUT, RUNTIME_ADMIN_READINESS_TIMEOUT,
+    RUNTIME_RELOAD_READINESS_TIMEOUT, RUNTIME_START_READINESS_TIMEOUT, build_runtime_plan,
     gateway_process_spec, promote_validated_config_for_test,
     reconcile_gateway_runtimes_with_pf_state_for_test, reconcile_project_gateway_runtimes_for_test,
     route_public_probes_to_gateway_for_test, use_unrouted_public_probe_ports_for_test,
@@ -10,6 +12,7 @@ use daemon::gateway::{
 };
 use daemon::{CaddyAdminError, CaddyAdminOperation, DaemonError, ProcessSupervisor, StopSignal};
 use insta::{Settings, allow_duplicates, assert_debug_snapshot};
+use platform::clock::Limit;
 use pv_fake::{FakeSettings, GatewayListeners, Persona};
 use resources::{PHP_TRACK_DEFAULT_INI, php_track_defaults};
 use rusqlite::Connection;
@@ -23,12 +26,14 @@ use state::{
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
+use std::future::{Future, pending};
 use std::io::Write;
 use std::net::TcpListener;
 use std::process::Output;
 use std::slice;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio::sync::oneshot;
 use tokio::time::{sleep, timeout};
 
 const GATEWAY_RECONCILIATION_SUMMARY: &str = "Gateway runtime reconciled";
@@ -37,27 +42,17 @@ async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, DaemonErr
     ensure_fake_caddy(paths).map_err(|error| DaemonError::UnexpectedProtocolResponse {
         reason: error.to_string(),
     })?;
-    reconcile_gateway_runtimes_with_pf_state_for_test(
-        paths,
-        Duration::from_secs(60),
-        GatewayPfRoutingState::Inactive,
-    )
-    .await
+    reconcile_gateway_runtimes_with_pf_state_for_test(paths, GatewayPfRoutingState::Inactive).await
 }
 
-async fn reconcile_gateway_runtimes_with_readiness_timeout(
-    paths: &PvPaths,
-    readiness_timeout: Duration,
-) -> Result<String, DaemonError> {
-    ensure_fake_caddy(paths).map_err(|error| DaemonError::UnexpectedProtocolResponse {
-        reason: error.to_string(),
+/// Runs `reconciliation` on the fake clock, moving the clock past `limit` once PV waits on it.
+async fn reconcile_past<T>(limit: &Limit, reconciliation: impl Future<Output = T>) -> Result<T> {
+    let clock = platform::clock::install_fake_for_test();
+    let (result, ()) = tokio::try_join!(async { Ok::<_, Error>(reconciliation.await) }, async {
+        Ok(clock.advance_when_waiting(limit).await?)
     })?;
-    reconcile_gateway_runtimes_with_pf_state_for_test(
-        paths,
-        readiness_timeout,
-        GatewayPfRoutingState::Inactive,
-    )
-    .await
+
+    Ok(result)
 }
 
 #[tokio::test]
@@ -81,12 +76,9 @@ async fn gateway_reconciliation_stops_before_workers_when_caddy_is_missing() -> 
     seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
     drop(database);
 
-    let summary = reconcile_gateway_runtimes_with_pf_state_for_test(
-        &paths,
-        Duration::from_secs(1),
-        GatewayPfRoutingState::Inactive,
-    )
-    .await?;
+    let summary =
+        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Inactive)
+            .await?;
 
     assert_eq!(summary, "Gateway runtime skipped; Caddy is not installed");
     assert!(!paths.gateway_runtime_metadata().exists());
@@ -125,12 +117,9 @@ async fn gateway_reconciliation_does_not_fallback_to_another_caddy_track() -> Re
     seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
     drop(database);
 
-    let summary = reconcile_gateway_runtimes_with_pf_state_for_test(
-        &paths,
-        Duration::from_secs(1),
-        GatewayPfRoutingState::Inactive,
-    )
-    .await?;
+    let summary =
+        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Inactive)
+            .await?;
 
     assert_eq!(summary, "Gateway runtime skipped; Caddy is not installed");
     assert!(!paths.gateway_runtime_metadata().exists());
@@ -176,12 +165,9 @@ async fn gateway_reconciliation_rejects_invalid_caddy_two_without_fallback() -> 
     seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
     drop(database);
 
-    let result = reconcile_gateway_runtimes_with_pf_state_for_test(
-        &paths,
-        Duration::from_secs(1),
-        GatewayPfRoutingState::Inactive,
-    )
-    .await;
+    let result =
+        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Inactive)
+            .await;
 
     assert!(matches!(
         result,
@@ -227,12 +213,11 @@ async fn gateway_reconciliation_rolls_back_after_fresh_admin_startup_failure() -
     drop(database);
     fs::write_sensitive_file(&paths.gateway_root_config(), previous_root_config)?;
 
-    let result = reconcile_gateway_runtimes_with_pf_state_for_test(
-        &paths,
-        Duration::from_millis(100),
-        GatewayPfRoutingState::Inactive,
+    let result = reconcile_past(
+        &RUNTIME_ADMIN_READINESS_TIMEOUT,
+        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Inactive),
     )
-    .await;
+    .await?;
 
     assert!(matches!(
         result,
@@ -281,13 +266,12 @@ async fn gateway_reconciliation_rolls_back_after_fresh_service_readiness_failure
     drop(database);
     fs::write_sensitive_file(&paths.gateway_root_config(), previous_root_config)?;
 
-    // The budget also covers the new process's admin readiness, which has to pass first.
-    let result = reconcile_gateway_runtimes_with_pf_state_for_test(
-        &paths,
-        Duration::from_secs(2),
-        GatewayPfRoutingState::Inactive,
+    // The admin wait has its own name, so the advance lands only once it has passed.
+    let result = reconcile_past(
+        &RUNTIME_START_READINESS_TIMEOUT,
+        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Inactive),
     )
-    .await;
+    .await?;
 
     assert!(
         matches!(result, Err(DaemonError::ReadinessTimedOut { .. })),
@@ -474,13 +458,8 @@ async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled(
     }
 
     let reconciliation_paths = paths.clone();
-    let mut reconciliation = tokio::spawn(async move {
-        reconcile_gateway_runtimes_with_readiness_timeout(
-            &reconciliation_paths,
-            Duration::from_secs(5),
-        )
-        .await
-    });
+    let mut reconciliation =
+        tokio::spawn(async move { reconcile_gateway_runtimes(&reconciliation_paths).await });
     let mut reconciliation_completed = false;
     let inspection = async {
         tokio::select! {
@@ -552,12 +531,9 @@ async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled(
     }
     assert!(!paths.gateway_runtime_metadata().exists());
 
-    let summary = timeout(
-        Duration::from_secs(10),
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(5)),
-    )
-    .await
-    .context("cancelled worker readiness reconciliation did not recover")??;
+    let summary = timeout(Duration::from_secs(10), reconcile_gateway_runtimes(&paths))
+        .await
+        .context("cancelled worker readiness reconciliation did not recover")??;
     assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
     for (index, (runtime_key, worker_pid)) in runtime_keys.iter().zip(&worker_pids).enumerate() {
         let recovered_pid =
@@ -648,13 +624,8 @@ async fn matching_worker_recovers_after_post_load_readiness_is_cancelled() -> Re
     drop(database);
 
     let reconciliation_paths = paths.clone();
-    let mut reconciliation = tokio::spawn(async move {
-        reconcile_gateway_runtimes_with_readiness_timeout(
-            &reconciliation_paths,
-            Duration::from_secs(5),
-        )
-        .await
-    });
+    let mut reconciliation =
+        tokio::spawn(async move { reconcile_gateway_runtimes(&reconciliation_paths).await });
     let mut reconciliation_completed = false;
     let inspection = async {
         tokio::select! {
@@ -696,12 +667,9 @@ async fn matching_worker_recovers_after_post_load_readiness_is_cancelled() -> Re
     assert!(cancellation.is_cancelled());
     pv_fake::write_gateway_control(&paths.worker_root_config(track), json!({}))?;
 
-    let summary = timeout(
-        Duration::from_secs(10),
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(5)),
-    )
-    .await
-    .context("cancelled matching worker reconciliation did not recover")??;
+    let summary = timeout(Duration::from_secs(10), reconcile_gateway_runtimes(&paths))
+        .await
+        .context("cancelled matching worker reconciliation did not recover")??;
     let replacement_worker_pid =
         required_runtime_metadata_pid(&paths.worker_runtime_metadata(track))?;
     let replacement_metadata: Value =
@@ -926,8 +894,7 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
         &paths.worker_root_config("8.4"),
         json!({"load_statuses": [422]}),
     )?;
-    let source_rejected =
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(1)).await;
+    let source_rejected = reconcile_gateway_runtimes(&paths).await;
     assert!(matches!(
         source_rejected,
         Err(DaemonError::CaddyAdmin(CaddyAdminError::LoadRejected {
@@ -941,8 +908,7 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
         &paths.worker_root_config("8.4"),
         json!({"load_response_body": ["not json"]}),
     )?;
-    let uncertain_source =
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(5)).await;
+    let uncertain_source = reconcile_gateway_runtimes(&paths).await;
     assert!(matches!(
         uncertain_source,
         Err(DaemonError::CaddyAdmin(
@@ -973,8 +939,7 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
         &paths.gateway_root_config(),
         json!({"load_statuses": [422]}),
     )?;
-    let failed_replacement =
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(1)).await;
+    let failed_replacement = reconcile_gateway_runtimes(&paths).await;
     assert!(matches!(
         failed_replacement,
         Err(DaemonError::UnexpectedProtocolResponse { ref reason })
@@ -993,8 +958,7 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
     assert_eq!(fs::read_to_string(&gateway_fragment)?, previous_gateway);
 
     fs::remove_file(&source_failure_marker)?;
-    let rejected =
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(1)).await;
+    let rejected = reconcile_gateway_runtimes(&paths).await;
     assert!(matches!(
         rejected,
         Err(DaemonError::CaddyAdmin(CaddyAdminError::LoadRejected {
@@ -1023,8 +987,7 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
         &paths.gateway_root_config(),
         json!({"load_response_body": ["not json"]}),
     )?;
-    let uncertain =
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(5)).await;
+    let uncertain = reconcile_gateway_runtimes(&paths).await;
     assert!(matches!(
         uncertain,
         Err(DaemonError::CaddyAdmin(
@@ -1071,10 +1034,7 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
         .await
         .context("replacement Gateway did not reach readiness")?
     };
-    let (retry, release) = tokio::join!(
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(5)),
-        release_gateway
-    );
+    let (retry, release) = tokio::join!(reconcile_gateway_runtimes(&paths), release_gateway);
     release?;
     retry?;
     assert!(!source_fragment.exists());
@@ -1322,7 +1282,7 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
         .context("failing sibling did not finish while xdebug was gated")?
     };
     let (result, release_result) = tokio::join!(
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(5)),
+        reconcile_gateway_runtimes(&paths),
         release_sibling_after_failure,
     );
     release_result?;
@@ -1529,16 +1489,13 @@ async fn assert_uncertain_pf_state_preserves_gateway(
     ensure_fake_caddy(&paths)?;
     use_unrouted_public_probe_ports_for_test();
 
-    let started_at = Instant::now();
-    let summary = reconcile_gateway_runtimes_with_pf_state_for_test(
-        &paths,
-        Duration::from_secs(2),
-        pf_routing_state,
+    let summary = reconcile_past(
+        &PF_PUBLIC_READINESS_TIMEOUT,
+        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, pf_routing_state),
     )
-    .await?;
+    .await??;
 
     assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
-    assert!(started_at.elapsed() < Duration::from_secs(5));
     assert!(paths.gateway_runtime_metadata().exists());
     assert_runtime_states_snapshot(
         snapshot_name,
@@ -1604,11 +1561,7 @@ async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() 
         .map_err(|_error| anyhow::anyhow!("fresh Gateway did not reach gated admin readiness"))?
     };
     let (result, gateway) = tokio::join!(
-        reconcile_gateway_runtimes_with_pf_state_for_test(
-            &paths,
-            Duration::from_secs(5),
-            GatewayPfRoutingState::Unknown,
-        ),
+        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Unknown,),
         corrupt_runtime_metadata,
     );
     let (gateway_pid, _gateway) = gateway?;
@@ -1632,7 +1585,8 @@ async fn fresh_gateway_exit_is_reported_before_the_readiness_timeout() -> Result
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
     let caddy_release = tempdir.path().join("fast-exit-caddy-release");
-    write_fast_exit_runtime(&caddy_release.join("bin/caddy"))?;
+    let go = tempdir.path().join("exit");
+    write_fast_exit_runtime(&caddy_release.join("bin/caddy"), &go)?;
 
     let mut database = Database::open(&paths)?;
     database.record_managed_resource_track_installed(
@@ -1645,12 +1599,15 @@ async fn fresh_gateway_exit_is_reported_before_the_readiness_timeout() -> Result
     seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
     drop(database);
 
-    let result = timeout(
-        Duration::from_secs(5),
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(60)),
-    )
+    let metadata_path = paths.gateway_runtime_metadata();
+    let (result, ()) = timeout(Duration::from_secs(5), async {
+        tokio::try_join!(
+            async { Ok::<_, Error>(reconcile_gateway_runtimes(&paths).await) },
+            release_fast_exit_runtime(&metadata_path, &go),
+        )
+    })
     .await
-    .context("Gateway reconciliation waited for the readiness timeout after Caddy exited")?;
+    .context("Gateway reconciliation waited for the readiness timeout after Caddy exited")??;
 
     assert!(
         matches!(
@@ -1674,7 +1631,8 @@ async fn fresh_worker_exit_is_reported_before_the_readiness_timeout() -> Result<
     let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
     let project_root = tempdir.path().join("acme");
     let frankenphp_release = tempdir.path().join("fast-exit-frankenphp-release");
-    write_fast_exit_runtime(&frankenphp_release.join("bin/frankenphp"))?;
+    let go = tempdir.path().join("exit");
+    write_fast_exit_runtime(&frankenphp_release.join("bin/frankenphp"), &go)?;
     create_project(
         &project_root,
         r#"php: "8.4"
@@ -1707,12 +1665,15 @@ root: public
     drop(database);
     ensure_fake_caddy(&paths)?;
 
-    let result = timeout(
-        Duration::from_secs(5),
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(60)),
-    )
+    let metadata_path = paths.worker_runtime_metadata("8.4");
+    let (result, ()) = timeout(Duration::from_secs(5), async {
+        tokio::try_join!(
+            async { Ok::<_, Error>(reconcile_gateway_runtimes(&paths).await) },
+            release_fast_exit_runtime(&metadata_path, &go),
+        )
+    })
     .await
-    .context("Gateway reconciliation waited for the readiness timeout after FrankenPHP exited")?;
+    .context("Gateway reconciliation waited for the readiness timeout after FrankenPHP exited")??;
 
     assert!(
         matches!(
@@ -2117,13 +2078,8 @@ env:
   APP_URL: "${url}"
 "#,
     )?;
-    reconcile_project_gateway_runtimes_for_test(
-        &paths,
-        &acme.id,
-        Duration::from_secs(5),
-        GatewayPfRoutingState::Inactive,
-    )
-    .await?;
+    reconcile_project_gateway_runtimes_for_test(&paths, &acme.id, GatewayPfRoutingState::Inactive)
+        .await?;
 
     assert_eq!(
         required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?,
@@ -2179,13 +2135,8 @@ env:
 
     fs::write_sensitive_file(&acme.path.join("web/index.php"), "<?php\n")?;
     fs::write_sensitive_file(&acme.config_path, "php: \"8.4\"\nroot: web\n")?;
-    reconcile_project_gateway_runtimes_for_test(
-        &paths,
-        &acme.id,
-        Duration::from_secs(5),
-        GatewayPfRoutingState::Inactive,
-    )
-    .await?;
+    reconcile_project_gateway_runtimes_for_test(&paths, &acme.id, GatewayPfRoutingState::Inactive)
+        .await?;
 
     assert_eq!(
         fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
@@ -2205,13 +2156,8 @@ env:
     );
 
     link_project_record(&paths, &acme.path, "www.acme.test", Some("8.4"))?;
-    reconcile_project_gateway_runtimes_for_test(
-        &paths,
-        &acme.id,
-        Duration::from_secs(5),
-        GatewayPfRoutingState::Inactive,
-    )
-    .await?;
+    reconcile_project_gateway_runtimes_for_test(&paths, &acme.id, GatewayPfRoutingState::Inactive)
+        .await?;
 
     assert_eq!(
         fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
@@ -2245,14 +2191,9 @@ env:
         }),
     )?;
     drop(database);
-    reconcile_project_gateway_runtimes_for_test(
-        &paths,
-        &acme.id,
-        Duration::from_secs(5),
-        GatewayPfRoutingState::Inactive,
-    )
-    .await
-    .context("switch the target Project to PHP 8.5")?;
+    reconcile_project_gateway_runtimes_for_test(&paths, &acme.id, GatewayPfRoutingState::Inactive)
+        .await
+        .context("switch the target Project to PHP 8.5")?;
 
     assert_eq!(
         required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?,
@@ -2295,13 +2236,15 @@ env:
     let loads_before_readiness_failure =
         fake_admin_load_bodies(&paths.gateway_root_config())?.len();
     use_unrouted_public_probe_ports_for_test();
-    reconcile_project_gateway_runtimes_for_test(
-        &paths,
-        &acme.id,
-        Duration::from_millis(250),
-        GatewayPfRoutingState::Unknown,
+    reconcile_past(
+        &PF_PUBLIC_READINESS_TIMEOUT,
+        reconcile_project_gateway_runtimes_for_test(
+            &paths,
+            &acme.id,
+            GatewayPfRoutingState::Unknown,
+        ),
     )
-    .await?;
+    .await??;
     assert_eq!(
         fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
         loads_before_readiness_failure + 1,
@@ -2313,7 +2256,6 @@ env:
     let changed_root = reconcile_project_gateway_runtimes_for_test(
         &paths,
         &acme.id,
-        Duration::from_secs(5),
         GatewayPfRoutingState::Inactive,
     )
     .await;
@@ -2359,7 +2301,6 @@ env:
         reconcile_project_gateway_runtimes_for_test(
             &paths,
             &acme.id,
-            Duration::from_secs(5),
             GatewayPfRoutingState::Inactive,
         )
         .await?;
@@ -2406,13 +2347,8 @@ env:
         Some("stale worker cleanup failed"),
     )?;
     drop(database);
-    reconcile_project_gateway_runtimes_for_test(
-        &paths,
-        &acme.id,
-        Duration::from_secs(5),
-        GatewayPfRoutingState::Inactive,
-    )
-    .await?;
+    reconcile_project_gateway_runtimes_for_test(&paths, &acme.id, GatewayPfRoutingState::Inactive)
+        .await?;
     let worker_83_status = Database::open(&paths)?
         .runtime_observed_states()?
         .into_iter()
@@ -2506,7 +2442,6 @@ async fn targeted_project_reconciliation_does_not_activate_tampered_unrelated_fr
     reconcile_project_gateway_runtimes_for_test(
         &paths,
         &target.id,
-        Duration::from_secs(5),
         GatewayPfRoutingState::Inactive,
     )
     .await?;
@@ -2525,7 +2460,6 @@ async fn targeted_project_reconciliation_does_not_activate_tampered_unrelated_fr
     reconcile_project_gateway_runtimes_for_test(
         &paths,
         &target.id,
-        Duration::from_secs(5),
         GatewayPfRoutingState::Inactive,
     )
     .await?;
@@ -2548,7 +2482,6 @@ async fn targeted_project_reconciliation_does_not_activate_tampered_unrelated_fr
     reconcile_project_gateway_runtimes_for_test(
         &paths,
         &target.id,
-        Duration::from_secs(5),
         GatewayPfRoutingState::Inactive,
     )
     .await?;
@@ -2649,7 +2582,6 @@ async fn targeted_project_reconciliation_promotes_split_peer_runtime_state() -> 
     let failed = reconcile_project_gateway_runtimes_for_test(
         &paths,
         &peer.id,
-        Duration::from_secs(5),
         GatewayPfRoutingState::Inactive,
     )
     .await;
@@ -2685,7 +2617,6 @@ async fn targeted_project_reconciliation_promotes_split_peer_runtime_state() -> 
     reconcile_project_gateway_runtimes_for_test(
         &paths,
         &target.id,
-        Duration::from_secs(5),
         GatewayPfRoutingState::Inactive,
     )
     .await?;
@@ -2805,7 +2736,6 @@ async fn targeted_project_reconciliation_uses_verified_fragment_snapshot() -> Re
         reconcile_project_gateway_runtimes_for_test(
             &paths,
             &target.id,
-            Duration::from_secs(5),
             GatewayPfRoutingState::Inactive,
         ),
         mutate_fragment,
@@ -2913,7 +2843,6 @@ async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is
     let failed = reconcile_project_gateway_runtimes_for_test(
         &paths,
         &project.id,
-        Duration::from_millis(250),
         GatewayPfRoutingState::Inactive,
     )
     .await;
@@ -2946,7 +2875,6 @@ async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is
     reconcile_project_gateway_runtimes_for_test(
         &paths,
         &project.id,
-        Duration::from_secs(5),
         GatewayPfRoutingState::Inactive,
     )
     .await
@@ -2988,7 +2916,6 @@ async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is
     let failed = reconcile_project_gateway_runtimes_for_test(
         &paths,
         &project.id,
-        Duration::from_millis(250),
         GatewayPfRoutingState::Inactive,
     )
     .await;
@@ -3011,7 +2938,6 @@ async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is
     reconcile_project_gateway_runtimes_for_test(
         &paths,
         &project.id,
-        Duration::from_secs(5),
         GatewayPfRoutingState::Inactive,
     )
     .await
@@ -3247,11 +3173,7 @@ async fn gateway_reconciliation_keeps_pending_state_when_applied_fingerprint_com
         .map_err(|_error| anyhow::anyhow!("pending runtime metadata was not recorded"))?
     };
     let (result, block_result) = tokio::join!(
-        reconcile_gateway_runtimes_with_pf_state_for_test(
-            &paths,
-            Duration::from_secs(2),
-            GatewayPfRoutingState::Unknown,
-        ),
+        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Unknown,),
         block_final_metadata_write,
     );
     block_result?;
@@ -3398,12 +3320,9 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
         "legacy fixture must be adoptable before reconciliation"
     );
 
-    let summary = reconcile_gateway_runtimes_with_pf_state_for_test(
-        &paths,
-        Duration::from_secs(1),
-        GatewayPfRoutingState::Inactive,
-    )
-    .await?;
+    let summary =
+        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Inactive)
+            .await?;
     assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
     timeout(Duration::from_secs(1), async {
         loop {
@@ -3425,12 +3344,8 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
     )));
     assert!(!root_config.contains("admin off"));
 
-    reconcile_gateway_runtimes_with_pf_state_for_test(
-        &paths,
-        Duration::from_secs(1),
-        GatewayPfRoutingState::Inactive,
-    )
-    .await?;
+    reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Inactive)
+        .await?;
     let stable_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
         .ok_or_else(|| anyhow::anyhow!("expected stable gateway metadata"))?;
     assert_eq!(stable_pid, replacement_pid);
@@ -3593,11 +3508,14 @@ root: public
     let http_port = http_listener.local_addr()?.port();
     let https_port = https_listener.local_addr()?.port();
     https_listener.set_nonblocking(true)?;
+    let (accepted, accept_seen) = oneshot::channel();
     let https_server = tokio::spawn(async move {
         let (_stream, _address) = tokio::net::TcpListener::from_std(https_listener)?
             .accept()
             .await?;
-        sleep(Duration::from_secs(30)).await;
+        let _sent = accepted.send(());
+        // Never answers the TLS handshake.
+        pending::<()>().await;
 
         Ok::<(), std::io::Error>(())
     });
@@ -3626,11 +3544,19 @@ root: public
     )?;
     drop(database);
 
-    let result = timeout(
-        Duration::from_secs(5),
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(100)),
-    )
-    .await;
+    // The worker's port check is a foreign-listener probe too, so advance only once the Gateway's
+    // probe holds the HTTPS connection.
+    let clock = platform::clock::install_fake_for_test();
+    let result = tokio::try_join!(
+        async { Ok::<_, Error>(reconcile_gateway_runtimes(&paths).await) },
+        async {
+            accept_seen.await?;
+            clock
+                .advance_when_waiting(&FOREIGN_LISTENER_PROBE_TIMEOUT)
+                .await?;
+            Ok(())
+        },
+    );
 
     https_server.abort();
     drop(http_listener);
@@ -3829,7 +3755,6 @@ root: public
     let targeted_reconcile_result = reconcile_project_gateway_runtimes_for_test(
         &paths,
         &surviving_project.project.id,
-        Duration::from_secs(5),
         GatewayPfRoutingState::Inactive,
     )
     .await;
@@ -5038,12 +4963,11 @@ root: public
         json!({"apply_load": [false]}),
     )?;
 
-    let result = reconcile_gateway_runtimes_with_pf_state_for_test(
-        &paths,
-        Duration::from_millis(150),
-        GatewayPfRoutingState::Unknown,
+    let result = reconcile_past(
+        &RUNTIME_RELOAD_READINESS_TIMEOUT,
+        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Unknown),
     )
-    .await;
+    .await?;
     let unready_worker_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?;
     let desired_fragment = fs::read_to_string(&fragment_path)?;
     let load_count = fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len();
@@ -5126,8 +5050,7 @@ async fn gateway_reconciliation_rejection_keeps_old_runtime_and_disk_state() -> 
     seed_runtime_ports(&paths, &mut database, new_ports[0], new_ports[1], &[])?;
     drop(database);
 
-    let result =
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(250)).await;
+    let result = reconcile_gateway_runtimes(&paths).await;
     let second_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
         .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
     let root_after = read_test_bytes(paths.gateway_root_config())?;
@@ -5268,8 +5191,7 @@ async fn gateway_reconciliation_rejects_load_error_reported_with_success_status(
     seed_runtime_ports(&paths, &mut database, new_ports[0], new_ports[1], &[])?;
     drop(database);
 
-    let result =
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(250)).await;
+    let result = reconcile_gateway_runtimes(&paths).await;
     let second_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
         .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
     let root_after = read_test_bytes(paths.gateway_root_config())?;
@@ -5330,8 +5252,7 @@ async fn gateway_reconciliation_replaces_runtime_before_newer_desired_state() ->
     seed_runtime_ports(&paths, &mut database, ports[2], ports[3], &[])?;
     drop(database);
 
-    let result =
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_secs(5)).await;
+    let result = reconcile_gateway_runtimes(&paths).await;
     let initial_load_bodies = fake_admin_load_bodies(&paths.gateway_root_config())?;
     let first_candidate_root = initial_load_bodies
         .first()
@@ -5367,12 +5288,9 @@ async fn gateway_reconciliation_replaces_runtime_before_newer_desired_state() ->
     seed_runtime_ports(&paths, &mut database, ports[4], ports[5], &[])?;
     drop(database);
 
-    let recovery_summary = reconcile_gateway_runtimes_with_pf_state_for_test(
-        &paths,
-        Duration::from_secs(5),
-        GatewayPfRoutingState::Unknown,
-    )
-    .await?;
+    let recovery_summary =
+        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Unknown)
+            .await?;
     let second_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
         .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
     let root_after = read_test_bytes(paths.gateway_root_config())?;
@@ -5451,24 +5369,22 @@ async fn gateway_reconciliation_preserves_accepted_config_for_pf_state(
     drop(database);
     use_unrouted_public_probe_ports_for_test();
 
-    reconcile_gateway_runtimes_with_pf_state_for_test(
-        &paths,
-        Duration::from_millis(150),
-        pf_routing_state,
+    reconcile_past(
+        &PF_PUBLIC_READINESS_TIMEOUT,
+        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, pf_routing_state),
     )
-    .await?;
+    .await??;
     let second_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
         .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
     let root_after = read_test_bytes(paths.gateway_root_config())?;
     let load_count = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
     let validation_count = fake_validator_spawns(&paths.gateway_root_config())?;
 
-    reconcile_gateway_runtimes_with_pf_state_for_test(
-        &paths,
-        Duration::from_millis(150),
-        pf_routing_state,
+    reconcile_past(
+        &PF_PUBLIC_READINESS_TIMEOUT,
+        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, pf_routing_state),
     )
-    .await?;
+    .await??;
     let third_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
         .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
     let metadata: Value =
@@ -5533,8 +5449,7 @@ async fn gateway_reconciliation_does_not_reload_after_runtime_exits_after_load()
     seed_runtime_ports(&paths, &mut database, new_ports[0], new_ports[1], &[])?;
     drop(database);
 
-    let result =
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(250)).await;
+    let result = reconcile_gateway_runtimes(&paths).await;
     let root_after = read_test_bytes(paths.gateway_root_config())?;
     let load_bodies = fake_admin_load_bodies(&paths.gateway_root_config())?;
     let metadata: Value =
@@ -5622,8 +5537,11 @@ async fn gateway_reconciliation_keeps_accepted_config_when_runtime_readiness_fai
     // The fake accepts the load without applying it, so the new ports never open.
     pv_fake::write_gateway_control(&paths.gateway_root_config(), json!({"apply_load": [false]}))?;
 
-    let result =
-        reconcile_gateway_runtimes_with_readiness_timeout(&paths, Duration::from_millis(250)).await;
+    let result = reconcile_past(
+        &RUNTIME_RELOAD_READINESS_TIMEOUT,
+        reconcile_gateway_runtimes(&paths),
+    )
+    .await?;
     let unready_gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
     let root_config = fs::read_to_string(&paths.gateway_root_config())?;
     let load_bodies = fake_admin_load_bodies(&paths.gateway_root_config())?;
@@ -6540,10 +6458,26 @@ fn write_fake_caddy(path: &Utf8Path) -> Result<()> {
     Ok(())
 }
 
-fn write_fast_exit_runtime(path: &Utf8Path) -> Result<()> {
+/// Lets a [`write_fast_exit_runtime`] runtime exit once PV has recorded it as started, so it exits
+/// while PV waits for it to become ready.
+async fn release_fast_exit_runtime(metadata_path: &Utf8Path, go: &Utf8Path) -> Result<()> {
+    loop {
+        if let Ok(metadata) = fs::read_to_string(metadata_path)
+            && serde_json::from_str::<Value>(&metadata)?["replacement_required"] == true
+        {
+            fs::write_sensitive_file(go, "")?;
+            return Ok(());
+        }
+        sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// Writes a runtime that exits once `go` exists; see [`release_fast_exit_runtime`].
+fn write_fast_exit_runtime(path: &Utf8Path, go: &Utf8Path) -> Result<()> {
     fs::write_sensitive_file(
         path,
-        r#"#!/bin/sh
+        &format!(
+            r#"#!/bin/sh
 set -eu
 
 if [ "$1" = "validate" ]; then
@@ -6551,12 +6485,18 @@ if [ "$1" = "validate" ]; then
 fi
 
 if [ "$1" = "run" ]; then
-  sleep 1
+  attempt=0
+  while [ ! -f '{go}' ]; do
+    [ "$attempt" -lt 15000 ] || exit 91
+    attempt=$((attempt + 1))
+    sleep 0.01
+  done
   exit 42
 fi
 
 exit 2
-"#,
+"#
+        ),
     )?;
     set_executable(path)?;
 
@@ -7209,7 +7149,6 @@ async fn resource_only_target_recovers_alive_unready_gateway_with_invalid_config
     reconcile_project_gateway_runtimes_for_test(
         &paths,
         &project.id,
-        Duration::from_secs(5),
         GatewayPfRoutingState::Inactive,
     )
     .await?;
@@ -7280,7 +7219,6 @@ async fn targeted_inspection_promotes_only_recoverable_uncertainty() -> Result<(
         let summary = reconcile_project_gateway_runtimes_for_test(
             &paths,
             &project.id,
-            Duration::from_secs(5),
             GatewayPfRoutingState::Inactive,
         )
         .await?;
@@ -7343,7 +7281,6 @@ async fn targeted_inspection_promotes_only_recoverable_uncertainty() -> Result<(
         let invalid = reconcile_project_gateway_runtimes_for_test(
             &paths,
             &project.id,
-            Duration::from_secs(5),
             GatewayPfRoutingState::Inactive,
         )
         .await;
@@ -7366,7 +7303,6 @@ async fn targeted_inspection_promotes_only_recoverable_uncertainty() -> Result<(
         let deleted = reconcile_project_gateway_runtimes_for_test(
             &paths,
             &project.id,
-            Duration::from_secs(5),
             GatewayPfRoutingState::Inactive,
         )
         .await;
@@ -7450,7 +7386,6 @@ async fn gateway_failure_preserves_primary_error_when_observation_write_fails() 
     let result = reconcile_project_gateway_runtimes_for_test(
         &paths,
         &project.id,
-        Duration::from_secs(5),
         GatewayPfRoutingState::Inactive,
     )
     .await;
@@ -7544,13 +7479,15 @@ async fn targeted_reconciliation_reports_alive_unready_worker() -> Result<()> {
     .await
     .context("worker listener stayed up")?;
     assert!(supervisor.verify_ownership(&spec)?.is_some());
-    let result = reconcile_project_gateway_runtimes_for_test(
-        &paths,
-        &project.id,
-        Duration::from_millis(250),
-        GatewayPfRoutingState::Inactive,
+    let result = reconcile_past(
+        &RUNTIME_RELOAD_READINESS_TIMEOUT,
+        reconcile_project_gateway_runtimes_for_test(
+            &paths,
+            &project.id,
+            GatewayPfRoutingState::Inactive,
+        ),
     )
-    .await;
+    .await?;
     let still_owned = supervisor.verify_ownership(&spec)?.is_some();
     let still_unready = TcpStream::connect(("127.0.0.1", ports[2])).await.is_err();
     let final_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?;

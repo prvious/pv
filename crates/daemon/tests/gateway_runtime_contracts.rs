@@ -37,8 +37,7 @@ use state::PvPaths;
 )]
 type RuntimeCommand = std::process::Command;
 
-const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
-const READINESS: Limit = Limit::new("contract readiness", READINESS_TIMEOUT);
+const READINESS: Limit = Limit::new("contract readiness", Duration::from_secs(30));
 /// Caddy switches listeners before `/load` responds; this only absorbs scheduling delays.
 const RELOAD: Limit = Limit::new("contract reload readiness", Duration::from_secs(5));
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
@@ -122,7 +121,7 @@ async fn gateway_contract(paths: &PvPaths, executable: &Utf8Path) -> Result<()> 
         .await?;
     let serving = async {
         CaddyAdminClient::new()
-            .wait_until_ready(&endpoint, READINESS_TIMEOUT)
+            .wait_until_ready(&endpoint, &READINESS)
             .await?;
         wait_for_readiness(gateway_identity(paths, http_port, https_port), &READINESS).await?;
 
@@ -240,7 +239,7 @@ async fn worker_contract(paths: &PvPaths, artifact_root: &Utf8Path, php_track: &
         .await?;
     let serving = async {
         CaddyAdminClient::new()
-            .wait_until_ready(&endpoint, READINESS_TIMEOUT)
+            .wait_until_ready(&endpoint, &READINESS)
             .await?;
         wait_for_readiness(worker_identity(port), &READINESS).await?;
 

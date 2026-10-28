@@ -3943,12 +3943,8 @@ mod tests {
             |_port| true,
         )?;
         drop(database);
-        reconcile_gateway_runtimes_with_pf_state_for_test(
-            &paths,
-            Duration::from_secs(5),
-            GatewayPfRoutingState::Inactive,
-        )
-        .await?;
+        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Inactive)
+            .await?;
         let supervisor = ProcessSupervisor::new(paths.clone());
         let worker = supervisor
             .adopt_recorded(&paths.worker_runtime_metadata("8.4"))?
@@ -4063,7 +4059,6 @@ mod tests {
         let mut caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
         crate::gateway::reconcile_gateway_runtimes_with_pf_state_for_test(
             &paths,
-            Duration::from_secs(5),
             crate::gateway::GatewayPfRoutingState::Inactive,
         )
         .await?;
@@ -4152,7 +4147,6 @@ mod tests {
         let mut caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
         crate::gateway::reconcile_gateway_runtimes_with_pf_state_for_test(
             &paths,
-            Duration::from_secs(5),
             crate::gateway::GatewayPfRoutingState::Inactive,
         )
         .await?;
