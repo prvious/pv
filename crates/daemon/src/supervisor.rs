@@ -15,7 +15,9 @@ use sha2::{Digest, Sha256};
 use state::{PvPaths, StateError, fs};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::{Instant, sleep, timeout};
+#[cfg(target_os = "macos")]
+use tokio::time::Instant;
+use tokio::time::{sleep, timeout};
 use tokio_rustls::TlsConnector;
 
 use crate::monitor::{self, MonitorCleanup, MonitorExit, MonitorStart, MonitorState, MonitorStop};
@@ -792,12 +794,6 @@ where
     })
 }
 
-fn remaining_timeout(started_at: Instant, readiness_timeout: Duration) -> Option<Duration> {
-    readiness_timeout
-        .checked_sub(started_at.elapsed())
-        .filter(|remaining| !remaining.is_zero())
-}
-
 impl ReadinessCheck {
     fn name(&self) -> String {
         match self {
@@ -1108,6 +1104,13 @@ pub(crate) async fn wait_for_process_group_exit(
     }
 
     process_group_has_exited(pid)
+}
+
+#[cfg(target_os = "macos")]
+fn remaining_timeout(started_at: Instant, readiness_timeout: Duration) -> Option<Duration> {
+    readiness_timeout
+        .checked_sub(started_at.elapsed())
+        .filter(|remaining| !remaining.is_zero())
 }
 
 /// The monitor subject of the runtime recorded at `metadata_path`: the record's path under
