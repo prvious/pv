@@ -1,15 +1,17 @@
 use std::collections::BTreeSet;
 use std::io;
-use std::thread;
 use std::time::Duration;
-use std::time::Instant;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use platform::clock::{self, Deadline, Limit};
 use serde::{Deserialize, Serialize};
 use state::{PvPaths, fs};
 
 use crate::supervisor::monitor_subject;
 use crate::{DaemonError, ProcessSupervisor, RuntimeReconciliationFailure, monitor};
+
+/// How long the previous daemon gets to exit after PV unloads its LaunchAgent.
+pub const DAEMON_EXIT_GRACE: Limit = Limit::new("daemon exit", Duration::from_secs(10));
 
 /// Captured process identity to wait on after unloading the LaunchAgent.
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
@@ -19,18 +21,18 @@ pub struct DaemonProcess {
 }
 
 impl DaemonProcess {
-    pub fn wait_for_exit(&self, grace: Duration) -> Result<(), DaemonError> {
-        let deadline = Instant::now() + grace;
+    pub fn wait_for_exit(&self) -> Result<(), DaemonError> {
+        let deadline = Deadline::after(&DAEMON_EXIT_GRACE);
         while platform::inspect_process_start_identity(self.pid)? == Some(self.start_identity)
             && !platform::process_is_zombie(self.pid)?
         {
-            if Instant::now() >= deadline {
+            if deadline.is_expired() {
                 return Err(DaemonError::RuntimeCleanupUnproven {
                     pid: self.pid,
                     reason: "daemon is still running after LaunchAgent unload".to_owned(),
                 });
             }
-            thread::sleep(Duration::from_millis(25));
+            clock::poll_blocking(Duration::from_millis(25));
         }
         Ok(())
     }

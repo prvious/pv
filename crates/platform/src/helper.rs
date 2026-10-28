@@ -7,7 +7,7 @@ use std::io::Write;
 #[cfg(target_os = "macos")]
 use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 #[cfg(target_os = "macos")]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use camino::Utf8Path;
 #[cfg(target_os = "macos")]
@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "macos")]
 use sha2::{Digest, Sha256};
 
+#[cfg(target_os = "macos")]
+use crate::clock::{self, Deadline, Limit};
 use crate::{
     ActivePfRedirectInspection, KeychainCertificate, LowPortInspection, PfRedirectConfig,
     PlatformError, ResolverConfig, ResolverFileState,
@@ -68,6 +70,9 @@ const HELPER_LIFECYCLE_READY_PREFIX: &str = "PV-HELPER-LIFECYCLE-READY";
 const MAX_MESSAGE_BYTES: usize = 16 * 1024;
 #[cfg(target_os = "macos")]
 const HELPER_IO_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long PV waits for launchd to create the helper's control socket after bootstrap.
+#[cfg(target_os = "macos")]
+const HELPER_SOCKET_WAIT: Limit = Limit::new("helper socket", Duration::from_secs(5));
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PrivilegedHelperStatus {
@@ -1254,13 +1259,11 @@ fn probe_helper_lifecycle(socket_path: &Utf8Path) -> Result<PrivilegedHelperStat
 fn wait_for_helper_lifecycle(
     socket_path: &Utf8Path,
 ) -> Result<PrivilegedHelperStatus, PlatformError> {
-    let started_at = Instant::now();
+    let deadline = Deadline::after(&HELPER_SOCKET_WAIT);
     loop {
         match probe_helper_lifecycle(socket_path) {
-            Err(PlatformError::PrivilegedHelperUnavailable)
-                if started_at.elapsed() < HELPER_IO_TIMEOUT =>
-            {
-                std::thread::sleep(Duration::from_millis(25));
+            Err(PlatformError::PrivilegedHelperUnavailable) if !deadline.is_expired() => {
+                clock::poll_blocking(Duration::from_millis(25));
             }
             result => return result,
         }
@@ -1894,11 +1897,11 @@ mod tests {
     use super::{HELPER_PROTOCOL_VERSION, HelperOperation, write_message};
     #[cfg(target_os = "macos")]
     use super::{
-        HELPER_SOCKET_NAME, HELPER_STANDARD_ERROR_PATH, HelperLaunchDaemonPlist, HelperPayload,
-        PRIVILEGED_HELPER_VERSION, call_helper, dispatch_request,
-        lock_machine_helper_lifecycle_file, probe_helper_lifecycle, render_launch_daemon_plist,
-        restore_helper_file, serve_next_helper_connection, validate_root_owned_regular_file,
-        wait_for_helper_lifecycle,
+        HELPER_SOCKET_NAME, HELPER_SOCKET_WAIT, HELPER_STANDARD_ERROR_PATH,
+        HelperLaunchDaemonPlist, HelperPayload, PRIVILEGED_HELPER_VERSION, call_helper,
+        dispatch_request, lock_machine_helper_lifecycle_file, probe_helper_lifecycle,
+        render_launch_daemon_plist, restore_helper_file, serve_next_helper_connection,
+        validate_root_owned_regular_file, wait_for_helper_lifecycle,
     };
     use super::{
         HelperRequest, MAX_MESSAGE_BYTES, PrivilegedHelperMetadata, helper_artifacts_present,
@@ -1906,6 +1909,8 @@ mod tests {
         validate_fingerprint, validate_helper_identity, validate_high_port,
     };
     use crate::PlatformError;
+    #[cfg(target_os = "macos")]
+    use crate::clock;
 
     #[cfg(target_os = "macos")]
     #[test]
@@ -2150,6 +2155,7 @@ mod tests {
     #[test]
     fn helper_bootstrap_wait_stops_when_the_socket_never_appears() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
+        clock::install_fake_for_test().advance_when_waiting_in_background(&HELPER_SOCKET_WAIT);
         let result = wait_for_helper_lifecycle(&tempdir.path().join("missing.sock"));
         assert!(matches!(
             result,

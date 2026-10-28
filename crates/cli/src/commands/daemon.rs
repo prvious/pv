@@ -1,5 +1,4 @@
 use std::process::ExitCode;
-use std::time::Duration;
 
 use ::daemon::MonitorHooks;
 use camino::Utf8PathBuf;
@@ -139,7 +138,7 @@ pub(crate) fn unload_and_wait_for_daemon(
         None => environment.daemon_process_for_stop(paths)?,
     };
     if let Some(daemon) = daemon {
-        daemon.wait_for_exit(Duration::from_secs(10))?;
+        daemon.wait_for_exit()?;
     }
     Ok(())
 }

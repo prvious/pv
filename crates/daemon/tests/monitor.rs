@@ -224,8 +224,8 @@ async fn monitor_stop_outlives_its_client_and_keeps_its_first_deadline() -> Resu
 async fn monitor_reports_a_leader_exit_while_its_group_lives_on() -> Result<()> {
     let harness = Harness::new()?;
     let shell = Utf8Path::new("/bin/sh");
-    let mut start = harness.start_for(shell, &["-c", "trap '' TERM; sleep 30 & exit 3"])?;
-    start.fallback_stop.grace_ms = 3_000;
+    let mut start = harness.start_for(shell, &["-c", "trap '' TERM; sleep 150 & exit 3"])?;
+    start.fallback_stop.grace_ms = 1_000;
     harness.start(start.clone()).await?;
 
     let exited = harness.wait_for_state(|state| state.exit.is_some()).await?;

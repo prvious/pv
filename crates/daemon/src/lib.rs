@@ -38,10 +38,10 @@ pub use caddy_admin::{
     MAX_RESPONSE_DETAIL_BYTES, load_caddyfile, wait_until_ready,
 };
 pub use client::{
-    CompletedJob, JobDownloadProgress, JobEventHandler, SubmittedJob, health_blocking,
-    managed_resource_update_check_blocking, run_job_blocking, run_job_with_events_blocking,
-    submit_job, submit_job_blocking, wait_until_healthy_allowing_protocol_mismatch_blocking,
-    wait_until_healthy_blocking,
+    CompletedJob, DAEMON_RESPONSE_TIMEOUT, JobDownloadProgress, JobEventHandler, SubmittedJob,
+    health_blocking, managed_resource_update_check_blocking, run_job_blocking,
+    run_job_with_events_blocking, submit_job, submit_job_blocking,
+    wait_until_healthy_allowing_protocol_mismatch_blocking, wait_until_healthy_blocking,
 };
 pub use dns::{dns_port_available, response_bytes};
 pub use error::{DaemonError, ManagedResourceProjectFailure, RuntimeReconciliationFailure};
@@ -57,7 +57,8 @@ pub use reconciliation::{
     ReconciliationQueue, ReconciliationScope, ReconciliationScopeParseError, RunningReconciliation,
 };
 pub use runtime_stop::{
-    DaemonProcess, daemon_process_for_stop, stop_recorded_runtimes, stop_recorded_runtimes_blocking,
+    DAEMON_EXIT_GRACE, DaemonProcess, daemon_process_for_stop, stop_recorded_runtimes,
+    stop_recorded_runtimes_blocking,
 };
 pub use supervisor::{
     AdoptedProcess, ManagedProcess, OwnedRuntime, ProcessSpec, ProcessSupervisor, ReadinessCheck,
