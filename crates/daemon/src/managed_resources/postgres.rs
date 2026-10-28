@@ -1,7 +1,5 @@
 use std::collections::BTreeMap;
 use std::io;
-#[cfg(test)]
-use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use state::{EnvContextValues, PostgresPreloadLibrary, PvPaths, ResourceAllocationRecord};
@@ -22,22 +20,11 @@ const POSTGRES_PORTS: &[ManagedResourcePortSpec] = &[ManagedResourcePortSpec {
 }];
 
 #[derive(Clone, Debug)]
-pub(crate) struct PostgresRuntimeAdapter {
-    #[cfg(test)]
-    readiness_timeout: Duration,
-}
+pub(crate) struct PostgresRuntimeAdapter;
 
 impl PostgresRuntimeAdapter {
     pub(crate) fn new() -> Self {
-        Self {
-            #[cfg(test)]
-            readiness_timeout: super::RESOURCE_READINESS_TIMEOUT,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_readiness_timeout(readiness_timeout: Duration) -> Self {
-        Self { readiness_timeout }
+        Self
     }
 }
 
@@ -119,11 +106,6 @@ impl ManagedResourceRuntimeAdapter for PostgresRuntimeAdapter {
                 Box::pin(async move { sql::ping_admin(&admin, SqlEngine::Postgres).await })
             },
         ))
-    }
-
-    #[cfg(test)]
-    fn readiness_timeout(&self) -> Duration {
-        self.readiness_timeout
     }
 
     /// SIGTERM is PostgreSQL's smart shutdown, which waits until every client disconnects, so an

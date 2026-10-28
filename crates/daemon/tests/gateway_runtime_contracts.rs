@@ -23,6 +23,7 @@ use daemon::{
     CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, ProcessSupervisor, ReadinessCheck,
     wait_for_readiness,
 };
+use platform::clock::Limit;
 use pv_fake::Persona;
 use resources::{
     ManagedResourceCommands, TargetPlatform, TrackSelector, caddy_adapter, frankenphp_adapter,
@@ -37,8 +38,9 @@ use state::PvPaths;
 type RuntimeCommand = std::process::Command;
 
 const READINESS_TIMEOUT: Duration = Duration::from_secs(30);
+const READINESS: Limit = Limit::new("contract readiness", READINESS_TIMEOUT);
 /// Caddy switches listeners before `/load` responds; this only absorbs scheduling delays.
-const RELOAD_TIMEOUT: Duration = Duration::from_secs(5);
+const RELOAD: Limit = Limit::new("contract reload readiness", Duration::from_secs(5));
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 const GATEWAY_SERVER_NAME: &str = "pv-gateway.localhost";
 const WORKER_PHP_TRACK: &str = "8.4";
@@ -122,11 +124,7 @@ async fn gateway_contract(paths: &PvPaths, executable: &Utf8Path) -> Result<()> 
         CaddyAdminClient::new()
             .wait_until_ready(&endpoint, READINESS_TIMEOUT)
             .await?;
-        wait_for_readiness(
-            gateway_identity(paths, http_port, https_port),
-            READINESS_TIMEOUT,
-        )
-        .await?;
+        wait_for_readiness(gateway_identity(paths, http_port, https_port), &READINESS).await?;
 
         // Caddy has closed the old ports and serves the new identity by the time `/load` returns.
         CaddyAdminClient::new()
@@ -138,7 +136,7 @@ async fn gateway_contract(paths: &PvPaths, executable: &Utf8Path) -> Result<()> 
         ensure_ports_closed(&[http_port, https_port])?;
         wait_for_readiness(
             gateway_identity(paths, moved_http_port, moved_https_port),
-            RELOAD_TIMEOUT,
+            &RELOAD,
         )
         .await?;
 
@@ -162,7 +160,7 @@ async fn gateway_contract(paths: &PvPaths, executable: &Utf8Path) -> Result<()> 
         );
         wait_for_readiness(
             gateway_identity(paths, moved_http_port, moved_https_port),
-            RELOAD_TIMEOUT,
+            &RELOAD,
         )
         .await?;
         Ok::<(), anyhow::Error>(())
@@ -244,7 +242,7 @@ async fn worker_contract(paths: &PvPaths, artifact_root: &Utf8Path, php_track: &
         CaddyAdminClient::new()
             .wait_until_ready(&endpoint, READINESS_TIMEOUT)
             .await?;
-        wait_for_readiness(worker_identity(port), READINESS_TIMEOUT).await?;
+        wait_for_readiness(worker_identity(port), &READINESS).await?;
 
         // Caddy has closed the old port and serves the new health route by the time `/load`
         // returns.
@@ -256,7 +254,7 @@ async fn worker_contract(paths: &PvPaths, artifact_root: &Utf8Path, php_track: &
             .load_caddyfile(&endpoint, worker_config(moved_port)?.as_bytes())
             .await?;
         ensure_ports_closed(&[port])?;
-        wait_for_readiness(worker_identity(moved_port), RELOAD_TIMEOUT).await?;
+        wait_for_readiness(worker_identity(moved_port), &RELOAD).await?;
         Ok::<(), anyhow::Error>(())
     }
     .await;

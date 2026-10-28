@@ -11,7 +11,9 @@ use crate::{
     DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck,
     gateway::ReconciliationOutcome,
     jobs::DaemonDownloadProgress,
-    managed_resources::{ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext},
+    managed_resources::{
+        ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext, RESOURCE_READINESS_TIMEOUT,
+    },
     project_env::{
         DemandedResourceTrack, ProjectApplyOptions, ProjectApplyStage, discover_project_demand,
         reconcile_project_env_with_runtime_catalog_and_progress,
@@ -25,7 +27,7 @@ use aws_sdk_s3::operation::head_bucket::HeadBucketError;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
-use platform::loopback_tcp_port_available;
+use platform::{clock, loopback_tcp_port_available};
 use pv_fake::{FakeSettings, Persona};
 use rcgen::{
     CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose,
@@ -2678,6 +2680,7 @@ async fn assert_fallback_during_project_resource_readiness(
         Some(reason) => ReadinessWaveGate::with_failing_readiness(reason),
         None => ReadinessWaveGate::new(),
     });
+    let fake_clock = readiness_error.map(|_reason| clock::install_fake_for_test());
     let allocation_events = Arc::new(Mutex::new(Vec::new()));
     let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
         super::ManagedResourceInstallOptions {
@@ -2714,7 +2717,30 @@ async fn assert_fallback_during_project_resource_readiness(
     fallback_sender.send(true)?;
     gate.proceed.add_permits(1);
     gate.finish.add_permits(1);
-    let result = timeout(Duration::from_secs(5), &mut reconciliation).await?;
+    let result = match &fake_clock {
+        None => timeout(Duration::from_secs(5), &mut reconciliation).await?,
+        Some(fake_clock) => {
+            // Advance only once the first check has failed and a second has started, so the
+            // reported error is the check's own.
+            let (result, ()) = tokio::try_join!(
+                async {
+                    Ok::<_, anyhow::Error>(
+                        timeout(Duration::from_secs(5), &mut reconciliation).await?,
+                    )
+                },
+                async {
+                    while gate.started.load(Ordering::SeqCst) < 2 {
+                        tokio::task::yield_now().await;
+                    }
+                    fake_clock
+                        .advance_when_waiting(&RESOURCE_READINESS_TIMEOUT)
+                        .await?;
+                    Ok(())
+                },
+            )?;
+            result
+        }
+    };
 
     let database = Database::open(&paths)?;
     let env_after = read_dotenv(&project)?;
@@ -6060,6 +6086,7 @@ async fn reconcile_project_env_with_unready_fake_runtime_catalog(
 ) -> Result<(), DaemonError> {
     let catalog = super::fake_unready_runtime_catalog(resources::default_artifact_manifest_url())?;
     let mut database = Database::open(paths)?;
+    clock::install_fake_for_test().advance_when_waiting_in_background(&RESOURCE_READINESS_TIMEOUT);
 
     crate::project_env::reconcile_project_env_with_catalog(
         paths,
@@ -6134,11 +6161,9 @@ async fn reconcile_project_env_with_unready_postgres_runtime_catalog(
     paths: &PvPaths,
     project_id: &str,
 ) -> Result<()> {
-    let catalog = super::postgres_runtime_catalog_with_readiness_timeout(
-        resources::default_artifact_manifest_url(),
-        Duration::from_millis(100),
-    )?;
+    let catalog = super::postgres_runtime_catalog(resources::default_artifact_manifest_url())?;
     let mut database = Database::open(paths)?;
+    clock::install_fake_for_test().advance_when_waiting_in_background(&RESOURCE_READINESS_TIMEOUT);
 
     crate::project_env::reconcile_project_env_with_catalog(
         paths,
@@ -7902,14 +7927,6 @@ impl super::ManagedResourceRuntimeAdapter for GatedSqlRuntimeAdapter {
             name: "mysql",
             preferred_port: 3306,
         }]
-    }
-
-    fn readiness_timeout(&self) -> Duration {
-        if self.gate.readiness_error.is_some() {
-            Duration::from_millis(100)
-        } else {
-            super::RESOURCE_READINESS_TIMEOUT
-        }
     }
 
     fn prepare_runtime<'a>(

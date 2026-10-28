@@ -61,8 +61,9 @@ pub use runtime_stop::{
     stop_recorded_runtimes_blocking,
 };
 pub use supervisor::{
-    AdoptedProcess, ManagedProcess, OwnedRuntime, ProcessSpec, ProcessSupervisor, ReadinessCheck,
-    StopSignal, wait_for_custom_readiness, wait_for_readiness,
+    AdoptedProcess, ManagedProcess, OwnedRuntime, ProcessSpec, ProcessSupervisor,
+    READINESS_PROBE_TIMEOUT, ReadinessCheck, StopSignal, wait_for_custom_readiness,
+    wait_for_readiness,
 };
 pub use worktrees::hook_approval_folder;
 

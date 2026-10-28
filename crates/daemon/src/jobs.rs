@@ -4842,6 +4842,9 @@ mod tests {
             }
             let catalog =
                 crate::managed_resources::fake_unready_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
+            platform::clock::install_fake_for_test().advance_when_waiting_in_background(
+                &crate::managed_resources::RESOURCE_READINESS_TIMEOUT,
+            );
             let scope = ReconciliationScope::resource("mailpit", MAILPIT_TEST_TRACK)?;
             let ReconciliationScope::Resource { name, track } = &scope else {
                 return Err(anyhow::anyhow!("expected resource scope"));
@@ -4886,12 +4889,7 @@ mod tests {
             let resource_cleanup_result =
                 stop_undemanded_system_resource_runtimes(&paths, Some(&catalog)).await;
             let correct_error = match (&result, reject_observation) {
-                (
-                    Err(DaemonError::ReadinessTimedOut {
-                        timeout_ms: 100, ..
-                    }),
-                    false,
-                ) => true,
+                (Err(DaemonError::ReadinessTimedOut { .. }), false) => true,
                 (
                     Err(DaemonError::ProjectEnvFailureRecordingFailed {
                         project_id,
@@ -4905,10 +4903,7 @@ mod tests {
                         .any(|project| &project.id == project_id)
                         && matches!(
                             reconciliation.as_ref(),
-                            DaemonError::ReadinessTimedOut {
-                                timeout_ms: 100,
-                                ..
-                            }
+                            DaemonError::ReadinessTimedOut { .. }
                         )
                         && matches!(recording.as_ref(), DaemonError::State(StateError::Sqlite(SqliteError::SqliteFailure(_, Some(message)))) if message == "fixture rejected Project failure observation")
                 }

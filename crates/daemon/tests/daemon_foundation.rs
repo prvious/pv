@@ -35,6 +35,8 @@ use tokio::time::{Instant as TokioInstant, sleep, timeout, timeout_at};
 
 const EXPECTED_DNS_TTL_SECONDS: u32 = 5;
 const JOB_STATUS_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+const RUNTIME_READINESS: clock::Limit =
+    clock::Limit::new("test runtime readiness", Duration::from_secs(5));
 const JOB_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const REQUEST_LINES_TIMEOUT: Duration = Duration::from_secs(30);
 const TARGETED_SCENARIO_TIMEOUT: Duration = Duration::from_secs(60);
@@ -1162,7 +1164,7 @@ async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
                 port: http_port,
                 path: "/__pv/health".to_owned(),
             },
-            Duration::from_secs(5),
+            &RUNTIME_READINESS,
         )
         .await?;
 
@@ -2499,7 +2501,7 @@ async fn wait_for_seeded_worker(paths: &PvPaths, php_track: &str, port: u16) -> 
             host: Ipv4Addr::LOCALHOST.to_string(),
             port,
         },
-        Duration::from_secs(1),
+        &RUNTIME_READINESS,
     )
     .await?;
     let published_pid = supervisor
@@ -3178,7 +3180,7 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
                 port: http_port,
                 path: "/__pv/health".to_owned(),
             },
-            Duration::from_secs(5),
+            &RUNTIME_READINESS,
         )
         .await?;
         let runtime_states = database.runtime_observed_states()?;

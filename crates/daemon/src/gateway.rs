@@ -72,6 +72,8 @@ const RUNTIME_START_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
 const RUNTIME_RELOAD_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
 const PF_PUBLIC_READINESS_TIMEOUT: Duration = Duration::from_secs(2);
 const FOREIGN_LISTENER_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
+const GATEWAY_IDENTITY_PROBE_TIMEOUT: Limit =
+    Limit::new("gateway identity probe", Duration::from_secs(1));
 const OWNED_READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const OWNED_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const PUBLIC_HTTP_PORT: u16 = 80;
@@ -647,7 +649,7 @@ pub fn probe_gateway_identity_blocking(
         ca_certificate_path,
     );
 
-    runtime.block_on(wait_for_readiness(check, Duration::from_secs(1)))
+    runtime.block_on(wait_for_readiness(check, &GATEWAY_IDENTITY_PROBE_TIMEOUT))
 }
 
 #[doc(hidden)]

@@ -6,6 +6,7 @@ use std::{fmt, future::Future, io};
 use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::{Stream, StreamExt, stream};
 use platform::PlatformCapability;
+use platform::clock::{self, Deadline, Limit};
 #[cfg(target_os = "macos")]
 use rustix::process::{Pid, Signal, WaitOptions, kill_process_group, waitpid};
 use rustls::pki_types::ServerName;
@@ -14,14 +15,17 @@ use sha2::{Digest, Sha256};
 use state::{PvPaths, StateError, fs};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::{Instant, sleep, timeout};
+#[cfg(target_os = "macos")]
+use tokio::time::Instant;
+use tokio::time::{sleep, timeout};
 use tokio_rustls::TlsConnector;
 
 use crate::monitor::{self, MonitorCleanup, MonitorExit, MonitorStart, MonitorState, MonitorStop};
 use crate::{DaemonError, structured_log};
 
 const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
-const READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+/// The most one readiness probe may take before PV counts it as failed and probes again.
+pub const READINESS_PROBE_TIMEOUT: Limit = Limit::new("readiness probe", Duration::from_secs(1));
 /// How long past a stop's grace period to wait for its monitor: the SIGKILL wait and the final
 /// group check, with room to spare.
 const MONITOR_STOP_MARGIN: Duration = Duration::from_secs(5);
@@ -724,30 +728,35 @@ impl AdoptedProcess {
     }
 }
 
-pub async fn wait_for_readiness(
-    check: ReadinessCheck,
-    readiness_timeout: Duration,
-) -> Result<(), DaemonError> {
-    let started_at = Instant::now();
+pub async fn wait_for_readiness(check: ReadinessCheck, budget: &Limit) -> Result<(), DaemonError> {
+    let deadline = Deadline::after(budget);
     let mut last_error = None;
 
-    while let Some(remaining) = remaining_timeout(started_at, readiness_timeout) {
-        let probe_timeout = remaining.min(READINESS_PROBE_TIMEOUT);
-        match timeout(probe_timeout, check_once(&check)).await {
+    // Probe at least once, even when the budget passed before the first probe could start.
+    loop {
+        match deadline
+            .timeout(&READINESS_PROBE_TIMEOUT, check_once(&check))
+            .await
+        {
             Ok(Ok(())) => return Ok(()),
             Ok(Err(error)) => {
                 last_error = Some(error.to_string());
-                sleep(remaining.min(READINESS_POLL_INTERVAL)).await;
+                clock::poll(READINESS_POLL_INTERVAL).await;
             }
-            Err(elapsed) => {
+            // A probe the budget cut short says less than the failure before it.
+            Err(elapsed) if last_error.is_none() || !deadline.is_expired() => {
                 last_error = Some(elapsed.to_string());
             }
+            Err(_elapsed) => {}
+        }
+        if deadline.is_expired() {
+            break;
         }
     }
 
     Err(DaemonError::ReadinessTimedOut {
         check: check.name(),
-        timeout_ms: readiness_timeout.as_millis(),
+        timeout_ms: budget.duration().as_millis(),
         last_error,
     })
 }
@@ -758,41 +767,33 @@ pub(crate) async fn probe_readiness_once(check: &ReadinessCheck) -> Result<(), D
 
 pub async fn wait_for_custom_readiness<F, Fut>(
     name: &str,
-    readiness_timeout: Duration,
+    budget: &Limit,
     mut check: F,
 ) -> Result<(), DaemonError>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = bool>,
 {
-    let started_at = Instant::now();
-    let mut last_error = None;
+    let deadline = Deadline::after(budget);
 
-    while let Some(remaining) = remaining_timeout(started_at, readiness_timeout) {
-        match timeout(remaining, check()).await {
+    // Check at least once, even when the budget passed before the first check could start.
+    let last_error = loop {
+        let error = match deadline.timeout(budget, check()).await {
             Ok(true) => return Ok(()),
-            Ok(false) => {
-                last_error = Some("custom readiness returned false".to_string());
-                sleep(remaining.min(READINESS_POLL_INTERVAL)).await;
-            }
-            Err(elapsed) => {
-                last_error = Some(elapsed.to_string());
-                break;
-            }
+            Ok(false) => "custom readiness returned false".to_string(),
+            Err(elapsed) => break elapsed.to_string(),
+        };
+        clock::poll(READINESS_POLL_INTERVAL).await;
+        if deadline.is_expired() {
+            break error;
         }
-    }
+    };
 
     Err(DaemonError::ReadinessTimedOut {
         check: format!("custom:{name}"),
-        timeout_ms: readiness_timeout.as_millis(),
-        last_error,
+        timeout_ms: budget.duration().as_millis(),
+        last_error: Some(last_error),
     })
-}
-
-fn remaining_timeout(started_at: Instant, readiness_timeout: Duration) -> Option<Duration> {
-    readiness_timeout
-        .checked_sub(started_at.elapsed())
-        .filter(|remaining| !remaining.is_zero())
 }
 
 impl ReadinessCheck {
@@ -1105,6 +1106,13 @@ pub(crate) async fn wait_for_process_group_exit(
     }
 
     process_group_has_exited(pid)
+}
+
+#[cfg(target_os = "macos")]
+fn remaining_timeout(started_at: Instant, readiness_timeout: Duration) -> Option<Duration> {
+    readiness_timeout
+        .checked_sub(started_at.elapsed())
+        .filter(|remaining| !remaining.is_zero())
 }
 
 /// The monitor subject of the runtime recorded at `metadata_path`: the record's path under

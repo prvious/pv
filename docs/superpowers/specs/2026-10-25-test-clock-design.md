@@ -72,12 +72,15 @@ A new `platform::clock` module exposes a few functions plus a real poll tick.
 | `sleep(&limit)` | `tokio::time::sleep(limit.duration())` (from PR 3, for schedules) |
 | `timeout(&limit, future)` | `tokio::time::timeout(limit.duration(), future)` |
 | `Deadline::after(&limit)` with `is_expired()` | `now()` arithmetic, for polling loops such as `DaemonProcess::wait_for_exit` |
+| `deadline.timeout(&limit, future)` | `tokio::time::timeout` for the smaller of `limit` and the time left, for one attempt inside a budget, such as a readiness probe |
 | `poll(duration)` / `poll_blocking(duration)` | `tokio::time::sleep` / `std::thread::sleep`, always real. Only for short ticks (≤ 100 ms) between checks of a real process. |
 
 - **What goes through the clock:**
   - Every limit PV gives up on: config validation, hook environment capture, daemon exit, helper socket, client response, readiness budgets, cleanup grace.
-  - Every schedule: the health interval and its retries, download retry backoff, debounce windows.
-- **What stays real:** the poll ticks between "is it up yet?" checks, through `poll`.
+  - Every schedule long enough that a test would otherwise wait it out: the health interval and its retries, download retry backoff.
+- **What stays real:**
+  - The poll ticks between "is it up yet?" checks, through `poll`.
+  - Timers of 100 ms or less that are part of PV's normal work, such as debounce windows and accept-error backoffs. Under a frozen clock they would stop the daemon's normal work in every test that installs the fake.
 
 Without the `test-support` feature the fake isn't compiled. Each function is the tokio or std call itself, with no extra branch and no runtime cost.
 
@@ -97,6 +100,7 @@ The fake lives behind a new `test-support` feature on `platform`, which the dev-
     - synchronous code on the test's own thread, such as the CLI run in-process;
     - a blocking thread, such as `spawn_blocking` around the blocking daemon client. Tokio waits for blocking threads when the test's runtime shuts down, so a stuck one would hang the test even after `try_join!` returned an error.
   - **If the named limit doesn't appear within 30 s of real time,** the call fails with the list of pending limits. A mistake becomes a clear failure instead of a hang.
+- **An attempt inside a budget uses `deadline.timeout`.** An advance can land between a loop checking its deadline and starting the next attempt. An attempt timed from `now()` would then be due after the advanced time, and nothing would advance it. `deadline.timeout` caps the attempt at the deadline under the fake's lock, so an attempt started after the deadline passed ends at once.
 - **A blocked test still fails.**
   - An async test isn't blocked while it awaits `advance_when_waiting`, so the error returns to it.
   - A synchronous test's own thread is stuck inside PV, so an error returned on the helper thread would never reach it. Instead, when the guard expires, the background helper writes the pending limits to stderr and exits the test process with a failure status.
@@ -153,7 +157,7 @@ The fake holds a mutex over the virtual time and the pending limits with their w
 - **A hidden dependency.** Code doesn't show that it depends on time. It's acceptable because every wait goes through the clock (guardrail 6), so there's nothing special to spot.
 - **One clock per process.** Plain `cargo test` runs tests as threads in one process, where they would share the fake. nextest is required.
 - **The ordering trap.** An advance before PV waits would hang. Guardrail 4 removes the API that allows it.
-- **Everything freezes.** With the fake installed, health scans, debounce windows and every other PV timer stop too. A test that quietly depends on one of them can't finish. The real-time guard turns that into a failure listing the pending limits.
+- **Everything freezes.** With the fake installed, health scans and every other PV schedule stop too. A test that quietly depends on one of them can't finish. The real-time guard turns that into a failure listing the pending limits.
 - **A convention in production code.** PV calls `platform::clock::sleep` instead of `tokio::time::sleep`. It costs nothing at runtime, but contributors and agents must follow it. Guardrail 6 enforces it.
 - **We own the fake.** About 150 lines of waking and ordering logic. It stays small, gets its own tests, and fires the limits one advance passes in deadline order.
 - **A hung happy path** fails at nextest's 120 s termination instead of at PV's limit.
@@ -205,12 +209,20 @@ A stack, each PR verified with targeted runs, the full suite, and a comparison o
    - Convert the CLI, platform and client tests.
    - Raise the two validator scripts' `sleep 30` to 150 and the monitor test's grace from 3 s to 1 s.
    - The client's event and health limits and `read_job_completion_with_timeout`'s timeout argument wait for PR 4.
-3. **Readiness budgets and schedules.**
-   - Add `sleep`.
-   - Route Gateway, worker and supervisor readiness, health and retry schedules through the clock.
-   - Replace the short budgets in `gateway_reconciliation` and the three 1 s `supervisor_foundation` tests with advances.
-   - Turn the pause/advance/resume tests into advances.
-   - If the pf removal lands first, rebase onto it, since that work deletes part of the readiness code.
+3. **Readiness budgets and schedules,** in three PRs:
+   - **3a, supervisor and resource readiness.**
+     - Add `deadline.timeout`.
+     - The supervisor's readiness loops and the managed-resource readiness loop take named budgets, and each probe has the 1 s "readiness probe" limit.
+     - Delete the `#[cfg(test)]` readiness timeout and the helpers that shrank the Postgres budget.
+     - The three 1 s `supervisor_foundation` tests advance instead.
+   - **3b, Gateway readiness.**
+     - The Gateway readiness loop and the Caddy admin client get named limits.
+     - The budget argument comes off the `*_for_test` entry points, and the short budgets in `gateway_reconciliation` become advances.
+     - If the pf removal lands first, rebase onto it, since that work deletes part of the readiness code.
+   - **3c, health and schedules.**
+     - Add `sleep`.
+     - Route the health scan, recovery retries, job heartbeat and startup lock retry through the clock.
+     - Turn the pause/advance/resume tests and the remaining time windows into advances or handshakes.
 4. **The rest and the lint.**
    - Convert the remaining timing constants (72 named, about 100 `timeout` calls).
    - Turn on the Clippy rule.
