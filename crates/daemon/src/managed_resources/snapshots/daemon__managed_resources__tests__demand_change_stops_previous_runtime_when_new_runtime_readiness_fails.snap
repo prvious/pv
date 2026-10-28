@@ -1,5 +1,6 @@
 ---
 source: crates/daemon/src/managed_resources/tests.rs
+assertion_line: 8179
 expression: snapshot
 ---
 (
@@ -84,7 +85,7 @@ expression: snapshot
             },
             status: Failed,
             message: Some(
-                "readiness check `http:127.0.0.1:<readiness_port>/__pv_unready_fixture__` timed out after 100ms; last error: Some(\"I/O error: readiness unavailable\")",
+                "readiness check `http:127.0.0.1:<readiness_port>/__pv_unready_fixture__` timed out after 15000ms; last error: Some(\"I/O error: readiness unavailable\")",
             ),
             observed_at: "<timestamp>",
         },

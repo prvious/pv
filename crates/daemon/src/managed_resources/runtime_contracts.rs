@@ -26,10 +26,7 @@ use tokio::net::TcpStream;
 
 use super::sql::{self, SqlAdminContext, SqlEngine};
 use super::tests::ManagedResourceFixtureGuard;
-use super::{
-    ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext, adapter_readiness_timeout,
-    start_or_adopt_runtime,
-};
+use super::{ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext, start_or_adopt_runtime};
 use crate::ProcessSupervisor;
 
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
@@ -202,7 +199,7 @@ async fn real_postgres_forced_exit_keeps_recovery_records() -> Result<()> {
         let supervisor = ProcessSupervisor::new(paths.clone());
         let spec = adapter.build_process_spec(&paths, &context)?;
         let pending = start_or_adopt_runtime(&supervisor, spec.clone(), adapter.stop_signal(),
-            adapter.readiness(&context)?, adapter_readiness_timeout(&adapter), None).await?
+            adapter.readiness(&context)?, None).await?
             .ok_or_else(|| anyhow!("Postgres was not started"))?;
         pending.wait().await?;
         let pool = PgPool::connect_with(sql::postgres_options(&admin)).await?;
@@ -777,7 +774,6 @@ async fn start_wait_and_stop<Held>(
         spec,
         adapter.stop_signal(),
         adapter.readiness(context)?,
-        adapter_readiness_timeout(adapter),
         None,
     )
     .await?

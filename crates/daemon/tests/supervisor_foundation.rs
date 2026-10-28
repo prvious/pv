@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::process::Output;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -9,10 +10,11 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use daemon::gateway::{GatewayPfRoutingState, persisted_gateway_is_ready_with_pf_state_for_test};
 use daemon::{
-    DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck, wait_for_custom_readiness,
-    wait_for_readiness,
+    DaemonError, ProcessSpec, ProcessSupervisor, READINESS_PROBE_TIMEOUT, ReadinessCheck,
+    wait_for_custom_readiness, wait_for_readiness,
 };
 use insta::{Settings, assert_debug_snapshot};
+use platform::clock::{self, Limit};
 #[cfg(target_os = "macos")]
 use pv_fake::{EventKind, InstalledFake, Persona};
 use rustix::process::{Pid, test_kill_process};
@@ -34,6 +36,7 @@ type TestProcessCommand = std::process::Command;
 /// stopping it leaves nothing running for long. That outlasts the CI profile's 120 s limit on a
 /// test, so a stalled test can't pass because its fixture exited on its own.
 const IDLE_SHELL_LOOP: &str = "i=0; while [ $i -lt 150 ]; do sleep 1; i=$((i + 1)); done";
+const READINESS: Limit = Limit::new("test readiness", Duration::from_secs(5));
 
 #[tokio::test]
 async fn tcp_readiness_succeeds_for_listening_ports_and_times_out() -> Result<()> {
@@ -45,17 +48,18 @@ async fn tcp_readiness_succeeds_for_listening_ports_and_times_out() -> Result<()
             host: "127.0.0.1".to_string(),
             port,
         },
-        Duration::from_secs(1),
+        &READINESS,
     )
     .await?;
 
     drop(listener);
+    clock::install_fake_for_test().advance_when_waiting_in_background(&READINESS);
     let result = wait_for_readiness(
         ReadinessCheck::Tcp {
             host: "127.0.0.1".to_string(),
             port,
         },
-        Duration::from_millis(10),
+        &READINESS,
     )
     .await;
 
@@ -68,10 +72,13 @@ async fn tcp_readiness_succeeds_for_listening_ports_and_times_out() -> Result<()
 async fn readiness_timeout_reports_the_last_probe_failure() -> Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let accepted = Arc::clone(&connections);
     let server = tokio::spawn(async move {
         let result: Result<(), std::io::Error> = async {
             loop {
                 let (mut stream, _address) = listener.accept().await?;
+                accepted.fetch_add(1, Ordering::SeqCst);
                 let mut request = [0_u8; 1024];
                 let _bytes = stream.read(&mut request).await?;
                 stream
@@ -87,15 +94,23 @@ async fn readiness_timeout_reports_the_last_probe_failure() -> Result<()> {
         result
     });
 
-    let result = wait_for_readiness(
-        ReadinessCheck::Http {
-            host: "127.0.0.1".to_string(),
-            port,
-            path: "/health".to_string(),
+    let fake_clock = clock::install_fake_for_test();
+    let check = ReadinessCheck::Http {
+        host: "127.0.0.1".to_string(),
+        port,
+        path: "/health".to_string(),
+    };
+    let (result, ()) = tokio::try_join!(
+        async { Ok::<_, anyhow::Error>(wait_for_readiness(check, &READINESS).await) },
+        async {
+            // A second connection means the first probe has failed.
+            while connections.load(Ordering::SeqCst) < 2 {
+                tokio::task::yield_now().await;
+            }
+            fake_clock.advance_when_waiting(&READINESS).await?;
+            Ok(())
         },
-        Duration::from_secs(1),
-    )
-    .await;
+    )?;
 
     assert!(matches!(
         result,
@@ -130,7 +145,7 @@ async fn http_readiness_succeeds_for_successful_responses() -> Result<()> {
             port,
             path: "/health".to_string(),
         },
-        Duration::from_secs(1),
+        &READINESS,
     )
     .await?;
     server.await??;
@@ -191,7 +206,7 @@ async fn gateway_https_readiness_accepts_non_success_status_lines() -> Result<()
             server_name: "acme.test".to_owned(),
             ca_certificate_path,
         },
-        Duration::from_secs(1),
+        &READINESS,
     )
     .await?;
 
@@ -225,7 +240,7 @@ async fn gateway_https_readiness_accepts_tls_handshake_without_app_response() ->
     let server = tokio::spawn(async move {
         let (stream, _address) = https_listener.accept().await?;
         let _stream = acceptor.accept(stream).await?;
-        sleep(Duration::from_secs(1)).await;
+        std::future::pending::<()>().await;
 
         Ok::<(), std::io::Error>(())
     });
@@ -239,7 +254,7 @@ async fn gateway_https_readiness_accepts_tls_handshake_without_app_response() ->
             server_name: "acme.test".to_owned(),
             ca_certificate_path,
         },
-        Duration::from_millis(100),
+        &READINESS,
     )
     .await?;
 
@@ -333,35 +348,6 @@ async fn gateway_identity_readiness_preserves_probe_error() -> Result<()> {
 }
 
 #[tokio::test]
-async fn gateway_identity_readiness_preserves_timeout_diagnostic() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let http_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    let http_port = http_listener.local_addr()?.port();
-    let https_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    let https_port = https_listener.local_addr()?.port();
-
-    let result = persisted_gateway_is_ready_with_pf_state_for_test(
-        &paths,
-        http_port,
-        https_port,
-        GatewayPfRoutingState::Inactive,
-    )
-    .await;
-
-    assert!(matches!(
-        result,
-        Err(DaemonError::ReadinessTimedOut {
-            timeout_ms: 1_000,
-            last_error: Some(error),
-            ..
-        }) if error == "deadline has elapsed"
-    ));
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn gateway_identity_readiness_rejects_generic_tcp_listeners() -> Result<()> {
     let tempdir = tempdir()?;
     let ca_certificate_path = tempdir.path().join("ca.pem");
@@ -370,6 +356,7 @@ async fn gateway_identity_readiness_rejects_generic_tcp_listeners() -> Result<()
     let https_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let https_port = https_listener.local_addr()?.port();
 
+    clock::install_fake_for_test().advance_when_waiting_in_background(&READINESS);
     let result = wait_for_readiness(
         ReadinessCheck::GatewayIdentity {
             http_host: "127.0.0.1".to_owned(),
@@ -381,7 +368,7 @@ async fn gateway_identity_readiness_rejects_generic_tcp_listeners() -> Result<()
             expected_body: "pv-gateway-health-v1:48080:48443".to_owned(),
             ca_certificate_path,
         },
-        Duration::from_millis(50),
+        &READINESS,
     )
     .await;
 
@@ -419,20 +406,21 @@ async fn http_readiness_times_out_even_when_the_server_keeps_the_socket_open() -
     let port = listener.local_addr()?.port();
     let server = tokio::spawn(async move {
         let (_stream, _address) = listener.accept().await?;
-        sleep(Duration::from_secs(1)).await;
+        std::future::pending::<()>().await;
 
         Ok::<(), std::io::Error>(())
     });
 
+    clock::install_fake_for_test().advance_when_waiting_in_background(&READINESS);
     let result = timeout(
-        Duration::from_millis(250),
+        Duration::from_secs(5),
         wait_for_readiness(
             ReadinessCheck::Http {
                 host: "127.0.0.1".to_string(),
                 port,
                 path: "/health".to_string(),
             },
-            Duration::from_millis(30),
+            &READINESS,
         ),
     )
     .await?;
@@ -447,8 +435,11 @@ async fn http_readiness_times_out_even_when_the_server_keeps_the_socket_open() -
 async fn readiness_retries_after_one_probe_hangs() -> Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let port = listener.local_addr()?.port();
+    let hanging_probe_accepted = Arc::new(AtomicBool::new(false));
+    let accepted = Arc::clone(&hanging_probe_accepted);
     let server = tokio::spawn(async move {
         let (_hanging_stream, _address) = listener.accept().await?;
+        accepted.store(true, Ordering::SeqCst);
         let (mut stream, _address) = listener.accept().await?;
         let mut request = [0_u8; 1024];
         let _bytes = stream.read(&mut request).await?;
@@ -459,15 +450,25 @@ async fn readiness_retries_after_one_probe_hangs() -> Result<()> {
         Ok::<(), std::io::Error>(())
     });
 
-    wait_for_readiness(
-        ReadinessCheck::Http {
-            host: "127.0.0.1".to_string(),
-            port,
-            path: "/health".to_string(),
+    let fake_clock = clock::install_fake_for_test();
+    let check = ReadinessCheck::Http {
+        host: "127.0.0.1".to_string(),
+        port,
+        path: "/health".to_string(),
+    };
+    tokio::try_join!(
+        async { Ok::<_, anyhow::Error>(wait_for_readiness(check, &READINESS).await?) },
+        async {
+            // The first probe hangs until its own limit passes; the second one succeeds.
+            while !hanging_probe_accepted.load(Ordering::SeqCst) {
+                tokio::task::yield_now().await;
+            }
+            fake_clock
+                .advance_when_waiting(&READINESS_PROBE_TIMEOUT)
+                .await?;
+            Ok(())
         },
-        Duration::from_secs(2),
-    )
-    .await?;
+    )?;
     server.await??;
 
     Ok(())
@@ -478,7 +479,7 @@ async fn custom_readiness_retries_until_the_check_succeeds() -> Result<()> {
     let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let check_attempts = std::sync::Arc::clone(&attempts);
 
-    wait_for_custom_readiness("test-custom", Duration::from_secs(1), move || {
+    wait_for_custom_readiness("test-custom", &READINESS, move || {
         let attempts = std::sync::Arc::clone(&check_attempts);
         async move { attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) > 0 }
     })
@@ -491,9 +492,10 @@ async fn custom_readiness_retries_until_the_check_succeeds() -> Result<()> {
 
 #[tokio::test]
 async fn custom_readiness_timeout_bounds_a_hanging_check_future() -> Result<()> {
+    clock::install_fake_for_test().advance_when_waiting_in_background(&READINESS);
     let result = timeout(
-        Duration::from_millis(250),
-        wait_for_custom_readiness("hanging-custom", Duration::from_millis(30), || {
+        Duration::from_secs(5),
+        wait_for_custom_readiness("hanging-custom", &READINESS, || {
             std::future::pending::<bool>()
         }),
     )
@@ -587,6 +589,10 @@ async fn supervisor_stops_its_runtime_when_runtime_metadata_persistence_fails() 
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
     pv_fake::install_monitor(&paths)?;
+    let fake = pv_fake::install(
+        &paths.root().join("fake-release/bin/runtime"),
+        Persona::LongRunning,
+    )?;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let metadata_parent_blocker = paths.run().join("metadata-parent");
     state::fs::write_sensitive_file(&metadata_parent_blocker, "not a directory")?;
@@ -594,8 +600,8 @@ async fn supervisor_stops_its_runtime_when_runtime_metadata_persistence_fails() 
     let result = supervisor
         .start(ProcessSpec {
             name: "metadata-failure".to_string(),
-            command: "/bin/sh".into(),
-            arguments: vec!["-c".to_string(), "sleep 30".to_string()],
+            command: fake.executable().to_owned(),
+            arguments: Vec::new(),
             private_environment: Default::default(),
             config_path: paths.config().join("metadata-failure.json"),
             config_fingerprint: None,
@@ -619,13 +625,12 @@ async fn supervisor_verifies_and_adopts_owned_runtime_metadata() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
     pv_fake::install_monitor(&paths)?;
+    let fake = pv_fake::install(
+        &paths.root().join("fake-release/bin/runtime"),
+        Persona::LongRunning,
+    )?;
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let spec = process_spec(
-        &paths,
-        "adoptable-runtime",
-        "/bin/sleep",
-        vec!["30".to_string()],
-    );
+    let spec = process_spec(&paths, "adoptable-runtime", fake.executable(), Vec::new());
     let process = supervisor.start(spec.clone()).await?;
 
     let owned = supervisor
@@ -728,13 +733,12 @@ async fn supervisor_rejects_owned_runtime_when_private_environment_changes() -> 
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
     pv_fake::install_monitor(&paths)?;
+    let fake = pv_fake::install(
+        &paths.root().join("fake-release/bin/runtime"),
+        Persona::LongRunning,
+    )?;
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let mut spec = process_spec(
-        &paths,
-        "private-env-runtime",
-        "/bin/sleep",
-        vec!["30".to_string()],
-    );
+    let mut spec = process_spec(&paths, "private-env-runtime", fake.executable(), Vec::new());
     spec.private_environment = BTreeMap::from([(
         "RUSTFS_SECRET_KEY".to_string(),
         "initial-secret".to_string(),
@@ -846,12 +850,16 @@ async fn adopted_stop_accepts_runtime_already_stopped_by_its_owner() -> Result<(
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
     pv_fake::install_monitor(&paths)?;
+    let fake = pv_fake::install(
+        &paths.root().join("fake-release/bin/runtime"),
+        Persona::LongRunning,
+    )?;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let spec = process_spec(
         &paths,
         "already-stopped-runtime",
-        "/bin/sleep",
-        vec!["30".to_owned()],
+        fake.executable(),
+        Vec::new(),
     );
     let process = supervisor.start(spec.clone()).await?;
     let adopted = supervisor

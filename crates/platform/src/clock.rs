@@ -5,6 +5,7 @@
 //! advances it past a limit PV is waiting on, so a test of a frozen process never waits out the real
 //! limit.
 
+use std::fmt;
 use std::future::Future;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -39,6 +40,12 @@ impl Limit {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Elapsed;
 
+impl fmt::Display for Elapsed {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("deadline has elapsed")
+    }
+}
+
 /// Returns the current time, or the fake clock's time when a test installed one.
 pub fn now() -> Instant {
     #[cfg(feature = "test-support")]
@@ -53,7 +60,7 @@ pub fn now() -> Instant {
 pub async fn timeout<F: Future>(limit: &Limit, future: F) -> Result<F::Output, Elapsed> {
     #[cfg(feature = "test-support")]
     if let Some(fake) = fake::installed() {
-        return fake.timeout(limit, future).await;
+        return fake.timeout(limit, None, future).await;
     }
 
     tokio::time::timeout(limit.duration, future)
@@ -102,6 +109,20 @@ impl Deadline {
 
     pub fn is_expired(&self) -> bool {
         now() >= self.at
+    }
+
+    /// Runs `future` until it finishes, `limit` passes, or this deadline passes, whichever is
+    /// first.
+    pub async fn timeout<F: Future>(&self, limit: &Limit, future: F) -> Result<F::Output, Elapsed> {
+        #[cfg(feature = "test-support")]
+        if let Some(fake) = fake::installed() {
+            return fake.timeout(limit, Some(self.at), future).await;
+        }
+
+        let remaining = self.at.saturating_duration_since(Instant::now());
+        tokio::time::timeout(remaining.min(limit.duration), future)
+            .await
+            .map_err(|_elapsed| Elapsed)
     }
 }
 
@@ -266,10 +287,11 @@ mod fake {
         pub(super) async fn timeout<F: Future>(
             &self,
             limit: &Limit,
+            deadline: Option<Instant>,
             future: F,
         ) -> Result<F::Output, Elapsed> {
             let expiry = Expiry {
-                registration: self.register(limit),
+                registration: self.register(limit, deadline),
             };
             tokio::pin!(future);
             tokio::select! {
@@ -280,16 +302,21 @@ mod fake {
         }
 
         pub(super) fn deadline(&self, limit: &Limit) -> (Instant, Registration) {
-            let registration = self.register(limit);
+            let registration = self.register(limit, None);
 
             (self.shared.start + registration.due, registration)
         }
 
-        fn register(&self, limit: &Limit) -> Registration {
+        /// Registers `limit`, ending no later than `deadline`. The cap is applied under the same
+        /// lock as the advance, so a limit started just after its deadline passed ends at once.
+        fn register(&self, limit: &Limit, deadline: Option<Instant>) -> Registration {
             let mut state = self.lock();
             let id = state.next_id;
             state.next_id += 1;
-            let due = state.elapsed + limit.duration;
+            let mut due = state.elapsed + limit.duration;
+            if let Some(deadline) = deadline {
+                due = due.min(deadline.saturating_duration_since(self.shared.start));
+            }
             state.pending.insert(
                 id,
                 Pending {
@@ -409,6 +436,23 @@ mod tests {
         ensure!(timeout(&short, pending::<()>()).await == Err(Elapsed));
         ensure!(deadline.is_expired());
         ensure!(timeout(&short, async { 7 }).await == Ok(7));
+        ensure!(
+            Deadline::after(&short)
+                .timeout(&HEALTH, pending::<()>())
+                .await
+                == Err(Elapsed)
+        );
+        Ok(())
+    }
+
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn fake_limit_started_after_its_deadline_passed_ends_at_once() -> Result<()> {
+        let clock = super::install_fake_for_test();
+        let deadline = Deadline::after(&HEALTH);
+        clock.advance_when_waiting(&HEALTH).await?;
+
+        ensure!(deadline.timeout(&RESPONSE, pending::<()>()).await == Err(Elapsed));
         Ok(())
     }
 

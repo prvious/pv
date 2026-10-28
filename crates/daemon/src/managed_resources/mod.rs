@@ -18,10 +18,11 @@ use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use camino::Utf8Path;
 use futures_util::{StreamExt, stream::FuturesUnordered};
+use platform::clock::{self, Deadline, Limit};
 use platform::loopback_tcp_port_available;
 use protocol::{
     ManagedResourceUpdateCheck as ProtocolUpdateCheck,
@@ -35,7 +36,6 @@ use state::{
     RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 use tokio::sync::watch;
-use tokio::time::{sleep, timeout};
 
 use crate::gateway::ReconciliationOutcome;
 use crate::jobs::DaemonDownloadProgress;
@@ -50,7 +50,9 @@ use crate::{
 };
 
 const RESOURCE_HOST: &str = "127.0.0.1";
-const RESOURCE_READINESS_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a managed resource gets to become ready after PV starts or adopts it.
+pub(crate) const RESOURCE_READINESS_TIMEOUT: Limit =
+    Limit::new("resource readiness", Duration::from_secs(15));
 const ASYNC_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const RESOURCE_STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
 const RESOURCE_PROCESS_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
@@ -144,11 +146,6 @@ pub(crate) trait ManagedResourceRuntimeAdapter: Send + Sync {
         &self,
         context: &ManagedResourceRuntimeContext,
     ) -> Result<ManagedResourceReadiness, DaemonError>;
-
-    #[cfg(test)]
-    fn readiness_timeout(&self) -> Duration {
-        RESOURCE_READINESS_TIMEOUT
-    }
 
     /// The signal that starts this runtime's graceful shutdown whenever PV stops it.
     fn stop_signal(&self) -> StopSignal {
@@ -2063,7 +2060,6 @@ async fn prepare_resource_track(
             return Ok(None);
         }
         let readiness = adapter.readiness(&context)?;
-        let readiness_timeout = adapter_readiness_timeout(adapter);
         if fallback_shutdown_requested(reconciliation.fallback_shutdown) {
             return Ok(None);
         }
@@ -2072,7 +2068,6 @@ async fn prepare_resource_track(
             spec,
             adapter.stop_signal(),
             readiness,
-            readiness_timeout,
             reconciliation.fallback_shutdown,
         )
         .await
@@ -2582,7 +2577,6 @@ async fn start_or_adopt_runtime(
     spec: ProcessSpec,
     stop_signal: StopSignal,
     readiness: ManagedResourceReadiness,
-    readiness_timeout: Duration,
     fallback_shutdown: Option<&watch::Receiver<bool>>,
 ) -> Result<Option<PendingManagedResourceReadiness>, DaemonError> {
     if supervisor.adopt(&spec)?.is_some() {
@@ -2590,7 +2584,6 @@ async fn start_or_adopt_runtime(
             spec,
             stop_signal,
             readiness,
-            readiness_timeout,
             process: None,
         }));
     }
@@ -2616,7 +2609,6 @@ async fn start_or_adopt_runtime(
         spec,
         stop_signal,
         readiness,
-        readiness_timeout,
         process: Some(process),
     }))
 }
@@ -2629,14 +2621,12 @@ struct PendingManagedResourceReadiness {
     spec: ProcessSpec,
     stop_signal: StopSignal,
     readiness: ManagedResourceReadiness,
-    readiness_timeout: Duration,
     process: Option<ManagedProcess>,
 }
 
 impl PendingManagedResourceReadiness {
     async fn wait(mut self) -> Result<(), DaemonError> {
-        let readiness_wait =
-            wait_for_managed_resource_readiness(&self.readiness, self.readiness_timeout);
+        let readiness_wait = wait_for_managed_resource_readiness(&self.readiness);
         let Some(mut process) = self.process.take() else {
             return readiness_wait.await;
         };
@@ -2672,31 +2662,30 @@ impl PendingManagedResourceReadiness {
 
 async fn wait_for_managed_resource_readiness(
     readiness: &ManagedResourceReadiness,
-    readiness_timeout: Duration,
 ) -> Result<(), DaemonError> {
     match readiness {
         ManagedResourceReadiness::TcpHttp(check) => {
-            wait_for_readiness(check.clone(), readiness_timeout).await
+            wait_for_readiness(check.clone(), &RESOURCE_READINESS_TIMEOUT).await
         }
-        ManagedResourceReadiness::Async(check) => {
-            wait_for_async_readiness(check, readiness_timeout).await
-        }
+        ManagedResourceReadiness::Async(check) => wait_for_async_readiness(check).await,
     }
 }
 
 async fn wait_for_async_readiness(
     readiness: &AsyncManagedResourceReadiness,
-    readiness_timeout: Duration,
 ) -> Result<(), DaemonError> {
-    let started_at = Instant::now();
+    let deadline = Deadline::after(&RESOURCE_READINESS_TIMEOUT);
     let mut last_error = None;
 
-    while let Some(remaining) = remaining_timeout(started_at, readiness_timeout) {
-        match timeout(remaining, (readiness.check)()).await {
+    while !deadline.is_expired() {
+        match deadline
+            .timeout(&RESOURCE_READINESS_TIMEOUT, (readiness.check)())
+            .await
+        {
             Ok(Ok(())) => return Ok(()),
             Ok(Err(error)) => {
                 last_error = Some(error.to_string());
-                sleep(remaining.min(ASYNC_READINESS_POLL_INTERVAL)).await;
+                clock::poll(ASYNC_READINESS_POLL_INTERVAL).await;
             }
             Err(elapsed) => {
                 last_error = Some(elapsed.to_string());
@@ -2707,15 +2696,9 @@ async fn wait_for_async_readiness(
 
     Err(DaemonError::ReadinessTimedOut {
         check: format!("async:{}", readiness.name),
-        timeout_ms: readiness_timeout.as_millis(),
+        timeout_ms: RESOURCE_READINESS_TIMEOUT.duration().as_millis(),
         last_error,
     })
-}
-
-fn remaining_timeout(started_at: Instant, readiness_timeout: Duration) -> Option<Duration> {
-    readiness_timeout
-        .checked_sub(started_at.elapsed())
-        .filter(|remaining| !remaining.is_zero())
 }
 
 fn cleanup_started_runtime_files(spec: &ProcessSpec) -> Result<(), DaemonError> {
@@ -2723,20 +2706,6 @@ fn cleanup_started_runtime_files(spec: &ProcessSpec) -> Result<(), DaemonError> 
     delete_optional_file(&spec.config_path)?;
 
     Ok(())
-}
-
-fn adapter_readiness_timeout(adapter: &dyn ManagedResourceRuntimeAdapter) -> Duration {
-    #[cfg(test)]
-    {
-        adapter.readiness_timeout()
-    }
-
-    #[cfg(not(test))]
-    {
-        let _adapter = adapter;
-
-        RESOURCE_READINESS_TIMEOUT
-    }
 }
 
 fn desired_allocations(
@@ -2967,20 +2936,5 @@ pub(crate) fn postgres_runtime_catalog(
             target_platform: resources::TargetPlatform::current()?,
         },
         postgres::PostgresRuntimeAdapter::new(),
-    ))
-}
-
-#[cfg(test)]
-#[doc(hidden)]
-pub(crate) fn postgres_runtime_catalog_with_readiness_timeout(
-    manifest_url: &str,
-    readiness_timeout: Duration,
-) -> Result<ManagedResourceRuntimeCatalog, DaemonError> {
-    Ok(ManagedResourceRuntimeCatalog::with_adapter(
-        ManagedResourceInstallOptions {
-            manifest_url: manifest_url.to_string(),
-            target_platform: resources::TargetPlatform::current()?,
-        },
-        postgres::PostgresRuntimeAdapter::with_readiness_timeout(readiness_timeout),
     ))
 }

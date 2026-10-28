@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::time::Duration;
 
 use resources::{ResourceName, RuntimeArtifactAdapter};
 use state::{EnvContextValues, PvPaths};
@@ -30,7 +29,7 @@ pub(crate) struct FakeMailpitRuntimeAdapter {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum FakeMailpitReadiness {
     Dashboard,
-    UnservedDashboardPort { timeout: Duration },
+    UnservedDashboardPort,
 }
 
 impl FakeMailpitRuntimeAdapter {
@@ -50,9 +49,7 @@ impl FakeMailpitRuntimeAdapter {
                 ResourceName::new("mailpit")?,
                 "bin/pv-fake-mailpit",
             ),
-            readiness: FakeMailpitReadiness::UnservedDashboardPort {
-                timeout: Duration::from_millis(100),
-            },
+            readiness: FakeMailpitReadiness::UnservedDashboardPort,
         })
     }
 }
@@ -110,7 +107,7 @@ impl ManagedResourceRuntimeAdapter for FakeMailpitRuntimeAdapter {
     ) -> Result<ManagedResourceReadiness, DaemonError> {
         let path = match self.readiness {
             FakeMailpitReadiness::Dashboard => "/ready",
-            FakeMailpitReadiness::UnservedDashboardPort { .. } => "/__pv_unready_fixture__",
+            FakeMailpitReadiness::UnservedDashboardPort => "/__pv_unready_fixture__",
         };
         Ok(ReadinessCheck::Http {
             host: RESOURCE_HOST.to_string(),
@@ -118,13 +115,6 @@ impl ManagedResourceRuntimeAdapter for FakeMailpitRuntimeAdapter {
             path: path.to_string(),
         }
         .into())
-    }
-
-    fn readiness_timeout(&self) -> Duration {
-        match self.readiness {
-            FakeMailpitReadiness::Dashboard => Duration::from_secs(15),
-            FakeMailpitReadiness::UnservedDashboardPort { timeout } => timeout,
-        }
     }
 
     fn resource_env(
