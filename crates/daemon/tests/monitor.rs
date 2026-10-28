@@ -224,13 +224,25 @@ async fn monitor_stop_outlives_its_client_and_keeps_its_first_deadline() -> Resu
 async fn monitor_reports_a_leader_exit_while_its_group_lives_on() -> Result<()> {
     let harness = Harness::new()?;
     let shell = Utf8Path::new("/bin/sh");
-    let mut start = harness.start_for(shell, &["-c", "trap '' TERM; sleep 150 & exit 3"])?;
-    start.fallback_stop.grace_ms = 1_000;
+    let go = harness.tempdir.path().join("go");
+    // The leftover member ignores the stop signal and leaves once the test creates `go`, so the
+    // group lives on for exactly as long as the checks below need. It gives up after 150 seconds.
+    let mut start = harness.start_for(
+        shell,
+        &[
+            "-c",
+            r#"trap '' TERM; (attempt=0; while [ ! -f "$1" ]; do [ "$attempt" -lt 15000 ] || exit 91; attempt=$((attempt + 1)); sleep 0.01; done) & exit 3"#,
+            "sh",
+            go.as_str(),
+        ],
+    )?;
+    start.fallback_stop.grace_ms = 60_000;
     harness.start(start.clone()).await?;
 
     let exited = harness.wait_for_state(|state| state.exit.is_some()).await?;
     let release = daemon::release_monitor(&harness.paths, SUBJECT).await;
     let restart = harness.start(start).await;
+    state::fs::write_sensitive_file(&go, "")?;
     let cleaned = harness
         .wait_for_state(|state| state.cleanup != MonitorCleanup::Pending)
         .await?;
