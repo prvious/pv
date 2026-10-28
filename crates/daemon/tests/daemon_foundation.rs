@@ -1097,6 +1097,7 @@ fn captured_validation_process_group(leader: Pid) -> Result<Pid> {
 
 #[tokio::test]
 async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
+    let clock = platform::clock::install_fake_for_test();
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     seed_foundation_caddy(&paths)?;
@@ -1116,11 +1117,8 @@ async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
     .await?;
     assert_eq!(health_lines[0]["status"], json!("ok"));
 
-    tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(30)).await;
-    tokio::task::yield_now().await;
-    tokio::time::resume();
-    sleep(Duration::from_millis(1500)).await;
+    // Startup can't finish while the test holds the jobs lock, so no scan may be scheduled yet.
+    let scan_scheduled_during_startup = clock.is_waiting(&daemon::RUNTIME_HEALTH_SCAN);
     let jobs_during_startup = Database::open(&paths)?.recent_jobs()?;
     drop(jobs_lock);
 
@@ -1134,17 +1132,14 @@ async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
         let gateway_pid = gateway.pid();
         gateway.stop(Duration::from_secs(1)).await?;
 
-        tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(29)).await;
-        tokio::task::yield_now().await;
-        tokio::time::resume();
-        sleep(Duration::from_millis(200)).await;
         let jobs_before_first_scan = Database::open(&paths)?.recent_jobs()?;
-
-        tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(2)).await;
-        tokio::task::yield_now().await;
-        tokio::time::resume();
+        // The first scan records the failure; recovery runs on the 1 s retry scan.
+        clock
+            .advance_when_waiting(&daemon::RUNTIME_HEALTH_SCAN)
+            .await?;
+        clock
+            .advance_when_waiting(&daemon::RUNTIME_HEALTH_SCAN)
+            .await?;
         wait_for_succeeded_job_scope(&paths, "resource:caddy:2").await?;
         let recovered_gateway = supervisor
             .adopt_recorded(&paths.gateway_runtime_metadata())?
@@ -1180,6 +1175,7 @@ async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
     let (jobs_during_startup, jobs_before_first_scan, gateway_pid, recovered_gateway_pid) =
         propagate_after_cleanup(operation_result, cleanup_result)?;
 
+    assert!(!scan_scheduled_during_startup);
     assert!(jobs_during_startup.is_empty());
     assert_eq!(jobs_before_first_scan.len(), 1);
     assert_eq!(jobs_before_first_scan[0].scope, "system");
@@ -1248,6 +1244,7 @@ async fn fallback_shutdown_cancels_foreground_socket_reconciliation() -> Result<
 
 #[tokio::test(flavor = "current_thread")]
 async fn daemon_shutdown_joins_health_triggered_worker_recovery() -> Result<()> {
+    let clock = platform::clock::install_fake_for_test();
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_path = tempdir.path().join("project");
@@ -1268,10 +1265,13 @@ async fn daemon_shutdown_joins_health_triggered_worker_recovery() -> Result<()> 
     worker.stop(Duration::from_secs(1)).await?;
     state::fs::remove_file_if_exists(&paths.worker_runtime_metadata("8.4"))?;
 
-    tokio::time::pause();
-    tokio::time::advance(Duration::from_secs(30)).await;
-    tokio::task::yield_now().await;
-    tokio::time::resume();
+    // The first scan records the failure; recovery runs on the 1 s retry scan.
+    clock
+        .advance_when_waiting(&daemon::RUNTIME_HEALTH_SCAN)
+        .await?;
+    clock
+        .advance_when_waiting(&daemon::RUNTIME_HEALTH_SCAN)
+        .await?;
     wait_for_fake_hold(&worker_fake).await?;
     let job =
         wait_for_job_scope_status(&paths, &format!("project:{project_id}"), JobStatus::Running)
@@ -3128,6 +3128,7 @@ fn required_response_job_id(lines: &[Value]) -> Result<&str> {
 #[tokio::test]
 async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project_config()
 -> Result<()> {
+    let clock = platform::clock::install_fake_for_test();
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_path = tempdir.path().join("project");
@@ -3155,10 +3156,13 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
         wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
         initial_worker.stop(Duration::from_secs(1)).await?;
 
-        tokio::time::pause();
-        tokio::time::advance(Duration::from_secs(30)).await;
-        tokio::task::yield_now().await;
-        tokio::time::resume();
+        // The first scan records the failure; recovery runs on the 1 s retry scan.
+        clock
+            .advance_when_waiting(&daemon::RUNTIME_HEALTH_SCAN)
+            .await?;
+        clock
+            .advance_when_waiting(&daemon::RUNTIME_HEALTH_SCAN)
+            .await?;
         let job =
             wait_for_job_scope_status(&paths, &format!("project:{project_id}"), JobStatus::Failed)
                 .await?;
@@ -3639,13 +3643,12 @@ async fn daemon_shutdown_cancels_watcher_retry_waiting_for_jobs_lock() -> Result
         "env:\n  APP_URL: \"${url}\"\n  APP_NAME: watched\n",
     )
     .await?;
-    // Give the config watcher time to observe the change and enter its jobs-lock retry loop.
-    sleep(Duration::from_secs(1)).await;
+    wait_for_jobs_lock_wait(&paths, "project:project_1").await?;
     let jobs_before_shutdown = Database::open(&paths)?.recent_jobs()?.len();
 
+    // Shutdown waits for every daemon task, so nothing can start a job after it returns.
     daemon.shutdown().await?;
     drop(jobs_lock);
-    sleep(Duration::from_millis(300)).await;
 
     let database = Database::open(&paths)?;
     assert_eq!(database.recent_jobs()?.len(), jobs_before_shutdown);
@@ -4155,6 +4158,29 @@ async fn wait_for_runtime_replacement_required(metadata_path: &Utf8Path) -> Resu
     .map_err(|_elapsed| {
         anyhow!("runtime metadata {metadata_path} did not record a pending replacement")
     })
+}
+
+/// Waits until the daemon logs that a reconciliation for `scope` found the jobs lock held.
+async fn wait_for_jobs_lock_wait(paths: &PvPaths, scope: &str) -> Result<()> {
+    let deadline = Instant::now() + JOB_STATUS_WAIT_TIMEOUT;
+
+    loop {
+        if let Ok(log) = state::fs::read_to_string(&paths.daemon_log())
+            && log.lines().any(|line| {
+                serde_json::from_str::<Value>(line).is_ok_and(|event| {
+                    event["event"] == "reconciliation_waiting_for_jobs_lock"
+                        && event["scope"] == scope
+                })
+            })
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            bail!("no {scope} reconciliation waited for the jobs lock");
+        }
+
+        sleep(JOB_STATUS_POLL_INTERVAL).await;
+    }
 }
 
 async fn wait_for_succeeded_job_scope(paths: &PvPaths, scope: &str) -> Result<JobRecord> {

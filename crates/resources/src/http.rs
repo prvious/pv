@@ -234,8 +234,9 @@ mod tests {
 
         std::thread::scope(|scope| {
             let server = scope.spawn(move || -> Result<()> {
-                let (_stream, _address) = listener.accept()?;
-                std::thread::sleep(Duration::from_millis(250));
+                let (mut stream, _address) = listener.accept()?;
+                // Never answers; returns once the client gives up and hangs up.
+                let _drained = std::io::copy(&mut stream, &mut std::io::sink());
 
                 Ok(())
             });

@@ -7,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::Utf8TempDir;
+use platform::clock::{self, Limit};
 use sha2::{Digest, Sha256};
 
 use crate::fs;
@@ -16,7 +17,9 @@ use crate::{
 };
 
 const DOWNLOAD_ATTEMPTS: usize = 2;
-const DOWNLOAD_RETRY_BACKOFF: Duration = Duration::from_millis(300);
+/// How long a download waits after a transient failure before its second attempt.
+pub const DOWNLOAD_RETRY_BACKOFF: Limit =
+    Limit::new("download retry backoff", Duration::from_millis(300));
 pub const MAX_PARALLEL_ARTIFACT_DOWNLOADS: usize = 4;
 
 #[derive(Clone, Debug)]
@@ -213,7 +216,7 @@ impl ArtifactDownloader {
         for _ in 1..DOWNLOAD_ATTEMPTS {
             match write_download(artifact, client, path, progress) {
                 Err(error) if is_retriable_download_error(&error) => {
-                    thread::sleep(DOWNLOAD_RETRY_BACKOFF)
+                    clock::sleep_blocking(&DOWNLOAD_RETRY_BACKOFF)
                 }
                 result => return result,
             }

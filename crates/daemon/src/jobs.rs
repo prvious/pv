@@ -31,6 +31,7 @@ use crate::reconciliation::{
     ReconciliationScope, RunningReconciliation,
 };
 use crate::structured_log::{self, PhaseOutcome, ReconciliationPhase, ReconciliationPhaseLog};
+use platform::clock::{self, Limit};
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
 use state::{
     Database, JobDiagnosticSubject, ManagedResourceDesiredState, ProjectEnvObservedStatus,
@@ -40,9 +41,10 @@ use state::{
 use tokio::io::AsyncWrite;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::sync::{oneshot, watch};
-use tokio::time::{Duration, Instant, MissedTickBehavior, interval_at, timeout};
+use tokio::time::{Duration, timeout};
 
-const FOREGROUND_JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+const FOREGROUND_JOB_HEARTBEAT_INTERVAL: Limit =
+    Limit::new("job heartbeat", Duration::from_secs(10));
 const FOREGROUND_JOB_STREAM_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
 const FOREGROUND_JOB_PROGRESS_BUFFER: usize = 16;
 const FOREGROUND_JOB_QUEUE_HEARTBEAT: &str = "Waiting for the reconciliation slot";
@@ -435,6 +437,7 @@ pub(crate) async fn run_startup_reconciliation_job(
     mut shutdown: oneshot::Receiver<()>,
     fallback_shutdown: watch::Receiver<bool>,
 ) -> Result<(), BackgroundReconciliationError> {
+    let mut waiting_for_jobs_lock = false;
     let result = loop {
         let enqueue_paths = paths.clone();
         let enqueue_queue = queue.clone();
@@ -468,8 +471,15 @@ pub(crate) async fn run_startup_reconciliation_job(
             Err(DaemonError::State(StateError::CoordinationLockHeld { path }))
                 if path == paths.jobs_lock() =>
             {
+                if !waiting_for_jobs_lock {
+                    waiting_for_jobs_lock = true;
+                    structured_log::reconciliation_waiting_for_jobs_lock(
+                        &paths,
+                        &ReconciliationScope::System.to_string(),
+                    );
+                }
                 tokio::select! {
-                    _ = tokio::time::sleep(STARTUP_JOBS_LOCK_RETRY_INTERVAL) => {}
+                    () = clock::poll(STARTUP_JOBS_LOCK_RETRY_INTERVAL) => {}
                     _ = &mut shutdown => return Ok(()),
                 }
             }
@@ -628,7 +638,6 @@ async fn run_reconciliation_job(
                 queued,
                 &mut transport,
                 stream_is_open,
-                FOREGROUND_JOB_HEARTBEAT_INTERVAL,
                 Some(fallback_shutdown),
             )
             .await
@@ -772,7 +781,6 @@ async fn run_update_job(
                 queued,
                 &mut transport,
                 stream_is_open,
-                FOREGROUND_JOB_HEARTBEAT_INTERVAL,
                 Some(fallback_shutdown),
             )
             .await
@@ -894,7 +902,6 @@ where
             &mut transport,
             job_id,
             "Managed Resource update still running",
-            FOREGROUND_JOB_HEARTBEAT_INTERVAL,
             complete_update_job_with_progress(
                 &paths,
                 job_id,
@@ -980,7 +987,6 @@ async fn wait_for_foreground_turn<Stream>(
     queued: QueuedReconciliation,
     transport: &mut DaemonTransport<Stream>,
     mut stream_is_open: bool,
-    heartbeat_interval: Duration,
     fallback_shutdown: Option<&watch::Receiver<bool>>,
 ) -> Option<(RunningReconciliation, bool)>
 where
@@ -990,8 +996,8 @@ where
     let wait_for_turn = queued.wait_for_turn();
     tokio::pin!(wait_for_turn);
     let mut fallback_shutdown = fallback_shutdown.cloned();
-    let mut heartbeat = interval_at(Instant::now() + heartbeat_interval, heartbeat_interval);
-    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let heartbeat = clock::sleep(&FOREGROUND_JOB_HEARTBEAT_INTERVAL);
+    tokio::pin!(heartbeat);
 
     loop {
         tokio::select! {
@@ -1004,7 +1010,8 @@ where
                 }
             } => return None,
             running = &mut wait_for_turn => return Some((running, stream_is_open)),
-            _ = heartbeat.tick(), if stream_is_open => {
+            _ = &mut heartbeat, if stream_is_open => {
+                heartbeat.set(clock::sleep(&FOREGROUND_JOB_HEARTBEAT_INTERVAL));
                 let event = DaemonEvent::Log {
                     job_id: &job_id,
                     message: FOREGROUND_JOB_QUEUE_HEARTBEAT,
@@ -1125,7 +1132,6 @@ where
                 &mut transport,
                 job_id,
                 "Reconciliation still running",
-                FOREGROUND_JOB_HEARTBEAT_INTERVAL,
                 complete_reconciliation_job_with_progress_outcome(
                     &paths,
                     job_id,
@@ -1215,21 +1221,21 @@ async fn complete_streamed_job_with_heartbeat<Stream, Completion>(
     transport: &mut DaemonTransport<Stream>,
     job_id: &str,
     heartbeat_message: &'static str,
-    heartbeat_interval: Duration,
     completion: Completion,
 ) -> Result<String, DaemonError>
 where
     Stream: AsyncWrite + Unpin,
     Completion: Future<Output = Result<String, DaemonError>>,
 {
-    let mut heartbeat = interval_at(Instant::now() + heartbeat_interval, heartbeat_interval);
-    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let heartbeat = clock::sleep(&FOREGROUND_JOB_HEARTBEAT_INTERVAL);
+    tokio::pin!(heartbeat);
     tokio::pin!(completion);
 
     loop {
         tokio::select! {
             result = &mut completion => return result,
-            _ = heartbeat.tick() => {
+            _ = &mut heartbeat => {
+                heartbeat.set(clock::sleep(&FOREGROUND_JOB_HEARTBEAT_INTERVAL));
                 let heartbeat_event = DaemonEvent::Log {
                     job_id,
                     message: heartbeat_message,
@@ -1249,7 +1255,6 @@ async fn complete_streamed_job_with_heartbeat_and_events<Stream, Completion>(
     transport: &mut DaemonTransport<Stream>,
     job_id: &str,
     heartbeat_message: &'static str,
-    heartbeat_interval: Duration,
     completion: Completion,
     events: Receiver<ForegroundJobEvent>,
     phases: watch::Receiver<Vec<ReconciliationPhase>>,
@@ -1262,7 +1267,6 @@ where
         transport,
         job_id,
         heartbeat_message,
-        heartbeat_interval,
         completion,
         events,
         phases,
@@ -1274,7 +1278,6 @@ async fn complete_streamed_output_with_heartbeat_and_events<Stream, Completion, 
     transport: &mut DaemonTransport<Stream>,
     job_id: &str,
     heartbeat_message: &'static str,
-    heartbeat_interval: Duration,
     completion: Completion,
     mut events: Receiver<ForegroundJobEvent>,
     mut phases: watch::Receiver<Vec<ReconciliationPhase>>,
@@ -1283,8 +1286,8 @@ where
     Stream: AsyncWrite + Unpin,
     Completion: Future<Output = Output>,
 {
-    let mut heartbeat = interval_at(Instant::now() + heartbeat_interval, heartbeat_interval);
-    heartbeat.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let heartbeat = clock::sleep(&FOREGROUND_JOB_HEARTBEAT_INTERVAL);
+    tokio::pin!(heartbeat);
     tokio::pin!(completion);
     let mut events_open = true;
     let mut phases_open = true;
@@ -1339,7 +1342,8 @@ where
                     events_open = false;
                 }
             }
-            _ = heartbeat.tick() => {
+            _ = &mut heartbeat => {
+                heartbeat.set(clock::sleep(&FOREGROUND_JOB_HEARTBEAT_INTERVAL));
                 let heartbeat_event = DaemonEvent::Log {
                     job_id,
                     message: heartbeat_message,
@@ -3861,10 +3865,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::run_reconciliation_job;
     use super::{
-        BackgroundReconciliationError, DaemonDownloadProgress, FOREGROUND_JOB_PROGRESS_BUFFER,
-        FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent, ReconciliationJobCompletion,
-        ReconciliationJobOptions, SystemProjectReconciliationReport, abandon_reconciliation_job,
-        cancel_or_preserve_system_reconciliation_errors,
+        BackgroundReconciliationError, DaemonDownloadProgress, FOREGROUND_JOB_HEARTBEAT_INTERVAL,
+        FOREGROUND_JOB_PROGRESS_BUFFER, FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent,
+        ReconciliationJobCompletion, ReconciliationJobOptions, SystemProjectReconciliationReport,
+        abandon_reconciliation_job, cancel_or_preserve_system_reconciliation_errors,
         complete_managed_resource_reconciliation_with_progress,
         complete_or_fail_background_reconciliation, complete_project_reconciliation_with_progress,
         complete_queued_background_reconciliation_job, complete_reconciliation_job_with_progress,
@@ -9259,27 +9263,25 @@ mod tests {
     #[tokio::test]
     async fn streamed_job_writes_heartbeat_before_quiet_completion_finishes() -> anyhow::Result<()>
     {
+        let clock = platform::clock::install_fake_for_test();
         let (client, server) = duplex(1024);
         let mut writer = protocol::transport(server);
         let (finish_sender, finish_receiver) = oneshot::channel::<()>();
         let task = tokio::spawn(async move {
-            complete_streamed_job_with_heartbeat(
-                &mut writer,
-                "job_1",
-                "job still running",
-                Duration::from_millis(5),
-                async {
-                    finish_receiver.await.map_err(|_error| {
-                        crate::DaemonError::Io(io::Error::other("completion cancelled"))
-                    })?;
+            complete_streamed_job_with_heartbeat(&mut writer, "job_1", "job still running", async {
+                finish_receiver.await.map_err(|_error| {
+                    crate::DaemonError::Io(io::Error::other("completion cancelled"))
+                })?;
 
-                    Ok("job done".to_string())
-                },
-            )
+                Ok("job done".to_string())
+            })
             .await
         });
 
         let mut reader = protocol::transport(client);
+        clock
+            .advance_when_waiting(&FOREGROUND_JOB_HEARTBEAT_INTERVAL)
+            .await?;
         let line = timeout(Duration::from_millis(100), reader.next())
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing heartbeat line"))??;
@@ -9314,7 +9316,6 @@ mod tests {
                 &mut writer,
                 "job_1",
                 "job still running",
-                Duration::from_secs(60),
                 async {
                     finish_receiver.await.map_err(|_error| {
                         crate::DaemonError::Io(io::Error::other("completion cancelled"))
@@ -9368,6 +9369,7 @@ mod tests {
 
     #[tokio::test]
     async fn streamed_job_writes_ordered_phases_and_heartbeat() -> anyhow::Result<()> {
+        let clock = platform::clock::install_fake_for_test();
         let (client, server) = duplex(1024);
         let mut writer = protocol::transport(server);
         let (_event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
@@ -9378,7 +9380,6 @@ mod tests {
                 &mut writer,
                 "job_1",
                 "job still running",
-                Duration::from_millis(20),
                 async {
                     finish_receiver.await.map_err(|_error| {
                         crate::DaemonError::Io(io::Error::other("completion cancelled"))
@@ -9405,6 +9406,9 @@ mod tests {
         let resources = timeout(Duration::from_millis(100), reader.next())
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing resources phase"))??;
+        clock
+            .advance_when_waiting(&FOREGROUND_JOB_HEARTBEAT_INTERVAL)
+            .await?;
         let heartbeat = timeout(Duration::from_millis(100), reader.next())
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing heartbeat"))??;
@@ -9459,7 +9463,6 @@ mod tests {
             &mut writer,
             "job_1",
             "job still running",
-            Duration::from_secs(60),
             async { Ok("job done".to_string()) },
             event_receiver,
             phase_receiver,
@@ -9525,7 +9528,6 @@ mod tests {
                 &mut writer,
                 "job_1",
                 "job still running",
-                Duration::from_secs(60),
                 async {
                     finish_receiver.await.map_err(|_error| {
                         crate::DaemonError::Io(io::Error::other("completion cancelled"))
@@ -9570,6 +9572,7 @@ mod tests {
 
     #[tokio::test]
     async fn streamed_job_completion_wins_when_heartbeat_write_blocks() -> anyhow::Result<()> {
+        let clock = platform::clock::install_fake_for_test();
         let (blocked_write_sender, blocked_write_receiver) = oneshot::channel();
         let mut writer = protocol::transport(InitiallyWritableStream::with_blocked_write_signal(
             0,
@@ -9577,22 +9580,19 @@ mod tests {
         ));
         let (finish_sender, finish_receiver) = oneshot::channel::<()>();
         let mut task = tokio::spawn(async move {
-            complete_streamed_job_with_heartbeat(
-                &mut writer,
-                "job_1",
-                "job still running",
-                Duration::from_millis(5),
-                async {
-                    finish_receiver.await.map_err(|_error| {
-                        crate::DaemonError::Io(io::Error::other("completion cancelled"))
-                    })?;
+            complete_streamed_job_with_heartbeat(&mut writer, "job_1", "job still running", async {
+                finish_receiver.await.map_err(|_error| {
+                    crate::DaemonError::Io(io::Error::other("completion cancelled"))
+                })?;
 
-                    Ok("job done".to_string())
-                },
-            )
+                Ok("job done".to_string())
+            })
             .await
         });
 
+        clock
+            .advance_when_waiting(&FOREGROUND_JOB_HEARTBEAT_INTERVAL)
+            .await?;
         timeout(Duration::from_millis(100), blocked_write_receiver)
             .await?
             .map_err(|_error| anyhow::anyhow!("heartbeat writer dropped"))?;
@@ -9624,7 +9624,6 @@ mod tests {
                 &mut writer,
                 "job_1",
                 "job still running",
-                Duration::from_secs(60),
                 async {
                     finish_receiver.await.map_err(|_error| {
                         crate::DaemonError::Io(io::Error::other("completion cancelled"))
@@ -9680,7 +9679,6 @@ mod tests {
                 &mut writer,
                 "job_1",
                 "job still running",
-                Duration::from_secs(60),
                 async {
                     finish_receiver.await.map_err(|_error| {
                         crate::DaemonError::Io(io::Error::other("completion cancelled"))
@@ -9732,7 +9730,6 @@ mod tests {
                 &mut writer,
                 "job_1",
                 "job still running",
-                Duration::from_secs(60),
                 async {
                     finish_receiver.await.map_err(|_error| {
                         crate::DaemonError::Io(io::Error::other("completion cancelled"))
@@ -9797,7 +9794,6 @@ mod tests {
                 &mut writer,
                 "job_1",
                 "job still running",
-                Duration::from_secs(60),
                 async {
                     finish_receiver.await.map_err(|_error| {
                         crate::DaemonError::Io(io::Error::other("completion cancelled"))
@@ -10445,6 +10441,7 @@ mod tests {
 
     #[tokio::test]
     async fn queued_foreground_job_streams_heartbeats_until_its_turn() -> anyhow::Result<()> {
+        let clock = platform::clock::install_fake_for_test();
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let queue = ReconciliationQueue::new();
@@ -10459,18 +10456,14 @@ mod tests {
         let (client, server) = duplex(1024);
         let task = tokio::spawn(async move {
             let mut transport = protocol::transport(server);
-            wait_for_foreground_turn(
-                waiting,
-                &mut transport,
-                true,
-                Duration::from_millis(5),
-                None,
-            )
-            .await
+            wait_for_foreground_turn(waiting, &mut transport, true, None).await
         });
         let mut reader = protocol::transport(client);
 
         for _heartbeat in 0..2 {
+            clock
+                .advance_when_waiting(&FOREGROUND_JOB_HEARTBEAT_INTERVAL)
+                .await?;
             let line = timeout(Duration::from_millis(100), reader.next())
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("missing queued heartbeat"))??;
@@ -10497,6 +10490,7 @@ mod tests {
 
     #[tokio::test]
     async fn queued_foreground_job_continues_after_heartbeat_write_fails() -> anyhow::Result<()> {
+        let clock = platform::clock::install_fake_for_test();
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let queue = ReconciliationQueue::new();
@@ -10512,16 +10506,12 @@ mod tests {
         let task = tokio::spawn(async move {
             let mut transport =
                 protocol::transport(FailingWriteStream::with_signal(failed_write_sender));
-            wait_for_foreground_turn(
-                waiting,
-                &mut transport,
-                true,
-                Duration::from_millis(5),
-                None,
-            )
-            .await
+            wait_for_foreground_turn(waiting, &mut transport, true, None).await
         });
 
+        clock
+            .advance_when_waiting(&FOREGROUND_JOB_HEARTBEAT_INTERVAL)
+            .await?;
         timeout(Duration::from_millis(100), failed_write_receiver)
             .await?
             .map_err(|_error| anyhow::anyhow!("queued heartbeat writer dropped"))?;

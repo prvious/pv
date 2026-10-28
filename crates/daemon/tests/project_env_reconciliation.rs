@@ -610,6 +610,7 @@ async fn project_tls_reconciliation_replaces_overlong_leaf_once() -> Result<()> 
 #[tokio::test]
 async fn daemon_health_tick_replaces_expiring_tls_certificate_without_explicit_reconciliation()
 -> Result<()> {
+    let clock = platform::clock::install_fake_for_test();
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project(
@@ -635,10 +636,9 @@ async fn daemon_health_tick_replaces_expiring_tls_certificate_without_explicit_r
     write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 7)?;
     let stale_certificate_pem =
         state::fs::read_to_string(&paths.project_tls_certificate(&project.id))?;
-    tokio::time::pause();
-    tokio::time::advance(std::time::Duration::from_secs(30)).await;
-    tokio::task::yield_now().await;
-    tokio::time::resume();
+    clock
+        .advance_when_waiting(&daemon::RUNTIME_HEALTH_SCAN)
+        .await?;
     let job = wait_for_succeeded_project_job(&paths, &project.id).await?;
     let (certificate_pem, private_key_pem) = read_project_tls_files(&paths, &project)?;
     daemon.shutdown().await?;
@@ -1376,6 +1376,7 @@ async fn invalid_config_failure_rolls_back_resource_state_mutations() -> Result<
 
 #[tokio::test]
 async fn malformed_config_with_existing_tls_is_renewed_by_daemon_health() -> Result<()> {
+    let clock = platform::clock::install_fake_for_test();
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project = link_project(
@@ -1414,10 +1415,9 @@ async fn malformed_config_with_existing_tls_is_renewed_by_daemon_health() -> Res
     wait_for_new_finished_system_job(&paths, finished_system_jobs).await?;
     write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 7)?;
     state::fs::remove_file(&paths.project_tls_private_key(&project.id))?;
-    tokio::time::pause();
-    tokio::time::advance(std::time::Duration::from_secs(30)).await;
-    tokio::task::yield_now().await;
-    tokio::time::resume();
+    clock
+        .advance_when_waiting(&daemon::RUNTIME_HEALTH_SCAN)
+        .await?;
     let mut failed_job = None;
     for _attempt in 0..50 {
         let certificate_exists =

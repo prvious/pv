@@ -1,16 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use camino::Utf8Path;
 use config::ProjectConfigFile;
 use futures_util::{StreamExt, stream};
+use platform::clock::{self, Elapsed, Limit};
 use state::{
     Database, GatewayPort, ManagedResourceDesiredState, PortOwner, ProjectMode, PvPaths,
     RuntimeObservedStatus, RuntimeSubject,
 };
-use tokio::time::{Instant, timeout};
 
 use crate::DaemonError;
 use crate::gateway::{persisted_gateway_is_ready, worker_readiness_check};
@@ -21,8 +21,12 @@ use crate::reconciliation::ReconciliationScope;
 use crate::supervisor::{ProcessSupervisor, ReadinessCheck, probe_readiness_once};
 
 pub(crate) const RUNTIME_HEALTH_INTERVAL: Duration = Duration::from_secs(30);
+/// The daemon's wait until its next health scan: the 30 s interval, or a sooner recovery retry
+/// under the same name.
+pub const RUNTIME_HEALTH_SCAN: Limit = Limit::new("runtime health scan", RUNTIME_HEALTH_INTERVAL);
 const HEALTHY_RESET_INTERVAL: Duration = Duration::from_secs(60);
-const RUNTIME_HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const RUNTIME_HEALTH_PROBE_TIMEOUT: Limit =
+    Limit::new("runtime health probe", Duration::from_secs(1));
 const RUNTIME_HEALTH_SCAN_ERROR_RETRY_DELAY: Duration = Duration::from_secs(1);
 const RUNTIME_HEALTH_PROBE_CONCURRENCY: usize = 4;
 const RUNTIME_RECOVERY_EXHAUSTED: &str =
@@ -591,11 +595,11 @@ async fn inspect_runtime_probe(
                 .await
             }
             Some(RuntimeReadinessProbe::Worker(check)) => readiness_probe_outcome(
-                timeout(RUNTIME_HEALTH_PROBE_TIMEOUT, probe_readiness_once(&check)).await,
+                clock::timeout(&RUNTIME_HEALTH_PROBE_TIMEOUT, probe_readiness_once(&check)).await,
                 probe.error,
             ),
             Some(RuntimeReadinessProbe::Resource(readiness)) => readiness_probe_outcome(
-                timeout(RUNTIME_HEALTH_PROBE_TIMEOUT, readiness.probe_once()).await,
+                clock::timeout(&RUNTIME_HEALTH_PROBE_TIMEOUT, readiness.probe_once()).await,
                 probe.error,
             ),
             None => (false, probe.error),
@@ -623,7 +627,7 @@ async fn inspect_runtime_probe(
 }
 
 fn readiness_probe_outcome(
-    result: Result<Result<(), DaemonError>, tokio::time::error::Elapsed>,
+    result: Result<Result<(), DaemonError>, Elapsed>,
     existing_error: Option<String>,
 ) -> (bool, Option<String>) {
     match result {
@@ -681,9 +685,10 @@ mod tests {
         ProjectManagedResourceInput,
     };
     use state::{PvPaths, RuntimeSubject};
+    use std::time::{Duration, Instant};
     #[cfg(target_os = "macos")]
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    use tokio::time::{Duration, Instant, advance, sleep};
+    use tokio::time::sleep;
 
     use super::{
         DesiredRuntimeProbe, HEALTHY_RESET_INTERVAL, RUNTIME_HEALTH_INTERVAL,
@@ -732,8 +737,8 @@ mod tests {
         scopes
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn backoff_retries_at_one_five_and_fifteen_seconds_then_waits_for_later_tick()
+    #[test]
+    fn backoff_retries_at_one_five_and_fifteen_seconds_then_waits_for_later_tick()
     -> anyhow::Result<()> {
         let mut backoff = RuntimeRecoveryBackoff::default();
         let mut now = Instant::now();
@@ -741,37 +746,32 @@ mod tests {
         assert_eq!(backoff.next_scan_at(now), now + Duration::from_secs(1));
 
         for delay in [1, 5, 15] {
-            advance(Duration::from_secs(delay) - Duration::from_millis(1)).await;
-            now = Instant::now();
+            now += Duration::from_secs(delay) - Duration::from_millis(1);
             assert!(backoff.scopes_due(now, &scan(false)?).is_empty());
-            advance(Duration::from_millis(1)).await;
-            now = Instant::now();
+            now += Duration::from_millis(1);
             assert_eq!(accept_due(&mut backoff, now, &scan(false)?).len(), 1);
         }
         assert_eq!(backoff.next_scan_at(now), now + RUNTIME_HEALTH_INTERVAL);
 
-        advance(RUNTIME_HEALTH_INTERVAL).await;
-        now = Instant::now();
+        now += RUNTIME_HEALTH_INTERVAL;
         assert_eq!(accept_due(&mut backoff, now, &scan(false)?).len(), 1);
         assert_eq!(backoff.next_scan_at(now), now + RUNTIME_HEALTH_INTERVAL);
 
         Ok(())
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn backoff_resets_after_sixty_continuously_healthy_seconds() -> anyhow::Result<()> {
+    #[test]
+    fn backoff_resets_after_sixty_continuously_healthy_seconds() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let mut backoff = RuntimeRecoveryBackoff::default();
         let mut now = Instant::now();
         accept_due(&mut backoff, now, &scan(false)?);
-        advance(Duration::from_secs(1)).await;
-        now = Instant::now();
+        now += Duration::from_secs(1);
         accept_due(&mut backoff, now, &scan(false)?);
         backoff.scopes_due(now, &scan(true)?);
 
-        advance(HEALTHY_RESET_INTERVAL).await;
-        now = Instant::now();
+        now += HEALTHY_RESET_INTERVAL;
         backoff.record_healthy_resets(&paths, &scan(true)?, now)?;
         assert!(backoff.scopes_due(now, &scan(false)?).is_empty());
         assert_eq!(backoff.next_scan_at(now), now + Duration::from_secs(1));
@@ -779,46 +779,42 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn brief_healthy_period_preserves_the_retry_attempt() -> anyhow::Result<()> {
+    #[test]
+    fn brief_healthy_period_preserves_the_retry_attempt() -> anyhow::Result<()> {
         let mut backoff = RuntimeRecoveryBackoff::default();
         let mut now = Instant::now();
         accept_due(&mut backoff, now, &scan(false)?);
-        advance(Duration::from_secs(1)).await;
-        now = Instant::now();
+        now += Duration::from_secs(1);
         accept_due(&mut backoff, now, &scan(false)?);
         backoff.scopes_due(now, &scan(true)?);
 
-        advance(HEALTHY_RESET_INTERVAL - Duration::from_secs(1)).await;
-        now = Instant::now();
+        now += HEALTHY_RESET_INTERVAL - Duration::from_secs(1);
         assert!(backoff.scopes_due(now, &scan(false)?).is_empty());
         assert_eq!(backoff.next_scan_at(now), now + Duration::from_secs(5));
 
         Ok(())
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn exhausted_backoff_survives_a_brief_healthy_period() -> anyhow::Result<()> {
+    #[test]
+    fn exhausted_backoff_survives_a_brief_healthy_period() -> anyhow::Result<()> {
         let mut backoff = RuntimeRecoveryBackoff::default();
         let mut now = Instant::now();
         for delay in [1, 5, 15] {
             backoff.scopes_due(now, &scan(false)?);
-            advance(Duration::from_secs(delay)).await;
-            now = Instant::now();
+            now += Duration::from_secs(delay);
             accept_due(&mut backoff, now, &scan(false)?);
         }
         backoff.scopes_due(now, &scan(true)?);
 
-        advance(RUNTIME_HEALTH_INTERVAL).await;
-        now = Instant::now();
+        now += RUNTIME_HEALTH_INTERVAL;
         assert!(backoff.scopes_due(now, &scan(false)?).is_empty());
         assert_eq!(backoff.next_scan_at(now), now + RUNTIME_HEALTH_INTERVAL);
 
         Ok(())
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn another_runtime_retry_does_not_rearm_exhausted_backoff() -> anyhow::Result<()> {
+    #[test]
+    fn another_runtime_retry_does_not_rearm_exhausted_backoff() -> anyhow::Result<()> {
         let redis_subject = RuntimeSubject::Resource {
             name: "redis".to_owned(),
             track: "8.2".to_owned(),
@@ -842,8 +838,7 @@ mod tests {
             RuntimeRecoveryEntry::after_failure(detected_at, 0),
         );
 
-        advance(Duration::from_secs(1)).await;
-        let now = Instant::now();
+        let now = detected_at + Duration::from_secs(1);
         let scopes = accept_due(&mut backoff, now, &scan);
 
         assert_eq!(
@@ -901,8 +896,8 @@ mod tests {
     }
 
     #[cfg(target_os = "macos")]
-    #[tokio::test(start_paused = true)]
-    async fn healthy_reset_retracts_exhausted_runtime_failure() -> anyhow::Result<()> {
+    #[test]
+    fn healthy_reset_retracts_exhausted_runtime_failure() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         Database::open(&paths)?;
@@ -924,8 +919,7 @@ mod tests {
         );
         backoff.record_healthy_resets(&paths, &scan(true)?, now)?;
 
-        advance(HEALTHY_RESET_INTERVAL).await;
-        now = Instant::now();
+        now += HEALTHY_RESET_INTERVAL;
         backoff.record_healthy_resets(&paths, &scan(true)?, now)?;
 
         let observed = Database::open(&paths)?
@@ -940,9 +934,8 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn scan_errors_preserve_retry_deadlines_without_consuming_attempts() -> anyhow::Result<()>
-    {
+    #[test]
+    fn scan_errors_preserve_retry_deadlines_without_consuming_attempts() -> anyhow::Result<()> {
         let mut backoff = RuntimeRecoveryBackoff::default();
         let detected_at = Instant::now();
         backoff.scopes_due(detected_at, &scan(false)?);
@@ -1076,7 +1069,7 @@ mod tests {
     async fn gateway_pf_inspection_is_not_bounded_by_readiness_timeout() -> anyhow::Result<()> {
         let (healthy, error) = gateway_readiness_probe_outcome(
             async {
-                sleep(RUNTIME_HEALTH_PROBE_TIMEOUT + Duration::from_secs(1)).await;
+                sleep(RUNTIME_HEALTH_PROBE_TIMEOUT.duration() + Duration::from_secs(1)).await;
 
                 Ok(true)
             },
@@ -1090,8 +1083,8 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn first_periodic_scan_is_not_immediate() {
+    #[test]
+    fn first_periodic_scan_is_not_immediate() {
         let now = Instant::now();
         assert_eq!(
             RuntimeRecoveryBackoff::default().next_scan_at(now),

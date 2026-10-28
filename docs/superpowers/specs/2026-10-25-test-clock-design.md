@@ -69,7 +69,7 @@ A new `platform::clock` module exposes a few functions plus a real poll tick.
 | Function | In production |
 |---|---|
 | `now() -> Instant` | `std::time::Instant::now()` |
-| `sleep(&limit)` | `tokio::time::sleep(limit.duration())` (from PR 3, for schedules) |
+| `sleep(&limit)` / `sleep_blocking(&limit)` | `tokio::time::sleep` / `std::thread::sleep` for `limit.duration()`, for schedules such as the health scan and the download retry |
 | `timeout(&limit, future)` | `tokio::time::timeout(limit.duration(), future)` |
 | `Deadline::after(&limit)` with `is_expired()` | `now()` arithmetic, for polling loops such as `DaemonProcess::wait_for_exit` |
 | `deadline.timeout(&limit, future)` | `tokio::time::timeout` for the smaller of `limit` and the time left, for one attempt inside a budget, such as a readiness probe |
@@ -100,6 +100,7 @@ The fake lives behind a new `test-support` feature on `platform`, which the dev-
     - synchronous code on the test's own thread, such as the CLI run in-process;
     - a blocking thread, such as `spawn_blocking` around the blocking daemon client. Tokio waits for blocking threads when the test's runtime shuts down, so a stuck one would hang the test even after `try_join!` returned an error.
   - **If the named limit doesn't appear within 30 s of real time,** the call fails with the list of pending limits. A mistake becomes a clear failure instead of a hang.
+  - **`FakeClock::is_waiting(&limit)`.** Says whether PV waits on that limit now, without moving time. A test uses it to act once PV waits, such as letting an old daemon exit once `pv` waits for it, or to prove a wait isn't scheduled yet.
 - **Waits in a row get their own names.** A started runtime's admin API wait and its readiness wait share a budget but not a name, so a test can advance past the readiness wait without catching the admin wait first.
 - **An attempt inside a budget uses `deadline.timeout`.** An advance can land between a loop checking its deadline and starting the next attempt. An attempt timed from `now()` would then be due after the advanced time, and nothing would advance it. `deadline.timeout` caps the attempt at the deadline under the fake's lock, so an attempt started after the deadline passed ends at once.
 - **A blocked test still fails.**
@@ -221,8 +222,8 @@ A stack, each PR verified with targeted runs, the full suite, and a comparison o
      - The budget argument comes off the `*_for_test` entry points, and the short budgets in `gateway_reconciliation` become advances.
      - If the pf removal lands first, rebase onto it, since that work deletes part of the readiness code.
    - **3c, health and schedules.**
-     - Add `sleep`.
-     - Route the health scan, recovery retries, job heartbeat and startup lock retry through the clock.
+     - Add `sleep`, `sleep_blocking` and `FakeClock::is_waiting`.
+     - Route the health scan and its recovery retries, the job heartbeat and the download retry through the clock. The 50 ms jobs-lock retries stay real through `poll`.
      - Turn the pause/advance/resume tests and the remaining time windows into advances or handshakes.
 4. **The rest and the lint.**
    - Convert the remaining timing constants (72 named, about 100 `timeout` calls).

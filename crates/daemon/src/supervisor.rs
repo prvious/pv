@@ -1675,7 +1675,8 @@ mod tests {
     }
 
     async fn wait_for_test_path(path: &Utf8Path) -> Result<()> {
-        for _attempt in 0..50 {
+        // A fixture's interpreter can take seconds to start on a loaded runner.
+        for _attempt in 0..500 {
             if path.exists() {
                 return Ok(());
             }

@@ -9,8 +9,9 @@ use camino_tempfile::tempdir;
 use insta::assert_debug_snapshot;
 use resources::{
     ArtifactDownloader, ArtifactManifest, ArtifactManifestCache, ArtifactManifestSource,
-    DownloadProgress, DownloadProgressEvent, ManifestArtifact, ResourceHttpClient, ResourceName,
-    ResourcesError, TargetPlatform, TrackName, UreqResourceHttpClient,
+    DOWNLOAD_RETRY_BACKOFF, DownloadProgress, DownloadProgressEvent, ManifestArtifact,
+    ResourceHttpClient, ResourceName, ResourcesError, TargetPlatform, TrackName,
+    UreqResourceHttpClient,
 };
 use state::fs::read_dir_paths;
 
@@ -310,6 +311,8 @@ fn artifact_downloader_deletes_bad_downloads_and_reports_checksum_mismatch() -> 
 
 #[test]
 fn artifact_downloader_retries_transient_download_failures() -> Result<()> {
+    platform::clock::install_fake_for_test()
+        .advance_when_waiting_in_background(&DOWNLOAD_RETRY_BACKOFF);
     let tempdir = tempdir()?;
     let downloader = ArtifactDownloader::new(tempdir.path().join("downloads"));
     let artifact = redis_artifact()?;
@@ -330,6 +333,8 @@ fn artifact_downloader_retries_transient_download_failures() -> Result<()> {
 
 #[test]
 fn artifact_downloader_retries_transient_http_status_failures() -> Result<()> {
+    platform::clock::install_fake_for_test()
+        .advance_when_waiting_in_background(&DOWNLOAD_RETRY_BACKOFF);
     let tempdir = tempdir()?;
     let downloader = ArtifactDownloader::new(tempdir.path().join("downloads"));
     let artifact = redis_artifact()?;

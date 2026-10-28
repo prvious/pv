@@ -14,6 +14,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
 flate2 = "1.1.9"
+platform = { path = "../platform" }
 state = { path = "../state" }
 tar = "0.4.45"
 thiserror = { workspace = true }
@@ -24,3 +25,4 @@ url = "2"
 [dev-dependencies]
 anyhow = { workspace = true }
 insta = { workspace = true }
+platform = { path = "../platform", features = ["test-support"] }

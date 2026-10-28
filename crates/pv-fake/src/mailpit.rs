@@ -85,8 +85,8 @@ pub(crate) async fn start_pv_fake(
     let [_executable, smtp_port, dashboard_port, ..] = argv else {
         bail!("expected `pv-fake-mailpit <smtp port> <dashboard port>`");
     };
-    let smtp = bind_retrying(smtp_port).await?;
-    let dashboard = bind_retrying(dashboard_port).await?;
+    let smtp = bind_retrying(smtp_port, events).await?;
+    let dashboard = bind_retrying(dashboard_port, events).await?;
     tokio::spawn(greet(smtp, PV_FAKE_MAILPIT_GREETING));
     let exit_after_response = settings
         .exit_after_first_http_response
@@ -137,14 +137,19 @@ async fn bind(address: &str) -> Result<Option<TcpListener>> {
     }
 }
 
-async fn bind_retrying(port: &str) -> Result<TcpListener> {
+async fn bind_retrying(port: &str, events: &EventLog) -> Result<TcpListener> {
     let port = port
         .parse::<u16>()
         .with_context(|| format!("port {port}"))?;
+    let mut busy_recorded = false;
     loop {
         match TcpListener::bind(("127.0.0.1", port)).await {
             Ok(listener) => return Ok(listener),
             Err(error) if error.kind() == ErrorKind::AddrInUse => {
+                if !busy_recorded {
+                    events.record(EventKind::PortBusy { port })?;
+                    busy_recorded = true;
+                }
                 tokio::time::sleep(BIND_RETRY_DELAY).await;
             }
             Err(error) => return Err(error).with_context(|| format!("binding port {port}")),
