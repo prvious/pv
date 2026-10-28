@@ -1,15 +1,18 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
+use platform::clock;
 use state::PvPaths;
 use tokio::io::AsyncRead;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
-use tokio::time::{Instant, sleep, sleep_until, timeout};
+use tokio::time::{sleep, timeout};
 
 use crate::DaemonError;
-use crate::health::{RuntimeHealthScan, RuntimeRecoveryBackoff, scan_runtime_health};
+use crate::health::{
+    RUNTIME_HEALTH_SCAN, RuntimeHealthScan, RuntimeRecoveryBackoff, scan_runtime_health,
+};
 use crate::hooks::DaemonHooks;
 use crate::ipc::{LocalListener, LocalStream};
 use crate::jobs::{
@@ -83,7 +86,7 @@ pub(crate) async fn serve(
     let mut watcher_task_finished = false;
     let mut runtime_health_task: Option<JoinHandle<Result<RuntimeHealthScan, DaemonError>>> = None;
     let mut recovery_backoff = RuntimeRecoveryBackoff::default();
-    let mut next_health_scan = None;
+    let mut next_health_scan: Option<Instant> = None;
 
     let result = loop {
         tokio::select! {
@@ -116,7 +119,7 @@ pub(crate) async fn serve(
                 {
                     break Err(error);
                 }
-                next_health_scan = Some(recovery_backoff.next_scan_at(Instant::now()));
+                next_health_scan = Some(recovery_backoff.next_scan_at(clock::now()));
             }
             runtime_health_result = async {
                 match runtime_health_task.as_mut() {
@@ -125,7 +128,7 @@ pub(crate) async fn serve(
                 }
             }, if runtime_health_task.is_some() => {
                 runtime_health_task = None;
-                let now = Instant::now();
+                let now = clock::now();
                 if let Some(runtime_health_result) = runtime_health_result {
                     match runtime_health_result {
                         Ok(Ok(scan)) => {
@@ -212,7 +215,7 @@ pub(crate) async fn serve(
             }
             _ = async {
                 if let Some(next_health_scan) = next_health_scan {
-                    sleep_until(next_health_scan).await;
+                    clock::sleep_until(&RUNTIME_HEALTH_SCAN, next_health_scan).await;
                 }
             }, if next_health_scan.is_some() && runtime_health_task.is_none() => {
                 let health_paths = paths.clone();
@@ -348,6 +351,7 @@ async fn run_debounced_reconciliation_job(
     mut shutdown: watch::Receiver<bool>,
     fallback_shutdown: watch::Receiver<bool>,
 ) -> Result<(), BackgroundReconciliationError> {
+    let mut waiting_for_jobs_lock = false;
     let result = loop {
         match enqueue_background_reconciliation_job(&paths, &queue, scope.clone()) {
             Ok(Some(result)) => break result,
@@ -359,9 +363,16 @@ async fn run_debounced_reconciliation_job(
                         if path == &paths.jobs_lock()
                 ) =>
             {
+                if !waiting_for_jobs_lock {
+                    waiting_for_jobs_lock = true;
+                    structured_log::reconciliation_waiting_for_jobs_lock(
+                        &paths,
+                        &scope.to_string(),
+                    );
+                }
                 tokio::select! {
-                    _ = sleep(PROJECT_CONFIG_DEBOUNCE) => {}
-                    _ = wait_for_background_shutdown(&mut shutdown) => return Ok(()),
+                    () = clock::poll(PROJECT_CONFIG_DEBOUNCE) => {}
+                    () = wait_for_background_shutdown(&mut shutdown) => return Ok(()),
                 }
             }
             Err(error) => return Err(error),
@@ -594,11 +605,11 @@ mod tests {
         Database, JobDiagnosticSubject, JobStatus, JobsLock, LinkProjectInput, ProjectRecord,
         PvPaths,
     };
+    #[cfg(target_os = "macos")]
+    use std::time::Instant;
     use time::{Duration as CertificateDuration, OffsetDateTime};
     use tokio::io::duplex;
     use tokio::sync::watch;
-    #[cfg(target_os = "macos")]
-    use tokio::time::Instant;
     use tokio::time::{sleep, timeout};
 
     #[cfg(target_os = "macos")]

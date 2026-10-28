@@ -41,6 +41,10 @@ pub enum EventKind {
     Held {
         until: Utf8PathBuf,
     },
+    /// A port the fake must bind was busy; it keeps retrying until the port is free.
+    PortBusy {
+        port: u16,
+    },
     DescendantSpawned {
         descendant_pid: i32,
     },

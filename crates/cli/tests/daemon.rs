@@ -572,6 +572,7 @@ fn daemon_disable_clears_a_previous_boot_postgres_monitor_without_signalling_reu
 
 #[test]
 fn daemon_replacement_waits_for_delayed_exit_before_bootstrap() -> anyhow::Result<()> {
+    let clock = clock::install_fake_for_test();
     for publish_during_bootout in [false, true] {
         let tempdir = tempdir()?;
         let home = tempdir.path().join("home");
@@ -604,12 +605,29 @@ fn daemon_replacement_waits_for_delayed_exit_before_bootstrap() -> anyhow::Resul
             state::fs::write_sensitive_file(&paths.daemon_process_record(), &record)?;
         }
         let (signal, receiver) = mpsc::channel();
+        let cleanup_clock = clock.clone();
         let cleanup = thread::Builder::new()
             .name("daemon-fixture-cleanup".to_owned())
             .spawn(move || -> anyhow::Result<()> {
-                receiver.recv_timeout(Duration::from_secs(5))?;
-                thread::sleep(Duration::from_millis(500));
-                previous.cleanup()
+                let result = (|| {
+                    receiver.recv_timeout(Duration::from_secs(5))?;
+                    // Exit only once `pv` waits for it, so bootstrapping first fails the test.
+                    let give_up_at = Instant::now() + Duration::from_secs(5);
+                    while !cleanup_clock.is_waiting(&DAEMON_EXIT_GRACE) {
+                        anyhow::ensure!(
+                            Instant::now() < give_up_at,
+                            "pv never waited for the previous daemon to exit"
+                        );
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    previous.cleanup()
+                })();
+                if result.is_err() {
+                    // The daemon may still be alive: let `pv` give up on it instead of waiting on
+                    // frozen time, so the test reports this error.
+                    cleanup_clock.advance_when_waiting_in_background(&DAEMON_EXIT_GRACE);
+                }
+                result
             })?;
         environment.bootout_signal = Some(signal);
         environment.bootstrap_requires_daemon_exit = Some(pid);

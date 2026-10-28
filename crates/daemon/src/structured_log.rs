@@ -430,6 +430,19 @@ pub(crate) fn runtime_exited(paths: &PvPaths, subject: &str, exit: &str) {
     );
 }
 
+/// Records a reconciliation that found the jobs lock held by another process. It retries until the
+/// lock frees or the daemon shuts down.
+pub(crate) fn reconciliation_waiting_for_jobs_lock(paths: &PvPaths, scope: &str) {
+    append_best_effort(
+        paths,
+        "info",
+        "reconciliation",
+        "reconciliation_waiting_for_jobs_lock",
+        "reconciliation is waiting for the jobs lock",
+        &[("scope", scope)],
+    );
+}
+
 pub(crate) fn runtime_config_cleanup_failed(paths: &PvPaths, runtime: &str, error: &str) {
     append_best_effort(
         paths,

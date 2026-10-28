@@ -29,9 +29,9 @@ pub use command::{
     ManagedResourceUpdateStatus, PhpPairInstall, PhpPairRemovalIntent, PhpPairUpdate,
 };
 pub use download::{
-    ArtifactDownload, ArtifactDownloader, DownloadProgress, DownloadProgressEvent,
-    MAX_PARALLEL_ARTIFACT_DOWNLOADS, NoDownloadProgress, ResourceOperation, ResourceOperationEvent,
-    ResourceOperationOutcome,
+    ArtifactDownload, ArtifactDownloader, DOWNLOAD_RETRY_BACKOFF, DownloadProgress,
+    DownloadProgressEvent, MAX_PARALLEL_ARTIFACT_DOWNLOADS, NoDownloadProgress, ResourceOperation,
+    ResourceOperationEvent, ResourceOperationOutcome,
 };
 pub use endpoint::{
     ARTIFACT_MANIFEST_URL_BUILD_ENV, STABLE_ARTIFACT_MANIFEST_URL, default_artifact_manifest_url,

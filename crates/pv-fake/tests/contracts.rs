@@ -850,7 +850,9 @@ fn pv_fake_mailpit_waits_for_busy_ports_and_answers_ready() -> Result<()> {
         &[],
     )?;
 
-    sleep(Duration::from_millis(250));
+    wait_for_event(&fake, |kind| {
+        (*kind == EventKind::PortBusy { port: smtp_port }).then_some(())
+    })?;
     let waiting_for_smtp = process.0.try_wait()?.is_none()
         && TcpStream::connect(("127.0.0.1", dashboard_port)).is_err();
     drop(smtp_reservation);
@@ -865,7 +867,15 @@ fn pv_fake_mailpit_waits_for_busy_ports_and_answers_ready() -> Result<()> {
     assert_eq!(greeting, "220 fake mailpit\r\n");
     assert_eq!((ready.0, other.0), (200, 404));
     assert_eq!(status.code(), Some(0));
-    assert_eq!(event_names(&fake)?, ["started", "signal SIGTERM", "exit 0"]);
+    assert_eq!(
+        event_names(&fake)?,
+        [
+            "started".to_owned(),
+            format!("port_busy {smtp_port}"),
+            "signal SIGTERM".to_owned(),
+            "exit 0".to_owned(),
+        ]
+    );
 
     Ok(())
 }
@@ -1638,6 +1648,7 @@ fn event_names(fake: &InstalledFake) -> Result<Vec<String>> {
             EventKind::Signal { signal } => format!("signal {signal}"),
             EventKind::LifelineFired => "lifeline_fired".to_owned(),
             EventKind::Held { .. } => "held".to_owned(),
+            EventKind::PortBusy { port } => format!("port_busy {port}"),
             EventKind::DescendantSpawned { .. } => "descendant_spawned".to_owned(),
             EventKind::DescendantResident => "descendant_resident".to_owned(),
             EventKind::ParentExited => "parent_exited".to_owned(),
