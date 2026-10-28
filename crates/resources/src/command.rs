@@ -1690,7 +1690,7 @@ fn start_resource_operation(
 ) -> Instant {
     progress.operation_started(operation);
 
-    Instant::now()
+    platform::clock::now()
 }
 
 fn report_resource_operation(
@@ -1701,7 +1701,7 @@ fn report_resource_operation(
 ) {
     progress.operation_finished(ResourceOperationEvent {
         operation,
-        elapsed: started_at.elapsed(),
+        elapsed: platform::clock::elapsed(started_at),
         outcome,
     });
 }

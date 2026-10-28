@@ -8,7 +8,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     mpsc,
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use config::{ProjectConfig, ProjectConfigFile};
@@ -62,6 +62,9 @@ pub const CONFIG_VALIDATION_TIMEOUT: Limit =
     Limit::new("config validation", Duration::from_secs(10));
 const CONFIG_VALIDATION_CLEANUP_TIMEOUT: Limit =
     Limit::new("config validation cleanup", Duration::from_secs(1));
+/// How long the fallback reaper waits for a stopped validator's processes to exit.
+const CONFIG_VALIDATION_REAP_TIMEOUT: Limit =
+    Limit::new("config validation reap", Duration::from_secs(1));
 #[cfg(target_os = "macos")]
 const CONFIG_VALIDATION_GROUP_ANCHOR: &str = "while IFS= read -r _line; do :; done\nkill -KILL 0\n";
 /// How long a Gateway or worker gets to become ready after it starts. A first launch of a newly
@@ -663,7 +666,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
     if reconciliation_cancelled(shutdown) {
         return Ok(ReconciliationOutcome::Cancelled);
     }
-    let lookup_started_at = Instant::now();
+    let lookup_started_at = clock::now();
     let gateway_command = first_installed_caddy_command(paths).inspect_err(|_| {
         if let Some(phase_log) = phase_log {
             phase_log.report_progress(structured_log::ReconciliationPhase::Gateway);
@@ -671,7 +674,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
                 structured_log::ReconciliationPhase::Gateway,
                 "gateway",
                 structured_log::PhaseOutcome::Failed,
-                lookup_started_at.elapsed(),
+                clock::elapsed(lookup_started_at),
                 &[],
             );
         }
@@ -692,7 +695,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             phase_log.report_progress(structured_log::ReconciliationPhase::Gateway);
         }
 
-        let observation_started_at = Instant::now();
+        let observation_started_at = clock::now();
         record_runtime_observed(
             paths,
             RuntimeSubject::Gateway,
@@ -705,7 +708,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
                     structured_log::ReconciliationPhase::Gateway,
                     "gateway",
                     structured_log::PhaseOutcome::Failed,
-                    observation_started_at.elapsed(),
+                    clock::elapsed(observation_started_at),
                     &[],
                 );
             }
@@ -1933,7 +1936,7 @@ impl Drop for ValidationProcess {
 
 impl ValidationProcessReap {
     fn reap(mut self) {
-        let mut deadline = Instant::now() + Duration::from_secs(1);
+        let mut deadline = Deadline::after(&CONFIG_VALIDATION_REAP_TIMEOUT);
         let mut pending_signal_failure_logged = false;
         loop {
             if self.group_signal_pending {
@@ -1945,7 +1948,7 @@ impl ValidationProcessReap {
                             "validation process-group anchor",
                             &mut self.failures,
                         );
-                        deadline = Instant::now() + Duration::from_secs(1);
+                        deadline = Deadline::after(&CONFIG_VALIDATION_REAP_TIMEOUT);
                     }
                     Err(error) if self.failures.is_empty() => {
                         self.failures.push(error.to_string());
@@ -1983,14 +1986,14 @@ impl ValidationProcessReap {
             if child_exited && anchor_exited && group_exited {
                 break;
             }
-            if Instant::now() >= deadline {
+            if deadline.is_expired() {
                 if self.group_signal_pending {
                     if !pending_signal_failure_logged {
                         self.log_cleanup_failures();
                         self.failures.clear();
                         pending_signal_failure_logged = true;
                     }
-                    std::thread::sleep(OWNED_READINESS_POLL_INTERVAL);
+                    clock::poll_blocking(OWNED_READINESS_POLL_INTERVAL);
                     continue;
                 }
                 if !child_exited {
@@ -2013,7 +2016,7 @@ impl ValidationProcessReap {
                 }
                 break;
             }
-            std::thread::sleep(OWNED_READINESS_POLL_INTERVAL);
+            clock::poll_blocking(OWNED_READINESS_POLL_INTERVAL);
         }
         self.log_cleanup_failures();
     }

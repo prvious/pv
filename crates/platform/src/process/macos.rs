@@ -5,7 +5,6 @@ use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
 use std::ptr;
 use std::str;
-use std::thread;
 use std::time::Duration;
 
 use camino::Utf8PathBuf;
@@ -14,7 +13,7 @@ use nix::sys::event::{EvFlags, EventFilter, FilterFlag, KEvent, Kqueue};
 use thiserror::Error;
 
 use super::{BootSessionId, ProcessIdentity, ProcessStartIdentity};
-use crate::PlatformError;
+use crate::{PlatformError, clock};
 
 const MAX_SNAPSHOT_ATTEMPTS: usize = 5;
 const MICROSECONDS_PER_SECOND: u64 = 1_000_000;
@@ -432,7 +431,7 @@ fn process_arguments(
                 return Ok(None);
             }
             Err(source) if argument_query_is_retryable(&source, attempt) => {
-                thread::sleep(SNAPSHOT_RETRY_DELAY);
+                clock::poll_blocking(SNAPSHOT_RETRY_DELAY);
                 continue;
             }
             Err(source) if argument_query_is_unavailable(&source) => return Ok(None),
@@ -452,7 +451,7 @@ fn process_arguments(
                 return Ok(None);
             }
             Err(source) if argument_query_is_retryable(&source, attempt) => {
-                thread::sleep(SNAPSHOT_RETRY_DELAY);
+                clock::poll_blocking(SNAPSHOT_RETRY_DELAY);
             }
             Err(source) if argument_query_is_unavailable(&source) => return Ok(None),
             Err(source) => return Err(InspectionError::ArgumentRead { pid, source }),

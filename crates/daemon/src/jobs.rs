@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::io;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use crate::DaemonError;
 use crate::gateway::{
@@ -41,11 +42,12 @@ use state::{
 use tokio::io::AsyncWrite;
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::sync::{oneshot, watch};
-use tokio::time::{Duration, timeout};
 
 const FOREGROUND_JOB_HEARTBEAT_INTERVAL: Limit =
     Limit::new("job heartbeat", Duration::from_secs(10));
-const FOREGROUND_JOB_STREAM_WRITE_TIMEOUT: Duration = Duration::from_millis(100);
+/// How long one write to a job's stream may take before PV stops streaming to that client.
+const FOREGROUND_JOB_STREAM_WRITE_TIMEOUT: Limit =
+    Limit::new("job stream write", Duration::from_millis(100));
 const FOREGROUND_JOB_PROGRESS_BUFFER: usize = 16;
 const FOREGROUND_JOB_QUEUE_HEARTBEAT: &str = "Waiting for the reconciliation slot";
 const STARTUP_JOBS_LOCK_RETRY_INTERVAL: Duration = Duration::from_millis(50);
@@ -1017,8 +1019,8 @@ where
                     message: FOREGROUND_JOB_QUEUE_HEARTBEAT,
                 };
                 if !matches!(
-                    timeout(
-                        FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,
+                    clock::timeout(
+                        &FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,
                         write_line(transport, &event),
                     )
                     .await,
@@ -1243,7 +1245,7 @@ where
                 let heartbeat_result = write_line(transport, &heartbeat_event);
                 tokio::select! {
                     result = &mut completion => return result,
-                    _ = timeout(FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, heartbeat_result) => {}
+                    _ = clock::timeout(&FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,heartbeat_result) => {}
                 }
             }
         }
@@ -1329,7 +1331,7 @@ where
                             )
                             .await;
                         }
-                        write_result = timeout(FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, write_result) => {
+                        write_result = clock::timeout(&FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,write_result) => {
                             if !matches!(write_result, Ok(Ok(()))) {
                                 return StreamedJobCompletion {
                                     result: completion.await,
@@ -1360,7 +1362,7 @@ where
                         )
                         .await;
                     }
-                    heartbeat_result = timeout(FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, heartbeat_result) => {
+                    heartbeat_result = clock::timeout(&FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,heartbeat_result) => {
                         if !matches!(heartbeat_result, Ok(Ok(()))) {
                             return StreamedJobCompletion {
                                 result: completion.await,
@@ -1416,8 +1418,8 @@ where
             message: phase.as_str(),
         };
         if !matches!(
-            timeout(
-                FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,
+            clock::timeout(
+                &FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,
                 write_line(transport, &event),
             )
             .await,
@@ -1437,8 +1439,8 @@ async fn write_foreground_terminal_event<Stream>(
 where
     Stream: AsyncWrite + Unpin,
 {
-    match timeout(
-        FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,
+    match clock::timeout(
+        &FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,
         write_line(transport, event),
     )
     .await
@@ -8743,7 +8745,7 @@ mod tests {
             .map_err(|_error| anyhow::anyhow!("streamed reconciliation task dropped early"))?;
         let progress_write_elapsed = blocked_write_started_at.elapsed();
         assert!(
-            progress_write_elapsed >= FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,
+            progress_write_elapsed >= FOREGROUND_JOB_STREAM_WRITE_TIMEOUT.duration(),
             "progress write returned before its timeout budget: {progress_write_elapsed:?}"
         );
         let database = Database::open(&paths)?;
@@ -9762,7 +9764,10 @@ mod tests {
             .await
             .map_err(|_error| anyhow::anyhow!("phase write did not stall"))?
             .map_err(|_error| anyhow::anyhow!("phase write stream dropped"))?;
-        tokio::time::sleep(FOREGROUND_JOB_STREAM_WRITE_TIMEOUT + Duration::from_millis(50)).await;
+        tokio::time::sleep(
+            FOREGROUND_JOB_STREAM_WRITE_TIMEOUT.duration() + Duration::from_millis(50),
+        )
+        .await;
         writable.store(true, Ordering::SeqCst);
         finish_sender
             .send(())

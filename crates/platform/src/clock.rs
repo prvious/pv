@@ -46,6 +46,8 @@ impl fmt::Display for Elapsed {
     }
 }
 
+impl std::error::Error for Elapsed {}
+
 /// Returns the current time, or the fake clock's time when a test installed one.
 pub fn now() -> Instant {
     #[cfg(feature = "test-support")]
@@ -56,16 +58,45 @@ pub fn now() -> Instant {
     Instant::now()
 }
 
-/// Runs `future` until it finishes or `limit` passes.
-pub async fn timeout<F: Future>(limit: &Limit, future: F) -> Result<F::Output, Elapsed> {
-    #[cfg(feature = "test-support")]
-    if let Some(fake) = fake::installed() {
-        return fake.timeout(limit, None, future).await;
-    }
+/// How long has passed since `since`, a moment read from [`now`].
+pub fn elapsed(since: Instant) -> Duration {
+    now().saturating_duration_since(since)
+}
 
-    tokio::time::timeout(limit.duration, future)
-        .await
-        .map_err(|_elapsed| Elapsed)
+/// Runs `future` until it finishes or `limit` passes.
+pub fn timeout<F: Future>(
+    limit: &Limit,
+    future: F,
+) -> impl Future<Output = Result<F::Output, Elapsed>> + use<F> {
+    limited(limit, None, future)
+}
+
+/// Runs `future` until it finishes, `limit` passes, or `at` passes.
+///
+/// The future is boxed so the timeout stores it once. Taken by an `async fn`, it would also stay in
+/// the timeout's state beside the copy each branch awaits, and limits wrap large futures such as TLS
+/// probes inside already large reconciliation futures.
+fn limited<F: Future>(
+    limit: &Limit,
+    at: Option<Instant>,
+    future: F,
+) -> impl Future<Output = Result<F::Output, Elapsed>> + use<F> {
+    let limit = *limit;
+    let future = Box::pin(future);
+    async move {
+        #[cfg(feature = "test-support")]
+        if let Some(fake) = fake::installed() {
+            return fake.timeout(&limit, at, future).await;
+        }
+
+        let duration = at.map_or(limit.duration, |at| {
+            at.saturating_duration_since(Instant::now())
+                .min(limit.duration)
+        });
+        tokio::time::timeout(duration, future)
+            .await
+            .map_err(|_elapsed| Elapsed)
+    }
 }
 
 /// Sleeps until `limit` passes, for schedules such as the health scan interval.
@@ -143,16 +174,12 @@ impl Deadline {
 
     /// Runs `future` until it finishes, `limit` passes, or this deadline passes, whichever is
     /// first.
-    pub async fn timeout<F: Future>(&self, limit: &Limit, future: F) -> Result<F::Output, Elapsed> {
-        #[cfg(feature = "test-support")]
-        if let Some(fake) = fake::installed() {
-            return fake.timeout(limit, Some(self.at), future).await;
-        }
-
-        let remaining = self.at.saturating_duration_since(Instant::now());
-        tokio::time::timeout(remaining.min(limit.duration), future)
-            .await
-            .map_err(|_elapsed| Elapsed)
+    pub fn timeout<F: Future>(
+        &self,
+        limit: &Limit,
+        future: F,
+    ) -> impl Future<Output = Result<F::Output, Elapsed>> + use<F> {
+        limited(limit, Some(self.at), future)
     }
 }
 

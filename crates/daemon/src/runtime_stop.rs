@@ -12,6 +12,10 @@ use crate::{DaemonError, ProcessSupervisor, RuntimeReconciliationFailure, monito
 
 /// How long the previous daemon gets to exit after PV unloads its LaunchAgent.
 pub const DAEMON_EXIT_GRACE: Limit = Limit::new("daemon exit", Duration::from_secs(10));
+/// How long finding a daemon to stop waits to connect to its socket.
+#[cfg(target_os = "macos")]
+const DAEMON_CONNECT_FOR_STOP_TIMEOUT: Limit =
+    Limit::new("daemon connect for stop", Duration::from_secs(3));
 
 /// Captured process identity to wait on after unloading the LaunchAgent.
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
@@ -105,7 +109,7 @@ pub fn daemon_process_for_stop(paths: &PvPaths) -> Result<Option<DaemonProcess>,
     }
     #[cfg(target_os = "macos")]
     return super::build_runtime()?.block_on(async {
-        match tokio::time::timeout(Duration::from_secs(3), crate::ipc::connect(paths)).await {
+        match clock::timeout(&DAEMON_CONNECT_FOR_STOP_TIMEOUT, crate::ipc::connect(paths)).await {
             Ok(Ok(stream)) => {
                 let peer_pid = stream
                     .peer_cred()?

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant as StdInstant};
+use std::time::Duration;
 use std::{fmt, future::Future, io};
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -15,9 +15,6 @@ use sha2::{Digest, Sha256};
 use state::{PvPaths, StateError, fs};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-#[cfg(target_os = "macos")]
-use tokio::time::Instant;
-use tokio::time::{sleep, timeout};
 use tokio_rustls::TlsConnector;
 
 use crate::monitor::{self, MonitorCleanup, MonitorExit, MonitorStart, MonitorState, MonitorStop};
@@ -29,6 +26,9 @@ pub const READINESS_PROBE_TIMEOUT: Limit = Limit::new("readiness probe", Duratio
 /// How long past a stop's grace period to wait for its monitor: the SIGKILL wait and the final
 /// group check, with room to spare.
 const MONITOR_STOP_MARGIN: Duration = Duration::from_secs(5);
+/// How long a process group gets to exit after SIGKILL.
+#[cfg(target_os = "macos")]
+const PROCESS_GROUP_KILL_TIMEOUT: Limit = Limit::new("process group kill", Duration::from_secs(1));
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
 const POSTGRES_RECOVERY: &str = "Restart your Mac, then run this command again.";
@@ -601,7 +601,7 @@ where
 
                 return result;
             }
-            () = sleep(process_exit_poll_interval) => {
+            () = clock::poll(process_exit_poll_interval) => {
                 if process.has_exited()? {
                     return Err(runtime_exited_before_readiness_error(runtime_name));
                 }
@@ -689,12 +689,12 @@ impl AdoptedProcess {
         }
 
         signal_process_group(self.owned.pid, ProcessSignal::Kill)?;
-        let deadline = StdInstant::now() + timeout;
+        let deadline = Deadline::after(&Limit::new("test process group kill", timeout));
         loop {
             if process_group_has_exited(self.owned.pid)? {
                 return Ok(());
             }
-            if StdInstant::now() >= deadline {
+            if deadline.is_expired() {
                 return Err(io::Error::new(
                     io::ErrorKind::TimedOut,
                     format!(
@@ -704,7 +704,7 @@ impl AdoptedProcess {
                 )
                 .into());
             }
-            std::thread::sleep(READINESS_POLL_INTERVAL);
+            clock::poll_blocking(READINESS_POLL_INTERVAL);
         }
     }
 
@@ -762,9 +762,7 @@ pub async fn wait_for_readiness(check: ReadinessCheck, budget: &Limit) -> Result
 }
 
 pub(crate) async fn probe_readiness_once(check: &ReadinessCheck) -> Result<(), DaemonError> {
-    // Boxed because the TLS probe is large and the Gateway awaits it, through a clock limit, inside
-    // its already large reconciliation futures.
-    Box::pin(check_once(check)).await
+    check_once(check).await
 }
 
 pub async fn wait_for_custom_readiness<F, Fut>(
@@ -1068,7 +1066,7 @@ pub(crate) async fn stop_process_group(
 ) -> Result<(), DaemonError> {
     signal_process_group(pid, ProcessSignal::Stop(signal))?;
 
-    if wait_for_process_group_exit(pid, grace_period).await? {
+    if wait_for_process_group_exit(pid, &Limit::new("stop grace", grace_period)).await? {
         return Ok(());
     }
 
@@ -1081,7 +1079,7 @@ pub(crate) async fn stop_process_group(
     }
     signal_process_group(pid, ProcessSignal::Kill)?;
 
-    if wait_for_process_group_exit(pid, Duration::from_secs(1)).await? {
+    if wait_for_process_group_exit(pid, &PROCESS_GROUP_KILL_TIMEOUT).await? {
         return Ok(());
     }
 
@@ -1095,26 +1093,19 @@ pub(crate) async fn stop_process_group(
 #[cfg(target_os = "macos")]
 pub(crate) async fn wait_for_process_group_exit(
     pid: u32,
-    readiness_timeout: Duration,
+    limit: &Limit,
 ) -> Result<bool, DaemonError> {
-    let started_at = Instant::now();
+    let deadline = Deadline::after(limit);
 
-    while let Some(remaining) = remaining_timeout(started_at, readiness_timeout) {
+    while !deadline.is_expired() {
         if process_group_has_exited(pid)? {
             return Ok(true);
         }
 
-        sleep(remaining.min(READINESS_POLL_INTERVAL)).await;
+        clock::poll(READINESS_POLL_INTERVAL).await;
     }
 
     process_group_has_exited(pid)
-}
-
-#[cfg(target_os = "macos")]
-fn remaining_timeout(started_at: Instant, readiness_timeout: Duration) -> Option<Duration> {
-    readiness_timeout
-        .checked_sub(started_at.elapsed())
-        .filter(|remaining| !remaining.is_zero())
 }
 
 /// The monitor subject of the runtime recorded at `metadata_path`: the record's path under
@@ -1216,11 +1207,12 @@ pub(crate) async fn stop_monitor_instance(
     if monitor::recorded_monitor_instance(paths, subject)?.as_deref() != Some(instance) {
         return Ok(MonitorStopped::Gone);
     }
-    let state = match timeout(
+    let monitor_stop = Limit::new(
+        "monitor stop",
         stop_grace(stop).saturating_add(MONITOR_STOP_MARGIN),
-        monitor::stop_monitor(paths, subject, stop),
-    )
-    .await
+    );
+    let state = match clock::timeout(&monitor_stop, monitor::stop_monitor(paths, subject, stop))
+        .await
     {
         Ok(Ok(state)) => state,
         Ok(Err(DaemonError::MonitorUnavailable { .. })) => return Ok(MonitorStopped::Unavailable),

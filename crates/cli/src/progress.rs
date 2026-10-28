@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use daemon::{JobDownloadProgress, JobEventHandler};
 use indicatif::{MultiProgress, ProgressBar, ProgressDrawTarget, ProgressStyle};
+use platform::clock;
 use resources::{DownloadProgress, DownloadProgressEvent, ManifestArtifact};
 
 use crate::output::Output;
@@ -175,7 +176,7 @@ impl DownloadProgress for DownloadProgressRenderer<'_> {
 
 impl JobEventHandler for DownloadProgressRenderer<'_> {
     fn job_accepted(&mut self, _job_id: &str) {
-        self.waiting_since = Some(Instant::now());
+        self.waiting_since = Some(clock::now());
         if self.enabled {
             self.transition(WAITING_MESSAGE, true);
         } else {
@@ -187,7 +188,7 @@ impl JobEventHandler for DownloadProgressRenderer<'_> {
         let wait = self
             .waiting_since
             .take()
-            .map_or(Duration::ZERO, |started_at| started_at.elapsed());
+            .map_or(Duration::ZERO, clock::elapsed);
         let work = if kind == "update" {
             "Managed Resource update"
         } else {

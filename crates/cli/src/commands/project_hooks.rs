@@ -191,7 +191,7 @@ async fn wait_for_reconciliation_job(paths: &PvPaths, job_id: &str) -> Result<()
                 job_id: job_id.to_string(),
             })?;
         match job.status {
-            JobStatus::Running => tokio::time::sleep(Duration::from_millis(100)).await,
+            JobStatus::Running => platform::clock::poll(Duration::from_millis(100)).await,
             JobStatus::Succeeded => return Ok(()),
             JobStatus::Failed => {
                 return Err(CliError::LinkReconciliationFailed {

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::Utf8TempDir;
@@ -125,7 +125,7 @@ impl ArtifactDownloader {
         progress: &(impl DownloadProgress + ?Sized),
     ) -> Result<ArtifactDownload> {
         progress.operation_started(ResourceOperation::Download(artifact));
-        let started_at = Instant::now();
+        let started_at = clock::now();
         let result = (|| {
             let path = self.cache_path(artifact)?;
 
@@ -141,7 +141,7 @@ impl ArtifactDownloader {
         })();
         progress.operation_finished(ResourceOperationEvent {
             operation: ResourceOperation::Download(artifact),
-            elapsed: started_at.elapsed(),
+            elapsed: clock::elapsed(started_at),
             outcome: ResourceOperationOutcome::from_succeeded(result.is_ok()),
         });
 

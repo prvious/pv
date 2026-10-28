@@ -384,7 +384,7 @@ async fn submit_reconciliation(
                     deferred = true;
                     let _ = stderr.warning(DEFERRED_RECONCILIATION_WARNING);
                 }
-                tokio::time::sleep(JOBS_LOCK_RETRY_INTERVAL).await;
+                platform::clock::poll(JOBS_LOCK_RETRY_INTERVAL).await;
             }
             Err(error) => return Err(error.into()),
         }
