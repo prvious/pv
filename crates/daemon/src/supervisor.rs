@@ -732,7 +732,8 @@ pub async fn wait_for_readiness(check: ReadinessCheck, budget: &Limit) -> Result
     let deadline = Deadline::after(budget);
     let mut last_error = None;
 
-    while !deadline.is_expired() {
+    // Probe at least once, even when the budget passed before the first probe could start.
+    loop {
         match deadline
             .timeout(&READINESS_PROBE_TIMEOUT, check_once(&check))
             .await
@@ -747,6 +748,9 @@ pub async fn wait_for_readiness(check: ReadinessCheck, budget: &Limit) -> Result
                 last_error = Some(elapsed.to_string());
             }
             Err(_elapsed) => {}
+        }
+        if deadline.is_expired() {
+            break;
         }
     }
 
@@ -771,26 +775,24 @@ where
     Fut: Future<Output = bool>,
 {
     let deadline = Deadline::after(budget);
-    let mut last_error = None;
 
-    while !deadline.is_expired() {
-        match deadline.timeout(budget, check()).await {
+    // Check at least once, even when the budget passed before the first check could start.
+    let last_error = loop {
+        let error = match deadline.timeout(budget, check()).await {
             Ok(true) => return Ok(()),
-            Ok(false) => {
-                last_error = Some("custom readiness returned false".to_string());
-                clock::poll(READINESS_POLL_INTERVAL).await;
-            }
-            Err(elapsed) => {
-                last_error = Some(elapsed.to_string());
-                break;
-            }
+            Ok(false) => "custom readiness returned false".to_string(),
+            Err(elapsed) => break elapsed.to_string(),
+        };
+        clock::poll(READINESS_POLL_INTERVAL).await;
+        if deadline.is_expired() {
+            break error;
         }
-    }
+    };
 
     Err(DaemonError::ReadinessTimedOut {
         check: format!("custom:{name}"),
         timeout_ms: budget.duration().as_millis(),
-        last_error,
+        last_error: Some(last_error),
     })
 }
 

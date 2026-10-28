@@ -2675,29 +2675,27 @@ async fn wait_for_async_readiness(
     readiness: &AsyncManagedResourceReadiness,
 ) -> Result<(), DaemonError> {
     let deadline = Deadline::after(&RESOURCE_READINESS_TIMEOUT);
-    let mut last_error = None;
 
-    while !deadline.is_expired() {
-        match deadline
+    // Check at least once, even when the budget passed before the first check could start.
+    let last_error = loop {
+        let error = match deadline
             .timeout(&RESOURCE_READINESS_TIMEOUT, (readiness.check)())
             .await
         {
             Ok(Ok(())) => return Ok(()),
-            Ok(Err(error)) => {
-                last_error = Some(error.to_string());
-                clock::poll(ASYNC_READINESS_POLL_INTERVAL).await;
-            }
-            Err(elapsed) => {
-                last_error = Some(elapsed.to_string());
-                break;
-            }
+            Ok(Err(error)) => error.to_string(),
+            Err(elapsed) => break elapsed.to_string(),
+        };
+        clock::poll(ASYNC_READINESS_POLL_INTERVAL).await;
+        if deadline.is_expired() {
+            break error;
         }
-    }
+    };
 
     Err(DaemonError::ReadinessTimedOut {
         check: format!("async:{}", readiness.name),
         timeout_ms: RESOURCE_READINESS_TIMEOUT.duration().as_millis(),
-        last_error,
+        last_error: Some(last_error),
     })
 }
 
