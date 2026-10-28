@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use platform::clock::{self, Limit};
+use platform::clock;
 use state::PvPaths;
 use tokio::io::AsyncRead;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -215,8 +215,7 @@ pub(crate) async fn serve(
             }
             _ = async {
                 if let Some(next_health_scan) = next_health_scan {
-                    let wait = next_health_scan.saturating_duration_since(clock::now());
-                    clock::sleep(&Limit::new(RUNTIME_HEALTH_SCAN.name(), wait)).await;
+                    clock::sleep_until(&RUNTIME_HEALTH_SCAN, next_health_scan).await;
                 }
             }, if next_health_scan.is_some() && runtime_health_task.is_none() => {
                 let health_paths = paths.clone();

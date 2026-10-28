@@ -74,6 +74,19 @@ pub async fn sleep(limit: &Limit) {
     let _elapsed = timeout(limit, future::pending::<()>()).await;
 }
 
+/// Sleeps until `at`, a moment a schedule worked out, or for `limit` if that comes first. `limit`
+/// names the wait for a test to advance past.
+pub async fn sleep_until(limit: &Limit, at: Instant) {
+    let deadline = Deadline {
+        at,
+        #[cfg(feature = "test-support")]
+        _registration: None,
+    };
+    // The fake caps the wait at `at` under its lock, so an advance that lands before the wait
+    // registers can't push it past `at`.
+    let _elapsed = deadline.timeout(limit, future::pending::<()>()).await;
+}
+
 /// The synchronous [`sleep`], for schedules in code that runs outside an async runtime.
 pub fn sleep_blocking(limit: &Limit) {
     #[cfg(feature = "test-support")]
@@ -452,7 +465,8 @@ mod tests {
     use anyhow::{Result, ensure};
 
     use super::{
-        Deadline, Elapsed, Limit, now, poll, poll_blocking, sleep, sleep_blocking, timeout,
+        Deadline, Elapsed, Limit, now, poll, poll_blocking, sleep, sleep_blocking, sleep_until,
+        timeout,
     };
 
     const RESPONSE: Limit = Limit::new("response", Duration::from_secs(3));
@@ -498,6 +512,24 @@ mod tests {
 
         sleeping.await?;
         ensure!(!clock.is_waiting(&HEALTH));
+        Ok(())
+    }
+
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn sleep_until_keeps_its_moment_across_an_earlier_advance() -> Result<()> {
+        let clock = super::install_fake_for_test();
+        let at = now() + Duration::from_secs(5);
+        let _response = Deadline::after(&RESPONSE);
+        clock.advance_when_waiting(&RESPONSE).await?;
+
+        let sleeping = tokio::spawn(async move { sleep_until(&HEALTH, at).await });
+        clock.advance_when_waiting(&HEALTH).await?;
+        sleeping.await?;
+
+        ensure!(now() == at);
+        // A moment already passed ends the sleep at once.
+        sleep_until(&HEALTH, at).await;
         Ok(())
     }
 
