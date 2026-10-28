@@ -34,6 +34,8 @@ Linux and Windows are committed subsequent platforms. During macOS stabilization
 
 Native compile support and explicit unsupported behavior do not make Linux or Windows supported distributions, add them to v1, or authorize publishing Linux or Windows binaries.
 
+Resource and application manifests recognize `linux-amd64` and `linux-arm64` alongside the two macOS platforms. This metadata foundation does not imply Linux system integration or a supported Linux distribution. Before any Linux entries are published, the macOS release that recognizes these platform names must be installed on both maintainer laptops; older clients reject manifests containing unknown platforms.
+
 The design may use macOS-specific primitives where they materially improve the v1 experience, including launch agents for daemon startup and the macOS System keychain for local CA trust.
 
 PV uses a host platform boundary in the Rust workspace. Application crates such as `cli`, `daemon`, `state`, `config`, and `resources` should not depend directly on macOS implementation APIs. The v1 concrete host platform implementation is macOS-only; unfinished Linux and Windows implementations return explicit unsupported results, and app-facing code should call the `platform` crate for host integration concerns.
@@ -678,7 +680,7 @@ The v1 PV app update manifest is a single stable-channel release document. It do
 
 `schema_version` must be `2`; other schema versions fail as unsupported rather than being partially interpreted. `channel` must be exactly `stable`; runtime/user-facing channel selection is not part of v1. `version`, `minimum_pv_version`, and helper `version` use PV's simple version identity, `major.minor.patch` with no leading zero components. `minimum_pv_version` is the minimum currently installed PV application version that may apply this release; if the running PV binary is older than that value, self-update manifest parsing fails clearly and tells the user that a newer PV parser is required.
 
-`published_at` must be an RFC 3339 timestamp for the PV application release. Each entry in `assets` describes a native PV application binary and separate native helper binary for one exact supported target platform. V1 app update assets support `darwin-arm64` and `darwin-amd64`; `any` is not valid. Helper `protocol_version` is a positive integer versioned independently from the app and helper release versions. Each `url` must be HTTPS, include a host, and include a non-empty final path segment that is not `.` or `..` and does not contain backslashes. Each `sha256` must be a 64-character hexadecimal digest, normalized case-insensitively by the parser. Each `size` must be a positive byte count.
+`published_at` must be an RFC 3339 timestamp for the PV application release. Each entry in `assets` describes a native PV application binary and separate native helper binary for one exact target platform. App update metadata recognizes `darwin-arm64`, `darwin-amd64`, `linux-amd64`, and `linux-arm64`; `any` is not valid. Recognizing a platform does not authorize its publication. Helper `protocol_version` is a positive integer versioned independently from the app and helper release versions. Each `url` must be HTTPS, include a host, and include a non-empty final path segment that is not `.` or `..` and does not contain backslashes. Each `sha256` must be a 64-character hexadecimal digest, normalized case-insensitively by the parser. Each `size` must be a positive byte count.
 
 The manifest must contain at least one asset and must not contain duplicate assets for the same platform. Selecting the current platform returns the matching asset for the current target platform. If the current target platform is missing, selection fails clearly instead of falling back to another platform.
 
@@ -1098,6 +1100,8 @@ When a backing Managed Resource port changes, PV regenerates PV-managed `.env` b
 PV's PostgreSQL 17 and 18 Managed Resource artifacts supply every extension from PostgreSQL's source tree that builds without the deliberately excluded Perl, Python, UUID, XML, or SELinux dependencies. `uuid-ossp` and `xml2` are therefore outside this contract. Exact per-track catalogs belong in checked-in release and test fixtures rather than hard-coded design counts.
 
 PostgreSQL is built with OpenSSL so supplied extensions such as `pgcrypto` and `sslinfo` are available. The artifacts bundle their required OpenSSL runtime libraries and must not retain Homebrew, staging-prefix, or build-runner runtime dependencies.
+
+The `resources` target platform owns PostgreSQL shared-library naming. Artifact validation and preload checks use `.dylib` on macOS and `.so` on Linux; bundled OpenSSL names are `libcrypto.3.dylib`/`libssl.3.dylib` on macOS and `libcrypto.so.3`/`libssl.so.3` on Linux. Validation uses the selected artifact target, independently of the host running the validator.
 
 PV's tested `pgcrypto` contract covers digest, `gen_salt`, and AES operations. Blowfish and DES require the OpenSSL legacy provider and are not part of PV's tested contract.
 

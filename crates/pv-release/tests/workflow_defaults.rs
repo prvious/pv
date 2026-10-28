@@ -1,13 +1,13 @@
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use anyhow::Context;
 use anyhow::Result;
 use camino::Utf8Path;
 use insta::assert_snapshot;
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[expect(
     clippy::disallowed_types,
-    reason = "workflow test executes the macOS awk used by app release"
+    reason = "workflow tests execute publication preflight Bash and the macOS app release awk"
 )]
 type StdCommand = std::process::Command;
 
@@ -231,6 +231,72 @@ fn artifact_publication_defaults_to_preview_native_platform_gate() -> Result<()>
     trims_required_native_platforms=2
     rejects_empty_required_native_platforms=true
     "###);
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn artifact_publication_preflight_accepts_native_platforms_and_rejects_invalid_entries()
+-> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let workflow = read_file(&workspace_root.join(".github/workflows/artifact-publication.yml"))?;
+    let validation_step = workflow_step(&workflow, "Validate publication configuration")
+        .context("missing publication configuration validation step")?;
+    let (_, script) = validation_step
+        .split_once("        run: |\n")
+        .context("missing publication configuration validation script")?;
+    let script = script
+        .lines()
+        .map(|line| line.strip_prefix("          ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut results = Vec::new();
+
+    for platforms in [
+        "darwin-arm64",
+        "darwin-amd64",
+        "linux-amd64",
+        "linux-arm64",
+        " darwin-arm64 ,\tlinux-amd64, linux-arm64\t ",
+        "windows-amd64",
+        "",
+        "linux-arm64,",
+    ] {
+        let output = StdCommand::new("/bin/bash")
+            .args(["--noprofile", "--norc", "-c", &script])
+            .env_clear()
+            .envs([
+                ("PATH", "/usr/bin:/bin"),
+                ("CLOUDFLARE_ACCOUNT_ID", "dummy"),
+                ("R2_BUCKET", "dummy"),
+                ("R2_PUBLIC_BASE_URL", "https://artifacts.pv-linux.invalid"),
+                ("AWS_ACCESS_KEY_ID", "dummy"),
+                ("AWS_SECRET_ACCESS_KEY", "dummy"),
+                ("SOURCE_RUN_ID", "1"),
+                ("STABLE_MANIFEST_KEY", "manifest.json"),
+                ("VERSIONED_MANIFEST_PREFIX", "manifests/runs"),
+                ("REQUIRED_NATIVE_PLATFORMS", platforms),
+            ])
+            .output()?;
+        results.push(format!(
+            "{platforms:?}: code={:?}, stdout={:?}, stderr={:?}",
+            output.status.code(),
+            String::from_utf8(output.stdout)?,
+            String::from_utf8(output.stderr)?,
+        ));
+    }
+
+    assert_snapshot!(results.join("\n"), @r#"
+    "darwin-arm64": code=Some(0), stdout="", stderr=""
+    "darwin-amd64": code=Some(0), stdout="", stderr=""
+    "linux-amd64": code=Some(0), stdout="", stderr=""
+    "linux-arm64": code=Some(0), stdout="", stderr=""
+    " darwin-arm64 ,\tlinux-amd64, linux-arm64\t ": code=Some(0), stdout="", stderr=""
+    "windows-amd64": code=Some(1), stdout="", stderr="unsupported required native platform: windows-amd64\n"
+    "": code=Some(1), stdout="", stderr="missing publication configuration: REQUIRED_NATIVE_PLATFORMS\n"
+    "linux-arm64,": code=Some(1), stdout="", stderr="required native platform entries must be non-empty\n"
+    "#);
 
     Ok(())
 }
