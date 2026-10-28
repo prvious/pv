@@ -12,7 +12,7 @@ use thiserror::Error;
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
-pub use unix::{capture_environment, login_shell, run_commands};
+pub use unix::{CAPTURE_TIMEOUT, capture_environment, login_shell, run_commands};
 #[cfg(not(unix))]
 mod unsupported;
 #[cfg(not(unix))]

@@ -1,0 +1,429 @@
+//! The clock behind every limit PV gives up after.
+//!
+//! In production each function is the Tokio or standard-library call it wraps. With the
+//! `test-support` feature, a test can install a fake clock whose time moves only when the test
+//! advances it past a limit PV is waiting on, so a test of a frozen process never waits out the real
+//! limit.
+
+use std::future::Future;
+use std::time::{Duration, Instant};
+
+#[cfg(feature = "test-support")]
+pub use fake::{FakeClock, LimitNotPending, install_fake_for_test};
+
+/// A named limit PV gives up after.
+///
+/// The name lets a test advance past exactly this limit while other limits are pending.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Limit {
+    name: &'static str,
+    duration: Duration,
+}
+
+impl Limit {
+    pub const fn new(name: &'static str, duration: Duration) -> Self {
+        Self { name, duration }
+    }
+
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    pub const fn duration(&self) -> Duration {
+        self.duration
+    }
+}
+
+/// The limit passed before the operation finished.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Elapsed;
+
+/// Returns the current time, or the fake clock's time when a test installed one.
+pub fn now() -> Instant {
+    #[cfg(feature = "test-support")]
+    if let Some(fake) = fake::installed() {
+        return fake.now();
+    }
+
+    Instant::now()
+}
+
+/// Runs `future` until it finishes or `limit` passes.
+pub async fn timeout<F: Future>(limit: &Limit, future: F) -> Result<F::Output, Elapsed> {
+    #[cfg(feature = "test-support")]
+    if let Some(fake) = fake::installed() {
+        return fake.timeout(limit, future).await;
+    }
+
+    tokio::time::timeout(limit.duration, future)
+        .await
+        .map_err(|_elapsed| Elapsed)
+}
+
+/// Sleeps for a short real interval between checks of a real process.
+///
+/// Limits go through [`timeout`] or [`Deadline`]. This pause stays real under a fake clock so PV
+/// keeps watching real processes at real speed.
+pub async fn poll(interval: Duration) {
+    tokio::time::sleep(interval).await;
+}
+
+/// The moment a limit passes, for loops that poll until something happens or the limit passes.
+#[derive(Debug)]
+pub struct Deadline {
+    at: Instant,
+    #[cfg(feature = "test-support")]
+    _registration: Option<fake::Registration>,
+}
+
+impl Deadline {
+    pub fn after(limit: &Limit) -> Self {
+        #[cfg(feature = "test-support")]
+        if let Some(fake) = fake::installed() {
+            let (at, registration) = fake.deadline(limit);
+            return Self {
+                at,
+                _registration: Some(registration),
+            };
+        }
+
+        Self {
+            at: Instant::now() + limit.duration,
+            #[cfg(feature = "test-support")]
+            _registration: None,
+        }
+    }
+
+    pub fn is_expired(&self) -> bool {
+        now() >= self.at
+    }
+}
+
+#[cfg(feature = "test-support")]
+mod fake {
+    use std::collections::BTreeMap;
+    use std::future::Future;
+    use std::pin::Pin;
+    use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+    use std::task::{Context, Poll, Waker};
+    use std::time::{Duration, Instant};
+
+    use thiserror::Error;
+
+    use super::{Elapsed, Limit};
+
+    /// How long, in real time, [`FakeClock::advance_when_waiting`] waits for PV to start waiting.
+    const WAIT_FOR_LIMIT: Duration = Duration::from_secs(30);
+    const WAIT_FOR_LIMIT_POLL: Duration = Duration::from_millis(5);
+
+    static FAKE: OnceLock<FakeClock> = OnceLock::new();
+
+    pub(super) fn installed() -> Option<&'static FakeClock> {
+        FAKE.get()
+    }
+
+    /// Switches every later clock call in this process to a fake whose time moves only when the
+    /// test advances it.
+    ///
+    /// The fake stays installed until the process exits, so it relies on nextest running each test
+    /// in its own process. Calling this again returns the same fake.
+    pub fn install_fake_for_test() -> FakeClock {
+        FAKE.get_or_init(|| FakeClock {
+            shared: Arc::new(Shared {
+                start: Instant::now(),
+                state: Mutex::new(State::default()),
+            }),
+        })
+        .clone()
+    }
+
+    /// A clock whose time moves only through [`FakeClock::advance_when_waiting`].
+    #[derive(Clone, Debug)]
+    pub struct FakeClock {
+        shared: Arc<Shared>,
+    }
+
+    #[derive(Debug)]
+    struct Shared {
+        start: Instant,
+        state: Mutex<State>,
+    }
+
+    #[derive(Debug, Default)]
+    struct State {
+        elapsed: Duration,
+        next_id: u64,
+        pending: BTreeMap<u64, Pending>,
+    }
+
+    #[derive(Debug)]
+    struct Pending {
+        name: &'static str,
+        due: Duration,
+        waker: Option<Waker>,
+    }
+
+    /// PV didn't start waiting on the limit within the real-time guard.
+    #[derive(Debug, Error)]
+    #[error("PV never waited on the `{limit}` limit; pending limits: {pending:?}")]
+    pub struct LimitNotPending {
+        limit: &'static str,
+        pending: Vec<&'static str>,
+    }
+
+    impl FakeClock {
+        /// Waits until PV is waiting on `limit`, then moves time to the moment it passes.
+        ///
+        /// Only a pending limit with the same name counts, so other limits that are already
+        /// pending can't satisfy the wait. Gives up after 30 seconds of real time and lists the
+        /// pending limits.
+        pub async fn advance_when_waiting(&self, limit: &Limit) -> Result<(), LimitNotPending> {
+            self.advance_when_waiting_within(limit, WAIT_FOR_LIMIT)
+                .await
+        }
+
+        pub(super) async fn advance_when_waiting_within(
+            &self,
+            limit: &Limit,
+            guard: Duration,
+        ) -> Result<(), LimitNotPending> {
+            let give_up_at = Instant::now() + guard;
+            loop {
+                if let Some(due) = self.pending_due(limit.name) {
+                    self.advance_to(due);
+                    return Ok(());
+                }
+                if Instant::now() >= give_up_at {
+                    return Err(LimitNotPending {
+                        limit: limit.name,
+                        pending: self.pending_names(),
+                    });
+                }
+                super::poll(WAIT_FOR_LIMIT_POLL).await;
+            }
+        }
+
+        pub(super) fn now(&self) -> Instant {
+            self.shared.start + self.lock().elapsed
+        }
+
+        pub(super) async fn timeout<F: Future>(
+            &self,
+            limit: &Limit,
+            future: F,
+        ) -> Result<F::Output, Elapsed> {
+            let expiry = Expiry {
+                registration: self.register(limit),
+            };
+            tokio::pin!(future);
+            tokio::select! {
+                biased;
+                output = &mut future => Ok(output),
+                () = expiry => Err(Elapsed),
+            }
+        }
+
+        pub(super) fn deadline(&self, limit: &Limit) -> (Instant, Registration) {
+            let registration = self.register(limit);
+
+            (self.shared.start + registration.due, registration)
+        }
+
+        fn register(&self, limit: &Limit) -> Registration {
+            let mut state = self.lock();
+            let id = state.next_id;
+            state.next_id += 1;
+            let due = state.elapsed + limit.duration;
+            state.pending.insert(
+                id,
+                Pending {
+                    name: limit.name,
+                    due,
+                    waker: None,
+                },
+            );
+
+            Registration {
+                clock: self.clone(),
+                id,
+                due,
+            }
+        }
+
+        fn pending_due(&self, name: &str) -> Option<Duration> {
+            let state = self.lock();
+            state
+                .pending
+                .values()
+                .filter(|pending| pending.name == name && pending.due > state.elapsed)
+                .map(|pending| pending.due)
+                .min()
+        }
+
+        fn pending_names(&self) -> Vec<&'static str> {
+            let state = self.lock();
+            state
+                .pending
+                .values()
+                .filter(|pending| pending.due > state.elapsed)
+                .map(|pending| pending.name)
+                .collect()
+        }
+
+        fn advance_to(&self, due: Duration) {
+            let wakers = {
+                let mut state = self.lock();
+                state.elapsed = state.elapsed.max(due);
+                let elapsed = state.elapsed;
+                state
+                    .pending
+                    .values_mut()
+                    .filter(|pending| pending.due <= elapsed)
+                    .filter_map(|pending| pending.waker.take())
+                    .collect::<Vec<_>>()
+            };
+            for waker in wakers {
+                waker.wake();
+            }
+        }
+
+        fn lock(&self) -> MutexGuard<'_, State> {
+            match self.shared.state.lock() {
+                Ok(state) => state,
+                Err(poisoned) => poisoned.into_inner(),
+            }
+        }
+    }
+
+    /// A pending limit, removed from the fake when dropped.
+    #[derive(Debug)]
+    pub(super) struct Registration {
+        clock: FakeClock,
+        id: u64,
+        due: Duration,
+    }
+
+    impl Drop for Registration {
+        fn drop(&mut self) {
+            self.clock.lock().pending.remove(&self.id);
+        }
+    }
+
+    struct Expiry {
+        registration: Registration,
+    }
+
+    impl Future for Expiry {
+        type Output = ();
+
+        fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+            let registration = &self.registration;
+            let mut state = registration.clock.lock();
+            if state.elapsed >= registration.due {
+                return Poll::Ready(());
+            }
+            if let Some(pending) = state.pending.get_mut(&registration.id) {
+                pending.waker = Some(context.waker().clone());
+            }
+
+            Poll::Pending
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::pending;
+    use std::time::Duration;
+
+    use anyhow::{Result, ensure};
+
+    use super::{Deadline, Elapsed, Limit, now, poll, timeout};
+
+    const RESPONSE: Limit = Limit::new("response", Duration::from_secs(3));
+    const WRITE: Limit = Limit::new("write", Duration::from_secs(3));
+    const HEALTH: Limit = Limit::new("health", Duration::from_secs(30));
+    const SETTLE: Duration = Duration::from_millis(50);
+
+    #[tokio::test]
+    async fn real_clock_times_out_after_the_limit() -> Result<()> {
+        let short = Limit::new("short", Duration::from_millis(20));
+        let deadline = Deadline::after(&short);
+
+        ensure!(timeout(&short, pending::<()>()).await == Err(Elapsed));
+        ensure!(deadline.is_expired());
+        ensure!(timeout(&short, async { 7 }).await == Ok(7));
+        Ok(())
+    }
+
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn fake_limit_passes_only_after_the_test_advances_it() -> Result<()> {
+        let clock = super::install_fake_for_test();
+        let started_at = now();
+        let waiting = tokio::spawn(timeout(&RESPONSE, pending::<()>()));
+
+        poll(SETTLE).await;
+        ensure!(!waiting.is_finished());
+        ensure!(now() == started_at);
+
+        clock.advance_when_waiting(&RESPONSE).await?;
+
+        ensure!(waiting.await? == Err(Elapsed));
+        ensure!(now() == started_at + RESPONSE.duration());
+        Ok(())
+    }
+
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn advance_waits_for_the_named_limit_while_others_are_pending() -> Result<()> {
+        let clock = super::install_fake_for_test();
+        let started_at = now();
+        let health = tokio::spawn(timeout(&HEALTH, pending::<()>()));
+        let write = tokio::spawn(timeout(&WRITE, pending::<()>()));
+        let advance = tokio::spawn({
+            let clock = clock.clone();
+            async move { clock.advance_when_waiting(&RESPONSE).await }
+        });
+
+        poll(SETTLE).await;
+        ensure!(!advance.is_finished());
+        ensure!(now() == started_at);
+
+        let response = tokio::spawn(timeout(&RESPONSE, pending::<()>()));
+        advance.await??;
+
+        ensure!(response.await? == Err(Elapsed));
+        ensure!(write.await? == Err(Elapsed));
+        poll(SETTLE).await;
+        ensure!(!health.is_finished());
+        health.abort();
+        Ok(())
+    }
+
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn fake_deadline_expires_only_after_the_test_advances_it() -> Result<()> {
+        let clock = super::install_fake_for_test();
+        let deadline = Deadline::after(&RESPONSE);
+
+        ensure!(!deadline.is_expired());
+        clock.advance_when_waiting(&RESPONSE).await?;
+        ensure!(deadline.is_expired());
+        Ok(())
+    }
+
+    #[cfg(feature = "test-support")]
+    #[tokio::test]
+    async fn advance_lists_pending_limits_when_the_limit_never_appears() -> Result<()> {
+        let clock = super::install_fake_for_test();
+        let _health = Deadline::after(&HEALTH);
+
+        let Err(error) = clock.advance_when_waiting_within(&RESPONSE, SETTLE).await else {
+            anyhow::bail!("expected the response limit to be missing");
+        };
+
+        insta::assert_snapshot!(error.to_string(), @r#"PV never waited on the `response` limit; pending limits: ["health"]"#);
+        Ok(())
+    }
+}

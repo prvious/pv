@@ -2,10 +2,11 @@ use anyhow::{Context, Error, Result, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use daemon::gateway::{
-    CaddyCliCommand, GatewayPfRoutingState, build_runtime_plan, gateway_process_spec,
-    promote_validated_config_for_test, reconcile_gateway_runtimes_with_pf_state_for_test,
-    reconcile_project_gateway_runtimes_for_test, route_public_probes_to_gateway_for_test,
-    use_unrouted_public_probe_ports_for_test, validate_config, worker_process_spec,
+    CONFIG_VALIDATION_TIMEOUT, CaddyCliCommand, GatewayPfRoutingState, build_runtime_plan,
+    gateway_process_spec, promote_validated_config_for_test,
+    reconcile_gateway_runtimes_with_pf_state_for_test, reconcile_project_gateway_runtimes_for_test,
+    route_public_probes_to_gateway_for_test, use_unrouted_public_probe_ports_for_test,
+    validate_config, worker_process_spec,
 };
 use daemon::{CaddyAdminError, CaddyAdminOperation, DaemonError, ProcessSupervisor, StopSignal};
 use insta::{Settings, allow_duplicates, assert_debug_snapshot};
@@ -25,6 +26,7 @@ use std::ffi::OsString;
 use std::io::Write;
 use std::net::TcpListener;
 use std::process::Output;
+use std::slice;
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::time::{sleep, timeout};
@@ -3651,6 +3653,7 @@ root: public
 
 #[tokio::test]
 async fn frankenphp_config_validation_timeout_stops_validator_process_group() -> Result<()> {
+    let clock = platform::clock::install_fake_for_test();
     let tempdir = tempdir()?;
     let validator = tempdir.path().join("hanging-validator");
     let validator_child_pid = tempdir.path().join("validator-child.pid");
@@ -3659,12 +3662,18 @@ async fn frankenphp_config_validation_timeout_stops_validator_process_group() ->
     write_hanging_frankenphp_validator(&validator, &validator_child_pid)?;
     fs::write_sensitive_file(&config_path, "{}\n")?;
 
-    let result = validate_config(
-        &CaddyCliCommand::frankenphp(&validator),
-        &config_path,
-        &BTreeMap::new(),
-    )
-    .await;
+    let command = CaddyCliCommand::frankenphp(&validator);
+    let environment = BTreeMap::new();
+    let (result, ()) = tokio::try_join!(
+        async { Ok::<_, Error>(validate_config(&command, &config_path, &environment).await) },
+        async {
+            wait_for_existing_path_count(slice::from_ref(&validator_child_pid), 1).await?;
+            clock
+                .advance_when_waiting(&CONFIG_VALIDATION_TIMEOUT)
+                .await?;
+            Ok(())
+        },
+    )?;
 
     assert!(matches!(
         result,
@@ -6479,13 +6488,15 @@ set -eu
 
 if [ "$1" = "validate" ]; then
   sleep 30 &
-  echo "$!" > {}
+  echo "$!" > {temporary}
+  mv {temporary} {published}
   wait "$!"
 fi
 
 exit 2
 "#,
-            shell_single_quoted(child_pid_path.as_str())
+            temporary = shell_single_quoted(&format!("{child_pid_path}.tmp")),
+            published = shell_single_quoted(child_pid_path.as_str()),
         ),
     )?;
     set_executable(path)?;

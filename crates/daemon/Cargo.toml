@@ -46,6 +46,7 @@ anyhow = { workspace = true }
 camino = { workspace = true }
 camino-tempfile = { workspace = true }
 insta = { workspace = true }
+platform = { path = "../platform", features = ["test-support"] }
 pv-fake = { path = "../pv-fake" }
 rcgen = { workspace = true }
 rusqlite = { workspace = true }
