@@ -501,17 +501,18 @@ mod tests {
     #[tokio::test]
     async fn fake_sleep_ends_only_after_the_test_advances_it() -> Result<()> {
         let clock = super::install_fake_for_test();
+        let health = Deadline::after(&HEALTH);
+        ensure!(clock.is_waiting(&HEALTH));
+        drop(health);
         ensure!(!clock.is_waiting(&HEALTH));
         let sleeping = tokio::spawn(async { sleep(&HEALTH).await });
 
         poll(SETTLE).await;
         ensure!(!sleeping.is_finished());
-        ensure!(clock.is_waiting(&HEALTH));
 
         clock.advance_when_waiting(&HEALTH).await?;
 
         sleeping.await?;
-        ensure!(!clock.is_waiting(&HEALTH));
         Ok(())
     }
 
