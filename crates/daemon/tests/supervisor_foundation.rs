@@ -15,8 +15,9 @@ use daemon::{
 };
 use insta::{Settings, assert_debug_snapshot};
 use platform::clock::{self, Limit};
+use pv_fake::Persona;
 #[cfg(target_os = "macos")]
-use pv_fake::{EventKind, InstalledFake, Persona};
+use pv_fake::{EventKind, InstalledFake};
 use rustix::process::{Pid, test_kill_process};
 use rustls::pki_types::PrivateKeyDer;
 use serde_json::json;
