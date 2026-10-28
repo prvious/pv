@@ -6,6 +6,7 @@
 //! limit.
 
 use std::future::Future;
+use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(feature = "test-support")]
@@ -68,6 +69,11 @@ pub async fn poll(interval: Duration) {
     tokio::time::sleep(interval).await;
 }
 
+/// The synchronous [`poll`], for polling loops that run outside an async runtime.
+pub fn poll_blocking(interval: Duration) {
+    thread::sleep(interval);
+}
+
 /// The moment a limit passes, for loops that poll until something happens or the limit passes.
 #[derive(Debug)]
 pub struct Deadline {
@@ -103,10 +109,12 @@ impl Deadline {
 mod fake {
     use std::collections::BTreeMap;
     use std::future::Future;
+    use std::io::{self, Write};
     use std::pin::Pin;
     use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
     use std::task::{Context, Poll, Waker};
     use std::time::{Duration, Instant};
+    use std::{process, thread};
 
     use thiserror::Error;
 
@@ -115,6 +123,8 @@ mod fake {
     /// How long, in real time, [`FakeClock::advance_when_waiting`] waits for PV to start waiting.
     const WAIT_FOR_LIMIT: Duration = Duration::from_secs(30);
     const WAIT_FOR_LIMIT_POLL: Duration = Duration::from_millis(5);
+    /// The status a failing Rust test exits with.
+    const TEST_FAILURE_STATUS: i32 = 101;
 
     static FAKE: OnceLock<FakeClock> = OnceLock::new();
 
@@ -182,24 +192,70 @@ mod fake {
                 .await
         }
 
+        /// Does what [`FakeClock::advance_when_waiting`] does, from a helper thread, for a wait the
+        /// test can't cancel: synchronous code on the test's own thread, or a blocking thread,
+        /// which Tokio waits for when the test's runtime shuts down.
+        ///
+        /// A stuck test can't receive an error, so if PV doesn't wait on `limit` within 30 seconds
+        /// of real time, the helper writes the pending limits to stderr and exits the test
+        /// process with a failure status. nextest runs each test in its own process, so that fails
+        /// only this test.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the helper must run while the test's own thread is blocked inside PV"
+        )]
+        pub fn advance_when_waiting_in_background(&self, limit: &Limit) {
+            let clock = self.clone();
+            let limit = *limit;
+            thread::spawn(move || {
+                if let Err(error) = clock.advance_when_waiting_blocking(&limit) {
+                    let _write_result = writeln!(io::stderr(), "{error}");
+                    process::exit(TEST_FAILURE_STATUS);
+                }
+            });
+        }
+
         pub(super) async fn advance_when_waiting_within(
             &self,
             limit: &Limit,
             guard: Duration,
         ) -> Result<(), LimitNotPending> {
             let give_up_at = Instant::now() + guard;
-            loop {
-                if let Some(due) = self.pending_due(limit.name) {
-                    self.advance_to(due);
-                    return Ok(());
-                }
+            while !self.try_advance(limit) {
                 if Instant::now() >= give_up_at {
-                    return Err(LimitNotPending {
-                        limit: limit.name,
-                        pending: self.pending_names(),
-                    });
+                    return Err(self.not_pending(limit));
                 }
                 super::poll(WAIT_FOR_LIMIT_POLL).await;
+            }
+
+            Ok(())
+        }
+
+        fn advance_when_waiting_blocking(&self, limit: &Limit) -> Result<(), LimitNotPending> {
+            let give_up_at = Instant::now() + WAIT_FOR_LIMIT;
+            while !self.try_advance(limit) {
+                if Instant::now() >= give_up_at {
+                    return Err(self.not_pending(limit));
+                }
+                super::poll_blocking(WAIT_FOR_LIMIT_POLL);
+            }
+
+            Ok(())
+        }
+
+        fn try_advance(&self, limit: &Limit) -> bool {
+            let Some(due) = self.pending_due(limit.name) else {
+                return false;
+            };
+            self.advance_to(due);
+
+            true
+        }
+
+        fn not_pending(&self, limit: &Limit) -> LimitNotPending {
+            LimitNotPending {
+                limit: limit.name,
+                pending: self.pending_names(),
             }
         }
 
@@ -338,7 +394,7 @@ mod tests {
 
     use anyhow::{Result, ensure};
 
-    use super::{Deadline, Elapsed, Limit, now, poll, timeout};
+    use super::{Deadline, Elapsed, Limit, now, poll, poll_blocking, timeout};
 
     const RESPONSE: Limit = Limit::new("response", Duration::from_secs(3));
     const WRITE: Limit = Limit::new("write", Duration::from_secs(3));
@@ -411,6 +467,18 @@ mod tests {
         clock.advance_when_waiting(&RESPONSE).await?;
         ensure!(deadline.is_expired());
         Ok(())
+    }
+
+    #[cfg(feature = "test-support")]
+    #[test]
+    fn background_advance_expires_a_deadline_the_test_thread_polls() {
+        let clock = super::install_fake_for_test();
+        clock.advance_when_waiting_in_background(&RESPONSE);
+        let deadline = Deadline::after(&RESPONSE);
+
+        while !deadline.is_expired() {
+            poll_blocking(Duration::from_millis(1));
+        }
     }
 
     #[cfg(feature = "test-support")]

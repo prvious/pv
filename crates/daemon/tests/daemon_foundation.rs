@@ -6,7 +6,7 @@ use hickory_proto::rr::rdata::A;
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::serialize::binary::BinEncodable;
 use insta::{Settings, assert_debug_snapshot};
-use platform::loopback_tcp_port_available;
+use platform::{clock, loopback_tcp_port_available};
 use pv_fake::{EventKind, FakeSettings, InstalledFake, Pause, Persona};
 use rusqlite::{Connection, params};
 use rustix::io::Errno;
@@ -3299,10 +3299,12 @@ async fn blocking_client_times_out_when_daemon_withholds_response() -> Result<()
         let mut request = String::new();
         let mut reader = BufReader::new(&mut stream);
         reader.read_line(&mut request).await?;
-        tokio::time::sleep(Duration::from_secs(6)).await;
+        std::future::pending::<()>().await;
 
         Ok::<(), anyhow::Error>(())
     });
+    clock::install_fake_for_test()
+        .advance_when_waiting_in_background(&daemon::DAEMON_RESPONSE_TIMEOUT);
     let client_paths = paths.clone();
     let client = tokio::task::spawn_blocking(move || {
         daemon::submit_job_blocking(client_paths, "reconcile", "system")

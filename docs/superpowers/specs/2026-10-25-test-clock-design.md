@@ -72,7 +72,7 @@ A new `platform::clock` module exposes a few functions plus a real poll tick.
 | `sleep(&limit)` | `tokio::time::sleep(limit.duration())` (from PR 3, for schedules) |
 | `timeout(&limit, future)` | `tokio::time::timeout(limit.duration(), future)` |
 | `Deadline::after(&limit)` with `is_expired()` | `now()` arithmetic, for polling loops such as `DaemonProcess::wait_for_exit` |
-| `poll(duration)` / `poll_blocking(duration)` | `tokio::time::sleep` / `std::thread::sleep`, always real. Only for short ticks (≤ 100 ms) between checks of a real process. `poll_blocking` arrives in PR 2. |
+| `poll(duration)` / `poll_blocking(duration)` | `tokio::time::sleep` / `std::thread::sleep`, always real. Only for short ticks (≤ 100 ms) between checks of a real process. |
 
 - **What goes through the clock:**
   - Every limit PV gives up on: config validation, hook environment capture, daemon exit, helper socket, client response, readiness budgets, cleanup grace.
@@ -93,7 +93,9 @@ The fake lives behind a new `test-support` feature on `platform`, which the dev-
   - Nothing advances on its own.
 - **Advance when waiting.** Advancing before PV starts waiting would leave the limit unfired and the test hung. So the only way to advance is to wait until PV is waiting on that limit, which is what Kubernetes' fake clock provides with `HasWaiters`:
   - **`FakeClock::advance_when_waiting(&limit)`.** Waits until PV has a pending limit with **that name**. Other pending limits don't count, even with the same duration. It then moves time to the moment that limit passes, which also fires anything else due by then.
-  - **`advance_when_waiting_in_background(&limit)`** (PR 2). Does the same from a helper thread, for synchronous code that blocks the test's own thread.
+  - **`advance_when_waiting_in_background(&limit)`.** Does the same from a helper thread. Use it whenever PV's wait runs on a thread the test can't cancel:
+    - synchronous code on the test's own thread, such as the CLI run in-process;
+    - a blocking thread, such as `spawn_blocking` around the blocking daemon client. Tokio waits for blocking threads when the test's runtime shuts down, so a stuck one would hang the test even after `try_join!` returned an error.
   - **If the named limit doesn't appear within 30 s of real time,** the call fails with the list of pending limits. A mistake becomes a clear failure instead of a hang.
 - **A blocked test still fails.**
   - An async test isn't blocked while it awaits `advance_when_waiting`, so the error returns to it.
@@ -122,10 +124,14 @@ A fixture that reports a PID the test waits on publishes it atomically (write a 
 
 ```rust
 // Synchronous: `pv daemon:disable` runs in-process and blocks the test thread (PR 2).
-let clock = platform::clock::install_fake_for_test();
-clock.advance_when_waiting_in_background(&DAEMON_EXIT_GRACE);
+clock::install_fake_for_test().advance_when_waiting_in_background(&DAEMON_EXIT_GRACE);
 let output = run_pv(&["daemon:disable"], &environment)?;
 ```
+
+**Process-group fixtures stay shell scripts.**
+- A test that proves PV stops a whole process group needs a child that keeps running after its parent exits. A frozen validator with a background `sleep` is the example.
+- pv-fake's descendant exits with its parent, so with it the test would pass even if PV stopped only the parent.
+- These scripts sleep 150 s, longer than the CI profile's 120 s limit, so a broken stop can't pass by the child exiting on its own.
 
 The fake holds a mutex over the virtual time and the pending limits with their wakers. It gets its own tests, including one where an unrelated limit with the same duration is already pending.
 
@@ -195,9 +201,10 @@ A stack, each PR verified with targeted runs, the full suite, and a comparison o
    - Convert config validation and hook environment capture, including their cleanup limits, and their two tests. Each now finishes well under 1 s.
 2. **Synchronous limits and private runtimes.**
    - Add `poll_blocking` and `advance_when_waiting_in_background`.
-   - Convert `DaemonProcess::wait_for_exit`, the helper socket wait and the blocking client's response limit.
-   - Name the CLI's inline 10 s grace as a constant.
+   - Convert `DaemonProcess::wait_for_exit` (the CLI's inline 10 s grace becomes `DAEMON_EXIT_GRACE`), the helper socket wait, and the client's connect, write and response limits.
    - Convert the CLI, platform and client tests.
+   - Raise the two validator scripts' `sleep 30` to 150 and the monitor test's grace from 3 s to 1 s.
+   - The client's event and health limits and `read_job_completion_with_timeout`'s timeout argument wait for PR 4.
 3. **Readiness budgets and schedules.**
    - Add `sleep`.
    - Route Gateway, worker and supervisor readiness, health and retry schedules through the clock.

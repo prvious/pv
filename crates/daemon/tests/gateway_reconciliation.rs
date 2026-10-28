@@ -3705,7 +3705,7 @@ async fn config_validation_stops_descendant_that_retains_output_after_leader_exi
 set -eu
 
 if [ "$1" = "validate" ]; then
-  sleep 30 &
+  sleep 150 &
   echo "$!" > {}
   exit 0
 fi
@@ -6487,7 +6487,7 @@ fn write_hanging_frankenphp_validator(path: &Utf8Path, child_pid_path: &Utf8Path
 set -eu
 
 if [ "$1" = "validate" ]; then
-  sleep 30 &
+  sleep 150 &
   echo "$!" > {temporary}
   mv {temporary} {published}
   wait "$!"

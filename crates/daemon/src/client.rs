@@ -1,4 +1,5 @@
 use futures_util::StreamExt;
+use platform::clock::{self, Limit};
 use serde_json::Value;
 use state::PvPaths;
 use tokio::io::AsyncRead;
@@ -10,9 +11,10 @@ use protocol::{
     ResponseStatus, write_line,
 };
 
-const DAEMON_CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-const DAEMON_WRITE_TIMEOUT: Duration = Duration::from_secs(3);
-const DAEMON_RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
+const DAEMON_CONNECT_TIMEOUT: Limit = Limit::new("daemon connect", Duration::from_secs(3));
+const DAEMON_WRITE_TIMEOUT: Limit = Limit::new("daemon request write", Duration::from_secs(3));
+/// How long the client waits for the daemon to answer a request.
+pub const DAEMON_RESPONSE_TIMEOUT: Limit = Limit::new("daemon response", Duration::from_secs(3));
 const DAEMON_EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 const DAEMON_HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
 const DAEMON_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -245,7 +247,7 @@ async fn managed_resource_update_check(
 async fn connect_transport(
     paths: &PvPaths,
 ) -> Result<protocol::DaemonTransport<ipc::LocalStream>, DaemonError> {
-    let stream = timeout(DAEMON_CONNECT_TIMEOUT, ipc::connect(paths))
+    let stream = clock::timeout(&DAEMON_CONNECT_TIMEOUT, ipc::connect(paths))
         .await
         .map_err(|_| DaemonError::ProtocolTimedOut {
             phase: "connection",
@@ -262,7 +264,7 @@ async fn write_health_request(
         command: DaemonCommand::Health,
     };
 
-    timeout(DAEMON_WRITE_TIMEOUT, write_line(transport, &request))
+    clock::timeout(&DAEMON_WRITE_TIMEOUT, write_line(transport, &request))
         .await
         .map_err(|_| DaemonError::ProtocolTimedOut { phase: "write" })?
         .map_err(DaemonError::from)
@@ -281,7 +283,7 @@ async fn write_job_request(
         },
     };
 
-    timeout(DAEMON_WRITE_TIMEOUT, write_line(transport, &request))
+    clock::timeout(&DAEMON_WRITE_TIMEOUT, write_line(transport, &request))
         .await
         .map_err(|_| DaemonError::ProtocolTimedOut { phase: "write" })?
         .map_err(DaemonError::from)
@@ -295,7 +297,7 @@ async fn write_managed_resource_update_check_request(
         command: DaemonCommand::ManagedResourceUpdateCheck,
     };
 
-    timeout(DAEMON_WRITE_TIMEOUT, write_line(transport, &request))
+    clock::timeout(&DAEMON_WRITE_TIMEOUT, write_line(transport, &request))
         .await
         .map_err(|_| DaemonError::ProtocolTimedOut { phase: "write" })?
         .map_err(DaemonError::from)
@@ -324,7 +326,7 @@ fn health_error_is_retryable(error: &DaemonError, started_at: Instant) -> bool {
 async fn read_response(
     transport: &mut protocol::DaemonTransport<ipc::LocalStream>,
 ) -> Result<DaemonResponse, DaemonError> {
-    let Some(line) = timeout(DAEMON_RESPONSE_TIMEOUT, transport.next())
+    let Some(line) = clock::timeout(&DAEMON_RESPONSE_TIMEOUT, transport.next())
         .await
         .map_err(|_| DaemonError::ProtocolTimedOut { phase: "response" })?
     else {

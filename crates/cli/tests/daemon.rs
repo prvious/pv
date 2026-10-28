@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
+use daemon::DAEMON_EXIT_GRACE;
 use insta::assert_debug_snapshot;
-use platform::{LAUNCH_AGENT_LABEL, LaunchAgentConfig};
+use platform::{LAUNCH_AGENT_LABEL, LaunchAgentConfig, clock};
 use serde_json::json;
 use state::{PvPaths, StateError};
 
@@ -461,6 +462,7 @@ fn daemon_disable_waits_for_process_death_after_its_socket_is_gone() -> anyhow::
         state::fs::read_to_string(&paths.daemon_process_record())?,
         daemon_record
     );
+    clock::install_fake_for_test().advance_when_waiting_in_background(&DAEMON_EXIT_GRACE);
     let output = run_pv(&["daemon:disable"], &environment)?;
     assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert!(runtime.records_exist()?);
@@ -666,6 +668,7 @@ fn daemon_replacement_refuses_to_bootstrap_while_previous_daemon_is_alive() -> a
         }))?;
         state::fs::write_sensitive_file(&paths.daemon_process_record(), &record)?;
 
+        clock::install_fake_for_test().advance_when_waiting_in_background(&DAEMON_EXIT_GRACE);
         let output = run_pv(&[command], &environment)?;
         assert_eq!(output.exit_code, ExitCode::FAILURE);
         assert_eq!(
