@@ -531,6 +531,8 @@ fn validate_job_event_id(value: &Value, expected_job_id: &str) -> Result<(), Dae
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use insta::assert_debug_snapshot;
@@ -551,6 +553,8 @@ mod tests {
         started: Vec<(String, String)>,
         progress: Vec<String>,
         logs: Vec<String>,
+        /// How many log events the reader has handled, for a test running beside it.
+        logs_handled: Arc<AtomicUsize>,
     }
 
     impl JobEventHandler for RecordingEvents {
@@ -564,6 +568,7 @@ mod tests {
 
         fn log(&mut self, message: &str) {
             self.logs.push(message.to_string());
+            self.logs_handled.fetch_add(1, Ordering::SeqCst);
         }
 
         fn download_progress(&mut self, progress: JobDownloadProgress) {
@@ -665,14 +670,22 @@ mod tests {
         let clock = clock::install_fake_for_test();
         let (client, server) = duplex(1024);
         let mut reader = protocol::transport(client);
+        let mut events = RecordingEvents::default();
+        let logs_handled = Arc::clone(&events.logs_handled);
         let writer = tokio::spawn(async move {
             let mut writer = protocol::transport(server);
-            for _heartbeat in 0..2 {
+            for heartbeat in 1..=2 {
                 while !clock.is_waiting(&DAEMON_EVENT_TIMEOUT) {
                     tokio::task::yield_now().await;
                 }
                 let _step = Deadline::after(&STEP);
                 clock.advance_when_waiting(&STEP).await?;
+                // 20 s after the last event, the wait the reader renewed is still running. One
+                // wait for the whole job would have ended at 30 s, before the second step.
+                anyhow::ensure!(
+                    clock.is_waiting(&DAEMON_EVENT_TIMEOUT),
+                    "the event wait ended {heartbeat} steps in"
+                );
                 protocol::write_line(
                     &mut writer,
                     &protocol::DaemonEvent::Log {
@@ -681,6 +694,10 @@ mod tests {
                     },
                 )
                 .await?;
+                // Step again only once the reader has handled this heartbeat and renewed its wait.
+                while logs_handled.load(Ordering::SeqCst) < heartbeat {
+                    tokio::task::yield_now().await;
+                }
             }
             protocol::write_line(
                 &mut writer,
@@ -702,7 +719,6 @@ mod tests {
 
             Ok::<(), anyhow::Error>(())
         });
-        let mut events = RecordingEvents::default();
 
         let summary = read_job_completion(&mut reader, "job-1", &mut events).await?;
 

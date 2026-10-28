@@ -834,7 +834,10 @@ impl Monitor {
                 .rotation_interval_ms
                 .map_or(ROTATION_INTERVAL, Duration::from_millis),
         );
-        let rotation_tick = clock::sleep(&rotation_period);
+        // A moment, not a duration: the branch waits while a rotation runs, and a duration would
+        // only start counting once it is polled again.
+        let rotation_tick =
+            clock::sleep_until(&rotation_period, clock::now() + rotation_period.duration());
         tokio::pin!(rotation_tick);
         if self.exit.is_some() {
             self.start_cleanup(self.record.fallback_stop);
@@ -888,7 +891,10 @@ impl Monitor {
                     self.start_cleanup(self.record.fallback_stop);
                 }
                 () = &mut rotation_tick, if self.rotation.is_none() => {
-                    rotation_tick.set(clock::sleep(&rotation_period));
+                    rotation_tick.set(clock::sleep_until(
+                        &rotation_period,
+                        clock::now() + rotation_period.duration(),
+                    ));
                     match self.start_rotation(hooks) {
                         Ok(rotation) => self.rotation = Some(rotation),
                         Err(error) => self.log_rotation_error = Some(error.to_string()),
