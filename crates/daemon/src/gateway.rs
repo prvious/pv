@@ -27,7 +27,6 @@ use state::{
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
-use tokio::time::{sleep, timeout};
 
 use crate::gateway_config::{
     GATEWAY_HEALTH_HOSTNAME, GatewayConfigInput, GatewayProjectRoute, HEALTH_PATH,
@@ -41,8 +40,9 @@ use crate::project_env::{
 };
 use crate::structured_log;
 use crate::supervisor::{
-    ManagedProcess, RecordedConfigFingerprint, bounded_runtime_readiness, probe_readiness_once,
-    runtime_exited_before_readiness_error, wait_for_started_runtime_readiness,
+    ManagedProcess, READINESS_PROBE_TIMEOUT, RecordedConfigFingerprint, bounded_runtime_readiness,
+    probe_readiness_once, runtime_exited_before_readiness_error,
+    wait_for_started_runtime_readiness,
 };
 use crate::{
     CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, DaemonError,
@@ -66,15 +66,27 @@ const CONFIG_VALIDATION_CLEANUP_TIMEOUT: Limit =
 const CONFIG_VALIDATION_GROUP_ANCHOR: &str = "while IFS= read -r _line; do :; done\nkill -KILL 0\n";
 /// How long a Gateway or worker gets to become ready after it starts. A first launch of a newly
 /// installed binary can be slow while macOS scans it.
-const RUNTIME_START_READINESS_TIMEOUT: Duration = Duration::from_secs(60);
+pub const RUNTIME_START_READINESS_TIMEOUT: Limit =
+    Limit::new("runtime start readiness", Duration::from_secs(60));
+/// How long a started Gateway or worker gets to open its admin API, before PV waits for it to
+/// become ready. A Gateway whose pf state is uncertain gets the pf budget under the same name.
+pub const RUNTIME_ADMIN_READINESS_TIMEOUT: Limit = Limit::new(
+    "runtime admin readiness",
+    RUNTIME_START_READINESS_TIMEOUT.duration(),
+);
 /// How long a running Gateway or worker gets to become ready after a `/load`, which returns only
 /// once Caddy has started the new config.
-const RUNTIME_RELOAD_READINESS_TIMEOUT: Duration = Duration::from_secs(5);
-const PF_PUBLIC_READINESS_TIMEOUT: Duration = Duration::from_secs(2);
-const FOREIGN_LISTENER_PROBE_TIMEOUT: Duration = Duration::from_millis(100);
+pub const RUNTIME_RELOAD_READINESS_TIMEOUT: Limit =
+    Limit::new("runtime reload readiness", Duration::from_secs(5));
+/// How long a Gateway gets to answer on the public ports when PV can't tell whether pf routes
+/// them.
+pub const PF_PUBLIC_READINESS_TIMEOUT: Limit =
+    Limit::new("pf public readiness", Duration::from_secs(2));
+/// How long PV waits for a process it doesn't own to answer on a runtime's port.
+pub const FOREIGN_LISTENER_PROBE_TIMEOUT: Limit =
+    Limit::new("foreign listener probe", Duration::from_millis(100));
 const GATEWAY_IDENTITY_PROBE_TIMEOUT: Limit =
     Limit::new("gateway identity probe", Duration::from_secs(1));
-const OWNED_READINESS_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 const OWNED_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const PUBLIC_HTTP_PORT: u16 = 80;
 const PUBLIC_HTTPS_PORT: u16 = 443;
@@ -259,22 +271,18 @@ pub fn promote_validated_config_for_test(
 }
 
 pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, DaemonError> {
-    reconcile_gateway_runtimes_with_readiness_timeout(paths, RUNTIME_START_READINESS_TIMEOUT).await
+    reconcile_gateway_runtimes_with_pf_state(paths, None, None, None)
+        .await?
+        .into_completed()
 }
 
 pub(crate) async fn reconcile_gateway_runtimes_with_phase_log(
     paths: &PvPaths,
     phase_log: &structured_log::ReconciliationPhaseLog,
 ) -> Result<String, DaemonError> {
-    reconcile_gateway_runtimes_with_pf_state(
-        paths,
-        RUNTIME_START_READINESS_TIMEOUT,
-        None,
-        Some(phase_log),
-        None,
-    )
-    .await?
-    .into_completed()
+    reconcile_gateway_runtimes_with_pf_state(paths, None, Some(phase_log), None)
+        .await?
+        .into_completed()
 }
 
 pub(crate) async fn reconcile_gateway_runtimes_with_phase_log_and_fallback_shutdown(
@@ -282,14 +290,8 @@ pub(crate) async fn reconcile_gateway_runtimes_with_phase_log_and_fallback_shutd
     phase_log: &structured_log::ReconciliationPhaseLog,
     fallback_shutdown: &watch::Receiver<bool>,
 ) -> Result<ReconciliationOutcome<String>, DaemonError> {
-    reconcile_gateway_runtimes_with_pf_state(
-        paths,
-        RUNTIME_START_READINESS_TIMEOUT,
-        None,
-        Some(phase_log),
-        Some(fallback_shutdown),
-    )
-    .await
+    reconcile_gateway_runtimes_with_pf_state(paths, None, Some(phase_log), Some(fallback_shutdown))
+        .await
 }
 
 pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
@@ -319,7 +321,6 @@ pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log_and_fallba
     reconcile_project_gateway_runtimes(
         paths,
         project_id,
-        RUNTIME_START_READINESS_TIMEOUT,
         pf_routing_state,
         phase_log,
         fallback_shutdown,
@@ -331,7 +332,6 @@ pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log_and_fallba
 pub async fn reconcile_project_gateway_runtimes_for_test(
     paths: &PvPaths,
     project_id: &str,
-    readiness_timeout: Duration,
     pf_routing_state: GatewayPfRoutingState,
 ) -> Result<String, DaemonError> {
     let phase_log = structured_log::ReconciliationPhaseLog::new(
@@ -343,7 +343,6 @@ pub async fn reconcile_project_gateway_runtimes_for_test(
     match reconcile_project_gateway_runtimes(
         paths,
         project_id,
-        readiness_timeout,
         Some(pf_routing_state),
         &phase_log,
         None,
@@ -355,7 +354,6 @@ pub async fn reconcile_project_gateway_runtimes_for_test(
         ProjectGatewayReconciliationOutcome::PromoteSystem => {
             reconcile_gateway_runtimes_with_pf_state(
                 paths,
-                readiness_timeout,
                 Some(pf_routing_state),
                 Some(&phase_log),
                 None,
@@ -369,7 +367,6 @@ pub async fn reconcile_project_gateway_runtimes_for_test(
 async fn reconcile_project_gateway_runtimes(
     paths: &PvPaths,
     project_id: &str,
-    readiness_timeout: Duration,
     pf_routing_state: Option<GatewayPfRoutingState>,
     phase_log: &structured_log::ReconciliationPhaseLog,
     shutdown: Option<&watch::Receiver<bool>>,
@@ -380,7 +377,6 @@ async fn reconcile_project_gateway_runtimes(
     let Some(gateway_command) = first_installed_caddy_command(paths)? else {
         let summary = match reconcile_gateway_runtimes_with_pf_state(
             paths,
-            readiness_timeout,
             pf_routing_state,
             Some(phase_log),
             shutdown,
@@ -441,15 +437,14 @@ async fn reconcile_project_gateway_runtimes(
             paths,
             target_active_impact.gateway_fragments.keys(),
         )?;
-        let readiness = gateway_readiness_plan(
-            &targeted.plan,
-            readiness_hostname,
-            pf_routing_state,
-            readiness_timeout,
-        );
-        let probe_timeout = readiness.timeout.min(OWNED_READINESS_PROBE_TIMEOUT);
+        let readiness =
+            gateway_readiness_plan(&targeted.plan, readiness_hostname, pf_routing_state);
         if !matches!(
-            timeout(probe_timeout, probe_readiness_once(&readiness.check)).await,
+            clock::timeout(
+                &READINESS_PROBE_TIMEOUT,
+                probe_readiness_once(&readiness.check)
+            )
+            .await,
             Ok(Ok(()))
         ) {
             return Ok(ReconciliationOutcome::Completed(
@@ -506,7 +501,6 @@ async fn reconcile_project_gateway_runtimes(
             paths,
             worker,
             &worker_runtime,
-            readiness_timeout,
             active_impact.worker_fragments.get(runtime_key),
             None,
             shutdown,
@@ -545,7 +539,6 @@ async fn reconcile_project_gateway_runtimes(
             &targeted.plan,
             &gateway_command,
             pf_routing_state,
-            readiness_timeout,
             Some(&active_impact.gateway_fragments),
             shutdown,
         )
@@ -586,7 +579,6 @@ async fn reconcile_project_gateway_runtimes(
                 paths,
                 worker,
                 &worker_runtime,
-                readiness_timeout,
                 active_impact.worker_fragments.get(previous_runtime_key),
                 None,
                 shutdown,
@@ -653,35 +645,17 @@ pub fn probe_gateway_identity_blocking(
 }
 
 #[doc(hidden)]
-pub async fn reconcile_gateway_runtimes_with_readiness_timeout(
+pub async fn reconcile_gateway_runtimes_with_pf_state_for_test(
     paths: &PvPaths,
-    readiness_timeout: Duration,
+    pf_routing_state: GatewayPfRoutingState,
 ) -> Result<String, DaemonError> {
-    reconcile_gateway_runtimes_with_pf_state(paths, readiness_timeout, None, None, None)
+    reconcile_gateway_runtimes_with_pf_state(paths, Some(pf_routing_state), None, None)
         .await?
         .into_completed()
 }
 
-#[doc(hidden)]
-pub async fn reconcile_gateway_runtimes_with_pf_state_for_test(
-    paths: &PvPaths,
-    readiness_timeout: Duration,
-    pf_routing_state: GatewayPfRoutingState,
-) -> Result<String, DaemonError> {
-    reconcile_gateway_runtimes_with_pf_state(
-        paths,
-        readiness_timeout,
-        Some(pf_routing_state),
-        None,
-        None,
-    )
-    .await?
-    .into_completed()
-}
-
 async fn reconcile_gateway_runtimes_with_pf_state(
     paths: &PvPaths,
-    readiness_timeout: Duration,
     pf_routing_state: Option<GatewayPfRoutingState>,
     phase_log: Option<&structured_log::ReconciliationPhaseLog>,
     shutdown: Option<&watch::Receiver<bool>>,
@@ -784,7 +758,6 @@ async fn reconcile_gateway_runtimes_with_pf_state(
                 None,
                 previous_gateway.as_ref(),
                 pf_routing_state,
-                readiness_timeout,
                 shutdown,
             )
             .await;
@@ -909,7 +882,6 @@ async fn reconcile_gateway_runtimes_with_pf_state(
                 paths,
                 &worker,
                 &worker_runtime,
-                readiness_timeout,
                 None,
                 retained_fragments,
                 shutdown,
@@ -937,7 +909,6 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             Some(&plan),
             previous_gateway.as_ref(),
             pf_routing_state,
-            readiness_timeout,
             shutdown,
         )
         .await;
@@ -973,7 +944,6 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         &plan,
         &gateway_command,
         pf_routing_state,
-        readiness_timeout,
         None,
         shutdown,
     )
@@ -1000,16 +970,8 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         if retained_worker_fragments.contains_key(&worker.runtime_key) {
             let result = match required_installed_worker_runtime(paths, worker) {
                 Ok(worker_runtime) => {
-                    reconcile_planned_worker(
-                        paths,
-                        worker,
-                        &worker_runtime,
-                        readiness_timeout,
-                        None,
-                        None,
-                        shutdown,
-                    )
-                    .await
+                    reconcile_planned_worker(paths, worker, &worker_runtime, None, None, shutdown)
+                        .await
                 }
                 Err(error) => Err(error),
             };
@@ -1061,7 +1023,6 @@ async fn recover_previous_gateway(
     plan: Option<&RuntimePlan>,
     snapshot: Option<&ActiveRuntimeConfigSnapshot>,
     pf_routing_state: Option<GatewayPfRoutingState>,
-    readiness_timeout: Duration,
     shutdown: Option<&watch::Receiver<bool>>,
 ) -> Result<ReconciliationOutcome<()>, DaemonError> {
     if reconciliation_cancelled(shutdown) {
@@ -1090,7 +1051,6 @@ async fn recover_previous_gateway(
                     plan,
                     gateway_command,
                     pf_routing_state,
-                    readiness_timeout,
                     None,
                     shutdown,
                 )
@@ -1137,7 +1097,6 @@ async fn recover_previous_gateway(
         &plan,
         gateway_command,
         pf_routing_state,
-        readiness_timeout,
         desired,
         shutdown,
     )
@@ -1149,7 +1108,6 @@ async fn reconcile_planned_gateway(
     plan: &RuntimePlan,
     gateway_command: &CaddyCliCommand,
     pf_routing_state: Option<GatewayPfRoutingState>,
-    readiness_timeout: Duration,
     preserved_fragments: Option<&BTreeMap<String, String>>,
     shutdown: Option<&watch::Receiver<bool>>,
 ) -> Result<ReconciliationOutcome<()>, DaemonError> {
@@ -1164,7 +1122,6 @@ async fn reconcile_planned_gateway(
         plan,
         gateway_command,
         pf_routing_state,
-        readiness_timeout,
         desired_gateway_config,
         shutdown,
     )
@@ -1176,7 +1133,6 @@ async fn reconcile_gateway_config(
     plan: &RuntimePlan,
     gateway_command: &CaddyCliCommand,
     pf_routing_state: Option<GatewayPfRoutingState>,
-    readiness_timeout: Duration,
     desired_gateway_config: DesiredGatewayConfig,
     shutdown: Option<&watch::Receiver<bool>>,
 ) -> Result<ReconciliationOutcome<()>, DaemonError> {
@@ -1189,7 +1145,6 @@ async fn reconcile_gateway_config(
         plan,
         desired_gateway_config.readiness_hostname,
         pf_routing_state,
-        readiness_timeout,
     );
     let gateway_spec = gateway_process_spec(paths, gateway_command);
     let readiness_outcome = if let Some(outcome) = match reconcile_unchanged_runtime(
@@ -1262,7 +1217,6 @@ async fn reconcile_planned_worker(
     paths: &PvPaths,
     worker: &PhpWorkerRuntimePlan,
     worker_runtime: &InstalledFrankenphpRuntime,
-    readiness_timeout: Duration,
     preserved_fragments: Option<&BTreeMap<String, String>>,
     retained_fragments: Option<&BTreeMap<String, String>>,
     shutdown: Option<&watch::Receiver<bool>>,
@@ -1271,7 +1225,6 @@ async fn reconcile_planned_worker(
         paths,
         worker,
         worker_runtime,
-        readiness_timeout,
         preserved_fragments,
         retained_fragments,
         shutdown,
@@ -1296,7 +1249,6 @@ async fn prepare_planned_worker(
     paths: &PvPaths,
     worker: &PhpWorkerRuntimePlan,
     worker_runtime: &InstalledFrankenphpRuntime,
-    readiness_timeout: Duration,
     preserved_fragments: Option<&BTreeMap<String, String>>,
     retained_fragments: Option<&BTreeMap<String, String>>,
     shutdown: Option<&watch::Receiver<bool>>,
@@ -1324,7 +1276,7 @@ async fn prepare_planned_worker(
     let readiness = RuntimeReadinessPlan {
         check: worker_readiness_check(worker.port),
         failure_policy: ReadinessFailurePolicy::FailRuntime,
-        timeout: readiness_timeout,
+        budget: RUNTIME_START_READINESS_TIMEOUT,
         admin_endpoint: CaddyAdminEndpoint::new(worker.admin_socket_path.clone()),
         preserve_staged_config: retained_fragments.is_some_and(|fragments| !fragments.is_empty()),
     };
@@ -1474,22 +1426,17 @@ fn gateway_readiness_plan(
     plan: &RuntimePlan,
     readiness_hostname: Option<String>,
     pf_routing_state: GatewayPfRoutingState,
-    readiness_timeout: Duration,
 ) -> RuntimeReadinessPlan {
     let ports = gateway_readiness_ports(plan, pf_routing_state);
-    let failure_policy = match pf_routing_state {
-        GatewayPfRoutingState::Active | GatewayPfRoutingState::Inactive => {
-            ReadinessFailurePolicy::FailRuntime
-        }
-        GatewayPfRoutingState::Drifted | GatewayPfRoutingState::Unknown => {
-            ReadinessFailurePolicy::PreserveRuntime
-        }
-    };
-    let timeout = match failure_policy {
-        ReadinessFailurePolicy::FailRuntime => readiness_timeout,
-        ReadinessFailurePolicy::PreserveRuntime => {
-            readiness_timeout.min(PF_PUBLIC_READINESS_TIMEOUT)
-        }
+    let (failure_policy, budget) = match pf_routing_state {
+        GatewayPfRoutingState::Active | GatewayPfRoutingState::Inactive => (
+            ReadinessFailurePolicy::FailRuntime,
+            RUNTIME_START_READINESS_TIMEOUT,
+        ),
+        GatewayPfRoutingState::Drifted | GatewayPfRoutingState::Unknown => (
+            ReadinessFailurePolicy::PreserveRuntime,
+            PF_PUBLIC_READINESS_TIMEOUT,
+        ),
     };
 
     let check = if pf_routing_state == GatewayPfRoutingState::Inactive {
@@ -1501,7 +1448,7 @@ fn gateway_readiness_plan(
     RuntimeReadinessPlan {
         check,
         failure_policy,
-        timeout,
+        budget,
         admin_endpoint: CaddyAdminEndpoint::new(plan.gateway.admin_socket_path.clone()),
         preserve_staged_config: false,
     }
@@ -1511,7 +1458,8 @@ fn gateway_readiness_plan(
 struct RuntimeReadinessPlan {
     check: ReadinessCheck,
     failure_policy: ReadinessFailurePolicy,
-    timeout: Duration,
+    /// How long a started runtime gets to become ready.
+    budget: Limit,
     admin_endpoint: CaddyAdminEndpoint,
     preserve_staged_config: bool,
 }
@@ -1662,12 +1610,12 @@ pub async fn persisted_gateway_is_ready_with_pf_state_for_test(
         &paths.ca_certificate(),
     );
 
-    match timeout(OWNED_READINESS_PROBE_TIMEOUT, probe_readiness_once(&check)).await {
+    match clock::timeout(&READINESS_PROBE_TIMEOUT, probe_readiness_once(&check)).await {
         Ok(Ok(())) => Ok(true),
         Ok(Err(error)) => Err(error),
         Err(error) => Err(DaemonError::ReadinessTimedOut {
             check: format!("{check:?}"),
-            timeout_ms: OWNED_READINESS_PROBE_TIMEOUT.as_millis(),
+            timeout_ms: READINESS_PROBE_TIMEOUT.duration().as_millis(),
             last_error: Some(error.to_string()),
         }),
     }
@@ -3769,9 +3717,12 @@ async fn reconcile_unchanged_runtime(
         return Ok(None);
     }
 
-    let probe_timeout = readiness.timeout.min(OWNED_READINESS_PROBE_TIMEOUT);
     if !matches!(
-        timeout(probe_timeout, probe_readiness_once(&readiness.check)).await,
+        clock::timeout(
+            &READINESS_PROBE_TIMEOUT,
+            probe_readiness_once(&readiness.check)
+        )
+        .await,
         Ok(Ok(()))
     ) {
         return Ok(None);
@@ -4241,7 +4192,7 @@ async fn finish_runtime_transaction(
     let RuntimeReadinessPlan {
         check,
         failure_policy,
-        timeout: readiness_timeout,
+        budget,
         admin_endpoint,
         preserve_staged_config,
     } = readiness;
@@ -4250,12 +4201,17 @@ async fn finish_runtime_transaction(
         if reconciliation_cancelled(shutdown) {
             return Ok(ReconciliationOutcome::Cancelled);
         }
-        let reload_timeout = (*readiness_timeout).min(RUNTIME_RELOAD_READINESS_TIMEOUT);
+        // The pf budget is shorter than a reload's and still applies.
+        let reload_budget = if budget.duration() < RUNTIME_RELOAD_READINESS_TIMEOUT.duration() {
+            budget
+        } else {
+            &RUNTIME_RELOAD_READINESS_TIMEOUT
+        };
         let client = CaddyAdminClient::new();
         let readiness_result = wait_for_transaction_step(
             Box::pin(wait_for_owned_readiness(
                 check.clone(),
-                reload_timeout,
+                reload_budget,
                 || verify_runtime_ownership(supervisor, spec),
             )),
             shutdown,
@@ -4273,7 +4229,7 @@ async fn finish_runtime_transaction(
                     .is_some()
             {
                 let admin_result = wait_for_transaction_step(
-                    Box::pin(client.wait_until_ready(admin_endpoint, reload_timeout)),
+                    Box::pin(client.wait_until_ready(admin_endpoint, reload_budget)),
                     shutdown,
                 )
                 .await;
@@ -4314,9 +4270,11 @@ async fn finish_runtime_transaction(
         cancel_fresh_runtime_transaction(spec, process).await?;
         return Ok(ReconciliationOutcome::Cancelled);
     }
+    // A separate wait from the readiness wait below, with the same budget.
+    let admin_budget = Limit::new(RUNTIME_ADMIN_READINESS_TIMEOUT.name(), budget.duration());
     let admin_readiness = async {
         CaddyAdminClient::new()
-            .wait_until_ready(admin_endpoint, *readiness_timeout)
+            .wait_until_ready(admin_endpoint, &admin_budget)
             .await
             .map_err(DaemonError::from)
     };
@@ -4349,7 +4307,7 @@ async fn finish_runtime_transaction(
         )
         .await);
     }
-    let service_readiness = wait_for_owned_readiness(check.clone(), *readiness_timeout, || {
+    let service_readiness = wait_for_owned_readiness(check.clone(), budget, || {
         verify_runtime_ownership(supervisor, spec)
     });
     let service_result = wait_for_transaction_step(
@@ -4660,36 +4618,41 @@ fn daemon_error_as_caddy_admin_for_operation(
 
 async fn wait_for_owned_readiness<BeforeProbe>(
     check: ReadinessCheck,
-    readiness_timeout: Duration,
+    budget: &Limit,
     mut before_probe: BeforeProbe,
 ) -> Result<(), DaemonError>
 where
     BeforeProbe: FnMut() -> Result<(), DaemonError>,
 {
-    let started_at = Instant::now();
+    let deadline = Deadline::after(budget);
     let mut last_error = None;
 
-    while let Some(remaining) = readiness_timeout
-        .checked_sub(started_at.elapsed())
-        .filter(|remaining| !remaining.is_zero())
-    {
+    // Probe at least once, even when the budget passed before the first probe could start.
+    loop {
         before_probe()?;
-        let probe_timeout = remaining.min(OWNED_READINESS_PROBE_TIMEOUT);
-        match timeout(probe_timeout, probe_readiness_once(&check)).await {
+        match deadline
+            .timeout(&READINESS_PROBE_TIMEOUT, probe_readiness_once(&check))
+            .await
+        {
             Ok(Ok(())) => return Ok(()),
             Ok(Err(error)) => {
                 last_error = Some(error.to_string());
-                sleep(remaining.min(OWNED_READINESS_POLL_INTERVAL)).await;
+                clock::poll(OWNED_READINESS_POLL_INTERVAL).await;
             }
-            Err(error) => {
-                last_error = Some(error.to_string());
+            // A probe the budget cut short says less than the failure before it.
+            Err(elapsed) if last_error.is_none() || !deadline.is_expired() => {
+                last_error = Some(elapsed.to_string());
             }
+            Err(_elapsed) => {}
+        }
+        if deadline.is_expired() {
+            break;
         }
     }
 
     Err(DaemonError::ReadinessTimedOut {
         check: format!("{check:?}"),
-        timeout_ms: readiness_timeout.as_millis(),
+        timeout_ms: budget.duration().as_millis(),
         last_error,
     })
 }
@@ -4721,8 +4684,8 @@ async fn foreign_listener_is_ready(readiness: &ReadinessCheck) -> bool {
         readiness => readiness,
     };
     matches!(
-        timeout(
-            FOREIGN_LISTENER_PROBE_TIMEOUT,
+        clock::timeout(
+            &FOREIGN_LISTENER_PROBE_TIMEOUT,
             probe_readiness_once(readiness)
         )
         .await,
@@ -5465,8 +5428,8 @@ mod tests {
 
     use super::{
         CaddyCliCommand, GatewayPfRoutingState, GatewayReadinessPorts, GatewayRuntimePlan,
-        PhpWorkerRuntimePlan, ReadinessFailurePolicy, ReconciliationOutcome, RuntimePlan,
-        RuntimeProject, build_target_runtime_plan,
+        PF_PUBLIC_READINESS_TIMEOUT, PhpWorkerRuntimePlan, ReadinessFailurePolicy,
+        ReconciliationOutcome, RuntimePlan, RuntimeProject, build_target_runtime_plan,
         cancel_or_preserve_runtime_reconciliation_errors, classify_gateway_pf_routing_state,
         combined_runtime_reconciliation_error, desired_worker_config, enforce_project_bind_policy,
         gateway_project_config_fragments, gateway_public_readiness_check,
@@ -5757,7 +5720,7 @@ mod tests {
         let expected = PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port);
         let inspection = pf_inspection(None, BTreeSet::new());
         let state = classify_gateway_pf_routing_state(&expected, Some(&inspection), true);
-        let readiness = gateway_readiness_plan(&plan, None, state, Duration::from_secs(60));
+        let readiness = gateway_readiness_plan(&plan, None, state);
 
         assert_eq!(state, GatewayPfRoutingState::Inactive);
         assert_eq!(
@@ -5833,14 +5796,13 @@ mod tests {
             &plan,
             Some("project.test".to_string()),
             GatewayPfRoutingState::Unknown,
-            Duration::from_secs(60),
         );
 
         assert_eq!(
             readiness.failure_policy,
             ReadinessFailurePolicy::PreserveRuntime
         );
-        assert_eq!(readiness.timeout, Duration::from_secs(2));
+        assert_eq!(readiness.budget, PF_PUBLIC_READINESS_TIMEOUT);
         assert_eq!(
             readiness.check,
             ReadinessCheck::GatewayIdentity {

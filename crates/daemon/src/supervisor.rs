@@ -762,7 +762,9 @@ pub async fn wait_for_readiness(check: ReadinessCheck, budget: &Limit) -> Result
 }
 
 pub(crate) async fn probe_readiness_once(check: &ReadinessCheck) -> Result<(), DaemonError> {
-    check_once(check).await
+    // Boxed because the TLS probe is large and the Gateway awaits it, through a clock limit, inside
+    // its already large reconciliation futures.
+    Box::pin(check_once(check)).await
 }
 
 pub async fn wait_for_custom_readiness<F, Fut>(

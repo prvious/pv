@@ -34,8 +34,8 @@ use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 
 pub use caddy_admin::{
-    CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, CaddyAdminTimeouts,
-    MAX_RESPONSE_DETAIL_BYTES, load_caddyfile, wait_until_ready,
+    CADDY_ADMIN_REQUEST_TIMEOUT, CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError,
+    CaddyAdminOperation, MAX_RESPONSE_DETAIL_BYTES, load_caddyfile, wait_until_ready,
 };
 pub use client::{
     CompletedJob, DAEMON_RESPONSE_TIMEOUT, JobDownloadProgress, JobEventHandler, SubmittedJob,

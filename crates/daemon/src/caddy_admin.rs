@@ -1,5 +1,5 @@
 use std::fmt;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
 use camino::{Utf8Path, Utf8PathBuf};
@@ -12,6 +12,7 @@ use hyper::header::HOST;
 use hyper::{Method, Request};
 #[cfg(unix)]
 use hyper_util::rt::TokioIo;
+use platform::clock::{self, Deadline, Limit};
 use serde_json::{Deserializer, Value};
 use thiserror::Error;
 #[cfg(unix)]
@@ -20,11 +21,13 @@ use tokio::net::UnixStream;
 pub const MAX_RESPONSE_DETAIL_BYTES: usize = 4096;
 
 const MAX_LOAD_RESPONSE_BYTES: usize = 64 * 1024;
-const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
-const DEFAULT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(10);
-const DEFAULT_OVERALL_TIMEOUT: Duration = Duration::from_secs(15);
-const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+#[cfg(unix)]
+const CADDY_ADMIN_CONNECT_TIMEOUT: Limit =
+    Limit::new("caddy admin connect", Duration::from_secs(2));
+/// How long one admin request may take in all, from connecting to reading the response.
+pub const CADDY_ADMIN_REQUEST_TIMEOUT: Limit =
+    Limit::new("caddy admin request", Duration::from_secs(15));
+const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The Unix-domain socket path for one Caddy admin endpoint.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -156,72 +159,12 @@ impl CaddyAdminError {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CaddyAdminTimeouts {
-    pub connect: Duration,
-    pub write: Duration,
-    pub read: Duration,
-    pub overall: Duration,
-    pub poll_interval: Duration,
-}
-
-impl CaddyAdminTimeouts {
-    pub const fn new(
-        connect: Duration,
-        write: Duration,
-        read: Duration,
-        overall: Duration,
-        poll_interval: Duration,
-    ) -> Self {
-        Self {
-            connect,
-            write,
-            read,
-            overall,
-            poll_interval,
-        }
-    }
-}
-
-impl Default for CaddyAdminTimeouts {
-    fn default() -> Self {
-        Self {
-            connect: DEFAULT_CONNECT_TIMEOUT,
-            write: DEFAULT_WRITE_TIMEOUT,
-            read: DEFAULT_READ_TIMEOUT,
-            overall: DEFAULT_OVERALL_TIMEOUT,
-            poll_interval: DEFAULT_POLL_INTERVAL,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default)]
-pub struct CaddyAdminClient {
-    timeouts: CaddyAdminTimeouts,
-}
+pub struct CaddyAdminClient;
 
 impl CaddyAdminClient {
     pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub const fn with_timeouts(timeouts: CaddyAdminTimeouts) -> Self {
-        Self { timeouts }
-    }
-
-    pub const fn timeouts(self) -> CaddyAdminTimeouts {
-        self.timeouts
-    }
-
-    pub fn with_timeout(self, timeout: Duration) -> Self {
-        let current = self.timeouts;
-        Self::with_timeouts(CaddyAdminTimeouts::new(
-            current.connect.min(timeout),
-            current.write.min(timeout),
-            current.read.min(timeout),
-            current.overall.min(timeout),
-            current.poll_interval.min(timeout),
-        ))
+        Self
     }
 
     pub async fn load_caddyfile(
@@ -269,49 +212,41 @@ impl CaddyAdminClient {
     pub async fn wait_until_ready(
         self,
         endpoint: &CaddyAdminEndpoint,
-        readiness_timeout: Duration,
+        budget: &Limit,
     ) -> Result<(), CaddyAdminError> {
-        let started_at = Instant::now();
+        let deadline = Deadline::after(budget);
         let mut last_error = None;
 
+        // Ask at least once, even when the budget passed before the first request could start.
         loop {
-            let elapsed = started_at.elapsed();
-            if elapsed >= readiness_timeout {
-                return Err(readiness_timeout_error(
-                    endpoint,
-                    readiness_timeout,
-                    last_error,
-                ));
+            match deadline
+                .timeout(&CADDY_ADMIN_REQUEST_TIMEOUT, self.get_config(endpoint))
+                .await
+            {
+                Ok(Ok(())) => return Ok(()),
+                Ok(Err(error)) => {
+                    last_error = Some(readiness_error_detail(&error));
+                    clock::poll(READINESS_POLL_INTERVAL).await;
+                }
+                // A request the budget cut short says less than the failure before it.
+                Err(elapsed) if last_error.is_none() || !deadline.is_expired() => {
+                    last_error = Some(elapsed.to_string());
+                }
+                Err(_elapsed) => {}
             }
-
-            let remaining = readiness_timeout.saturating_sub(elapsed);
-            match self.get_config(endpoint, remaining).await {
-                Ok(()) => return Ok(()),
-                Err(error) => last_error = Some(readiness_error_detail(&error)),
-            }
-
-            let elapsed = started_at.elapsed();
-            if elapsed >= readiness_timeout {
-                return Err(readiness_timeout_error(
-                    endpoint,
-                    readiness_timeout,
-                    last_error,
-                ));
-            }
-
-            let remaining = readiness_timeout.saturating_sub(elapsed);
-            let poll_delay = self.timeouts.poll_interval.min(remaining);
-            if !poll_delay.is_zero() {
-                tokio::time::sleep(poll_delay).await;
+            if deadline.is_expired() {
+                break;
             }
         }
+
+        Err(CaddyAdminError::AdminReadinessTimedOut {
+            endpoint: endpoint.clone(),
+            timeout_ms: budget.duration().as_millis(),
+            last_error,
+        })
     }
 
-    async fn get_config(
-        self,
-        endpoint: &CaddyAdminEndpoint,
-        timeout: Duration,
-    ) -> Result<(), CaddyAdminError> {
+    async fn get_config(self, endpoint: &CaddyAdminEndpoint) -> Result<(), CaddyAdminError> {
         let request = Request::builder()
             .method(Method::GET)
             .uri("/config/")
@@ -322,7 +257,6 @@ impl CaddyAdminClient {
                 reason: error.to_string(),
             })?;
         let response = self
-            .with_timeout(timeout)
             .send(endpoint, CaddyAdminOperation::Readiness, request, false)
             .await?;
 
@@ -344,13 +278,13 @@ impl CaddyAdminClient {
         request: Request<Full<Bytes>>,
         include_response_detail: bool,
     ) -> Result<AdminResponse, CaddyAdminError> {
-        let started_at = Instant::now();
-        let connect_timeout = self.timeouts.connect.min(self.timeouts.overall);
-        let stream = match tokio::time::timeout(
-            connect_timeout,
-            UnixStream::connect(endpoint.path().as_std_path()),
-        )
-        .await
+        let deadline = Deadline::after(&CADDY_ADMIN_REQUEST_TIMEOUT);
+        let stream = match deadline
+            .timeout(
+                &CADDY_ADMIN_CONNECT_TIMEOUT,
+                UnixStream::connect(endpoint.path().as_std_path()),
+            )
+            .await
         {
             Ok(Ok(stream)) => stream,
             Ok(Err(error)) => {
@@ -370,16 +304,14 @@ impl CaddyAdminClient {
                     CaddyAdminError::RequestTimedOut {
                         endpoint: endpoint.clone(),
                         operation,
-                        timeout_ms: connect_timeout.as_millis(),
+                        timeout_ms: CADDY_ADMIN_CONNECT_TIMEOUT.duration().as_millis(),
                     },
                 ));
             }
         };
 
-        let overall_remaining = self.timeouts.overall.saturating_sub(started_at.elapsed());
-        let exchange_timeout =
-            overall_remaining.min(self.timeouts.write.saturating_add(self.timeouts.read));
-        match exchange_request(request, stream, include_response_detail, exchange_timeout).await {
+        let timeout_ms = CADDY_ADMIN_REQUEST_TIMEOUT.duration().as_millis();
+        match exchange_request(request, stream, include_response_detail, &deadline).await {
             Ok(response) => Ok(response),
             Err(ExchangeError::Transport(error)) => {
                 Err(map_exchange_error(endpoint, operation, error))
@@ -388,13 +320,13 @@ impl CaddyAdminClient {
                 Err(CaddyAdminError::RequestOutcomeUnknown {
                     endpoint: endpoint.clone(),
                     operation,
-                    reason: format!("request timed out after {}ms", exchange_timeout.as_millis()),
+                    reason: format!("request timed out after {timeout_ms}ms"),
                 })
             }
             Err(ExchangeError::TimedOut) => Err(CaddyAdminError::RequestTimedOut {
                 endpoint: endpoint.clone(),
                 operation,
-                timeout_ms: exchange_timeout.as_millis(),
+                timeout_ms,
             }),
         }
     }
@@ -432,47 +364,50 @@ async fn exchange_request(
     request: Request<Full<Bytes>>,
     stream: UnixStream,
     include_response_detail: bool,
-    exchange_timeout: Duration,
+    deadline: &Deadline,
 ) -> Result<AdminResponse, ExchangeError> {
-    let started_at = Instant::now();
-    let (mut sender, connection) =
-        tokio::time::timeout(exchange_timeout, http1::handshake(TokioIo::new(stream)))
-            .await
-            .map_err(|_error| ExchangeError::TimedOut)?
-            .map_err(ExchangeError::Transport)?;
+    let (mut sender, connection) = deadline
+        .timeout(
+            &CADDY_ADMIN_REQUEST_TIMEOUT,
+            http1::handshake(TokioIo::new(stream)),
+        )
+        .await
+        .map_err(|_error| ExchangeError::TimedOut)?
+        .map_err(ExchangeError::Transport)?;
     let connection_task = tokio::spawn(connection);
-    let remaining_exchange = exchange_timeout.saturating_sub(started_at.elapsed());
-    let response =
-        match tokio::time::timeout(remaining_exchange, sender.send_request(request)).await {
-            Ok(Ok(response)) => response,
-            Ok(Err(error)) => {
-                connection_task.abort();
-                return Err(ExchangeError::Transport(error));
-            }
-            Err(_error) => {
-                connection_task.abort();
-                return Err(ExchangeError::TimedOut);
-            }
-        };
+    let response = match deadline
+        .timeout(&CADDY_ADMIN_REQUEST_TIMEOUT, sender.send_request(request))
+        .await
+    {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            connection_task.abort();
+            return Err(ExchangeError::Transport(error));
+        }
+        Err(_error) => {
+            connection_task.abort();
+            return Err(ExchangeError::TimedOut);
+        }
+    };
     let status = response.status().as_u16();
     let body = if include_response_detail {
         let mut body = BoundedResponseBody {
             bytes: Vec::with_capacity(MAX_RESPONSE_DETAIL_BYTES),
             ..BoundedResponseBody::default()
         };
-        let body_timeout = exchange_timeout.saturating_sub(started_at.elapsed());
-        match tokio::time::timeout(
-            body_timeout,
-            bounded_response_body(response.into_body(), &mut body),
-        )
-        .await
+        match deadline
+            .timeout(
+                &CADDY_ADMIN_REQUEST_TIMEOUT,
+                bounded_response_body(response.into_body(), &mut body),
+            )
+            .await
         {
             Ok(Ok(())) => {}
             Ok(Err(error)) => body.read_error = Some(error.to_string()),
             Err(_error) => {
                 body.read_error = Some(format!(
                     "response body timed out after {}ms",
-                    body_timeout.as_millis()
+                    CADDY_ADMIN_REQUEST_TIMEOUT.duration().as_millis()
                 ));
             }
         }
@@ -622,18 +557,6 @@ fn request_not_sent(
     }
 }
 
-fn readiness_timeout_error(
-    endpoint: &CaddyAdminEndpoint,
-    timeout: Duration,
-    last_error: Option<String>,
-) -> CaddyAdminError {
-    CaddyAdminError::AdminReadinessTimedOut {
-        endpoint: endpoint.clone(),
-        timeout_ms: timeout.as_millis(),
-        last_error,
-    }
-}
-
 fn readiness_error_detail(error: &CaddyAdminError) -> String {
     match error {
         CaddyAdminError::UnexpectedReadinessStatus { status, .. } => {
@@ -652,17 +575,13 @@ pub async fn load_caddyfile(
     endpoint: &CaddyAdminEndpoint,
     bytes: impl AsRef<[u8]>,
 ) -> Result<(), CaddyAdminError> {
-    CaddyAdminClient::default()
-        .load_caddyfile(endpoint, bytes)
-        .await
+    CaddyAdminClient.load_caddyfile(endpoint, bytes).await
 }
 
 /// Waits for the Caddy admin API to expose its configuration endpoint.
 pub async fn wait_until_ready(
     endpoint: &CaddyAdminEndpoint,
-    timeout: Duration,
+    budget: &Limit,
 ) -> Result<(), CaddyAdminError> {
-    CaddyAdminClient::default()
-        .wait_until_ready(endpoint, timeout)
-        .await
+    CaddyAdminClient.wait_until_ready(endpoint, budget).await
 }
