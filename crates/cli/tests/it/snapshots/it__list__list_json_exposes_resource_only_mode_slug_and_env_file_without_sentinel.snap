@@ -1,0 +1,21 @@
+---
+source: crates/cli/tests/it/list.rs
+expression: snapshot
+---
+Object {
+    "projects": Array [
+        Object {
+            "config_path": String("<tempdir>/Resource Project/pv.yml"),
+            "env": String("none"),
+            "env_file": String("config/development.env"),
+            "hostname": Null,
+            "id": String("<project-id>"),
+            "mode": String("resource-only"),
+            "path": String("<tempdir>/Resource Project"),
+            "php": String("default"),
+            "resources": Array [],
+            "slug": String("resource-project"),
+            "status": String("unknown"),
+        },
+    ],
+}

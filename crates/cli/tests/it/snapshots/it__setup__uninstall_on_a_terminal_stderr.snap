@@ -1,0 +1,6 @@
+---
+source: crates/cli/tests/it/setup.rs
+expression: uninstall.stderr
+---
+│
+◆  Removing privileged helper

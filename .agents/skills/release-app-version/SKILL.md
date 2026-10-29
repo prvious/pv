@@ -86,7 +86,7 @@ cargo nextest run -p pv-release --test app_release_records
 cargo nextest run -p pv-release --test app_publication
 cargo nextest run -p pv-release --test workflow_defaults
 cargo nextest run -p self-update --test app_update_manifest
-cargo nextest run -p cli --test update
+cargo nextest run -p cli -E 'test(/^update::/)'
 ```
 
 If snapshots change, inspect them first and accept only expected changes:
