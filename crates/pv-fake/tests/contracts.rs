@@ -2,7 +2,7 @@
 #![cfg(unix)]
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -318,16 +318,21 @@ fn load_applies_after_its_client_disconnects() -> Result<()> {
     gateway.control(json!({"load_response_gate": [release]}))?;
     let load = gateway.config(port, "applied late");
 
-    // Hang up once the fake has the load, as PV does when its load times out.
+    // Hang up once the fake has the load, as PV does when its load times out. The fake closes the
+    // connection once it reads the hang-up, dropping the request before the load is released.
     let mut stream = UnixStream::connect(&gateway.admin_socket)?;
     write_request(&mut stream, "POST", "/load", &load)?;
     let received = wait_until(|| Ok(gateway.requests()?.len() == 1));
-    drop(stream);
+    stream.shutdown(Shutdown::Write)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut answer = Vec::new();
+    stream.read_to_end(&mut answer)?;
     state::fs::write_sensitive_file(&release, "released\n")?;
     let applied = wait_until(|| Ok(http_get(port, "/__pv/health")?.1 == "applied late"));
 
     received?;
     applied?;
+    assert!(answer.is_empty(), "{}", String::from_utf8_lossy(&answer));
     assert_eq!(gateway.record("fake-admin-current.bin")?, load);
 
     Ok(())

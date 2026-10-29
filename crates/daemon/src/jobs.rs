@@ -8693,10 +8693,14 @@ mod tests {
         )?;
         drop(database);
         let job_id = start_reconciliation_job(&paths, "system")?;
+        let (release_sender, release_receiver) = mpsc::channel();
         let catalog = Arc::new(
             crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
                 OFFLINE_TEST_MANIFEST_URL,
-                client,
+                HeldDownloadArtifactClient {
+                    inner: client,
+                    release_receiver: Mutex::new(release_receiver),
+                },
             )?,
         );
         let (blocked_write_sender, blocked_write_receiver) = oneshot::channel();
@@ -8730,26 +8734,23 @@ mod tests {
             )
         })?
         .map_err(|_error| anyhow::anyhow!("streamed reconciliation task dropped early"))?;
-        // Every write after the first two blocks, so each gives up at its limit until the job ends.
-        let advance_blocked_writes = async {
-            loop {
-                if let Err(error) = clock
-                    .advance_when_waiting(&FOREGROUND_JOB_STREAM_WRITE_TIMEOUT)
-                    .await
-                {
-                    return error;
-                }
-            }
-        };
-        let completion_result = real::timeout(STREAMED_RECONCILIATION_COMPLETION_TIMEOUT, async {
-            tokio::select! {
-                result = &mut task => Ok(result),
-                error = advance_blocked_writes => Err(error),
-            }
-        })
-        .await;
+        // The download is held, so the job can't finish before its blocked writes give up: first
+        // a phase write, then a download progress write. That one closes the stream, so no later
+        // write blocks.
+        for _blocked_write in 0..2 {
+            clock
+                .advance_when_waiting(&FOREGROUND_JOB_STREAM_WRITE_TIMEOUT)
+                .await?;
+        }
+        // Let the stream task act on the timeout before the job can finish.
+        tokio::task::yield_now().await;
+        release_sender
+            .send(())
+            .map_err(|_error| anyhow::anyhow!("held download dropped"))?;
+        let completion_result =
+            real::timeout(STREAMED_RECONCILIATION_COMPLETION_TIMEOUT, &mut task).await;
         let task_result = match completion_result {
-            Ok(result) => result?,
+            Ok(result) => result,
             Err(_error) => {
                 task.abort();
                 let cleanup_result = task.await;
@@ -11919,6 +11920,34 @@ mod tests {
 
         fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
             self.inner.download(url, writer)
+        }
+    }
+
+    /// Downloads, then holds the download until the test releases it, so the job can't finish
+    /// while the test still acts on what the download started.
+    #[derive(Debug)]
+    struct HeldDownloadArtifactClient {
+        inner: ScriptedArtifactClient,
+        release_receiver: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl resources::ResourceHttpClient for HeldDownloadArtifactClient {
+        fn get_text(&self, url: &str) -> resources::Result<String> {
+            self.inner.get_text(url)
+        }
+
+        fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
+            self.inner.download(url, writer)?;
+            let release_receiver = match self.release_receiver.lock() {
+                Ok(release_receiver) => release_receiver,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            release_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| resources::ResourcesError::HttpRequestFailed {
+                    url: url.to_owned(),
+                    reason: format!("held download was not released: {error}"),
+                })
         }
     }
 
