@@ -20,7 +20,7 @@ Avoid `panic!`, `unreachable!`, `.unwrap()`, and `.expect()` in production code.
 
 For running tests, we recommend [nextest](https://nexte.st/).
 
-Some tests require `python3` on `PATH`: two supervisor process-group tests, and `pv-release`'s installer and smoke tests. They use only Python's standard library; no Python packages or virtual environment is required.
+Some tests require `python3` on `PATH`: a hook cleanup test in `platform`, and `pv-release`'s installer and smoke tests. They use only Python's standard library; no Python packages or virtual environment is required.
 
 To run a specific test by name:
 
@@ -134,6 +134,46 @@ guarantees do not cover machine or kernel failure, a test process that is
 stopped rather than killed (its fakes keep running), or descendants that
 deliberately escape their owned process group.
 
+## Time in Tests
+
+PV reads the time and waits only through `platform::clock`: every limit it
+gives up after, every schedule, every poll. Clippy rejects
+`std::thread::sleep`, `Instant::now`, `Instant::elapsed` and Tokio's timers
+everywhere else, tests included.
+
+A test never waits out or shortens a limit PV owns. It makes the failure happen,
+and how depends on the kind of failure:
+
+1. **A crash, or an error PV gives up on at once.** Make pv-fake fail
+   immediately, for example with `validate_exit_code` or a Gateway control
+   response. No limit is involved.
+2. **A freeze, or a failure PV retries until a limit passes.** Hold pv-fake
+   (`Pause { until }`, a load gate, `TcpHolder`) and move PV's clock past the
+   limit.
+
+To move the clock, call `platform::clock::install_fake_for_test()`, then
+`advance_when_waiting(&LIMIT)`. It waits until PV waits on that named limit and
+moves time to the moment the limit passes. When PV waits on the test's own
+thread or on a blocking thread, use `advance_when_waiting_in_background`
+instead. `is_waiting(&LIMIT)` says whether PV waits on a limit now, without
+moving time. The fake covers the whole test process, which nextest's
+process-per-test model keeps safe.
+
+Before a test waits on anything, ask:
+
+| Question | Then |
+|---|---|
+| Is it a limit or schedule PV owns? | Install the fake clock and `advance_when_waiting` past it. |
+| Is it another process or task reaching a point? | Wait on a handshake: a pv-fake event, a gate file, a channel. |
+| Does it prove that something doesn't happen? | Advance the clock past the moment it would, then assert, or check `is_waiting`. |
+| Is it a peer that never answers? | Use `std::future::pending()` or a held pv-fake. |
+
+What remains is a real wait. Ticks of 100 ms or less between checks go through
+`clock::poll` or `clock::poll_blocking`. Guards against a hung process,
+deadlines for an event, and the rare wait nothing can signal go through the
+test-only `clock::real` (`now`, `elapsed`, `timeout`, `sleep_blocking`), so
+each one is named.
+
 ## Formatting
 
 ```shell
@@ -159,7 +199,7 @@ cargo shear
 
 Treat Clippy warnings as issues to fix, not as pre-existing noise.
 
-The root `clippy.toml` configures PV-specific lint behavior. It intentionally disallows direct use of risky primitives such as raw filesystem methods, raw process spawning, raw environment access, direct terminal printing, `dbg!`, and unsafe zero-initialization.
+The root `clippy.toml` configures PV-specific lint behavior. It intentionally disallows direct use of risky primitives such as raw filesystem methods, raw process spawning, raw environment access, direct terminal printing, direct timers (see [Time in Tests](#time-in-tests)), `dbg!`, and unsafe zero-initialization.
 
 Use PV helpers instead, so permissions, atomic writes, injected test homes, process ownership checks, structured output, and diagnostics stay consistent.
 

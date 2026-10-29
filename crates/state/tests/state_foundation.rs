@@ -334,6 +334,10 @@ fn job_insertions_wait_for_a_writer_before_reading_the_next_id() -> Result<()> {
                 }
             });
             ready.recv_timeout(Duration::from_secs(5))?;
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "`state` can't use `platform::clock`, which depends on it"
+            )]
             thread::sleep(Duration::from_millis(25));
             transaction.commit()?;
             writer

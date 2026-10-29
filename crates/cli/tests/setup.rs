@@ -7,12 +7,13 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::{assert_debug_snapshot, assert_snapshot};
+use platform::clock::{self, real};
 use platform::{
     HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult, LAUNCH_AGENT_LABEL,
     LaunchAgentConfig, LocalCaMetadata, LowPortInspection, LowPortState, PRIVILEGED_HELPER_VERSION,
@@ -2166,7 +2167,7 @@ fn observed_setup_tracks(
 fn accept_with_timeout(
     listener: &UnixListener,
 ) -> anyhow::Result<(UnixStream, std::os::unix::net::SocketAddr)> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = real::now() + Duration::from_secs(5);
 
     loop {
         match listener.accept() {
@@ -2175,10 +2176,8 @@ fn accept_with_timeout(
 
                 return Ok((stream, address));
             }
-            Err(error)
-                if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-            {
-                thread::sleep(Duration::from_millis(10));
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock && real::now() < deadline => {
+                clock::poll_blocking(Duration::from_millis(10));
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 anyhow::bail!("daemon fixture did not receive a request")

@@ -21,6 +21,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use platform::clock;
 use rcgen::{CertificateParams, DistinguishedName, Issuer, KeyPair};
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
@@ -403,7 +404,7 @@ impl Runtime {
     async fn accept_http(self: Arc<Self>, listener: TcpListener) {
         loop {
             let Ok((stream, _address)) = listener.accept().await else {
-                tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
+                clock::poll(ACCEPT_RETRY_DELAY).await;
                 continue;
             };
             if self
@@ -423,7 +424,7 @@ impl Runtime {
     async fn accept_https(self: Arc<Self>, listener: TcpListener, acceptor: TlsAcceptor) {
         loop {
             let Ok((stream, _address)) = listener.accept().await else {
-                tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
+                clock::poll(ACCEPT_RETRY_DELAY).await;
                 continue;
             };
             let acceptor = acceptor.clone();
@@ -441,7 +442,7 @@ impl Runtime {
     async fn accept_admin(self: Arc<Self>, listener: UnixListener) {
         loop {
             let Ok((stream, _address)) = listener.accept().await else {
-                tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
+                clock::poll(ACCEPT_RETRY_DELAY).await;
                 continue;
             };
             tokio::spawn(
@@ -568,7 +569,6 @@ impl Runtime {
         if let Some(gate) = &control.gate {
             wait_for_path(gate).await?;
         }
-        tokio::time::sleep(control.delay).await;
         let (applied, adapt_error) = match adapted {
             Ok((config, plan)) if control.apply => (self.apply(config, &plan, source).await, None),
             Ok(_adapted) => (Ok(()), None),
@@ -594,7 +594,7 @@ impl Runtime {
             if control.exit_after {
                 let events = self.events.clone();
                 tokio::spawn(async move {
-                    tokio::time::sleep(EXIT_AFTER_LOAD_DELAY).await;
+                    clock::poll(EXIT_AFTER_LOAD_DELAY).await;
                     let _record_result = events.record(EventKind::Exit { code: 0 });
                     std::process::exit(0);
                 });
@@ -618,7 +618,7 @@ impl Runtime {
         if state::fs::path_entry_exists(&self.readiness_gate).unwrap_or(false) {
             let _probe_result = state::fs::write_sensitive_file(&self.readiness_probed, "probed\n");
             while state::fs::path_entry_exists(&self.readiness_gate).unwrap_or(false) {
-                tokio::time::sleep(GATE_POLL_INTERVAL).await;
+                clock::poll(GATE_POLL_INTERVAL).await;
             }
         }
     }
@@ -665,7 +665,7 @@ async fn hold(pause: &Pause, events: &EventLog) -> Result<()> {
 
 async fn wait_for_path(path: &Utf8Path) -> Result<()> {
     while !state::fs::path_entry_exists(path)? {
-        tokio::time::sleep(GATE_POLL_INTERVAL).await;
+        clock::poll(GATE_POLL_INTERVAL).await;
     }
 
     Ok(())

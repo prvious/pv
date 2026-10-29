@@ -127,6 +127,7 @@ mod tests {
     use std::time::Duration;
 
     use camino_tempfile::tempdir;
+    use platform::clock;
 
     use super::*;
 
@@ -142,7 +143,7 @@ mod tests {
             writeln!(&log, "round {round}")?;
             rotate_if_needed(&log, &path, 1, || {})?;
             // Archive names have millisecond stamps.
-            std::thread::sleep(Duration::from_millis(2));
+            clock::poll_blocking(Duration::from_millis(2));
         }
         writeln!(&log, "after rotation")?;
         rotate_if_needed(&log, &path, 1024, || {})?;

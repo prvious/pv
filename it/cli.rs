@@ -15,7 +15,7 @@ use std::sync::{
 #[cfg(target_os = "macos")]
 use std::thread::{self, JoinHandle};
 #[cfg(target_os = "macos")]
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Result;
 use assert_cmd::Command;
@@ -26,6 +26,8 @@ use config::ProjectConfigFile;
 #[cfg(target_os = "macos")]
 use daemon::{MonitorCleanup, MonitorExit, MonitorStart, MonitorStop, StopSignal};
 use insta::{assert_debug_snapshot, assert_snapshot};
+#[cfg(target_os = "macos")]
+use platform::clock::{self, real};
 #[cfg(target_os = "macos")]
 use serde_json::{Value, json};
 #[cfg(target_os = "macos")]
@@ -39,8 +41,6 @@ use state::{
     RuntimeLifecycleLock,
 };
 use support::{create_dir, create_laravel_init_fixture, run_pv_in, write_file};
-#[cfg(target_os = "macos")]
-use tokio::time::{sleep, timeout};
 
 mod support;
 
@@ -660,19 +660,19 @@ async fn project_link_during_daemon_prepare_stays_ordinary_after_prepare_finishe
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     let outcome = async {
-        timeout(Duration::from_secs(20), async {
+        real::timeout(Duration::from_secs(20), async {
             while !project.join("daemon-started").exists() {
-                sleep(Duration::from_millis(25)).await;
+                clock::poll(Duration::from_millis(25)).await;
             }
         })
         .await?;
         // Keep the daemon prepare held while startup's unrelated reconciliation drains.
-        timeout(Duration::from_secs(20), async {
+        real::timeout(Duration::from_secs(20), async {
             while Database::open(&paths)?
                 .job("job_000001")?
                 .is_some_and(|job| job.status == JobStatus::Running)
             {
-                sleep(Duration::from_millis(25)).await;
+                clock::poll(Duration::from_millis(25)).await;
             }
             Ok::<(), anyhow::Error>(())
         })
@@ -699,7 +699,7 @@ async fn project_link_during_daemon_prepare_stays_ordinary_after_prepare_finishe
             "serve: false\nhooks:\n  setup:\n    - touch unexpected-daemon-setup\n",
         )?;
         write_file(&project.join("release"), "")?;
-        timeout(Duration::from_secs(20), async {
+        real::timeout(Duration::from_secs(20), async {
             loop {
                 let database = Database::open(&paths)?;
                 if database.recent_jobs()?.iter().any(|job| {
@@ -709,13 +709,13 @@ async fn project_link_during_daemon_prepare_stays_ordinary_after_prepare_finishe
                 }) {
                     break Ok::<(), anyhow::Error>(());
                 }
-                sleep(Duration::from_millis(25)).await;
+                clock::poll(Duration::from_millis(25)).await;
             }
         })
         .await??;
         for _ in 0..2 {
             let accepted = daemon::submit_job(paths.clone(), "reconcile", "system").await?;
-            timeout(Duration::from_secs(20), async {
+            real::timeout(Duration::from_secs(20), async {
                 loop {
                     if Database::open(&paths)?
                         .job(&accepted.id)?
@@ -723,7 +723,7 @@ async fn project_link_during_daemon_prepare_stays_ordinary_after_prepare_finishe
                     {
                         break Ok::<(), anyhow::Error>(());
                     }
-                    sleep(Duration::from_millis(25)).await;
+                    clock::poll(Duration::from_millis(25)).await;
                 }
             })
             .await??;
@@ -940,16 +940,16 @@ struct HookCliProcess(Child);
 #[cfg(target_os = "macos")]
 impl HookCliProcess {
     fn output(&mut self) -> Result<CommandOutput> {
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = real::now() + Duration::from_secs(10);
         let status = loop {
             if let Some(status) = self.0.try_wait()? {
                 break status;
             }
             anyhow::ensure!(
-                Instant::now() < deadline,
+                real::now() < deadline,
                 "owned CLI did not stop after Ctrl-C"
             );
-            thread::sleep(Duration::from_millis(10));
+            clock::poll_blocking(Duration::from_millis(10));
         };
         let mut stdout = String::new();
         let mut stderr = String::new();
@@ -977,10 +977,10 @@ impl Drop for HookCliProcess {
 
 #[cfg(target_os = "macos")]
 fn wait_for_hook_fixture(path: &Utf8Path) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = real::now() + Duration::from_secs(10);
     while !state::fs::path_entry_exists(path)? {
-        anyhow::ensure!(Instant::now() < deadline, "hook fixture never became ready");
-        thread::sleep(Duration::from_millis(10));
+        anyhow::ensure!(real::now() < deadline, "hook fixture never became ready");
+        clock::poll_blocking(Duration::from_millis(10));
     }
     Ok(())
 }
@@ -997,10 +997,10 @@ fn reject_link_reconciliations(
     let paths = paths.clone();
     let ready = ready.to_path_buf();
     let task = thread::Builder::new().name("link-retry-fixture".to_string()).spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = real::now() + Duration::from_secs(20);
         let mut responses = 0;
         while !task_stop.load(Ordering::SeqCst) {
-            anyhow::ensure!(Instant::now() < deadline, "retry fixture timed out");
+            anyhow::ensure!(real::now() < deadline, "retry fixture timed out");
             match listener.accept() {
                 Ok((mut socket, _)) => {
                     // The test interrupts the CLI while it retries, so a later connection may hang
@@ -1025,7 +1025,7 @@ fn reject_link_reconciliations(
                         write_file(&ready, "ready")?;
                     }
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(Duration::from_millis(10)),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => clock::poll_blocking(Duration::from_millis(10)),
                 Err(error) => return Err(error.into()),
             }
         }
@@ -1526,9 +1526,9 @@ async fn project_link_skip_hooks_still_runs_discovered_first_setup_in_the_daemon
         .await??;
         assert_ne!(refused.code, Some(0));
         assert_eq!(skipped.code, Some(0));
-        timeout(Duration::from_secs(20), async {
+        real::timeout(Duration::from_secs(20), async {
             while !project.join("setup-count").exists() {
-                sleep(Duration::from_millis(25)).await;
+                clock::poll(Duration::from_millis(25)).await;
             }
         })
         .await?;
@@ -1592,14 +1592,14 @@ async fn project_link_skip_hooks_still_runs_discovered_first_setup_in_the_daemon
 
 #[cfg(target_os = "macos")]
 async fn wait_for_finished_hook_fixture_job(paths: &PvPaths, id: &str) -> Result<JobRecord> {
-    timeout(Duration::from_secs(20), async {
+    real::timeout(Duration::from_secs(20), async {
         loop {
             if let Some(job) = Database::open(paths)?.job(id)?
                 && job.status != JobStatus::Running
             {
                 return Ok::<_, anyhow::Error>(job);
             }
-            sleep(Duration::from_millis(25)).await;
+            clock::poll(Duration::from_millis(25)).await;
         }
     })
     .await?
@@ -1681,11 +1681,11 @@ fn fake_link_reconciliation(
     let paths = paths.clone();
     let project = project.to_path_buf();
     Ok(thread::Builder::new().name("link-reconciliation-fixture".to_string()).spawn(move || {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        let deadline = real::now() + Duration::from_secs(20);
         let mut socket = loop {
             match listener.accept() {
                 Ok((socket, _)) => break socket,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock && real::now() < deadline => clock::poll_blocking(Duration::from_millis(10)),
                 Err(error) => return Err(error.into()),
             }
         };
@@ -1701,7 +1701,7 @@ fn fake_link_reconciliation(
         drop(listener);
         state::fs::remove_file_if_exists(&paths.daemon_socket())?;
         if !matches!(outcome, LinkJobOutcome::Running) {
-            thread::sleep(Duration::from_millis(50));
+            clock::poll_blocking(Duration::from_millis(50));
             let mut database = Database::open(&paths)?;
             let linked = database.project_by_path(&state::fs::canonicalize(&project)?)?.ok_or_else(|| anyhow::anyhow!("Project not recorded before reconciliation"))?;
             match outcome {

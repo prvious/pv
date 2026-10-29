@@ -7,13 +7,14 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
 use platform::ResolverConfig;
+use platform::clock::{self, real};
 use serde_json::json;
 use state::{Database, PortOwner, PortRequest, PvPaths, StateError};
 
@@ -251,7 +252,7 @@ fn daemon_fixture_waits_for_delayed_health_request() -> anyhow::Result<()> {
     let daemon = DaemonFixture::start(&paths)?;
     let mut client = UnixStream::connect(paths.daemon_socket().as_std_path())?;
 
-    thread::sleep(Duration::from_millis(50));
+    clock::poll_blocking(Duration::from_millis(50));
     writeln!(
         client,
         r#"{{"protocol_version":{},"command":"health"}}"#,
@@ -616,7 +617,7 @@ fn spawn_daemon_fixture_thread(
 fn accept_with_timeout(
     listener: &UnixListener,
 ) -> anyhow::Result<(UnixStream, std::os::unix::net::SocketAddr)> {
-    let started_at = Instant::now();
+    let started_at = real::now();
 
     loop {
         match listener.accept() {
@@ -626,12 +627,12 @@ fn accept_with_timeout(
                 return Ok((stream, address));
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if started_at.elapsed() > Duration::from_secs(3) {
+                if real::elapsed(started_at) > Duration::from_secs(3) {
                     return Err(anyhow::anyhow!(
                         "timed out waiting for daemon client request"
                     ));
                 }
-                thread::sleep(Duration::from_millis(10));
+                clock::poll_blocking(Duration::from_millis(10));
             }
             Err(error) => return Err(error.into()),
         }

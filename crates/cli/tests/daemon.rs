@@ -7,14 +7,15 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use daemon::DAEMON_EXIT_GRACE;
 use insta::assert_debug_snapshot;
-use platform::{LAUNCH_AGENT_LABEL, LaunchAgentConfig, clock};
+use platform::clock::{self, real};
+use platform::{LAUNCH_AGENT_LABEL, LaunchAgentConfig};
 use serde_json::json;
 use state::{PvPaths, StateError};
 
@@ -540,13 +541,13 @@ fn daemon_disable_clears_a_previous_boot_postgres_monitor_without_signalling_reu
         .args(["-KILL", &monitor_pid.to_string()])
         .status()?;
     assert!(killed.success());
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = real::now() + Duration::from_secs(5);
     while platform::inspect_process_start_identity(monitor_pid)?.is_some() {
         assert!(
-            Instant::now() < deadline,
+            real::now() < deadline,
             "monitor {monitor_pid} outlived SIGKILL"
         );
-        thread::sleep(Duration::from_millis(10));
+        clock::poll_blocking(Duration::from_millis(10));
     }
     let reused = ChildGuard(
         TestCommand::new("/bin/sleep")
@@ -612,13 +613,13 @@ fn daemon_replacement_waits_for_delayed_exit_before_bootstrap() -> anyhow::Resul
                 let result = (|| {
                     receiver.recv_timeout(Duration::from_secs(5))?;
                     // Exit only once `pv` waits for it, so bootstrapping first fails the test.
-                    let give_up_at = Instant::now() + Duration::from_secs(5);
+                    let give_up_at = real::now() + Duration::from_secs(5);
                     while !cleanup_clock.is_waiting(&DAEMON_EXIT_GRACE) {
                         anyhow::ensure!(
-                            Instant::now() < give_up_at,
+                            real::now() < give_up_at,
                             "pv never waited for the previous daemon to exit"
                         );
-                        thread::sleep(Duration::from_millis(5));
+                        clock::poll_blocking(Duration::from_millis(5));
                     }
                     previous.cleanup()
                 })();
@@ -1015,7 +1016,7 @@ fn spawn_daemon_fixture_thread(
 fn accept_with_timeout(
     listener: &UnixListener,
 ) -> anyhow::Result<(UnixStream, std::os::unix::net::SocketAddr)> {
-    let started_at = Instant::now();
+    let started_at = real::now();
 
     loop {
         match listener.accept() {
@@ -1025,12 +1026,12 @@ fn accept_with_timeout(
                 return Ok((stream, address));
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if started_at.elapsed() > Duration::from_secs(3) {
+                if real::elapsed(started_at) > Duration::from_secs(3) {
                     return Err(anyhow::anyhow!(
                         "timed out waiting for daemon client request"
                     ));
                 }
-                thread::sleep(Duration::from_millis(10));
+                clock::poll_blocking(Duration::from_millis(10));
             }
             Err(error) => return Err(error.into()),
         }

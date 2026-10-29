@@ -455,8 +455,9 @@ mod tests {
     use camino_tempfile::tempdir;
     #[cfg(target_os = "macos")]
     use tokio::io::{AsyncBufReadExt, BufReader};
+
     #[cfg(target_os = "macos")]
-    use tokio::time::{sleep, timeout};
+    use crate::clock::{self, real};
 
     #[cfg(target_os = "macos")]
     use super::{HookCommand, HookProcess, group_is_running};
@@ -524,13 +525,13 @@ mod tests {
         let mut process = HookProcess::spawn(&mut command)?;
         let stdout = process.child_mut()?.stdout.take().context("child stdout")?;
         let mut ready = String::new();
-        timeout(
+        real::timeout(
             Duration::from_secs(5),
             BufReader::new(stdout).read_line(&mut ready),
         )
         .await??;
         assert_eq!(ready, "ready\n");
-        timeout(Duration::from_secs(5), process.stop()).await??;
+        real::timeout(Duration::from_secs(5), process.stop()).await??;
         Ok(())
     }
 
@@ -546,23 +547,23 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         let mut process = HookProcess::spawn(&mut command).context("spawn anchored command")?;
-        timeout(Duration::from_secs(5), async {
+        real::timeout(Duration::from_secs(5), async {
             while !state::fs::path_entry_exists(&directory.path().join("pid"))? {
-                sleep(Duration::from_millis(10)).await;
+                clock::poll(Duration::from_millis(10)).await;
             }
             Ok::<_, state::StateError>(())
         })
         .await??;
         process.anchor.stdin.take();
-        let status = timeout(Duration::from_secs(5), process.wait())
+        let status = real::timeout(Duration::from_secs(5), process.wait())
             .await
             .context("wait for the command after owner-pipe closure")?
             .context("read the command exit after owner-pipe closure")?;
         // Verify the fallback itself stopped every member before parent cleanup can help.
         // The unreaped anchor keeps the group identifier owned throughout this check.
-        timeout(Duration::from_secs(5), async {
+        real::timeout(Duration::from_secs(5), async {
             while group_is_running(process.group)? {
-                sleep(Duration::from_millis(10)).await;
+                clock::poll(Duration::from_millis(10)).await;
             }
             Ok::<_, io::Error>(())
         })

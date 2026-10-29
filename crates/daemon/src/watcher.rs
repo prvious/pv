@@ -404,10 +404,10 @@ mod tests {
     use camino_tempfile::{Utf8TempDir, tempdir};
     use notify::Event;
     use notify::event::{AccessKind, EventKind, Flag};
+    use platform::clock::real;
     use state::{Database, LinkProjectInput, PvPaths};
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
     use tokio::task::JoinHandle;
-    use tokio::time::timeout;
 
     use super::{ProjectConfigWatcher, WatchMessage};
     use crate::reconciliation::ReconciliationDebouncer;
@@ -492,7 +492,7 @@ mod tests {
 
     impl RunningWatcher {
         async fn next_scope(&mut self) -> Result<String> {
-            timeout(EVENT_TIMEOUT, self.scopes.recv())
+            real::timeout(EVENT_TIMEOUT, self.scopes.recv())
                 .await?
                 .ok_or_else(|| anyhow!("watcher scope recorder closed"))
         }
@@ -509,7 +509,7 @@ mod tests {
         /// The scopes requested until nothing arrives for [`QUIET_PERIOD`].
         async fn settle(&mut self) -> Vec<String> {
             let mut scopes = Vec::new();
-            while let Ok(Some(scope)) = timeout(QUIET_PERIOD, self.scopes.recv()).await {
+            while let Ok(Some(scope)) = real::timeout(QUIET_PERIOD, self.scopes.recv()).await {
                 scopes.push(scope);
             }
 

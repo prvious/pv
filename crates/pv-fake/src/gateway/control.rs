@@ -4,7 +4,6 @@
 
 use std::io::Write;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -32,8 +31,6 @@ pub(crate) struct Control {
     apply_load: Option<Setting<bool>>,
     /// Holds `POST /load`, after recording it, until this path exists.
     load_response_gate: Option<Setting<Utf8PathBuf>>,
-    /// Delays the `/load` response; an accepted load applies just before it.
-    load_delay_ms: Option<Setting<u64>>,
     /// Replaces the `/load` response body.
     load_response_body: Option<Setting<String>>,
     /// Written once a load is accepted.
@@ -80,7 +77,6 @@ pub(crate) struct LoadControl {
     pub(crate) status: u16,
     pub(crate) apply: bool,
     pub(crate) gate: Option<Utf8PathBuf>,
-    pub(crate) delay: Duration,
     pub(crate) response_body: Option<String>,
     pub(crate) accepted_marker: Option<Utf8PathBuf>,
     pub(crate) exit_after: bool,
@@ -96,7 +92,6 @@ impl LoadControl {
             status,
             apply: accepted && next(&mut control.apply_load).unwrap_or(true),
             gate: next(&mut control.load_response_gate),
-            delay: Duration::from_millis(next(&mut control.load_delay_ms).unwrap_or(0)),
             response_body: next(&mut control.load_response_body),
             accepted_marker: accepted
                 .then(|| next(&mut control.load_accepted_marker))

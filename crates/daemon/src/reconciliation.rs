@@ -693,8 +693,9 @@ fn lock_debounce_state(state: &DebounceState) -> MutexGuard<'_, DebounceInner> {
 
 #[cfg(test)]
 mod tests {
-    use platform::clock;
-    use tokio::time::{Duration, sleep, timeout};
+    use std::time::Duration;
+
+    use platform::clock::{self, real};
 
     use super::{
         EnqueueResult, QueuedReconciliation, ReconciliationDebouncer, ReconciliationJobTiming,
@@ -734,10 +735,10 @@ mod tests {
         )?;
         let enqueued_after = clock::now();
 
-        sleep(Duration::from_millis(10)).await;
+        clock::poll(Duration::from_millis(10)).await;
         let released_at = clock::now();
         active.finish();
-        let running = timeout(Duration::from_secs(1), waiting.wait_for_turn()).await?;
+        let running = real::timeout(Duration::from_secs(1), waiting.wait_for_turn()).await?;
         let started_after = clock::now();
         let timing = running.timing();
 
@@ -774,19 +775,19 @@ mod tests {
         let project = queued(queue.enqueue(project_scope.clone(), || {
             Ok::<String, anyhow::Error>("job_2".to_string())
         })?)?;
-        let project_wait = timeout(Duration::from_millis(10), project.wait_for_turn()).await;
+        let project_wait = real::timeout(Duration::from_millis(10), project.wait_for_turn()).await;
         assert!(project_wait.is_err());
 
         first_run.finish();
 
-        let trailing_run = timeout(Duration::from_secs(1), trailing.wait_for_turn()).await?;
+        let trailing_run = real::timeout(Duration::from_secs(1), trailing.wait_for_turn()).await?;
         assert_eq!(trailing_run.scope(), &ReconciliationScope::System);
         trailing_run.finish();
 
         let project = queued(queue.enqueue(project_scope.clone(), || {
             Ok::<String, anyhow::Error>("job_3".to_string())
         })?)?;
-        let project_run = timeout(Duration::from_secs(1), project.wait_for_turn()).await?;
+        let project_run = real::timeout(Duration::from_secs(1), project.wait_for_turn()).await?;
         assert_eq!(project_run.scope(), &project_scope);
         assert_eq!(project_run.job_id(), "job_3");
         project_run.finish();
@@ -838,7 +839,7 @@ mod tests {
 
         active.finish();
 
-        let running = timeout(Duration::from_secs(1), trailing.wait_for_turn()).await?;
+        let running = real::timeout(Duration::from_secs(1), trailing.wait_for_turn()).await?;
         assert_eq!(running.job_id(), "job_2");
         running.finish();
 
@@ -895,7 +896,8 @@ mod tests {
         assert_eq!(running_update.job_id(), "job_1");
         running_update.finish();
 
-        let running_reconcile = timeout(Duration::from_secs(1), reconcile.wait_for_turn()).await?;
+        let running_reconcile =
+            real::timeout(Duration::from_secs(1), reconcile.wait_for_turn()).await?;
         assert_eq!(running_reconcile.scope(), &ReconciliationScope::System);
         assert_eq!(running_reconcile.job_id(), "job_2");
         running_reconcile.finish();
@@ -920,7 +922,8 @@ mod tests {
         let running_startup = startup.wait_for_turn().await;
         running_startup.finish();
 
-        let running_reconcile = timeout(Duration::from_secs(1), reconcile.wait_for_turn()).await?;
+        let running_reconcile =
+            real::timeout(Duration::from_secs(1), reconcile.wait_for_turn()).await?;
         assert_eq!(running_reconcile.job_id(), "job_2");
         running_reconcile.finish();
 
@@ -938,7 +941,7 @@ mod tests {
         debouncer.request(ReconciliationScope::System).await;
         debouncer.request(ReconciliationScope::System).await;
         debouncer.request(project_scope.clone()).await;
-        sleep(Duration::from_millis(50)).await;
+        clock::poll(Duration::from_millis(50)).await;
 
         let mut scopes = Vec::new();
         while let Ok(scope) = receiver.try_recv() {

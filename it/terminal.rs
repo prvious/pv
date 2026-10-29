@@ -4,12 +4,13 @@
 use std::io::{Read, Write};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use insta::assert_snapshot;
+use platform::clock::{self, real};
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
 use support::{create_dir, create_laravel_init_fixture, run_pv_in, write_file};
 
@@ -382,7 +383,7 @@ impl Session {
     /// Types `keys` after a short pause. A key that arrives before the
     /// prompt switches the terminal into raw mode would be echoed by the tty.
     fn press(&mut self, keys: &str) -> Result<()> {
-        thread::sleep(KEY_DELAY);
+        clock::poll_blocking(KEY_DELAY);
         self.writer.write_all(keys.as_bytes())?;
         self.writer.flush()?;
 
@@ -392,9 +393,9 @@ impl Session {
     /// Waits until `text` is on screen. Wait for the last line of a frame
     /// before snapshotting, because frames can arrive in several reads.
     fn wait_for(&mut self, text: &str) -> Result<()> {
-        let deadline = Instant::now() + TIMEOUT;
+        let deadline = real::now() + TIMEOUT;
         while !self.contents().contains(text) {
-            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            let Some(remaining) = deadline.checked_duration_since(real::now()) else {
                 bail!(
                     "timed out waiting for {text:?}; screen:\n{}",
                     self.contents()
@@ -418,7 +419,7 @@ impl Session {
     /// text, because a pseudo-terminal may drop output still buffered when
     /// the process exits.
     fn wait_for_exit(&mut self) -> Result<u32> {
-        let deadline = Instant::now() + TIMEOUT;
+        let deadline = real::now() + TIMEOUT;
         let status = loop {
             if let Some(status) = self
                 .child
@@ -427,7 +428,7 @@ impl Session {
             {
                 break status;
             }
-            if Instant::now() >= deadline {
+            if real::now() >= deadline {
                 bail!(
                     "timed out waiting for pv to exit; screen:\n{}",
                     self.contents()

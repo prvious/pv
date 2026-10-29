@@ -4,6 +4,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use camino::Utf8PathBuf;
 use daemon::{AdoptedProcess, ManagedProcess, ProcessSpec, ProcessSupervisor};
+use platform::clock;
 use pv_fake::{EventKind, FakeSettings, Persona};
 use state::{PvPaths, fs};
 
@@ -56,7 +57,7 @@ impl RuntimeFixture {
                 fixture.descendant_pid = Some(pid);
                 return Ok(fixture);
             }
-            std::thread::sleep(Duration::from_millis(10));
+            clock::poll_blocking(Duration::from_millis(10));
         }
         Err(anyhow!("fixture descendant did not start"))
     }

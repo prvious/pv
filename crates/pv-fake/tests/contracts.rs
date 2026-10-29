@@ -2,17 +2,17 @@
 #![cfg(unix)]
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::process::{Child, ExitStatus, Stdio};
-use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
+use platform::clock::{self, real};
 use pv_fake::{EventKind, FakeSettings, GatewayListeners, InstalledFake, Pause, Persona, Scenario};
 use rustix::io::{FdFlags, fcntl_setfd};
 use rustix::process::{Pid, Signal, kill_process};
@@ -314,18 +314,25 @@ fn load_applies_after_its_client_disconnects() -> Result<()> {
     let tempdir = tempdir()?;
     let [port] = pv_fake::ports()?;
     let gateway = GatewayFake::start(tempdir.path(), port)?;
-    gateway.control(json!({"load_delay_ms": [100]}))?;
+    let release = tempdir.path().join("release-load");
+    gateway.control(json!({"load_response_gate": [release]}))?;
     let load = gateway.config(port, "applied late");
 
-    // Hang up once the fake has the load, as PV does when its load times out.
+    // Hang up once the fake has the load, as PV does when its load times out. The fake closes the
+    // connection once it reads the hang-up, dropping the request before the load is released.
     let mut stream = UnixStream::connect(&gateway.admin_socket)?;
     write_request(&mut stream, "POST", "/load", &load)?;
     let received = wait_until(|| Ok(gateway.requests()?.len() == 1));
-    drop(stream);
+    stream.shutdown(Shutdown::Write)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    let mut answer = Vec::new();
+    stream.read_to_end(&mut answer)?;
+    state::fs::write_sensitive_file(&release, "released\n")?;
     let applied = wait_until(|| Ok(http_get(port, "/__pv/health")?.1 == "applied late"));
 
     received?;
     applied?;
+    assert!(answer.is_empty(), "{}", String::from_utf8_lossy(&answer));
     assert_eq!(gateway.record("fake-admin-current.bin")?, load);
 
     Ok(())
@@ -1327,12 +1334,12 @@ fn smtp_greeting(port: u16) -> Result<String> {
 }
 
 fn connect_with_retry(port: u16) -> Result<TcpStream> {
-    let deadline = Instant::now() + WAIT_TIMEOUT;
+    let deadline = real::now() + WAIT_TIMEOUT;
     loop {
         match TcpStream::connect(("127.0.0.1", port)) {
             Ok(stream) => return Ok(stream),
-            Err(error) if Instant::now() >= deadline => return Err(error.into()),
-            Err(_error) => sleep(POLL_INTERVAL),
+            Err(error) if real::now() >= deadline => return Err(error.into()),
+            Err(_error) => clock::poll_blocking(POLL_INTERVAL),
         }
     }
 }
@@ -1532,15 +1539,15 @@ fn write_request(stream: &mut impl Write, method: &str, path: &str, body: &str) 
 }
 
 fn wait_until(mut condition: impl FnMut() -> Result<bool>) -> Result<()> {
-    let deadline = Instant::now() + WAIT_TIMEOUT;
+    let deadline = real::now() + WAIT_TIMEOUT;
     loop {
         if condition().unwrap_or(false) {
             return Ok(());
         }
-        if Instant::now() >= deadline {
+        if real::now() >= deadline {
             bail!("condition not met within {WAIT_TIMEOUT:?}");
         }
-        sleep(POLL_INTERVAL);
+        clock::poll_blocking(POLL_INTERVAL);
     }
 }
 
@@ -1587,7 +1594,7 @@ fn lifeline_pipe() -> Result<(OwnedFd, OwnedFd)> {
 
 /// Waits for the fake's `started` event and returns whether its lifeline is armed.
 fn wait_for_start(fake: &InstalledFake, child: &mut FakeProcess) -> Result<bool> {
-    let deadline = Instant::now() + WAIT_TIMEOUT;
+    let deadline = real::now() + WAIT_TIMEOUT;
     loop {
         let started = fake
             .events()?
@@ -1599,7 +1606,7 @@ fn wait_for_start(fake: &InstalledFake, child: &mut FakeProcess) -> Result<bool>
         if let Some(lifeline_armed) = started {
             return Ok(lifeline_armed);
         }
-        if Instant::now() >= deadline {
+        if real::now() >= deadline {
             let stderr = state::fs::read_to_string(&stderr_path(fake)).unwrap_or_default();
             let events = state::fs::read_to_string(&Utf8PathBuf::from(format!(
                 "{}.pv-fake.events.jsonl",
@@ -1612,20 +1619,20 @@ fn wait_for_start(fake: &InstalledFake, child: &mut FakeProcess) -> Result<bool>
                 child.0.try_wait()?
             );
         }
-        sleep(POLL_INTERVAL);
+        clock::poll_blocking(POLL_INTERVAL);
     }
 }
 
 fn wait_for_exit(child: &mut FakeProcess) -> Result<ExitStatus> {
-    let deadline = Instant::now() + WAIT_TIMEOUT;
+    let deadline = real::now() + WAIT_TIMEOUT;
     loop {
         if let Some(status) = child.0.try_wait()? {
             return Ok(status);
         }
-        if Instant::now() >= deadline {
+        if real::now() >= deadline {
             bail!("fake process {} did not exit", child.0.id());
         }
-        sleep(POLL_INTERVAL);
+        clock::poll_blocking(POLL_INTERVAL);
     }
 }
 
@@ -1662,19 +1669,19 @@ fn wait_for_event<T>(
     fake: &InstalledFake,
     mut find: impl FnMut(&EventKind) -> Option<T>,
 ) -> Result<T> {
-    let deadline = Instant::now() + WAIT_TIMEOUT;
+    let deadline = real::now() + WAIT_TIMEOUT;
     loop {
         let events = fake.events()?;
         if let Some(found) = events.iter().find_map(|event| find(&event.kind)) {
             return Ok(found);
         }
-        if Instant::now() >= deadline {
+        if real::now() >= deadline {
             bail!(
                 "fake {} did not record the expected event; events {events:?}",
                 fake.executable()
             );
         }
-        sleep(POLL_INTERVAL);
+        clock::poll_blocking(POLL_INTERVAL);
     }
 }
 

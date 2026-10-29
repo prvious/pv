@@ -6,7 +6,8 @@ use hickory_proto::rr::rdata::A;
 use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
 use hickory_proto::serialize::binary::BinEncodable;
 use insta::{Settings, assert_debug_snapshot};
-use platform::{clock, loopback_tcp_port_available};
+use platform::clock::{self, real};
+use platform::loopback_tcp_port_available;
 use pv_fake::{EventKind, FakeSettings, InstalledFake, Pause, Persona};
 use rusqlite::{Connection, params};
 use rustix::io::Errno;
@@ -31,7 +32,6 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UdpSocket, UnixListener, UnixStream};
-use tokio::time::{Instant as TokioInstant, sleep, timeout, timeout_at};
 
 const EXPECTED_DNS_TTL_SECONDS: u32 = 5;
 const JOB_STATUS_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -405,9 +405,9 @@ async fn daemon_shutdown_cancels_startup_reconciliation_waiting_for_jobs_lock() 
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
 
-    timeout(Duration::from_secs(1), daemon.shutdown()).await??;
+    real::timeout(Duration::from_secs(1), daemon.shutdown()).await??;
     drop(jobs_lock);
-    sleep(Duration::from_millis(100)).await;
+    clock::poll(Duration::from_millis(100)).await;
 
     let _jobs_lock = JobsLock::acquire(&paths)?;
     assert!(Database::open(&paths)?.recent_jobs()?.is_empty());
@@ -432,7 +432,7 @@ async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
 
         let shutdown_was_pending = {
             let mut shutdown = Box::pin(gateway_guard.shutdown_daemon());
-            let early_shutdown = timeout(Duration::from_millis(100), &mut shutdown).await;
+            let early_shutdown = real::timeout(Duration::from_millis(100), &mut shutdown).await;
             state::fs::write_sensitive_file(&release_validation, "release\n")?;
             match early_shutdown {
                 Ok(result) => {
@@ -440,7 +440,7 @@ async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
                     false
                 }
                 Err(_) => {
-                    timeout(Duration::from_secs(5), shutdown).await??;
+                    real::timeout(Duration::from_secs(5), shutdown).await??;
                     true
                 }
             }
@@ -513,9 +513,9 @@ async fn seeded_gateway_drop_does_not_block_current_thread_runtime() -> Result<(
         return propagate_after_cleanup(Err(error.into()), cleanup_result);
     }
 
-    let setup_deadline = TokioInstant::now() + TARGETED_SCENARIO_TIMEOUT;
+    let setup_deadline = real::now() + TARGETED_SCENARIO_TIMEOUT;
     while !fallback_ready_path.exists() && !child.has_exited()? {
-        if TokioInstant::now() >= setup_deadline {
+        if real::now() >= setup_deadline {
             let cleanup_result = async {
                 let child_cleanup = async {
                     child.stop(Duration::from_millis(100)).await?;
@@ -533,16 +533,16 @@ async fn seeded_gateway_drop_does_not_block_current_thread_runtime() -> Result<(
                 cleanup_result,
             );
         }
-        sleep(Duration::from_millis(20)).await;
+        clock::poll(Duration::from_millis(20)).await;
     }
     state::fs::write_sensitive_file(&fallback_release_path, "release\n")?;
-    let deadline = TokioInstant::now() + Duration::from_secs(5);
+    let deadline = real::now() + Duration::from_secs(5);
 
     loop {
         if child.has_exited()? {
             break;
         }
-        if TokioInstant::now() >= deadline {
+        if real::now() >= deadline {
             let mut cleanup_failures = Vec::new();
             if let Err(error) = async {
                 child.stop(Duration::from_millis(100)).await?;
@@ -569,7 +569,7 @@ async fn seeded_gateway_drop_does_not_block_current_thread_runtime() -> Result<(
                 "nested fallback regression timed out; output={output}{cleanup_diagnostic}"
             ));
         }
-        sleep(Duration::from_millis(20)).await;
+        clock::poll(Duration::from_millis(20)).await;
     }
 
     child.stop(Duration::from_millis(100)).await?;
@@ -1057,11 +1057,11 @@ fn recorded_runtime_pid(metadata_path: &Utf8Path) -> Result<Pid> {
 }
 
 async fn wait_for_test_process_exit(process: Pid) -> Result<()> {
-    timeout(Duration::from_secs(5), async {
+    real::timeout(Duration::from_secs(5), async {
         loop {
             match test_kill_process(process) {
                 Err(Errno::SRCH) => return Ok(()),
-                Ok(()) => sleep(Duration::from_millis(10)).await,
+                Ok(()) => clock::poll(Duration::from_millis(10)).await,
                 Err(error) => return Err(error.into()),
             }
         }
@@ -1071,12 +1071,12 @@ async fn wait_for_test_process_exit(process: Pid) -> Result<()> {
 }
 
 async fn wait_for_test_process_group_exit(process_group: Pid) -> Result<()> {
-    timeout(Duration::from_secs(5), async {
+    real::timeout(Duration::from_secs(5), async {
         loop {
             match test_kill_process_group(process_group) {
                 Err(Errno::SRCH) => return Ok(()),
                 // macOS reports a group holding only unreaped zombies as EPERM.
-                Ok(()) | Err(Errno::PERM) => sleep(Duration::from_millis(10)).await,
+                Ok(()) | Err(Errno::PERM) => clock::poll(Duration::from_millis(10)).await,
                 Err(error) => return Err(error.into()),
             }
         }
@@ -1124,7 +1124,7 @@ async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
 
     let operation_result = async {
         wait_for_succeeded_job_scope(&paths, "system").await?;
-        sleep(Duration::from_millis(100)).await;
+        clock::poll(Duration::from_millis(100)).await;
         let supervisor = daemon::ProcessSupervisor::new(paths.clone());
         let gateway = supervisor
             .adopt_recorded(&paths.gateway_runtime_metadata())?
@@ -1228,9 +1228,9 @@ async fn fallback_shutdown_cancels_foreground_socket_reconciliation() -> Result<
     );
     assert_job_has_no_coverage(&paths, &job.id)?;
     state::fs::write_sensitive_file(&release_validation, "release\n")?;
-    let lines = timeout(Duration::from_secs(5), request_task).await???;
+    let lines = real::timeout(Duration::from_secs(5), request_task).await???;
     assert_eq!(required_response_job_id(&lines)?, job.id);
-    sleep(Duration::from_millis(100)).await;
+    clock::poll(Duration::from_millis(100)).await;
     assert!(!fake_ran_after_hold(&worker)?);
     assert!(!paths.worker_runtime_metadata("8.4").exists());
     assert_eq!(
@@ -1282,7 +1282,7 @@ async fn daemon_shutdown_joins_health_triggered_worker_recovery() -> Result<()> 
         .take()
         .ok_or_else(|| anyhow!("daemon was not attached before health recovery shutdown"))?;
     let mut shutdown_task = tokio::spawn(daemon.shutdown());
-    let early_shutdown = timeout(Duration::from_millis(100), &mut shutdown_task).await;
+    let early_shutdown = real::timeout(Duration::from_millis(100), &mut shutdown_task).await;
     let shutdown_completed_before_recovery = early_shutdown.is_ok();
     state::fs::write_sensitive_file(&release_validation, "release\n")?;
     match early_shutdown {
@@ -1296,7 +1296,7 @@ async fn daemon_shutdown_joins_health_triggered_worker_recovery() -> Result<()> 
             .is_some_and(|error| error.contains("FrankenPHP config validation failed"))
     );
     assert_job_has_no_coverage(&paths, &job.id)?;
-    sleep(Duration::from_millis(100)).await;
+    clock::poll(Duration::from_millis(100)).await;
     assert!(!fake_ran_after_hold(&worker_fake)?);
     assert!(!paths.worker_runtime_metadata("8.4").exists());
     gateway_guard.shutdown_and_cleanup().await?;
@@ -1391,14 +1391,14 @@ async fn daemon_shutdown_keeps_jobs_lock_until_blocking_install_finishes() -> Re
             client,
         )
         .await?;
-    timeout(Duration::from_secs(5), async {
+    real::timeout(Duration::from_secs(5), async {
         while !started.load(Ordering::SeqCst) {
-            sleep(Duration::from_millis(10)).await;
+            clock::poll(Duration::from_millis(10)).await;
         }
     })
     .await?;
     let mut shutdown = Box::pin(daemon.shutdown());
-    let early_shutdown = timeout(Duration::from_millis(100), &mut shutdown).await;
+    let early_shutdown = real::timeout(Duration::from_millis(100), &mut shutdown).await;
     let jobs_lock_held = matches!(
         JobsLock::acquire(&paths),
         Err(state::StateError::CoordinationLockHeld { .. })
@@ -1410,7 +1410,7 @@ async fn daemon_shutdown_keeps_jobs_lock_until_blocking_install_finishes() -> Re
             false
         }
         Err(_) => {
-            timeout(Duration::from_secs(5), shutdown).await??;
+            real::timeout(Duration::from_secs(5), shutdown).await??;
             true
         }
     };
@@ -1448,9 +1448,9 @@ async fn fallback_shutdown_wakes_blocked_resource_request() -> Result<()> {
                 cancel,
             )
             .await?;
-    timeout(Duration::from_secs(5), async {
+    real::timeout(Duration::from_secs(5), async {
         while !started.load(Ordering::SeqCst) {
-            sleep(Duration::from_millis(10)).await;
+            clock::poll(Duration::from_millis(10)).await;
         }
     })
     .await?;
@@ -1462,7 +1462,7 @@ async fn fallback_shutdown_wakes_blocked_resource_request() -> Result<()> {
 
     daemon.shutdown_without_waiting_for_test()?;
 
-    let job = timeout(
+    let job = real::timeout(
         Duration::from_secs(5),
         wait_for_job_id_status(&paths, &job.id, JobStatus::Failed),
     )
@@ -1474,14 +1474,12 @@ async fn fallback_shutdown_wakes_blocked_resource_request() -> Result<()> {
         "resource error was not preserved: {:?}",
         job.error
     );
-    let lock_deadline = Instant::now() + Duration::from_secs(5);
+    let lock_deadline = real::now() + Duration::from_secs(5);
     let _jobs_lock = loop {
         match JobsLock::acquire(&paths) {
             Ok(lock) => break lock,
-            Err(state::StateError::CoordinationLockHeld { .. })
-                if Instant::now() < lock_deadline =>
-            {
-                sleep(JOB_STATUS_POLL_INTERVAL).await;
+            Err(state::StateError::CoordinationLockHeld { .. }) if real::now() < lock_deadline => {
+                clock::poll(JOB_STATUS_POLL_INTERVAL).await;
             }
             Err(error) => return Err(error.into()),
         }
@@ -1522,14 +1520,14 @@ async fn fallback_shutdown_drains_blocked_foreground_update_and_preserves_its_er
     let shutdown_paths = paths.clone();
     let shutdown_update_started = Arc::clone(&update_started);
     let shutdown_task = tokio::task::spawn_blocking(move || {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = real::now() + Duration::from_secs(5);
         while !shutdown_update_started.load(Ordering::SeqCst) {
-            if Instant::now() >= deadline {
+            if real::now() >= deadline {
                 return Err(anyhow!(
                     "foreground update did not reach the blocked request"
                 ));
             }
-            std::thread::sleep(Duration::from_millis(10));
+            clock::poll_blocking(Duration::from_millis(10));
         }
         let jobs_lock_held = matches!(
             JobsLock::acquire(&shutdown_paths),
@@ -1552,7 +1550,7 @@ async fn fallback_shutdown_drains_blocked_foreground_update_and_preserves_its_er
         )
         .await
     });
-    let lines = timeout(Duration::from_secs(5), request_task).await???;
+    let lines = real::timeout(Duration::from_secs(5), request_task).await???;
     let job_id = required_response_job_id(&lines)?;
     let jobs_lock_held = shutdown_task.await??;
     assert!(jobs_lock_held);
@@ -1565,14 +1563,12 @@ async fn fallback_shutdown_drains_blocked_foreground_update_and_preserves_its_er
         job.error
     );
     assert_eq!(job.id, job_id);
-    let lock_deadline = Instant::now() + Duration::from_secs(5);
+    let lock_deadline = real::now() + Duration::from_secs(5);
     let jobs_lock = loop {
         match JobsLock::acquire(&paths) {
             Ok(lock) => break lock,
-            Err(state::StateError::CoordinationLockHeld { .. })
-                if Instant::now() < lock_deadline =>
-            {
-                sleep(JOB_STATUS_POLL_INTERVAL).await;
+            Err(state::StateError::CoordinationLockHeld { .. }) if real::now() < lock_deadline => {
+                clock::poll(JOB_STATUS_POLL_INTERVAL).await;
             }
             Err(error) => return Err(error.into()),
         }
@@ -1776,7 +1772,7 @@ async fn repeated_system_requests_during_startup_create_one_trailing_job() -> Re
         }))?;
         let mut readers = Vec::new();
         let mut responses = Vec::new();
-        let exchange_deadline = TokioInstant::now() + REQUEST_LINES_TIMEOUT;
+        let exchange_deadline = real::now() + REQUEST_LINES_TIMEOUT;
         for reader_index in 0..3 {
             let mut stream = request_step(
                 exchange_deadline,
@@ -2335,12 +2331,12 @@ fn worker_load_requests(paths: &PvPaths) -> Result<usize> {
 }
 
 async fn wait_for_worker_load(paths: &PvPaths) -> Result<()> {
-    timeout(TARGETED_SCENARIO_TIMEOUT, async {
+    real::timeout(TARGETED_SCENARIO_TIMEOUT, async {
         loop {
             if worker_load_requests(paths)? > 0 {
                 return Ok::<(), anyhow::Error>(());
             }
-            sleep(JOB_STATUS_POLL_INTERVAL).await;
+            clock::poll(JOB_STATUS_POLL_INTERVAL).await;
         }
     })
     .await
@@ -2356,12 +2352,12 @@ struct HeldValidation {
 }
 
 async fn wait_for_held_validation(fake: &InstalledFake) -> Result<HeldValidation> {
-    timeout(TARGETED_SCENARIO_TIMEOUT, async {
+    real::timeout(TARGETED_SCENARIO_TIMEOUT, async {
         loop {
             if let Some(validation) = held_validation(fake)? {
                 return Ok::<_, anyhow::Error>(validation);
             }
-            sleep(JOB_STATUS_POLL_INTERVAL).await;
+            clock::poll(JOB_STATUS_POLL_INTERVAL).await;
         }
     })
     .await
@@ -2420,12 +2416,12 @@ fn event_pid(raw_pid: i32) -> Result<Pid> {
 }
 
 async fn wait_for_fake_hold(fake: &InstalledFake) -> Result<()> {
-    timeout(TARGETED_SCENARIO_TIMEOUT, async {
+    real::timeout(TARGETED_SCENARIO_TIMEOUT, async {
         loop {
             if fake_held(fake)? {
                 return Ok::<(), anyhow::Error>(());
             }
-            sleep(JOB_STATUS_POLL_INTERVAL).await;
+            clock::poll(JOB_STATUS_POLL_INTERVAL).await;
         }
     })
     .await
@@ -2456,7 +2452,7 @@ fn fake_ran_after_hold(fake: &InstalledFake) -> Result<bool> {
 
 /// The descendant of the fake's `run`, once it has started one.
 async fn wait_for_runtime_descendant(fake: &InstalledFake) -> Result<Pid> {
-    timeout(TARGETED_SCENARIO_TIMEOUT, async {
+    real::timeout(TARGETED_SCENARIO_TIMEOUT, async {
         loop {
             let events = fake.events()?;
             let runtime = events.iter().find_map(|event| match &event.kind {
@@ -2476,7 +2472,7 @@ async fn wait_for_runtime_descendant(fake: &InstalledFake) -> Result<Pid> {
             if let Some(descendant) = descendant {
                 return event_pid(descendant);
             }
-            sleep(JOB_STATUS_POLL_INTERVAL).await;
+            clock::poll(JOB_STATUS_POLL_INTERVAL).await;
         }
     })
     .await
@@ -2627,13 +2623,13 @@ async fn shutdown_seeded_gateway(
 /// Stops every runtime the test's PV home runs. A daemon shut down without waiting can still
 /// hold the jobs lock for a moment.
 async fn cleanup_seeded_runtimes(paths: &PvPaths) -> Result<()> {
-    let deadline = Instant::now() + SEEDED_GATEWAY_CLEANUP_TIMEOUT;
+    let deadline = real::now() + SEEDED_GATEWAY_CLEANUP_TIMEOUT;
     loop {
         match daemon::stop_recorded_runtimes(paths.clone()).await {
             Err(daemon::DaemonError::State(StateError::CoordinationLockHeld { .. }))
-                if Instant::now() < deadline =>
+                if real::now() < deadline =>
             {
-                sleep(SEEDED_GATEWAY_CLEANUP_POLL_INTERVAL).await;
+                clock::poll(SEEDED_GATEWAY_CLEANUP_POLL_INTERVAL).await;
             }
             result => return Ok(result?),
         }
@@ -2940,14 +2936,14 @@ async fn targeted_scenario_timeout_still_cleans_owned_state() -> Result<()> {
     wait_for_seeded_worker(&paths, "8.4", worker_port).await?;
     let worker_group = recorded_runtime_pid(&paths.worker_runtime_metadata("8.4"))?;
 
-    let operation_result = timeout(
+    let operation_result = real::timeout(
         Duration::from_millis(25),
         std::future::pending::<Result<()>>(),
     )
     .await
     .map_err(|_elapsed| anyhow!("targeted gateway scenario timed out after 25ms"))
     .and_then(|result| result);
-    let cleanup_result = timeout(
+    let cleanup_result = real::timeout(
         Duration::from_secs(5),
         gateway_guard.shutdown_without_waiting_and_cleanup(),
     )
@@ -3045,7 +3041,7 @@ async fn run_targeted_gateway_phase_scenario(
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
     gateway_guard.attach_daemon(daemon);
-    let operation_result = timeout(TARGETED_SCENARIO_TIMEOUT, async {
+    let operation_result = real::timeout(TARGETED_SCENARIO_TIMEOUT, async {
         let initial_lines = request_lines(
             &paths,
             json!({
@@ -3316,7 +3312,7 @@ async fn blocking_client_times_out_when_daemon_withholds_response() -> Result<()
         daemon::submit_job_blocking(client_paths, "reconcile", "system")
     });
 
-    let result = timeout(Duration::from_secs(5), client).await??;
+    let result = real::timeout(Duration::from_secs(5), client).await??;
 
     server.abort();
     assert!(matches!(
@@ -3422,7 +3418,7 @@ async fn idle_client_without_newline_does_not_block_health_requests() -> Result<
 
     idle_stream.write_all(b"{").await?;
 
-    let lines = timeout(
+    let lines = real::timeout(
         Duration::from_secs(2),
         request_lines(
             &paths,
@@ -3461,7 +3457,7 @@ async fn fallback_shutdown_drains_idle_client_without_waiting_for_request_timeou
 
     daemon.shutdown_without_waiting_for_test()?;
     let mut response = Vec::new();
-    timeout(
+    real::timeout(
         Duration::from_secs(5),
         idle_stream.read_to_end(&mut response),
     )
@@ -3738,13 +3734,13 @@ async fn worktree_discovery_follows_git_worktree_events() -> Result<()> {
     state::fs::write_sensitive_file(&worktree.join(".git"), &format!("gitdir: {entry}\n"))?;
     state::fs::write_sensitive_file(&entry.join("gitdir"), &format!("{worktree}/.git\n"))?;
     // The 30-second health scan would find it too, so this waits for less.
-    let discovered = timeout(Duration::from_secs(10), async {
+    let discovered = real::timeout(Duration::from_secs(10), async {
         loop {
             match Database::open(&paths).and_then(|database| database.discovered_projects()) {
                 Ok(discovered) if discovered.is_empty() => {}
                 result => return result,
             }
-            sleep(JOB_STATUS_POLL_INTERVAL).await;
+            clock::poll(JOB_STATUS_POLL_INTERVAL).await;
         }
     })
     .await;
@@ -3981,7 +3977,7 @@ async fn request_lines_with_timeout(
     request: Value,
     limit: Duration,
 ) -> Result<Vec<Value>> {
-    let deadline = TokioInstant::now() + limit;
+    let deadline = real::now() + limit;
     let request_payload = serde_json::to_string(&request)?;
     let mut lines = Vec::new();
     let mut stream = request_step(
@@ -4076,7 +4072,7 @@ async fn request_lines_timeout_reports_stage_request_and_partial_responses() -> 
 }
 
 async fn request_step<T, E>(
-    deadline: TokioInstant,
+    deadline: Instant,
     operation: impl Future<Output = std::result::Result<T, E>>,
     endpoint: &Utf8Path,
     request_payload: &str,
@@ -4087,7 +4083,7 @@ async fn request_step<T, E>(
 where
     E: Into<anyhow::Error>,
 {
-    match timeout_at(deadline, operation).await {
+    match real::timeout(deadline.saturating_duration_since(real::now()), operation).await {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(error)) => Err(error.into()).with_context(|| {
             format!(
@@ -4107,7 +4103,7 @@ async fn wait_for_succeeded_job_id(paths: &PvPaths, id: &str) -> Result<JobRecor
 }
 
 async fn wait_for_job_id_status(paths: &PvPaths, id: &str, status: JobStatus) -> Result<JobRecord> {
-    let deadline = Instant::now() + JOB_STATUS_WAIT_TIMEOUT;
+    let deadline = real::now() + JOB_STATUS_WAIT_TIMEOUT;
 
     loop {
         let database = Database::open(paths)?;
@@ -4119,23 +4115,23 @@ async fn wait_for_job_id_status(paths: &PvPaths, id: &str, status: JobStatus) ->
             return Ok(job);
         }
 
-        if Instant::now() >= deadline {
+        if real::now() >= deadline {
             break;
         }
 
-        sleep(JOB_STATUS_POLL_INTERVAL).await;
+        clock::poll(JOB_STATUS_POLL_INTERVAL).await;
     }
 
     Err(anyhow!("{status:?} job with id {id:?} was not recorded"))
 }
 
 async fn wait_for_path(path: &Utf8Path) -> Result<()> {
-    timeout(TARGETED_SCENARIO_TIMEOUT, async {
+    real::timeout(TARGETED_SCENARIO_TIMEOUT, async {
         loop {
             if path.exists() {
                 return;
             }
-            sleep(JOB_STATUS_POLL_INTERVAL).await;
+            clock::poll(JOB_STATUS_POLL_INTERVAL).await;
         }
     })
     .await
@@ -4143,7 +4139,7 @@ async fn wait_for_path(path: &Utf8Path) -> Result<()> {
 }
 
 async fn wait_for_runtime_replacement_required(metadata_path: &Utf8Path) -> Result<()> {
-    timeout(TARGETED_SCENARIO_TIMEOUT, async {
+    real::timeout(TARGETED_SCENARIO_TIMEOUT, async {
         loop {
             if let Ok(content) = state::fs::read_to_string(metadata_path)
                 && let Ok(metadata) = serde_json::from_str::<Value>(&content)
@@ -4151,7 +4147,7 @@ async fn wait_for_runtime_replacement_required(metadata_path: &Utf8Path) -> Resu
             {
                 return;
             }
-            sleep(JOB_STATUS_POLL_INTERVAL).await;
+            clock::poll(JOB_STATUS_POLL_INTERVAL).await;
         }
     })
     .await
@@ -4162,7 +4158,7 @@ async fn wait_for_runtime_replacement_required(metadata_path: &Utf8Path) -> Resu
 
 /// Waits until the daemon logs that a reconciliation for `scope` found the jobs lock held.
 async fn wait_for_jobs_lock_wait(paths: &PvPaths, scope: &str) -> Result<()> {
-    let deadline = Instant::now() + JOB_STATUS_WAIT_TIMEOUT;
+    let deadline = real::now() + JOB_STATUS_WAIT_TIMEOUT;
 
     loop {
         if let Ok(log) = state::fs::read_to_string(&paths.daemon_log())
@@ -4175,11 +4171,11 @@ async fn wait_for_jobs_lock_wait(paths: &PvPaths, scope: &str) -> Result<()> {
         {
             return Ok(());
         }
-        if Instant::now() >= deadline {
+        if real::now() >= deadline {
             bail!("no {scope} reconciliation waited for the jobs lock");
         }
 
-        sleep(JOB_STATUS_POLL_INTERVAL).await;
+        clock::poll(JOB_STATUS_POLL_INTERVAL).await;
     }
 }
 
@@ -4192,7 +4188,7 @@ async fn wait_for_job_scope_status(
     scope: &str,
     status: JobStatus,
 ) -> Result<JobRecord> {
-    let deadline = Instant::now() + JOB_STATUS_WAIT_TIMEOUT;
+    let deadline = real::now() + JOB_STATUS_WAIT_TIMEOUT;
 
     loop {
         let database = Database::open(paths)?;
@@ -4204,11 +4200,11 @@ async fn wait_for_job_scope_status(
             return Ok(job);
         }
 
-        if Instant::now() >= deadline {
+        if real::now() >= deadline {
             break;
         }
 
-        sleep(JOB_STATUS_POLL_INTERVAL).await;
+        clock::poll(JOB_STATUS_POLL_INTERVAL).await;
     }
 
     Err(anyhow::anyhow!(
@@ -4221,7 +4217,7 @@ async fn wait_for_succeeded_job_count(
     scope: &str,
     expected_count: usize,
 ) -> Result<()> {
-    let deadline = Instant::now() + JOB_STATUS_WAIT_TIMEOUT;
+    let deadline = real::now() + JOB_STATUS_WAIT_TIMEOUT;
 
     loop {
         let succeeded_count = Database::open(paths)?
@@ -4233,11 +4229,11 @@ async fn wait_for_succeeded_job_count(
             return Ok(());
         }
 
-        if Instant::now() >= deadline {
+        if real::now() >= deadline {
             break;
         }
 
-        sleep(JOB_STATUS_POLL_INTERVAL).await;
+        clock::poll(JOB_STATUS_POLL_INTERVAL).await;
     }
 
     Err(anyhow!(
@@ -4249,7 +4245,7 @@ async fn write_file_after_modified_time_tick(path: &camino::Utf8Path, content: &
     let before = state::fs::modified_at(path)?;
 
     for _attempt in 0..20 {
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        clock::poll(Duration::from_millis(100)).await;
         state::fs::write_sensitive_file(path, content)?;
 
         if state::fs::modified_at(path)? != before {
@@ -4287,7 +4283,7 @@ async fn udp_dns_query(port: u16, query: &[u8]) -> Result<Message> {
     socket.send_to(query, dns_address(port)).await?;
     let mut response = vec![0; 512];
     let (length, _address) =
-        timeout(Duration::from_secs(2), socket.recv_from(&mut response)).await??;
+        real::timeout(Duration::from_secs(2), socket.recv_from(&mut response)).await??;
     response.truncate(length);
 
     Ok(Message::from_vec(&response)?)
@@ -4300,14 +4296,14 @@ async fn tcp_dns_query(port: u16, query: &[u8]) -> Result<Message> {
     stream.write_all(query).await?;
 
     let mut length_prefix = [0; 2];
-    timeout(
+    real::timeout(
         Duration::from_secs(2),
         stream.read_exact(&mut length_prefix),
     )
     .await??;
     let response_length = usize::from(u16::from_be_bytes(length_prefix));
     let mut response = vec![0; response_length];
-    timeout(Duration::from_secs(2), stream.read_exact(&mut response)).await??;
+    real::timeout(Duration::from_secs(2), stream.read_exact(&mut response)).await??;
 
     Ok(Message::from_vec(&response)?)
 }
@@ -4321,7 +4317,7 @@ async fn bind_preferred_dns_port_pair() -> Result<Option<(StdTcpListener, StdUdp
         match bind_loopback_tcp_udp_at(DNS_PREFERRED_PORT) {
             Ok(blockers) => return Ok(Some(blockers)),
             Err(error) if error.kind() == ErrorKind::AddrInUse => {
-                sleep(Duration::from_millis(10)).await;
+                clock::poll(Duration::from_millis(10)).await;
             }
             Err(error) => return Err(error.into()),
         }

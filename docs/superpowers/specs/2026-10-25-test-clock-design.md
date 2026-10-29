@@ -154,7 +154,7 @@ The fake holds a mutex over the virtual time and the pending limits with their w
    - `tokio::time::{sleep, sleep_until, timeout, interval}`
    - `tokio::time::Instant::now`
 
-   A test that must wait on real time on purpose (a hang guard on another process, a deadline for an event) uses a test-only `clock::real` (`now`, `sleep`, `timeout`), so every such wait is named.
+   A test that must wait on real time on purpose (a hang guard on another process, a deadline for an event) uses a test-only `clock::real` (`now`, `elapsed`, `timeout`, `sleep_blocking`), so every such wait is named.
 
 ## Risks
 
@@ -233,7 +233,7 @@ A stack, each PR verified with targeted runs, the full suite, and a comparison o
      - Route the remaining short real pauses through `poll`, the monitor's log rotation through `sleep`, and elapsed-time measurements through `now` and `elapsed`.
      - Box the future inside `timeout` so wrapping a large future doesn't copy it into the timeout's state more than once.
    - **4b, the lint and the tests.**
-     - Add the test-only `clock::real`, move the tests' direct timers to `poll` or `clock::real`, and give pv-fake and pv-release the clock or a narrow exception.
+     - Add the test-only `clock::real`, move the tests' direct timers to `poll` or `clock::real`, and give pv-fake the clock. pv-release, and `state`, which `platform` depends on, get a narrow exception.
      - Turn on the Clippy rule.
      - Document the two failure kinds, the four questions and the clock in CONTRIBUTING.md.
 

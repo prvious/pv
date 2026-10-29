@@ -4,12 +4,12 @@
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::process::{Child, Stdio};
-use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Result, bail, ensure};
 use camino_tempfile::tempdir;
 use insta::assert_debug_snapshot;
+use platform::clock::{self, real};
 use platform::loopback_tcp_port_available;
 use pv_fake::{EventKind, FakeSettings, InstalledFake, Persona, TcpHolderConfig};
 use socket2::{Domain, Protocol, Socket, Type};
@@ -35,7 +35,7 @@ impl Holder {
     }
 
     fn wait_for(&mut self, ready: impl Fn(&EventKind) -> bool) -> Result<SocketAddr> {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = real::now() + Duration::from_secs(5);
         loop {
             let events = self.fake.events()?;
             if events.iter().any(|event| ready(&event.kind))
@@ -50,10 +50,10 @@ impl Holder {
                 bail!("TCP holder exited before readiness: {status}");
             }
             ensure!(
-                Instant::now() < deadline,
+                real::now() < deadline,
                 "TCP holder did not report readiness"
             );
-            sleep(Duration::from_millis(10));
+            clock::poll_blocking(Duration::from_millis(10));
         }
     }
 }

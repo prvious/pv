@@ -624,13 +624,13 @@ mod tests {
 
     use anyhow::{Result, anyhow};
     use camino_tempfile::tempdir;
+    use platform::clock::{self, real};
     use platform::hooks::HookError;
     use serde_json::Value;
     use state::{
         Database, JobStatus, LinkDiscoveredProjectInput, LinkProjectInput, ProjectMode, PvPaths,
     };
     use tokio::sync::watch;
-    use tokio::time::{sleep, timeout};
 
     use super::{DaemonHooks, HookRun};
     use crate::jobs::DaemonDownloadProgress;
@@ -749,14 +749,14 @@ mod tests {
                 )
                 .await
         });
-        let completed = timeout(Duration::from_secs(10), async {
+        let completed = real::timeout(Duration::from_secs(10), async {
             loop {
                 if let Some(job) = database.job(&queued.id)?
                     && job.status != JobStatus::Running
                 {
                     return Ok::<_, state::StateError>(job);
                 }
-                sleep(Duration::from_millis(10)).await;
+                clock::poll(Duration::from_millis(10)).await;
             }
         })
         .await;

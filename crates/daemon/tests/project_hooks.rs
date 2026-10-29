@@ -9,6 +9,7 @@ use anyhow::{Result, anyhow};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::{Utf8TempDir, tempdir};
 use insta::assert_debug_snapshot;
+use platform::clock::{self, real};
 use pv_fake::{EventKind, FakeSettings, InstalledFake, Pause, Persona};
 use rusqlite::Connection;
 use rustix::io::Errno;
@@ -17,7 +18,6 @@ use state::{
     Database, GatewayPort, JobRecord, JobStatus, LinkProjectInput, PortRequest, ProjectRecord,
     PvPaths,
 };
-use tokio::time::{sleep, timeout};
 
 struct Fixture {
     _tempdir: Utf8TempDir,
@@ -129,12 +129,12 @@ fn hold_until(path: &str) -> String {
 }
 
 async fn eventually<T>(mut inspect: impl FnMut() -> Result<Option<T>>) -> Result<T> {
-    timeout(Duration::from_secs(20), async {
+    real::timeout(Duration::from_secs(20), async {
         loop {
             if let Some(value) = inspect()? {
                 return Ok(value);
             }
-            sleep(Duration::from_millis(25)).await;
+            clock::poll(Duration::from_millis(25)).await;
         }
     })
     .await
@@ -294,7 +294,7 @@ async fn hooks_run_four_at_a_time_in_fifo_order_and_prepared_worktrees_link_once
         assert!(!ordered[4].join("started").exists());
         assert!(!ordered[5].join("started").exists());
         // An occupied hook pool does not hold jobs.lock or delay an unrelated reconciliation.
-        timeout(
+        real::timeout(
             Duration::from_secs(10),
             reconcile(&fixture.paths, &format!("project:{}", fixture.source.id)),
         )

@@ -18,13 +18,13 @@ use daemon::{
     MonitorPause, MonitorStart, MonitorState, MonitorStop, StopSignal,
 };
 use insta::{Settings, assert_snapshot};
+use platform::clock;
 use pv_fake::{EventKind, FakeSettings, InstalledFake, Persona, Scenario};
 use rustix::io::{FdFlags, fcntl_setfd};
 use rustix::process::{Pid, Signal, kill_process, kill_process_group, test_kill_process};
 use state::{MonitorReservation, PvPaths, StateError};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::UnixStream;
-use tokio::time::sleep;
 
 #[expect(
     clippy::disallowed_types,
@@ -732,7 +732,7 @@ impl Harness {
             if done(&state) {
                 return Ok(state);
             }
-            sleep(POLL_INTERVAL).await;
+            clock::poll(POLL_INTERVAL).await;
         }
 
         Err(anyhow!("monitor never reached the expected state"))
@@ -805,7 +805,7 @@ async fn wait_for_fake_start(fake: &InstalledFake) -> Result<u32> {
         if let Some(event) = started {
             return Ok(u32::try_from(event.pid)?);
         }
-        sleep(POLL_INTERVAL).await;
+        clock::poll(POLL_INTERVAL).await;
     }
 
     Err(anyhow!("fake {} never started", fake.executable()))
@@ -816,7 +816,7 @@ async fn wait_until(done: impl Fn() -> Result<bool>) -> Result<()> {
         if done()? {
             return Ok(());
         }
-        sleep(POLL_INTERVAL).await;
+        clock::poll(POLL_INTERVAL).await;
     }
 
     Err(anyhow!("condition never held"))

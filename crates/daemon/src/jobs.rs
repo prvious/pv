@@ -1245,7 +1245,7 @@ where
                 let heartbeat_result = write_line(transport, &heartbeat_event);
                 tokio::select! {
                     result = &mut completion => return result,
-                    _ = clock::timeout(&FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,heartbeat_result) => {}
+                    _ = clock::timeout(&FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, heartbeat_result) => {}
                 }
             }
         }
@@ -1331,7 +1331,7 @@ where
                             )
                             .await;
                         }
-                        write_result = clock::timeout(&FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,write_result) => {
+                        write_result = clock::timeout(&FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, write_result) => {
                             if !matches!(write_result, Ok(Ok(()))) {
                                 return StreamedJobCompletion {
                                     result: completion.await,
@@ -1362,7 +1362,7 @@ where
                         )
                         .await;
                     }
-                    heartbeat_result = clock::timeout(&FOREGROUND_JOB_STREAM_WRITE_TIMEOUT,heartbeat_result) => {
+                    heartbeat_result = clock::timeout(&FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, heartbeat_result) => {
                         if !matches!(heartbeat_result, Ok(Ok(()))) {
                             return StreamedJobCompletion {
                                 result: completion.await,
@@ -3835,13 +3835,14 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex, mpsc};
     use std::task::{Context, Poll};
-    use std::time::Instant;
+    use std::time::Duration;
 
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
     use config::ConfigError;
     use futures_util::StreamExt;
     use insta::{Settings, allow_duplicates, assert_debug_snapshot, assert_snapshot};
+    use platform::clock::{self, real};
     use pv_fake::Persona;
     use resources::{ManagedResourceCommandError, ResourceHttpClient, ResourcesError};
     use rusqlite::{Connection, Error as SqliteError};
@@ -3857,7 +3858,6 @@ mod tests {
     #[cfg(target_os = "macos")]
     use tokio::net::UnixStream;
     use tokio::sync::{mpsc::channel, oneshot, watch};
-    use tokio::time::{Duration, timeout};
 
     use crate::gateway::{
         GatewayPfRoutingState, reconcile_gateway_runtimes_with_pf_state_for_test,
@@ -8269,9 +8269,9 @@ mod tests {
         let blocker = blocker.wait_for_turn().await;
         let update = queued(enqueue_update_job(&paths, &queue)?)?;
 
-        tokio::time::sleep(Duration::from_millis(10)).await;
+        clock::poll(Duration::from_millis(10)).await;
         blocker.finish();
-        let running = timeout(Duration::from_secs(1), update.wait_for_turn()).await?;
+        let running = real::timeout(Duration::from_secs(1), update.wait_for_turn()).await?;
         let job_id = running.job_id().to_owned();
         let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
             OFFLINE_TEST_MANIFEST_URL,
@@ -8672,6 +8672,7 @@ mod tests {
     #[tokio::test]
     async fn streamed_reconciliation_returns_after_progress_write_times_out() -> anyhow::Result<()>
     {
+        let clock = platform::clock::install_fake_for_test();
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_installed_caddy(&paths)?;
@@ -8692,10 +8693,14 @@ mod tests {
         )?;
         drop(database);
         let job_id = start_reconciliation_job(&paths, "system")?;
+        let (release_sender, release_receiver) = mpsc::channel();
         let catalog = Arc::new(
             crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
                 OFFLINE_TEST_MANIFEST_URL,
-                DelayedScriptedArtifactClient::new(client, Duration::from_millis(200)),
+                HeldDownloadArtifactClient {
+                    inner: client,
+                    release_receiver: Mutex::new(release_receiver),
+                },
             )?,
         );
         let (blocked_write_sender, blocked_write_receiver) = oneshot::channel();
@@ -8718,13 +8723,32 @@ mod tests {
             .await
         });
 
-        let blocked_write_result = timeout(
+        real::timeout(
             STREAMED_RECONCILIATION_PROGRESS_SETUP_TIMEOUT,
             blocked_write_receiver,
         )
-        .await;
+        .await
+        .map_err(|_error| {
+            anyhow::anyhow!(
+                "streamed reconciliation did not reach the blocked progress write during setup"
+            )
+        })?
+        .map_err(|_error| anyhow::anyhow!("streamed reconciliation task dropped early"))?;
+        // The download is held, so the job can't finish before its blocked writes give up: first
+        // a phase write, then a download progress write. That one closes the stream, so no later
+        // write blocks.
+        for _blocked_write in 0..2 {
+            clock
+                .advance_when_waiting(&FOREGROUND_JOB_STREAM_WRITE_TIMEOUT)
+                .await?;
+        }
+        // Let the stream task act on the timeout before the job can finish.
+        tokio::task::yield_now().await;
+        release_sender
+            .send(())
+            .map_err(|_error| anyhow::anyhow!("held download dropped"))?;
         let completion_result =
-            timeout(STREAMED_RECONCILIATION_COMPLETION_TIMEOUT, &mut task).await;
+            real::timeout(STREAMED_RECONCILIATION_COMPLETION_TIMEOUT, &mut task).await;
         let task_result = match completion_result {
             Ok(result) => result,
             Err(_error) => {
@@ -8736,18 +8760,6 @@ mod tests {
             }
         };
         task_result??;
-        let blocked_write_started_at = blocked_write_result
-            .map_err(|_error| {
-                anyhow::anyhow!(
-                    "streamed reconciliation did not reach the blocked progress write during setup"
-                )
-            })?
-            .map_err(|_error| anyhow::anyhow!("streamed reconciliation task dropped early"))?;
-        let progress_write_elapsed = blocked_write_started_at.elapsed();
-        assert!(
-            progress_write_elapsed >= FOREGROUND_JOB_STREAM_WRITE_TIMEOUT.duration(),
-            "progress write returned before its timeout budget: {progress_write_elapsed:?}"
-        );
         let database = Database::open(&paths)?;
         let job = database
             .recent_jobs()?
@@ -8906,7 +8918,7 @@ mod tests {
             .await
         });
         let mut reader = protocol::transport(client);
-        let phase_result = timeout(Duration::from_secs(1), async {
+        let phase_result = real::timeout(Duration::from_secs(1), async {
             while let Some(line) = reader.next().await {
                 let event = serde_json::from_str::<serde_json::Value>(&line?)?;
                 if event["type"] == "progress" && event["message"] == "manifest" {
@@ -8923,7 +8935,7 @@ mod tests {
         let release_result = release_sender
             .send(())
             .map_err(|_error| anyhow::anyhow!("held manifest request dropped"));
-        let completion_result = timeout(Duration::from_secs(10), &mut task).await;
+        let completion_result = real::timeout(Duration::from_secs(10), &mut task).await;
 
         release_result?;
         let phase = phase_result
@@ -9284,7 +9296,7 @@ mod tests {
         clock
             .advance_when_waiting(&FOREGROUND_JOB_HEARTBEAT_INTERVAL)
             .await?;
-        let line = timeout(Duration::from_millis(100), reader.next())
+        let line = real::timeout(Duration::from_millis(100), reader.next())
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing heartbeat line"))??;
         let event = serde_json::from_str::<serde_json::Value>(&line)?;
@@ -9343,7 +9355,7 @@ mod tests {
             .map_err(|_error| anyhow::anyhow!("progress receiver dropped"))?;
 
         let mut reader = protocol::transport(client);
-        let line = timeout(Duration::from_millis(100), reader.next())
+        let line = real::timeout(Duration::from_millis(100), reader.next())
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing download progress line"))??;
         let event = serde_json::from_str::<serde_json::Value>(&line)?;
@@ -9399,19 +9411,19 @@ mod tests {
         phase_sender.send_modify(|phases| {
             phases.push(crate::structured_log::ReconciliationPhase::DemandDiscovery);
         });
-        let discovery = timeout(Duration::from_millis(100), reader.next())
+        let discovery = real::timeout(Duration::from_millis(100), reader.next())
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing demand discovery phase"))??;
         phase_sender.send_modify(|phases| {
             phases.push(crate::structured_log::ReconciliationPhase::Resources);
         });
-        let resources = timeout(Duration::from_millis(100), reader.next())
+        let resources = real::timeout(Duration::from_millis(100), reader.next())
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing resources phase"))??;
         clock
             .advance_when_waiting(&FOREGROUND_JOB_HEARTBEAT_INTERVAL)
             .await?;
-        let heartbeat = timeout(Duration::from_millis(100), reader.next())
+        let heartbeat = real::timeout(Duration::from_millis(100), reader.next())
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing heartbeat"))??;
 
@@ -9473,7 +9485,7 @@ mod tests {
         let mut reader = protocol::transport(client);
         let mut events = Vec::new();
         for _phase in 0..3 {
-            let line = timeout(Duration::from_millis(100), reader.next())
+            let line = real::timeout(Duration::from_millis(100), reader.next())
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("missing batched phase"))??;
             events.push(serde_json::from_str::<serde_json::Value>(&line)?);
@@ -9546,7 +9558,7 @@ mod tests {
         let mut phase = None;
 
         for _event in 0..=FOREGROUND_JOB_PROGRESS_BUFFER {
-            let line = timeout(Duration::from_millis(100), reader.next())
+            let line = real::timeout(Duration::from_millis(100), reader.next())
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("job stream ended before phase"))??;
             let event = serde_json::from_str::<serde_json::Value>(&line)?;
@@ -9595,13 +9607,13 @@ mod tests {
         clock
             .advance_when_waiting(&FOREGROUND_JOB_HEARTBEAT_INTERVAL)
             .await?;
-        timeout(Duration::from_millis(100), blocked_write_receiver)
+        real::timeout(Duration::from_millis(100), blocked_write_receiver)
             .await?
             .map_err(|_error| anyhow::anyhow!("heartbeat writer dropped"))?;
         finish_sender
             .send(())
             .map_err(|_error| anyhow::anyhow!("completion task dropped"))?;
-        let outcome = timeout(Duration::from_millis(300), &mut task).await;
+        let outcome = real::timeout(Duration::from_millis(300), &mut task).await;
         if outcome.is_err() {
             task.abort();
         }
@@ -9649,7 +9661,7 @@ mod tests {
             })
             .await
             .map_err(|_error| anyhow::anyhow!("progress receiver dropped"))?;
-        timeout(Duration::from_millis(100), blocked_write_receiver)
+        real::timeout(Duration::from_millis(100), blocked_write_receiver)
             .await?
             .map_err(|_error| anyhow::anyhow!("progress writer dropped"))?;
         phase_sender.send_modify(|phases| {
@@ -9658,7 +9670,7 @@ mod tests {
         finish_sender
             .send(())
             .map_err(|_error| anyhow::anyhow!("completion task dropped"))?;
-        let outcome = timeout(Duration::from_millis(300), &mut task).await;
+        let outcome = real::timeout(Duration::from_millis(300), &mut task).await;
         if outcome.is_err() {
             task.abort();
         }
@@ -9697,11 +9709,11 @@ mod tests {
         phase_sender.send_modify(|phases| {
             phases.push(crate::structured_log::ReconciliationPhase::Resources);
         });
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        clock::poll(Duration::from_millis(20)).await;
         finish_sender
             .send(())
             .map_err(|_error| anyhow::anyhow!("completion task dropped"))?;
-        let outcome = timeout(Duration::from_millis(300), &mut task).await;
+        let outcome = real::timeout(Duration::from_millis(300), &mut task).await;
         if outcome.is_err() {
             task.abort();
         }
@@ -9715,14 +9727,10 @@ mod tests {
 
     #[tokio::test]
     async fn stalled_phase_progress_does_not_close_job_stream() -> anyhow::Result<()> {
+        let clock = platform::clock::install_fake_for_test();
         let (client, server) = duplex(1024);
-        let writable = Arc::new(AtomicBool::new(false));
         let (stalled_sender, stalled_receiver) = oneshot::channel();
-        let writer = protocol::transport(GatedWriteStream::new(
-            server,
-            Arc::clone(&writable),
-            stalled_sender,
-        ));
+        let writer = protocol::transport(StalledFirstWriteStream::new(server, stalled_sender));
         let (_event_sender, event_receiver) = channel(FOREGROUND_JOB_PROGRESS_BUFFER);
         let (phase_sender, phase_receiver) = watch::channel(Vec::new());
         let (finish_sender, finish_receiver) = oneshot::channel::<()>();
@@ -9760,25 +9768,23 @@ mod tests {
         phase_sender.send_modify(|phases| {
             phases.push(crate::structured_log::ReconciliationPhase::Install);
         });
-        timeout(Duration::from_millis(100), stalled_receiver)
+        real::timeout(Duration::from_millis(100), stalled_receiver)
             .await
             .map_err(|_error| anyhow::anyhow!("phase write did not stall"))?
             .map_err(|_error| anyhow::anyhow!("phase write stream dropped"))?;
-        tokio::time::sleep(
-            FOREGROUND_JOB_STREAM_WRITE_TIMEOUT.duration() + Duration::from_millis(50),
-        )
-        .await;
-        writable.store(true, Ordering::SeqCst);
+        clock
+            .advance_when_waiting(&FOREGROUND_JOB_STREAM_WRITE_TIMEOUT)
+            .await?;
         finish_sender
             .send(())
             .map_err(|_error| anyhow::anyhow!("completion task dropped"))?;
-        let completion = timeout(Duration::from_millis(300), &mut task).await??;
+        let completion = real::timeout(Duration::from_millis(300), &mut task).await??;
 
         assert_eq!(completion.result?, "job done");
         assert!(completion.transport_is_open);
 
         let mut reader = protocol::transport(client);
-        let line = timeout(Duration::from_millis(100), reader.next())
+        let line = real::timeout(Duration::from_millis(100), reader.next())
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing terminal event"))??;
         let event = serde_json::from_str::<serde_json::Value>(&line)?;
@@ -9822,11 +9828,11 @@ mod tests {
             })
             .await
             .map_err(|_error| anyhow::anyhow!("progress receiver dropped"))?;
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        clock::poll(Duration::from_millis(20)).await;
         finish_sender
             .send(())
             .map_err(|_error| anyhow::anyhow!("completion task dropped"))?;
-        let outcome = timeout(Duration::from_millis(300), &mut task).await;
+        let outcome = real::timeout(Duration::from_millis(300), &mut task).await;
         if outcome.is_err() {
             task.abort();
         }
@@ -9867,13 +9873,13 @@ mod tests {
 
     struct InitiallyWritableStream {
         remaining_writes: usize,
-        blocked_write_sender: Option<oneshot::Sender<Instant>>,
+        blocked_write_sender: Option<oneshot::Sender<()>>,
     }
 
     impl InitiallyWritableStream {
         fn with_blocked_write_signal(
             remaining_writes: usize,
-            blocked_write_sender: oneshot::Sender<Instant>,
+            blocked_write_sender: oneshot::Sender<()>,
         ) -> Self {
             Self {
                 remaining_writes,
@@ -9900,7 +9906,7 @@ mod tests {
         ) -> Poll<io::Result<usize>> {
             if self.remaining_writes == 0 {
                 if let Some(sender) = self.blocked_write_sender.take() {
-                    let _send_result = sender.send(Instant::now());
+                    let _send_result = sender.send(());
                 }
 
                 return Poll::Pending;
@@ -9919,27 +9925,25 @@ mod tests {
         }
     }
 
-    struct GatedWriteStream {
+    /// Stalls the first write, as a client that stopped reading would: its bytes are dropped and
+    /// its flush never finishes. Later writes go through, as once the client reads again.
+    struct StalledFirstWriteStream {
         inner: DuplexStream,
-        writable: Arc<AtomicBool>,
-        blocked_write_sender: Option<oneshot::Sender<()>>,
+        stalled_write_sender: Option<oneshot::Sender<()>>,
+        flush_stalled: bool,
     }
 
-    impl GatedWriteStream {
-        fn new(
-            inner: DuplexStream,
-            writable: Arc<AtomicBool>,
-            blocked_write_sender: oneshot::Sender<()>,
-        ) -> Self {
+    impl StalledFirstWriteStream {
+        fn new(inner: DuplexStream, stalled_write_sender: oneshot::Sender<()>) -> Self {
             Self {
                 inner,
-                writable,
-                blocked_write_sender: Some(blocked_write_sender),
+                stalled_write_sender: Some(stalled_write_sender),
+                flush_stalled: false,
             }
         }
     }
 
-    impl AsyncRead for GatedWriteStream {
+    impl AsyncRead for StalledFirstWriteStream {
         fn poll_read(
             self: Pin<&mut Self>,
             _context: &mut Context<'_>,
@@ -9949,26 +9953,26 @@ mod tests {
         }
     }
 
-    impl AsyncWrite for GatedWriteStream {
+    impl AsyncWrite for StalledFirstWriteStream {
         fn poll_write(
             mut self: Pin<&mut Self>,
             context: &mut Context<'_>,
             buffer: &[u8],
         ) -> Poll<io::Result<usize>> {
-            if !self.writable.load(Ordering::SeqCst) {
-                if let Some(sender) = self.blocked_write_sender.take() {
-                    let _send_result = sender.send(());
-                }
+            if let Some(sender) = self.stalled_write_sender.take() {
+                let _send_result = sender.send(());
+                self.flush_stalled = true;
 
                 // The stalled write is dropped instead of being buffered for a later flush.
                 return Poll::Ready(Ok(buffer.len()));
             }
+            self.flush_stalled = false;
 
             Pin::new(&mut self.inner).poll_write(context, buffer)
         }
 
         fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
-            if !self.writable.load(Ordering::SeqCst) {
+            if self.flush_stalled {
                 return Poll::Pending;
             }
 
@@ -10469,7 +10473,7 @@ mod tests {
             clock
                 .advance_when_waiting(&FOREGROUND_JOB_HEARTBEAT_INTERVAL)
                 .await?;
-            let line = timeout(Duration::from_millis(100), reader.next())
+            let line = real::timeout(Duration::from_millis(100), reader.next())
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("missing queued heartbeat"))??;
             assert_eq!(
@@ -10517,7 +10521,7 @@ mod tests {
         clock
             .advance_when_waiting(&FOREGROUND_JOB_HEARTBEAT_INTERVAL)
             .await?;
-        timeout(Duration::from_millis(100), failed_write_receiver)
+        real::timeout(Duration::from_millis(100), failed_write_receiver)
             .await?
             .map_err(|_error| anyhow::anyhow!("queued heartbeat writer dropped"))?;
         running.finish();
@@ -10557,7 +10561,7 @@ mod tests {
             .await
         });
         let mut reader = protocol::transport(client);
-        let accepted = timeout(Duration::from_millis(100), reader.next())
+        let accepted = real::timeout(Duration::from_millis(100), reader.next())
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing accepted response"))??;
         let accepted = serde_json::from_str::<serde_json::Value>(&accepted)?;
@@ -10565,7 +10569,7 @@ mod tests {
         assert_eq!(accepted["type"], "response");
         assert_eq!(accepted["status"], "accepted");
         assert!(
-            timeout(Duration::from_millis(20), reader.next())
+            real::timeout(Duration::from_millis(20), reader.next())
                 .await
                 .is_err()
         );
@@ -10573,7 +10577,7 @@ mod tests {
         running.finish();
         let mut events = Vec::new();
         loop {
-            let line = timeout(Duration::from_millis(500), reader.next())
+            let line = real::timeout(Duration::from_millis(500), reader.next())
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("job stream ended before completion"))??;
             let event = serde_json::from_str::<serde_json::Value>(&line)?;
@@ -10627,7 +10631,7 @@ mod tests {
             .await
         });
 
-        let accepted = timeout(Duration::from_millis(300), client.next())
+        let accepted = real::timeout(Duration::from_millis(300), client.next())
             .await?
             .ok_or_else(|| anyhow::anyhow!("foreground stream ended before queue admission"))??;
         let accepted = serde_json::from_str::<serde_json::Value>(&accepted)?;
@@ -10636,7 +10640,7 @@ mod tests {
         fallback_sender
             .send(true)
             .map_err(|_| anyhow::anyhow!("queued foreground reconciliation stopped early"))?;
-        let result = timeout(Duration::from_millis(300), &mut task).await??;
+        let result = real::timeout(Duration::from_millis(300), &mut task).await??;
 
         assert!(result.is_ok());
         let job = Database::open(&paths)?
@@ -10691,7 +10695,7 @@ mod tests {
         fallback_sender
             .send(true)
             .map_err(|_| anyhow::anyhow!("queued reconciliation stopped before cancellation"))?;
-        timeout(Duration::from_millis(300), completion_task)
+        real::timeout(Duration::from_millis(300), completion_task)
             .await??
             .map_err(BackgroundReconciliationError::into_error)?;
 
@@ -10762,7 +10766,7 @@ mod tests {
             )
             .await
         });
-        timeout(Duration::from_secs(5), async {
+        real::timeout(Duration::from_secs(5), async {
             while !started.load(Ordering::SeqCst) {
                 tokio::task::yield_now().await;
             }
@@ -10773,7 +10777,7 @@ mod tests {
             .send(true)
             .map_err(|_| anyhow::anyhow!("system reconciliation stopped before cancellation"))?;
         assert!(
-            timeout(Duration::from_millis(100), &mut completion_task)
+            real::timeout(Duration::from_millis(100), &mut completion_task)
                 .await
                 .is_err()
         );
@@ -10782,7 +10786,7 @@ mod tests {
             Err(StateError::CoordinationLockHeld { .. })
         ));
         release_sender.send(())?;
-        timeout(Duration::from_secs(5), completion_task)
+        real::timeout(Duration::from_secs(5), completion_task)
             .await??
             .map_err(BackgroundReconciliationError::into_error)?;
 
@@ -10886,14 +10890,14 @@ mod tests {
 
                     Ok(completion)
                 })?;
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = real::now() + Duration::from_secs(5);
             while !started.load(Ordering::SeqCst) {
-                if Instant::now() >= deadline {
+                if real::now() >= deadline {
                     return Err(anyhow::anyhow!(
                         "update manifest request did not reach its test gate"
                     ));
                 }
-                std::thread::sleep(Duration::from_millis(10));
+                clock::poll_blocking(Duration::from_millis(10));
             }
             assert!(matches!(
                 JobsLock::acquire(&paths),
@@ -11120,18 +11124,18 @@ mod tests {
     }
 
     async fn wait_for_job_scope(paths: &PvPaths, scope: &str) -> anyhow::Result<()> {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        let deadline = real::now() + std::time::Duration::from_secs(3);
 
         loop {
             let database = Database::open(paths)?;
             if database.recent_jobs()?.iter().any(|job| job.scope == scope) {
                 return Ok(());
             }
-            if tokio::time::Instant::now() >= deadline {
+            if real::now() >= deadline {
                 anyhow::bail!("timed out waiting for job scope {scope}");
             }
 
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            clock::poll(std::time::Duration::from_millis(10)).await;
         }
     }
 
@@ -11919,10 +11923,32 @@ mod tests {
         }
     }
 
+    /// Downloads, then holds the download until the test releases it, so the job can't finish
+    /// while the test still acts on what the download started.
     #[derive(Debug)]
-    struct DelayedScriptedArtifactClient {
+    struct HeldDownloadArtifactClient {
         inner: ScriptedArtifactClient,
-        delay: Duration,
+        release_receiver: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl resources::ResourceHttpClient for HeldDownloadArtifactClient {
+        fn get_text(&self, url: &str) -> resources::Result<String> {
+            self.inner.get_text(url)
+        }
+
+        fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
+            self.inner.download(url, writer)?;
+            let release_receiver = match self.release_receiver.lock() {
+                Ok(release_receiver) => release_receiver,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            release_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(|error| resources::ResourcesError::HttpRequestFailed {
+                    url: url.to_owned(),
+                    reason: format!("held download was not released: {error}"),
+                })
+        }
     }
 
     struct FailingArtifactClient {
@@ -11946,23 +11972,6 @@ mod tests {
                     status_code: if attempt == 0 { 404 } else { 410 },
                 });
             }
-            self.inner.download(url, writer)
-        }
-    }
-
-    impl DelayedScriptedArtifactClient {
-        fn new(inner: ScriptedArtifactClient, delay: Duration) -> Self {
-            Self { inner, delay }
-        }
-    }
-
-    impl resources::ResourceHttpClient for DelayedScriptedArtifactClient {
-        fn get_text(&self, url: &str) -> resources::Result<String> {
-            self.inner.get_text(url)
-        }
-
-        fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
-            std::thread::sleep(self.delay);
             self.inner.download(url, writer)
         }
     }

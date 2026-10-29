@@ -12,7 +12,7 @@ use daemon::gateway::{
 };
 use daemon::{CaddyAdminError, CaddyAdminOperation, DaemonError, ProcessSupervisor, StopSignal};
 use insta::{Settings, allow_duplicates, assert_debug_snapshot};
-use platform::clock::Limit;
+use platform::clock::{self, Limit, real};
 use pv_fake::{FakeSettings, GatewayListeners, Persona};
 use resources::{PHP_TRACK_DEFAULT_INI, php_track_defaults};
 use rusqlite::Connection;
@@ -34,7 +34,6 @@ use std::slice;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
-use tokio::time::{sleep, timeout};
 
 const GATEWAY_RECONCILIATION_SUMMARY: &str = "Gateway runtime reconciled";
 
@@ -531,7 +530,7 @@ async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled(
     }
     assert!(!paths.gateway_runtime_metadata().exists());
 
-    let summary = timeout(Duration::from_secs(10), reconcile_gateway_runtimes(&paths))
+    let summary = real::timeout(Duration::from_secs(10), reconcile_gateway_runtimes(&paths))
         .await
         .context("cancelled worker readiness reconciliation did not recover")??;
     assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
@@ -667,7 +666,7 @@ async fn matching_worker_recovers_after_post_load_readiness_is_cancelled() -> Re
     assert!(cancellation.is_cancelled());
     pv_fake::write_gateway_control(&paths.worker_root_config(track), json!({}))?;
 
-    let summary = timeout(Duration::from_secs(10), reconcile_gateway_runtimes(&paths))
+    let summary = real::timeout(Duration::from_secs(10), reconcile_gateway_runtimes(&paths))
         .await
         .context("cancelled matching worker reconciliation did not recover")??;
     let replacement_worker_pid =
@@ -1015,7 +1014,7 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
     )?;
     let requests_before_retry = fake_admin_requests(&paths.gateway_root_config())?.len();
     let release_gateway = async {
-        timeout(Duration::from_secs(5), async {
+        real::timeout(Duration::from_secs(5), async {
             loop {
                 if let Some(pid) = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
                     && pid != gateway_pid
@@ -1028,7 +1027,7 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
                     fs::write_sensitive_file(&readiness_gate, "ready\n")?;
                     return Ok::<(), Error>(());
                 }
-                sleep(Duration::from_millis(5)).await;
+                clock::poll(Duration::from_millis(5)).await;
             }
         })
         .await
@@ -1259,7 +1258,7 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
     ));
     fs::write_sensitive_file(&xdebug_gate, "wait\n")?;
     let release_sibling_after_failure = async {
-        timeout(Duration::from_secs(5), async {
+        real::timeout(Duration::from_secs(5), async {
             loop {
                 let redis_failed = Database::open(&paths)?
                     .runtime_observed_states()?
@@ -1275,7 +1274,7 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
                     fs::remove_file(&xdebug_gate)?;
                     return Ok::<(), Error>(());
                 }
-                sleep(Duration::from_millis(5)).await;
+                clock::poll(Duration::from_millis(5)).await;
             }
         })
         .await
@@ -1537,7 +1536,7 @@ async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() 
     )?;
 
     let corrupt_runtime_metadata = async {
-        timeout(Duration::from_secs(5), async {
+        real::timeout(Duration::from_secs(5), async {
             loop {
                 let gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
                 let admin_ready = fake_admin_requests(&paths.gateway_root_config())?
@@ -1554,7 +1553,7 @@ async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() 
                     fs::write_sensitive_file(&admin_response_gate, "")?;
                     return Ok::<_, Error>((gateway_pid, gateway));
                 }
-                sleep(Duration::from_millis(10)).await;
+                clock::poll(Duration::from_millis(10)).await;
             }
         })
         .await
@@ -1600,7 +1599,7 @@ async fn fresh_gateway_exit_is_reported_before_the_readiness_timeout() -> Result
     drop(database);
 
     let metadata_path = paths.gateway_runtime_metadata();
-    let (result, ()) = timeout(Duration::from_secs(5), async {
+    let (result, ()) = real::timeout(Duration::from_secs(5), async {
         tokio::try_join!(
             async { Ok::<_, Error>(reconcile_gateway_runtimes(&paths).await) },
             release_fast_exit_runtime(&metadata_path, &go),
@@ -1666,7 +1665,7 @@ root: public
     ensure_fake_caddy(&paths)?;
 
     let metadata_path = paths.worker_runtime_metadata("8.4");
-    let (result, ()) = timeout(Duration::from_secs(5), async {
+    let (result, ()) = real::timeout(Duration::from_secs(5), async {
         tokio::try_join!(
             async { Ok::<_, Error>(reconcile_gateway_runtimes(&paths).await) },
             release_fast_exit_runtime(&metadata_path, &go),
@@ -2707,9 +2706,10 @@ async fn targeted_project_reconciliation_uses_verified_fragment_snapshot() -> Re
         .gateway_projects_config_dir()
         .join(format!("{}.Caddyfile", peer.id));
     let peer_gateway_fragment = fs::read_to_string(&peer_gateway_fragment_path)?;
+    let release_load = tempdir.path().join("release-worker-load");
     pv_fake::write_gateway_control(
         &paths.worker_root_config("8.4"),
-        json!({"load_delay_ms": 500}),
+        json!({"load_response_gate": [release_load]}),
     )?;
     fs::write_sensitive_file(&target.path.join("web/index.php"), "<?php\n")?;
     fs::write_sensitive_file(&target.config_path, "php: \"8.4\"\nroot: web\n")?;
@@ -2717,18 +2717,20 @@ async fn targeted_project_reconciliation_uses_verified_fragment_snapshot() -> Re
     let mutation_paths = paths.clone();
     let mutation_fragment_path = peer_gateway_fragment_path.clone();
     let mutate_fragment = async move {
-        timeout(Duration::from_secs(5), async {
+        real::timeout(Duration::from_secs(5), async {
             loop {
                 if fake_admin_load_bodies(&mutation_paths.worker_root_config("8.4"))?.len()
                     > worker_loads
                 {
                     return Ok::<(), Error>(());
                 }
-                sleep(Duration::from_millis(10)).await;
+                clock::poll(Duration::from_millis(10)).await;
             }
         })
         .await??;
+        // The worker holds the load until the fragment changes.
         fs::write_sensitive_file(&mutation_fragment_path, "# raced Gateway fragment\n")?;
+        fs::write_sensitive_file(&release_load, "released\n")?;
 
         Ok::<(), Error>(())
     };
@@ -3155,7 +3157,7 @@ async fn gateway_reconciliation_keeps_pending_state_when_applied_fingerprint_com
     )?;
 
     let block_final_metadata_write = async {
-        timeout(Duration::from_secs(2), async {
+        real::timeout(Duration::from_secs(2), async {
             loop {
                 if let Ok(content) = fs::read_to_string(&paths.gateway_runtime_metadata())
                     && let Ok(metadata) = serde_json::from_str::<Value>(&content)
@@ -3166,7 +3168,7 @@ async fn gateway_reconciliation_keeps_pending_state_when_applied_fingerprint_com
                     fs::write_sensitive_file(&admin_response_gate, "")?;
                     return Ok::<(), Error>(());
                 }
-                sleep(Duration::from_millis(5)).await;
+                clock::poll(Duration::from_millis(5)).await;
             }
         })
         .await
@@ -3324,12 +3326,12 @@ async fn gateway_reconciliation_replaces_legacy_admin_off_process_before_admin_c
         reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Inactive)
             .await?;
     assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
-    timeout(Duration::from_secs(1), async {
+    real::timeout(Duration::from_secs(1), async {
         loop {
             if legacy_process.has_exited()? {
                 return Ok::<(), DaemonError>(());
             }
-            sleep(Duration::from_millis(10)).await;
+            clock::poll(Duration::from_millis(10)).await;
         }
     })
     .await
@@ -3644,7 +3646,7 @@ exit 2
     set_executable(&validator)?;
     fs::write_sensitive_file(&config_path, "{}\n")?;
 
-    timeout(
+    real::timeout(
         Duration::from_secs(5),
         validate_config(
             &CaddyCliCommand::frankenphp(&validator),
@@ -5456,7 +5458,7 @@ async fn gateway_reconciliation_does_not_reload_after_runtime_exits_after_load()
         serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
 
     let cleanup_result: Result<()> = async {
-        timeout(Duration::from_secs(5), async {
+        real::timeout(Duration::from_secs(5), async {
             loop {
                 if supervisor
                     .adopt_recorded(&paths.gateway_runtime_metadata())?
@@ -5464,7 +5466,7 @@ async fn gateway_reconciliation_does_not_reload_after_runtime_exits_after_load()
                 {
                     return Ok::<_, anyhow::Error>(());
                 }
-                sleep(Duration::from_millis(10)).await;
+                clock::poll(Duration::from_millis(10)).await;
             }
         })
         .await
@@ -6468,7 +6470,7 @@ async fn release_fast_exit_runtime(metadata_path: &Utf8Path, go: &Utf8Path) -> R
             fs::write_sensitive_file(go, "")?;
             return Ok(());
         }
-        sleep(Duration::from_millis(5)).await;
+        clock::poll(Duration::from_millis(5)).await;
     }
 }
 
@@ -6759,14 +6761,14 @@ fn available_loopback_ports(count: usize) -> Result<Vec<u16>> {
 }
 
 async fn wait_for_existing_path_count(paths: &[Utf8PathBuf], expected: usize) -> Result<()> {
-    timeout(Duration::from_secs(10), async {
+    real::timeout(Duration::from_secs(10), async {
         loop {
             let existing = paths.iter().filter(|path| path.exists()).count();
             if existing == expected {
                 return;
             }
 
-            sleep(Duration::from_millis(10)).await;
+            clock::poll(Duration::from_millis(10)).await;
         }
     })
     .await
@@ -6941,7 +6943,7 @@ async fn wait_for_process_exit(pid: u32) -> Result<()> {
             Err(error) => bail!("failed to inspect process {pid}: {error}"),
         }
 
-        sleep(Duration::from_millis(20)).await;
+        clock::poll(Duration::from_millis(20)).await;
     }
 
     Err(anyhow::anyhow!("process {process:?} was still running"))
@@ -7129,12 +7131,12 @@ async fn resource_only_target_recovers_alive_unready_gateway_with_invalid_config
     reconcile_gateway_runtimes(&paths).await?;
     let initial_gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
     pv_fake::write_gateway_control(&paths.gateway_root_config(), json!({"stop_service": true}))?;
-    timeout(Duration::from_secs(5), async {
+    real::timeout(Duration::from_secs(5), async {
         loop {
             if TcpStream::connect(("127.0.0.1", ports[0])).await.is_err() {
                 return;
             }
-            sleep(Duration::from_millis(10)).await;
+            clock::poll(Duration::from_millis(10)).await;
         }
     })
     .await
@@ -7468,12 +7470,12 @@ async fn targeted_reconciliation_reports_alive_unready_worker() -> Result<()> {
         &paths.worker_root_config("8.4"),
         json!({"stop_service": true}),
     )?;
-    timeout(Duration::from_secs(5), async {
+    real::timeout(Duration::from_secs(5), async {
         loop {
             if TcpStream::connect(("127.0.0.1", ports[2])).await.is_err() {
                 return;
             }
-            sleep(Duration::from_millis(10)).await;
+            clock::poll(Duration::from_millis(10)).await;
         }
     })
     .await

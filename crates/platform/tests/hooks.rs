@@ -9,6 +9,7 @@ use anyhow::{Result, anyhow};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use insta::{assert_debug_snapshot, assert_snapshot};
+use platform::clock::{self, real};
 use platform::hooks::{
     CAPTURE_TIMEOUT, HookCommandContext, HookEnvironment, HookError, HookOutput,
     capture_environment, run_commands,
@@ -16,7 +17,6 @@ use platform::hooks::{
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use state::{PvPaths, fs};
 use tokio::sync::watch;
-use tokio::time::{Instant, sleep, timeout};
 
 #[tokio::test]
 async fn hook_capture_ignores_startup_noise_and_prompt_and_applies_overlay() -> Result<()> {
@@ -151,7 +151,7 @@ async fn hook_capture_does_not_wait_for_background_jobs_holding_output() -> Resu
         r#"/bin/sleep 150 & descendant=$!; printf '%s' "$descendant" > "$PV_HOOK_PROJECT/pid"; /bin/sh -c "$4""#,
     )?;
     let (_sender, mut shutdown) = watch::channel(false);
-    timeout(
+    real::timeout(
         Duration::from_secs(5),
         capture_environment(
             shell.as_std_path(),
@@ -174,7 +174,7 @@ async fn hook_capture_discards_output_written_after_the_end_marker() -> Result<(
         r#"/bin/sh -c "$4" || exit; /bin/dd if=/dev/zero bs=65536 count=4 2>/dev/null"#,
     )?;
     let (_sender, mut shutdown) = watch::channel(false);
-    timeout(
+    real::timeout(
         Duration::from_secs(5),
         capture_environment(
             shell.as_std_path(),
@@ -310,7 +310,7 @@ fn hooks_detach_the_login_shell_and_commands_under_a_terminal() -> Result<()> {
                     sender.send(true)?;
                     Ok::<_, anyhow::Error>((shell, descendant))
                 };
-                let (result, processes) = timeout(Duration::from_secs(5), async {
+                let (result, processes) = real::timeout(Duration::from_secs(5), async {
                     tokio::join!(
                         capture_environment(
                             Utf8Path::new("/bin/zsh").as_std_path(),
@@ -329,7 +329,7 @@ fn hooks_detach_the_login_shell_and_commands_under_a_terminal() -> Result<()> {
                 let paths = PvPaths::for_home(&home);
                 let (_sender, mut shutdown) = watch::channel(false);
                 let environment = test_environment(&home, &mut shutdown).await?;
-                let result = timeout(
+                let result = real::timeout(
                     Duration::from_secs(5),
                     run_commands(
                         &HookCommandContext {
@@ -375,15 +375,15 @@ fn hooks_detach_the_login_shell_and_commands_under_a_terminal() -> Result<()> {
         let mut bytes = Vec::new();
         reader.read_to_end(&mut bytes).map(|_| bytes)
     });
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = real::now() + Duration::from_secs(15);
     let outcome = loop {
         match child.try_wait() {
             Ok(Some(status)) => break Ok(status),
             Err(error) => break Err(error.into()),
-            Ok(None) if Instant::now() >= deadline => {
+            Ok(None) if real::now() >= deadline => {
                 break Err(anyhow!("PTY capture regression timed out"));
             }
-            Ok(None) => thread::sleep(Duration::from_millis(10)),
+            Ok(None) => clock::poll_blocking(Duration::from_millis(10)),
         }
     };
     if outcome.is_err() {
@@ -458,9 +458,9 @@ async fn dropping_a_hook_run_stops_its_process_group() -> Result<()> {
 }
 
 async fn wait_for_pid(path: &Utf8Path) -> Result<u32> {
-    timeout(Duration::from_secs(5), async {
+    real::timeout(Duration::from_secs(5), async {
         while !fs::path_entry_exists(path)? {
-            sleep(Duration::from_millis(10)).await;
+            clock::poll(Duration::from_millis(10)).await;
         }
         Ok::<_, anyhow::Error>(fs::read_to_string(path)?.parse::<u32>()?)
     })
@@ -468,12 +468,12 @@ async fn wait_for_pid(path: &Utf8Path) -> Result<u32> {
 }
 
 async fn assert_stopped(pid: u32) -> Result<()> {
-    timeout(Duration::from_secs(5), async {
+    real::timeout(Duration::from_secs(5), async {
         loop {
             if process_stopped(pid)? {
                 return Ok::<_, anyhow::Error>(());
             }
-            sleep(Duration::from_millis(10)).await;
+            clock::poll(Duration::from_millis(10)).await;
         }
     })
     .await?

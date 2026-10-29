@@ -15,6 +15,8 @@ use std::time::Duration;
 #[cfg(unix)]
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
+#[cfg(unix)]
+use platform::clock;
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use tokio::net::{TcpListener, TcpStream};
@@ -73,7 +75,7 @@ async fn accept(listener: &TcpListener) -> TcpStream {
         if let Ok((stream, _address)) = listener.accept().await {
             return stream;
         }
-        tokio::time::sleep(ACCEPT_RETRY_DELAY).await;
+        clock::poll(ACCEPT_RETRY_DELAY).await;
     }
 }
 
