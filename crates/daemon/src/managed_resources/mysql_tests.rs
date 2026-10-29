@@ -358,7 +358,9 @@ fn create_mysql_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<(
     run_fixture_command(
         "/usr/bin/tar",
         &[
-            "-czf",
+            "--use-compress-program",
+            "gzip -1",
+            "-cf",
             archive_path.as_str(),
             "-C",
             archive_parent.as_str(),

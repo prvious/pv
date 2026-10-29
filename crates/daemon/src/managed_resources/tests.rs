@@ -7166,7 +7166,9 @@ fn create_archive(
     run_fixture_command(
         "/usr/bin/tar",
         &[
-            "-czf",
+            "--use-compress-program",
+            "gzip -1",
+            "-cf",
             archive_path.as_str(),
             "-C",
             archive_parent.as_str(),
@@ -7186,7 +7188,9 @@ fn create_fake_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> R
     run_fixture_command(
         "/usr/bin/tar",
         &[
-            "-czf",
+            "--use-compress-program",
+            "gzip -1",
+            "-cf",
             archive_path.as_str(),
             "-C",
             archive_parent.as_str(),
@@ -7206,7 +7210,9 @@ fn create_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result
     run_fixture_command(
         "/usr/bin/tar",
         &[
-            "-czf",
+            "--use-compress-program",
+            "gzip -1",
+            "-cf",
             archive_path.as_str(),
             "-C",
             archive_parent.as_str(),
@@ -7226,7 +7232,9 @@ fn create_redis_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<(
     run_fixture_command(
         "/usr/bin/tar",
         &[
-            "-czf",
+            "--use-compress-program",
+            "gzip -1",
+            "-cf",
             archive_path.as_str(),
             "-C",
             archive_parent.as_str(),
@@ -7246,7 +7254,9 @@ fn create_rustfs_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<
     run_fixture_command(
         "/usr/bin/tar",
         &[
-            "-czf",
+            "--use-compress-program",
+            "gzip -1",
+            "-cf",
             archive_path.as_str(),
             "-C",
             archive_parent.as_str(),
@@ -7266,8 +7276,15 @@ fn write_postgres_fixture_binaries_with(release_path: &Utf8Path, postgres: Perso
     write_postgres_support_files(release_path)
 }
 
+/// Stubs, not fakes: PV rejects the artifact before it runs anything.
 fn write_postgres_fixture_binaries_without_support_files(release_path: &Utf8Path) -> Result<()> {
-    install_postgres_fakes(release_path, Persona::Postgres)
+    for binary in ["bin/initdb", "bin/postgres"] {
+        let path = release_path.join(binary);
+        state::fs::write_sensitive_file(&path, "#!/bin/sh\nexit 1\n")?;
+        set_executable(&path)?;
+    }
+
+    Ok(())
 }
 
 /// The fakes and their scenario files, which an archive carries and PV extracts together.
