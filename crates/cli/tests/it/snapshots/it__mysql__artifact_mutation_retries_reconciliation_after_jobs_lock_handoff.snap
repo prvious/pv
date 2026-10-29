@@ -1,0 +1,42 @@
+---
+source: crates/cli/tests/it/mysql.rs
+expression: snapshot
+---
+(
+    ExitCode(
+        unix_exit_status(
+            0,
+        ),
+    ),
+    "Installed MySQL track 8.0 (8.0.36-pv1)\nSystem reconciliation requested: job_lock_2\n",
+    [
+        Object {
+            "command": String("run_job"),
+            "kind": String("reconcile"),
+            "protocol_version": Number(3),
+            "scope": String("system"),
+        },
+        Object {
+            "command": String("run_job"),
+            "kind": String("reconcile"),
+            "protocol_version": Number(3),
+            "scope": String("system"),
+        },
+    ],
+    [
+        ResourceRecordSnapshot {
+            resource_name: "mysql",
+            track: "8.0",
+            desired_state: "Installed",
+            installed_version: Some(
+                "8.0.36-pv1",
+            ),
+            current_artifact_path: Some(
+                "home/.pv/resources/mysql/8.0/releases/8.0.36-pv1",
+            ),
+            usage_count: 0,
+            removal_prune: false,
+            removal_force: false,
+        },
+    ],
+)
