@@ -2,7 +2,7 @@
 source: crates/cli/tests/it/jobs.rs
 expression: wide.stdout
 ---
-[pv] jobs                                                                                                                             v0.2.8
+[pv] jobs                                                                                                                             v0.2.9
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 ID          KIND       SCOPE             STATUS       STARTED               FINISHED              SUMMARY
