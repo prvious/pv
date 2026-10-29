@@ -1,0 +1,185 @@
+---
+source: crates/config/tests/it/project_config.rs
+expression: cases
+---
+[
+    (
+        "project-url-root-env",
+        Ok(
+            ProjectConfig {
+                serve: true,
+                env_file: ".env",
+                php: None,
+                root: None,
+                env: {
+                    "APP_URL": "${url}",
+                },
+                hooks: ProjectHooks {
+                    prepare: [],
+                    setup: [],
+                },
+                resources: {},
+            },
+        ),
+    ),
+    (
+        "tls-placeholders-project-env",
+        Ok(
+            ProjectConfig {
+                serve: true,
+                env_file: ".env",
+                php: None,
+                root: None,
+                env: {
+                    "PV_TLS_CA": "${tls.ca}",
+                    "VITE_DEV_SERVER_CERT": "${tls.cert}",
+                    "VITE_DEV_SERVER_KEY": "${tls.key}",
+                },
+                hooks: ProjectHooks {
+                    prepare: [],
+                    setup: [],
+                },
+                resources: {},
+            },
+        ),
+    ),
+    (
+        "unknown-project-env",
+        Err(
+            UnknownEnvPlaceholder {
+                field: "env.APP_URL",
+                placeholder: "missing_url",
+            },
+        ),
+    ),
+    (
+        "resource-project-tls",
+        Ok(
+            ProjectConfig {
+                serve: true,
+                env_file: ".env",
+                php: None,
+                root: None,
+                env: {},
+                hooks: ProjectHooks {
+                    prepare: [],
+                    setup: [],
+                },
+                resources: {
+                    "mysql": ResourceConfig {
+                        track: None,
+                        env: {
+                            "PV_TLS_CA": "${tls.ca}",
+                            "VITE_DEV_SERVER_CERT": "${tls.cert}",
+                            "VITE_DEV_SERVER_KEY": "${tls.key}",
+                        },
+                        allocations: {},
+                    },
+                },
+            },
+        ),
+    ),
+    (
+        "resource-scoped-url",
+        Ok(
+            ProjectConfig {
+                serve: true,
+                env_file: ".env",
+                php: None,
+                root: None,
+                env: {},
+                hooks: ProjectHooks {
+                    prepare: [],
+                    setup: [],
+                },
+                resources: {
+                    "mysql": ResourceConfig {
+                        track: None,
+                        env: {
+                            "DATABASE_URL": "${url}",
+                        },
+                        allocations: {},
+                    },
+                },
+            },
+        ),
+    ),
+    (
+        "resource-url-not-exposed",
+        Err(
+            UnknownEnvPlaceholder {
+                field: "mailpit.env.MAIL_URL",
+                placeholder: "url",
+            },
+        ),
+    ),
+    (
+        "allocation-project-tls",
+        Ok(
+            ProjectConfig {
+                serve: true,
+                env_file: ".env",
+                php: None,
+                root: None,
+                env: {},
+                hooks: ProjectHooks {
+                    prepare: [],
+                    setup: [],
+                },
+                resources: {
+                    "mysql": ResourceConfig {
+                        track: None,
+                        env: {},
+                        allocations: {
+                            "app": AllocationConfig {
+                                env: {
+                                    "PV_TLS_CA": "${tls.ca}",
+                                    "VITE_DEV_SERVER_CERT": "${tls.cert}",
+                                    "VITE_DEV_SERVER_KEY": "${tls.key}",
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        ),
+    ),
+    (
+        "allocation-scoped-url",
+        Ok(
+            ProjectConfig {
+                serve: true,
+                env_file: ".env",
+                php: None,
+                root: None,
+                env: {},
+                hooks: ProjectHooks {
+                    prepare: [],
+                    setup: [],
+                },
+                resources: {
+                    "mysql": ResourceConfig {
+                        track: None,
+                        env: {},
+                        allocations: {
+                            "app": AllocationConfig {
+                                env: {
+                                    "DATABASE_URL": "${url}",
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        ),
+    ),
+    (
+        "allocation-unknown-url-like-placeholder",
+        Err(
+            UnknownEnvPlaceholder {
+                field: "mysql.allocations.app.env.DATABASE_URL",
+                placeholder: "database_url",
+            },
+        ),
+    ),
+]

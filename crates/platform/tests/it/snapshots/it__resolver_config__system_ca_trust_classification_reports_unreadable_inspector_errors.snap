@@ -1,0 +1,7 @@
+---
+source: crates/platform/tests/it/resolver_config.rs
+expression: state
+---
+Unreadable {
+    message: "macOS keychain inspection failed: fixture failure",
+}

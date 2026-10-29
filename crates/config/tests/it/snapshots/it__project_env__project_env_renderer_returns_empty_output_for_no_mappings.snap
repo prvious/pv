@@ -1,0 +1,10 @@
+---
+source: crates/config/tests/it/project_env.rs
+expression: "(&rendered, format_project_env(&RenderedProjectEnv::default()))"
+---
+(
+    RenderedProjectEnv {
+        values: {},
+    },
+    "",
+)

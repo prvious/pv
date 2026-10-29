@@ -132,7 +132,7 @@ Focused test checks:
 cargo nextest run -p pv-release --test release_records
 cargo nextest run -p pv-release --test manifest_generation
 cargo nextest run -p pv-release --test publication
-cargo nextest run -p resources --test manifest_foundation
+cargo nextest run -p resources -E 'test(/^manifest_foundation::/)'
 cargo nextest run -p cli -E 'test(/^update::/)'
 ```
 

@@ -685,10 +685,10 @@ fn real_artifact_e2e_runs_gateway_and_resource_matrix_for_manifest_input() -> Re
             "cargo nextest run -p daemon --locked --run-ignored ignored-only -E 'test(real_artifact_gateway_e2e_serves_tiny_php_project)'"
         ),
         workflow.contains(
-            "cargo nextest run -p daemon --locked --run-ignored ignored-only --test real_artifact_resource_matrix"
+            "cargo nextest run -p daemon --locked --run-ignored ignored-only -E 'test(/^real_artifact_resource_matrix::/)'"
         ),
         workflow.contains(
-            "cargo nextest run -p daemon --locked --run-ignored ignored-only --test gateway_runtime_contracts"
+            "cargo nextest run -p daemon --locked --run-ignored ignored-only -E 'test(/^gateway_runtime_contracts::/)'"
         ),
         workflow.contains(
             "cargo nextest run -p daemon --locked --lib --run-ignored ignored-only -E 'test(/runtime_contracts::/)'"

@@ -1,0 +1,22 @@
+---
+source: crates/platform/tests/it/hooks.rs
+expression: failures
+---
+[
+    (
+        "exit status: 9",
+        ": shell startup failed",
+    ),
+    (
+        "missing start marker",
+        "",
+    ),
+    (
+        "missing end marker",
+        "",
+    ),
+    (
+        "invalid environment entry",
+        "",
+    ),
+]

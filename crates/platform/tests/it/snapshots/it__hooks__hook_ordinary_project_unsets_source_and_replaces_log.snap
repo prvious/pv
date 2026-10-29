@@ -1,0 +1,6 @@
+---
+source: crates/platform/tests/it/hooks.rs
+expression: "fs::read_to_string(&log)?"
+---
+Running setup: printf '%s\n' "${PV_SOURCE_PATH-unset}"
+unset

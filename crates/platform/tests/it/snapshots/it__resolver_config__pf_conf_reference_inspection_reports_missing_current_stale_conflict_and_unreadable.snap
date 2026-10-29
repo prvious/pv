@@ -1,0 +1,18 @@
+---
+source: crates/platform/tests/it/resolver_config.rs
+assertion_line: 251
+expression: normalized_states
+---
+[
+    "Missing { path: \"[tempdir]/missing-pf-conf\" }",
+    "Current { path: \"[tempdir]/current-pf-conf\", value: PfConfReference }",
+    "Stale { path: \"[tempdir]/stale-pf-conf\", expected: Some(PfConfReference), actual: None }",
+    "Conflict { path: \"[tempdir]/conflict-pf-conf\" }",
+    "Conflict { path: \"[tempdir]/active-anchor-conflict-pf-conf\" }",
+    "Conflict { path: \"[tempdir]/active-rdr-anchor-conflict-pf-conf\" }",
+    "Conflict { path: \"[tempdir]/active-load-conflict-pf-conf\" }",
+    "Missing { path: \"[tempdir]/commented-reference-pf-conf\" }",
+    "Missing { path: \"[tempdir]/prose-reference-pf-conf\" }",
+    "Missing { path: \"[tempdir]/unrelated-pf-conf\" }",
+    "Unreadable { path: \"[tempdir]/pf-conf-directory\", message: \"<read error>\" }",
+]
