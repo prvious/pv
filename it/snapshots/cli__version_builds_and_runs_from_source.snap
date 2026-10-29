@@ -6,6 +6,6 @@ CommandOutput {
     code: Some(
         0,
     ),
-    stdout: "pv 0.2.8\n",
+    stdout: "pv 0.2.9\n",
     stderr: "",
 }

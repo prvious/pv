@@ -2,7 +2,7 @@
 source: crates/cli/tests/it/list.rs
 expression: decorated
 ---
-[pv] list                                                                                                         v0.2.8
+[pv] list                                                                                                         v0.2.9
 ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 PROJECT  MODE  PHP  STATUS  RESOURCES  ENV  PATH
