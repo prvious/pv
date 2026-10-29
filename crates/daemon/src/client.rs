@@ -1,9 +1,10 @@
+use std::time::Duration;
+
 use futures_util::StreamExt;
-use platform::clock::{self, Limit};
+use platform::clock::{self, Deadline, Limit};
 use serde_json::Value;
 use state::PvPaths;
 use tokio::io::AsyncRead;
-use tokio::time::{Duration, Instant, sleep, timeout};
 
 use crate::{DaemonError, ipc};
 use protocol::{
@@ -15,8 +16,10 @@ const DAEMON_CONNECT_TIMEOUT: Limit = Limit::new("daemon connect", Duration::fro
 const DAEMON_WRITE_TIMEOUT: Limit = Limit::new("daemon request write", Duration::from_secs(3));
 /// How long the client waits for the daemon to answer a request.
 pub const DAEMON_RESPONSE_TIMEOUT: Limit = Limit::new("daemon response", Duration::from_secs(3));
-const DAEMON_EVENT_TIMEOUT: Duration = Duration::from_secs(30);
-const DAEMON_HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long the client waits for the next event of a running job.
+pub const DAEMON_EVENT_TIMEOUT: Limit = Limit::new("daemon job event", Duration::from_secs(30));
+/// How long the client keeps retrying a daemon that isn't answering yet.
+pub const DAEMON_HEALTH_TIMEOUT: Limit = Limit::new("daemon health", Duration::from_secs(15));
 const DAEMON_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,13 +169,13 @@ async fn run_job(
 }
 
 async fn wait_until_healthy(paths: PvPaths) -> Result<(), DaemonError> {
-    let started_at = Instant::now();
+    let deadline = Deadline::after(&DAEMON_HEALTH_TIMEOUT);
 
     loop {
         match health(paths.clone()).await {
             Ok(()) => return Ok(()),
-            Err(error) if health_error_is_retryable(&error, started_at) => {
-                sleep(DAEMON_HEALTH_POLL_INTERVAL).await;
+            Err(error) if health_error_is_retryable(&error, &deadline) => {
+                clock::poll(DAEMON_HEALTH_POLL_INTERVAL).await;
             }
             Err(error) => return Err(error),
         }
@@ -180,13 +183,13 @@ async fn wait_until_healthy(paths: PvPaths) -> Result<(), DaemonError> {
 }
 
 async fn wait_until_healthy_allowing_protocol_mismatch(paths: PvPaths) -> Result<(), DaemonError> {
-    let started_at = Instant::now();
+    let deadline = Deadline::after(&DAEMON_HEALTH_TIMEOUT);
 
     loop {
         match health_allowing_protocol_mismatch(paths.clone()).await {
             Ok(()) => return Ok(()),
-            Err(error) if health_error_is_retryable(&error, started_at) => {
-                sleep(DAEMON_HEALTH_POLL_INTERVAL).await;
+            Err(error) if health_error_is_retryable(&error, &deadline) => {
+                clock::poll(DAEMON_HEALTH_POLL_INTERVAL).await;
             }
             Err(error) => return Err(error),
         }
@@ -303,8 +306,8 @@ async fn write_managed_resource_update_check_request(
         .map_err(DaemonError::from)
 }
 
-fn health_error_is_retryable(error: &DaemonError, started_at: Instant) -> bool {
-    if started_at.elapsed() >= DAEMON_HEALTH_TIMEOUT {
+fn health_error_is_retryable(error: &DaemonError, deadline: &Deadline) -> bool {
+    if deadline.is_expired() {
         return false;
     }
 
@@ -338,25 +341,16 @@ async fn read_response(
     serde_json::from_str::<DaemonResponse>(&line?).map_err(DaemonError::from)
 }
 
-async fn read_job_completion(
-    transport: &mut protocol::DaemonTransport<ipc::LocalStream>,
-    expected_job_id: &str,
-    events: &mut impl JobEventHandler,
-) -> Result<String, DaemonError> {
-    read_job_completion_with_timeout(transport, expected_job_id, events, DAEMON_EVENT_TIMEOUT).await
-}
-
-async fn read_job_completion_with_timeout<Stream>(
+async fn read_job_completion<Stream>(
     transport: &mut protocol::DaemonTransport<Stream>,
     expected_job_id: &str,
     events: &mut impl JobEventHandler,
-    event_timeout: Duration,
 ) -> Result<String, DaemonError>
 where
     Stream: AsyncRead + Unpin,
 {
     loop {
-        let Some(line) = timeout(event_timeout, transport.next())
+        let Some(line) = clock::timeout(&DAEMON_EVENT_TIMEOUT, transport.next())
             .await
             .map_err(|_| DaemonError::ProtocolTimedOut { phase: "job event" })?
         else {
@@ -537,14 +531,21 @@ fn validate_job_event_id(value: &Value, expected_job_id: &str) -> Result<(), Dae
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
     use insta::assert_debug_snapshot;
+    use platform::clock::{self, Deadline, Limit};
     use tokio::io::duplex;
-    use tokio::sync::oneshot;
-    use tokio::time::{Duration, sleep};
 
     use super::{
-        JobDownloadProgress, JobEventHandler, parse_job_event, read_job_completion_with_timeout,
+        DAEMON_EVENT_TIMEOUT, JobDownloadProgress, JobEventHandler, parse_job_event,
+        read_job_completion,
     };
+
+    /// Less than the event limit, so two steps outlast it only if each event restarts the wait.
+    const STEP: Limit = Limit::new("step", Duration::from_secs(20));
 
     #[derive(Default)]
     struct RecordingEvents {
@@ -552,6 +553,8 @@ mod tests {
         started: Vec<(String, String)>,
         progress: Vec<String>,
         logs: Vec<String>,
+        /// How many log events the reader has handled, for a test running beside it.
+        logs_handled: Arc<AtomicUsize>,
     }
 
     impl JobEventHandler for RecordingEvents {
@@ -565,6 +568,7 @@ mod tests {
 
         fn log(&mut self, message: &str) {
             self.logs.push(message.to_string());
+            self.logs_handled.fetch_add(1, Ordering::SeqCst);
         }
 
         fn download_progress(&mut self, progress: JobDownloadProgress) {
@@ -663,12 +667,25 @@ mod tests {
 
     #[tokio::test]
     async fn queued_job_heartbeats_extend_event_timeout() -> anyhow::Result<()> {
+        let clock = clock::install_fake_for_test();
         let (client, server) = duplex(1024);
         let mut reader = protocol::transport(client);
+        let mut events = RecordingEvents::default();
+        let logs_handled = Arc::clone(&events.logs_handled);
         let writer = tokio::spawn(async move {
             let mut writer = protocol::transport(server);
-            for _heartbeat in 0..10 {
-                sleep(Duration::from_millis(20)).await;
+            for heartbeat in 1..=2 {
+                while !clock.is_waiting(&DAEMON_EVENT_TIMEOUT) {
+                    tokio::task::yield_now().await;
+                }
+                let _step = Deadline::after(&STEP);
+                clock.advance_when_waiting(&STEP).await?;
+                // 20 s after the last event, the wait the reader renewed is still running. One
+                // wait for the whole job would have ended at 30 s, before the second step.
+                anyhow::ensure!(
+                    clock.is_waiting(&DAEMON_EVENT_TIMEOUT),
+                    "the event wait ended {heartbeat} steps in"
+                );
                 protocol::write_line(
                     &mut writer,
                     &protocol::DaemonEvent::Log {
@@ -677,6 +694,10 @@ mod tests {
                     },
                 )
                 .await?;
+                // Step again only once the reader has handled this heartbeat and renewed its wait.
+                while logs_handled.load(Ordering::SeqCst) < heartbeat {
+                    tokio::task::yield_now().await;
+                }
             }
             protocol::write_line(
                 &mut writer,
@@ -696,17 +717,10 @@ mod tests {
             )
             .await?;
 
-            Ok::<(), protocol::ProtocolError>(())
+            Ok::<(), anyhow::Error>(())
         });
-        let mut events = RecordingEvents::default();
 
-        let summary = read_job_completion_with_timeout(
-            &mut reader,
-            "job-1",
-            &mut events,
-            Duration::from_millis(100),
-        )
-        .await?;
+        let summary = read_job_completion(&mut reader, "job-1", &mut events).await?;
 
         writer.await??;
         assert_eq!(summary, "done");
@@ -716,7 +730,7 @@ mod tests {
         );
         assert_eq!(
             events.logs,
-            vec!["Waiting for the reconciliation slot".to_string(); 10]
+            vec!["Waiting for the reconciliation slot".to_string(); 2]
         );
 
         Ok(())
@@ -724,36 +738,31 @@ mod tests {
 
     #[tokio::test]
     async fn started_job_retains_running_event_timeout() -> anyhow::Result<()> {
+        let clock = clock::install_fake_for_test();
         let (client, server) = duplex(1024);
         let mut reader = protocol::transport(client);
-        let (finish_sender, finish_receiver) = oneshot::channel::<()>();
-        let writer = tokio::spawn(async move {
-            let mut writer = protocol::transport(server);
-            protocol::write_line(
-                &mut writer,
-                &protocol::DaemonEvent::JobStarted {
-                    job_id: "job-1",
-                    kind: "reconcile",
-                    scope: "system",
-                },
-            )
-            .await?;
-            let _finish_result = finish_receiver.await;
-
-            Ok::<(), protocol::ProtocolError>(())
-        });
+        let mut writer = protocol::transport(server);
+        // Written before the read starts, so the only event wait the advance can see is the one
+        // after `job_started`.
+        protocol::write_line(
+            &mut writer,
+            &protocol::DaemonEvent::JobStarted {
+                job_id: "job-1",
+                kind: "reconcile",
+                scope: "system",
+            },
+        )
+        .await?;
         let mut events = RecordingEvents::default();
 
-        let result = read_job_completion_with_timeout(
-            &mut reader,
-            "job-1",
-            &mut events,
-            Duration::from_millis(10),
-        )
-        .await;
+        let (result, ()) = tokio::try_join!(
+            async {
+                Ok::<_, anyhow::Error>(read_job_completion(&mut reader, "job-1", &mut events).await)
+            },
+            async { Ok(clock.advance_when_waiting(&DAEMON_EVENT_TIMEOUT).await?) },
+        )?;
 
-        let _finish_result = finish_sender.send(());
-        writer.await??;
+        drop(writer);
         assert!(matches!(
             result,
             Err(super::DaemonError::ProtocolTimedOut { phase: "job event" })

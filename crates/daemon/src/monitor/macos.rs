@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::StreamExt as _;
+use platform::clock::{self, Deadline, Limit};
 use platform::{BootSessionId, ProcessEvents, ProcessExitWatch, ProcessStartIdentity};
 use protocol::{DaemonTransport, ProtocolError, transport, write_line};
 use serde::{Deserialize, Serialize};
@@ -17,7 +18,6 @@ use tokio::io::unix::AsyncFd;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, MissedTickBehavior, interval_at, sleep, timeout};
 
 use super::{
     LiveRuntime, MONITOR_GATE_COMMAND, MONITOR_RUN_COMMAND, MonitorCleanup, MonitorErrorKind,
@@ -33,14 +33,15 @@ const PHP_INI_ENVIRONMENT_KEYS: [&str; 2] = ["PHPRC", "PHP_INI_SCAN_DIR"];
 const SOCKET_PATH_LIMIT: usize = 103;
 const RECORD_FILE: &str = "monitor.json";
 const SOCKET_FILE: &str = "sock";
-const STARTUP_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
-const STARTUP_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
-const EXEC_TIMEOUT: Duration = Duration::from_secs(10);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
-const RELEASE_TIMEOUT: Duration = Duration::from_secs(5);
+const STARTUP_REQUEST_TIMEOUT: Limit =
+    Limit::new("monitor startup request", Duration::from_secs(10));
+const STARTUP_REPLY_TIMEOUT: Limit = Limit::new("monitor startup reply", Duration::from_secs(30));
+const EXEC_TIMEOUT: Limit = Limit::new("monitor exec", Duration::from_secs(10));
+const REQUEST_TIMEOUT: Limit = Limit::new("monitor request", Duration::from_secs(5));
+const RELEASE_TIMEOUT: Limit = Limit::new("monitor release", Duration::from_secs(5));
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
-const GATE_FAILURE_TIMEOUT: Duration = Duration::from_millis(100);
-const EXITING_LEADER_TIMEOUT: Duration = Duration::from_secs(1);
+const GATE_FAILURE_TIMEOUT: Limit = Limit::new("monitor gate failure", Duration::from_millis(100));
+const EXITING_LEADER_TIMEOUT: Limit = Limit::new("monitor exiting leader", Duration::from_secs(1));
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// 150 s of [`POLL_INTERVAL`]s.
 const PAUSE_POLLS: u32 = 15_000;
@@ -214,7 +215,7 @@ pub async fn stop_monitor(
         if state.cleanup != MonitorCleanup::Pending {
             return Ok(state);
         }
-        sleep(POLL_INTERVAL).await;
+        clock::poll(POLL_INTERVAL).await;
     }
 }
 
@@ -260,7 +261,7 @@ async fn recover_reserved(paths: &PvPaths, subject: &str) -> Result<(), DaemonEr
                 .await?;
             }
             // A leader that is exiting has no identity yet still counts as live: it may finish.
-            None if wait_for_process_group_exit(runtime.pid, EXITING_LEADER_TIMEOUT).await? => {}
+            None if wait_for_process_group_exit(runtime.pid, &EXITING_LEADER_TIMEOUT).await? => {}
             Some(_) | None => {
                 return Err(DaemonError::RuntimeProcessIdentityChanged { pid: runtime.pid });
             }
@@ -364,7 +365,7 @@ async fn complete_startup(
     stream.set_nonblocking(true)?;
     let mut startup = transport(UnixStream::from_std(stream)?);
     write_line(&mut startup, request).await?;
-    let reply = timeout(STARTUP_REPLY_TIMEOUT, read_reply(&mut startup))
+    let reply = clock::timeout(&STARTUP_REPLY_TIMEOUT, read_reply(&mut startup))
         .await
         .map_err(|_elapsed| DaemonError::ProtocolTimedOut {
             phase: "monitor startup",
@@ -397,7 +398,7 @@ async fn request(
     let record = read_record(paths, subject)?
         .ok_or_else(|| unavailable(subject, "no monitor is recorded"))?;
     let socket = monitor_socket(paths, subject)?;
-    let stream = timeout(REQUEST_TIMEOUT, UnixStream::connect(&socket))
+    let stream = clock::timeout(&REQUEST_TIMEOUT, UnixStream::connect(&socket))
         .await
         .map_err(|_elapsed| unavailable(subject, "connecting timed out"))?
         .map_err(|error| unavailable(subject, &format!("cannot connect: {error}")))?;
@@ -414,7 +415,7 @@ async fn request(
         operation,
     };
     write_line(&mut connection, &request).await?;
-    let reply = timeout(REQUEST_TIMEOUT, read_reply(&mut connection))
+    let reply = clock::timeout(&REQUEST_TIMEOUT, read_reply(&mut connection))
         .await
         .map_err(|_elapsed| unavailable(subject, "the monitor did not reply"))??
         .ok_or_else(|| unavailable(subject, "the monitor closed the connection"))?;
@@ -462,13 +463,13 @@ async fn wait_for_reservation(
     paths: &PvPaths,
     subject: &str,
 ) -> Result<MonitorReservation, DaemonError> {
-    let deadline = Instant::now() + RELEASE_TIMEOUT;
+    let deadline = Deadline::after(&RELEASE_TIMEOUT);
 
     loop {
         match MonitorReservation::acquire(paths, subject) {
             Ok(reservation) => return Ok(reservation),
-            Err(StateError::CoordinationLockHeld { .. }) if Instant::now() < deadline => {
-                sleep(POLL_INTERVAL).await;
+            Err(StateError::CoordinationLockHeld { .. }) if !deadline.is_expired() => {
+                clock::poll(POLL_INTERVAL).await;
             }
             Err(error) => return Err(reservation_error(subject, error)),
         }
@@ -494,7 +495,7 @@ async fn run_monitor(paths: &PvPaths, hooks: &MonitorHooks) -> Result<(), Daemon
     let startup = StdUnixStream::from(io::stdout().as_fd().try_clone_to_owned()?);
     startup.set_nonblocking(true)?;
     let mut startup = transport(UnixStream::from_std(startup)?);
-    let line = timeout(STARTUP_REQUEST_TIMEOUT, startup.next())
+    let line = clock::timeout(&STARTUP_REQUEST_TIMEOUT, startup.next())
         .await
         .map_err(|_elapsed| DaemonError::ProtocolTimedOut {
             phase: "monitor startup request",
@@ -631,7 +632,7 @@ async fn supervise_gate(
         arguments: start.arguments.clone(),
     };
     write_line(&mut gate, &permission).await?;
-    let events = timeout(EXEC_TIMEOUT, confirm_exec(&mut watch, &mut gate, subject))
+    let events = clock::timeout(&EXEC_TIMEOUT, confirm_exec(&mut watch, &mut gate, subject))
         .await
         .map_err(|_elapsed| startup_failed(subject, "the runtime did not start in time"))??;
     let exit = events.exit.map(MonitorExit::from);
@@ -661,7 +662,7 @@ async fn confirm_exec(
                     return Ok(events);
                 }
                 if let Some(status) = events.exit {
-                    let message = timeout(GATE_FAILURE_TIMEOUT, gate_failure(gate))
+                    let message = clock::timeout(&GATE_FAILURE_TIMEOUT, gate_failure(gate))
                         .await
                         .ok()
                         .flatten()
@@ -827,11 +828,17 @@ impl Monitor {
         let (commands, mut requests) = mpsc::channel(16);
         let mut lifeline = self.lifeline.take().map(watch_lifeline).transpose()?;
         let mut self_release = false;
-        let rotation_period = hooks
-            .rotation_interval_ms
-            .map_or(ROTATION_INTERVAL, Duration::from_millis);
-        let mut rotation_tick = interval_at(Instant::now() + rotation_period, rotation_period);
-        rotation_tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        let rotation_period = Limit::new(
+            "monitor log rotation",
+            hooks
+                .rotation_interval_ms
+                .map_or(ROTATION_INTERVAL, Duration::from_millis),
+        );
+        // A moment, not a duration: the branch waits while a rotation runs, and a duration would
+        // only start counting once it is polled again.
+        let rotation_tick =
+            clock::sleep_until(&rotation_period, clock::now() + rotation_period.duration());
+        tokio::pin!(rotation_tick);
         if self.exit.is_some() {
             self.start_cleanup(self.record.fallback_stop);
         }
@@ -856,7 +863,7 @@ impl Monitor {
                         tokio::spawn(serve_connection(stream, instance, commands.clone()));
                     }
                     // A persistent failure such as EMFILE stays ready; don't spin on it.
-                    Err(_error) => sleep(ACCEPT_ERROR_BACKOFF).await,
+                    Err(_error) => clock::poll(ACCEPT_ERROR_BACKOFF).await,
                 },
                 Some(command) = requests.recv() => match command {
                     Command::State(reply) => {
@@ -883,7 +890,11 @@ impl Monitor {
                     self_release = true;
                     self.start_cleanup(self.record.fallback_stop);
                 }
-                _tick = rotation_tick.tick(), if self.rotation.is_none() => {
+                () = &mut rotation_tick, if self.rotation.is_none() => {
+                    rotation_tick.set(clock::sleep_until(
+                        &rotation_period,
+                        clock::now() + rotation_period.duration(),
+                    ));
                     match self.start_rotation(hooks) {
                         Ok(rotation) => self.rotation = Some(rotation),
                         Err(error) => self.log_rotation_error = Some(error.to_string()),
@@ -986,7 +997,7 @@ async fn answer(
         return Ok(());
     }
     let mut connection = transport(stream);
-    let Some(line) = timeout(REQUEST_TIMEOUT, connection.next())
+    let Some(line) = clock::timeout(&REQUEST_TIMEOUT, connection.next())
         .await
         .map_err(|_elapsed| DaemonError::ProtocolTimedOut {
             phase: "monitor request",
@@ -1129,7 +1140,7 @@ async fn pause(hooks: &MonitorHooks, point: MonitorPause) {
             if fs::path_exists(&resume) {
                 return;
             }
-            sleep(POLL_INTERVAL).await;
+            clock::poll(POLL_INTERVAL).await;
         }
     }
 }
@@ -1142,7 +1153,7 @@ fn pause_blocking(hooks: &MonitorHooks, point: MonitorPause) {
             if fs::path_exists(&resume) {
                 return;
             }
-            std::thread::sleep(POLL_INTERVAL);
+            clock::poll_blocking(POLL_INTERVAL);
         }
     }
 }

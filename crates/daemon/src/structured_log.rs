@@ -1,6 +1,7 @@
 use std::io::{self, Write as _};
 use std::time::{Duration, Instant};
 
+use platform::clock;
 use serde_json::{Map, Value};
 use state::PvPaths;
 use tokio::sync::watch;
@@ -75,7 +76,7 @@ impl ReconciliationPhaseLog {
             log: self.clone(),
             phase,
             subject: subject.into(),
-            started_at: Instant::now(),
+            started_at: clock::now(),
             finished: false,
         }
     }
@@ -192,7 +193,7 @@ impl PhaseTimer {
             self.phase,
             &self.subject,
             outcome,
-            self.started_at.elapsed(),
+            clock::elapsed(self.started_at),
             counts,
         );
     }
@@ -208,7 +209,7 @@ impl Drop for PhaseTimer {
             self.phase,
             &self.subject,
             PhaseOutcome::Failed,
-            self.started_at.elapsed(),
+            clock::elapsed(self.started_at),
             &[],
         );
     }

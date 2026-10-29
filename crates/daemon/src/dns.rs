@@ -6,13 +6,13 @@ use hickory_proto::op::{Message, ResponseCode};
 use hickory_proto::rr::rdata::{A, SOA};
 use hickory_proto::rr::{Name, RData, Record, RecordType};
 use hickory_proto::serialize::binary::BinEncodable;
+use platform::clock;
 use platform::loopback_tcp_port_available;
 use state::{Database, PortOwner, PortRequest, PvPaths};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream, UdpSocket as TokioUdpSocket};
 use tokio::sync::oneshot;
 use tokio::task::{JoinHandle, JoinSet};
-use tokio::time::sleep;
 
 use crate::DaemonError;
 
@@ -238,7 +238,7 @@ async fn run_dns_resolver(
                         tcp_connections.spawn(handle_tcp_connection(stream));
                     }
                     Err(_error) => {
-                        sleep(DNS_TCP_ACCEPT_ERROR_BACKOFF).await;
+                        clock::poll(DNS_TCP_ACCEPT_ERROR_BACKOFF).await;
                     }
                 }
             }

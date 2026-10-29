@@ -68,9 +68,9 @@ A new `platform::clock` module exposes a few functions plus a real poll tick.
 
 | Function | In production |
 |---|---|
-| `now() -> Instant` | `std::time::Instant::now()` |
+| `now() -> Instant` / `elapsed(since)` | `std::time::Instant::now()` / the time since `since` |
 | `sleep(&limit)` / `sleep_blocking(&limit)` | `tokio::time::sleep` / `std::thread::sleep` for `limit.duration()`, for schedules such as the health scan and the download retry |
-| `timeout(&limit, future)` | `tokio::time::timeout(limit.duration(), future)` |
+| `timeout(&limit, future)` | `tokio::time::timeout(limit.duration(), future)`, with `future` boxed so the timeout stores it once |
 | `Deadline::after(&limit)` with `is_expired()` | `now()` arithmetic, for polling loops such as `DaemonProcess::wait_for_exit` |
 | `deadline.timeout(&limit, future)` | `tokio::time::timeout` for the smaller of `limit` and the time left, for one attempt inside a budget, such as a readiness probe |
 | `poll(duration)` / `poll_blocking(duration)` | `tokio::time::sleep` / `std::thread::sleep`, always real. Only for short ticks (≤ 100 ms) between checks of a real process. |
@@ -148,11 +148,13 @@ The fake holds a mutex over the virtual time and the pending limits with their w
 3. **Poll ticks are explicit.** Real sleeps go through `poll`/`poll_blocking` and stay at 100 ms or less, so every real wait is deliberate.
 4. **No early advances.** Every advance goes through advance-when-waiting, with a real-time guard that fails loudly.
 5. **Test-only build.** The fake exists only with `test-support`; release builds can't contain it.
-6. **One clock.** From PR 4, a Clippy rule bans direct timers outside `platform::clock` in every crate (D2):
+6. **One clock.** From PR 4b, a Clippy rule bans direct timers outside `platform::clock` in every crate and every target, tests included (D2, D4):
    - `std::thread::sleep`
-   - `std::time::Instant::now`
+   - `std::time::Instant::{now, elapsed}`
    - `tokio::time::{sleep, sleep_until, timeout, interval}`
    - `tokio::time::Instant::now`
+
+   A test that must wait on real time on purpose (a hang guard on another process, a deadline for an event) uses a test-only `clock::real` (`now`, `sleep`, `timeout`), so every such wait is named.
 
 ## Risks
 
@@ -225,13 +227,19 @@ A stack, each PR verified with targeted runs, the full suite, and a comparison o
      - Add `sleep`, `sleep_blocking` and `FakeClock::is_waiting`.
      - Route the health scan and its recovery retries, the job heartbeat and the download retry through the clock. The 50 ms jobs-lock retries stay real through `poll`.
      - Turn the pause/advance/resume tests and the remaining time windows into advances or handshakes.
-4. **The rest and the lint.**
-   - Convert the remaining timing constants (72 named, about 100 `timeout` calls).
-   - Turn on the Clippy rule.
-   - Document the two failure kinds and the clock in CONTRIBUTING.md.
+4. **The rest and the lint,** in two PRs:
+   - **4a, the app code.**
+     - Convert the remaining limits: the monitor's, the server's request line, the daemon client's event and health limits, stop and kill waits, and job stream writes. Delete the client's `read_job_completion_with_timeout` override.
+     - Route the remaining short real pauses through `poll`, the monitor's log rotation through `sleep`, and elapsed-time measurements through `now` and `elapsed`.
+     - Box the future inside `timeout` so wrapping a large future doesn't copy it into the timeout's state more than once.
+   - **4b, the lint and the tests.**
+     - Add the test-only `clock::real`, move the tests' direct timers to `poll` or `clock::real`, and give pv-fake and pv-release the clock or a narrow exception.
+     - Turn on the Clippy rule.
+     - Document the two failure kinds, the four questions and the clock in CONTRIBUTING.md.
 
 ## Decisions
 
 - **D1 — process-wide fake, not an injected clock. Decided 2026-10-25.** A clock passed into each component stays the cleaner option if the daemon gets a context object; it isn't worth adding one for this.
 - **D2 — the Clippy rule turns on at the end of the stack. Decided 2026-10-25.** PR 4 enables it for all crates, once every limit and schedule goes through the clock.
 - **D3 — no new dependency. Decided 2026-10-25.** Production keeps tokio and std; PV owns the small fake.
+- **D4 — the lint covers tests too. Decided 2026-10-28.** Tests' deliberate real-time waits go through a test-only `clock::real`, so every new raw sleep in a test is caught and the four questions apply everywhere. The alternative, a second Clippy run for app code only, would leave tests free to add sleeps and duplicate `clippy.toml`.

@@ -2645,7 +2645,7 @@ impl PendingManagedResourceReadiness {
 
             return Err(error);
         }
-        tokio::time::sleep(RESOURCE_PROCESS_EXIT_POLL_INTERVAL).await;
+        clock::poll(RESOURCE_PROCESS_EXIT_POLL_INTERVAL).await;
         if process.has_exited()? {
             // Releases the monitor, which logs the exit it holds.
             process

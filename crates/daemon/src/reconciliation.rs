@@ -4,6 +4,7 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use platform::clock;
 use state::{JobsLock, PvPaths, StateError};
 use thiserror::Error;
 use tokio::sync::Notify;
@@ -200,7 +201,7 @@ impl ReconciliationQueue {
             job,
             inner: Arc::clone(&self.inner),
             abandon_job: Some(Box::new(abandon_job)),
-            enqueued_at: Instant::now(),
+            enqueued_at: clock::now(),
             released: false,
         }))
     }
@@ -316,7 +317,7 @@ impl ReconciliationQueue {
             job,
             inner: Arc::clone(&self.inner),
             abandon_job: Some(Box::new(abandon_job)),
-            enqueued_at: Instant::now(),
+            enqueued_at: clock::now(),
             released: false,
         }))
     }
@@ -345,7 +346,7 @@ impl QueuedReconciliation {
                     state.active = Some(job.clone());
                     let abandon_job = queued.abandon_job.take();
                     queued.released = true;
-                    let started_at = Instant::now();
+                    let started_at = clock::now();
 
                     return RunningReconciliation {
                         job,
@@ -372,7 +373,7 @@ impl QueuedReconciliation {
 impl ReconciliationJobTiming {
     #[cfg(test)]
     pub(crate) fn immediate() -> Self {
-        let now = Instant::now();
+        let now = clock::now();
 
         Self {
             enqueued_at: now,
@@ -385,7 +386,7 @@ impl ReconciliationJobTiming {
     }
 
     pub(crate) fn execution_elapsed(self) -> Duration {
-        self.execution_elapsed_at(Instant::now())
+        self.execution_elapsed_at(clock::now())
     }
 
     fn execution_elapsed_at(self, now: Instant) -> Duration {
@@ -477,7 +478,7 @@ impl ReconciliationDebouncer {
     }
 
     async fn flush_after_delay(self) {
-        tokio::time::sleep(self.delay).await;
+        clock::poll(self.delay).await;
 
         let scopes = {
             let mut inner = lock_debounce_state(&self.state);
@@ -692,8 +693,7 @@ fn lock_debounce_state(state: &DebounceState) -> MutexGuard<'_, DebounceInner> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Instant;
-
+    use platform::clock;
     use tokio::time::{Duration, sleep, timeout};
 
     use super::{
@@ -704,7 +704,7 @@ mod tests {
 
     #[test]
     fn job_timing_separates_queue_wait_from_execution() {
-        let enqueued_at = Instant::now();
+        let enqueued_at = clock::now();
         let started_at = enqueued_at + Duration::from_millis(11);
         let timing = ReconciliationJobTiming {
             enqueued_at,
@@ -726,19 +726,19 @@ mod tests {
         })?)?
         .wait_for_turn()
         .await;
-        let enqueued_before = Instant::now();
+        let enqueued_before = clock::now();
         let waiting = queued(
             queue.enqueue(ReconciliationScope::project("project_1")?, || {
                 Ok::<String, anyhow::Error>("job_2".to_string())
             })?,
         )?;
-        let enqueued_after = Instant::now();
+        let enqueued_after = clock::now();
 
         sleep(Duration::from_millis(10)).await;
-        let released_at = Instant::now();
+        let released_at = clock::now();
         active.finish();
         let running = timeout(Duration::from_secs(1), waiting.wait_for_turn()).await?;
-        let started_after = Instant::now();
+        let started_after = clock::now();
         let timing = running.timing();
 
         assert!(timing.enqueued_at >= enqueued_before);

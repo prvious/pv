@@ -2,12 +2,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use platform::clock;
+use platform::clock::{self, Limit};
 use state::PvPaths;
 use tokio::io::AsyncRead;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
-use tokio::time::{sleep, timeout};
 
 use crate::DaemonError;
 use crate::health::{
@@ -30,7 +29,8 @@ use protocol::{
 
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
 const PROJECT_CONFIG_DEBOUNCE: Duration = Duration::from_millis(50);
-const REQUEST_LINE_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long the daemon waits for a connected client to send its request.
+const REQUEST_LINE_TIMEOUT: Limit = Limit::new("daemon request line", Duration::from_secs(30));
 
 pub(crate) async fn serve(
     paths: PvPaths,
@@ -278,7 +278,7 @@ pub(crate) async fn serve(
                         });
                     }
                     Err(_error) => {
-                        sleep(ACCEPT_ERROR_BACKOFF).await;
+                        clock::poll(ACCEPT_ERROR_BACKOFF).await;
                     }
                 }
             }
@@ -505,7 +505,7 @@ async fn handle_connection(
     let line = tokio::select! {
         biased;
         _ = wait_for_fallback_shutdown(&mut fallback_shutdown) => return Ok(()),
-        line = read_request_line(&mut transport, REQUEST_LINE_TIMEOUT) => line?,
+        line = read_request_line(&mut transport) => line?,
     };
     let Some(line) = line else {
         return Ok(());
@@ -576,12 +576,11 @@ async fn wait_for_fallback_shutdown(shutdown: &mut watch::Receiver<bool>) {
 
 async fn read_request_line<Stream>(
     transport: &mut DaemonTransport<Stream>,
-    read_timeout: Duration,
 ) -> Result<Option<String>, DaemonError>
 where
     Stream: AsyncRead + Unpin,
 {
-    match timeout(read_timeout, transport.next()).await {
+    match clock::timeout(&REQUEST_LINE_TIMEOUT, transport.next()).await {
         Ok(Some(line)) => Ok(Some(line?)),
         Ok(None) | Err(_) => Ok(None),
     }
@@ -615,8 +614,8 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::enqueue_runtime_recovery_job;
     use super::{
-        handle_background_reconciliation_result, handle_startup_task_result, read_request_line,
-        run_debounced_reconciliation_job,
+        REQUEST_LINE_TIMEOUT, handle_background_reconciliation_result, handle_startup_task_result,
+        read_request_line, run_debounced_reconciliation_job,
     };
     use crate::health::collect_project_tls_health_scopes;
     #[cfg(target_os = "macos")]
@@ -755,11 +754,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn request_line_read_times_out_for_idle_connection() -> Result<(), crate::DaemonError> {
+    async fn request_line_read_times_out_for_idle_connection() -> Result<()> {
+        let clock = platform::clock::install_fake_for_test();
         let (_client, server) = duplex(1024);
         let mut transport = transport(server);
 
-        let line = read_request_line(&mut transport, Duration::from_millis(10)).await?;
+        let (line, ()) = tokio::try_join!(
+            async { Ok::<_, anyhow::Error>(read_request_line(&mut transport).await?) },
+            async { Ok(clock.advance_when_waiting(&REQUEST_LINE_TIMEOUT).await?) },
+        )?;
 
         assert!(line.is_none());
 
