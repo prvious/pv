@@ -677,7 +677,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
-    use platform::clock::{self, Limit, real};
+    #[cfg(target_os = "macos")]
+    use platform::clock::real;
+    use platform::clock::{self, Limit};
     #[cfg(target_os = "macos")]
     use pv_fake::Persona;
     #[cfg(target_os = "macos")]
