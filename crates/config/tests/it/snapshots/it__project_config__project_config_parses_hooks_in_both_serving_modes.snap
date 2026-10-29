@@ -1,0 +1,13 @@
+---
+source: crates/config/tests/it/project_config.rs
+expression: serving.hooks
+---
+ProjectHooks {
+    prepare: [
+        "cp \"$PV_SOURCE_PATH/auth.json\" auth.json",
+    ],
+    setup: [
+        "composer install",
+        "pnpm install\npnpm build\n",
+    ],
+}

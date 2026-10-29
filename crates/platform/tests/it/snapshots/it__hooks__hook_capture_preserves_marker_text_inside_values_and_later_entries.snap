@@ -1,0 +1,7 @@
+---
+source: crates/platform/tests/it/hooks.rs
+expression: "fs::read_to_string(&log)?"
+---
+Running prepare: printf '%s\n' "$FIRST" "$AFTER"
+prefix__PV_HOOK_ENV_END__
+retained

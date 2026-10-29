@@ -46,13 +46,13 @@ jobs:
         env:
           PV_E2E_REAL_ARTIFACTS: "1"
           PV_E2E_ARTIFACT_MANIFEST_URL: ${{ inputs.manifest_url }}
-        run: cargo nextest run -p daemon --locked --run-ignored ignored-only --test real_artifact_resource_matrix
+        run: cargo nextest run -p daemon --locked --run-ignored ignored-only -E 'test(/^real_artifact_resource_matrix::/)'
       - name: Run Gateway runtime contracts against real artifacts
         if: ${{ !cancelled() }}
         env:
           PV_E2E_REAL_ARTIFACTS: "1"
           PV_E2E_ARTIFACT_MANIFEST_URL: ${{ inputs.manifest_url }}
-        run: cargo nextest run -p daemon --locked --run-ignored ignored-only --test gateway_runtime_contracts
+        run: cargo nextest run -p daemon --locked --run-ignored ignored-only -E 'test(/^gateway_runtime_contracts::/)'
       - name: Run Managed Resource runtime contracts against real artifacts
         if: ${{ !cancelled() }}
         env:
