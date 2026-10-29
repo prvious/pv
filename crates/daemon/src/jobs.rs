@@ -12176,7 +12176,9 @@ mod tests {
         run_fixture_command(
             "tar",
             &[
-                "-czf",
+                "--use-compress-program",
+                "gzip -1",
+                "-cf",
                 archive_path.as_str(),
                 "-C",
                 archive_parent.as_str(),

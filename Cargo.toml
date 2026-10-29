@@ -132,3 +132,29 @@ path = "it/cli.rs"
 [[test]]
 name = "terminal"
 path = "it/terminal.rs"
+
+# Tests hash, unpack and verify archives that carry the 34 MB pv-fake, and log in to Postgres with
+# SCRAM. Unoptimized, these small crates cost seconds per test, most of all on Intel.
+[profile.dev.package.sha2]
+opt-level = 3
+
+[profile.dev.package.digest]
+opt-level = 3
+
+[profile.dev.package.block-buffer]
+opt-level = 3
+
+[profile.dev.package.hmac]
+opt-level = 3
+
+[profile.dev.package.flate2]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+
+[profile.dev.package.crc32fast]
+opt-level = 3
+
+[profile.dev.package.tar]
+opt-level = 3
