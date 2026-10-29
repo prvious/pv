@@ -5420,11 +5420,11 @@ mod tests {
     use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
     use insta::assert_debug_snapshot;
+    #[cfg(target_os = "macos")]
+    use platform::clock::real;
     use platform::{ActivePfRedirectInspection, PfRedirectConfig};
     use state::{Database, LinkProjectInput, PvPaths};
     use tokio::sync::watch;
-    #[cfg(target_os = "macos")]
-    use tokio::time::timeout;
 
     use crate::gateway_config::GatewayProjectRoute;
     use crate::{DaemonError, ReadinessCheck};
@@ -5571,8 +5571,8 @@ mod tests {
         };
         drop(owner_pipe);
 
-        timeout(Duration::from_secs(5), member.wait()).await??;
-        timeout(Duration::from_secs(5), group_anchor.wait()).await??;
+        real::timeout(Duration::from_secs(5), member.wait()).await??;
+        real::timeout(Duration::from_secs(5), group_anchor.wait()).await??;
         wait_for_validation_process_group_exit(Some(group_pid)).await?;
 
         Ok(())

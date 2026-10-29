@@ -40,6 +40,10 @@ fn smoke_hook_reports_success_and_failure() -> Result<()> {
 }
 
 #[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "pv-release moves to `platform::clock` in its cleanup pass"
+)]
 fn smoke_hook_times_out_and_kills_child() -> Result<()> {
     let tempdir = tempdir()?;
     let hook = tempdir.path().join("timeout.sh");
@@ -1229,6 +1233,10 @@ exit 72
 }
 
 #[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "pv-release moves to `platform::clock` in its cleanup pass"
+)]
 fn redis_smoke_kills_server_when_shutdown_fails() -> Result<()> {
     let tempdir = tempdir()?;
     let artifact_root = tempdir.path().join("artifact");
@@ -1412,6 +1420,10 @@ fn rustfs_smoke_uses_explicit_loopback_console_port() -> Result<()> {
 }
 
 #[test]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "pv-release moves to `platform::clock` in its cleanup pass"
+)]
 fn rustfs_smoke_fails_when_server_does_not_stop() -> Result<()> {
     let tempdir = tempdir()?;
     let artifact_root = tempdir.path().join("artifact");

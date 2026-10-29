@@ -3,12 +3,12 @@
 use std::io::Write as _;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Stdio};
-use std::thread;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
+use platform::clock;
 use platform::{
     ProcessEvents, ProcessExitWatch, inspect_process_identity, inspect_process_start_identity,
     process_is_zombie,
@@ -42,7 +42,7 @@ fn native_process_identity_reports_direct_executable_and_ordered_arguments() -> 
 fn native_process_identity_preserves_shell_command_as_one_argument() -> Result<()> {
     let command = "kill -STOP $$";
     let mut child = ChildGuard(TestCommand::new("/bin/sh").args(["-c", command]).spawn()?);
-    thread::sleep(Duration::from_millis(50));
+    clock::poll_blocking(Duration::from_millis(50));
     let identity = inspect_child(&mut child)?;
 
     assert!(identity.executable.is_absolute());
@@ -59,7 +59,7 @@ fn native_process_identity_reports_shebang_script_and_ordered_arguments() -> Res
     state::fs::write_sensitive_file(&script, "#!/bin/sh\nkill -STOP $$\n")?;
     set_executable(&script)?;
     let mut child = ChildGuard(TestCommand::new(&script).args(["one", "two"]).spawn()?);
-    thread::sleep(Duration::from_millis(50));
+    clock::poll_blocking(Duration::from_millis(50));
     let identity = inspect_child(&mut child)?;
 
     assert!(identity.executable.is_absolute());
@@ -117,7 +117,7 @@ fn wait_for_events(
         if done(&events) {
             return Ok(events);
         }
-        thread::sleep(Duration::from_millis(10));
+        clock::poll_blocking(Duration::from_millis(10));
     }
 
     Err(anyhow!("process events never arrived"))

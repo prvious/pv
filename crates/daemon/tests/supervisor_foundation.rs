@@ -14,7 +14,7 @@ use daemon::{
     wait_for_custom_readiness, wait_for_readiness,
 };
 use insta::{Settings, assert_debug_snapshot};
-use platform::clock::{self, Limit};
+use platform::clock::{self, Limit, real};
 use pv_fake::Persona;
 #[cfg(target_os = "macos")]
 use pv_fake::{EventKind, InstalledFake};
@@ -24,7 +24,6 @@ use serde_json::json;
 use state::PvPaths;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::time::{sleep, timeout};
 use tokio_rustls::TlsAcceptor;
 
 #[expect(
@@ -413,7 +412,7 @@ async fn http_readiness_times_out_even_when_the_server_keeps_the_socket_open() -
     });
 
     clock::install_fake_for_test().advance_when_waiting_in_background(&READINESS);
-    let result = timeout(
+    let result = real::timeout(
         Duration::from_secs(5),
         wait_for_readiness(
             ReadinessCheck::Http {
@@ -494,7 +493,7 @@ async fn custom_readiness_retries_until_the_check_succeeds() -> Result<()> {
 #[tokio::test]
 async fn custom_readiness_timeout_bounds_a_hanging_check_future() -> Result<()> {
     clock::install_fake_for_test().advance_when_waiting_in_background(&READINESS);
-    let result = timeout(
+    let result = real::timeout(
         Duration::from_secs(5),
         wait_for_custom_readiness("hanging-custom", &READINESS, || {
             std::future::pending::<bool>()
@@ -881,7 +880,7 @@ async fn wait_for_file_contains(path: &camino::Utf8Path, needle: &str) -> Result
             return Ok(content);
         }
 
-        sleep(Duration::from_millis(20)).await;
+        clock::poll(Duration::from_millis(20)).await;
     }
 
     Err(anyhow!("file {path} did not contain {needle:?}"))
@@ -911,7 +910,7 @@ async fn wait_for_process_exit(pid: u32) -> Result<()> {
             return Ok(());
         }
 
-        sleep(Duration::from_millis(20)).await;
+        clock::poll(Duration::from_millis(20)).await;
     }
 
     Err(anyhow!("process {pid:?} was still running"))
@@ -932,7 +931,7 @@ async fn wait_for_fake_start(fake: &InstalledFake) -> Result<bool> {
             return Ok(lifeline_armed);
         }
 
-        sleep(Duration::from_millis(20)).await;
+        clock::poll(Duration::from_millis(20)).await;
     }
 
     Err(anyhow!(
@@ -947,7 +946,7 @@ async fn wait_for_path(path: &camino::Utf8Path) -> Result<()> {
             return Ok(());
         }
 
-        sleep(Duration::from_millis(20)).await;
+        clock::poll(Duration::from_millis(20)).await;
     }
 
     Err(anyhow!("file {path} did not exist"))

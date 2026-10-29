@@ -566,8 +566,13 @@ mod tests {
 
     use camino_tempfile::tempdir;
     use insta::assert_snapshot;
+    use platform::clock::real;
 
     use super::*;
+
+    /// How long a writer waits for the follower to catch up: to record where each log ends, or to
+    /// read what was written so far. Nothing signals that moment, so this is a real wait.
+    const FOLLOWER_START: Duration = Duration::from_millis(250);
 
     const BODIES: [&str; 4] = [
         "error: upstream worker:8.3 refused for legacy-shop.test",
@@ -634,7 +639,7 @@ mod tests {
 
         std::thread::scope(|scope| {
             let writer = scope.spawn(|| {
-                std::thread::sleep(Duration::from_millis(250));
+                real::sleep_blocking(FOLLOWER_START);
                 append_test_file(&daemon_log, "daemon follow\n")?;
                 append_test_file(&gateway_log, "gateway follow\n")
             });
@@ -690,9 +695,9 @@ mod tests {
 
         std::thread::scope(|scope| {
             let writer = scope.spawn(|| {
-                std::thread::sleep(Duration::from_millis(250));
+                real::sleep_blocking(FOLLOWER_START);
                 write_test_file(&worker_log, "first line\nsecond ")?;
-                std::thread::sleep(Duration::from_millis(250));
+                real::sleep_blocking(FOLLOWER_START);
                 append_test_file(&worker_log, "line\n")
             });
             follow_sources_until(&sources, false, &mut stdout, Some(2))?;
@@ -719,7 +724,7 @@ mod tests {
 
         std::thread::scope(|scope| {
             let writer = scope.spawn(|| {
-                std::thread::sleep(Duration::from_millis(250));
+                real::sleep_blocking(FOLLOWER_START);
                 // Not UTF-8, and a Windows line ending.
                 append_test_file(&mysql_log, b"caf\xe9\r\n")
             });

@@ -1882,8 +1882,6 @@ mod tests {
     use std::thread;
     #[cfg(unix)]
     use std::time::Duration;
-    #[cfg(target_os = "macos")]
-    use std::time::Instant;
 
     #[cfg(target_os = "macos")]
     use anyhow::anyhow;
@@ -1892,6 +1890,9 @@ mod tests {
     use insta::{Settings, assert_debug_snapshot};
     #[cfg(target_os = "macos")]
     use pv_fake::{EventKind, FakeSettings, InstalledFake, Persona, TcpHolderConfig};
+
+    #[cfg(target_os = "macos")]
+    use crate::clock::real;
 
     #[cfg(unix)]
     use super::{HELPER_PROTOCOL_VERSION, HelperOperation, write_message};
@@ -2130,7 +2131,7 @@ mod tests {
         let server_path = socket_path.clone();
         let owner_uid = rustix::process::getuid().as_raw();
         let server = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(75));
+            clock::poll_blocking(Duration::from_millis(75));
             let listener = std::os::unix::net::UnixListener::bind(server_path)?;
             serve_next_helper_connection(
                 &listener,
@@ -2330,7 +2331,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     impl LowPortHolder {
         fn wait_ready(&mut self, fake: &InstalledFake) -> anyhow::Result<()> {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = real::now() + Duration::from_secs(5);
             loop {
                 if fake
                     .events()?
@@ -2342,10 +2343,10 @@ mod tests {
                 if let Some(status) = self.0.try_wait()? {
                     return Err(anyhow!("TCP holder exited before readiness: {status}"));
                 }
-                if Instant::now() >= deadline {
+                if real::now() >= deadline {
                     return Err(anyhow!("TCP holder did not report readiness"));
                 }
-                thread::sleep(Duration::from_millis(10));
+                clock::poll_blocking(Duration::from_millis(10));
             }
         }
 

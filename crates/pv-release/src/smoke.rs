@@ -14,6 +14,10 @@ pub fn run_smoke_hook(hook: &Utf8Path, artifact_root: &Utf8Path) -> crate::Resul
     run_smoke_hook_with_timeout(hook, artifact_root, DEFAULT_SMOKE_HOOK_TIMEOUT)
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "pv-release moves to `platform::clock` in its cleanup pass"
+)]
 pub fn run_smoke_hook_with_timeout(
     hook: &Utf8Path,
     artifact_root: &Utf8Path,

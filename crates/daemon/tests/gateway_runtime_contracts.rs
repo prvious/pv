@@ -6,7 +6,7 @@
 
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::process::Output;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use camino::Utf8Path;
@@ -23,7 +23,7 @@ use daemon::{
     CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, ProcessSupervisor, ReadinessCheck,
     wait_for_readiness,
 };
-use platform::clock::Limit;
+use platform::clock::{Limit, real};
 use pv_fake::Persona;
 use resources::{
     ManagedResourceCommands, TargetPlatform, TrackSelector, caddy_adapter, frankenphp_adapter,
@@ -165,9 +165,9 @@ async fn gateway_contract(paths: &PvPaths, executable: &Utf8Path) -> Result<()> 
         Ok::<(), anyhow::Error>(())
     }
     .await;
-    let stop_started = Instant::now();
+    let stop_started = real::now();
     process.stop(STOP_GRACE_PERIOD).await?;
-    let stopped_within = stop_started.elapsed();
+    let stopped_within = real::elapsed(stop_started);
 
     serving.with_context(|| runtime_log(&paths.gateway_supervisor_log()))?;
     ensure!(
@@ -257,9 +257,9 @@ async fn worker_contract(paths: &PvPaths, artifact_root: &Utf8Path, php_track: &
         Ok::<(), anyhow::Error>(())
     }
     .await;
-    let stop_started = Instant::now();
+    let stop_started = real::now();
     process.stop(STOP_GRACE_PERIOD).await?;
-    let stopped_within = stop_started.elapsed();
+    let stopped_within = real::elapsed(stop_started);
 
     serving.with_context(|| runtime_log(&paths.worker_log(&runtime_key)))?;
     ensure!(

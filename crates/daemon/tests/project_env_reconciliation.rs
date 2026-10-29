@@ -2,13 +2,14 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
-use std::time::Duration as StdDuration;
+use std::time::{Duration as StdDuration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use platform::GeneratedLocalCa;
+use platform::clock::{self, real};
 use rcgen::{
     CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose,
     PKCS_ECDSA_P256_SHA256,
@@ -23,7 +24,6 @@ use state::{
 use time::{Duration, OffsetDateTime};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tokio::time::{Instant as TokioInstant, timeout_at};
 
 const REQUEST_LINES_TIMEOUT: StdDuration = StdDuration::from_secs(30);
 
@@ -1443,7 +1443,7 @@ async fn malformed_config_with_existing_tls_is_renewed_by_daemon_health() -> Res
                 break;
             }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        clock::poll(std::time::Duration::from_millis(20)).await;
     }
     daemon.shutdown().await?;
 
@@ -1969,7 +1969,7 @@ async fn wait_for_succeeded_project_job(paths: &PvPaths, project_id: &str) -> Re
             return Ok(job);
         }
 
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        clock::poll(std::time::Duration::from_millis(50)).await;
     }
 
     Err(anyhow!(
@@ -1999,7 +1999,7 @@ async fn wait_for_new_finished_system_job(paths: &PvPaths, existing_count: usize
             return Ok(());
         }
 
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        clock::poll(std::time::Duration::from_millis(20)).await;
     }
 
     Err(anyhow!("new finished startup System job was not recorded"))
@@ -2007,7 +2007,7 @@ async fn wait_for_new_finished_system_job(paths: &PvPaths, existing_count: usize
 
 async fn request_lines(paths: &PvPaths, request: Value) -> Result<Vec<Value>> {
     let limit = REQUEST_LINES_TIMEOUT;
-    let deadline = TokioInstant::now() + limit;
+    let deadline = real::now() + limit;
     let request_payload = serde_json::to_string(&request)?;
     let mut lines = Vec::new();
     let mut stream = request_step(
@@ -2067,7 +2067,7 @@ async fn request_lines(paths: &PvPaths, request: Value) -> Result<Vec<Value>> {
 }
 
 async fn request_step<T, E>(
-    deadline: TokioInstant,
+    deadline: Instant,
     operation: impl Future<Output = std::result::Result<T, E>>,
     endpoint: &Utf8Path,
     request_payload: &str,
@@ -2078,7 +2078,7 @@ async fn request_step<T, E>(
 where
     E: Into<anyhow::Error>,
 {
-    match timeout_at(deadline, operation).await {
+    match real::timeout(deadline.saturating_duration_since(real::now()), operation).await {
         Ok(Ok(value)) => Ok(value),
         Ok(Err(error)) => Err(error.into()).with_context(|| {
             format!(

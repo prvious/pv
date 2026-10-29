@@ -448,10 +448,10 @@ mod tests {
     use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
     use insta::assert_debug_snapshot;
+    use platform::clock::{self, real};
     use platform::{PlatformCapability, PlatformError, PlatformTarget};
     use state::PvPaths;
     use tokio::sync::{oneshot, watch};
-    use tokio::time::timeout;
 
     #[cfg(target_os = "macos")]
     use super::publish_started_daemon;
@@ -505,7 +505,7 @@ mod tests {
         let runtime = build_runtime()?;
 
         runtime.block_on(async {
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            clock::poll(std::time::Duration::from_millis(1)).await;
         });
 
         Ok(())
@@ -673,7 +673,7 @@ mod tests {
             blocked_request_release_signal: None,
         };
 
-        let result = timeout(
+        let result = real::timeout(
             Duration::from_millis(100),
             wait_for_shutdown(daemon, future::pending::<io::Result<()>>()),
         )

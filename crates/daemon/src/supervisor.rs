@@ -1389,8 +1389,8 @@ mod bounded_readiness_tests {
     use std::time::Duration;
 
     use anyhow::{Result, anyhow};
+    use platform::clock::real;
     use tokio::sync::Semaphore;
-    use tokio::time::timeout;
 
     use super::bounded_runtime_readiness;
     use futures_util::StreamExt;
@@ -1432,7 +1432,7 @@ mod bounded_readiness_tests {
             .collect::<Vec<_>>(),
         );
 
-        timeout(Duration::from_secs(1), async {
+        real::timeout(Duration::from_secs(1), async {
             while started.load(Ordering::SeqCst) < 4 {
                 tokio::task::yield_now().await;
             }
@@ -1446,7 +1446,7 @@ mod bounded_readiness_tests {
         assert_eq!(maximum_active.load(Ordering::SeqCst), 4);
 
         gate.add_permits(8);
-        let outcomes = timeout(Duration::from_secs(1), task)
+        let outcomes = real::timeout(Duration::from_secs(1), task)
             .await??
             .into_iter()
             .collect::<Result<Vec<_>>>()?;
@@ -1460,14 +1460,15 @@ mod bounded_readiness_tests {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use std::net::TcpListener;
+    use std::net::{Ipv4Addr, SocketAddr, TcpListener};
     use std::time::Duration;
 
     use anyhow::{Context, Result, anyhow, bail};
-    use camino::{Utf8Path, Utf8PathBuf};
+    use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
+    use platform::clock;
+    use pv_fake::{EventKind, FakeSettings, InstalledFake, Persona, TcpHolderConfig};
     use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
-    use tokio::time::sleep;
 
     use super::{
         ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint, monitor_subject,
@@ -1573,19 +1574,34 @@ mod tests {
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         state::fs::ensure_layout(&paths).context("create test layout")?;
         pv_fake::install_monitor(&paths)?;
-        let descendant_pid_path = paths.run().join("adopted-kill-descendant.pid");
-        let listener_ready_path = paths.run().join("adopted-kill-listener.ready");
         let listener_port = pv_fake::port()?;
+        let listener = pv_fake::install_with_settings(
+            &paths.run().join("adopted-kill-listener"),
+            Persona::TcpHolder,
+            FakeSettings {
+                tcp_holder: Some(TcpHolderConfig {
+                    address: SocketAddr::from((Ipv4Addr::LOCALHOST, listener_port)),
+                    reuse_address: false,
+                    reuse_port: false,
+                    ipv6_only: false,
+                    listen: true,
+                }),
+                ..FakeSettings::default()
+            },
+        )?;
 
+        // The listener runs in the background, so it outlives the shell unless PV stops the whole
+        // group.
         let spec = descendant_spec(
             &paths,
             "adopted-kill",
             "/bin/sh".into(),
-            listener_descendant_arguments(
-                listener_port,
-                &listener_ready_path,
-                &descendant_pid_path,
-            ),
+            vec![
+                "-c".to_owned(),
+                format!("\"$1\" & {IDLE_SHELL_LOOP}"),
+                "runtime-teardown".to_owned(),
+                listener.executable().to_string(),
+            ],
         );
         let metadata_path = spec.metadata_path.clone();
         let supervisor = ProcessSupervisor::new(paths);
@@ -1597,12 +1613,7 @@ mod tests {
             .block_on(supervisor.start(spec))
             .context("start recorded process")?;
         let leader_pid = process.pid();
-        runtime.block_on(wait_for_test_path(&descendant_pid_path))?;
-        runtime.block_on(wait_for_test_path(&listener_ready_path))?;
-        let descendant_pid = state::fs::read_to_string(&descendant_pid_path)
-            .context("read descendant pid")?
-            .trim()
-            .parse::<u32>()?;
+        let descendant_pid = runtime.block_on(wait_for_listener_ready(&listener))?;
         drop(process);
         drop(runtime);
 
@@ -1649,34 +1660,22 @@ mod tests {
         }
     }
 
-    fn listener_descendant_arguments(
-        port: u16,
-        listener_ready_path: &Utf8Path,
-        descendant_pid_path: &Utf8Path,
-    ) -> Vec<String> {
-        vec![
-            "-c".to_string(),
-            format!(
-                "python3 -c 'import os, pathlib, socket, sys, time; pathlib.Path(sys.argv[3]).write_text(str(os.getpid()) + \"\\n\"); listener = socket.socket(); listener.bind((\"127.0.0.1\", int(sys.argv[1]))); listener.listen(); open(sys.argv[2], \"w\").close(); time.sleep(60)' \"$1\" \"$2\" \"$3\" & {IDLE_SHELL_LOOP}"
-            ),
-            "runtime-teardown".to_string(),
-            port.to_string(),
-            listener_ready_path.to_string(),
-            descendant_pid_path.to_string(),
-        ]
-    }
-
-    async fn wait_for_test_path(path: &Utf8Path) -> Result<()> {
-        // A fixture's interpreter can take seconds to start on a loaded runner.
+    /// Waits until `listener` listens, and returns its process ID.
+    async fn wait_for_listener_ready(listener: &InstalledFake) -> Result<u32> {
+        // A new fake's first launch can take seconds on a loaded runner.
         for _attempt in 0..500 {
-            if path.exists() {
-                return Ok(());
+            if let Some(ready) = listener
+                .events()?
+                .iter()
+                .find(|event| matches!(event.kind, EventKind::TcpReady { .. }))
+            {
+                return Ok(u32::try_from(ready.pid)?);
             }
 
-            sleep(Duration::from_millis(20)).await;
+            clock::poll(Duration::from_millis(20)).await;
         }
 
-        bail!("{path} did not appear")
+        bail!("{} did not start listening", listener.executable())
     }
 
     async fn wait_for_test_process_exit(pid: u32) -> Result<bool> {
@@ -1688,7 +1687,7 @@ mod tests {
                 Err(error) => bail!("failed to inspect process {pid}: {error}"),
             }
 
-            sleep(Duration::from_millis(20)).await;
+            clock::poll(Duration::from_millis(20)).await;
         }
 
         Ok(false)
@@ -1700,7 +1699,7 @@ mod tests {
                 return Ok(true);
             }
 
-            std::thread::sleep(Duration::from_millis(10));
+            clock::poll_blocking(Duration::from_millis(10));
         }
 
         Ok(false)
@@ -1715,7 +1714,7 @@ mod tests {
                 Err(error) => bail!("failed to inspect process {pid}: {error}"),
             }
 
-            std::thread::sleep(Duration::from_millis(10));
+            clock::poll_blocking(Duration::from_millis(10));
         }
 
         Ok(false)
@@ -1727,7 +1726,7 @@ mod tests {
                 return true;
             }
 
-            std::thread::sleep(Duration::from_millis(10));
+            clock::poll_blocking(Duration::from_millis(10));
         }
 
         false

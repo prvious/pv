@@ -595,6 +595,7 @@ mod tests {
     use anyhow::{Result, anyhow};
     use camino::Utf8Path;
     use camino_tempfile::tempdir;
+    use platform::clock::{self, real};
     use rcgen::{
         CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose,
         PKCS_ECDSA_P256_SHA256,
@@ -604,12 +605,9 @@ mod tests {
         Database, JobDiagnosticSubject, JobStatus, JobsLock, LinkProjectInput, ProjectRecord,
         PvPaths,
     };
-    #[cfg(target_os = "macos")]
-    use std::time::Instant;
     use time::{Duration as CertificateDuration, OffsetDateTime};
     use tokio::io::duplex;
     use tokio::sync::watch;
-    use tokio::time::{sleep, timeout};
 
     #[cfg(target_os = "macos")]
     use super::enqueue_runtime_recovery_job;
@@ -665,7 +663,7 @@ mod tests {
         .await?;
         let queue = ReconciliationQueue::new();
         let mut backoff = RuntimeRecoveryBackoff::default();
-        let detected_at = Instant::now();
+        let detected_at = clock::now();
         assert!(backoff.scopes_due(detected_at, &scan).is_empty());
 
         let first_attempt_at = detected_at + Duration::from_secs(1);
@@ -796,11 +794,11 @@ mod tests {
             .await
         });
 
-        sleep(Duration::from_millis(100)).await;
+        clock::poll(Duration::from_millis(100)).await;
         assert!(Database::open(&paths)?.recent_jobs()?.is_empty());
         drop(jobs_lock);
 
-        let result = timeout(Duration::from_secs(1), task).await??;
+        let result = real::timeout(Duration::from_secs(1), task).await??;
         assert!(matches!(
             result,
             Err(BackgroundReconciliationError::Execution { .. })
@@ -837,12 +835,12 @@ mod tests {
             .await
         });
 
-        sleep(Duration::from_millis(100)).await;
+        clock::poll(Duration::from_millis(100)).await;
         assert!(Database::open(&paths)?.recent_jobs()?.is_empty());
         shutdown_sender
             .send(true)
             .map_err(|_error| anyhow!("watcher shutdown receiver was dropped"))?;
-        let result = timeout(Duration::from_secs(1), task).await??;
+        let result = real::timeout(Duration::from_secs(1), task).await??;
         drop(jobs_lock);
 
         assert!(result.is_ok());

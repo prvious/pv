@@ -199,8 +199,7 @@ The persona issues leaves from the configured certificate, which must be a CA. E
 - `POST /load`:
   - `load_statuses`: anything but 2xx rejects without applying.
   - `apply_load`: `false` accepts without applying, so changed ports never open.
-  - `load_response_gate`: holds the load, after recording it, until a path exists.
-  - `load_delay_ms`: an accepted load applies that long after it arrived, just before the response. Loads finish in their own task, so, as with Caddy, a load still applies after PV hangs up.
+  - `load_response_gate`: holds the load, after recording it, until a path exists. Loads finish in their own task, so, as with Caddy, a held load still applies after PV hangs up.
   - `load_response_body`, `load_accepted_marker`, and `exit_after_load`.
 - `stop_service`: closes the HTTP listener on its next connection and keeps the process running.
 

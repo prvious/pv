@@ -95,6 +95,17 @@ disallowed-methods = [
   { path = "tokio::fs::write", reason = "use PV filesystem helpers so atomic writes, permissions, and diagnostics are consistent" },
   { path = "std::os::unix::fs::symlink", reason = "use PV filesystem helpers so symlink policy is centralized", allow-invalid = true },
   { path = "tokio::fs::symlink", reason = "use PV filesystem helpers so symlink policy is centralized", allow-invalid = true },
+  { path = "std::thread::sleep", reason = "use platform::clock, so a test can move PV's time and every real wait is named" },
+  { path = "std::time::Instant::now", reason = "use platform::clock, so a test can move PV's time and every real wait is named" },
+  { path = "std::time::Instant::elapsed", reason = "use platform::clock, so a test can move PV's time and every real wait is named" },
+  { path = "tokio::time::Instant::now", reason = "use platform::clock, so a test can move PV's time and every real wait is named" },
+  { path = "tokio::time::Instant::elapsed", reason = "use platform::clock, so a test can move PV's time and every real wait is named" },
+  { path = "tokio::time::sleep", reason = "use platform::clock, so a test can move PV's time and every real wait is named" },
+  { path = "tokio::time::sleep_until", reason = "use platform::clock, so a test can move PV's time and every real wait is named" },
+  { path = "tokio::time::timeout", reason = "use platform::clock, so a test can move PV's time and every real wait is named" },
+  { path = "tokio::time::timeout_at", reason = "use platform::clock, so a test can move PV's time and every real wait is named" },
+  { path = "tokio::time::interval", reason = "use platform::clock, so a test can move PV's time and every real wait is named" },
+  { path = "tokio::time::interval_at", reason = "use platform::clock, so a test can move PV's time and every real wait is named" },
 ]
 
 disallowed-macros = [

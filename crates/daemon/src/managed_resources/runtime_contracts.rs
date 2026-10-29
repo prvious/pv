@@ -7,12 +7,13 @@
 use std::collections::BTreeMap;
 use std::future;
 use std::net::Ipv4Addr;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::{Utf8TempDir, tempdir};
+use platform::clock::{self, real};
 use pv_fake::Persona;
 use resources::{
     ManagedResourceCommands, ManagedResourceInstall, ResourceAdapter, TargetPlatform,
@@ -219,14 +220,14 @@ async fn real_postgres_forced_exit_keeps_recovery_records() -> Result<()> {
         ensure!(!crate::recorded_monitor_subjects(&paths)?.is_empty());
         ensure!(state::fs::path_entry_exists(&spec.metadata_path)?);
         ensure!(state::fs::path_entry_exists(&spec.command)?);
-        let query = tokio::time::timeout(Duration::from_secs(3),
+        let query = real::timeout(Duration::from_secs(3),
             sqlx::query("SELECT 1").execute(&mut *connection)).await?;
         ensure!(query.is_err(), "backend connection survived postmaster death");
         // PostgreSQL's own parent-death handling must finish this connected
         // backend. Root-group disappearance alone is not our oracle.
-        tokio::time::timeout(Duration::from_secs(5), async {
+        real::timeout(Duration::from_secs(5), async {
             while platform::inspect_process_start_identity(backend_pid)? == Some(backend_identity) {
-                tokio::time::sleep(Duration::from_millis(25)).await;
+                clock::poll(Duration::from_millis(25)).await;
             }
             Ok::<_, platform::PlatformError>(())
         }).await??;
@@ -725,7 +726,7 @@ fn s3_error_code<Output, Error: ProvideErrorMetadata, Response>(
 async fn smtp_greets(port: u16) -> Result<()> {
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port)).await?;
     let mut greeting = [0; 4];
-    tokio::time::timeout(SMTP_GREETING_TIMEOUT, stream.read_exact(&mut greeting)).await??;
+    real::timeout(SMTP_GREETING_TIMEOUT, stream.read_exact(&mut greeting)).await??;
     ensure!(
         &greeting == b"220 ",
         "SMTP port {port} greeted with {greeting:?}"
@@ -785,9 +786,9 @@ async fn start_wait_and_stop<Held>(
         Err(error) => Err(error.into()),
     };
     // A runtime that failed its readiness wait has been stopped and its records removed already.
-    let stop_started = Instant::now();
+    let stop_started = real::now();
     let stopped = crate::stop_recorded_runtimes(paths.clone()).await;
-    let stopped_within = stop_started.elapsed();
+    let stopped_within = real::elapsed(stop_started);
 
     // Released only now, so whatever the check held stayed open through the stop.
     checked.with_context(|| runtime_log(&log_path))?;

@@ -5,7 +5,7 @@ use std::net::TcpListener;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier, Condvar, Mutex, mpsc};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::{
     DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck,
@@ -27,7 +27,8 @@ use aws_sdk_s3::operation::head_bucket::HeadBucketError;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
-use platform::{clock, loopback_tcp_port_available};
+use platform::clock::{self, real};
+use platform::loopback_tcp_port_available;
 use pv_fake::{FakeSettings, Persona};
 use rcgen::{
     CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose,
@@ -50,7 +51,6 @@ use state::{
 };
 use time::{Duration as CertificateDuration, OffsetDateTime};
 use tokio::sync::{Semaphore, watch};
-use tokio::time::timeout;
 
 const FAKE_MAILPIT_TRACK: &str = "1.0";
 const FAKE_MAILPIT_NEXT_TRACK: &str = "1.1";
@@ -781,14 +781,14 @@ async fn postgres_replacement_and_stop_do_not_wait_for_an_open_client() -> Resul
         POSTGRES_TRACK,
         &["pg_stat_statements".to_owned()],
     )?;
-    let replacement_started = Instant::now();
+    let replacement_started = real::now();
     crate::project_env::reconcile_project_env(&paths, &project.id).await?;
-    let replaced_within = replacement_started.elapsed();
+    let replaced_within = real::elapsed(replacement_started);
     let replacement_pid = resource_runtime_metadata_pid(&paths, "postgres", POSTGRES_TRACK)?;
 
     let second_client = connect_postgres_admin(&paths, postgres_port).await?;
     Database::open(&paths)?.replace_project_managed_resources(&project.id, &[])?;
-    let stop_started = Instant::now();
+    let stop_started = real::now();
     super::reconcile_persisted_resource_track_with_progress(
         &paths,
         "postgres",
@@ -797,7 +797,7 @@ async fn postgres_replacement_and_stop_do_not_wait_for_an_open_client() -> Resul
         DaemonDownloadProgress::disabled(),
     )
     .await?;
-    let stopped_within = stop_started.elapsed();
+    let stopped_within = real::elapsed(stop_started);
     drop((first_client, second_client));
     let runtime_files = runtime_files_exist_for_resource(&paths, "postgres", POSTGRES_TRACK)?;
     runtimes.cleanup().await?;
@@ -2487,7 +2487,8 @@ async fn fallback_after_resource_artifact_install_skips_runtime_preparation() ->
         release_downloads.1.notify_all();
     }
     gate.preparation.add_permits(1);
-    let (installed, failures) = timeout(Duration::from_secs(5), &mut reconciliation).await??;
+    let (installed, failures) =
+        real::timeout(Duration::from_secs(5), &mut reconciliation).await??;
 
     assert!(installed);
     assert!(failures.is_empty());
@@ -2606,7 +2607,7 @@ async fn artifact_failure_completed_during_fallback_outranks_cancellation() -> R
         release_downloads.1.notify_all();
     }
     gate.preparation.add_permits(1);
-    let result = timeout(Duration::from_secs(5), &mut reconciliation).await?;
+    let result = real::timeout(Duration::from_secs(5), &mut reconciliation).await?;
 
     let error = match result {
         Err(error) => error,
@@ -2702,7 +2703,7 @@ async fn assert_fallback_during_project_resource_readiness(
     );
     tokio::pin!(reconciliation);
 
-    timeout(Duration::from_secs(5), async {
+    real::timeout(Duration::from_secs(5), async {
         while gate.started.load(Ordering::SeqCst) == 0 {
             tokio::select! {
                 result = &mut reconciliation => {
@@ -2718,14 +2719,14 @@ async fn assert_fallback_during_project_resource_readiness(
     gate.proceed.add_permits(1);
     gate.finish.add_permits(1);
     let result = match &fake_clock {
-        None => timeout(Duration::from_secs(5), &mut reconciliation).await?,
+        None => real::timeout(Duration::from_secs(5), &mut reconciliation).await?,
         Some(fake_clock) => {
             // Advance only once the first check has failed and a second has started, so the
             // reported error is the check's own.
             let (result, ()) = tokio::try_join!(
                 async {
                     Ok::<_, anyhow::Error>(
-                        timeout(Duration::from_secs(5), &mut reconciliation).await?,
+                        real::timeout(Duration::from_secs(5), &mut reconciliation).await?,
                     )
                 },
                 async {
@@ -5193,7 +5194,7 @@ async fn resource_readiness_slots_include_start_and_poll_during_preparation() ->
         super::reconcile_resource_tracks(&paths, &mut database, &mut context, &project, &plan);
     tokio::pin!(reconciliation);
 
-    timeout(Duration::from_secs(5), async {
+    real::timeout(Duration::from_secs(5), async {
         loop {
             if gate.started.load(Ordering::SeqCst) == 4 {
                 return Ok(());
@@ -5210,7 +5211,7 @@ async fn resource_readiness_slots_include_start_and_poll_during_preparation() ->
 
     gate.proceed.add_permits(1);
     gate.finish.add_permits(1);
-    timeout(Duration::from_secs(5), async {
+    real::timeout(Duration::from_secs(5), async {
         while gate.preparation_started.load(Ordering::SeqCst) == 0 {
             tokio::select! {
                 result = &mut reconciliation => return Err(anyhow!("resource reconciliation finished before later preparation: {result:#?}")),
@@ -5223,7 +5224,7 @@ async fn resource_readiness_slots_include_start_and_poll_during_preparation() ->
     assert_eq!(gate.started.load(Ordering::SeqCst), 4);
 
     gate.preparation.add_permits(1);
-    timeout(Duration::from_secs(5), async {
+    real::timeout(Duration::from_secs(5), async {
         while gate.started.load(Ordering::SeqCst) < tracks.len() {
             tokio::select! {
                 result = &mut reconciliation => return Err(anyhow!("resource reconciliation finished before final readiness start: {result:#?}")),
@@ -5235,7 +5236,7 @@ async fn resource_readiness_slots_include_start_and_poll_during_preparation() ->
     .await??;
     gate.proceed.add_permits(tracks.len() - 1);
     gate.finish.add_permits(tracks.len() - 1);
-    timeout(Duration::from_secs(5), &mut reconciliation).await??;
+    real::timeout(Duration::from_secs(5), &mut reconciliation).await??;
 
     assert_eq!(cloned_hook_events(&allocation_events)?.len(), tracks.len());
     runtimes.cleanup().await?;
@@ -5308,7 +5309,7 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
             super::reconcile_resource_tracks(&paths, &mut database, &mut context, &project, &plan);
         tokio::pin!(reconciliation);
 
-        timeout(Duration::from_secs(5), async {
+        real::timeout(Duration::from_secs(5), async {
             loop {
                 if cancelled_gate.started.load(Ordering::SeqCst) == ready_tracks.len() {
                     return Ok(());
@@ -5324,7 +5325,7 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
         .await??;
         cancelled_gate.proceed.add_permits(1);
         cancelled_gate.finish.add_permits(1);
-        timeout(Duration::from_secs(5), async {
+        real::timeout(Duration::from_secs(5), async {
             loop {
                 if cloned_hook_events(&allocation_events)?.len() == 1 {
                     return Ok(());
@@ -5387,7 +5388,7 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
             super::reconcile_resource_tracks(&paths, &mut database, &mut context, &project, &plan);
         tokio::pin!(reconciliation);
 
-        timeout(Duration::from_secs(5), async {
+        real::timeout(Duration::from_secs(5), async {
             loop {
                 if gate.started.load(Ordering::SeqCst) == ready_tracks.len() {
                     return Ok(());
@@ -5408,7 +5409,7 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
         let write_lock =
             lock_connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
         gate.proceed.add_permits(ready_tracks.len());
-        timeout(Duration::from_secs(1), async {
+        real::timeout(Duration::from_secs(1), async {
             loop {
                 if gate.ready_to_return.load(Ordering::SeqCst) == ready_tracks.len() {
                     return Ok(());
@@ -5426,7 +5427,7 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
 
         drop(write_lock);
         gate.finish.add_permits(1);
-        timeout(Duration::from_secs(5), async {
+        real::timeout(Duration::from_secs(5), async {
             loop {
                 if cloned_hook_events(&allocation_events)?.len() == committed_events.len() + 1 {
                     return Ok(());
@@ -5439,7 +5440,7 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
         }).await??;
         assert_eq!(gate.active.load(Ordering::SeqCst), 1);
         gate.finish.add_permits(1);
-        timeout(Duration::from_secs(1), async {
+        real::timeout(Duration::from_secs(1), async {
             loop {
                 if gate.active.load(Ordering::SeqCst) == 0 {
                     return Ok(());
@@ -5451,7 +5452,7 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
             }
         }).await.context("sibling readiness stopped during allocation")??;
         allocation_gate.add_permits(ready_tracks.len());
-        timeout(Duration::from_secs(5), &mut reconciliation).await?
+        real::timeout(Duration::from_secs(5), &mut reconciliation).await?
     };
     let runtime_states = database.runtime_observed_states()?;
     let mut allocation_events = cloned_hook_events(&allocation_events)?;
@@ -6376,32 +6377,32 @@ async fn connect_postgres_admin(paths: &PvPaths, port: u16) -> Result<PgPool> {
 }
 
 async fn bind_loopback_ports_when_available(ports: [u16; 2]) -> Result<[TcpListener; 2]> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let deadline = real::now() + Duration::from_secs(3);
 
     loop {
         match bind_loopback_ports(ports) {
             Ok(listeners) => return Ok(listeners),
-            Err(error) if tokio::time::Instant::now() >= deadline => {
+            Err(error) if real::now() >= deadline => {
                 bail!("timed out waiting for RustFS ports to become available: {error}");
             }
             Err(_error) => {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                clock::poll(Duration::from_millis(10)).await;
             }
         }
     }
 }
 
 async fn bind_loopback_port_when_available(port: u16) -> Result<TcpListener> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let deadline = real::now() + Duration::from_secs(3);
 
     loop {
         match TcpListener::bind(("127.0.0.1", port)) {
             Ok(listener) => return Ok(listener),
-            Err(error) if tokio::time::Instant::now() >= deadline => {
+            Err(error) if real::now() >= deadline => {
                 bail!("timed out waiting for Redis port {port} to become available: {error}");
             }
             Err(_error) => {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                clock::poll(Duration::from_millis(10)).await;
             }
         }
     }

@@ -677,6 +677,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
+    use platform::clock::{self, Limit, real};
     #[cfg(target_os = "macos")]
     use pv_fake::Persona;
     #[cfg(target_os = "macos")]
@@ -688,7 +689,6 @@ mod tests {
     use std::time::{Duration, Instant};
     #[cfg(target_os = "macos")]
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    use tokio::time::sleep;
 
     use super::{
         DesiredRuntimeProbe, HEALTHY_RESET_INTERVAL, RUNTIME_HEALTH_INTERVAL,
@@ -741,7 +741,7 @@ mod tests {
     fn backoff_retries_at_one_five_and_fifteen_seconds_then_waits_for_later_tick()
     -> anyhow::Result<()> {
         let mut backoff = RuntimeRecoveryBackoff::default();
-        let mut now = Instant::now();
+        let mut now = clock::now();
         assert!(backoff.scopes_due(now, &scan(false)?).is_empty());
         assert_eq!(backoff.next_scan_at(now), now + Duration::from_secs(1));
 
@@ -765,7 +765,7 @@ mod tests {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let mut backoff = RuntimeRecoveryBackoff::default();
-        let mut now = Instant::now();
+        let mut now = clock::now();
         accept_due(&mut backoff, now, &scan(false)?);
         now += Duration::from_secs(1);
         accept_due(&mut backoff, now, &scan(false)?);
@@ -782,7 +782,7 @@ mod tests {
     #[test]
     fn brief_healthy_period_preserves_the_retry_attempt() -> anyhow::Result<()> {
         let mut backoff = RuntimeRecoveryBackoff::default();
-        let mut now = Instant::now();
+        let mut now = clock::now();
         accept_due(&mut backoff, now, &scan(false)?);
         now += Duration::from_secs(1);
         accept_due(&mut backoff, now, &scan(false)?);
@@ -798,7 +798,7 @@ mod tests {
     #[test]
     fn exhausted_backoff_survives_a_brief_healthy_period() -> anyhow::Result<()> {
         let mut backoff = RuntimeRecoveryBackoff::default();
-        let mut now = Instant::now();
+        let mut now = clock::now();
         for delay in [1, 5, 15] {
             backoff.scopes_due(now, &scan(false)?);
             now += Duration::from_secs(delay);
@@ -828,7 +828,7 @@ mod tests {
             healthy: false,
         });
         let mut backoff = RuntimeRecoveryBackoff::default();
-        let detected_at = Instant::now();
+        let detected_at = clock::now();
         backoff.entries.insert(
             redis_subject.clone(),
             RuntimeRecoveryEntry::after_failure(detected_at, RUNTIME_RETRY_DELAYS.len()),
@@ -875,7 +875,7 @@ mod tests {
         let mut backoff = RuntimeRecoveryBackoff::default();
         backoff.entries.insert(
             subject.clone(),
-            RuntimeRecoveryEntry::after_failure(Instant::now(), RUNTIME_RETRY_DELAYS.len()),
+            RuntimeRecoveryEntry::after_failure(clock::now(), RUNTIME_RETRY_DELAYS.len()),
         );
 
         backoff.record_exhausted_failures(&paths, &scan)?;
@@ -912,7 +912,7 @@ mod tests {
         drop(database);
 
         let mut backoff = RuntimeRecoveryBackoff::default();
-        let mut now = Instant::now();
+        let mut now = clock::now();
         backoff.entries.insert(
             subject.clone(),
             RuntimeRecoveryEntry::after_failure(now, RUNTIME_RETRY_DELAYS.len()),
@@ -937,7 +937,7 @@ mod tests {
     #[test]
     fn scan_errors_preserve_retry_deadlines_without_consuming_attempts() -> anyhow::Result<()> {
         let mut backoff = RuntimeRecoveryBackoff::default();
-        let detected_at = Instant::now();
+        let detected_at = clock::now();
         backoff.scopes_due(detected_at, &scan(false)?);
 
         let before_deadline = detected_at + Duration::from_millis(500);
@@ -970,7 +970,7 @@ mod tests {
     fn retry_attempt_advances_only_after_accepted_dispatch() -> anyhow::Result<()> {
         let mut backoff = RuntimeRecoveryBackoff::default();
         let scan = scan(false)?;
-        let detected_at = Instant::now();
+        let detected_at = clock::now();
         assert!(backoff.scopes_due(detected_at, &scan).is_empty());
 
         let due_at = detected_at + Duration::from_secs(1);
@@ -997,8 +997,9 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn runtime_probe_preserves_readiness_errors_and_timeouts() -> anyhow::Result<()> {
+        let clock = clock::install_fake_for_test();
         let failed_readiness = ManagedResourceReadiness::async_check("failure", || {
             Box::pin(async {
                 Err(crate::DaemonError::Io(io::Error::other(
@@ -1029,22 +1030,31 @@ mod tests {
 
         let stalled_readiness =
             ManagedResourceReadiness::async_check("stalled", || Box::pin(std::future::pending()));
-        let (_observation, timeout_error) = inspect_runtime_probe(
-            PvPaths::for_home("/unused"),
-            DesiredRuntimeProbe {
-                subject: RuntimeSubject::Resource {
-                    name: "postgres".to_owned(),
-                    track: "18".to_owned(),
-                },
-                scopes: [ReconciliationScope::resource("postgres", "18")?]
-                    .into_iter()
-                    .collect(),
-                current: true,
-                error: None,
-                readiness: Some(RuntimeReadinessProbe::Resource(Box::new(stalled_readiness))),
+        let stalled_probe = DesiredRuntimeProbe {
+            subject: RuntimeSubject::Resource {
+                name: "postgres".to_owned(),
+                track: "18".to_owned(),
             },
-        )
-        .await;
+            scopes: [ReconciliationScope::resource("postgres", "18")?]
+                .into_iter()
+                .collect(),
+            current: true,
+            error: None,
+            readiness: Some(RuntimeReadinessProbe::Resource(Box::new(stalled_readiness))),
+        };
+        let ((_observation, timeout_error), ()) = tokio::try_join!(
+            async {
+                Ok::<_, anyhow::Error>(
+                    inspect_runtime_probe(PvPaths::for_home("/unused"), stalled_probe).await,
+                )
+            },
+            async {
+                clock
+                    .advance_when_waiting(&RUNTIME_HEALTH_PROBE_TIMEOUT)
+                    .await?;
+                Ok(())
+            },
+        )?;
         assert_eq!(
             timeout_error.map(|timeout_error| timeout_error.error),
             Some("deadline has elapsed".to_owned())
@@ -1065,17 +1075,33 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn gateway_pf_inspection_is_not_bounded_by_readiness_timeout() -> anyhow::Result<()> {
-        let (healthy, error) = gateway_readiness_probe_outcome(
+        let clock = clock::install_fake_for_test();
+        let slow_inspection = Limit::new(
+            "slow pf inspection",
+            RUNTIME_HEALTH_PROBE_TIMEOUT.duration() + Duration::from_secs(1),
+        );
+        // Advancing past the slow inspection also passes the probe limit, had one been pending.
+        let ((healthy, error), ()) = tokio::try_join!(
             async {
-                sleep(RUNTIME_HEALTH_PROBE_TIMEOUT.duration() + Duration::from_secs(1)).await;
+                Ok::<_, anyhow::Error>(
+                    gateway_readiness_probe_outcome(
+                        async {
+                            clock::sleep(&slow_inspection).await;
 
-                Ok(true)
+                            Ok(true)
+                        },
+                        None,
+                    )
+                    .await,
+                )
             },
-            None,
-        )
-        .await;
+            async {
+                clock.advance_when_waiting(&slow_inspection).await?;
+                Ok(())
+            },
+        )?;
 
         assert!(healthy);
         assert_eq!(error, None);
@@ -1085,7 +1111,7 @@ mod tests {
 
     #[test]
     fn first_periodic_scan_is_not_immediate() {
-        let now = Instant::now();
+        let now = clock::now();
         assert_eq!(
             RuntimeRecoveryBackoff::default().next_scan_at(now),
             now + RUNTIME_HEALTH_INTERVAL
@@ -1312,7 +1338,7 @@ mod tests {
         let scan = scan_result?;
         cleanup_result?;
         let mut backoff = RuntimeRecoveryBackoff::default();
-        let detected_at = Instant::now();
+        let detected_at = clock::now();
         assert!(backoff.scopes_due(detected_at, &scan).is_empty());
         let scopes = backoff.scopes_due(detected_at + Duration::from_secs(1), &scan);
 
@@ -1608,18 +1634,18 @@ mod tests {
         spec: &ProcessSpec,
         fingerprint: &str,
     ) -> anyhow::Result<()> {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = real::now() + Duration::from_secs(5);
         loop {
             if supervisor.record_applied_config(spec, fingerprint)? {
                 return Ok(());
             }
-            if Instant::now() >= deadline {
+            if real::now() >= deadline {
                 return Err(anyhow!(
                     "runtime {} did not remain owned while recording applied config",
                     spec.name
                 ));
             }
-            sleep(Duration::from_millis(10)).await;
+            clock::poll(Duration::from_millis(10)).await;
         }
     }
 

@@ -18,6 +18,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use platform::clock;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpListener;
 
@@ -150,7 +151,7 @@ async fn bind_retrying(port: &str, events: &EventLog) -> Result<TcpListener> {
                     events.record(EventKind::PortBusy { port })?;
                     busy_recorded = true;
                 }
-                tokio::time::sleep(BIND_RETRY_DELAY).await;
+                clock::poll(BIND_RETRY_DELAY).await;
             }
             Err(error) => return Err(error).with_context(|| format!("binding port {port}")),
         }

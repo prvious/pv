@@ -5,6 +5,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use futures_util::StreamExt;
+use platform::clock::{self, real};
 use protocol::{
     DaemonCommand, DaemonRequest, DaemonResponse, PROTOCOL_VERSION, ResponseStatus, write_line,
 };
@@ -19,7 +20,6 @@ use state::{
     RuntimeObservedStatus, RuntimeSubject,
 };
 use tokio::net::UnixStream;
-use tokio::time::timeout;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(600);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -160,7 +160,7 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
     seed_local_ca(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
-    let result = timeout(TEST_TIMEOUT, async {
+    let result = real::timeout(TEST_TIMEOUT, async {
         run_reconciliation_job(&paths, &format!("project:{}", project.id)).await?;
         assert_resource_matrix_evidence(&paths, &project)?;
         if composer.is_some() {
@@ -233,7 +233,7 @@ fn resource_matrix_cleanup_errors_are_reported_without_masking_primary_error() -
 async fn cleanup_reconciliation_timeout_reports_bounded_cleanup() -> Result<()> {
     let result = await_cleanup_reconciliation_with_timeout(
         async {
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            clock::poll(Duration::from_millis(50)).await;
             Ok::<String, anyhow::Error>("reconciled".to_string())
         },
         Duration::from_millis(1),
@@ -301,7 +301,7 @@ async fn await_cleanup_reconciliation_with_timeout(
     reconciliation: impl Future<Output = Result<String>>,
     duration: Duration,
 ) -> Result<()> {
-    timeout(duration, reconciliation)
+    real::timeout(duration, reconciliation)
         .await
         .context("cleanup reconciliation timed out")??;
 
@@ -542,7 +542,7 @@ async fn run_reconciliation_job(paths: &PvPaths, scope: &str) -> Result<String> 
     let job_id = job_id.to_string();
 
     loop {
-        let Some(line_result) = timeout(EVENT_TIMEOUT, transport.next()).await? else {
+        let Some(line_result) = real::timeout(EVENT_TIMEOUT, transport.next()).await? else {
             bail!("daemon closed before completing job `{job_id}`");
         };
         let line = line_result?;
@@ -555,7 +555,7 @@ async fn run_reconciliation_job(paths: &PvPaths, scope: &str) -> Result<String> 
 async fn read_response(
     transport: &mut protocol::DaemonTransport<UnixStream>,
 ) -> Result<DaemonResponse> {
-    let Some(line_result) = timeout(RESPONSE_TIMEOUT, transport.next()).await? else {
+    let Some(line_result) = real::timeout(RESPONSE_TIMEOUT, transport.next()).await? else {
         bail!("daemon closed before sending a response");
     };
     let line = line_result?;

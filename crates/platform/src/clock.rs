@@ -4,6 +4,10 @@
 //! `test-support` feature, a test can install a fake clock whose time moves only when the test
 //! advances it past a limit PV is waiting on, so a test of a frozen process never waits out the real
 //! limit.
+#![expect(
+    clippy::disallowed_methods,
+    reason = "the clock is the one place that calls timers directly"
+)]
 
 use std::fmt;
 use std::future::{self, Future};
@@ -180,6 +184,33 @@ impl Deadline {
         future: F,
     ) -> impl Future<Output = Result<F::Output, Elapsed>> + use<F> {
         limited(limit, Some(self.at), future)
+    }
+}
+
+/// Real time for a test that waits on purpose, such as a guard against a hung process or a
+/// deadline for a file to appear.
+///
+/// It ignores the fake clock, so a test's own guard keeps running while PV's time is frozen.
+#[cfg(feature = "test-support")]
+pub mod real {
+    use std::future::Future;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    pub fn now() -> Instant {
+        Instant::now()
+    }
+
+    pub fn elapsed(since: Instant) -> Duration {
+        since.elapsed()
+    }
+
+    pub fn timeout<F: Future>(duration: Duration, future: F) -> tokio::time::Timeout<F> {
+        tokio::time::timeout(duration, future)
+    }
+
+    pub fn sleep_blocking(duration: Duration) {
+        thread::sleep(duration);
     }
 }
 
