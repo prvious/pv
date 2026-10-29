@@ -133,7 +133,7 @@ cargo nextest run -p pv-release --test release_records
 cargo nextest run -p pv-release --test manifest_generation
 cargo nextest run -p pv-release --test publication
 cargo nextest run -p resources --test manifest_foundation
-cargo nextest run -p cli --test update
+cargo nextest run -p cli -E 'test(/^update::/)'
 ```
 
 Final local verification for code or checked-in revocation changes, before commit, push, workflow dispatch, publication, or any claim that the revocation change is ready:
