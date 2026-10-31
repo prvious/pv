@@ -22,6 +22,9 @@ For running tests, we recommend [nextest](https://nexte.st/).
 
 Some tests require `python3` on `PATH`: a hook cleanup test in `platform`, and `pv-release`'s installer and smoke tests. They use only Python's standard library; no Python packages or virtual environment is required.
 
+The `pv-release` workflow readback test also requires `jq` on `PATH`; it executes
+the workflow's metadata comparison and success-summary script locally.
+
 To run a specific test by name:
 
 ```shell
