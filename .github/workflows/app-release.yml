@@ -26,7 +26,7 @@ permissions:
 jobs:
   prepare-release:
     name: prepare release metadata
-    runs-on: macos-14
+    runs-on: macos-15
 
     outputs:
       version: ${{ steps.metadata.outputs.version }}
@@ -169,13 +169,16 @@ jobs:
     name: "build app ${{ matrix.platform }}"
     needs: prepare-release
     runs-on: ${{ matrix.runner }}
+    env:
+      # Keep app and helper binaries compatible with older macOS after runner upgrades.
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
     strategy:
       fail-fast: false
       matrix:
         platform: [darwin-arm64, darwin-amd64]
         include:
           - platform: darwin-arm64
-            runner: macos-14
+            runner: macos-15
             rust_target: aarch64-apple-darwin
           - platform: darwin-amd64
             runner: macos-15-intel
@@ -385,7 +388,7 @@ jobs:
     needs:
       - prepare-release
       - build-app
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: Checkout
