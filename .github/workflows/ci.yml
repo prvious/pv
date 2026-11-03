@@ -289,7 +289,7 @@ jobs:
           set -euo pipefail
           cargo build --locked --all-features -p pv-privileged-helper
           cargo nextest list --locked --all-features -p cli --run-ignored only \
-            -E 'binary(=linux_helper_system) and test(=systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes)'
+            -E 'test(/^linux_helper_system::/)'
           nextest_state_directory=$(mktemp -d "$RUNNER_TEMP/nextest-helper-state.XXXXXX")
           printf 'NEXTEST_STATE_DIR=%s\n' "$nextest_state_directory" >> "$GITHUB_ENV"
 
