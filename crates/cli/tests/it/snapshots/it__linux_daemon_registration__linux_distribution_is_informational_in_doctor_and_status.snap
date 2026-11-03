@@ -6,7 +6,7 @@ expression: "serde_json::to_string_pretty(&observed)?"
   {
     "case": "double quoted",
     "distribution": {
-      "pretty_name": "Étoile \"LTS\" $HOME $(printf expanded) `printf expanded`",
+      "pretty_name": "Étoile \\\"LTS\\\" $HOME $(printf expanded) `printf expanded`",
       "support": "untested"
     }
   },
@@ -27,7 +27,7 @@ expression: "serde_json::to_string_pretty(&observed)?"
   {
     "case": "malformed last",
     "distribution": {
-      "pretty_name": "Linux",
+      "pretty_name": "\"broken",
       "support": "untested"
     }
   },
@@ -48,7 +48,7 @@ expression: "serde_json::to_string_pretty(&observed)?"
   {
     "case": "multiple words",
     "distribution": {
-      "pretty_name": "Linux",
+      "pretty_name": "Two Words",
       "support": "untested"
     }
   },

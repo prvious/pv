@@ -46,26 +46,8 @@ pub(crate) fn require_capability_for(
     capability: PlatformCapability,
 ) -> Result<(), PlatformError> {
     match target {
-        PlatformTarget::Macos => Ok(()),
-        PlatformTarget::Linux
-            if matches!(
-                capability,
-                PlatformCapability::BrowserHandoff
-                    | PlatformCapability::ProcessInspection
-                    | PlatformCapability::ProcessContainment
-                    | PlatformCapability::DaemonIpc
-                    | PlatformCapability::DaemonRegistration
-                    | PlatformCapability::PrivilegedHelper
-                    | PlatformCapability::ResolverIntegration
-                    | PlatformCapability::LowPortFrontend
-                    | PlatformCapability::TrustStore
-            ) =>
-        {
-            Ok(())
-        }
-        PlatformTarget::Linux | PlatformTarget::Windows => {
-            Err(PlatformError::Unsupported { capability, target })
-        }
+        PlatformTarget::Macos | PlatformTarget::Linux => Ok(()),
+        PlatformTarget::Windows => Err(PlatformError::Unsupported { capability, target }),
     }
 }
 

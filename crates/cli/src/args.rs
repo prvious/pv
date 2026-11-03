@@ -1,5 +1,4 @@
-use clap::{Command as ClapCommand, CommandFactory, Parser, Subcommand};
-use platform::PlatformTarget;
+use clap::{Parser, Subcommand};
 
 use crate::shell::Shell;
 
@@ -19,26 +18,6 @@ pub(crate) struct Cli {
 
     #[command(subcommand)]
     pub(crate) command: Command,
-}
-
-impl Cli {
-    pub(crate) fn command_for(target: PlatformTarget) -> ClapCommand {
-        let command = Self::command();
-        if target != PlatformTarget::Linux {
-            return command;
-        }
-        command.mut_subcommands(|command| match command.get_name() {
-            "ports:status" => command
-                .about("Show PV socket proxy status")
-                .mut_arg("json", |argument| {
-                    argument.help("Print socket proxy status as JSON")
-                }),
-            "ports:install" => command.about("Install or repair PV socket proxies"),
-            "ports:uninstall" => command.about("Remove PV socket proxies"),
-            "ca:trust" => command.about("Trust PV local CA in the system and browser trust stores"),
-            _ => command,
-        })
-    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -125,7 +104,10 @@ pub(crate) enum Command {
     #[command(name = "ca:status", about = "Show PV local CA trust status")]
     CaStatus,
 
-    #[command(name = "ca:trust", about = "Trust PV local CA in the System keychain")]
+    #[command(
+        name = "ca:trust",
+        about = "Trust PV local CA in the system trust store"
+    )]
     CaTrust,
 
     #[command(name = "ca:untrust", about = "Remove PV local CA trust")]

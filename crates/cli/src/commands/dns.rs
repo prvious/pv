@@ -28,6 +28,14 @@ pub(crate) fn status(
     write_resolver_state(output, "Prepared resolver config", &prepared_state, target)?;
     write_resolver_state(output, "System resolver config", &system_state, target)?;
 
+    if target == PlatformTarget::Linux
+        && let Err(error) = environment.check_linux_resolved_stub()
+    {
+        output.failure(error.to_string())?;
+        output
+            .detail("Repair systemd-resolved and /etc/resolv.conf, then retry `pv dns:install`.")?;
+        return Ok(ExitCode::FAILURE);
+    }
     Ok(ExitCode::SUCCESS)
 }
 

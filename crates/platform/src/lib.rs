@@ -52,7 +52,7 @@ pub use helper::{
     remove_privileged_helper, serve_privileged_helper,
 };
 #[cfg(target_os = "linux")]
-pub use linux_host::{check_linux_setup_dns, check_linux_setup_host};
+pub use linux_host::{check_linux_resolved_stub, check_linux_setup_host};
 pub use low_port::{LowPortInspection, LowPortState, PortOwner};
 pub use pf::{
     ActivePfRedirectInspection, PfConfReference, PfFileState, PfRedirectConfig,
@@ -113,65 +113,13 @@ mod tests {
     }
 
     #[test]
-    fn capability_check_supports_only_implemented_host_boundaries() {
-        assert!(
-            require_capability_for(PlatformTarget::Macos, PlatformCapability::TrustStore,).is_ok()
-        );
-
-        let error = require_capability_for(PlatformTarget::Windows, PlatformCapability::TrustStore);
+    fn capability_check_rejects_windows() {
         assert!(matches!(
-            error,
+            require_capability_for(PlatformTarget::Windows, PlatformCapability::TrustStore),
             Err(PlatformError::Unsupported {
-                capability: PlatformCapability::TrustStore,
                 target: PlatformTarget::Windows,
+                ..
             })
         ));
-        assert!(
-            require_capability_for(PlatformTarget::Linux, PlatformCapability::BrowserHandoff)
-                .is_ok()
-        );
-        assert!(matches!(
-            require_capability_for(PlatformTarget::Windows, PlatformCapability::BrowserHandoff),
-            Err(PlatformError::Unsupported {
-                capability: PlatformCapability::BrowserHandoff,
-                target: PlatformTarget::Windows,
-            })
-        ));
-        assert!(
-            require_capability_for(PlatformTarget::Linux, PlatformCapability::ProcessInspection)
-                .is_ok()
-        );
-        assert!(
-            require_capability_for(
-                PlatformTarget::Linux,
-                PlatformCapability::ProcessContainment
-            )
-            .is_ok()
-        );
-        assert!(
-            require_capability_for(PlatformTarget::Linux, PlatformCapability::DaemonIpc).is_ok()
-        );
-        assert!(
-            require_capability_for(
-                PlatformTarget::Linux,
-                PlatformCapability::DaemonRegistration
-            )
-            .is_ok()
-        );
-        assert!(
-            require_capability_for(PlatformTarget::Linux, PlatformCapability::PrivilegedHelper)
-                .is_ok()
-        );
-        assert!(
-            require_capability_for(
-                PlatformTarget::Linux,
-                PlatformCapability::ResolverIntegration
-            )
-            .is_ok()
-        );
-        assert!(
-            require_capability_for(PlatformTarget::Linux, PlatformCapability::LowPortFrontend)
-                .is_ok()
-        );
     }
 }

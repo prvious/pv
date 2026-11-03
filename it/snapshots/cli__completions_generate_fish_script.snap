@@ -50,7 +50,7 @@ complete -c pv -n "__fish_pv_needs_command" -f -a "ports:status" -d 'Show PV pf 
 complete -c pv -n "__fish_pv_needs_command" -f -a "ports:install" -d 'Install or repair PV pf redirects'
 complete -c pv -n "__fish_pv_needs_command" -f -a "ports:uninstall" -d 'Remove PV pf redirects'
 complete -c pv -n "__fish_pv_needs_command" -f -a "ca:status" -d 'Show PV local CA trust status'
-complete -c pv -n "__fish_pv_needs_command" -f -a "ca:trust" -d 'Trust PV local CA in the System keychain'
+complete -c pv -n "__fish_pv_needs_command" -f -a "ca:trust" -d 'Trust PV local CA in the system trust store'
 complete -c pv -n "__fish_pv_needs_command" -f -a "ca:untrust" -d 'Remove PV local CA trust'
 complete -c pv -n "__fish_pv_needs_command" -f -a "link" -d 'Link a Project'
 complete -c pv -n "__fish_pv_needs_command" -f -a "hooks:trust" -d 'Approve Project hook commands without running them'

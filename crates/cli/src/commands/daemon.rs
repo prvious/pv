@@ -1,8 +1,8 @@
 use std::process::ExitCode;
 
 use ::daemon::MonitorHooks;
-use daemon::DaemonError;
 use camino::Utf8PathBuf;
+use daemon::DaemonError;
 use platform::{
     DaemonRegistrationConfig, DaemonRegistrationFileState, PlatformTarget, daemon_registration_name,
 };
@@ -154,14 +154,21 @@ pub(crate) fn unload_and_wait_for_daemon(
     };
     if let Some(daemon) = daemon {
         daemon.wait_for_exit().map_err(|error| match error {
-            DaemonError::RuntimeCleanupUnproven { pid, .. } => DaemonError::RuntimeCleanupUnproven {
-                pid,
-                reason: match target {
-                    PlatformTarget::Macos => "daemon is still running after LaunchAgent unload",
-                    PlatformTarget::Linux => "daemon is still running after stopping the systemd user service",
-                    PlatformTarget::Windows => "daemon is still running after stopping daemon registration",
-                }.to_owned(),
-            },
+            DaemonError::RuntimeCleanupUnproven { pid, .. } => {
+                DaemonError::RuntimeCleanupUnproven {
+                    pid,
+                    reason: match target {
+                        PlatformTarget::Macos => "daemon is still running after LaunchAgent unload",
+                        PlatformTarget::Linux => {
+                            "daemon is still running after stopping the systemd user service"
+                        }
+                        PlatformTarget::Windows => {
+                            "daemon is still running after stopping daemon registration"
+                        }
+                    }
+                    .to_owned(),
+                }
+            }
             error => error,
         })?;
     }

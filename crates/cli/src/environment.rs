@@ -187,9 +187,8 @@ pub trait Environment {
         platform::check_linux_setup_host(&address)
     }
 
-    #[cfg(target_os = "linux")]
-    fn check_linux_setup_dns(&self) -> Result<(), platform::PlatformError> {
-        platform::check_linux_setup_dns()
+    fn check_linux_resolved_stub(&self) -> Result<(), platform::PlatformError> {
+        Ok(())
     }
 
     #[cfg(target_os = "linux")]
@@ -405,6 +404,11 @@ pub(crate) fn app_update_manifest_url(environment: &impl Environment) -> String 
 pub struct ProcessEnvironment;
 
 impl Environment for ProcessEnvironment {
+    #[cfg(target_os = "linux")]
+    fn check_linux_resolved_stub(&self) -> Result<(), platform::PlatformError> {
+        platform::check_linux_resolved_stub()
+    }
+
     fn browser_ca_databases(
         &self,
         home: &Utf8Path,

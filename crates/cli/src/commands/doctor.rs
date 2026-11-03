@@ -558,6 +558,15 @@ fn dns_check(
     paths: &PvPaths,
     target: PlatformTarget,
 ) -> Result<DoctorCheck, ExecuteError> {
+    if target == PlatformTarget::Linux
+        && let Err(error) = environment.check_linux_resolved_stub()
+    {
+        return Ok(DoctorCheck::fail(
+            "DNS config",
+            error.to_string(),
+            "repair systemd-resolved and /etc/resolv.conf, then run `pv dns:install`",
+        ));
+    }
     let prepared = platform::inspect_resolver_file(&paths.resolver_config(), None);
     let expected = resolver_config_from_state(&prepared);
     let system_path = resolver_test_path(environment)?;
