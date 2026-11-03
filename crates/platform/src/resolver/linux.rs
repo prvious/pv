@@ -630,7 +630,7 @@ pub fn stop_resolver_link() -> Result<(), PlatformError> {
 async fn stop_link(connection: &Connection) -> Result<(), PlatformError> {
     with_netlink(|handle| async move {
         let current = query_network(&handle).await?;
-        let Some(link) = owned_pv_link(&current.links)? else {
+        let Some(link) = pv_link(&current.links) else {
             return Ok(());
         };
         let index = link.header.index;
