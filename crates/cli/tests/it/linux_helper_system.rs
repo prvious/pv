@@ -80,7 +80,6 @@ fn systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes() -> R
     let mut fixture = HelperFixture {
         scratch: tempdir()?,
         owner_uid,
-        control_created: false,
         cleaned: false,
         processes: Vec::new(),
     };
@@ -98,7 +97,6 @@ fn systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes() -> R
 struct HelperFixture {
     scratch: Utf8TempDir,
     owner_uid: u32,
-    control_created: bool,
     cleaned: bool,
     processes: Vec<(u32, ProcessStartIdentity)>,
 }
@@ -115,7 +113,6 @@ impl HelperFixture {
         let replacement_sha256 = checksum(&replacement)?;
         ensure!(original_sha256 != replacement_sha256);
         root(&["/usr/bin/install", "-d", "-m", "0700", CONTROL_DIRECTORY])?;
-        self.control_created = true;
 
         self.install(&original, &original_sha256)?;
         let first = self.capture_process()?;
@@ -412,7 +409,7 @@ impl HelperFixture {
     }
 
     fn cleanup(&mut self) -> Result<()> {
-        if self.cleaned || !self.control_created {
+        if self.cleaned {
             return Ok(());
         }
         self.remove_condition()?;
