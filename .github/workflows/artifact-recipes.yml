@@ -326,7 +326,7 @@ jobs:
   build-composer:
     name: "composer ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
-    if: ${{ (inputs.platform == 'all' || startsWith(inputs.platform, 'darwin-')) && (inputs.resource == 'all' || inputs.resource == 'composer') }}
+    if: ${{ (inputs.platform == 'all' || inputs.platform == 'any' || startsWith(inputs.platform, 'darwin-')) && (inputs.resource == 'all' || inputs.resource == 'composer') }}
     runs-on: macos-15
     strategy:
       fail-fast: false
