@@ -252,7 +252,9 @@ impl DnsFixture {
         if self.cleaned {
             return Ok(());
         }
-        root(&["/usr/bin/systemctl", "stop", "pv-dns.service"])?;
+        if service_property("pv-dns.service", "ActiveState")? != "inactive" {
+            root(&["/usr/bin/systemctl", "stop", "pv-dns.service"])?;
+        }
         for name in ["pv0", FOREIGN_LINK] {
             if link(name)?.is_some() {
                 root(&["/usr/sbin/ip", "link", "delete", "dev", name])?;
