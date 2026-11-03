@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: macos-14
+    runs-on: macos-15
 
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

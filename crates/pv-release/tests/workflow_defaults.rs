@@ -291,7 +291,7 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
         workflow_job_ids(release_workflow),
         input_default(release_workflow, "app_platforms").unwrap_or(""),
         platform_matrices(release_workflow),
-        release_workflow.contains("macos-14") && release_workflow.contains("macos-15-intel"),
+        release_workflow.contains("runner: macos-15\n") && release_workflow.contains("macos-15-intel"),
         release_workflow.contains("contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform))"),
         release_workflow.contains("PV_APP_PLATFORMS: ${{ needs.prepare-release.outputs.app_platforms }}")
             && release_workflow.contains("IFS=',' read -r -a platforms <<< \"$PV_APP_PLATFORMS\""),
@@ -740,7 +740,7 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     no_push_or_pull_request=true
     artifact_manifest_input_default=
     app_manifest_input_default=
-    runs_on_macos_14=true
+    runs_on_macos_15=true
     avoids_source_build=true
     resolves_manifest_from_input_or_public_var=true
     resolves_installer_from_input_or_manifest=true
@@ -813,7 +813,7 @@ fn privileged_macos_rc_workflow_summary(workflow: &str) -> String {
 
 fn privileged_macos_rc_dispatch_summary(workflow: &str) -> String {
     format!(
-        "workflow_exists={}\nworkflow_name={}\nmanual_dispatch={}\nreusable_call={}\nno_push_or_pull_request={}\nartifact_manifest_input_default={}\napp_manifest_input_default={}\nruns_on_macos_14={}",
+        "workflow_exists={}\nworkflow_name={}\nmanual_dispatch={}\nreusable_call={}\nno_push_or_pull_request={}\nartifact_manifest_input_default={}\napp_manifest_input_default={}\nruns_on_macos_15={}",
         !workflow.is_empty(),
         workflow_name(workflow).unwrap_or(""),
         workflow.contains("workflow_dispatch:"),
@@ -821,7 +821,7 @@ fn privileged_macos_rc_dispatch_summary(workflow: &str) -> String {
         !workflow.contains("pull_request:") && !workflow.contains("push:"),
         input_default(workflow, "artifact_manifest_url").unwrap_or(""),
         input_default(workflow, "app_update_manifest_url").unwrap_or(""),
-        workflow.contains("runs-on: macos-14"),
+        workflow.contains("runs-on: macos-15"),
     )
 }
 
