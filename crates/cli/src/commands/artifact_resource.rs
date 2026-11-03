@@ -21,7 +21,8 @@ use crate::prompt;
 pub(crate) struct ArtifactResourceCommandSpec {
     pub resource_name: &'static str,
     pub display_name: &'static str,
-    pub adapter: fn() -> resources::Result<resources::RuntimeArtifactAdapter>,
+    pub adapter:
+        fn(resources::TargetPlatform) -> resources::Result<resources::RuntimeArtifactAdapter>,
 }
 
 pub(crate) fn install(
@@ -35,7 +36,7 @@ pub(crate) fn install(
         Some(track) => TrackSelector::parse(track)?,
         None => TrackSelector::Latest,
     };
-    let adapter = (spec.adapter)()?;
+    let adapter = (spec.adapter)(environment.resolve_target_platform()?)?;
     let commands = resource_commands(&paths, environment)?;
     let jobs_lock = super::acquire_jobs_lock(&paths)?;
     let progress = DownloadProgressRenderer::new(&streams.err);
@@ -72,7 +73,7 @@ pub(crate) fn update(
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let adapter = (spec.adapter)()?;
+    let adapter = (spec.adapter)(environment.resolve_target_platform()?)?;
     let commands = resource_commands(&paths, environment)?;
     let jobs_lock = super::acquire_jobs_lock(&paths)?;
     let progress = DownloadProgressRenderer::new(&streams.err);
@@ -632,7 +633,7 @@ mod tests {
         ArtifactResourceCommandSpec {
             resource_name: "redis",
             display_name: "Redis",
-            adapter: resources::composer_adapter,
+            adapter: |_| resources::composer_adapter(),
         }
     }
 
@@ -640,7 +641,7 @@ mod tests {
         ArtifactResourceCommandSpec {
             resource_name: "mailpit",
             display_name: "Mailpit",
-            adapter: resources::composer_adapter,
+            adapter: |_| resources::composer_adapter(),
         }
     }
 

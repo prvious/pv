@@ -58,7 +58,7 @@ const SETUP_DEFAULTS: &[SetupDefault] = &[
     SetupDefault {
         resource: "postgres",
         track: "18",
-        adapter: postgres_adapter,
+        adapter: || postgres_adapter(target_platform()),
         darwin_amd64_required: true,
     },
     SetupDefault {
@@ -131,7 +131,7 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
 
     let mysql = commands.install(&mysql_adapter()?, setup_track_selector("mysql")?, &client)?;
     let postgres = commands.install(
-        &postgres_adapter()?,
+        &postgres_adapter(target_platform())?,
         setup_track_selector("postgres")?,
         &client,
     )?;

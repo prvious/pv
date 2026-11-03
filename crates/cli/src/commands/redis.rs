@@ -9,7 +9,7 @@ use crate::output::Streams;
 const SPEC: ArtifactResourceCommandSpec = ArtifactResourceCommandSpec {
     resource_name: "redis",
     display_name: "Redis",
-    adapter: resources::redis_adapter,
+    adapter: |_| resources::redis_adapter(),
 };
 
 pub(crate) fn install(

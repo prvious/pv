@@ -7,7 +7,7 @@ use flate2::write::GzEncoder;
 use insta::{assert_debug_snapshot, assert_snapshot};
 use pv_release::ReleaseError;
 use pv_release::publication::{PublicationRequest, prepare_publication};
-use resources::{ArtifactManifest, ArtifactPlatform};
+use resources::{ArtifactManifest, ArtifactPlatform, ResourceName, TargetPlatform, TrackName};
 use sha2::{Digest, Sha256};
 use tar::{Builder, Header};
 
@@ -181,6 +181,31 @@ fn publication_stage_allows_configured_native_platform_subset() -> Result<()> {
     ArtifactManifest::parse(&stable_manifest)?;
 
     assert_snapshot!(stable_manifest);
+
+    Ok(())
+}
+
+#[test]
+fn publication_stage_validates_linux_native_platforms_before_writing_manifest() -> Result<()> {
+    let fixture = PublicationFixture::new()?;
+    fixture.write_candidate_for_platform("linux-amd64")?;
+    fixture.write_candidate_for_platform("linux-arm64")?;
+    let request = fixture.request_with_required_native_platforms(
+        "manifests/runs/123456789/manifest.json",
+        "manifest.json",
+        vec![ArtifactPlatform::LinuxAmd64, ArtifactPlatform::LinuxArm64],
+    );
+
+    prepare_publication(&request)?;
+    let manifest = ArtifactManifest::parse(&read_file(&fixture.stage().join("manifest.json"))?)?;
+    for target in [TargetPlatform::LinuxAmd64, TargetPlatform::LinuxArm64] {
+        let selected = manifest.select_latest(
+            &ResourceName::new("redis")?,
+            &TrackName::new("8.2")?,
+            target,
+        )?;
+        assert_eq!(selected.artifact().platform().as_str(), target.as_str());
+    }
 
     Ok(())
 }

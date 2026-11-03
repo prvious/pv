@@ -3,6 +3,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::Utf8TempDir;
 use camino_tempfile::tempdir;
 use insta::{assert_debug_snapshot, assert_snapshot};
+use self_update::{AppUpdateManifest, AppUpdatePlatform};
 use std::process::{ExitStatus, Output};
 
 #[expect(
@@ -41,6 +42,38 @@ fn app_release_records_generate_self_update_manifest() -> Result<()> {
     let manifest_json = read_file(&fixture.output)?;
 
     assert_snapshot!(manifest_json);
+
+    Ok(())
+}
+
+#[test]
+fn app_release_records_generate_mixed_macos_and_linux_manifest() -> Result<()> {
+    let fixture = AppManifestFixture::new()?;
+    fixture.write_record("pv-darwin-arm64.json", PV_APP_ARM64)?;
+    fixture.write_record("pv-darwin-amd64.json", PV_APP_AMD64)?;
+    fixture.write_record(
+        "pv-linux-arm64.json",
+        &PV_APP_ARM64.replace("darwin", "linux"),
+    )?;
+    fixture.write_record(
+        "pv-linux-amd64.json",
+        &PV_APP_AMD64.replace("darwin", "linux"),
+    )?;
+
+    let output = fixture.generate_manifest()?;
+    assert_command_success(&output, "generate-app-manifest")?;
+    let manifest = AppUpdateManifest::parse(&read_file(&fixture.output)?)?;
+    for platform in ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"] {
+        let asset = manifest.select_platform(AppUpdatePlatform::parse(platform)?)?;
+        assert_eq!(
+            asset.url(),
+            format!("{STAGING_BASE_URL}/pv/0.2.0/pv-{platform}")
+        );
+        assert_eq!(
+            asset.helper().url(),
+            format!("{STAGING_BASE_URL}/pv/0.2.0/pv-helper-1.0.0-{platform}")
+        );
+    }
 
     Ok(())
 }
@@ -158,7 +191,7 @@ fn app_release_records_reject_invalid_record_metadata() -> Result<()> {
                 "invalid-platform.json",
                 PV_APP_ARM64.replace(
                     "\"platform\": \"darwin-arm64\"",
-                    "\"platform\": \"linux-amd64\"",
+                    "\"platform\": \"windows-amd64\"",
                 ),
             )],
         },

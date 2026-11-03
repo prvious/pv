@@ -273,6 +273,8 @@ fn target_platform_for_native_artifact(
     match platform {
         ArtifactPlatform::DarwinArm64 => Ok(TargetPlatform::DarwinArm64),
         ArtifactPlatform::DarwinAmd64 => Ok(TargetPlatform::DarwinAmd64),
+        ArtifactPlatform::LinuxAmd64 => Ok(TargetPlatform::LinuxAmd64),
+        ArtifactPlatform::LinuxArm64 => Ok(TargetPlatform::LinuxArm64),
         ArtifactPlatform::Any => Err(crate::ReleaseError::InvalidPublicationInput {
             path: "required-native-platform".to_string(),
             reason: "`any` is portable metadata, not a native publication platform".to_string(),
