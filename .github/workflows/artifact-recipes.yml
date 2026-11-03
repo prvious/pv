@@ -39,7 +39,7 @@ permissions:
 jobs:
   validate:
     name: validate
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: Checkout
@@ -106,7 +106,7 @@ jobs:
     name: "php & frankenphp ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
     if: ${{ inputs.resource == 'all' || inputs.resource == 'php' }}
-    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-15' }}
     strategy:
       fail-fast: false
       matrix:
@@ -227,7 +227,7 @@ jobs:
     name: "caddy ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
     if: ${{ inputs.resource == 'all' || inputs.resource == 'caddy' }}
-    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-15' }}
     strategy:
       fail-fast: false
       matrix:
@@ -297,7 +297,7 @@ jobs:
     name: "composer ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
     if: ${{ inputs.resource == 'all' || inputs.resource == 'composer' }}
-    runs-on: macos-14
+    runs-on: macos-15
     strategy:
       fail-fast: false
       matrix:
@@ -372,7 +372,7 @@ jobs:
     name: "redis ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
     if: ${{ inputs.resource == 'all' || inputs.resource == 'redis' }}
-    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-15' }}
     strategy:
       fail-fast: false
       matrix:
@@ -440,7 +440,7 @@ jobs:
     name: "mysql ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
     if: ${{ inputs.resource == 'all' || inputs.resource == 'mysql' }}
-    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-15' }}
     strategy:
       fail-fast: false
       matrix:
@@ -508,7 +508,7 @@ jobs:
     name: "postgres dependencies ${{ matrix.platform }}"
     needs: validate
     if: ${{ inputs.resource == 'all' || inputs.resource == 'postgres' }}
-    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-15' }}
     strategy:
       fail-fast: false
       matrix:
@@ -589,7 +589,7 @@ jobs:
     name: "postgres ${{ matrix.track }} ${{ matrix.platform }}"
     needs: [validate, build-postgres-dependencies]
     if: ${{ inputs.resource == 'all' || inputs.resource == 'postgres' }}
-    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-15' }}
     strategy:
       fail-fast: false
       matrix:
@@ -715,7 +715,7 @@ jobs:
     name: "mailpit ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
     if: ${{ inputs.resource == 'all' || inputs.resource == 'mailpit' }}
-    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-15' }}
     strategy:
       fail-fast: false
       matrix:
@@ -783,7 +783,7 @@ jobs:
     name: "rustfs ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
     if: ${{ inputs.resource == 'all' || inputs.resource == 'rustfs' }}
-    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-14' }}
+    runs-on: ${{ matrix.platform == 'darwin-amd64' && 'macos-15-intel' || 'macos-15' }}
     strategy:
       fail-fast: false
       matrix:

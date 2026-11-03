@@ -13,6 +13,11 @@ on:
         required: true
         default: "darwin-arm64"
         type: string
+      publish:
+        description: "Publish this build to the configured installer/update endpoints after building; false only builds artifacts"
+        required: true
+        default: false
+        type: boolean
       helper_only:
         description: "Release a new helper for the current stable app without rebuilding the app binary"
         required: true
@@ -26,7 +31,7 @@ permissions:
 jobs:
   prepare-release:
     name: prepare release metadata
-    runs-on: macos-14
+    runs-on: macos-15
 
     outputs:
       version: ${{ steps.metadata.outputs.version }}
@@ -169,13 +174,16 @@ jobs:
     name: "build app ${{ matrix.platform }}"
     needs: prepare-release
     runs-on: ${{ matrix.runner }}
+    env:
+      # Keep app and helper binaries compatible with older macOS after runner upgrades.
+      MACOSX_DEPLOYMENT_TARGET: "13.0"
     strategy:
       fail-fast: false
       matrix:
         platform: [darwin-arm64, darwin-amd64]
         include:
           - platform: darwin-arm64
-            runner: macos-14
+            runner: macos-15
             rust_target: aarch64-apple-darwin
           - platform: darwin-amd64
             runner: macos-15-intel
@@ -385,7 +393,7 @@ jobs:
     needs:
       - prepare-release
       - build-app
-    runs-on: macos-14
+    runs-on: macos-15
 
     steps:
       - name: Checkout
@@ -458,3 +466,304 @@ jobs:
             ${{ runner.temp }}/pv-app-release-stage/pv-app-manifest.json
             ${{ runner.temp }}/pv-app-release-stage/install.sh
           if-no-files-found: error
+
+  publish:
+    name: publish and verify app
+    needs: [prepare-release, generate-release]
+    if: ${{ inputs.publish }}
+    concurrency:
+      group: app-publication-stable-entrypoints
+      cancel-in-progress: false
+    runs-on: macos-15
+
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      R2_ENDPOINT: https://${{ secrets.CLOUDFLARE_ACCOUNT_ID }}.r2.cloudflarestorage.com
+      R2_BUCKET: ${{ vars.R2_BUCKET }}
+      R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      STABLE_APP_MANIFEST_KEY: pv-app-manifest.json
+      STABLE_INSTALLER_KEY: install.sh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8
+
+      - name: Install app publication dependencies
+        run: |
+          set -euo pipefail
+          if ! command -v aws >/dev/null 2>&1; then
+            brew install awscli
+          fi
+          if ! command -v jq >/dev/null 2>&1; then
+            brew install jq
+          fi
+          aws --version
+          jq --version
+
+      - name: Validate publication configuration
+        env:
+          SOURCE_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          for name in CLOUDFLARE_ACCOUNT_ID R2_BUCKET R2_PUBLIC_BASE_URL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SOURCE_RUN_ID STABLE_APP_MANIFEST_KEY STABLE_INSTALLER_KEY; do
+            eval "value=\${$name:-}"
+            if [ -z "$value" ]; then
+              printf '%s\n' "missing app publication configuration: $name" >&2
+              exit 1
+            fi
+          done
+
+          case "$R2_PUBLIC_BASE_URL" in
+            https://*) ;;
+            *)
+              printf '%s\n' "R2_PUBLIC_BASE_URL must use https" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Download app release artifacts
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: pv-app-release-${{ needs.prepare-release.outputs.version }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/pv-app-publication-download
+
+      - name: Stage app publication
+        shell: bash
+        env:
+          SOURCE_RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          download_dir="$RUNNER_TEMP/pv-app-publication-download"
+          candidate_record_dir="$RUNNER_TEMP/pv-app-publication-record-files"
+          stage="$RUNNER_TEMP/pv-app-publication-stage"
+
+          app_manifest_count=$(find "$download_dir" -type f -name pv-app-manifest.json | wc -l | tr -d '[:space:]')
+          if [ "$app_manifest_count" -ne 1 ]; then
+            printf '%s\n' "source run did not contain pv-app-manifest.json" >&2
+            exit 1
+          fi
+          app_manifest=$(find "$download_dir" -type f -name pv-app-manifest.json -print -quit)
+          handoff_dir=$(dirname "$app_manifest")
+          installer="$handoff_dir/install.sh"
+          if [ ! -f "$installer" ]; then
+            printf '%s\n' "source run did not contain install.sh next to pv-app-manifest.json" >&2
+            exit 1
+          fi
+
+          for platform in darwin-arm64; do
+            binary_name="pv-$platform"
+            binary_source=$(find "$handoff_dir" -type f -path "*/pv/*/$binary_name" -print -quit)
+            helper_source=$(find "$handoff_dir" -type f -path "*/pv/*/pv-helper-*-$platform" -print -quit)
+            record_source=$(find "$handoff_dir" -type f -path "*/pv/records/*/$binary_name.json" -print -quit)
+            if [ -z "$binary_source" ]; then
+              printf '%s\n' "missing required app binary for $binary_name" >&2
+              exit 1
+            fi
+            if [ -z "$record_source" ]; then
+              printf '%s\n' "missing required app release record for $binary_name" >&2
+              exit 1
+            fi
+            if [ -z "$helper_source" ]; then
+              printf '%s\n' "missing required privileged helper for $platform" >&2
+              exit 1
+            fi
+          done
+
+          rm -rf "$candidate_record_dir" "$stage"
+          mkdir -p "$candidate_record_dir"
+          find "$handoff_dir" -type f -path "*/pv/records/*/pv-darwin-*.json" | while IFS= read -r record; do
+            cp "$record" "$candidate_record_dir/$(basename "$record")"
+          done
+          if ! find "$candidate_record_dir" -type f -name '*.json' -print -quit | grep -q .; then
+            printf '%s\n' "source run did not contain app release records" >&2
+            exit 1
+          fi
+
+          current_stable_args=()
+          fetch_current_stable_object() {
+            local object_key=$1
+            local local_path=$2
+            local label=$3
+            local error_file=$4
+            if aws s3api get-object \
+              --bucket "$R2_BUCKET" \
+              --key "$object_key" \
+              --endpoint-url "$R2_ENDPOINT" \
+              "$local_path" \
+              > /dev/null 2>"$error_file"; then
+              return 0
+            fi
+            if grep -Eiq 'NoSuchKey|Not Found|404' "$error_file"; then
+              printf '%s\n' "no current stable $label found"
+              return 1
+            fi
+            printf '%s\n' "failed to read current stable $label" >&2
+            cat "$error_file" >&2
+            exit 1
+          }
+
+          current_app_manifest="$RUNNER_TEMP/current-pv-app-manifest.json"
+          current_app_manifest_error="$RUNNER_TEMP/current-pv-app-manifest.err"
+          if fetch_current_stable_object "$STABLE_APP_MANIFEST_KEY" "$current_app_manifest" "app manifest" "$current_app_manifest_error"; then
+            current_stable_args+=(--current-app-manifest "$current_app_manifest")
+          fi
+
+          current_app_installer="$RUNNER_TEMP/current-install.sh"
+          current_app_installer_error="$RUNNER_TEMP/current-install.err"
+          if fetch_current_stable_object "$STABLE_INSTALLER_KEY" "$current_app_installer" "installer" "$current_app_installer_error"; then
+            current_stable_args+=(--current-app-installer "$current_app_installer")
+          fi
+
+          run_stage_app_publication() {
+            cargo run --locked -p pv-release -- stage-app-publication \
+              --source-binaries "$handoff_dir" \
+              --candidate-records "$candidate_record_dir" \
+              --stage "$stage" \
+              --source-run-id "$SOURCE_RUN_ID" \
+              --base-url "$R2_PUBLIC_BASE_URL" \
+              "$@"
+          }
+
+          if [ "${#current_stable_args[@]}" -eq 0 ]; then
+            run_stage_app_publication
+          else
+            run_stage_app_publication "${current_stable_args[@]}"
+          fi
+
+          expected_app_manifest_key="pv/manifests/runs/$SOURCE_RUN_ID/pv-app-manifest.json"
+          expected_installer_key="pv/manifests/runs/$SOURCE_RUN_ID/install.sh"
+          jq -e \
+            --arg manifest_key "$expected_app_manifest_key" \
+            --arg installer_key "$expected_installer_key" \
+            'any(.immutable_uploads[]; .object_key == $manifest_key) and any(.immutable_uploads[]; .object_key == $installer_key)' \
+            "$stage/publication-plan.json" >/dev/null
+
+      - name: Upload staged app publication plan
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pv-app-publication-plan-${{ github.run_id }}
+          path: ${{ runner.temp }}/pv-app-publication-stage/publication-plan.json
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Upload immutable app objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pv-app-publication-stage"
+
+          upload_immutable_object() {
+            local_path=$1
+            object_key=$2
+            error_file="$RUNNER_TEMP/pv-app-put-object.err"
+            if aws s3api put-object \
+              --bucket "$R2_BUCKET" \
+              --key "$object_key" \
+              --body "$local_path" \
+              --endpoint-url "$R2_ENDPOINT" \
+              --if-none-match '*' \
+              > /dev/null 2>"$error_file"; then
+              return 0
+            fi
+            if grep -Eiq 'PreconditionFailed|Precondition Failed|412' "$error_file"; then
+              existing_file="$RUNNER_TEMP/pv-app-existing-object"
+              if aws s3api get-object \
+                --bucket "$R2_BUCKET" \
+                --key "$object_key" \
+                --endpoint-url "$R2_ENDPOINT" \
+                "$existing_file" \
+                > /dev/null 2>>"$error_file" \
+                && cmp -s "$local_path" "$existing_file"; then
+                rm -f "$existing_file"
+                printf '%s\n' "immutable app object already exists with matching content: $object_key"
+                return 0
+              fi
+              rm -f "$existing_file"
+              printf '%s\n' "immutable app object already exists with different content: $object_key" >&2
+              cat "$error_file" >&2
+              exit 1
+            fi
+            printf '%s\n' "failed to upload immutable app object: $object_key" >&2
+            cat "$error_file" >&2
+            exit 1
+          }
+
+          upload_rows="$RUNNER_TEMP/pv-app-immutable-uploads.tsv"
+          jq -r '.immutable_uploads[] | [.local_path, .object_key] | @tsv' publication-plan.json > "$upload_rows"
+          if [ ! -s "$upload_rows" ]; then
+            printf '%s\n' "app publication plan did not contain immutable uploads" >&2
+            exit 1
+          fi
+
+          while IFS=$'\t' read -r local_path object_key; do
+            upload_immutable_object "$local_path" "$object_key"
+          done < "$upload_rows"
+
+      - name: Publish stable app manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pv-app-publication-stage"
+          local_path=$(jq -e -r '.stable_app_manifest.local_path' publication-plan.json)
+          object_key=$(jq -e -r '.stable_app_manifest.object_key' publication-plan.json)
+          if [ "$object_key" != "$STABLE_APP_MANIFEST_KEY" ]; then
+            printf '%s\n' "stable app manifest object key must be $STABLE_APP_MANIFEST_KEY" >&2
+            exit 1
+          fi
+          aws s3api put-object \
+            --bucket "$R2_BUCKET" \
+            --key "$object_key" \
+            --body "$local_path" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type application/json \
+            > /dev/null
+
+      - name: Publish stable installer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/pv-app-publication-stage"
+          local_path=$(jq -e -r '.stable_installer.local_path' publication-plan.json)
+          object_key=$(jq -e -r '.stable_installer.object_key' publication-plan.json)
+          if [ "$object_key" != "$STABLE_INSTALLER_KEY" ]; then
+            printf '%s\n' "stable installer object key must be $STABLE_INSTALLER_KEY" >&2
+            exit 1
+          fi
+          aws s3api put-object \
+            --bucket "$R2_BUCKET" \
+            --key "$object_key" \
+            --body "$local_path" \
+            --endpoint-url "$R2_ENDPOINT" \
+            --content-type text/x-shellscript \
+            > /dev/null
+
+      - name: Verify published app entrypoints
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/pv-app-publication-stage"
+          for entrypoint in pv-app-manifest.json install.sh; do
+            published="$RUNNER_TEMP/published-$entrypoint"
+            curl --fail --location --silent --show-error \
+              --retry 3 --retry-delay 2 --retry-all-errors \
+              --output "$published" "${R2_PUBLIC_BASE_URL%/}/$entrypoint"
+            if ! cmp -s "$stage/$entrypoint" "$published"; then
+              printf '%s\n' "published $entrypoint differs from this release; inspect the public endpoint and publication plan before retrying" >&2
+              exit 1
+            fi
+          done
+          version=$(jq -er '.version' "$stage/pv-app-manifest.json")
+          {
+            printf 'Published PV %s\n\n' "$version"
+            printf -- '- App manifest: %s/pv-app-manifest.json\n' "${R2_PUBLIC_BASE_URL%/}"
+            printf -- '- Installer: %s/install.sh\n' "${R2_PUBLIC_BASE_URL%/}"
+            printf -- '- Both public entrypoints match the validated publication plan.\n'
+          } >>"${GITHUB_STEP_SUMMARY:?}"

@@ -1,13 +1,15 @@
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use anyhow::Context;
 use anyhow::Result;
 use camino::Utf8Path;
+#[cfg(unix)]
+use camino_tempfile::tempdir;
 use insta::assert_snapshot;
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[expect(
     clippy::disallowed_types,
-    reason = "workflow test executes the macOS awk used by app release"
+    reason = "workflow tests execute the release workflow's shell steps"
 )]
 type StdCommand = std::process::Command;
 
@@ -17,7 +19,6 @@ const ARTIFACT_RECIPES_UPLOAD_PATHS: [&str; 3] = [
     "${{ runner.temp }}/pv-records/**/*.json",
 ];
 const APP_RELEASE_WORKFLOW_PATH: &str = ".github/workflows/app-release.yml";
-const APP_PUBLICATION_WORKFLOW_PATH: &str = ".github/workflows/app-publication.yml";
 const PRIVILEGED_MACOS_RC_WORKFLOW_PATH: &str = ".github/workflows/privileged-macos-rc.yml";
 const REAL_ARTIFACT_E2E_WORKFLOW_PATH: &str = ".github/workflows/real-artifact-e2e.yml";
 
@@ -238,16 +239,16 @@ fn artifact_publication_defaults_to_preview_native_platform_gate() -> Result<()>
 #[test]
 fn app_workflows_use_repository_r2_configuration() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let release = read_optional_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
-    let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
-    let release_workflow = release.as_deref().unwrap_or("");
-    let publication_workflow = publication.as_deref().unwrap_or("");
+    let release = read_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
+    let publication = workflow_job_block(&release, "publish");
+    let release_workflow = release.as_str();
+    let publication_workflow = publication.unwrap_or("");
     let summary = format!(
-        "release_workflow_exists={}\npublication_workflow_exists={}\nrelease_name={}\npublication_name={}\nrelease_uses_r2_public_base_url_var={}\npublication_uses_r2_bucket_var={}\npublication_uses_r2_public_base_url_var={}\npublication_uses_cloudflare_account_secret={}\npublication_uses_r2_access_key_secret={}\npublication_uses_r2_secret_access_key_secret={}\npublication_derives_r2_endpoint_from_secret={}\npublication_hardcodes_staging_bucket={}\npublication_hardcodes_staging_public_base_url={}",
-        release.is_some(),
+        "release_workflow_exists={}\npublication_workflow_exists={}\nrelease_name={}\nhas_publish_job={}\nrelease_uses_r2_public_base_url_var={}\npublication_uses_r2_bucket_var={}\npublication_uses_r2_public_base_url_var={}\npublication_uses_cloudflare_account_secret={}\npublication_uses_r2_access_key_secret={}\npublication_uses_r2_secret_access_key_secret={}\npublication_derives_r2_endpoint_from_secret={}\npublication_hardcodes_staging_bucket={}\npublication_hardcodes_staging_public_base_url={}",
+        !release.is_empty(),
         publication.is_some(),
         workflow_name(release_workflow).unwrap_or(""),
-        workflow_name(publication_workflow).unwrap_or(""),
+        workflow_job_ids(release_workflow).contains(&"publish"),
         release_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}"),
         publication_workflow.contains("${{ vars.R2_BUCKET }}"),
         publication_workflow.contains("${{ vars.R2_PUBLIC_BASE_URL }}"),
@@ -264,7 +265,7 @@ fn app_workflows_use_repository_r2_configuration() -> Result<()> {
     release_workflow_exists=true
     publication_workflow_exists=true
     release_name=PV App Release
-    publication_name=PV App Publication
+    has_publish_job=true
     release_uses_r2_public_base_url_var=true
     publication_uses_r2_bucket_var=true
     publication_uses_r2_public_base_url_var=true
@@ -283,7 +284,8 @@ fn app_workflows_use_repository_r2_configuration() -> Result<()> {
 fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let release = read_optional_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
-    let release_workflow = release.as_deref().unwrap_or("");
+    let workflow = release.as_deref().unwrap_or("");
+    let release_workflow = workflow.split("\n  publish:\n").next().unwrap_or("");
     let summary = format!(
         "release_workflow_exists={}\nrelease_name={}\njobs={:?}\napp_platforms_default={}\nplatform_matrices={:?}\nuses_native_macos_runners={}\nbuild_app_platform_gate={}\ngenerate_uses_selected_platforms={}\napp_update_manifest_url_env={}\nartifact_manifest_url_env={}\nuses_r2_public_base_url_var={}\nhardcodes_staging_bucket={}\nhardcodes_staging_public_base_url={}\nbuilds_privileged_helper={}\nadhoc_signs_privileged_helper={}\napp_only_reuses_verified_helper={}\nhelper_only_reuses_verified_app={}\nhelper_only_preserves_minimum_pv_version={}\nderives_helper_identity={}\nwrite_app_release_record_command={}\nrecords_helper_metadata={}\napp_manifest_command={}\napp_installer_command={}\napp_binary_object_key_refs={}\napp_record_object_key_refs={}\nupload_steps={}\nuploads_binaries={}\nuploads_helpers={}\nuploads_records={}\nuploads_manifest={}\nuploads_installer={}",
         release.is_some(),
@@ -291,7 +293,7 @@ fn app_release_workflow_builds_native_binaries_and_handoff_artifacts() -> Result
         workflow_job_ids(release_workflow),
         input_default(release_workflow, "app_platforms").unwrap_or(""),
         platform_matrices(release_workflow),
-        release_workflow.contains("macos-14") && release_workflow.contains("macos-15-intel"),
+        release_workflow.contains("runner: macos-15\n") && release_workflow.contains("macos-15-intel"),
         release_workflow.contains("contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform))"),
         release_workflow.contains("PV_APP_PLATFORMS: ${{ needs.prepare-release.outputs.app_platforms }}")
             && release_workflow.contains("IFS=',' read -r -a platforms <<< \"$PV_APP_PLATFORMS\""),
@@ -463,10 +465,128 @@ fn app_release_workflow_compares_helper_versions_with_macos_awk() -> Result<()> 
 }
 
 #[test]
+fn app_publication_is_opt_in_and_uses_this_runs_completed_handoff() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let workflow = read_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
+    let publication = workflow_job_block(&workflow, "publish")
+        .ok_or_else(|| anyhow::anyhow!("app publication job is missing"))?;
+    let summary = format!(
+        "manual_only={}\npublish_default={}\npublish_gate={}\nneeds_metadata_and_handoff={}\nserializes_stable_entrypoints={}\nselects_this_runs_exact_handoff={}\nsource_run_is_current_run={}\nno_cross_run_selector={}\nplan_can_be_reuploaded_on_retry={}",
+        workflow.contains("workflow_dispatch:")
+            && !workflow.contains("push:")
+            && !workflow.contains("pull_request:"),
+        input_default(&workflow, "publish").unwrap_or(""),
+        publication.contains("if: ${{ inputs.publish }}"),
+        publication.contains("needs: [prepare-release, generate-release]"),
+        publication.contains("group: app-publication-stable-entrypoints")
+            && publication.contains("cancel-in-progress: false"),
+        publication.contains(
+            "name: pv-app-release-${{ needs.prepare-release.outputs.version }}-${{ github.run_id }}"
+        ),
+        publication.contains("SOURCE_RUN_ID: ${{ github.run_id }}"),
+        !workflow.contains("inputs.source_run_id")
+            && !path_exists(&workspace_root.join(".github/workflows/app-publication.yml")),
+        workflow_step(publication, "Upload staged app publication plan")
+            .is_some_and(|step| step.contains("overwrite: true")),
+    );
+
+    assert_snapshot!(summary, @"
+    manual_only=true
+    publish_default=false
+    publish_gate=true
+    needs_metadata_and_handoff=true
+    serializes_stable_entrypoints=true
+    selects_this_runs_exact_handoff=true
+    source_run_is_current_run=true
+    no_cross_run_selector=true
+    plan_can_be_reuploaded_on_retry=true
+    ");
+
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn app_publication_readback_requires_both_exact_entrypoints() -> Result<()> {
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let workflow = read_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
+    let step = workflow_step(&workflow, "Verify published app entrypoints")
+        .context("app publication readback step is missing")?;
+    let (_, script) = step
+        .split_once("run: |\n")
+        .context("readback script is missing")?;
+    let script = script
+        .lines()
+        .map(|line| line.strip_prefix("          ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    // Only the HTTP transport is replaced; execute the committed comparison and summary code.
+    let transport = r#"
+curl() {
+  if [ "$READBACK_FAILURE" = true ]; then return 22; fi
+  local output url
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --output) output=$2; shift 2 ;;
+      https://*) url=$1; shift ;;
+      *) shift ;;
+    esac
+  done
+  cp "$READBACK_FIXTURES/${url##*/}" "$output"
+}
+"#;
+    let mut outcomes = Vec::new();
+    for (case, stale_entrypoint, http_failure) in [
+        ("matching", None, false),
+        ("stale manifest", Some("pv-app-manifest.json"), false),
+        ("stale installer", Some("install.sh"), false),
+        ("HTTP failure", None, true),
+    ] {
+        let temp = tempdir()?;
+        let stage = temp.path().join("pv-app-publication-stage");
+        let public = temp.path().join("public");
+        for (name, content) in [
+            ("pv-app-manifest.json", "{\"version\":\"0.2.9\"}"),
+            ("install.sh", "installer"),
+        ] {
+            write_file(&stage.join(name), content)?;
+            write_file(&public.join(name), content)?;
+        }
+        if let Some(entrypoint) = stale_entrypoint {
+            write_file(&public.join(entrypoint), "stale")?;
+        }
+        let summary = temp.path().join("summary");
+        let output = StdCommand::new("bash")
+            .args(["-c", &format!("{transport}\n{script}")])
+            .env("RUNNER_TEMP", temp.path())
+            .env("READBACK_FIXTURES", &public)
+            .env("READBACK_FAILURE", http_failure.to_string())
+            .env("R2_PUBLIC_BASE_URL", "https://downloads.prvious.test/")
+            .env("GITHUB_STEP_SUMMARY", &summary)
+            .output()?;
+        let success_summary = read_optional_file(&summary)?
+            .unwrap_or_default()
+            .contains("Published PV 0.2.9");
+        outcomes.push(format!(
+            "{case}: success={}, success_summary={success_summary}",
+            output.status.success()
+        ));
+    }
+    assert_snapshot!(outcomes.join("\n"), @"
+    matching: success=true, success_summary=true
+    stale manifest: success=false, success_summary=false
+    stale installer: success=false, success_summary=false
+    HTTP failure: success=false, success_summary=false
+    ");
+    Ok(())
+}
+
+#[test]
 fn app_publication_writes_app_stable_entrypoints() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
-    let publication_workflow = publication.as_deref().unwrap_or("");
+    let release = read_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
+    let publication = workflow_job_block(&release, "publish");
+    let publication_workflow = publication.unwrap_or("");
     let summary = format!(
         "publication_workflow_exists={}\nstable_app_manifest_key_present={}\nstable_installer_key_present={}\npublishes_manifest_before_installer={}\nrequires_arm64_handoff={}\nallows_amd64_to_be_absent={}\nmanaged_resource_key_references={:?}",
         publication.is_some(),
@@ -499,8 +619,9 @@ fn app_publication_writes_app_stable_entrypoints() -> Result<()> {
 #[test]
 fn app_publication_uses_immutable_upload_checks_for_app_objects() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
-    let publication_workflow = publication.as_deref().unwrap_or("");
+    let release = read_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
+    let publication = workflow_job_block(&release, "publish");
+    let publication_workflow = publication.unwrap_or("");
     let summary = format!(
         "publication_workflow_exists={}\nuses_stage_app_publication_command={}\ndefines_immutable_upload_helper={}\nuses_if_none_match={}\nhandles_precondition_failed={}\napp_binary_object_key_refs={}\napp_record_object_key_refs={}\nversioned_manifest_object_key_refs={}\nversioned_installer_object_key_refs={}",
         publication.is_some(),
@@ -535,13 +656,7 @@ fn app_publication_uses_immutable_upload_checks_for_app_objects() -> Result<()> 
 #[test]
 fn app_workflows_pin_actions_and_disable_checkout_credentials() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let release = read_optional_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
-    let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
-    let combined = format!(
-        "{}\n{}",
-        release.as_deref().unwrap_or(""),
-        publication.as_deref().unwrap_or("")
-    );
+    let combined = read_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
     let summary = format!(
         "unpinned_uses={:?}\ncheckout_persist_credentials_false_count={}",
         unpinned_uses_references(&combined),
@@ -584,8 +699,9 @@ jobs:
 #[test]
 fn app_publication_regenerates_entrypoints_and_validates_current_stable() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
-    let publication_workflow = publication.as_deref().unwrap_or("");
+    let release = read_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
+    let publication = workflow_job_block(&release, "publish");
+    let publication_workflow = publication.unwrap_or("");
     let summary = format!(
         "passes_base_url={}\npasses_current_app_manifest={}\npasses_current_app_installer={}\npasses_app_manifest_path={}\npasses_installer_path={}\nfetches_current_stable_manifest={}\nfetches_current_stable_installer={}\nhandles_missing_current_stable_without_empty_array_nounset={}",
         publication_workflow.contains("--base-url \"$R2_PUBLIC_BASE_URL\""),
@@ -620,8 +736,9 @@ fn app_publication_regenerates_entrypoints_and_validates_current_stable() -> Res
 #[test]
 fn app_publication_retries_matching_immutable_uploads() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
-    let publication_workflow = publication.as_deref().unwrap_or("");
+    let release = read_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
+    let publication = workflow_job_block(&release, "publish");
+    let publication_workflow = publication.unwrap_or("");
     let summary = format!(
         "downloads_existing_immutable={}\ncompares_existing_immutable={}\nrejects_different_existing_immutable={}",
         publication_workflow.contains("get-object"),
@@ -641,8 +758,9 @@ fn app_publication_retries_matching_immutable_uploads() -> Result<()> {
 #[test]
 fn app_publication_publishes_stable_manifest_before_installer() -> Result<()> {
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let publication = read_optional_file(&workspace_root.join(APP_PUBLICATION_WORKFLOW_PATH))?;
-    let publication_workflow = publication.as_deref().unwrap_or("");
+    let release = read_file(&workspace_root.join(APP_RELEASE_WORKFLOW_PATH))?;
+    let publication = workflow_job_block(&release, "publish");
+    let publication_workflow = publication.unwrap_or("");
     let installer_index = publication_workflow.find("- name: Publish stable installer");
     let manifest_index = publication_workflow.find("- name: Publish stable app manifest");
     let summary = format!(
@@ -740,7 +858,7 @@ fn privileged_macos_rc_workflow_is_manual_and_exercises_system_rc_path() -> Resu
     no_push_or_pull_request=true
     artifact_manifest_input_default=
     app_manifest_input_default=
-    runs_on_macos_14=true
+    runs_on_macos_15=true
     avoids_source_build=true
     resolves_manifest_from_input_or_public_var=true
     resolves_installer_from_input_or_manifest=true
@@ -813,7 +931,7 @@ fn privileged_macos_rc_workflow_summary(workflow: &str) -> String {
 
 fn privileged_macos_rc_dispatch_summary(workflow: &str) -> String {
     format!(
-        "workflow_exists={}\nworkflow_name={}\nmanual_dispatch={}\nreusable_call={}\nno_push_or_pull_request={}\nartifact_manifest_input_default={}\napp_manifest_input_default={}\nruns_on_macos_14={}",
+        "workflow_exists={}\nworkflow_name={}\nmanual_dispatch={}\nreusable_call={}\nno_push_or_pull_request={}\nartifact_manifest_input_default={}\napp_manifest_input_default={}\nruns_on_macos_15={}",
         !workflow.is_empty(),
         workflow_name(workflow).unwrap_or(""),
         workflow.contains("workflow_dispatch:"),
@@ -821,7 +939,7 @@ fn privileged_macos_rc_dispatch_summary(workflow: &str) -> String {
         !workflow.contains("pull_request:") && !workflow.contains("push:"),
         input_default(workflow, "artifact_manifest_url").unwrap_or(""),
         input_default(workflow, "app_update_manifest_url").unwrap_or(""),
-        workflow.contains("runs-on: macos-14"),
+        workflow.contains("runs-on: macos-15"),
     )
 }
 
@@ -1258,7 +1376,7 @@ fn workflow_job_ids(workflow: &str) -> Vec<&str> {
 }
 
 fn workflow_job_block<'a>(workflow: &'a str, job_id: &str) -> Option<&'a str> {
-    let start_marker = format!("  {job_id}:\n");
+    let start_marker = format!("\n  {job_id}:\n");
     let start = workflow.find(&start_marker)?;
     let job_body = &workflow[start + start_marker.len()..];
     let end = job_body
@@ -1345,4 +1463,16 @@ fn read_optional_file(path: &Utf8Path) -> Result<Option<String>> {
 )]
 fn read_file(path: &Utf8Path) -> Result<String> {
     Ok(std::fs::read_to_string(path)?)
+}
+
+#[cfg(unix)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "workflow test writes isolated publication readback fixtures"
+)]
+fn write_file(path: &Utf8Path, content: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(std::fs::write(path, content)?)
 }

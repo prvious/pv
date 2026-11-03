@@ -74,14 +74,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Pull requests test the oldest and newest supported macOS. Pushes to main test every
+        # Pull requests test the oldest and newest hosted macOS lanes. Pushes to main test every
         # lane, including Intel, which takes the longest.
         lane: >-
           ${{ fromJSON(github.event_name == 'pull_request' && '[
-            {"name": "macOS 14 arm64", "runner": "macos-14", "macos_major": "14", "architecture": "arm64"},
+            {"name": "macOS 15 arm64", "runner": "macos-15", "macos_major": "15", "architecture": "arm64"},
             {"name": "macOS 27 arm64", "runner": "xcode-27", "macos_major": "27", "architecture": "arm64"}
           ]' || '[
-            {"name": "macOS 14 arm64", "runner": "macos-14", "macos_major": "14", "architecture": "arm64"},
+            {"name": "macOS 15 arm64", "runner": "macos-15", "macos_major": "15", "architecture": "arm64"},
             {"name": "macOS 15 Intel", "runner": "macos-15-intel", "macos_major": "15", "architecture": "x86_64"},
             {"name": "macOS 26 arm64", "runner": "macos-26", "macos_major": "26", "architecture": "arm64"},
             {"name": "macOS 27 arm64", "runner": "xcode-27", "macos_major": "27", "architecture": "arm64"}
