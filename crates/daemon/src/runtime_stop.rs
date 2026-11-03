@@ -265,8 +265,9 @@ fn require_directory(path: &Utf8Path) -> Result<(), DaemonError> {
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
     use std::process::Child;
-    use std::thread;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+
+    use platform::clock::{self, real};
 
     use anyhow::{Result, ensure};
     use camino_tempfile::tempdir;
@@ -304,14 +305,14 @@ mod tests {
                 .arg("daemon:run")
                 .spawn()?,
         );
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = real::now() + Duration::from_secs(5);
         while !fake
             .events()?
             .into_iter()
             .any(|event| matches!(event.kind, EventKind::Started { .. }))
         {
-            ensure!(Instant::now() < deadline, "fake daemon never started");
-            thread::sleep(Duration::from_millis(10));
+            ensure!(real::now() < deadline, "fake daemon never started");
+            clock::poll_blocking(Duration::from_millis(10));
         }
 
         let identity = verify_daemon_process(&paths, child.0.id())?;
