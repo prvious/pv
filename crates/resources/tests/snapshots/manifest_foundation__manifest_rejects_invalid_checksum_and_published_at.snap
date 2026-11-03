@@ -1,9 +1,0 @@
----
-source: crates/resources/tests/manifest_foundation.rs
-assertion_line: 175
-expression: parse_manifest_error(&checksum_manifest)?
----
-InvalidIdentity {
-    kind: "sha256",
-    value: "bad",
-}

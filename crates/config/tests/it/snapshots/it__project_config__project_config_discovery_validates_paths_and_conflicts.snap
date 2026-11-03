@@ -1,0 +1,24 @@
+---
+source: crates/config/tests/it/project_config.rs
+expression: "(config_file.path.file_name(), config_file.exists, config_file.config,)"
+---
+(
+    Some(
+        "pv.yml",
+    ),
+    true,
+    ProjectConfig {
+        serve: true,
+        env_file: ".env",
+        php: None,
+        root: Some(
+            "public",
+        ),
+        env: {},
+        hooks: ProjectHooks {
+            prepare: [],
+            setup: [],
+        },
+        resources: {},
+    },
+)

@@ -1,9 +1,0 @@
----
-source: crates/resources/tests/artifact_cache_download.rs
-expression: result
----
-Err(
-    InvalidManifestUrl {
-        url: "http://artifacts.example.test/manifest.json",
-    },
-)

@@ -1,7 +1,0 @@
----
-source: crates/resources/tests/artifact_cache_download.rs
-expression: cached.source()
----
-Cached {
-    reason: "HTTP request failed for `https://artifacts.example.test/manifest.json`: offline",
-}

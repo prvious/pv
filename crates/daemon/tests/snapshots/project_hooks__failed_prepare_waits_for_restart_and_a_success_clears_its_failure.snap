@@ -1,9 +1,0 @@
----
-source: crates/daemon/tests/project_hooks.rs
-expression: "(state::fs::read_to_string(&path.join(\"attempts\"))?,\nfixture.hook_jobs()?.len(), failures)"
----
-(
-    "attempt\nattempt\n",
-    3,
-    0,
-)

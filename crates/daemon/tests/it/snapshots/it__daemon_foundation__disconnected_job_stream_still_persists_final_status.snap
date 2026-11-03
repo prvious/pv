@@ -1,0 +1,34 @@
+---
+source: crates/daemon/tests/it/daemon_foundation.rs
+expression: snapshot
+---
+[
+    JobRecord {
+        id: "job_000002",
+        kind: "reconcile",
+        scope: "system",
+        status: Succeeded,
+        started_at: "<timestamp>",
+        finished_at: Some(
+            "<timestamp>",
+        ),
+        summary: Some(
+            "Gateway runtime reconciled",
+        ),
+        error: None,
+    },
+    JobRecord {
+        id: "job_000001",
+        kind: "reconcile",
+        scope: "system",
+        status: Succeeded,
+        started_at: "<timestamp>",
+        finished_at: Some(
+            "<timestamp>",
+        ),
+        summary: Some(
+            "Gateway runtime reconciled",
+        ),
+        error: None,
+    },
+]

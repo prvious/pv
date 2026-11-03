@@ -1,0 +1,35 @@
+---
+source: crates/config/tests/it/project_config.rs
+expression: "(updated.path.file_name(), updated.exists, updated.config)"
+---
+(
+    Some(
+        "pv.yml",
+    ),
+    true,
+    ProjectConfig {
+        serve: true,
+        env_file: ".env",
+        php: Some(
+            PhpConfig {
+                version: Some(
+                    "8.4",
+                ),
+                extensions: [],
+            },
+        ),
+        root: None,
+        env: {},
+        hooks: ProjectHooks {
+            prepare: [],
+            setup: [],
+        },
+        resources: {
+            "redis": ResourceConfig {
+                track: None,
+                env: {},
+                allocations: {},
+            },
+        },
+    },
+)

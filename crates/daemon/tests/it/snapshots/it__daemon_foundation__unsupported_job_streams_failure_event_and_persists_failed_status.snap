@@ -1,0 +1,47 @@
+---
+source: crates/daemon/tests/it/daemon_foundation.rs
+expression: snapshot
+---
+(
+    [
+        Object {
+            "job_id": String("job_000001"),
+            "message": String("job accepted"),
+            "protocol_version": Number(3),
+            "status": String("accepted"),
+            "type": String("response"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "kind": String("unsupported"),
+            "scope": String("system"),
+            "type": String("job_started"),
+        },
+        Object {
+            "job_id": String("job_000001"),
+            "message": String("stub job started"),
+            "type": String("log"),
+        },
+        Object {
+            "error": String("unsupported daemon job `unsupported` with scope `system`"),
+            "job_id": String("job_000001"),
+            "type": String("job_failed"),
+        },
+    ],
+    [
+        JobRecord {
+            id: "job_000001",
+            kind: "unsupported",
+            scope: "system",
+            status: Failed,
+            started_at: "<timestamp>",
+            finished_at: Some(
+                "<timestamp>",
+            ),
+            summary: None,
+            error: Some(
+                "unsupported daemon job `unsupported` with scope `system`",
+            ),
+        },
+    ],
+)

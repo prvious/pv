@@ -1,0 +1,51 @@
+---
+source: crates/resources/tests/it/resource_allocations.rs
+expression: allocations
+---
+[
+    AllocationNameSnapshot {
+        resource_name: "mysql",
+        allocation_name: "app-db",
+        generated_name: "acme_app_db",
+    },
+    AllocationNameSnapshot {
+        resource_name: "postgres",
+        allocation_name: "analytics",
+        generated_name: "api_analytics",
+    },
+    AllocationNameSnapshot {
+        resource_name: "redis",
+        allocation_name: "cache",
+        generated_name: "acme.cache.",
+    },
+    AllocationNameSnapshot {
+        resource_name: "rustfs",
+        allocation_name: "uploads_bucket",
+        generated_name: "acme-uploads-bucket",
+    },
+    AllocationNameSnapshot {
+        resource_name: "mysql",
+        allocation_name: "app-db",
+        generated_name: "acme_store_app_db",
+    },
+    AllocationNameSnapshot {
+        resource_name: "redis",
+        allocation_name: "cache_bucket",
+        generated_name: "acme-store.cache-bucket.",
+    },
+    AllocationNameSnapshot {
+        resource_name: "rustfs",
+        allocation_name: "cache_bucket",
+        generated_name: "acme-store-cache-bucket",
+    },
+    AllocationNameSnapshot {
+        resource_name: "postgres",
+        allocation_name: "app-db",
+        generated_name: "acme_app_db",
+    },
+    AllocationNameSnapshot {
+        resource_name: "rustfs",
+        allocation_name: "uploads_bucket",
+        generated_name: "acme-uploads-bucket",
+    },
+]

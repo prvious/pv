@@ -1,0 +1,5 @@
+---
+source: crates/platform/tests/it/hooks.rs
+expression: error.to_string()
+---
+couldn't load your shell environment: timed out after 10 seconds
