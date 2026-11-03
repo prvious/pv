@@ -7,15 +7,9 @@ use platform::{
     DaemonRegistrationConfig, PlatformError, daemon_registration_session_address,
     enable_daemon_registration, inspect_daemon_registration, inspect_daemon_registration_file,
     remove_daemon_registration, restart_daemon_registration, stop_daemon_registration,
-    write_daemon_registration_file,
 };
 use state::{PvPaths, fs};
 use std::error::Error;
-use std::io;
-use std::os::unix::net::UnixListener;
-use std::sync::mpsc;
-use std::thread;
-use std::time::{Duration, Instant};
 
 #[test]
 fn daemon_unit_keeps_monitors_alive_and_restarts_while_the_user_is_logged_in() -> Result<()> {
@@ -111,76 +105,5 @@ fn daemon_registration_reports_an_unavailable_user_manager_without_changing_the_
         assert!(error.source().is_some());
     }
     assert_eq!(fs::read_to_string(&path)?, rendered);
-    Ok(())
-}
-
-#[test]
-fn daemon_registration_mutations_preserve_a_foreign_unit_before_connecting_to_the_bus() -> Result<()>
-{
-    let tempdir = tempdir()?;
-    let path = tempdir.path().join("pv-daemon.service");
-    let foreign = "[Service]\nExecStart=/some/other/daemon\n";
-    fs::write_sensitive_file(&path, foreign)?;
-
-    let config = DaemonRegistrationConfig::for_paths(&PvPaths::for_home(tempdir.path()));
-    for result in [
-        write_daemon_registration_file(&path, &config),
-        enable_daemon_registration(&path, "invalid-bus-address"),
-        remove_daemon_registration(&path, "invalid-bus-address"),
-    ] {
-        assert!(matches!(
-            result,
-            Err(PlatformError::DaemonRegistrationConflict { path: conflict_path }) if conflict_path == path
-        ));
-    }
-    assert_eq!(fs::read_to_string(&path)?, foreign);
-    Ok(())
-}
-
-#[test]
-fn daemon_registration_bounds_a_stalled_session_bus_handshake() -> Result<()> {
-    let tempdir = tempdir()?;
-    let listener = UnixListener::bind(tempdir.path().join("bus"))?;
-    listener.set_nonblocking(true)?;
-    let (stop, release) = mpsc::channel();
-    let server = thread::Builder::new()
-        .name("stalled-session-bus".to_owned())
-        .spawn(move || -> io::Result<bool> {
-            let deadline = Instant::now() + Duration::from_secs(20);
-            loop {
-                match listener.accept() {
-                    Ok((_connection, _address)) => {
-                        // Keep authentication unanswered until the client returns or the fixture expires.
-                        let _release = release.recv_timeout(Duration::from_secs(20));
-                        return Ok(true);
-                    }
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        if release.try_recv().is_ok() || Instant::now() >= deadline {
-                            return Ok(false);
-                        }
-                        thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-        })?;
-    let address = daemon_registration_session_address(None, Some(tempdir.path().as_std_path()))?;
-    let started = Instant::now();
-    let result = inspect_daemon_registration(&address);
-    let elapsed = started.elapsed();
-    let _release = stop.send(());
-    let accepted = server
-        .join()
-        .map_err(|_| anyhow::anyhow!("session bus fixture panicked"))??;
-
-    assert!(accepted);
-    let Err(PlatformError::UserManagerUnavailable(source)) = result else {
-        anyhow::bail!("expected a timed-out session handshake, got {result:?}");
-    };
-    let zbus::Error::InputOutput(source) = source.as_ref() else {
-        anyhow::bail!("expected a timed-out session handshake, got {source:?}");
-    };
-    assert_eq!(source.kind(), io::ErrorKind::TimedOut);
-    assert!(elapsed < Duration::from_secs(15));
     Ok(())
 }

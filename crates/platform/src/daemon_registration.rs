@@ -135,8 +135,6 @@ fn write_daemon_registration_file_for(
     config: &DaemonRegistrationConfig,
 ) -> Result<(), PlatformError> {
     require_capability_for(target, PlatformCapability::DaemonRegistration)?;
-    #[cfg(target_os = "linux")]
-    native::require_owned_file(path)?;
     state::fs::write_sensitive_file(path, &config.render()?).map_err(registration_file_error)
 }
 
@@ -184,11 +182,6 @@ fn registration_file_error(error: state::StateError) -> PlatformError {
 
     #[cfg(not(target_os = "linux"))]
     PlatformError::LaunchAgent(error.to_string())
-}
-
-#[cfg(target_os = "linux")]
-pub fn reload_daemon_registration(session_address: &str) -> Result<(), PlatformError> {
-    native::reload(session_address)
 }
 
 pub fn enable_daemon_registration(

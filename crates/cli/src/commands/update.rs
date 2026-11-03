@@ -206,8 +206,6 @@ fn normalize_daemon_registration(
             return Err(CliError::AppUpdateDaemonRegistrationUnreadable { message }.into());
         }
     };
-    #[cfg(target_os = "linux")]
-    environment.reload_daemon_registration()?;
     Ok(path)
 }
 

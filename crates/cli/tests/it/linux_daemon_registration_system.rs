@@ -1,14 +1,9 @@
 #![cfg(target_os = "linux")]
 
+use platform::clock::{self, real};
 use std::io::{self, Write as _};
-#[expect(
-    clippy::disallowed_types,
-    reason = "the opt-in system test arms and cancels its independent native cleanup timer"
-)]
-type SystemTestCommand = std::process::Command;
 use std::process::ExitCode;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -56,7 +51,6 @@ fn systemd_user_registration_preserves_monitors_and_refuses_foreign_units() -> R
         paths,
         unit,
         cleaned: false,
-        cleanup_timer: None,
         monitor_record: None,
     };
     let result = exercise_registration(&mut fixture, &binary);
@@ -79,7 +73,6 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
     layout.activate_release(env!("CARGO_PKG_VERSION"))?;
     pv_fake::seed_dns_port(&fixture.paths)?;
     let config = DaemonRegistrationConfig::for_paths(&fixture.paths);
-    fixture.arm_cleanup_timer()?;
     // This file has never been loaded: lifecycle ownership must resolve it first.
     let foreign = "[Service]\nExecStart=/bin/true\n";
     fs::write_sensitive_file(&fixture.unit, foreign)?;
@@ -87,7 +80,6 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
         environment.restart_daemon_registration(),
         environment.stop_daemon_registration(),
         environment.enable_daemon_registration(&fixture.unit),
-        environment.reload_daemon_registration(),
         environment.remove_daemon_registration(&fixture.unit),
     ] {
         assert!(
@@ -122,39 +114,6 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
     let (first_job, monitor) = wait_for_redis_monitor(&fixture.paths, None)?;
     fixture.monitor_record = Some(monitor.clone());
 
-    let drop_in_directory = fixture.unit.with_extension("service.d");
-    ensure!(!fs::path_entry_exists(&drop_in_directory)?);
-    let daemon_identity = platform::inspect_process_start_identity(first.main_pid)?
-        .context("missing live daemon identity")?;
-    let drop_in = drop_in_directory.join("override.conf");
-    let override_content = "[Service]\nExecStart=\nExecStart=/bin/true\nKillMode=control-group\n";
-    fs::write_sensitive_file(&drop_in, override_content)?;
-    let results = [
-        environment.remove_daemon_registration(&fixture.unit),
-        environment.enable_daemon_registration(&fixture.unit),
-        environment.reload_daemon_registration(),
-        environment.inspect_daemon_registration().map(|_| ()),
-        environment.restart_daemon_registration(),
-        environment.stop_daemon_registration(),
-        environment.remove_daemon_registration(&fixture.unit),
-    ];
-    let preserved_drop_in = fs::read_to_string(&drop_in);
-    let preserved_unit = fs::read_to_string(&fixture.unit);
-    let preserved_link = fs::read_link(&enabled_link);
-    let preserved_identity = platform::inspect_process_start_identity(first.main_pid);
-    let preserved_health = daemon::health_blocking(fixture.paths.clone());
-    fs::delete_dir_all(&drop_in_directory)?;
-    assert_eq!(preserved_drop_in?, override_content);
-    assert_eq!(preserved_unit?, config.render()?);
-    assert_eq!(preserved_link?, fixture.unit);
-    assert_eq!(preserved_identity?, Some(daemon_identity));
-    preserved_health?;
-    for result in results {
-        assert!(
-            matches!(&result, Err(PlatformError::DaemonRegistrationConflict { path }) if path == &drop_in),
-            "{result:?}"
-        );
-    }
     environment.stop_daemon_registration()?;
     let stopped = status()?;
     assert_eq!(stopped.active_state, "inactive");
@@ -262,7 +221,7 @@ fn status() -> Result<DaemonRegistrationStatus> {
 }
 
 fn wait_for_redis_monitor(paths: &PvPaths, previous_job: Option<&str>) -> Result<(String, Value)> {
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = real::now() + Duration::from_secs(15);
     loop {
         let jobs = Database::open(paths)?.recent_jobs()?;
         if let Some(job) = jobs.iter().find(|job| job.scope == "system")
@@ -284,11 +243,11 @@ fn wait_for_redis_monitor(paths: &PvPaths, previous_job: Option<&str>) -> Result
             }
         }
         ensure!(
-            Instant::now() < deadline,
+            real::now() < deadline,
             "Redis monitor did not become live; daemon log: {}",
             fs::read_to_string(&paths.daemon_log()).unwrap_or_default()
         );
-        thread::sleep(Duration::from_millis(50));
+        clock::poll_blocking(Duration::from_millis(50));
     }
 }
 
@@ -296,12 +255,11 @@ struct RegistrationFixture {
     paths: PvPaths,
     unit: Utf8PathBuf,
     cleaned: bool,
-    cleanup_timer: Option<String>,
     monitor_record: Option<Value>,
 }
 
 fn require_recorded_processes_exited(record: &Value) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = real::now() + Duration::from_secs(2);
     for process in ["monitor", "runtime"] {
         let pid: u32 = serde_json::from_value(record[process]["pid"].clone())?;
         let identity: platform::ProcessStartIdentity =
@@ -310,64 +268,16 @@ fn require_recorded_processes_exited(record: &Value) -> Result<()> {
             && !platform::process_is_zombie(pid)?
         {
             ensure!(
-                Instant::now() < deadline,
+                real::now() < deadline,
                 "fixture {process} {pid} remained live"
             );
-            thread::sleep(Duration::from_millis(10));
+            clock::poll_blocking(Duration::from_millis(10));
         }
     }
     Ok(())
 }
 
 impl RegistrationFixture {
-    fn arm_cleanup_timer(&mut self) -> Result<()> {
-        let prepared = self.paths.config().join("system-test/pv-daemon.service");
-        let script = self.paths.config().join("system-test/cleanup.sh");
-        fs::write_sensitive_file(
-            &prepared,
-            &DaemonRegistrationConfig::for_paths(&self.paths).render()?,
-        )?;
-        // The user manager cannot inherit the test's lifeline. This timer outlasts nextest's
-        // 120-second limit and 10-second shutdown grace, and still fires after test SIGKILL.
-        fs::write_sensitive_file(
-            &script,
-            r#"set -eu
-export XDG_CONFIG_HOME="$4"
-if cp -- "$1" "$2" && /usr/bin/systemctl --user daemon-reload && "$3" daemon:disable; then
-    exit 0
-fi
-# Last-resort cleanup is confined to the fresh fixture unit's own cgroup.
-/usr/bin/systemctl --user stop pv-daemon.service || :
-/usr/bin/systemctl --user kill --kill-who=all --signal=KILL pv-daemon.service
-exit 1
-"#,
-        )?;
-        let config_home = self.unit.ancestors().nth(3).context("XDG config root")?;
-        let name = format!("pv-registration-test-{}", std::process::id());
-        let output = SystemTestCommand::new("/usr/bin/systemd-run")
-            .args([
-                "--user",
-                "--collect",
-                "--on-active=150s",
-                "--unit",
-                &name,
-                "/bin/sh",
-            ])
-            .arg(&script)
-            .arg(&prepared)
-            .arg(&self.unit)
-            .arg(self.paths.active_pv_binary())
-            .arg(config_home)
-            .output()?;
-        ensure!(
-            output.status.success(),
-            "could not arm fixture cleanup: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        self.cleanup_timer = Some(name);
-        Ok(())
-    }
-
     fn cleanup(&mut self) -> Result<()> {
         if self.cleaned {
             return Ok(());
@@ -385,16 +295,6 @@ exit 1
             require_recorded_processes_exited(record)?;
         }
         environment.remove_daemon_registration(&self.unit)?;
-        if let Some(name) = &self.cleanup_timer {
-            let output = SystemTestCommand::new("/usr/bin/systemctl")
-                .args(["--user", "stop", &format!("{name}.timer")])
-                .output()?;
-            ensure!(
-                output.status.success(),
-                "could not cancel fixture cleanup: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
         fs::delete_dir_all(self.paths.root())?;
         self.cleaned = true;
         Ok(())

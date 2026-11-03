@@ -17,14 +17,13 @@ mod pf;
 mod port;
 mod process;
 mod resolver;
+#[cfg(target_os = "linux")]
+mod systemd;
 mod target;
 mod trust;
 
 #[cfg(target_os = "linux")]
 pub use process::inspect_process_comm;
-
-#[cfg(target_os = "linux")]
-pub use daemon_registration::reload_daemon_registration;
 
 pub use browser::open_url;
 pub use ca::{

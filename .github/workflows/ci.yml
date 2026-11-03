@@ -270,7 +270,7 @@ jobs:
         run: |
           cargo nextest run --profile ci --user-config-file "$RUNNER_TEMP/nextest-user.toml" \
             --run-ignored only -p cli -p daemon --all-features --locked \
-            -E 'binary(=linux_daemon_registration_system)'
+            -E 'test(/^linux_daemon_registration_system::/)'
 
       - name: Export Linux system test recording
         if: ${{ !cancelled() && steps.linux_system_tests.outcome != 'skipped' }}

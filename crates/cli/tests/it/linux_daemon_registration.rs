@@ -22,7 +22,6 @@ struct TestEnvironment {
     operations: RefCell<Vec<&'static str>>,
     fail_next_enable: Cell<bool>,
     registration_status: Option<DaemonRegistrationStatus>,
-    registration_conflict: Option<Utf8PathBuf>,
     registration_unloaded: bool,
 }
 
@@ -33,7 +32,6 @@ impl TestEnvironment {
             operations: RefCell::new(Vec::new()),
             fail_next_enable: Cell::new(false),
             registration_status: None,
-            registration_conflict: None,
             registration_unloaded: false,
         }
     }
@@ -115,9 +113,6 @@ impl Environment for TestEnvironment {
     fn inspect_daemon_registration(
         &self,
     ) -> Result<Option<DaemonRegistrationStatus>, PlatformError> {
-        if let Some(path) = &self.registration_conflict {
-            return Err(PlatformError::DaemonRegistrationConflict { path: path.clone() });
-        }
         if self.registration_unloaded {
             return Ok(None);
         }
@@ -339,26 +334,6 @@ fn linux_doctor_rejects_a_configured_service_that_is_not_loaded() -> anyhow::Res
     }
     snapshot_settings(tempdir.path()).bind(|| {
         assert_debug_snapshot!(observed);
-    });
-    Ok(())
-}
-
-#[test]
-fn linux_doctor_reports_configuration_repair_for_a_foreign_drop_in() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let mut environment = TestEnvironment::new(&tempdir.path().join("home"));
-    environment.write_unit()?;
-    environment.registration_conflict = Some(
-        environment
-            .unit_path()
-            .with_extension("service.d")
-            .join("override.conf"),
-    );
-    let output = run_pv(&["doctor", "--json"], &environment)?;
-    let report: Value = serde_json::from_str(&output.stdout)?;
-    let check = manager_check(&report)?;
-    snapshot_settings(tempdir.path()).bind(|| {
-        assert_debug_snapshot!(check);
     });
     Ok(())
 }

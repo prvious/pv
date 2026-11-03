@@ -274,12 +274,8 @@ environment intact:
 cargo build --locked -p pv -p daemon --examples --bins
 PV_LINUX_SYSTEM_TESTS=1 PV_LINUX_SYSTEM_PV="$PWD/target/debug/pv" \
   cargo nextest run --profile ci --locked -p cli -p daemon --run-ignored only \
-  -E 'test(=systemd_user_registration_preserves_monitors_and_refuses_foreign_units)'
+  -E 'test(/^linux_daemon_registration_system::/)'
 ```
-
-This test installs its own real daemon and a fake Redis runtime. A test-only
-150-second user timer stops them if the test is killed; successful cleanup
-cancels it. The ordinary workspace suite compiles this test but leaves it ignored.
 
 ## Crate structure
 
