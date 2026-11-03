@@ -80,6 +80,7 @@ where
         Command::CaTrust => ca::trust(environment, streams),
         Command::CaUntrust => ca::untrust(environment, streams),
         Command::Link(args) => project::link(args, environment, streams, runtime_lifecycle_lock),
+        Command::HooksTrust => project::trust_hooks(environment, streams),
         Command::Init(args) => init::run(args, environment, streams),
         Command::Unlink(args) => project::unlink(args, environment, streams),
         Command::Open(args) => project::open(args, environment, streams),
@@ -221,6 +222,7 @@ fn required_capability(command: &Command) -> Option<PlatformCapability> {
         // filesystem boundary. They do not require a host-integration capability here.
         Command::Env(_)
         | Command::Completions(_)
+        | Command::HooksTrust
         | Command::Init(_)
         | Command::ProjectEnv(_)
         | Command::Logs(_)
@@ -304,6 +306,7 @@ fn command_blocked_during_update(command: &Command) -> bool {
                 | Command::CaTrust
                 | Command::CaUntrust
                 | Command::Link(_)
+                | Command::HooksTrust
                 | Command::Unlink(_)
                 | Command::PhpUse(_)
                 | Command::PhpInstall(_)

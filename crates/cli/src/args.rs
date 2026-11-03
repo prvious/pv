@@ -113,6 +113,12 @@ pub(crate) enum Command {
     #[command(name = "link", about = "Link a Project")]
     Link(LinkArgs),
 
+    #[command(
+        name = "hooks:trust",
+        about = "Approve Project hook commands without running them"
+    )]
+    HooksTrust,
+
     #[command(name = "init", about = "Initialize Project config")]
     Init(InitArgs),
 

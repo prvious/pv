@@ -253,6 +253,77 @@ fn daemon_run_is_hidden_from_top_level_help() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn hooks_trust_without_a_terminal_never_approves_or_links() -> Result<()> {
+    let directory = tempdir()?;
+    let project = directory.path().join("acme");
+    let home = directory.path().join("home");
+    create_dir(&project)?;
+    write_file(
+        &project.join("pv.yml"),
+        "serve: false\nhooks:\n  prepare:\n    - touch prepared\n  setup:\n    - touch set-up\n",
+    )?;
+    let output = run_pv_in_dir_with_home(&["hooks:trust"], &project, &home)?;
+    assert_eq!(output.code, Some(0));
+    let database = Database::open(&PvPaths::for_home(&home))?;
+    let folder = state::fs::canonicalize(&project)?;
+    let commands = vec!["touch prepared".to_owned(), "touch set-up".to_owned()];
+    assert_eq!(
+        database.unapproved_hook_commands(&folder, &commands)?,
+        commands
+    );
+    assert!(database.projects()?.is_empty());
+    assert!(database.recent_jobs()?.is_empty());
+    assert!(!project.join("prepared").exists());
+    assert!(!project.join("set-up").exists());
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(directory.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| assert_debug_snapshot!(output));
+    Ok(())
+}
+
+#[test]
+fn hooks_trust_validates_config_and_handles_empty_hooks() -> Result<()> {
+    let directory = tempdir()?;
+    let project = directory.path().join("acme");
+    let home = directory.path().join("home");
+    create_dir(&project)?;
+    let missing = run_pv_in_dir_with_home(&["hooks:trust"], &project, &home)?;
+    write_file(&project.join("pv.yml"), "serve: false\nhooks: invalid\n")?;
+    let invalid = run_pv_in_dir_with_home(&["hooks:trust"], &project, &home)?;
+    write_file(&project.join("pv.yml"), "serve: false\n")?;
+    let empty = run_pv_in_dir_with_home(&["hooks:trust"], &project, &home)?;
+    let automatic = run_pv_in_dir_with_home(&["hooks:trust", "--yes"], &project, &home)?;
+    assert_eq!(missing.code, Some(0));
+    assert_eq!(invalid.code, Some(1));
+    assert_eq!(empty.code, Some(0));
+    assert_eq!(automatic.code, Some(2));
+    assert!(!PvPaths::for_home(&home).db().exists());
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(directory.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| assert_debug_snapshot!((missing, invalid, empty, automatic)));
+    Ok(())
+}
+
+#[test]
+fn hooks_trust_refuses_an_active_update() -> Result<()> {
+    let directory = tempdir()?;
+    let project = directory.path().join("acme");
+    let home = directory.path().join("home");
+    create_dir(&project)?;
+    write_file(&project.join("pv.yml"), "serve: false\n")?;
+    let _lock = UpdateLock::acquire(&PvPaths::for_home(&home))?;
+    let output = run_pv_in_dir_with_home(&["hooks:trust"], &project, &home)?;
+    assert_eq!(output.code, Some(1));
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(directory.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| assert_debug_snapshot!(output));
+    Ok(())
+}
+
 #[cfg(target_os = "macos")]
 #[tokio::test]
 async fn hidden_monitor_commands_run_a_runtime_until_released() -> Result<()> {

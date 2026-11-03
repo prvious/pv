@@ -91,6 +91,14 @@ pv link ~/Code/acme --hostname acme.test
 
 `pv link` records desired Project state and requests daemon reconciliation. It can run before setup, but the Project is not reachable until setup completes.
 
+When you add or edit `hooks.prepare` or `hooks.setup` commands in `pv.yml`, review them without re-linking:
+
+```shell
+pv hooks:trust
+```
+
+Run it from the Project directory. It shows unapproved commands and asks once, defaulting to No, just like `pv link`. Yes remembers approval for each exact command; it does not run hooks, link the Project, or request reconciliation. Worktrees share the main checkout's approvals for the same Project folder. It needs no running daemon or existing link. Without an interactive terminal it warns and saves no new approvals; there is no `--yes` flag. Empty or already-approved hook lists need no prompt. Run `pv link` when you want to execute the hooks; trusting them alone does not retry previously skipped runs. Normal background worktree discovery can use the approvals for future hook runs.
+
 Every one-label subdomain of a served Project's hostname reaches the same Project over HTTPS, so `https://tenant.acme.test` is served by `acme.test`. Deeper names such as `v1.tenant.acme.test` are not. To send a subdomain to a different Project, link that Project with the exact hostname, such as `pv link ~/Code/api --hostname api.acme.test`. While that Project is served, its exact hostname always wins, and it gets its own subdomains. While it is resource-only (`serve: false`), the parent answers that hostname.
 
 Open a linked Project:

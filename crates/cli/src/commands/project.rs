@@ -52,7 +52,13 @@ pub(crate) fn link(
             &project_path,
             environment,
             streams,
+            "Run them and remember the approval?",
         )?;
+        if !hooks_enabled {
+            streams.err.warning(
+                "Hooks skipped because they aren't approved; run `pv hooks:trust` here in a terminal to review them",
+            )?;
+        }
     }
     let source_path = match &existing {
         Some(project) => discovered_source_path(&database, project)?,
@@ -191,14 +197,49 @@ pub(crate) fn link(
     Ok(ExitCode::SUCCESS)
 }
 
-/// Hooks run only when every command is approved for the Project's folder. Approving needs a
-/// terminal; without one, or when the user declines, the Project is linked without hooks.
+pub(crate) fn trust_hooks(
+    environment: &impl Environment,
+    streams: &mut Streams<'_>,
+) -> Result<ExitCode, ExecuteError> {
+    let project_path = resolve_project_path(None, environment)?;
+    let config_file = ProjectConfigFile::read_from_root(&project_path)?;
+    config::validate_project_env_shape(&config_file.config)?;
+    if config_file.config.hooks.is_empty() {
+        streams
+            .out
+            .status(Mark::Idle, "No Project hook commands to approve")?;
+        return Ok(ExitCode::SUCCESS);
+    }
+    let project_path = project_root_from_config_path(&config_file.path)?;
+    let mut database = Database::open(&pv_paths(environment)?)?;
+    if approve_hooks(
+        &mut database,
+        &config_file.config.hooks,
+        &project_path,
+        environment,
+        streams,
+        "Remember the approval without running hooks?",
+    )? {
+        streams.out.status(
+            Mark::Success,
+            "All Project hook commands are approved; no hooks were run",
+        )?;
+    } else {
+        streams.err.warning(
+            "Hook approval skipped; run `pv hooks:trust` here in a terminal to review the commands",
+        )?;
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Both linking and trust-only review use exact commands and the same default-No prompt.
 fn approve_hooks(
     database: &mut Database,
     hooks: &ProjectHooks,
     project_path: &Utf8Path,
     environment: &impl Environment,
     streams: &mut Streams<'_>,
+    question: &str,
 ) -> Result<bool, ExecuteError> {
     let folder = daemon::hook_approval_folder(project_path);
     let commands = hooks
@@ -229,21 +270,10 @@ fn approve_hooks(
                 .value(visible(command)),
         )?;
     }
-    if streams.interactive
-        && prompt::confirm(
-            environment,
-            &streams.out,
-            "Run them and remember the approval?",
-            false,
-        )?
-    {
+    if streams.interactive && prompt::confirm(environment, &streams.out, question, false)? {
         database.approve_hook_commands(&folder, &unapproved)?;
         return Ok(true);
     }
-    streams.err.warning(
-        "Hooks skipped because they aren't approved; run `pv link` here in a terminal to review them",
-    )?;
-
     Ok(false)
 }
 

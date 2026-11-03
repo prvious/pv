@@ -462,7 +462,7 @@ fn apply_change(
                     "hooks",
                     &format!("project:{}", linked.id),
                     Ok(&format!(
-                        "prepare skipped: hook commands aren't approved; run `pv link` in {skipped_path} to review them"
+                        "prepare skipped: hook commands aren't approved; run `pv hooks:trust` in {skipped_path} to review them"
                     )),
                     &[],
                 )?;
