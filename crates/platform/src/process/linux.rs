@@ -252,7 +252,6 @@ fn inspection_error(source: impl std::error::Error + Send + Sync + 'static) -> P
 mod tests {
     use std::io::Write as _;
     use std::process::{Child, Stdio};
-    use std::thread;
     use std::time::Duration;
 
     use anyhow::{Result, anyhow};
@@ -262,6 +261,7 @@ mod tests {
     use state::fs;
 
     use super::inspect_identity;
+    use crate::clock;
 
     #[expect(
         clippy::disallowed_types,
@@ -287,7 +287,7 @@ mod tests {
                     if process.exe()? == expected.as_std_path() {
                         return Ok(());
                     }
-                    thread::sleep(Duration::from_millis(10));
+                    clock::poll_blocking(Duration::from_millis(10));
                 }
                 return Err(ProcError::Other("child never exec'd sleep".to_owned()));
             }

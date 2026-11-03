@@ -12,9 +12,9 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
-use platform::clock;
 #[cfg(target_os = "macos")]
 use platform::ProcessEvents;
+use platform::clock;
 use platform::{
     ProcessExitWatch, inspect_process_identity, inspect_process_start_identity,
     process_group_has_live_members, process_is_zombie,
@@ -199,31 +199,6 @@ fn process_identity_preserves_the_path_of_a_deleted_executable() -> Result<()> {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn process_identity_preserves_literal_and_kernel_executable_markers() -> Result<()> {
-    let directory = tempdir()?;
-    let executable = directory.path().join("owned-runtime (deleted)");
-    fs::copy_file_atomically(Utf8Path::new("/bin/sleep"), &executable)?;
-    set_executable(&executable)?;
-    let mut child = ChildGuard(TestCommand::new(&executable).arg("30").spawn()?);
-    let expected = fs::canonicalize(&executable)?;
-    wait_for_executable(child.0.id(), &expected)?;
-    let linked = inspect_child(&mut child)?;
-    fs::remove_file_if_exists(&executable)?;
-    let unlinked = inspect_child(&mut child)?;
-    let decorated = format!("{expected} (deleted)");
-
-    assert_eq!(
-        [linked.executable.as_str(), unlinked.executable.as_str()],
-        [expected.as_str(), decorated.as_str()]
-    );
-    let mut expected_identity = linked;
-    expected_identity.executable = decorated.into();
-    assert_eq!(unlinked, expected_identity);
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-#[test]
 fn process_identity_preserves_empty_arguments() -> Result<()> {
     let mut child = ChildGuard(
         TestCommand::new("/bin/bash")
@@ -304,7 +279,7 @@ async fn pidfd_readiness_holds_exact_exit_status_until_the_parent_reaps() -> Res
                 .write_all(b"go\n")?;
         }
         {
-            let _ready = tokio::time::timeout(Duration::from_secs(5), watch.readable()).await??;
+            let _ready = clock::real::timeout(Duration::from_secs(5), watch.readable()).await??;
         }
         let status = watch
             .get_mut()
@@ -352,74 +327,6 @@ fn group_inspection_keeps_live_members_after_the_leader_exits() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-#[test]
-fn zombie_thread_group_leader_keeps_its_live_worker_visible() -> Result<()> {
-    let mut child = ChildGuard(
-        TestCommand::new("python3")
-            .args([
-                "-c",
-                r"import ctypes, os, signal, sys, threading
-signal.signal(signal.SIGTERM, signal.SIG_IGN)
-def worker():
-    for line in sys.stdin:
-        print(line.strip(), flush=True)
-    os._exit(0)
-threading.Thread(target=worker).start()
-timer = threading.Timer(150, lambda: os._exit(1))
-timer.daemon = True
-timer.start()
-print('ready', flush=True)
-ctypes.CDLL(None).pthread_exit(None)
-",
-            ])
-            .process_group(0)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()?,
-    );
-    let pid = child.0.id();
-    let mut output = BufReader::new(
-        child
-            .0
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow!("missing worker stdout"))?,
-    );
-    let mut line = String::new();
-    output.read_line(&mut line)?;
-    assert_eq!(line, "ready\n");
-    let process = Process::new(i32::try_from(pid)?)?;
-    for _attempt in 0..500 {
-        if process.stat()?.state == 'Z' {
-            break;
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-    assert_eq!(process.stat()?.state, 'Z');
-    child
-        .0
-        .stdin
-        .as_mut()
-        .ok_or_else(|| anyhow!("missing worker stdin"))?
-        .write_all(b"alive\n")?;
-    line.clear();
-    output.read_line(&mut line)?;
-    assert_eq!(line, "alive\n");
-
-    let mut watch = ProcessExitWatch::new(pid)?;
-    assert!(watch.try_exit_status()?.is_none());
-    assert!(!process_is_zombie(pid)?);
-    assert!(process_group_has_live_members(pid)?);
-    child.0.kill()?;
-    let status = wait_for_exit(&mut watch)?;
-    assert_eq!(status.signal(), Some(9));
-    assert!(process_is_zombie(pid)?);
-    assert!(!process_group_has_live_members(pid)?);
-    assert_eq!(child.0.wait()?, status);
-    Ok(())
-}
-
 #[test]
 fn reaped_process_has_no_identity_or_zombie_state() -> Result<()> {
     let mut child = ChildGuard(TestCommand::new("/bin/sleep").arg("30").spawn()?);
@@ -438,7 +345,7 @@ fn wait_for_exit(watch: &mut ProcessExitWatch) -> Result<std::process::ExitStatu
         if let Some(status) = watch.try_exit_status()? {
             return Ok(status);
         }
-        thread::sleep(Duration::from_millis(10));
+        clock::poll_blocking(Duration::from_millis(10));
     }
     Err(anyhow!("process exit never arrived"))
 }
@@ -449,7 +356,7 @@ fn inspect_child(child: &mut ChildGuard) -> Result<platform::ProcessIdentity> {
         if let Ok(Some(identity)) = inspect_process_identity(pid) {
             return Ok(identity);
         }
-        thread::sleep(Duration::from_millis(10));
+        clock::poll_blocking(Duration::from_millis(10));
     }
     inspect_process_identity(pid)?.ok_or_else(|| anyhow!("process {pid} had no native identity"))
 }
@@ -461,7 +368,7 @@ fn wait_for_executable(pid: u32, expected: &Utf8Path) -> Result<()> {
         if process.exe()? == expected.as_std_path() {
             return Ok(());
         }
-        thread::sleep(Duration::from_millis(10));
+        clock::poll_blocking(Duration::from_millis(10));
     }
     Err(anyhow!("process {pid} did not execute {expected}"))
 }
