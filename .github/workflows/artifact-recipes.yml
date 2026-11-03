@@ -7,6 +7,10 @@ on:
         description: "Skip builds and run Linux acceptance using this completed recipe run"
         required: false
         type: string
+      acceptance_composer_run_id:
+        description: "Completed explicit Composer any build for Linux acceptance"
+        required: false
+        type: string
       resource:
         description: "Resource to build: all, php, composer, redis, mysql, postgres, mailpit, rustfs, caddy"
         required: true
@@ -53,6 +57,7 @@ jobs:
     uses: ./.github/workflows/linux-acceptance.yml
     with:
       source_run_id: ${{ inputs.acceptance_source_run_id }}
+      composer_run_id: ${{ inputs.acceptance_composer_run_id }}
 
   validate:
     name: validate

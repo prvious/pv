@@ -1,5 +1,4 @@
-#[path = "it/real_artifact_client.rs"]
-mod real_artifact_client;
+use super::real_artifact_client;
 
 use anyhow::{Result, anyhow, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -30,7 +29,7 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
     pv_fake::install_monitor(&paths)?;
     let commands =
         ManagedResourceCommands::new(paths.clone(), manifest_url, TargetPlatform::current()?);
-    let client = real_artifact_client::RealArtifactClient::from_env()?;
+    let client = real_artifact_client::RealArtifactClient::from_env();
 
     commands.install(&caddy_adapter()?, TrackSelector::Latest, &client)?;
     let php_install = commands.install(&php_adapter()?, TrackSelector::Latest, &client)?;
@@ -83,8 +82,6 @@ async fn verify_wildcard_routing(
     // Project's fragment Caddy imports first.
     for (laravel, api) in [("parent", "child"), ("child", "parent")] {
         if laravel == "child" {
-            // Each fragment ordering gets its own cold start.
-            daemon::stop_recorded_runtimes(paths.clone()).await?;
             let mut database = Database::open(paths)?;
             link_project(&mut database, parent, "swap.test")?;
             link_project(&mut database, child, "laravel.test")?;

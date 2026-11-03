@@ -6,10 +6,17 @@ on:
       source_run_id:
         required: true
         type: string
+      composer_run_id:
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       source_run_id:
         description: Completed Artifact Recipes run containing Linux resource outputs
+        required: true
+        type: string
+      composer_run_id:
+        description: Completed Composer build with resource=composer and platform=any
         required: true
         type: string
   schedule:
@@ -24,6 +31,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       run_id: ${{ steps.source.outputs.run_id }}
+      composer_run_id: ${{ steps.source.outputs.composer_run_id }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
@@ -33,30 +41,36 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          COMPOSER_RUN_ID: ${{ inputs.composer_run_id }}
         run: |
           set -euo pipefail
           source_run_id="$SOURCE_RUN_ID"
-          if [ -z "$source_run_id" ]; then
+          composer_run_id="$COMPOSER_RUN_ID"
+          if [ -z "$source_run_id" ] || [ -z "$composer_run_id" ]; then
             for candidate in $(gh run list --workflow artifact-recipes.yml --limit 30 --json databaseId,status,conclusion --jq '.[] | select(.status == "completed" and .conclusion == "success") | .databaseId'); do
               names=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$candidate/artifacts" --jq '.artifacts[] | select(.expired == false) | .name')
-              complete=true
-              for identity in php-8.3 php-8.4 php-8.5 mysql-8.0 mysql-8.4 mysql-9.7 \
-                postgres-17 postgres-18 redis-8.8 caddy-2 mailpit-1 rustfs-1; do
-                for cpu in amd64 arm64; do
-                  [[ "$names" == *"pv-artifact-recipes-$identity-linux-$cpu-"* ]] || complete=false
-                done
-              done
-              [[ "$names" == *pv-artifact-recipes-composer-2-linux-amd64-* ]] || complete=false
-              if [ "$complete" = true ]; then
-                source_run_id=$candidate
-                break
+              if [ -z "$composer_run_id" ] && [[ "$names" == *pv-artifact-recipes-composer-2-any-* ]]; then
+                composer_run_id=$candidate
               fi
+              if [ -z "$source_run_id" ]; then
+                complete=true
+                for identity in php-8.3 php-8.4 php-8.5 mysql-8.0 mysql-8.4 mysql-9.7 \
+                  postgres-17 postgres-18 redis-8.8 caddy-2 mailpit-1 rustfs-1; do
+                  for cpu in amd64 arm64; do
+                    [[ "$names" == *"pv-artifact-recipes-$identity-linux-$cpu-"* ]] || complete=false
+                  done
+                done
+                if [ "$complete" = true ]; then source_run_id=$candidate; fi
+              fi
+              if [ -n "$source_run_id" ] && [ -n "$composer_run_id" ]; then break; fi
             done
           fi
-          [[ "$source_run_id" =~ ^[0-9]+$ ]] || { echo 'No Linux recipe run is available'; exit 1; }
-          gh run view "$source_run_id" --json workflowName,status,conclusion --jq \
-            'select(.workflowName == "Artifact Recipes" and .status == "completed" and .conclusion == "success")' | grep -q .
-          printf 'run_id=%s\n' "$source_run_id" >> "$GITHUB_OUTPUT"
+          for run_id in "$source_run_id" "$composer_run_id"; do
+            [[ "$run_id" =~ ^[0-9]+$ ]] || { echo 'No complete recipe inputs are available'; exit 1; }
+            gh run view "$run_id" --json workflowName,status,conclusion --jq \
+              'select(.workflowName == "Artifact Recipes" and .status == "completed" and .conclusion == "success")' | grep -q .
+          done
+          printf 'run_id=%s\ncomposer_run_id=%s\n' "$source_run_id" "$composer_run_id" >> "$GITHUB_OUTPUT"
 
   app:
     needs: source
@@ -145,16 +159,15 @@ jobs:
         with:
           github-token: ${{ github.token }}
           run-id: ${{ needs.source.outputs.run_id }}
-          pattern: pv-artifact-recipes-*-linux-${{ matrix.cpu }}-*
+          pattern: pv-artifact-recipes-{php,mysql,postgres,redis,caddy,mailpit,rustfs}-*-linux-${{ matrix.cpu }}-*
           merge-multiple: true
           path: ${{ runner.temp }}/inputs
-      - name: Download portable Composer for ARM64
-        if: ${{ matrix.cpu == 'arm64' }}
+      - name: Download portable Composer
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           github-token: ${{ github.token }}
-          run-id: ${{ needs.source.outputs.run_id }}
-          pattern: pv-artifact-recipes-composer-*-linux-amd64-*
+          run-id: ${{ needs.source.outputs.composer_run_id }}
+          pattern: pv-artifact-recipes-composer-2-any-*
           merge-multiple: true
           path: ${{ runner.temp }}/inputs
       - name: Prepare test files

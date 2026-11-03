@@ -24,7 +24,7 @@ Per-project versions are supported too — add a pv.yml file with php: "8.4" in 
 
 ## Platform Scope
 
-PV v1 supports macOS 14 and newer and the Linux distribution/CPU pairs below.
+PV v1 supports macOS 14 and newer and the Linux distribution/CPU pairs below. Stabilizing the macOS application remains the immediate product priority.
 
 | Linux distribution | Supported CPUs |
 | --- | --- |
@@ -48,9 +48,6 @@ and NSS certutil. Setup reports missing prerequisites with repair guidance;
 PV does not install system packages. musl, non-systemd hosts, WSL and containers
 as installed PV hosts are unsupported. Disposable acceptance containers are
 test infrastructure.
-
-Linux's robustness bar is parity with macOS main. It does not add CA history,
-extra durability barriers or interruption guarantees beyond the macOS code.
 
 macOS 13 may continue to run PV when the application and Managed Resource binaries remain compatible, but it is untested and unsupported. Dropping support does not by itself require raising binary deployment targets or republishing otherwise compatible Managed Resource artifacts. Before PV deliberately ships an application binary that cannot run on macOS 13, the application update manifest and updater must prevent an incompatible update from being activated there.
 

@@ -27,8 +27,14 @@ impl LinuxDistribution {
                 .lines()
                 .filter_map(|line| line.strip_prefix(prefix))
                 .next_back()?;
-            let name = value.strip_prefix('"').and_then(|value| value.strip_suffix('"'))
-                .or_else(|| value.strip_prefix('\'').and_then(|value| value.strip_suffix('\'')))
+            let name = value
+                .strip_prefix('"')
+                .and_then(|value| value.strip_suffix('"'))
+                .or_else(|| {
+                    value
+                        .strip_prefix('\'')
+                        .and_then(|value| value.strip_suffix('\''))
+                })
                 .unwrap_or(value);
             (!name.is_empty() && !name.chars().any(char::is_control)).then(|| name.to_owned())
         };

@@ -56,7 +56,6 @@ fn linux_acceptance_selects_complete_inputs_instead_of_a_newer_partial_build() -
             names.push(format!("pv-artifact-recipes-{identity}-linux-{cpu}-1"));
         }
     }
-    names.push("pv-artifact-recipes-composer-2-linux-amd64-1".to_owned());
     let backend = r#"gh() {
     if [ "$1 $2" = "run list" ]; then
         printf '2\n1\n'
@@ -89,6 +88,7 @@ fn linux_acceptance_selects_complete_inputs_instead_of_a_newer_partial_build() -
             ("PATH", "/usr/bin:/bin"),
             ("GITHUB_REPOSITORY", "prvious/pv"),
             ("SOURCE_RUN_ID", ""),
+            ("COMPOSER_RUN_ID", "3"),
             ("GITHUB_OUTPUT", "/dev/stdout"),
         ])
         .env("COMPLETE_ARTIFACT_NAMES", names.join("\n"))
@@ -97,7 +97,7 @@ fn linux_acceptance_selects_complete_inputs_instead_of_a_newer_partial_build() -
         output.status.success(),
         "source selection failed: {output:?}"
     );
-    assert_snapshot!(String::from_utf8(output.stdout)?, @"run_id=1");
+    assert_snapshot!(String::from_utf8(output.stdout)?, @"run_id=1\ncomposer_run_id=3");
     Ok(())
 }
 
@@ -872,7 +872,7 @@ fn real_artifact_e2e_runs_gateway_and_resource_matrix_for_manifest_input() -> Re
         input_default(&workflow, "platform").unwrap_or(""),
         workflow.contains("      platform:\n        description: Native platform for resource tests\n        required: false\n"),
         workflow.contains("        options:\n          - darwin-arm64\n          - darwin-amd64\n          - linux-amd64\n          - linux-arm64\n"),
-        workflow.contains("runs-on: ${{ fromJSON('{\"darwin-arm64\":\"macos-14\",\"darwin-amd64\":\"macos-15-intel\",\"linux-amd64\":\"ubuntu-24.04\",\"linux-arm64\":\"ubuntu-24.04-arm\"}')[inputs.platform] }}"),
+        workflow.contains("runs-on: ${{ fromJSON('{\"darwin-arm64\":\"macos-15\",\"darwin-amd64\":\"macos-15-intel\",\"linux-amd64\":\"ubuntu-24.04\",\"linux-arm64\":\"ubuntu-24.04-arm\"}')[inputs.platform] }}"),
         workflow.contains("app_update_manifest_url:") && workflow.contains("required: false"),
         workflow.contains("installer_url:") && workflow.contains("required: false"),
         workflow.contains("privileged_rc:")

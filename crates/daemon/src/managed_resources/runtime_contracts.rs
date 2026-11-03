@@ -4,7 +4,7 @@
 //! the grace period. Each contract runs against a `pv-fake` persona, and against the real artifact
 //! when `PV_E2E_REAL_ARTIFACTS=1`, so the fakes can't drift from what PV depends on.
 
-#[path = "../../tests/it/real_artifact_client.rs"]
+#[path = "../../tests/it/support/real_artifact_client.rs"]
 mod real_artifact_client;
 
 use std::collections::BTreeMap;
@@ -869,7 +869,7 @@ fn install_real_artifact(
     Ok(commands.install(
         adapter,
         TrackSelector::Latest,
-        &real_artifact_client::RealArtifactClient::from_env()?,
+        &real_artifact_client::RealArtifactClient::from_env(),
     )?)
 }
 

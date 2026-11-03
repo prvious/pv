@@ -1,5 +1,4 @@
-#[path = "it/real_artifact_client.rs"]
-mod real_artifact_client;
+use super::real_artifact_client;
 
 use std::future::Future;
 use std::time::Duration;
@@ -93,7 +92,7 @@ async fn real_artifact_manifest_contains_setup_defaults_for_current_platform() -
     };
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let client = real_artifact_client::RealArtifactClient::from_env()?;
+    let client = real_artifact_client::RealArtifactClient::from_env();
     let manifest = ArtifactManifestCache::new(paths.downloads())
         .refresh_latest(&manifest_url, &client)?
         .into_manifest();
@@ -129,7 +128,7 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     pv_fake::install_monitor(&paths)?;
-    let client = real_artifact_client::RealArtifactClient::from_env()?;
+    let client = real_artifact_client::RealArtifactClient::from_env();
     let commands =
         ManagedResourceCommands::new(paths.clone(), manifest_url, TargetPlatform::current()?);
 
