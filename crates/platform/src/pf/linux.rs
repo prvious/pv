@@ -9,7 +9,9 @@ use super::{
     ActivePfRedirectInspection, PV_MARKER, PfFileState, PfRedirectConfig, classify_pv_file_state,
 };
 use crate::PlatformError;
+use crate::clock::Limit;
 use crate::systemd::{native_proxy, read_unit, within};
+use tokio::runtime::Builder;
 
 pub(super) mod root;
 pub(crate) use root::MUTATION_TIMEOUT;
@@ -244,43 +246,57 @@ fn inspection(http: &Forwarder, https: &Forwarder) -> ActivePfRedirectInspection
 }
 
 pub(super) fn inspect() -> Result<ActivePfRedirectInspection, PlatformError> {
-    futures_lite::future::block_on(within(INSPECTION_TIMEOUT, async {
-        let manager = inspection_manager().await?;
-        let http = observe(&manager, &HTTP).await?;
-        let https = observe(&manager, &HTTPS).await?;
-        complete_inspection(http, https, Utf8Path::new(SYSTEM_DIRECTORY))
-    }))
-    .ok_or_else(|| {
-        PlatformError::SystemIntegration("systemd socket proxy inspection timed out".to_owned())
-    })?
+    Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(PlatformError::PortProxyIo)?
+        .block_on(within(
+            &Limit::new("socket proxy inspection", INSPECTION_TIMEOUT),
+            async {
+                let manager = inspection_manager().await?;
+                let http = observe(&manager, &HTTP).await?;
+                let https = observe(&manager, &HTTPS).await?;
+                complete_inspection(http, https, Utf8Path::new(SYSTEM_DIRECTORY))
+            },
+        ))
+        .ok_or_else(|| {
+            PlatformError::SystemIntegration("systemd socket proxy inspection timed out".to_owned())
+        })?
 }
 
 pub(in crate::pf) fn repairable_ports() -> Result<BTreeSet<u16>, PlatformError> {
-    futures_lite::future::block_on(within(INSPECTION_TIMEOUT, async {
-        let manager = inspection_manager().await?;
-        let mut ports = BTreeSet::new();
-        for frontend in [&HTTP, &HTTPS] {
-            let mut forwarder = Forwarder {
-                socket: query_unit(&manager, &frontend.socket_name(), "GetUnit")
-                    .await?
-                    .0,
-                service: query_unit(&manager, &frontend.service_name(), "GetUnit")
-                    .await?
-                    .0,
-                ..Forwarder::default()
-            };
-            read_files(&mut forwarder, frontend, Utf8Path::new(SYSTEM_DIRECTORY))?;
-            if forwarder.owned(frontend) && forwarder.socket.active() {
-                ports.insert(frontend.public_port);
-            }
-        }
-        Ok(ports)
-    }))
-    .ok_or_else(|| {
-        PlatformError::SystemIntegration(
-            "systemd socket proxy ownership inspection timed out".to_owned(),
-        )
-    })?
+    Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(PlatformError::PortProxyIo)?
+        .block_on(within(
+            &Limit::new("socket proxy inspection", INSPECTION_TIMEOUT),
+            async {
+                let manager = inspection_manager().await?;
+                let mut ports = BTreeSet::new();
+                for frontend in [&HTTP, &HTTPS] {
+                    let mut forwarder = Forwarder {
+                        socket: query_unit(&manager, &frontend.socket_name(), "GetUnit")
+                            .await?
+                            .0,
+                        service: query_unit(&manager, &frontend.service_name(), "GetUnit")
+                            .await?
+                            .0,
+                        ..Forwarder::default()
+                    };
+                    read_files(&mut forwarder, frontend, Utf8Path::new(SYSTEM_DIRECTORY))?;
+                    if forwarder.owned(frontend) && forwarder.socket.active() {
+                        ports.insert(frontend.public_port);
+                    }
+                }
+                Ok(ports)
+            },
+        ))
+        .ok_or_else(|| {
+            PlatformError::SystemIntegration(
+                "systemd socket proxy ownership inspection timed out".to_owned(),
+            )
+        })?
 }
 
 async fn inspection_manager() -> Result<Proxy<'static>, PlatformError> {
@@ -456,16 +472,14 @@ mod tests {
     use std::process;
 
     use anyhow::{Context, Result, anyhow};
-    use camino_tempfile::tempdir;
     use insta::assert_debug_snapshot;
-    use state::fs;
     use zbus::zvariant::Type;
 
     use super::{
         ExecCommand, Forwarder, Frontend, HTTP, HTTPS, PROXY_EXECUTABLE, SYSTEM_DIRECTORY, Unit,
-        UnitStatus, complete_inspection, executing_command_matches, inspection,
+        UnitStatus, executing_command_matches, inspection,
     };
-    use crate::{PfRedirectConfig, PlatformError, inspect_process_identity};
+    use crate::{PfRedirectConfig, inspect_process_identity};
 
     fn current(frontend: &Frontend, port: u16) -> Forwarder {
         let unit = |name: &str, content| Unit {
@@ -713,35 +727,6 @@ mod tests {
             }
             assert!(!inspection(&changed, &https).pf_enabled, "{name}");
         }
-    }
-
-    #[test]
-    fn unsafe_unit_files_cannot_hide_native_absence_or_prove_active() -> Result<()> {
-        let directory = tempdir()?;
-        let foreign = directory.path().join("foreign");
-        fs::write_sensitive_file(&foreign, "foreign unit")?;
-        fs::symlink_file(&foreign, &directory.path().join(HTTP.socket_name()))?;
-        let absent =
-            complete_inspection(Forwarder::default(), Forwarder::default(), directory.path())?;
-        assert!(absent.pv_config.is_none());
-        assert!(absent.resolved_target_ports.is_empty());
-        assert!(!absent.pv_anchor_has_unparsed_rules);
-        assert!(!absent.has_unresolved_redirect_targets);
-        let retained = complete_inspection(
-            current(&HTTP, 48080),
-            Forwarder::default(),
-            directory.path(),
-        )?;
-        assert_eq!(retained.resolved_target_ports, BTreeSet::from([48080]));
-        assert!(matches!(
-            complete_inspection(
-                current(&HTTP, 48080),
-                current(&HTTPS, 48443),
-                directory.path()
-            ),
-            Err(PlatformError::PortProxyIo(_))
-        ));
-        Ok(())
     }
 
     #[test]

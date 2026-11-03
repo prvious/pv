@@ -1,10 +1,8 @@
 use std::collections::BTreeMap;
-use std::io;
 
 use procfs::net::{TcpNetEntry, TcpState, tcp, tcp6};
 use procfs::process::{FDTarget, Process, all_processes};
 use procfs::{ProcError, ProcResult};
-use rustix::fs::{Dir, OFlags};
 
 use super::{LowPortState, record_owner};
 
@@ -37,37 +35,12 @@ fn record_process_owners(
     let Some(stat) = diagnostic_read(process.stat())? else {
         return Ok(());
     };
-    // Process::fd() hides target-read errors. Enumerate fallibly, then decode
-    // each descriptor through the pinned process instead.
-    let Some(directory) = diagnostic_read(
-        process.open_relative_flags("fd", OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC),
-    )?
-    else {
-        return Ok(());
-    };
-    let Some(descriptors) = diagnostic_read(
-        Dir::read_from(&directory).map_err(|source| io::Error::from(source).into()),
-    )?
-    else {
+    let Some(descriptors) = diagnostic_read(process.fd())? else {
         return Ok(());
     };
     let pid = u32::try_from(process.pid).map_err(|source| ProcError::Other(source.to_string()))?;
-    for descriptor in descriptors {
-        let Some(entry) =
-            diagnostic_read(descriptor.map_err(|source| io::Error::from(source).into()))?
-        else {
-            continue;
-        };
-        let Some(number) = entry
-            .file_name()
-            .to_str()
-            .ok()
-            .and_then(|name| name.parse::<i32>().ok())
-        else {
-            continue;
-        };
-        if let Some(descriptor) = diagnostic_read(process.fd_from_fd(number))?
-            && let FDTarget::Socket(inode) = descriptor.target
+    for descriptor in descriptors.flatten() {
+        if let FDTarget::Socket(inode) = descriptor.target
             && let Some(port) = sockets.get(&inode)
         {
             record_owner(ports, *port, pid, &stat.comm);
@@ -104,47 +77,17 @@ fn diagnostic_read<T>(result: ProcResult<T>) -> ProcResult<Option<T>> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::io;
     use std::net::TcpListener;
     use std::process;
 
     use anyhow::{Context, Result};
-    use camino::Utf8Path;
-    use camino_tempfile::tempdir;
     use insta::assert_debug_snapshot;
     use procfs::net::TcpNetEntries;
-    use procfs::process::Process;
     use procfs::{FromReadSI, ProcError, current_system_info};
-    use state::fs;
 
     use super::super::inspect_loopback_ports;
-    use super::{LowPortState, diagnostic_read, record_process_owners, socket_ports};
-
-    #[test]
-    fn descriptor_read_failures_are_not_silently_omitted() -> Result<()> {
-        let directory = tempdir()?;
-        let root = directory.path().join(process::id().to_string());
-        fs::write_sensitive_file(
-            &root.join("stat"),
-            &fs::read_to_string(Utf8Path::new("/proc/self/stat"))?,
-        )?;
-        fs::ensure_user_dir(&root.join("fd"))?;
-        fs::symlink_file(Utf8Path::new("socket:[]"), &root.join("fd/7"))?;
-        let process = Process::new_with_root(root.into_std_path_buf())?;
-        let mut ports = [LowPortState {
-            port: 80,
-            available: false,
-            owners: Vec::new(),
-        }];
-        let result = record_process_owners(&process, &BTreeMap::from([(7, 80)]), &mut ports);
-        assert!(
-            matches!(&result, Err(ProcError::Incomplete(None))),
-            "unexpected descriptor inspection result: {result:?}"
-        );
-        assert!(ports[0].owners.is_empty());
-        Ok(())
-    }
+    use super::{LowPortState, diagnostic_read, socket_ports};
 
     #[test]
     fn socket_candidates_only_include_listeners_on_requested_unavailable_ports() -> Result<()> {

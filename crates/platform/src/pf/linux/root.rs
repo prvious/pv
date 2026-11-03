@@ -7,12 +7,14 @@ use zbus::{Proxy, connection};
 use super::{
     HTTP, HTTPS, SYSTEM_DIRECTORY, UnitStatus, bus_error, observe, query_unit, unit_names,
 };
+use crate::clock::Limit;
 use crate::helper::linux::{self as root_files, RootFile};
 use crate::helper::validate_high_port;
 use crate::systemd::{
     read_owned_unit, require_no_candidate, system_manager_proxy, unit_job, within, write_owned_unit,
 };
 use crate::{PfRedirectConfig, PlatformError};
+use tokio::runtime::Builder;
 
 const PREFLIGHT_TIMEOUT: Duration = Duration::from_secs(10);
 const APPLY_TIMEOUT: Duration = Duration::from_secs(45);
@@ -58,14 +60,19 @@ pub(in crate::pf) fn apply(config: &PfRedirectConfig) -> Result<(), PlatformErro
     require_root()?;
     validate_ports(config)?;
     let _lock = mutation_lock()?;
-    let (manager, previous) = futures_lite::future::block_on(preflight()).map_err(|error| {
-        PlatformError::PrivilegedHelperRejected {
-            message: error.to_string(),
-        }
-    })?;
-    futures_lite::future::block_on(async {
+    let runtime = Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(PlatformError::PortProxyIo)?;
+    let (manager, previous) =
+        runtime
+            .block_on(preflight())
+            .map_err(|error| PlatformError::PrivilegedHelperRejected {
+                message: error.to_string(),
+            })?;
+    runtime.block_on(async {
         let mut enablement_attempted = false;
-        let result = within(APPLY_TIMEOUT, async {
+        let result = within(&Limit::new("socket proxy apply", APPLY_TIMEOUT), async {
             stop_units(&manager).await?;
             let inspection = crate::low_port::inspect_loopback_ports(&[80, 443])?;
             let conflicts = inspection.ports.iter().filter(|port| !port.available)
@@ -100,7 +107,7 @@ pub(in crate::pf) fn apply(config: &PfRedirectConfig) -> Result<(), PlatformErro
             }
         }).await.unwrap_or_else(|| Err(timeout("apply")));
         if let Err(original) = result {
-            let restored = within(ROLLBACK_TIMEOUT, rollback(&manager, &previous, enablement_attempted))
+            let restored = within(&Limit::new("socket proxy rollback", ROLLBACK_TIMEOUT), rollback(&manager, &previous, enablement_attempted))
                 .await.unwrap_or_else(|| Err(timeout("rollback")));
             return Err(PlatformError::SystemIntegration(match restored {
                 Ok(()) => format!("{original}; restored the previous PV unit files, enablement and activity"),
@@ -114,54 +121,58 @@ pub(in crate::pf) fn apply(config: &PfRedirectConfig) -> Result<(), PlatformErro
 pub(in crate::pf) fn remove() -> Result<(), PlatformError> {
     require_root()?;
     let _lock = mutation_lock()?;
-    futures_lite::future::block_on(async {
-        let (manager, previous) = preflight().await?;
-        within(APPLY_TIMEOUT, async {
-            stop_units(&manager).await?;
-            for unit in &previous {
-                disable(&manager, &unit.name, unit.checksum.is_none()).await?;
-            }
-            require_owned_units(&manager, &previous, false).await?;
-            for unit in &previous {
-                if unit.checksum.is_some() {
-                    match manager
-                        .call::<_, _, ()>("ResetFailedUnit", &(unit.name.as_str(),))
-                        .await
-                    {
-                        Ok(()) => {}
-                        Err(zbus::Error::MethodError(name, _, _))
-                            if name.as_str() == "org.freedesktop.systemd1.NoSuchUnit" => {}
-                        Err(error) => return Err(bus_error(error)),
+    Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(PlatformError::PortProxyIo)?
+        .block_on(async {
+            let (manager, previous) = preflight().await?;
+            within(&Limit::new("socket proxy apply", APPLY_TIMEOUT), async {
+                stop_units(&manager).await?;
+                for unit in &previous {
+                    disable(&manager, &unit.name, unit.checksum.is_none()).await?;
+                }
+                require_owned_units(&manager, &previous, false).await?;
+                for unit in &previous {
+                    if unit.checksum.is_some() {
+                        match manager
+                            .call::<_, _, ()>("ResetFailedUnit", &(unit.name.as_str(),))
+                            .await
+                        {
+                            Ok(()) => {}
+                            Err(zbus::Error::MethodError(name, _, _))
+                                if name.as_str() == "org.freedesktop.systemd1.NoSuchUnit" => {}
+                            Err(error) => return Err(bus_error(error)),
+                        }
                     }
                 }
-            }
-            for unit in &previous {
-                read_owned_unit(&path(&unit.name))?;
-                remove_file(&path(&unit.name))?;
-            }
-            reload(&manager).await?;
-            for name in unit_names() {
-                if read_owned_unit(&path(&name))?.is_some()
-                    || query_unit(&manager, &name, "LoadUnit")
-                        .await?
-                        .0
-                        .status
-                        .is_some()
-                {
-                    return Err(PlatformError::SystemIntegration(format!(
-                        "socket proxy unit remains after removal: {name}"
-                    )));
+                for unit in &previous {
+                    read_owned_unit(&path(&unit.name))?;
+                    remove_file(&path(&unit.name))?;
                 }
-            }
-            Ok(())
+                reload(&manager).await?;
+                for name in unit_names() {
+                    if read_owned_unit(&path(&name))?.is_some()
+                        || query_unit(&manager, &name, "LoadUnit")
+                            .await?
+                            .0
+                            .status
+                            .is_some()
+                    {
+                        return Err(PlatformError::SystemIntegration(format!(
+                            "socket proxy unit remains after removal: {name}"
+                        )));
+                    }
+                }
+                Ok(())
+            })
+            .await
+            .unwrap_or_else(|| Err(timeout("remove")))
         })
-        .await
-        .unwrap_or_else(|| Err(timeout("remove")))
-    })
-    .map_err(|source| PlatformError::PortProxyMutation {
-        operation: "remove",
-        source: Box::new(source),
-    })
+        .map_err(|source| PlatformError::PortProxyMutation {
+            operation: "remove",
+            source: Box::new(source),
+        })
 }
 
 fn mutation_lock() -> Result<RootFile, PlatformError> {
@@ -171,29 +182,32 @@ fn mutation_lock() -> Result<RootFile, PlatformError> {
 }
 
 async fn preflight() -> Result<(Proxy<'static>, Vec<PreviousUnit>), PlatformError> {
-    within(PREFLIGHT_TIMEOUT, async {
-        let connection = connection::Builder::address("unix:path=/run/dbus/system_bus_socket")
-            .map_err(bus_error)?
-            .build()
-            .await
-            .map_err(bus_error)?;
-        let manager = system_manager_proxy(&connection).await.map_err(bus_error)?;
-        let mut previous = capture_files(Utf8Path::new(SYSTEM_DIRECTORY))?;
-        for unit in &mut previous {
-            let status = query_unit(&manager, &unit.name, "LoadUnit").await?.0.status;
-            require_owned_status(&unit.name, unit.checksum.is_some(), status.as_ref())?;
-            unit.active = status.as_ref().is_some_and(|status| {
-                matches!(
-                    status.active_state.as_str(),
-                    "active" | "activating" | "reloading"
-                )
-            });
-            if unit.checksum.is_some() {
-                unit.enabled = enablement(&manager, &unit.name).await?;
+    within(
+        &Limit::new("socket proxy preflight", PREFLIGHT_TIMEOUT),
+        async {
+            let connection = connection::Builder::address("unix:path=/run/dbus/system_bus_socket")
+                .map_err(bus_error)?
+                .build()
+                .await
+                .map_err(bus_error)?;
+            let manager = system_manager_proxy(&connection).await.map_err(bus_error)?;
+            let mut previous = capture_files(Utf8Path::new(SYSTEM_DIRECTORY))?;
+            for unit in &mut previous {
+                let status = query_unit(&manager, &unit.name, "LoadUnit").await?.0.status;
+                require_owned_status(&unit.name, unit.checksum.is_some(), status.as_ref())?;
+                unit.active = status.as_ref().is_some_and(|status| {
+                    matches!(
+                        status.active_state.as_str(),
+                        "active" | "activating" | "reloading"
+                    )
+                });
+                if unit.checksum.is_some() {
+                    unit.enabled = enablement(&manager, &unit.name).await?;
+                }
             }
-        }
-        Ok((manager, previous))
-    })
+            Ok((manager, previous))
+        },
+    )
     .await
     .ok_or_else(|| timeout("preflight"))?
 }
@@ -483,15 +497,18 @@ async fn enablement(manager: &Proxy<'_>, name: &str) -> Result<Option<bool>, Pla
 }
 
 async fn job(manager: &Proxy<'_>, operation: &str, name: &str) -> Result<(), PlatformError> {
-    let result = within(Duration::from_secs(15), async {
-        if operation == "RestartUnit" {
-            // Explicit repair and rollback must not inherit an earlier start limit.
-            manager
-                .call::<_, _, ()>("ResetFailedUnit", &(name,))
-                .await?;
-        }
-        unit_job(manager, operation, name).await
-    })
+    let result = within(
+        &Limit::new("socket proxy systemd job", Duration::from_secs(15)),
+        async {
+            if operation == "RestartUnit" {
+                // Explicit repair and rollback must not inherit an earlier start limit.
+                manager
+                    .call::<_, _, ()>("ResetFailedUnit", &(name,))
+                    .await?;
+            }
+            unit_job(manager, operation, name).await
+        },
+    )
     .await
     .ok_or_else(|| {
         PlatformError::SystemIntegration(format!("systemd {operation} {name} timed out"))

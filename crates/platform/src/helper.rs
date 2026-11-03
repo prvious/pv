@@ -2000,9 +2000,7 @@ fn helper_error_code(error: &PlatformError) -> HelperErrorCode {
         PlatformError::PrivilegedHelperProtocolMismatch { .. } => HelperErrorCode::ProtocolMismatch,
         PlatformError::PrivilegedHelperRejected { .. } => HelperErrorCode::InvalidRequest,
         #[cfg(target_os = "linux")]
-        PlatformError::PortProxyMutation { .. } => {
-            HelperErrorCode::SystemIntegrationFailed
-        }
+        PlatformError::PortProxyMutation { .. } => HelperErrorCode::SystemIntegrationFailed,
         PlatformError::SystemIntegration(_)
         | PlatformError::Unsupported { .. }
         | PlatformError::SystemIntegrationCommand { .. }
@@ -2030,13 +2028,12 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use anyhow::anyhow;
     use camino_tempfile::tempdir;
+    #[cfg(target_os = "linux")]
+    use insta::assert_snapshot;
     #[cfg(target_os = "macos")]
     use insta::{Settings, assert_debug_snapshot};
     #[cfg(target_os = "macos")]
     use pv_fake::{EventKind, FakeSettings, InstalledFake, Persona, TcpHolderConfig};
-
-    #[cfg(target_os = "macos")]
-    use crate::clock::real;
 
     #[cfg(unix)]
     use super::{HELPER_PROTOCOL_VERSION, HelperOperation, write_message};
@@ -2058,7 +2055,7 @@ mod tests {
         validate_fingerprint, validate_helper_identity, validate_high_port,
     };
     use crate::PlatformError;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use crate::clock::{self, real};
 
     #[cfg(target_os = "macos")]
@@ -2271,15 +2268,13 @@ mod tests {
     #[test]
     fn mutations_wait_beyond_the_lifecycle_deadline_and_preserve_unknown_outcomes()
     -> anyhow::Result<()> {
-        for (apply_operation, remove_operation) in [
-            (
-                HelperOperation::PfApply {
-                    http_port: 48080,
-                    https_port: 48443,
-                },
-                HelperOperation::PfRemove,
-            ),
-        ] {
+        for (apply_operation, remove_operation) in [(
+            HelperOperation::PfApply {
+                http_port: 48080,
+                https_port: 48443,
+            },
+            HelperOperation::PfRemove,
+        )] {
             let directory = tempdir()?;
             let socket = directory.path().join("mutation-helper.sock");
             let listener = std::os::unix::net::UnixListener::bind(&socket)?;
@@ -2309,7 +2304,7 @@ mod tests {
                         assert_eq!(request.protocol_version, HELPER_PROTOCOL_VERSION);
                         assert_eq!(request.operation, operation);
                         if reply {
-                            clock::poll_blocking(Duration::from_millis(5500));
+                            real::sleep_blocking(Duration::from_millis(5500));
                             write_message(
                                 &mut stream,
                                 &super::successful_response(HelperPayload::Empty),

@@ -156,7 +156,6 @@ struct PortsFixture {
 impl PortsFixture {
     fn exercise(&mut self, helper_fixture: &mut HelperFixture, helper: &Utf8Path) -> Result<()> {
         self.arm_cleanup(helper_fixture)?;
-        helper_fixture.arm_cleanup()?;
         helper_fixture.install(helper, &checksum(helper)?)?;
         helper_fixture.capture_process()?;
         ensure!(
@@ -466,7 +465,7 @@ impl PortsFixture {
                 ),
                 ca_certificate_path: self.paths.ca_certificate(),
             },
-            Duration::from_secs(2),
+            &platform::clock::Limit::new("ports fixture readiness", Duration::from_secs(2)),
         ))?;
         Ok(())
     }
