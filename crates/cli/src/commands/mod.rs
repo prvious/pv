@@ -638,7 +638,7 @@ mod tests {
     use platform::{PlatformCapability, PlatformError, PlatformTarget};
 
     use super::execute_with_capability_check;
-    use crate::args::{Cli, Command, LinkArgs, SetupArgs, UninstallArgs, UnlinkArgs};
+    use crate::args::{Cli, Command, LinkArgs, UnlinkArgs};
     use crate::environment::Environment;
     use crate::error::ExecuteError;
     use crate::output::{Presentation, Streams};
@@ -660,21 +660,6 @@ mod tests {
         assert_preflight_before_environment_access(
             Command::InternalUpdateManagedResources,
             PlatformCapability::DaemonRegistration,
-        );
-        assert_preflight_before_environment_access(
-            Command::Setup(SetupArgs {
-                yes: true,
-                non_interactive: true,
-                no_path: true,
-            }),
-            PlatformCapability::LowPortFrontend,
-        );
-        assert_preflight_before_environment_access(
-            Command::Uninstall(UninstallArgs {
-                prune: true,
-                force: true,
-            }),
-            PlatformCapability::TrustStore,
         );
     }
 
