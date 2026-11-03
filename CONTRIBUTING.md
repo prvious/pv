@@ -226,31 +226,23 @@ Do not add broad Clippy ignores for convenience.
 
 ## Linux development
 
-Linux system integration is being implemented in ordered slices. The Linux CI
-lanes currently run the portable suites and explicit unsupported boundaries;
-the full workspace suite will be enabled with Linux monitors and daemon IPC.
-Linux Clippy already covers every target and feature. macOS behavior remains
-covered by the existing native matrix.
-
-Build the Ubuntu 22.04 development image on the host's native architecture:
+Build the pinned Ubuntu 22.04 builder on the host's native architecture:
 
 ```shell
 df -h /
 docker build -f scripts/linux/builder.Dockerfile -t pv-linux-builder .
 pv_mount_source=${PWD//\"/\"\"}
-docker run --rm --mount "type=bind,\"src=$pv_mount_source\",dst=/src,readonly" \
+docker run --rm --init --mount "type=bind,\"src=$pv_mount_source\",dst=/src,readonly" \
   --mount type=volume,src=pv-linux-target,dst=/target \
-  --env CARGO_TARGET_DIR=/target --env CARGO_BUILD_JOBS=1 --workdir /src pv-linux-builder \
-  cargo nextest run --profile ci --locked -p resources -p self-update
+  --env CARGO_TARGET_DIR=/target --workdir /src pv-linux-builder \
+  cargo nextest run --profile ci --workspace --all-features --locked
 ```
 
-The builder runs tests as an ordinary user so filesystem permission checks
-remain meaningful. It includes stable Rust, Clippy, rustfmt, nextest 0.9.146,
-cargo-shear, shellcheck, and the native build tools. Its Ubuntu base is pinned
-by digest and supplies the glibc 2.35 baseline for Linux artifacts. Local Apple
-Silicon runs are ARM64 only; use native GitHub runners for amd64.
+The builder includes Rust, Clippy, rustfmt, nextest 0.9.146, cargo-shear,
+shellcheck and native build tools. It runs as an ordinary user and provides the
+glibc 2.35 baseline. Apple Silicon runs ARM64 locally; amd64 uses native CI.
 
-System integration needs a separate disposable container with systemd as PID 1:
+Use a disposable systemd container for system integration:
 
 ```shell
 df -h /
@@ -261,15 +253,16 @@ bash scripts/linux/container.sh exec ubuntu-22.04 bash -c 'id; systemctl --user 
 bash scripts/linux/container.sh down ubuntu-22.04
 ```
 
-This uses privileged Docker containers, a private cgroup namespace, and a
-read-only source mount. It never runs setup against the host's PV installation.
-The helper labels containers with their worktree and refuses to execute in or
-remove another worktree's container. Linger is enabled only for the container's
-test user. It is never part of PV's installed daemon behavior.
+Containers mount the source read-only. Test-only linger applies to their user.
+Run `shellcheck scripts/linux/*.sh` when changing the scripts.
 
-Run `python3 scripts/linux/test_container.py` and `shellcheck scripts/linux/*.sh`
-when changing the helper. Distro acceptance is a separate gate; a successful
-build or unit suite does not establish supported Linux distributions.
+For acceptance, dispatch `artifact-recipes.yml` on the branch with
+`platform=all-linux`, then `linux-acceptance.yml` with that recipe run ID.
+These build and test; publication remains a separate owner action.
+
+To add a supported distribution/CPU pair, update the acceptance matrix and
+`release/linux-supported-distributions.txt`, then pass every resource smoke
+and the system acceptance journey on that pair before listing it in DESIGN.md.
 
 ## Crate structure
 

@@ -67,7 +67,7 @@ jobs:
           esac
 
       - name: Check artifact recipe scripts
-        run: shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh release/artifacts/recipes/redis/*.sh release/artifacts/recipes/mysql/*.sh release/artifacts/recipes/postgres/*.sh release/artifacts/recipes/mailpit/*.sh release/artifacts/recipes/rustfs/*.sh
+        run: shellcheck scripts/linux/*.sh release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh release/artifacts/recipes/redis/*.sh release/artifacts/recipes/mysql/*.sh release/artifacts/recipes/postgres/*.sh release/artifacts/recipes/mailpit/*.sh release/artifacts/recipes/rustfs/*.sh
 
   rust:
     name: Rust (${{ matrix.lane.name }})
@@ -167,12 +167,36 @@ jobs:
           )
           sudo -n "$test_binary" --ignored --exact helper::tests::pf_apply_rejects_a_low_port_conflict_as_root
 
+  linux-clippy:
+    name: Linux Clippy
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          key: linux-clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install cargo-shear
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-shear
+      - name: Run Clippy including Linux implementations
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Check unused dependencies
+        run: cargo shear
+
   linux:
     name: Linux (${{ matrix.runner }})
     strategy:
       fail-fast: false
       matrix:
-        runner: [ubuntu-22.04, ubuntu-24.04, ubuntu-26.04, ubuntu-24.04-arm]
+        runner: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-22.04","ubuntu-26.04"]' || '["ubuntu-22.04","ubuntu-24.04","ubuntu-26.04","ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
 
@@ -189,38 +213,12 @@ jobs:
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
         with:
           key: ${{ matrix.runner }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install development tools
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-nextest@0.9.146,cargo-shear,shellcheck@0.11.0
-
-      - name: Check formatting
-        run: cargo fmt --all --check
-
-      - name: Run Clippy including Linux implementations
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-
-      - name: Check unused dependencies
-        run: cargo shear
-
-      - name: Enforce privileged-helper sudo boundary
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo_references=$(git grep -n -F '"/usr/bin/sudo"' -- 'crates/**/*.rs')
-          printf '%s\n' "$sudo_references"
-          reference_count=$(printf '%s\n' "$sudo_references" | wc -l | tr -d '[:space:]')
-          test "$reference_count" = 1
-          case "$sudo_references" in
-            crates/platform/src/helper.rs:*) ;;
-            *) exit 1 ;;
-          esac
-
-      - name: Check shell scripts and container helper
-        run: |
-          shellcheck scripts/linux/*.sh release/artifacts/recipes/common.sh release/artifacts/recipes/*/*.sh
-          python3 scripts/linux/test_container.py
+          tool: cargo-nextest@0.9.146
 
       - name: Run portable suites and explicit unsupported boundaries
         id: tests
@@ -251,8 +249,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
-            target: linux
           - runner: windows-latest
             target: windows
     runs-on: ${{ matrix.runner }}
@@ -291,14 +287,6 @@ jobs:
           cargo test --locked -p resources --lib target_platform_for
           cargo test --locked -p platform --test unsupported_launch_agent
           cargo test --locked -p daemon --test platform_preflight
-
-      - name: Compile daemon tests on Linux
-        if: matrix.target == 'linux'
-        run: cargo test --locked -p daemon --all-features --tests --no-run
-
-      - name: Test portable runtime health on Linux
-        if: matrix.target == 'linux'
-        run: cargo test --locked -p daemon --all-features --lib health::tests
 
       - name: Smoke portable commands
         shell: bash

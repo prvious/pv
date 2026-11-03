@@ -1041,7 +1041,7 @@ Maintainer-local macOS artifact builds also run natively on macOS. Docker is not
 
 Linux artifact builds must use the shared builder definition under `scripts/linux/`, based on Ubuntu 22.04 pinned by digest, so glibc 2.35 is the runtime baseline for both `linux-amd64` and `linux-arm64`. Docker is the supported path for local Linux builds and tests. Each architecture builds and runs natively; Apple Silicon development uses ARM64 containers and amd64 validation uses native CI runners.
 
-Linux system integration tests use disposable systemd containers separately from the builder. Their source mount is read-only, their test user is unprivileged, and container lifecycle commands verify a worktree ownership label before execution or removal. Test-only linger does not change the installed daemon's login-session lifecycle. Container tests do not establish a supported distro until the artifact and system acceptance gates both pass.
+Linux system integration tests use disposable systemd containers separately from the builder. Their source mount is read-only, their test user is unprivileged. Test-only linger does not change the installed daemon's login-session lifecycle. Container tests do not establish a supported distro until the artifact and system acceptance gates both pass.
 
 Strict byte-for-byte reproducible Managed Resource builds are not a v1 requirement. Artifact recipes should still record provenance and pin source/dependency/tool inputs where practical, but v1 does not block publication on deterministic rebuild verification.
 
