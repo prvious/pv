@@ -194,9 +194,14 @@ async fn require_owned_unit(
                     });
                 }
             }
-            manager
+            match manager
                 .call::<_, _, ()>("ResetFailedUnit", &(DAEMON_REGISTRATION_LABEL,))
-                .await?;
+                .await
+            {
+                Ok(()) => {}
+                Err(error) if is_method_error(&error, "org.freedesktop.systemd1.NoSuchUnit") => {}
+                Err(error) => return Err(error.into()),
+            }
             return Ok(None);
         }
         match inspect_daemon_registration_file(&status.fragment_path, None) {
