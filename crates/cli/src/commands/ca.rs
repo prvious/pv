@@ -1,5 +1,3 @@
-mod linux;
-
 use std::io;
 use std::process::ExitCode;
 
@@ -16,9 +14,11 @@ pub(crate) fn status(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    if environment.platform_target()? == PlatformTarget::Linux {
-        return linux::status(environment, streams);
-    }
+    let system_store = if environment.platform_target()? == PlatformTarget::Linux {
+        "System CA"
+    } else {
+        "System keychain"
+    };
     let paths = pv_paths(environment)?;
     let local_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
@@ -28,8 +28,15 @@ pub(crate) fn status(
 
     output.heading("ca:status", Some("CA trust status"))?;
     write_local_ca_state(output, &local_state)?;
-    write_system_trust_state(output, &trust_state)?;
+    write_trust_state(output, &format!("{system_store} trust"), &trust_state)?;
 
+    for report in browser_ca_reports(environment, &paths, local_metadata.as_ref())? {
+        write_trust_state(
+            output,
+            &format!("Browser CA trust: {}", report.database),
+            &report.state,
+        )?;
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -37,9 +44,11 @@ pub(crate) fn trust(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    if environment.platform_target()? == PlatformTarget::Linux {
-        return linux::trust(environment, streams);
-    }
+    let system_store = if environment.platform_target()? == PlatformTarget::Linux {
+        "System CA"
+    } else {
+        "System keychain"
+    };
     let paths = pv_paths(environment)?;
     let initial_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
@@ -60,63 +69,75 @@ pub(crate) fn trust(
         }
         None => output.detail("existing local CA is current")?,
     }
-    write_system_trust_state(output, &trust_state)?;
+    write_trust_state(output, &format!("{system_store} trust"), &trust_state)?;
 
-    match trust_state {
+    let exit_code = match trust_state {
         TrustDomainState::Current { .. } => {
             output.note(if decorated {
-                "PV’s local HTTPS certificate is already trusted"
+                "PV’s local HTTPS certificate is already trusted".to_owned()
             } else {
-                "System keychain trust already matches PV."
+                format!("{system_store} trust already matches PV.")
             })?;
-            Ok(ExitCode::SUCCESS)
+            ExitCode::SUCCESS
         }
         TrustDomainState::NotTrusted { .. } => {
             environment.trust_system_ca(&paths.ca_certificate())?;
             output.success(if decorated {
-                "PV’s local HTTPS certificate is trusted"
+                "PV’s local HTTPS certificate is trusted".to_owned()
             } else {
-                "Trusted PV local CA in the System keychain."
+                format!("Trusted PV local CA in the {system_store}.")
             })?;
-            Ok(ExitCode::SUCCESS)
+            ExitCode::SUCCESS
         }
         TrustDomainState::Denied { fingerprint } => {
             environment.untrust_system_ca(&fingerprint)?;
             environment.trust_system_ca(&paths.ca_certificate())?;
-            output.success("Removed denied PV local CA trust from the System keychain.")?;
+            output.success(format!(
+                "Removed denied PV local CA trust from the {system_store}."
+            ))?;
             output.success(if decorated {
-                "PV’s local HTTPS certificate is trusted"
+                "PV’s local HTTPS certificate is trusted".to_owned()
             } else {
-                "Trusted PV local CA in the System keychain."
+                format!("Trusted PV local CA in the {system_store}.")
             })?;
-            Ok(ExitCode::SUCCESS)
+            ExitCode::SUCCESS
         }
         TrustDomainState::Stale {
             actual_fingerprint, ..
         } => {
             environment.untrust_system_ca(&actual_fingerprint)?;
             environment.trust_system_ca(&paths.ca_certificate())?;
-            output.success("Removed stale PV local CA trust from the System keychain.")?;
+            output.success(format!(
+                "Removed stale PV local CA trust from the {system_store}."
+            ))?;
             output.success(if decorated {
-                "PV’s local HTTPS certificate is trusted"
+                "PV’s local HTTPS certificate is trusted".to_owned()
             } else {
-                "Trusted PV local CA in the System keychain."
+                format!("Trusted PV local CA in the {system_store}.")
             })?;
-            Ok(ExitCode::SUCCESS)
+            ExitCode::SUCCESS
         }
-        TrustDomainState::Unknown { .. } | TrustDomainState::Unreadable { .. } => {
-            Ok(ExitCode::FAILURE)
-        }
+        TrustDomainState::Unknown { .. } | TrustDomainState::Unreadable { .. } => ExitCode::FAILURE,
+    };
+    if exit_code != ExitCode::SUCCESS {
+        return Ok(exit_code);
     }
+    for database in environment.browser_ca_databases(paths.home())? {
+        environment.trust_browser_ca(&database, &paths.ca_certificate())?;
+        output.success(Line::field("Trusted PV browser CA: ", &database))?;
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 pub(crate) fn untrust(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    if environment.platform_target()? == PlatformTarget::Linux {
-        return linux::untrust(environment, streams);
-    }
+    let system_store = if environment.platform_target()? == PlatformTarget::Linux {
+        "System CA"
+    } else {
+        "System keychain"
+    };
     let paths = pv_paths(environment)?;
     let local_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
@@ -127,37 +148,45 @@ pub(crate) fn untrust(
 
     output.success("Prepared PV local CA trust removal")?;
     write_local_ca_state(output, &local_state)?;
-    write_system_trust_state(output, &trust_state)?;
+    write_trust_state(output, &format!("{system_store} trust"), &trust_state)?;
 
-    match trust_state {
+    let exit_code = match trust_state {
         TrustDomainState::NotTrusted { .. } => {
             output.note(if decorated {
-                "PV’s local HTTPS certificate is already untrusted"
+                "PV’s local HTTPS certificate is already untrusted".to_owned()
             } else {
-                "System keychain trust is already absent."
+                format!("{system_store} trust is already absent.")
             })?;
-            Ok(ExitCode::SUCCESS)
+            ExitCode::SUCCESS
         }
         TrustDomainState::Current { fingerprint } | TrustDomainState::Denied { fingerprint } => {
             environment.untrust_system_ca(&fingerprint)?;
             output.success(if decorated {
-                "Removed trust for PV’s local HTTPS certificate"
+                "Removed trust for PV’s local HTTPS certificate".to_owned()
             } else {
-                "Removed PV local CA trust from the System keychain."
+                format!("Removed PV local CA trust from the {system_store}.")
             })?;
-            Ok(ExitCode::SUCCESS)
+            ExitCode::SUCCESS
         }
         TrustDomainState::Stale {
             actual_fingerprint, ..
         } => {
             environment.untrust_system_ca(&actual_fingerprint)?;
-            output.success("Removed stale PV local CA trust from the System keychain.")?;
-            Ok(ExitCode::SUCCESS)
+            output.success(format!(
+                "Removed stale PV local CA trust from the {system_store}."
+            ))?;
+            ExitCode::SUCCESS
         }
-        TrustDomainState::Unknown { .. } | TrustDomainState::Unreadable { .. } => {
-            Ok(ExitCode::FAILURE)
-        }
+        TrustDomainState::Unknown { .. } | TrustDomainState::Unreadable { .. } => ExitCode::FAILURE,
+    };
+    if exit_code != ExitCode::SUCCESS {
+        return Ok(exit_code);
     }
+    for database in environment.browser_ca_databases(paths.home())? {
+        environment.untrust_browser_ca(&database)?;
+        output.success(Line::field("Removed PV browser CA trust: ", &database))?;
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn ensure_local_ca(
@@ -272,16 +301,24 @@ fn write_ca_paths(
     output.detail(Line::field("private key: ", private_key_path))
 }
 
-fn write_system_trust_state(output: &mut Output<'_>, state: &TrustDomainState) -> io::Result<()> {
-    let (mark, status) = match state {
+pub(crate) fn trust_state_text(state: &TrustDomainState) -> (Mark, &'static str) {
+    match state {
         TrustDomainState::Current { .. } => (Mark::Success, "current"),
         TrustDomainState::NotTrusted { .. } => (Mark::Warning, "not trusted"),
         TrustDomainState::Stale { .. } => (Mark::Warning, "stale"),
         TrustDomainState::Denied { .. } => (Mark::Warning, "denied"),
         TrustDomainState::Unknown { .. } => (Mark::Failure, "unknown"),
         TrustDomainState::Unreadable { .. } => (Mark::Failure, "unreadable"),
-    };
-    output.status(mark, format!("System keychain trust: {status}"))?;
+    }
+}
+
+fn write_trust_state(
+    output: &mut Output<'_>,
+    label: &str,
+    state: &TrustDomainState,
+) -> io::Result<()> {
+    let (mark, status) = trust_state_text(state);
+    output.status(mark, format!("{label}: {status}"))?;
     match state {
         TrustDomainState::Current { fingerprint }
         | TrustDomainState::NotTrusted { fingerprint }
@@ -359,16 +396,6 @@ impl BrowserCaReport {
 
     pub fn current(&self) -> bool {
         matches!(self.state, TrustDomainState::Current { .. })
-    }
-    pub fn label(&self) -> &'static str {
-        match self.state {
-            TrustDomainState::Current { .. } => "current",
-            TrustDomainState::NotTrusted { .. } => "not trusted",
-            TrustDomainState::Stale { .. } => "stale",
-            TrustDomainState::Denied { .. } => "denied",
-            TrustDomainState::Unknown { .. } => "unknown",
-            TrustDomainState::Unreadable { .. } => "unreadable",
-        }
     }
 }
 

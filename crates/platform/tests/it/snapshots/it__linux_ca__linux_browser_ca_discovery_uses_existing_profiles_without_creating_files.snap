@@ -3,6 +3,7 @@ source: crates/platform/tests/it/linux_ca.rs
 expression: names
 ---
 [
+    ".config/mozilla/firefox/default",
     ".local/share/pki/nssdb",
     ".mozilla/firefox/default",
     ".pki/nssdb",

@@ -22,13 +22,17 @@ fn linux_browser_ca_discovery_uses_existing_profiles_without_creating_files() ->
     let directory = tempdir()?;
     let home = directory.path();
     let expected = [
+        ".config/mozilla/firefox/default",
         ".local/share/pki/nssdb",
         ".mozilla/firefox/default",
         ".pki/nssdb",
         "snap/chromium/current/.pki/nssdb",
         "snap/firefox/common/.mozilla/firefox/default",
     ];
-    assert_eq!(browser_ca_databases(home)?, vec![home.join(".pki/nssdb")]);
+    assert_eq!(
+        browser_ca_databases(home, &home.join(".config"))?,
+        vec![home.join(".pki/nssdb")]
+    );
     assert!(!fs::path_entry_exists(&home.join(".pki"))?);
     for relative in expected {
         if relative != ".pki/nssdb" {
@@ -37,7 +41,7 @@ fn linux_browser_ca_discovery_uses_existing_profiles_without_creating_files() ->
     }
     fs::ensure_user_dir(&home.join(".mozilla/firefox/without-database"))?;
     fs::write_sensitive_file(&home.join(".mozilla/firefox/profiles.ini"), "fixture")?;
-    let observed = browser_ca_databases(home)?;
+    let observed = browser_ca_databases(home, &home.join(".config"))?;
     assert_eq!(observed, expected.map(|relative| home.join(relative)));
     assert!(!fs::path_entry_exists(&home.join(".pki"))?);
     let names = observed
@@ -80,7 +84,7 @@ fn linux_certutil_adds_inspects_repairs_and_removes_only_pv_trust() -> Result<()
         TrustDomainState::NotTrusted { .. }
     ));
     fs::ensure_user_dir(&database)?;
-    untrust_browser_ca(&database, Some(&generated.metadata.fingerprint))?;
+    untrust_browser_ca(&database)?;
     assert!(matches!(
         inspect_browser_ca_trust(&database, Some(&generated.metadata)),
         TrustDomainState::NotTrusted { .. }
@@ -114,7 +118,7 @@ fn linux_certutil_adds_inspects_repairs_and_removes_only_pv_trust() -> Result<()
     assert!(
         matches!(inspect_browser_ca_trust(&database, Some(&generated.metadata)), TrustDomainState::Current { fingerprint } if fingerprint == generated.metadata.fingerprint)
     );
-    untrust_browser_ca(&database, Some(&generated.metadata.fingerprint))?;
+    untrust_browser_ca(&database)?;
     assert!(matches!(
         inspect_browser_ca_trust(&database, Some(&generated.metadata)),
         TrustDomainState::NotTrusted { .. }
@@ -162,8 +166,8 @@ fn linux_certutil_adds_inspects_repairs_and_removes_only_pv_trust() -> Result<()
         .find(&name)
         .context("PV nickname is missing from the fixture")?;
     assert!(misleading_position < pv_position);
-    untrust_browser_ca(&database, None)?;
-    untrust_browser_ca(&database, None)?;
+    untrust_browser_ca(&database)?;
+    untrust_browser_ca(&database)?;
     assert!(matches!(
         inspect_browser_ca_trust(&database, Some(&generated.metadata)),
         TrustDomainState::NotTrusted { .. }

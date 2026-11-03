@@ -97,7 +97,11 @@ impl DoctorReport {
             match super::ca::browser_ca_reports(environment, &paths, metadata.as_ref()) {
                 Ok(reports) => {
                     for report in reports {
-                        let mut detail = format!("{}: {}", report.database, report.label());
+                        let mut detail = format!(
+                            "{}: {}",
+                            report.database,
+                            super::ca::trust_state_text(&report.state).1
+                        );
                         if let Some(message) = report.detail() {
                             detail.push_str(": ");
                             detail.push_str(message);

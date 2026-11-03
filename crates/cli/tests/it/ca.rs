@@ -558,8 +558,6 @@ fn linux_ca_repairs_browser_trust_when_the_system_store_is_current() -> anyhow::
     assert_eq!(failed.exit_code, ExitCode::FAILURE);
     assert_eq!(environment.trusted_browsers.borrow().len(), 1);
     environment.fail_browser = None;
-    state::fs::remove_file(&paths.ca_certificate())?;
-    state::fs::remove_file(&paths.ca_private_key())?;
     let removed = run_pv(&["ca:untrust"], &environment)?;
     assert_eq!(removed.exit_code, ExitCode::SUCCESS);
     assert!(environment.trusted_browsers.borrow().is_empty());

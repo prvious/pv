@@ -7,9 +7,7 @@ use state::fs;
 
 use super::{KeychainCertificate, KeychainTrustResult, TrustDomainState};
 use crate::ca::{certificate_der_from_pem, is_pv_ca_metadata, pem_from_der};
-use crate::command::{
-    command_output_with_timeout, run_system_command_output_with_timeout, system_command_output,
-};
+use crate::command::run_system_command_output_with_timeout;
 use crate::helper::linux as root_files;
 use crate::helper::{owner_ca_certificate_path, validate_fingerprint};
 use crate::{LocalCaMetadata, PlatformError};
@@ -208,7 +206,10 @@ fn integration_error(error: impl std::fmt::Display) -> PlatformError {
     PlatformError::SystemIntegration(error.to_string())
 }
 
-pub(super) fn browser_databases(home: &Utf8Path) -> Result<Vec<Utf8PathBuf>, PlatformError> {
+pub(super) fn browser_databases(
+    home: &Utf8Path,
+    config_home: &Utf8Path,
+) -> Result<Vec<Utf8PathBuf>, PlatformError> {
     let mut databases = vec![home.join(".pki/nssdb")];
     for path in [
         home.join(".local/share/pki/nssdb"),
@@ -220,6 +221,7 @@ pub(super) fn browser_databases(home: &Utf8Path) -> Result<Vec<Utf8PathBuf>, Pla
     }
     for root in [
         home.join(".mozilla/firefox"),
+        config_home.join("mozilla/firefox"),
         home.join("snap/firefox/common/.mozilla/firefox"),
     ] {
         if !fs::path_is_directory(&root).map_err(integration_error)? {
@@ -257,21 +259,14 @@ fn certificate(
 ) -> Result<Option<LocalCaMetadata>, PlatformError> {
     let location = format!("sql:{database}");
     let arguments = ["-d", location.as_str(), "-L", "-n", nickname, "-a"];
-    let command = format!("{CERTUTIL} {}", arguments.join(" "));
-    let output =
-        command_output_with_timeout(CERTUTIL, &arguments, COMMAND_TIMEOUT).map_err(|source| {
-            PlatformError::SystemIntegrationCommand {
-                command: command.clone(),
-                source,
-            }
-        })?;
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if output.status.code() == Some(255)
-        && (stderr.contains("SEC_ERROR_UNKNOWN_CERT") || stderr.contains("PR_FILE_NOT_FOUND_ERROR"))
+    if !certutil(database, &["-L"])?
+        .lines()
+        .filter_map(|line| line.trim().rsplit_once(char::is_whitespace))
+        .any(|(name, _)| name.trim_end() == nickname)
     {
         return Ok(None);
     }
-    let pem = system_command_output(command, output)?;
+    let pem = run_system_command_output_with_timeout(CERTUTIL, &arguments, COMMAND_TIMEOUT, None)?;
     let mut found_certificate = false;
     for der in rustls_pemfile::certs(&mut Cursor::new(pem)) {
         let der = der.map_err(integration_error)?;
@@ -359,8 +354,11 @@ pub(super) fn trust_browser_ca(
                 "PV browser CA nickname contains a different certificate",
             ));
         }
-        Some(_) => {}
+        Some(_) => {
+            certutil(database, &["-M", "-t", "C,,", "-n", &name])?;
+        }
         None => {
+            untrust_browser_ca(database)?;
             certutil(
                 database,
                 &[
@@ -375,32 +373,24 @@ pub(super) fn trust_browser_ca(
             )?;
         }
     }
-    certutil(database, &["-M", "-t", "C,,", "-n", &name])?;
     Ok(())
 }
 
-pub(super) fn untrust_browser_ca(
-    database: &Utf8Path,
-    fingerprint: Option<&str>,
-) -> Result<(), PlatformError> {
+pub(super) fn untrust_browser_ca(database: &Utf8Path) -> Result<(), PlatformError> {
     if !fs::path_is_file(&database.join("cert9.db")).map_err(integration_error)? {
         return Ok(());
     }
-    let names = if let Some(fingerprint) = fingerprint {
-        vec![nickname(fingerprint)?]
-    } else {
-        certutil(database, &["-L"])?
-            .lines()
-            .filter_map(|line| line.trim().rsplit_once(char::is_whitespace))
-            .map(|(name, _)| name.trim_end())
-            .filter(|name| {
-                name.strip_prefix(NICKNAME_PREFIX).is_some_and(|suffix| {
-                    suffix.len() == 16 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
-                })
+    let names: Vec<String> = certutil(database, &["-L"])?
+        .lines()
+        .filter_map(|line| line.trim().rsplit_once(char::is_whitespace))
+        .map(|(name, _)| name.trim_end())
+        .filter(|name| {
+            name.strip_prefix(NICKNAME_PREFIX).is_some_and(|suffix| {
+                suffix.len() == 16 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
             })
-            .map(str::to_owned)
-            .collect()
-    };
+        })
+        .map(str::to_owned)
+        .collect();
     for name in names {
         if certificate(database, &name, true)?.is_some() {
             certutil(database, &["-D", "-n", &name])?;

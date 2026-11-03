@@ -172,7 +172,7 @@ impl StatusSnapshot {
             output.line(&format!(
                 "  Browser CA: {} · {}",
                 report.database,
-                report.label()
+                super::ca::trust_state_text(&report.state).1
             ))?;
             if let Some(detail) = report.detail() {
                 output.line(&format!("    {detail}"))?;
@@ -351,8 +351,10 @@ impl StatusSnapshot {
                 } else {
                     Mark::Failure
                 },
-                Line::field("Browser CA: ", &report.database)
-                    .text(format!(" · {}", report.label())),
+                Line::field("Browser CA: ", &report.database).text(format!(
+                    " · {}",
+                    super::ca::trust_state_text(&report.state).1
+                )),
             )?;
             if let Some(detail) = report.detail() {
                 output.detail(detail)?;

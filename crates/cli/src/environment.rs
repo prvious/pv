@@ -319,7 +319,7 @@ pub trait Environment {
     }
 
     fn untrust_browser_ca(&self, database: &Utf8Path) -> Result<(), platform::PlatformError> {
-        platform::untrust_browser_ca(database, None)
+        platform::untrust_browser_ca(database)
     }
 
     fn trust_system_ca(&self, certificate_path: &Utf8Path) -> Result<(), platform::PlatformError> {
@@ -385,7 +385,12 @@ impl Environment for ProcessEnvironment {
         &self,
         home: &Utf8Path,
     ) -> Result<Vec<Utf8PathBuf>, platform::PlatformError> {
-        platform::browser_ca_databases(home)
+        let config_home = self
+            .var_os("XDG_CONFIG_HOME")
+            .and_then(|path| Utf8PathBuf::from_path_buf(path.into()).ok())
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(|| home.join(".config"));
+        platform::browser_ca_databases(home, &config_home)
     }
 
     fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError> {

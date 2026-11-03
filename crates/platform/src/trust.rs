@@ -301,14 +301,17 @@ mod tests {
 }
 
 /// Browser certificate databases prescribed by the Linux integration.
-pub fn browser_ca_databases(home: &Utf8Path) -> Result<Vec<Utf8PathBuf>, PlatformError> {
+pub fn browser_ca_databases(
+    home: &Utf8Path,
+    config_home: &Utf8Path,
+) -> Result<Vec<Utf8PathBuf>, PlatformError> {
     #[cfg(target_os = "linux")]
     {
-        linux::browser_databases(home)
+        linux::browser_databases(home, config_home)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = home;
+        let _ = (home, config_home);
         Ok(Vec::new())
     }
 }
@@ -342,17 +345,14 @@ pub fn trust_browser_ca(database: &Utf8Path, certificate: &Utf8Path) -> Result<(
     }
 }
 
-pub fn untrust_browser_ca(
-    database: &Utf8Path,
-    fingerprint: Option<&str>,
-) -> Result<(), PlatformError> {
+pub fn untrust_browser_ca(database: &Utf8Path) -> Result<(), PlatformError> {
     #[cfg(target_os = "linux")]
     {
-        linux::untrust_browser_ca(database, fingerprint)
+        linux::untrust_browser_ca(database)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (database, fingerprint);
+        let _ = database;
         Ok(())
     }
 }
