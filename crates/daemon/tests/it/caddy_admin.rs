@@ -50,15 +50,19 @@ async fn load_caddyfile_sends_exact_request_and_accepts_success() -> Result<()> 
 
 #[tokio::test]
 async fn load_caddyfile_accepts_complete_adapter_warnings() -> Result<()> {
-    let warnings = br#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies"}]"#;
-    let (endpoint, server) = spawn_response_server(vec![http_response(200, warnings)])?;
+    for warnings in [
+        br#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies"}]"#.as_slice(),
+        br#"{"warnings":[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies"}]}"#.as_slice(),
+    ] {
+        let (endpoint, server) = spawn_response_server(vec![http_response(200, warnings)])?;
 
-    CaddyAdminClient::new()
-        .load_caddyfile(&endpoint, b"candidate\n")
-        .await?;
-    let requests = server.await??;
+        CaddyAdminClient::new()
+            .load_caddyfile(&endpoint, b"candidate\n")
+            .await?;
+        let requests = server.await??;
 
-    assert_eq!(requests.len(), 1);
+        assert_eq!(requests.len(), 1);
+    }
     Ok(())
 }
 
@@ -68,6 +72,11 @@ async fn load_caddyfile_rejects_error_reported_with_success_status() -> Result<(
         (
             "after adapter warnings",
             &br#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted"}]{"error":"loading config: listener unavailable"}
+"#[..],
+        ),
+        (
+            "after FrankenPHP adapter warnings",
+            &br#"{"warnings":[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted"}]}{"error":"loading config: listener unavailable"}
 "#[..],
         ),
         (
