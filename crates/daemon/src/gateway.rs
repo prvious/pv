@@ -5427,7 +5427,7 @@ mod tests {
     use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
     use insta::assert_debug_snapshot;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use platform::clock::real;
     use platform::{ActivePfRedirectInspection, PfRedirectConfig};
     use state::{Database, LinkProjectInput, PvPaths};

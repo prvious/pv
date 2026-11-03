@@ -1959,25 +1959,14 @@ async fn run_project_reconciliation(
     }
     .await;
     let cleanup = daemon.shutdown().await;
-    let result = match (result, cleanup) {
+    match (result, cleanup) {
         (Err(error), Err(cleanup)) => {
             Err(error.context(format!("daemon shutdown also failed: {cleanup:#}")))
         }
         (Err(error), _) => Err(error),
         (Ok(_), Err(error)) => Err(error.into()),
         (Ok(lines), Ok(())) => Ok(lines),
-    };
-    result.map_err(|error| {
-        let recent_log = match state::fs::read_to_string(&paths.daemon_log()) {
-            Ok(content) => {
-                let mut tail = content.chars().rev().take(8_192).collect::<Vec<_>>();
-                tail.reverse();
-                tail.into_iter().collect::<String>()
-            }
-            Err(log_error) => format!("unavailable: {log_error}"),
-        };
-        error.context(format!("daemon log tail:\n{recent_log}"))
-    })
+    }
 }
 
 async fn wait_for_succeeded_project_job(paths: &PvPaths, project_id: &str) -> Result<JobRecord> {

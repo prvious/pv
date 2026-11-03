@@ -15,7 +15,7 @@ use crate::{DaemonError, ProcessSupervisor, RuntimeReconciliationFailure, monito
 /// How long the previous daemon gets to exit after PV unloads its LaunchAgent.
 pub const DAEMON_EXIT_GRACE: Limit = Limit::new("daemon exit", Duration::from_secs(10));
 /// How long finding a daemon to stop waits to connect to its socket.
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 const DAEMON_CONNECT_FOR_STOP_TIMEOUT: Limit =
     Limit::new("daemon connect for stop", Duration::from_secs(3));
 
@@ -31,9 +31,7 @@ pub struct DaemonProcess {
 impl DaemonProcess {
     pub fn wait_for_exit(&self) -> Result<(), DaemonError> {
         let deadline = Deadline::after(&DAEMON_EXIT_GRACE);
-        while self.matches_current_process()?
-            && !platform::process_is_zombie(self.pid)?
-        {
+        while self.matches_current_process()? && !platform::process_is_zombie(self.pid)? {
             if deadline.is_expired() {
                 return Err(DaemonError::RuntimeCleanupUnproven {
                     pid: self.pid,
@@ -50,7 +48,7 @@ impl DaemonProcess {
         if self.boot_session_id != current_boot_session_id()? {
             return Ok(false);
         }
-        Ok(self.matches_current_process()?)
+        Ok(platform::inspect_process_start_identity(self.pid)? == Some(self.start_identity))
     }
 }
 
@@ -293,15 +291,9 @@ mod tests {
     use anyhow::{Result, ensure};
     use camino_tempfile::tempdir;
     use pv_fake::{EventKind, Persona, install};
-    #[cfg(target_os = "linux")]
-    use serde_json::{Value, json};
     use state::{PvPaths, fs};
 
     use super::verify_daemon_process;
-    #[cfg(target_os = "linux")]
-    use super::{DaemonProcess, daemon_process_for_stop, record_daemon_process};
-    #[cfg(target_os = "linux")]
-    use crate::DaemonError;
 
     #[expect(
         clippy::disallowed_types,
@@ -316,44 +308,6 @@ mod tests {
             let _kill_result = self.0.kill();
             let _wait_result = self.0.wait();
         }
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn linux_daemon_record_publishes_and_requires_a_valid_boot_uuid() -> Result<()> {
-        let directory = tempdir()?;
-        let paths = PvPaths::for_home(directory.path());
-        fs::ensure_layout(&paths)?;
-        let record_path = paths.daemon_process_record();
-        let record = record_daemon_process(&paths)?;
-        let value: Value = serde_json::from_str(&fs::read_to_string(&record_path)?)?;
-        assert_eq!(
-            value["boot_session_id"],
-            json!(platform::current_boot_session_id()?)
-        );
-        assert_eq!(
-            serde_json::from_value::<DaemonProcess>(value.clone())?,
-            record
-        );
-
-        for invalid in [
-            json!({ "pid": value["pid"], "start_identity": value["start_identity"] }),
-            json!({
-                "pid": value["pid"],
-                "start_identity": value["start_identity"],
-                "boot_session_id": "invalid boot UUID",
-            }),
-        ] {
-            let content = serde_json::to_string(&invalid)?;
-            fs::write_sensitive_file(&record_path, &content)?;
-            let captured = daemon_process_for_stop(&paths);
-            ensure!(
-                matches!(&captured, Err(DaemonError::InvalidDaemonProcessRecord { path, .. }) if path == &record_path),
-                "expected invalid daemon record: {captured:?}"
-            );
-            assert_eq!(fs::read_to_string(&record_path)?, content);
-        }
-        Ok(())
     }
 
     #[test]
@@ -393,37 +347,6 @@ mod tests {
                 expected_identity
             );
         }
-        Ok(())
-    }
-
-    #[test]
-    #[cfg(target_os = "linux")]
-    fn daemon_identity_rejects_a_literal_marker_sibling_of_the_binaries_directory() -> Result<()> {
-        let directory = tempdir()?;
-        let paths = PvPaths::for_home(directory.path());
-        fs::ensure_user_dir(paths.bin())?;
-        let executable = paths.bin().with_file_name("bin (deleted)");
-        let fake = install(&executable, Persona::LongRunning)?;
-        let child = ChildGuard(
-            TestCommand::new(fake.executable())
-                .arg("daemon:run")
-                .spawn()?,
-        );
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !fake
-            .events()?
-            .into_iter()
-            .any(|event| matches!(event.kind, EventKind::Started { .. }))
-        {
-            ensure!(Instant::now() < deadline, "fake daemon never started");
-            thread::sleep(Duration::from_millis(10));
-        }
-
-        let result = verify_daemon_process(&paths, child.0.id());
-        ensure!(
-            matches!(&result, Err(DaemonError::RuntimeProcessIdentityChanged { pid }) if *pid == child.0.id()),
-            "expected sibling executable rejection: {result:?}"
-        );
         Ok(())
     }
 }

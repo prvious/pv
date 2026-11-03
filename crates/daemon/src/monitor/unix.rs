@@ -643,9 +643,12 @@ async fn supervise_gate(
     };
     write_line(&mut gate, &permission).await?;
     pause(hooks, MonitorPause::AfterPermission).await;
-    let events = clock::timeout(&EXEC_TIMEOUT, confirm_exec(&mut watch, &mut gate, subject, pid, hooks, gate_program))
-        .await
-        .map_err(|_elapsed| startup_failed(subject, "the runtime did not start in time"))??;
+    let events = clock::timeout(
+        &EXEC_TIMEOUT,
+        confirm_exec(&mut watch, &mut gate, subject, pid, hooks, gate_program),
+    )
+    .await
+    .map_err(|_elapsed| startup_failed(subject, "the runtime did not start in time"))??;
     let exit = events.exit.map(MonitorExit::from);
     // Stop watching once the exit is known; the leader stays unreaped until cleanup.
     let watch = exit.is_none().then_some(watch);
@@ -742,7 +745,7 @@ async fn confirm_exec(
             ));
         }
         pause(hooks, MonitorPause::AfterGateEof).await;
-        sleep(POLL_INTERVAL).await;
+        clock::poll(POLL_INTERVAL).await;
     }
 }
 

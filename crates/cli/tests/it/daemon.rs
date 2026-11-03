@@ -411,16 +411,16 @@ fn daemon_disable_stops_live_runtimes_without_a_plist_or_database() -> anyhow::R
     // The descendant belongs to the fake, not to this test process. Its signal
     // handler exits 0, while parent-pipe cleanup can instead kill it with SIGKILL.
     // Native observation must report one of those two fixture outcomes.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = real::now() + Duration::from_secs(5);
     let status = loop {
         if let Some(status) = watch.try_exit_status()? {
             break status;
         }
         ensure!(
-            Instant::now() < deadline,
+            real::now() < deadline,
             "descendant exit event never arrived"
         );
-        thread::sleep(Duration::from_millis(10));
+        clock::poll_blocking(Duration::from_millis(10));
     };
     assert!(
         status.success() || status.signal() == Some(9),

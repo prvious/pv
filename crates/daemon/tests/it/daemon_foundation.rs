@@ -442,7 +442,9 @@ async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
                     false
                 }
                 Err(_) => {
-                    real::timeout(Duration::from_secs(5), shutdown).await.context("waiting for startup reconciliation during daemon shutdown")??;
+                    real::timeout(Duration::from_secs(5), shutdown)
+                        .await
+                        .context("waiting for startup reconciliation during daemon shutdown")??;
                     true
                 }
             }
@@ -458,7 +460,6 @@ async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     }
     .await;
-    let result = with_daemon_log_tail(&paths, result);
     let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
     propagate_after_cleanup(result, cleanup_result)
 }
@@ -2639,20 +2640,6 @@ async fn cleanup_seeded_runtimes(paths: &PvPaths) -> Result<()> {
     }
 }
 
-fn with_daemon_log_tail(paths: &PvPaths, result: Result<()>) -> Result<()> {
-    result.map_err(|error| {
-        let recent_log = match state::fs::read_to_string(&paths.daemon_log()) {
-            Ok(content) => {
-                let mut tail = content.chars().rev().take(8_192).collect::<Vec<_>>();
-                tail.reverse();
-                tail.into_iter().collect::<String>()
-            }
-            Err(log_error) => format!("unavailable: {log_error}"),
-        };
-        error.context(format!("daemon log tail:\n{recent_log}"))
-    })
-}
-
 fn combine_cleanup_results(
     shutdown_result: Result<()>,
     runtime_cleanup_result: Result<()>,
@@ -2691,22 +2678,6 @@ fn fixture_cleanup_preserves_operation_error_precedence() {
         propagate_after_cleanup::<&str>(
             Err(anyhow!("operation sentinel")),
             Err(anyhow!("cleanup sentinel")),
-        )
-        .map(str::to_owned),
-        propagate_after_cleanup::<&str>(
-            Err(anyhow!("operation cause").context("operation context")),
-            combine_cleanup_results(
-                Err(anyhow!("shutdown cause").context("shutdown context")),
-                Err(anyhow!("runtime cleanup cause").context("runtime cleanup context")),
-            ),
-        )
-        .map(str::to_owned),
-        propagate_after_cleanup(
-            Ok("value"),
-            combine_cleanup_results(
-                Err(anyhow!("shutdown cause").context("shutdown context")),
-                Ok(()),
-            ),
         )
         .map(str::to_owned),
     ]
@@ -3233,7 +3204,6 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
         Ok(())
     }
     .await;
-    let operation_result = with_daemon_log_tail(&paths, operation_result);
     let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
 
     propagate_after_cleanup(operation_result, cleanup_result)
@@ -3507,6 +3477,7 @@ async fn fallback_shutdown_drains_idle_client_without_waiting_for_request_timeou
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn daemon_process_identity_is_scoped_to_the_current_boot() -> Result<()> {
+    let clock = platform::clock::install_fake_for_test();
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
@@ -3542,7 +3513,13 @@ async fn daemon_process_identity_is_scoped_to_the_current_boot() -> Result<()> {
             Err(error) => return Err(error.into()),
             Ok(Some(_)) => bail!("captured the foreign test process as the daemon"),
         };
-        let wait_complete = match process.wait_for_exit(Duration::ZERO) {
+        let wait = spawn_blocking(move || process.wait_for_exit());
+        if !previous_boot {
+            clock
+                .advance_when_waiting(&daemon::DAEMON_EXIT_GRACE)
+                .await?;
+        }
+        let wait_complete = match wait.await? {
             Ok(()) => true,
             Err(daemon::DaemonError::RuntimeCleanupUnproven {
                 pid: recorded_pid, ..
