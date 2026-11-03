@@ -1,6 +1,6 @@
 [package]
 name = "pv"
-version = "0.2.9"
+version.workspace = true
 edition = "2024"
 publish = false
 
@@ -22,6 +22,7 @@ members = [
 resolver = "3"
 
 [workspace.package]
+version = "0.2.9"
 edition = "2024"
 publish = false
 
