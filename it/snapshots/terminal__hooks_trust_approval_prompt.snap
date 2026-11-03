@@ -1,0 +1,10 @@
+---
+source: it/terminal.rs
+expression: session.screen()
+---
+⚠  Hook commands not approved for <tempdir>/acme
+   prepare  touch prepared
+   setup    touch set-up # \u{1b}[2K\u{d}hidden
+◆  Remember the approval without running hooks?
+│  ○ Yes / ● No
+└  y yes · n no · enter accepts the highlighted answer

@@ -12,6 +12,7 @@ use camino_tempfile::tempdir;
 use insta::assert_snapshot;
 use platform::clock::{self, real};
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
+use state::{Database, LinkProjectInput, ProjectMode, PvPaths};
 use support::{create_dir, create_laravel_init_fixture, run_pv_in, write_file};
 
 mod support;
@@ -232,6 +233,184 @@ fn link_asks_once_to_approve_hooks_and_remembers_the_answer() -> Result<()> {
         );
     }
 
+    Ok(())
+}
+
+#[test]
+fn hooks_trust_approves_exact_commands_without_running_or_linking() -> Result<()> {
+    let mut settings = insta::Settings::clone_current();
+    // macOS temporary paths can wrap this heading before the path is redacted.
+    settings.add_filter(
+        "Hook commands not approved for\n +",
+        "Hook commands not approved for ",
+    );
+    let _settings = settings.bind_to_scope();
+    let directory = tempdir()?;
+    let home = directory.path().join("home");
+    let project = directory.path().join("acme");
+    create_dir(&project)?;
+    let config = "serve: false\nhooks:\n  prepare:\n    - touch prepared\n  setup:\n    - \"touch set-up # \\e[2K\\rhidden\"\n";
+    write_file(&project.join("pv.yml"), config)?;
+    let mut session = Session::spawn(&["hooks:trust"], &project, &home)?;
+    session.wait_for(CONFIRM_HINT)?;
+    assert_screen_snapshot("hooks_trust_approval_prompt", directory.path(), &session);
+    session.press("y")?;
+    session.wait_for("no hooks were run")?;
+    assert_eq!(session.wait_for_exit()?, 0);
+    assert!(session.cursor_visible());
+    let mut database = Database::open(&PvPaths::for_home(&home))?;
+    let folder = state::fs::canonicalize(&project)?;
+    let commands = vec![
+        "touch prepared".to_owned(),
+        "touch set-up # \u{1b}[2K\rhidden".to_owned(),
+    ];
+    assert!(
+        database
+            .unapproved_hook_commands(&folder, &commands)?
+            .is_empty()
+    );
+    assert!(database.projects()?.is_empty());
+    assert!(database.recent_jobs()?.is_empty());
+    assert!(!project.join("prepared").exists());
+    assert!(!project.join("set-up").exists());
+    assert!(!project.join(".env").exists());
+    assert_eq!(state::fs::read_to_string(&project.join("pv.yml"))?, config);
+
+    // A linked Project can review an edit without changing its registration or running hooks.
+    let linked = database
+        .link_project_with_mode(
+            LinkProjectInput {
+                path: folder.clone(),
+                original_path: folder.clone(),
+                primary_hostname: "acme.test".to_owned(),
+                config_path: folder.join("pv.yml"),
+                desired_php_track: None,
+            },
+            ProjectMode::ResourceOnly,
+        )?
+        .project;
+    database.record_finished_job(
+        "hooks",
+        &format!("project:{}", linked.id),
+        Ok("setup skipped: hook commands aren't approved"),
+        &[],
+    )?;
+    let jobs = database.recent_jobs()?;
+    write_file(&project.join(".env"), "APP_KEY=existing-project-value\n")?;
+    write_file(
+        &project.join("pv.yml"),
+        "serve: false\nhooks:\n  setup:\n    - touch prepared\n    - touch edited\n",
+    )?;
+    let mut edited = Session::spawn(&["hooks:trust"], &project, &home)?;
+    edited.wait_for(CONFIRM_HINT)?;
+    assert_screen_snapshot("hooks_trust_edited_command", directory.path(), &edited);
+    edited.press("y")?;
+    edited.wait_for("no hooks were run")?;
+    assert_eq!(edited.wait_for_exit()?, 0);
+    assert!(!project.join("edited").exists());
+    assert_eq!(database.projects()?, vec![linked]);
+    assert_eq!(database.recent_jobs()?, jobs);
+    assert_eq!(
+        state::fs::read_to_string(&project.join(".env"))?,
+        "APP_KEY=existing-project-value\n"
+    );
+
+    // Removing/reordering commands or moving them between phases needs no approval.
+    write_file(
+        &project.join("pv.yml"),
+        "serve: false\nhooks:\n  prepare:\n    - touch edited\n    - touch prepared\n",
+    )?;
+    let repeated = run_pv_in(&["hooks:trust"], &project, &home)?;
+    assert!(repeated.status.success());
+    assert!(repeated.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(repeated.stdout)?,
+        "All Project hook commands are approved; no hooks were run\n"
+    );
+    Ok(())
+}
+
+#[test]
+fn hooks_trust_decline_default_and_cancellation_save_no_approvals() -> Result<()> {
+    for (key, exit_code) in [("n", 0), (ENTER, 0), (ESCAPE, 130), (CTRL_C, 130)] {
+        let directory = tempdir()?;
+        let home = directory.path().join("home");
+        let project = directory.path().join("acme");
+        create_dir(&project)?;
+        write_file(
+            &project.join("pv.yml"),
+            "serve: false\nhooks:\n  prepare:\n    - touch prepared\n",
+        )?;
+        let mut session = Session::spawn(&["hooks:trust"], &project, &home)?;
+        session.wait_for(CONFIRM_HINT)?;
+        session.press(key)?;
+        session.wait_for(if exit_code == 130 {
+            "Cancelled."
+        } else {
+            "Hook approval skipped"
+        })?;
+        assert_eq!(session.wait_for_exit()?, exit_code);
+        assert!(session.cursor_visible());
+        let database = Database::open(&PvPaths::for_home(&home))?;
+        let commands = vec!["touch prepared".to_owned()];
+        assert_eq!(
+            database.unapproved_hook_commands(&state::fs::canonicalize(&project)?, &commands)?,
+            commands
+        );
+        assert!(database.projects()?.is_empty());
+        assert!(database.recent_jobs()?.is_empty());
+        assert!(!project.join("prepared").exists());
+    }
+    Ok(())
+}
+
+#[test]
+fn hooks_trust_worktree_uses_its_main_checkout_project_folder() -> Result<()> {
+    let directory = tempdir()?;
+    let root = state::fs::canonicalize(directory.path())?;
+    let home = root.join("home");
+    let main = root.join("main");
+    let worktree = root.join("elsewhere/feature");
+    let entry = main.join(".git/worktrees/feature");
+    create_dir(&entry)?;
+    create_dir(&worktree)?;
+    write_file(&entry.join("commondir"), "../..\n")?;
+    write_file(&entry.join("gitdir"), &format!("{worktree}/.git\n"))?;
+    write_file(&worktree.join(".git"), &format!("gitdir: {entry}\n"))?;
+    let config = "serve: false\nhooks:\n  prepare:\n    - touch prepared\n";
+    let main_project = main.join("apps/web");
+    let worktree_project = worktree.join("apps/web");
+    for project in [&main_project, &worktree_project] {
+        create_dir(project)?;
+        write_file(&project.join("pv.yml"), config)?;
+    }
+    let mut session = Session::spawn(&["hooks:trust"], &worktree_project, &home)?;
+    session.wait_for(CONFIRM_HINT)?;
+    session.press("y")?;
+    session.wait_for("no hooks were run")?;
+    assert_eq!(session.wait_for_exit()?, 0);
+    let database = Database::open(&PvPaths::for_home(&home))?;
+    let commands = vec!["touch prepared".to_owned()];
+    assert!(
+        database
+            .unapproved_hook_commands(&main_project, &commands)?
+            .is_empty()
+    );
+    assert_eq!(
+        database.unapproved_hook_commands(&worktree_project, &commands)?,
+        commands
+    );
+    assert_eq!(
+        database.unapproved_hook_commands(&main, &commands)?,
+        commands
+    );
+    let repeated = run_pv_in(&["hooks:trust"], &main_project, &home)?;
+    assert!(repeated.status.success());
+    assert!(repeated.stderr.is_empty());
+    assert!(database.projects()?.is_empty());
+    assert!(database.recent_jobs()?.is_empty());
+    assert!(!main_project.join("prepared").exists());
+    assert!(!worktree_project.join("prepared").exists());
     Ok(())
 }
 

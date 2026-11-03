@@ -1509,8 +1509,9 @@ PV runs a hook command only after the user has approved its exact text for the P
 - **Exact commands.** Each approval is one command's exact text. A changed or new command needs approval; removing or reordering commands doesn't.
 - **All or nothing.** Hooks run only when every command in both lists is approved. Otherwise PV skips both lists.
 - **Linking never waits for approval.** A Project whose hooks aren't approved is linked and provisioned as if it had no hooks.
-- **Only `pv link` in a terminal approves.** It lists the unapproved commands with their phase on stderr, next to the prompt, showing every character outside printable ASCII as an escape such as `\u{1b}` or `\u{200b}` and backslashes doubled, so control sequences, invisible characters and look-alike letters can't make two commands look the same, and asks once. The exact text is still what's approved and run. Yes approves them and runs the hooks. No, or no terminal, links the Project without hooks, warns which commands were skipped and that `pv link` in a terminal reviews them, and exits zero. There is no `--yes` and no separate approval command.
-- **The daemon never asks.** A discovered worktree whose hooks aren't all approved is linked without `prepare`, and its `setup` is skipped. Each skipped daemon run completes with a summary that names `pv link` in the worktree, and records no coverage, so it shows in `pv jobs` but not as a failure. After approving through `pv link` in the worktree, its hooks run there.
+- **Terminal approval.** `pv link` and `pv hooks:trust` list the unapproved commands with their phase on stderr, next to the prompt, showing every character outside printable ASCII as an escape such as `\u{1b}` or `\u{200b}` and backslashes doubled, so control sequences, invisible characters and look-alike letters can't make two commands look the same, and ask once with default No. The exact text is still what's approved and run. There is no `--yes`. With `pv link`, Yes approves them and runs the hooks. No, or no terminal, links the Project without hooks, warns which commands were skipped and that `pv hooks:trust` in a terminal reviews them, and exits zero.
+- **Trust without execution.** `pv hooks:trust` reads and validates config in the current Project directory, using the same canonical Project root and approval folder as `pv link`. It needs neither a linked Project nor a running daemon. Yes saves approvals only; No or no terminal saves none, reports the skipped approval, and exits zero. Escape or Ctrl-C cancels with status 130. Empty hooks and already-approved hooks succeed without prompting. It does not capture the login-shell environment, run hooks, link or reconcile a Project, provision resources, or run framework setup/migrations. It uses the normal mutation lifecycle/update preflight. Saving approval does not retry a previously skipped hook run: use `pv link` when ready to run hooks. Independently scheduled discovery may still use newly approved commands under the existing lifecycle below.
+- **The daemon never asks.** A discovered worktree whose hooks aren't all approved is linked without `prepare`, and its `setup` is skipped. Each skipped daemon run completes with a summary that names `pv hooks:trust` in the worktree, and records no coverage, so it shows in `pv jobs` but not as a failure. After approval, `pv link` runs its hooks there; approval alone does not replay a skipped run.
 - **Approval covers a command's text, not the files it runs.** An approved `./bin/setup` runs whatever that script contains.
 
 ### When hooks run
@@ -1519,6 +1520,7 @@ PV runs a hook command only after the user has approved its exact text for the P
 |---|---|---|
 | `pv link`, first or again | Yes, in the terminal, before PV records the Project | Yes, in the terminal, after the accepted reconciliation job succeeds |
 | `pv link --skip-hooks` | No terminal hooks | No terminal hooks; daemon setup still runs on a discovered Project's first-success transition |
+| `pv hooks:trust` | No | No |
 | Discovery links a new worktree | Yes, in the daemon, after the env copy and before linking | Yes, in the daemon, after the Project's first successful reconciliation |
 | Editing `pv.yml`, any other reconciliation, daemon start, `pv setup`, `pv update`, `git worktree move` | No | No |
 
@@ -1909,6 +1911,7 @@ Every terminal row in `design.pen` maps to one command state. "Stream" names whe
 | command                  | what it does                                                                                                      |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------- |
 | pv link [path] [--hostname <hostname>] [--skip-hooks] | Register a Project, run declared hooks, and request daemon reconciliation                                                    |
+| pv hooks:trust           | Review and approve the current Project's hook commands without running them                                       |
 | pv open [hostname]       | Opens a Project in the browser                                                                                    |
 | pv project:env [selector] [--json] | Print generated Project environment values without editing the configured env file                          |
 | pv list [--json]         | List linked Projects with PHP, declared Managed Resource demand, env status, and currently known serving status    |

@@ -1,0 +1,11 @@
+---
+source: it/cli.rs
+expression: output
+---
+CommandOutput {
+    code: Some(
+        0,
+    ),
+    stdout: "",
+    stderr: "Hook commands not approved for <tempdir>/acme\n  prepare  touch prepared\n  setup    touch set-up\nwarning: Hook approval skipped; run `pv hooks:trust` here in a terminal to review the commands\n",
+}

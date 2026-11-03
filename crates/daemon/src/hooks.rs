@@ -360,7 +360,7 @@ impl DaemonHooks {
                 database.complete_job(
                     &run.job_id,
                     &format!(
-                        "{} skipped: hook commands aren't approved; run `pv link` in {} to review them",
+                        "{} skipped: hook commands aren't approved; run `pv hooks:trust` in {} to review them",
                         run.phase, run.project_path
                     ),
                 )?;

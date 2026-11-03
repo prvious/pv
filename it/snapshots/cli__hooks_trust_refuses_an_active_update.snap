@@ -1,0 +1,11 @@
+---
+source: it/cli.rs
+expression: output
+---
+CommandOutput {
+    code: Some(
+        1,
+    ),
+    stdout: "",
+    stderr: "error: PV self-update/daemon mutation coordination is active; the OS lock is held on <tempdir>/home/.pv/run/update.lock\n",
+}
