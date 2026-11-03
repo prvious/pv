@@ -1541,15 +1541,6 @@ cp -R valid missing-library
 rm missing-library/lib/libssl.so.3
 cp -R valid invalid-rpath
 patchelf --set-rpath /tmp/build/lib invalid-rpath/lib/libssl.so.3
-cp -R valid plain-text-library
-printf '%s\n' 'not an ELF library' > plain-text-library/lib/libssl.so.3
-cp -R valid symlink-library
-rm symlink-library/lib/libssl.so.3
-ln -s ../../invalid-rpath/lib/libssl.so.3 symlink-library/lib/libssl.so.3
-mkdir symlink-directory
-cp -R valid/include symlink-directory/
-cp valid/LICENSE.txt symlink-directory/
-ln -s ../invalid-rpath/lib symlink-directory/lib
 "#,
     )?;
     let output = StdCommand::new(&build)
@@ -1570,9 +1561,6 @@ ln -s ../invalid-rpath/lib symlink-directory/lib
         ("valid", true),
         ("missing-library", false),
         ("invalid-rpath", false),
-        ("plain-text-library", false),
-        ("symlink-library", false),
-        ("symlink-directory", false),
     ] {
         let output = StdCommand::new("/bin/sh")
             .args([

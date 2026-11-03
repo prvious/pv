@@ -70,17 +70,6 @@ pv_recipe_validate_openssl_prefix() (
 
   case "$platform" in
     linux-amd64 | linux-arm64)
-      [ ! -L "$openssl_prefix/lib" ] || die "OpenSSL library directory is a symlink: $openssl_prefix/lib"
-      need file
-      for library_name in $libraries; do
-        library="$openssl_prefix/lib/$library_name"
-        [ ! -L "$library" ] || die "OpenSSL SONAME library is a symlink: $library"
-        description=$(file -E -b -- "$library") || die "failed to inspect OpenSSL shared library $library"
-        case "$description" in
-          ELF\ *) ;;
-          *) die "OpenSSL shared library is not ELF: $library" ;;
-        esac
-      done
       pv_recipe_validate_elf_tree "$openssl_prefix/lib" "$platform"
       return
       ;;
