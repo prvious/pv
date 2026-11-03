@@ -380,10 +380,14 @@ async fn read_unit_status(
         if active_state != "inactive" {
             dns_unit_job(manager, "StopUnit").await?;
         }
-        manager
+        match manager
             .call::<_, _, ()>("ResetFailedUnit", &(UNIT_NAME,))
             .await
-            .map_err(bus_error)?;
+        {
+            Ok(()) => {}
+            Err(error) if is_method_error(&error, "org.freedesktop.systemd1.NoSuchUnit") => {}
+            Err(error) => return Err(bus_error(error)),
+        }
         return Ok(None);
     }
     Ok(Some(UnitStatus {
