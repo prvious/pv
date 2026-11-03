@@ -1,7 +1,8 @@
+use platform::clock::{self, real};
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixListener;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use serde_json::json;
@@ -22,15 +23,15 @@ impl DaemonFixture {
         let thread = thread::Builder::new()
             .name("dns-cli-health".to_owned())
             .spawn(move || {
-                let started = Instant::now();
+                let started = real::now();
                 let mut stream = loop {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,
                         Err(error)
                             if error.kind() == io::ErrorKind::WouldBlock
-                                && started.elapsed() < Duration::from_secs(3) =>
+                                && real::elapsed(started) < Duration::from_secs(3) =>
                         {
-                            thread::sleep(Duration::from_millis(10))
+                            clock::poll_blocking(Duration::from_millis(10))
                         }
                         Err(error) => return Err(error.into()),
                     }

@@ -2,7 +2,7 @@ use std::io;
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use platform::{PlatformError, ResolverConfig, ResolverFileState};
+use platform::{ResolverConfig, ResolverFileState};
 use state::{Database, PortOwner, PortRequest, PvPaths, StateError};
 
 use crate::environment::Environment;
@@ -10,7 +10,7 @@ use crate::error::{CliError, ExecuteError};
 use crate::output::{Line, Mark, Output, Streams};
 
 #[cfg(target_os = "linux")]
-pub(super) const RESOLVER_CONFLICT_GUIDANCE: &str = "Ask an administrator to inspect pv-dns.service and its overrides, pv0 ownership, and competing test search or routing domains, including subdomains. Repair conflicts before retrying `pv dns:install`; `pv dns:uninstall` removes only PV-owned configuration. For a retained unit cache, run `sudo systemctl daemon-reload` before retrying.";
+pub(super) const RESOLVER_CONFLICT_GUIDANCE: &str = "Ask an administrator to inspect pv-dns.service, pv0 ownership, and competing test search or routing domains, including subdomains. Repair conflicts before retrying `pv dns:install`; `pv dns:uninstall` removes only PV-owned configuration.";
 
 pub(crate) fn status(
     environment: &impl Environment,
@@ -117,9 +117,7 @@ fn install_inner(
         }
         ResolverFileState::Missing { path } | ResolverFileState::Stale { path, .. } => {
             if let Err(error) = environment.install_resolver_config(&prepared_path, &system_path) {
-                if resolver_apply_cannot_have_changed_state(&error) {
-                    release_new_dns_port(&mut database, had_dns_assignment)?;
-                }
+                release_new_dns_port(&mut database, had_dns_assignment)?;
 
                 return Err(error.into());
             }
@@ -136,21 +134,6 @@ fn install_inner(
     }
 
     Ok(ExitCode::SUCCESS)
-}
-
-fn resolver_apply_cannot_have_changed_state(error: &PlatformError) -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        !matches!(
-            error,
-            PlatformError::ResolverMutation { .. } | PlatformError::SystemIntegration(_)
-        )
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = error;
-        true
-    }
 }
 
 fn release_new_dns_port(
@@ -214,8 +197,6 @@ pub(crate) fn uninstall(
 
     match system_state {
         ResolverFileState::Missing { path } => {
-            #[cfg(target_os = "linux")]
-            environment.remove_resolver_config(&system_path)?;
             output.note(Line::field(
                 "System resolver config already absent: ",
                 &path,

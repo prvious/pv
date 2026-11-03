@@ -1239,20 +1239,7 @@ fn call_helper(
         operation,
     };
     write_message(&mut stream, &request)?;
-    let response: Result<HelperResponse, PlatformError> = read_message(&mut stream);
-    #[cfg(target_os = "linux")]
-    let response = response.map_err(|source| {
-        let operation = match request.operation {
-            HelperOperation::DnsApply { .. } => "apply",
-            HelperOperation::DnsRemove => "remove",
-            _ => return source,
-        };
-        PlatformError::ResolverMutation {
-            operation,
-            source: Box::new(source),
-        }
-    });
-    let response = response?;
+    let response: HelperResponse = read_message(&mut stream)?;
 
     if response.protocol_version != HELPER_PROTOCOL_VERSION {
         return Err(PlatformError::PrivilegedHelperProtocolMismatch {
@@ -1986,8 +1973,6 @@ fn helper_error_code(error: &PlatformError) -> HelperErrorCode {
         PlatformError::PrivilegedHelperAuthentication(_) => HelperErrorCode::AuthenticationFailed,
         PlatformError::PrivilegedHelperProtocolMismatch { .. } => HelperErrorCode::ProtocolMismatch,
         PlatformError::PrivilegedHelperRejected { .. } => HelperErrorCode::InvalidRequest,
-        #[cfg(target_os = "linux")]
-        PlatformError::ResolverMutation { .. } => HelperErrorCode::SystemIntegrationFailed,
         PlatformError::SystemIntegration(_)
         | PlatformError::Unsupported { .. }
         | PlatformError::SystemIntegrationCommand { .. }
@@ -2015,8 +2000,6 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use anyhow::anyhow;
     use camino_tempfile::tempdir;
-    #[cfg(target_os = "linux")]
-    use insta::assert_snapshot;
     #[cfg(target_os = "macos")]
     use insta::{Settings, assert_debug_snapshot};
     #[cfg(target_os = "macos")]

@@ -669,8 +669,12 @@ async fn job(manager: &Proxy<'_>, operation: &str, unit: &str) -> Result<(), Pla
         .await
         .ok_or_else(|| installation_error(format!("systemd {operation} {unit} timed out")))?
         .map_err(bus_error)?;
-    if result == "done" { Ok(()) } else {
-        Err(installation_error(format!("systemd {operation} {unit} finished with {result}")))
+    if result == "done" {
+        Ok(())
+    } else {
+        Err(installation_error(format!(
+            "systemd {operation} {unit} finished with {result}"
+        )))
     }
 }
 

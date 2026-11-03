@@ -1,8 +1,5 @@
 #![cfg(target_os = "linux")]
 
-#[path = "support/daemon_health.rs"]
-mod daemon_health;
-
 use std::cell::RefCell;
 use std::ffi::OsString;
 use std::io;
@@ -13,7 +10,6 @@ use anyhow::{Result, anyhow};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
-use daemon_health::DaemonFixture;
 use insta::{Settings, assert_debug_snapshot};
 use platform::{
     ActivePfRedirectInspection, DaemonRegistrationStatus, KeychainCertificate, LowPortInspection,
@@ -32,7 +28,6 @@ enum Operation {
 struct TestEnvironment {
     home: Utf8PathBuf,
     resolver: RefCell<ResolverFileState>,
-    apply_error: RefCell<Option<PlatformError>>,
     remove_error: RefCell<Option<PlatformError>>,
     operations: RefCell<Vec<Operation>>,
 }
@@ -44,7 +39,6 @@ impl TestEnvironment {
             resolver: RefCell::new(ResolverFileState::Missing {
                 path: SYSTEM_RESOLVER_TEST_PATH.into(),
             }),
-            apply_error: RefCell::new(None),
             remove_error: RefCell::new(None),
             operations: RefCell::new(Vec::new()),
         }
@@ -102,9 +96,6 @@ impl Environment for TestEnvironment {
         self.operations
             .borrow_mut()
             .push(Operation::Apply(config.port));
-        if let Some(error) = self.apply_error.borrow_mut().take() {
-            return Err(error);
-        }
         *self.resolver.borrow_mut() = ResolverFileState::Current {
             path: system_path.into(),
             port: config.port,
@@ -182,75 +173,7 @@ fn linux_dns_commands_refuse_helper_lifecycle_contention_before_mutation() -> Re
 }
 
 #[test]
-fn linux_dns_install_keeps_the_port_after_unknown_or_partial_apply_and_retries_it() -> Result<()> {
-    let directory = tempdir()?;
-    for (case, error) in [
-        ("unknown", unknown_outcome("apply")),
-        (
-            "partial",
-            PlatformError::SystemIntegration(
-                "fixture native apply failed after writing the unit".to_owned(),
-            ),
-        ),
-    ] {
-        let environment = TestEnvironment::new(&directory.path().join(case));
-        *environment.apply_error.borrow_mut() = Some(error);
-        let paths = environment.paths();
-        assert!(dns_port(&paths)?.is_none());
-        let daemon = DaemonFixture::start(&paths)?;
-        let first = run_pv(&["dns:install"], &environment)?;
-        assert_eq!(daemon.finish()?.len(), 1);
-        assert_eq!(first.exit_code, ExitCode::FAILURE);
-        let port =
-            dns_port(&paths)?.ok_or_else(|| anyhow!("uncertain DNS reservation was released"))?;
-        assert_eq!(
-            ResolverConfig::parse(&fs::read_to_string(&paths.resolver_config())?),
-            Some(ResolverConfig::new(port))
-        );
-        assert!(matches!(
-            *environment.resolver.borrow(),
-            ResolverFileState::Missing { .. }
-        ));
-        let daemon = DaemonFixture::start(&paths)?;
-        let retry = run_pv(&["dns:install"], &environment)?;
-        assert_eq!(daemon.finish()?.len(), 1);
-        assert_eq!(retry.exit_code, ExitCode::SUCCESS);
-        assert_eq!(dns_port(&paths)?, Some(port));
-        assert_eq!(
-            *environment.operations.borrow(),
-            vec![Operation::Apply(port), Operation::Apply(port)]
-        );
-        let mut settings = snapshot_settings(directory.path(), &[port]);
-        settings.set_snapshot_suffix(case);
-        settings.bind(|| assert_debug_snapshot!((first, retry)));
-    }
-    Ok(())
-}
-
-#[test]
-fn linux_dns_install_releases_a_new_port_after_an_unavailable_or_rejecting_helper() -> Result<()> {
-    let directory = tempdir()?;
-    for error in [
-        PlatformError::PrivilegedHelperUnavailable,
-        PlatformError::PrivilegedHelperRejected {
-            message: "fixture rejected before mutation".to_owned(),
-        },
-    ] {
-        let environment = TestEnvironment::new(&directory.path().join("home"));
-        *environment.apply_error.borrow_mut() = Some(error);
-        let paths = environment.paths();
-        let daemon = DaemonFixture::start(&paths)?;
-        let output = run_pv(&["dns:install"], &environment)?;
-        daemon.finish()?;
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(dns_port(&paths)?, None);
-        assert_eq!(environment.operations.borrow().len(), 1);
-    }
-    Ok(())
-}
-
-#[test]
-fn linux_dns_uninstall_waits_for_removal_even_when_inspection_is_missing() -> Result<()> {
+fn linux_dns_uninstall_skips_the_helper_when_native_configuration_is_missing() -> Result<()> {
     let directory = tempdir()?;
     let environment = TestEnvironment::new(&directory.path().join("home"));
     let paths = environment.paths();
@@ -259,17 +182,14 @@ fn linux_dns_uninstall_waits_for_removal_even_when_inspection_is_missing() -> Re
         &paths.resolver_config(),
         &ResolverConfig::new(port).render(),
     )?;
-    *environment.remove_error.borrow_mut() = Some(unknown_outcome("remove"));
+    *environment.remove_error.borrow_mut() = Some(PlatformError::PrivilegedHelperUnavailable);
     let first = run_pv(&["dns:uninstall"], &environment)?;
-    assert_eq!(first.exit_code, ExitCode::FAILURE);
+    assert_eq!(first.exit_code, ExitCode::SUCCESS);
     assert_eq!(dns_port(&paths)?, Some(port));
     let retry = run_pv(&["dns:uninstall"], &environment)?;
     assert_eq!(retry.exit_code, ExitCode::SUCCESS);
-    assert_eq!(dns_port(&paths)?, None);
-    assert_eq!(
-        *environment.operations.borrow(),
-        vec![Operation::Remove, Operation::Remove]
-    );
+    assert_eq!(dns_port(&paths)?, Some(port));
+    assert!(environment.operations.borrow().is_empty());
     assert!(!paths.resolver_config().exists());
     snapshot_settings(directory.path(), &[port]).bind(|| assert_debug_snapshot!((first, retry)));
     Ok(())
@@ -342,30 +262,8 @@ fn linux_dns_status_and_doctor_consume_native_states_without_mutation() -> Resul
 #[test]
 fn linux_dns_conflicts_require_manual_repair_and_do_not_mutate_system_state() -> Result<()> {
     let directory = tempdir()?;
-    let environment = TestEnvironment::new(&directory.path().join("home"));
-    let paths = environment.paths();
-    let port = pv_fake::seed_dns_port(&paths)?;
-    *environment.resolver.borrow_mut() = ResolverFileState::Conflict {
-        path: SYSTEM_RESOLVER_TEST_PATH.into(),
-    };
-    let install = run_pv(&["dns:install"], &environment)?;
-    *environment.remove_error.borrow_mut() = Some(PlatformError::PrivilegedHelperRejected {
-        message: "fixture refused foreign DNS ownership".to_owned(),
-    });
-    let uninstall = run_pv(&["dns:uninstall"], &environment)?;
-    assert_eq!(install.exit_code, ExitCode::FAILURE);
-    assert_eq!(uninstall.exit_code, ExitCode::FAILURE);
-    assert_eq!(dns_port(&paths)?, Some(port));
-    assert_eq!(*environment.operations.borrow(), [Operation::Remove]);
-    snapshot_settings(directory.path(), &[port])
-        .bind(|| assert_debug_snapshot!((install, uninstall)));
-    Ok(())
-}
-
-#[test]
-fn linux_dns_uninstall_delegates_uncertain_inspection_and_releases_only_after_success() -> Result<()>
-{
-    let directory = tempdir()?;
+    let mut observed = Vec::new();
+    let mut ports = Vec::new();
     for unreadable in [false, true] {
         for accepted in [false, true] {
             let case = format!(
@@ -392,6 +290,7 @@ fn linux_dns_uninstall_delegates_uncertain_inspection_and_releases_only_after_su
                         message: "fixture refused unsafe DNS removal".to_owned(),
                     });
             }
+            let install = run_pv(&["dns:install"], &environment)?;
             let output = run_pv(&["dns:uninstall"], &environment)?;
             assert_eq!(
                 output.exit_code,
@@ -401,24 +300,14 @@ fn linux_dns_uninstall_delegates_uncertain_inspection_and_releases_only_after_su
                     ExitCode::FAILURE
                 }
             );
-            assert_eq!(dns_port(&paths)?, (!accepted).then_some(port));
+            assert_eq!(dns_port(&paths)?, Some(port));
             assert_eq!(*environment.operations.borrow(), [Operation::Remove]);
-            let mut settings = snapshot_settings(directory.path(), &[port]);
-            settings.set_snapshot_suffix(case);
-            settings.bind(|| assert_debug_snapshot!(output));
+            ports.push(port);
+            observed.push((case, install, output));
         }
     }
+    snapshot_settings(directory.path(), &ports).bind(|| assert_debug_snapshot!(observed));
     Ok(())
-}
-
-fn unknown_outcome(operation: &'static str) -> PlatformError {
-    PlatformError::ResolverMutation {
-        operation,
-        source: Box::new(PlatformError::PrivilegedHelperIo(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "fixture response lost after request",
-        ))),
-    }
 }
 
 fn dns_port(paths: &PvPaths) -> Result<Option<u16>> {

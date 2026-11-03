@@ -4,9 +4,9 @@ use std::net::Ipv4Addr;
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
 
+use crate::PlatformError;
 #[cfg(target_os = "macos")]
 use crate::command::run_system_command;
-use crate::{PlatformError, PlatformTarget};
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -24,21 +24,11 @@ pub const SYSTEM_RESOLVER_TEST_PATH: &str = "/etc/systemd/system/pv-dns.service"
 pub const SYSTEM_RESOLVER_TEST_PATH: &str = "/etc/resolver/test";
 const PV_MARKER: &str = "# Managed by PV";
 const PREPARED_MARKER: &str = "# Source: PV prepared resolver configuration";
-const NATIVE_DNS_TARGET: PlatformTarget = if cfg!(target_os = "linux") {
-    PlatformTarget::Linux
-} else {
-    PlatformTarget::Macos
-};
-
 /// Fixed DNS listener address; DNS A answers remain `127.0.0.1` on every platform.
-pub const DNS_LISTEN_ADDRESS: Ipv4Addr = dns_address_for_target(NATIVE_DNS_TARGET);
-
-const fn dns_address_for_target(target: PlatformTarget) -> Ipv4Addr {
-    match target {
-        PlatformTarget::Linux => Ipv4Addr::new(127, 0, 0, 2),
-        PlatformTarget::Macos | PlatformTarget::Windows => Ipv4Addr::LOCALHOST,
-    }
-}
+#[cfg(target_os = "linux")]
+pub const DNS_LISTEN_ADDRESS: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
+#[cfg(not(target_os = "linux"))]
+pub const DNS_LISTEN_ADDRESS: Ipv4Addr = Ipv4Addr::LOCALHOST;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ResolverConfig {
@@ -74,26 +64,18 @@ impl ResolverConfig {
     }
 
     pub fn render(&self) -> String {
-        self.render_for_target(NATIVE_DNS_TARGET)
-    }
-
-    pub fn render_for_target(&self, target: PlatformTarget) -> String {
         format!(
             "{PV_MARKER}\n{PREPARED_MARKER}\nnameserver {}\nport {}\n",
-            dns_address_for_target(target),
+            Ipv4Addr::LOCALHOST,
             self.port
         )
     }
 
     pub fn parse(content: &str) -> Option<Self> {
-        Self::parse_for_target(content, NATIVE_DNS_TARGET)
-    }
-
-    pub fn parse_for_target(content: &str, target: PlatformTarget) -> Option<Self> {
         let mut port = None;
         let mut has_nameserver = false;
         let mut active_line_count = 0;
-        let nameserver = format!("nameserver {}", dns_address_for_target(target));
+        let nameserver = format!("nameserver {}", Ipv4Addr::LOCALHOST);
 
         for line in content.lines().map(str::trim) {
             if line.is_empty() || line.starts_with('#') {
