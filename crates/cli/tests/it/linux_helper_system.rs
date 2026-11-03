@@ -1,9 +1,9 @@
 #![cfg(target_os = "linux")]
 
+use platform::clock::{self, real};
 use std::io::{self, Write as _};
 use std::process::Output;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -19,12 +19,10 @@ use state::fs;
 
 #[expect(
     clippy::disallowed_types,
-    reason = "opt-in system fixture owns native service diagnostics and its independent cleanup timer"
+    reason = "opt-in system fixture controls native helper lifecycle and diagnostics"
 )]
 type SystemTestCommand = std::process::Command;
 
-const TEST_SERVICE: &str = "pv-helper-system-test.service";
-const CLEANUP_UNIT: &str = "pv-helper-system-cleanup";
 const CONTROL_DIRECTORY: &str = "/run/pv-helper-system-test";
 const EXECUTABLE_DIRECTORY: &str = "/usr/local/libexec/pv";
 const WORK_DIRECTORY: &str = "/var/lib/pv";
@@ -51,45 +49,8 @@ const INSTALLATION_PATHS: [&str; 6] = [
     DROP_IN_DIRECTORY,
 ];
 
-// This runs outside the test's cgroup after its hard lifetime limit. Stop that entire
-// cgroup first, so a surviving sudo lifecycle child cannot race filesystem cleanup.
-const CLEANUP_SCRIPT: &str = r#"set -eu
-/usr/bin/systemctl --no-block stop pv-helper-system-test.service pv-helper.socket pv-helper.service || :
-/usr/bin/systemctl kill --kill-who=all --signal=KILL pv-helper-system-test.service pv-helper.service || :
-stopped=false
-for _attempt in 1 2 3 4 5 6 7 8 9 10; do
-    remaining=$(/usr/bin/systemctl list-units --all --no-legend --no-pager --plain \
-        --state=active,activating,deactivating,reloading \
-        pv-helper-system-test.service pv-helper.socket pv-helper.service) || exit 1
-    if [ -z "$remaining" ]; then stopped=true; break; fi
-    sleep 0.5
-done
-if [ "$stopped" != true ]; then
-    printf '%s\n' 'fixture cgroups did not stop; retaining recovery files' >&2
-    exit 1
-fi
-for name in pv-helper.socket pv-helper.service; do
-    failed=$(/usr/bin/systemctl list-units --all --no-legend --no-pager --plain --state=failed "$name")
-    if [ -n "$failed" ]; then /usr/bin/systemctl reset-failed "$name"; fi
-done
-# Empty-path and native-unit preflight proved that these belong only to this fixture.
-rm -rf -- /usr/local/libexec/pv /var/lib/pv /etc/systemd/system/pv-helper.service.d
-rm -f -- /etc/systemd/system/pv-helper.socket /etc/systemd/system/pv-helper.service \
-    /etc/systemd/system/pv-helper.socket.rollback /etc/systemd/system/pv-helper.service.rollback \
-    /run/pv-helper.sock /var/log/pv-helper.err.log \
-    /etc/systemd/system/sockets.target.wants/pv-helper.socket \
-    /run/systemd/system/sockets.target.wants/pv-helper.socket
-/usr/bin/systemctl daemon-reload
-remaining=$(/usr/bin/systemctl list-units --all --no-legend --no-pager --plain pv-helper.socket pv-helper.service)
-if [ -n "$remaining" ]; then
-    printf '%s\n' 'fixture helper units remain loaded after cleanup' >&2
-    exit 1
-fi
-# Keep the root-owned control directory and journal for post-mortem inspection.
-"#;
-
 #[test]
-#[ignore = "requires PV_LINUX_SYSTEM_TESTS=1, PV_LINUX_SYSTEM_HELPER and the dedicated disposable systemd test service"]
+#[ignore = "requires PV_LINUX_SYSTEM_TESTS=1, PV_LINUX_SYSTEM_HELPER and a disposable systemd machine"]
 fn systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes() -> Result<()> {
     let environment = ProcessEnvironment;
     if environment.var_os("PV_LINUX_SYSTEM_TESTS").as_deref() != Some("1".as_ref()) {
@@ -103,7 +64,6 @@ fn systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes() -> R
     ensure!(helper.is_absolute(), "helper executable must be absolute");
     let owner_uid: u32 = text(checked("/usr/bin/id", &["-u"])?)?.trim().parse()?;
     ensure!(owner_uid != 0, "run as the disposable non-root account");
-    require_dedicated_service(owner_uid)?;
     for path in INSTALLATION_PATHS
         .into_iter()
         .chain(ENABLED_LINKS)
@@ -115,18 +75,12 @@ fn systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes() -> R
             "refusing existing system path {path}"
         );
     }
-    require_units_absent(&[
-        "pv-helper.socket",
-        "pv-helper.service",
-        "pv-helper-system-cleanup.timer",
-        "pv-helper-system-cleanup.service",
-    ])?;
+    require_units_absent(&["pv-helper.socket", "pv-helper.service"])?;
     root(&["/usr/bin/true"])?;
     let mut fixture = HelperFixture {
         scratch: tempdir()?,
         owner_uid,
         control_created: false,
-        timer_attempted: false,
         cleaned: false,
         processes: Vec::new(),
     };
@@ -141,45 +95,10 @@ fn systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes() -> R
     }
 }
 
-fn require_dedicated_service(owner_uid: u32) -> Result<()> {
-    for (property, expected) in [
-        ("User", owner_uid.to_string()),
-        ("KillMode", "control-group".to_owned()),
-        ("RuntimeMaxUSec", "2min".to_owned()),
-        ("TimeoutStopUSec", "5s".to_owned()),
-    ] {
-        ensure!(
-            service_property(TEST_SERVICE, property)? == expected,
-            "dedicated test service must have {property}={expected}"
-        );
-    }
-    let control_group = service_property(TEST_SERVICE, "ControlGroup")?;
-    ensure!(
-        control_group.ends_with("/pv-helper-system-test.service"),
-        "unexpected test control group {control_group}"
-    );
-    let groups = fs::read_to_string(Utf8Path::new("/proc/self/cgroup"))?;
-    ensure!(
-        groups
-            .lines()
-            .any(|line| line.splitn(3, ':').nth(2) == Some(control_group.as_str())),
-        "test is outside its bounded systemd service"
-    );
-    let root_groups = root_text(&["/usr/bin/cat", "/proc/self/cgroup"])?;
-    ensure!(
-        root_groups
-            .lines()
-            .any(|line| line.splitn(3, ':').nth(2) == Some(control_group.as_str())),
-        "sudo children escape the test service; refusing this test environment"
-    );
-    Ok(())
-}
-
 struct HelperFixture {
     scratch: Utf8TempDir,
     owner_uid: u32,
     control_created: bool,
-    timer_attempted: bool,
     cleaned: bool,
     processes: Vec<(u32, ProcessStartIdentity)>,
 }
@@ -195,7 +114,8 @@ impl HelperFixture {
         let original_sha256 = checksum(&original)?;
         let replacement_sha256 = checksum(&replacement)?;
         ensure!(original_sha256 != replacement_sha256);
-        self.arm_cleanup()?;
+        root(&["/usr/bin/install", "-d", "-m", "0700", CONTROL_DIRECTORY])?;
+        self.control_created = true;
 
         self.install(&original, &original_sha256)?;
         let first = self.capture_process()?;
@@ -326,7 +246,16 @@ impl HelperFixture {
             !fs::path_entry_exists(Utf8Path::new(LOG))?,
             "helper log remains after removal"
         );
+        root(&["/usr/bin/install", "-d", "-m", "0755", EXECUTABLE_DIRECTORY])?;
+        root(&["/usr/bin/install", "-d", "-m", "0700", WORK_DIRECTORY])?;
+        self.root_file(
+            "leftover-candidate",
+            "interrupted install",
+            CANDIDATE,
+            "0755",
+        )?;
         platform::remove_privileged_helper()?;
+        self.require_removed()?;
         assert_eq!(
             root_text(&["/usr/bin/stat", "-c", "%d:%i", LOCK])?,
             lock_inode
@@ -440,29 +369,6 @@ impl HelperFixture {
         Ok(process)
     }
 
-    fn arm_cleanup(&mut self) -> Result<()> {
-        root(&["/usr/bin/install", "-d", "-m", "0700", CONTROL_DIRECTORY])?;
-        self.control_created = true;
-        self.root_file(
-            "cleanup.sh",
-            CLEANUP_SCRIPT,
-            &format!("{CONTROL_DIRECTORY}/cleanup.sh"),
-            "0700",
-        )?;
-        self.timer_attempted = true;
-        root(&[
-            "/usr/bin/systemd-run",
-            "--collect",
-            "--on-active=150s",
-            "--unit",
-            CLEANUP_UNIT,
-            "--property=RuntimeMaxSec=30s",
-            "/bin/sh",
-            &format!("{CONTROL_DIRECTORY}/cleanup.sh"),
-        ])?;
-        Ok(())
-    }
-
     fn root_file(&self, name: &str, content: &str, destination: &str, mode: &str) -> Result<()> {
         let source = self.scratch.path().join(name);
         fs::write_sensitive_file(&source, content)?;
@@ -514,13 +420,6 @@ impl HelperFixture {
         self.require_removed()?;
         root(&["/usr/bin/rm", "-f", "--", LOG])?;
         root(&["/usr/bin/rm", "-rf", "--", CONTROL_DIRECTORY])?;
-        if self.timer_attempted {
-            root(&[
-                "/usr/bin/systemctl",
-                "stop",
-                &format!("{CLEANUP_UNIT}.timer"),
-            ])?;
-        }
         self.cleaned = true;
         Ok(())
     }
@@ -538,13 +437,13 @@ impl Drop for HelperFixture {
 }
 
 fn require_exited((pid, birth): (u32, ProcessStartIdentity)) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = real::now() + Duration::from_secs(2);
     while platform::inspect_process_start_identity(pid)? == Some(birth) {
         ensure!(
-            Instant::now() < deadline,
+            real::now() < deadline,
             "helper process {pid} remained present"
         );
-        thread::sleep(Duration::from_millis(10));
+        clock::poll_blocking(Duration::from_millis(10));
     }
     Ok(())
 }

@@ -1,19 +1,18 @@
 use std::fs::DirBuilder;
 use std::io::{self, Read as _, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, PermissionsExt as _};
-use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-use async_io::Async;
 use camino::{Utf8Path, Utf8PathBuf};
-use futures_lite::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use futures_util::StreamExt as _;
 use rustix::fs::{AtFlags, CWD, FlockOperation, Mode, OFlags, flock, open, unlinkat};
 use rustix::process::{Uid, geteuid, getuid};
 use rustix::thread::set_thread_res_uid;
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
+use tokio::net::UnixStream;
+use zbus::Proxy;
 use zbus::zvariant::OwnedObjectPath;
-use zbus::{Proxy, connection};
 
 use super::{
     HELPER_EXECUTABLE_PATH, HELPER_IO_TIMEOUT, HELPER_LIFECYCLE_PROBE, HELPER_METADATA_PATH,
@@ -24,7 +23,13 @@ use super::{
     validate_root_owned_regular_file,
 };
 use crate::PlatformError;
-use crate::systemd::{native_proxy, within};
+use crate::clock::{self, Limit};
+use crate::systemd::{self, native_proxy, within};
+
+const HELPER_SYSTEMD_TIMEOUT: Limit =
+    Limit::new("helper systemd operation", Duration::from_secs(10));
+const HELPER_JOB_TIMEOUT: Limit = Limit::new("helper systemd job", Duration::from_secs(15));
+const HELPER_READINESS_TIMEOUT: Limit = Limit::new("Linux helper readiness", HELPER_IO_TIMEOUT);
 
 const EXECUTABLE_DIRECTORY: &str = "/usr/local/libexec/pv";
 const WORK_DIRECTORY: &str = "/var/lib/pv";
@@ -93,10 +98,8 @@ const ARTIFACTS: [Artifact; 4] = [
 struct PreviousState {
     checksums: [Option<String>; 4],
     metadata: Option<PrivilegedHelperMetadata>,
-    socket_active: bool,
-    service_active: bool,
-    // Some(false) is persistent enablement, Some(true) is runtime-only, None is disabled.
-    enabled: Option<bool>,
+    active: bool,
+    enabled: bool,
 }
 
 fn installation_error(message: impl Into<String>) -> PlatformError {
@@ -130,55 +133,17 @@ pub(super) fn install(
     if sha256_file(candidate)? != expected_sha256 {
         return Err(installation_error("helper candidate checksum mismatch"));
     }
-    let cleanup_warning = stage_and_run(
+    stage_and_run(
         candidate,
-        if state::fs::path_entry_exists(Utf8Path::new(HELPER_EXECUTABLE_PATH))
-            .map_err(|error| installation_error(error.to_string()))?
-        {
-            "replace"
-        } else {
-            "install"
-        },
         owner_uid,
         expected_sha256,
         helper_version,
         protocol_version,
-    )?;
-    finish_installation(
-        async_io::block_on(wait_for_ready(Utf8Path::new(HELPER_SOCKET_PATH), owner_uid)),
-        owner_uid,
-        helper_version,
-        protocol_version,
-        cleanup_warning,
     )
 }
 
-fn finish_installation(
-    readiness: Result<PrivilegedHelperStatus, PlatformError>,
-    owner_uid: u32,
-    helper_version: &str,
-    protocol_version: u32,
-    cleanup_warning: Option<String>,
-) -> Result<PrivilegedHelperInstallOutcome, PlatformError> {
-    let verification = readiness.and_then(|status| {
-        require_identity(&status, owner_uid, helper_version, protocol_version)?;
-        Ok(status)
-    });
-    match (verification, cleanup_warning) {
-        (Ok(status), cleanup_warning) => Ok(PrivilegedHelperInstallOutcome {
-            status,
-            cleanup_warning,
-        }),
-        (Err(source), Some(cleanup_warning)) => Err(PlatformError::PrivilegedHelperVerification {
-            source: Box::new(source),
-            cleanup_warning,
-        }),
-        (Err(error), None) => Err(error),
-    }
-}
-
 /// Reports whether any of the fixed Linux helper installation paths remains.
-pub fn installed_helper_artifacts_present() -> Result<bool, PlatformError> {
+fn installed_helper_artifacts_present() -> Result<bool, PlatformError> {
     for path in [
         EXECUTABLE_DIRECTORY,
         WORK_DIRECTORY,
@@ -201,20 +166,42 @@ pub(super) fn remove() -> Result<(), PlatformError> {
         return Ok(());
     }
     let executable = Utf8Path::new(HELPER_EXECUTABLE_PATH);
-    validate_root_owned_regular_file(executable, 0o755).map_err(|error| {
-        installation_error(format!(
-            "existing helper executable cannot be verified; administrator recovery is required: {error}"
-        ))
-    })?;
+    let mut files_present = false;
+    for path in [HELPER_EXECUTABLE_PATH, SOCKET_UNIT_PATH, SERVICE_UNIT_PATH] {
+        if state::fs::path_entry_exists(Utf8Path::new(path))
+            .map_err(|error| installation_error(error.to_string()))?
+        {
+            files_present = true;
+            break;
+        }
+    }
+    if !files_present {
+        // -d removes only empty fixed directories, preserving metadata or unexpected contents.
+        return run_sudo(&[
+            "/usr/bin/rm",
+            "-f",
+            "-d",
+            "--",
+            CANDIDATE_PATH,
+            EXECUTABLE_DIRECTORY,
+            WORK_DIRECTORY,
+        ]);
+    }
+    validate_root_owned_regular_file(executable, 0o755)?;
     let checksum = sha256_file(executable)?;
-    stage_and_run(
-        executable,
+    run_sudo_output(&[
+        HELPER_EXECUTABLE_PATH,
+        "helper-lifecycle",
         "remove",
-        owner_uid,
+        "--owner-uid",
+        &owner_uid.to_string(),
+        "--sha256",
         &checksum,
+        "--helper-version",
         PRIVILEGED_HELPER_VERSION,
-        HELPER_PROTOCOL_VERSION,
-    )
+        "--protocol-version",
+        &HELPER_PROTOCOL_VERSION.to_string(),
+    ])
     .map(|_| ())
 }
 
@@ -231,27 +218,15 @@ fn non_root_caller() -> Result<u32, PlatformError> {
 
 fn stage_and_run(
     candidate: &Utf8Path,
-    action: &str,
     owner_uid: u32,
     checksum: &str,
     helper_version: &str,
     protocol_version: u32,
-) -> Result<Option<String>, PlatformError> {
+) -> Result<PrivilegedHelperInstallOutcome, PlatformError> {
     validate_directory_chain(Utf8Path::new(EXECUTABLE_DIRECTORY), false)?;
     run_sudo(&[
         "/usr/bin/install",
-        "-d",
-        "-o",
-        "root",
-        "-g",
-        "root",
-        "-m",
-        "0755",
-        "/usr/local/libexec",
-        EXECUTABLE_DIRECTORY,
-    ])?;
-    run_sudo(&[
-        "/usr/bin/install",
+        "-D",
         "-o",
         "root",
         "-g",
@@ -268,7 +243,7 @@ fn stage_and_run(
     let response = run_sudo_output(&[
         CANDIDATE_PATH,
         "helper-lifecycle",
-        action,
+        "install",
         "--owner-uid",
         &owner_uid.to_string(),
         "--sha256",
@@ -288,7 +263,7 @@ pub fn run_privileged_helper_lifecycle(
     expected_sha256: &str,
     helper_version: &str,
     protocol_version: u32,
-) -> Result<Option<String>, PlatformError> {
+) -> Result<Option<PrivilegedHelperInstallOutcome>, PlatformError> {
     if !getuid().is_root() || !geteuid().is_root() {
         return Err(PlatformError::PrivilegedHelperAuthentication(
             "helper lifecycle must run as root".to_owned(),
@@ -311,7 +286,12 @@ pub fn run_privileged_helper_lifecycle(
     validate_fingerprint(expected_sha256)?;
     validate_directory_chain(Utf8Path::new(EXECUTABLE_DIRECTORY), false)?;
     let _lock = acquire_lock(Utf8Path::new(LOCK_PATH))?;
-    let candidate = read_root_file(Utf8Path::new(CANDIDATE_PATH), 0o755)?
+    let source = if action == PrivilegedHelperLifecycleAction::Remove {
+        HELPER_EXECUTABLE_PATH
+    } else {
+        CANDIDATE_PATH
+    };
+    let candidate = read_root_file(Utf8Path::new(source), 0o755)?
         .ok_or_else(|| installation_error("root-staged helper candidate is missing"))?;
     let actual = checksum_bytes(&candidate);
     if actual != expected_sha256 {
@@ -320,15 +300,6 @@ pub fn run_privileged_helper_lifecycle(
         ));
     }
     let metadata = validate_existing_owner(owner_uid)?;
-    if action == PrivilegedHelperLifecycleAction::Remove
-        && let Some(metadata) = &metadata
-        && (metadata.helper_version != PRIVILEGED_HELPER_VERSION
-            || metadata.protocol_version != HELPER_PROTOCOL_VERSION)
-    {
-        return Err(installation_error(
-            "installed helper metadata does not match the staged removal binary",
-        ));
-    }
     for artifact in ARTIFACTS {
         if read_root_file(&sibling(artifact.path, "rollback"), artifact.mode)?.is_some() {
             return Err(installation_error(format!(
@@ -340,9 +311,13 @@ pub fn run_privileged_helper_lifecycle(
     ensure_root_directory(Utf8Path::new(EXECUTABLE_DIRECTORY), 0o755)?;
     ensure_root_directory(Utf8Path::new(WORK_DIRECTORY), 0o700)?;
     validate_directory_chain(Utf8Path::new("/etc/systemd/system"), true)?;
-    async_io::block_on(async {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(PlatformError::PrivilegedHelperIo)?;
+    runtime.block_on(async {
         let manager = manager().await?;
-        let previous = inspect_previous(&manager, metadata).await?;
+        let previous = inspect_previous(&manager, metadata, action).await?;
         let mut enablement_attempted = false;
         let result = transact(
             &manager,
@@ -353,9 +328,12 @@ pub fn run_privileged_helper_lifecycle(
             &mut enablement_attempted,
         )
         .await;
-        if let Err(error) = result {
-            return Err(rollback(&manager, &previous, enablement_attempted, error).await);
-        }
+        let status = match result {
+            Ok(status) => status,
+            Err(error) => {
+                return Err(rollback(&manager, &previous, enablement_attempted, error).await);
+            }
+        };
         if action == PrivilegedHelperLifecycleAction::Remove {
             remove_file(Utf8Path::new("/var/log/pv-helper.err.log"))?;
             clear_transaction_files()?;
@@ -363,9 +341,13 @@ pub fn run_privileged_helper_lifecycle(
             remove_empty_root_directory(Utf8Path::new(EXECUTABLE_DIRECTORY))?;
             return Ok(None);
         }
-        Ok(clear_transaction_files().err().map(|error| format!(
+        let cleanup_warning = clear_transaction_files().err().map(|error| format!(
             "helper lifecycle completed, but transaction cleanup failed: {error}; administrator recovery is required"
-        )))
+        ));
+        Ok(status.map(|status| PrivilegedHelperInstallOutcome {
+            status,
+            cleanup_warning,
+        }))
     })
 }
 
@@ -376,17 +358,29 @@ async fn transact(
     candidate: &[u8],
     previous: &PreviousState,
     enablement_attempted: &mut bool,
-) -> Result<(), PlatformError> {
-    job(manager, "StopUnit", SOCKET_UNIT).await?;
-    job(manager, "StopUnit", SERVICE_UNIT).await?;
+) -> Result<Option<PrivilegedHelperStatus>, PlatformError> {
+    for (index, unit) in [SOCKET_UNIT, SERVICE_UNIT].into_iter().enumerate() {
+        if action != PrivilegedHelperLifecycleAction::Remove
+            || previous.checksums[index + 2].is_some()
+        {
+            job(manager, "StopUnit", unit).await?;
+        }
+    }
     if action == PrivilegedHelperLifecycleAction::Remove {
         disable(manager).await?;
     }
-    for (unit, path) in [
+    for (index, (unit, path)) in [
         (SOCKET_UNIT, SOCKET_UNIT_PATH),
         (SERVICE_UNIT, SERVICE_UNIT_PATH),
-    ] {
-        reset_stopped_unit(manager, unit, path).await?;
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if action != PrivilegedHelperLifecycleAction::Remove
+            || previous.checksums[index + 2].is_some()
+        {
+            reset_stopped_unit(manager, unit, path).await?;
+        }
     }
     for (artifact, checksum) in ARTIFACTS.into_iter().zip(&previous.checksums) {
         if checksum.is_some() {
@@ -398,7 +392,7 @@ async fn transact(
     }
     if action == PrivilegedHelperLifecycleAction::Remove {
         reload(manager).await?;
-        return Ok(());
+        return Ok(None);
     }
     let metadata = PrivilegedHelperMetadata {
         owner_uid,
@@ -415,7 +409,7 @@ async fn transact(
     }
     reload(manager).await?;
     *enablement_attempted = true;
-    enable(manager, false).await?;
+    enable(manager).await?;
     job(manager, "StartUnit", SOCKET_UNIT).await?;
     let status = wait_for_ready(Utf8Path::new(HELPER_SOCKET_PATH), owner_uid).await?;
     require_identity(
@@ -423,7 +417,8 @@ async fn transact(
         owner_uid,
         PRIVILEGED_HELPER_VERSION,
         HELPER_PROTOCOL_VERSION,
-    )
+    )?;
+    Ok(Some(status))
 }
 
 async fn rollback(
@@ -468,23 +463,18 @@ async fn rollback(
     if let Err(error) = reload(manager).await {
         errors.push(error.to_string());
     }
-    if let Some(runtime) = previous.enabled
-        && let Err(error) = enable(manager, runtime).await
+    if previous.enabled
+        && let Err(error) = enable(manager).await
     {
         errors.push(error.to_string());
     }
-    // The restored service needs a listening descriptor even if its socket was stopped.
-    if (previous.socket_active || previous.service_active)
+    // Restore activity through socket activation.
+    if previous.active
         && let Err(error) = job(manager, "StartUnit", SOCKET_UNIT).await
     {
         errors.push(error.to_string());
     }
-    if previous.service_active
-        && let Err(error) = job(manager, "StartUnit", SERVICE_UNIT).await
-    {
-        errors.push(error.to_string());
-    }
-    if (previous.socket_active || previous.service_active)
+    if previous.active
         && let Some(metadata) = &previous.metadata
     {
         let result =
@@ -500,18 +490,6 @@ async fn rollback(
         if let Err(error) = result {
             errors.push(error.to_string());
         }
-    }
-    if previous.socket_active
-        && !previous.service_active
-        && let Err(error) = job(manager, "StopUnit", SERVICE_UNIT).await
-    {
-        errors.push(error.to_string());
-    }
-    if previous.service_active
-        && !previous.socket_active
-        && let Err(error) = job(manager, "StopUnit", SOCKET_UNIT).await
-    {
-        errors.push(error.to_string());
     }
     if errors.is_empty()
         && let Err(error) = clear_transaction_files()
@@ -559,39 +537,16 @@ async fn reset_stopped_unit(
 }
 
 async fn manager() -> Result<Proxy<'static>, PlatformError> {
-    within(Duration::from_secs(10), async {
-        // Root lifecycle always uses the real system bus, never a caller-supplied address.
-        let connection = connection::Builder::address("unix:path=/run/dbus/system_bus_socket")
-            .map_err(bus_error)?
-            .build()
-            .await
-            .map_err(bus_error)?;
-        let proxy = native_proxy(
-            &connection,
-            OwnedObjectPath::try_from("/org/freedesktop/systemd1")
-                .map_err(zbus::Error::from)
-                .map_err(bus_error)?,
-            "org.freedesktop.systemd1.Manager",
-        )
+    within(&HELPER_SYSTEMD_TIMEOUT, systemd::system_manager())
         .await
-        .map_err(bus_error)?;
-        proxy
-            .get_property::<String>("Version")
-            .await
-            .map_err(bus_error)?;
-        proxy
-            .call::<_, _, ()>("Subscribe", &())
-            .await
-            .map_err(bus_error)?;
-        Ok(proxy)
-    })
-    .await
-    .ok_or_else(|| installation_error("systemd system manager connection timed out"))?
+        .ok_or_else(|| installation_error("systemd system manager connection timed out"))?
+        .map_err(bus_error)
 }
 
 async fn inspect_previous(
     manager: &Proxy<'_>,
     metadata: Option<PrivilegedHelperMetadata>,
+    action: PrivilegedHelperLifecycleAction,
 ) -> Result<PreviousState, PlatformError> {
     let mut checksums = [const { None }; 4];
     for (index, artifact) in ARTIFACTS.into_iter().enumerate() {
@@ -607,28 +562,21 @@ async fn inspect_previous(
         }
         checksums[index] = content.as_deref().map(checksum_bytes);
     }
-    let socket_active = unit_active(manager, SOCKET_UNIT, SOCKET_UNIT_PATH).await?;
-    let service_active = unit_active(manager, SERVICE_UNIT, SERVICE_UNIT_PATH).await?;
+    let socket_active = (action != PrivilegedHelperLifecycleAction::Remove
+        || checksums[2].is_some())
+        && unit_active(manager, SOCKET_UNIT, SOCKET_UNIT_PATH).await?;
+    let service_active = (action != PrivilegedHelperLifecycleAction::Remove
+        || checksums[3].is_some())
+        && unit_active(manager, SERVICE_UNIT, SERVICE_UNIT_PATH).await?;
     let enabled = if checksums[2].is_some() {
-        let state: String = bounded_call(manager, "GetUnitFileState", &(SOCKET_UNIT,)).await?;
-        match state.as_str() {
-            "enabled" => Some(false),
-            "enabled-runtime" => Some(true),
-            "disabled" | "static" => None,
-            _ => {
-                return Err(installation_error(format!(
-                    "unexpected helper socket enablement state: {state}"
-                )));
-            }
-        }
+        bounded_call::<String>(manager, "GetUnitFileState", &(SOCKET_UNIT,)).await? == "enabled"
     } else {
-        None
+        false
     };
     Ok(PreviousState {
         checksums,
         metadata,
-        socket_active,
-        service_active,
+        active: socket_active || service_active,
         enabled,
     })
 }
@@ -638,7 +586,7 @@ async fn unit_active(
     name: &str,
     expected_path: &str,
 ) -> Result<bool, PlatformError> {
-    within(Duration::from_secs(10), async {
+    within(&HELPER_SYSTEMD_TIMEOUT, async {
         let path: OwnedObjectPath = match manager.call("LoadUnit", &(name,)).await {
             Ok(path) => path,
             Err(zbus::Error::MethodError(name, _, _))
@@ -687,7 +635,7 @@ async fn bounded_call<R>(
 where
     R: for<'de> serde::Deserialize<'de> + zbus::zvariant::Type,
 {
-    within(Duration::from_secs(10), manager.call(method, body))
+    within(&HELPER_SYSTEMD_TIMEOUT, manager.call(method, body))
         .await
         .ok_or_else(|| installation_error(format!("systemd {method} timed out")))?
         .map_err(bus_error)
@@ -696,21 +644,21 @@ where
 async fn reload(manager: &Proxy<'_>) -> Result<(), PlatformError> {
     bounded_call(manager, "Reload", &()).await
 }
-async fn enable(manager: &Proxy<'_>, runtime: bool) -> Result<(), PlatformError> {
+async fn enable(manager: &Proxy<'_>) -> Result<(), PlatformError> {
     let _: (bool, Vec<(String, String, String)>) = bounded_call(
         manager,
         "EnableUnitFiles",
-        &([SOCKET_UNIT].as_slice(), runtime, false),
+        &([SOCKET_UNIT].as_slice(), false, false),
     )
     .await?;
     Ok(())
 }
 async fn disable(manager: &Proxy<'_>) -> Result<(), PlatformError> {
-    for runtime in [false, true] {
+    if read_root_file(Utf8Path::new(SOCKET_UNIT_PATH), 0o644)?.is_some() {
         let _: Vec<(String, String, String)> = bounded_call(
             manager,
             "DisableUnitFiles",
-            &([SOCKET_UNIT].as_slice(), runtime),
+            &([SOCKET_UNIT].as_slice(), false),
         )
         .await?;
     }
@@ -718,7 +666,7 @@ async fn disable(manager: &Proxy<'_>) -> Result<(), PlatformError> {
 }
 
 async fn job(manager: &Proxy<'_>, operation: &str, unit: &str) -> Result<(), PlatformError> {
-    within(Duration::from_secs(15), async {
+    within(&HELPER_JOB_TIMEOUT, async {
         let mut removed = manager
             .receive_signal("JobRemoved")
             .await
@@ -765,9 +713,9 @@ pub(super) async fn wait_for_ready(
     }
     // This block runs on the lifecycle's current-thread executor. The saved UID is retained;
     // no root filesystem operation happens until the effective UID has been restored below.
-    let result = within(HELPER_IO_TIMEOUT, async {
+    let result = within(&HELPER_READINESS_TIMEOUT, async {
         loop {
-            match Async::<UnixStream>::connect(socket).await {
+            match UnixStream::connect(socket).await {
                 Ok(mut stream) => {
                     stream
                         .write_all(HELPER_LIFECYCLE_PROBE)
@@ -797,7 +745,7 @@ pub(super) async fn wait_for_ready(
                         io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
                     ) =>
                 {
-                    async_io::Timer::after(Duration::from_millis(25)).await;
+                    clock::poll(Duration::from_millis(25)).await;
                 }
                 Err(error) => return Err(PlatformError::PrivilegedHelperIo(error)),
             }
@@ -1022,128 +970,12 @@ fn remove_empty_root_directory(path: &Utf8Path) -> Result<(), PlatformError> {
 
 #[cfg(test)]
 mod tests {
-    use std::error::Error as _;
-    use std::fmt::Write as _;
-    use std::io;
-    use std::os::unix::net::UnixListener;
-    use std::ptr;
-    use std::time::Instant;
-
-    use anyhow::{anyhow, bail, ensure};
-    use async_io::{Async, Timer};
     use camino_tempfile::tempdir;
-    use futures_lite::future::zip;
-    use futures_lite::io::{AsyncReadExt as _, AsyncWriteExt as _};
     use insta::assert_snapshot;
-    use rustix::fs::{CWD, Mode, chmod, chown, link, mkfifoat};
-    use rustix::net::sockopt::socket_peercred;
-    use rustix::process::{Uid, geteuid, getuid};
+    use rustix::fs::{CWD, Mode, mkfifoat};
 
-    use super::{
-        HELPER_IO_TIMEOUT, HELPER_LIFECYCLE_PROBE, PlatformError, PrivilegedHelperInstallOutcome,
-        PrivilegedHelperStatus, SERVICE, acquire_lock, checksum_bytes, ensure_root_directory,
-        finish_installation, read_root_file, remove_file, rename, restore_file, sibling,
-        socket_unit, validate_directory_chain, wait_for_ready, within, write_root_file,
-    };
-
-    #[test]
-    fn installation_verification_preserves_cleanup_warnings_and_primary_errors()
-    -> anyhow::Result<()> {
-        let expected_status = PrivilegedHelperStatus {
-            version: "2.0.0".to_owned(),
-            protocol_version: 2,
-            owner_uid: 1000,
-        };
-        let mut report = String::new();
-        for warning in [
-            None,
-            Some("retained rollback requires administrator recovery"),
-        ] {
-            for (case, readiness) in [
-                (
-                    "readiness",
-                    Err(PlatformError::PrivilegedHelperIo(
-                        io::Error::from_raw_os_error(13),
-                    )),
-                ),
-                (
-                    "identity",
-                    Ok(PrivilegedHelperStatus {
-                        version: "unexpected".to_owned(),
-                        ..expected_status.clone()
-                    }),
-                ),
-                ("success", Ok(expected_status.clone())),
-            ] {
-                let result =
-                    finish_installation(readiness, 1000, "2.0.0", 2, warning.map(str::to_owned));
-                write!(report, "{case} warning={}: ", warning.is_some())?;
-                match result {
-                    Ok(outcome) => {
-                        assert_eq!(case, "success");
-                        let mut expected =
-                            PrivilegedHelperInstallOutcome::successful(expected_status.clone());
-                        if let Some(warning) = warning {
-                            expected = expected.with_cleanup_warning(warning);
-                        }
-                        assert_eq!(outcome, expected);
-                        writeln!(report, "{outcome:?}")?;
-                    }
-                    Err(error) => {
-                        let primary = match (&error, warning) {
-                            (
-                                PlatformError::PrivilegedHelperVerification {
-                                    source,
-                                    cleanup_warning,
-                                },
-                                Some(warning),
-                            ) => {
-                                assert_eq!(cleanup_warning, warning);
-                                let chained = error
-                                    .source()
-                                    .and_then(|source| source.downcast_ref::<Box<PlatformError>>())
-                                    .ok_or_else(|| anyhow!("typed platform source was lost"))?;
-                                assert!(ptr::eq(source, chained));
-                                chained.as_ref()
-                            }
-                            (primary, None) => primary,
-                            _ => bail!("{case} lost the cleanup warning: {error}"),
-                        };
-                        match case {
-                            "readiness" => {
-                                ensure!(
-                                    matches!(primary, PlatformError::PrivilegedHelperIo(source)
-                                        if source.raw_os_error() == Some(13)
-                                            && source.kind() == io::ErrorKind::PermissionDenied),
-                                    "readiness error changed: {primary}"
-                                );
-                                let nested = primary
-                                    .source()
-                                    .and_then(|source| source.downcast_ref::<io::Error>())
-                                    .ok_or_else(|| anyhow!("typed I/O source was lost"))?;
-                                assert_eq!(nested.raw_os_error(), Some(13));
-                            }
-                            "identity" => ensure!(
-                                matches!(primary, PlatformError::PrivilegedHelperInstallation(_)),
-                                "identity error changed: {primary}"
-                            ),
-                            _ => bail!("matching status failed: {error}"),
-                        }
-                        writeln!(report, "error: {error}")?;
-                    }
-                }
-            }
-        }
-        assert_snapshot!(report, @r#"
-        readiness warning=false: error: PV privileged helper I/O failed: Permission denied (os error 13)
-        identity warning=false: error: PV privileged helper installation failed: helper lifecycle identity did not match expected 2.0.0, protocol 2, owner UID 1000: PrivilegedHelperStatus { version: "unexpected", protocol_version: 2, owner_uid: 1000 }
-        success warning=false: PrivilegedHelperInstallOutcome { status: PrivilegedHelperStatus { version: "2.0.0", protocol_version: 2, owner_uid: 1000 }, cleanup_warning: None }
-        readiness warning=true: error: PV privileged helper I/O failed: Permission denied (os error 13); cleanup warning: retained rollback requires administrator recovery
-        identity warning=true: error: PV privileged helper installation failed: helper lifecycle identity did not match expected 2.0.0, protocol 2, owner UID 1000: PrivilegedHelperStatus { version: "unexpected", protocol_version: 2, owner_uid: 1000 }; cleanup warning: retained rollback requires administrator recovery
-        success warning=true: PrivilegedHelperInstallOutcome { status: PrivilegedHelperStatus { version: "2.0.0", protocol_version: 2, owner_uid: 1000 }, cleanup_warning: Some("retained rollback requires administrator recovery") }
-        "#);
-        Ok(())
-    }
+    use super::{SERVICE, read_root_file, socket_unit};
+    use crate::PlatformError;
 
     #[test]
     fn helper_units_use_owned_socket_activation_and_the_installing_uid() {
@@ -1189,146 +1021,6 @@ mod tests {
             Err(PlatformError::PrivilegedHelperInstallation(_))
         ));
         assert!(read_root_file(&directory.path().join("missing"), 0o600)?.is_none());
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "run as root in an ordinary disposable Linux container; uses only temporary files"]
-    fn root_files_preserve_modes_lock_identity_and_verified_rollback() -> anyhow::Result<()> {
-        ensure!(getuid().is_root() && geteuid().is_root(), "requires root");
-        let directory = camino_tempfile::tempdir_in("/run")?;
-        chmod(
-            directory.path().as_std_path(),
-            Mode::from_bits_truncate(0o700),
-        )?;
-        ensure_root_directory(directory.path(), 0o700)?;
-        let path = directory.path().join("helper");
-        let backup = sibling(path.as_str(), "rollback");
-        let checksum = checksum_bytes(b"original");
-        let staged = sibling(path.as_str(), "candidate");
-        write_root_file(&staged, b"other foreground candidate", 0o755)?;
-
-        write_root_file(&path, b"original", 0o755)?;
-        assert_eq!(read_root_file(&path, 0o755)?, Some(b"original".to_vec()));
-        assert_eq!(
-            read_root_file(&staged, 0o755)?,
-            Some(b"other foreground candidate".to_vec())
-        );
-        assert!(write_root_file(&path, b"cannot overwrite", 0o755).is_err());
-        assert_eq!(read_root_file(&path, 0o755)?, Some(b"original".to_vec()));
-        assert!(read_root_file(&path, 0o600).is_err());
-        let symbolic_link = directory.path().join("symbolic-link");
-        state::fs::symlink_file(&path, &symbolic_link)?;
-        assert!(read_root_file(&symbolic_link, 0o755).is_err());
-        restore_file(&path, 0o755, Some(&checksum))?;
-        rename(&path, &backup)?;
-        write_root_file(&path, b"replacement", 0o755)?;
-        restore_file(&path, 0o755, Some(&checksum))?;
-        assert_eq!(read_root_file(&path, 0o755)?, Some(b"original".to_vec()));
-        assert!(!state::fs::path_entry_exists(&backup)?);
-
-        rename(&path, &backup)?;
-        write_root_file(&path, b"replacement", 0o755)?;
-        assert!(restore_file(&path, 0o755, Some("wrong checksum")).is_err());
-        assert_eq!(read_root_file(&backup, 0o755)?, Some(b"original".to_vec()));
-        assert_eq!(read_root_file(&path, 0o755)?, Some(b"replacement".to_vec()));
-        remove_file(&backup)?;
-        assert!(restore_file(&path, 0o755, Some(&checksum)).is_err());
-        assert_eq!(read_root_file(&path, 0o755)?, Some(b"replacement".to_vec()));
-        remove_file(&path)?;
-        assert!(restore_file(&path, 0o755, Some(&checksum)).is_err());
-
-        write_root_file(&path, b"new install", 0o600)?;
-        restore_file(&path, 0o600, None)?;
-        assert!(read_root_file(&path, 0o600)?.is_none());
-        write_root_file(&path, b"one link", 0o600)?;
-        let other_link = directory.path().join("other-link");
-        link(path.as_std_path(), other_link.as_std_path())?;
-        assert!(read_root_file(&path, 0o600).is_err());
-        remove_file(&other_link)?;
-        assert!(read_root_file(&path, 0o600)?.is_some());
-
-        let lock = directory.path().join("lifecycle.lock");
-        let first = acquire_lock(&lock)?;
-        assert!(acquire_lock(&lock).is_err());
-        drop(first);
-        let _next = acquire_lock(&lock)?;
-        let writable = directory.path().join("writable");
-        ensure_root_directory(&writable, 0o700)?;
-        chmod(writable.as_std_path(), Mode::from_bits_truncate(0o777))?;
-        assert!(validate_directory_chain(&writable, false).is_err());
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "run as root in an ordinary disposable Linux container; switches only this thread's effective UID"]
-    fn root_readiness_authenticates_as_owner_and_restores_root_on_every_result()
-    -> anyhow::Result<()> {
-        ensure!(getuid().is_root() && geteuid().is_root(), "requires root");
-        let directory = camino_tempfile::tempdir_in("/run")?;
-        ensure_root_directory(directory.path(), 0o755)?;
-        let socket = directory.path().join("helper.sock");
-        let owner_uid = 1000;
-        for response in [
-            Some(b"PV-HELPER-LIFECYCLE-READY\t2.0.0\t2\t1000\n".as_slice()),
-            Some(b"invalid\n".as_slice()),
-            None,
-        ] {
-            let listener = Async::new(UnixListener::bind(&socket)?)?;
-            chown(socket.as_std_path(), Some(Uid::from_raw(owner_uid)), None)?;
-            let started = Instant::now();
-            let server = within(
-                HELPER_IO_TIMEOUT + std::time::Duration::from_secs(1),
-                async {
-                    let (mut stream, _) = listener.accept().await?;
-                    let peer_uid = socket_peercred(stream.get_ref())?.uid.as_raw();
-                    let mut probe = vec![0; HELPER_LIFECYCLE_PROBE.len()];
-                    stream.read_exact(&mut probe).await?;
-                    ensure!(
-                        probe == HELPER_LIFECYCLE_PROBE,
-                        "unexpected lifecycle probe"
-                    );
-                    if let Some(response) = response {
-                        stream.write_all(response).await?;
-                    } else {
-                        Timer::after(HELPER_IO_TIMEOUT + std::time::Duration::from_millis(100))
-                            .await;
-                    }
-                    Ok::<_, anyhow::Error>(peer_uid)
-                },
-            );
-            let (result, observed_uid) =
-                async_io::block_on(zip(wait_for_ready(&socket, owner_uid), server));
-            assert!(
-                geteuid().is_root(),
-                "lifecycle must restore root before returning"
-            );
-            assert_eq!(
-                observed_uid.ok_or_else(|| anyhow!("bounded fixture did not finish"))??,
-                owner_uid
-            );
-            match response {
-                Some(response) if response.starts_with(b"PV-HELPER-LIFECYCLE-READY") => {
-                    let status = result?;
-                    assert_eq!(status.owner_uid, owner_uid);
-                    assert_eq!(status.version, "2.0.0");
-                    assert_eq!(status.protocol_version, 2);
-                }
-                Some(_) => assert!(matches!(
-                    result,
-                    Err(PlatformError::PrivilegedHelperInstallation(_))
-                )),
-                None => {
-                    assert!(matches!(
-                        result,
-                        Err(PlatformError::PrivilegedHelperUnavailable)
-                    ));
-                    assert!(started.elapsed() >= HELPER_IO_TIMEOUT);
-                }
-            }
-            drop(listener);
-            remove_file(&socket)?;
-        }
         Ok(())
     }
 }

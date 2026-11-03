@@ -1,10 +1,7 @@
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::{
-    PrivilegedHelperLifecycleAction, installed_helper_artifacts_present,
-    run_privileged_helper_lifecycle,
-};
+pub use linux::{PrivilegedHelperLifecycleAction, run_privileged_helper_lifecycle};
 
 #[cfg(target_os = "macos")]
 use std::collections::BTreeMap;
@@ -98,7 +95,7 @@ pub struct PrivilegedHelperStatus {
     pub owner_uid: u32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PrivilegedHelperInstallOutcome {
     status: PrivilegedHelperStatus,
     cleanup_warning: Option<String>,
@@ -1295,25 +1292,18 @@ fn probe_helper_lifecycle(socket_path: &Utf8Path) -> Result<PrivilegedHelperStat
     parse_helper_lifecycle_response(&response)
 }
 
-/// Registration can finish before the native service manager creates the control socket.
-#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+/// Bootstrap can return before launchd has created the control socket.
+#[cfg(target_os = "macos")]
 fn wait_for_helper_lifecycle(
     socket_path: &Utf8Path,
 ) -> Result<PrivilegedHelperStatus, PlatformError> {
-    #[cfg(target_os = "linux")]
-    {
-        async_io::block_on(linux::wait_for_ready(socket_path, rustix::process::getuid().as_raw()))
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let deadline = Deadline::after(&HELPER_SOCKET_WAIT);
-        loop {
-            match probe_helper_lifecycle(socket_path) {
-                Err(PlatformError::PrivilegedHelperUnavailable) if !deadline.is_expired() => {
-                    clock::poll_blocking(Duration::from_millis(25));
-                }
-                result => return result,
+    let deadline = Deadline::after(&HELPER_SOCKET_WAIT);
+    loop {
+        match probe_helper_lifecycle(socket_path) {
+            Err(PlatformError::PrivilegedHelperUnavailable) if !deadline.is_expired() => {
+                clock::poll_blocking(Duration::from_millis(25));
             }
+            result => return result,
         }
     }
 }
@@ -1992,7 +1982,7 @@ fn helper_error_code(error: &PlatformError) -> HelperErrorCode {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     use std::io::Write as _;
     use std::io::{Cursor, ErrorKind};
     #[cfg(target_os = "macos")]
@@ -2019,14 +2009,15 @@ mod tests {
     use super::{HELPER_PROTOCOL_VERSION, HelperOperation, write_message};
     #[cfg(target_os = "macos")]
     use super::{
-        HELPER_SOCKET_NAME, HELPER_SOCKET_WAIT, HELPER_STANDARD_ERROR_PATH, HelperLaunchDaemonPlist, dispatch_request,
-        lock_machine_helper_lifecycle_file, render_launch_daemon_plist, restore_helper_file,
-        validate_root_owned_regular_file,
+        HELPER_SOCKET_NAME, HELPER_SOCKET_WAIT, HELPER_STANDARD_ERROR_PATH,
+        HelperLaunchDaemonPlist, dispatch_request, lock_machine_helper_lifecycle_file,
+        render_launch_daemon_plist, restore_helper_file, validate_root_owned_regular_file,
+        wait_for_helper_lifecycle,
     };
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use super::{
         HelperPayload, PRIVILEGED_HELPER_VERSION, call_helper, probe_helper_lifecycle,
-        serve_next_helper_connection, wait_for_helper_lifecycle,
+        serve_next_helper_connection,
     };
     use super::{
         HelperRequest, MAX_MESSAGE_BYTES, PrivilegedHelperMetadata, helper_artifacts_present,
@@ -2243,7 +2234,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     #[test]
     #[expect(
         clippy::disallowed_methods,
@@ -2276,7 +2267,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     #[test]
     fn helper_bootstrap_wait_stops_when_the_socket_never_appears() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
@@ -2289,7 +2280,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     #[test]
     #[expect(
         clippy::disallowed_methods,

@@ -277,35 +277,13 @@ PV_LINUX_SYSTEM_TESTS=1 PV_LINUX_SYSTEM_PV="$PWD/target/debug/pv" \
   -E 'test(/^linux_daemon_registration_system::/)'
 ```
 
-The helper lifecycle system test requires a disposable **machine**, passwordless
-sudo for its non-root account, and no existing helper installation or units. It
-refuses to run outside the dedicated bounded service below. Build the helper and
-compile the CLI tests first, then run as that account:
+The helper lifecycle test needs a fresh disposable systemd machine and a
+non-root account with passwordless sudo. Build `pv-helper`, then run:
 
 ```shell
-cargo build --locked -p pv-privileged-helper
-cargo nextest list --locked -p cli
-sudo -n systemd-run --wait --pipe --collect --unit=pv-helper-system-test \
-  --uid="$(id -u)" --property=KillMode=control-group \
-  --property=RuntimeMaxSec=120s --property=TimeoutStopSec=5s \
-  --working-directory="$PWD" --setenv="HOME=$HOME" --setenv="PATH=$PATH" \
-  --setenv=PV_LINUX_SYSTEM_TESTS=1 \
-  --setenv="PV_LINUX_SYSTEM_HELPER=$PWD/target/debug/pv-helper" \
-  "$(command -v cargo)" nextest run --profile ci --locked -p cli --run-ignored only \
-  -E 'test(=systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes)'
+PV_LINUX_SYSTEM_TESTS=1 PV_LINUX_SYSTEM_HELPER="$PWD/target/debug/pv-helper" \
+  cargo nextest run --profile ci --locked -p cli --run-ignored only -E 'test(/^linux_helper_system::/)'
 ```
-
-The test also verifies that sudo children remain in its service cgroup. It checks
-native socket activation, replacement, peer and lifecycle owner
-authentication, rollback, and repeat removal. Its root timer fires after 150
-seconds if cleanup did not finish. It requests stop for the test and helper
-units, kills remaining service processes, waits for the units to stop, then
-removes fixture files.
-Normal cleanup cancels that timer after verifying removal. Failed cleanup keeps
-any scheduled timer and the root-owned `/run/pv-helper-system-test` directory for
-inspection. These live checks are ignored by the ordinary suite. The two ignored
-`platform` helper checks for root file handling and temporary credential changes
-need only an ordinary disposable root container; they do not require systemd.
 
 ## Crate structure
 

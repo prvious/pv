@@ -523,11 +523,7 @@ fn run_app_update_phase(
         .unwrap_or_else(AppUpdatePlatform::current)?;
     let asset = manifest.select_platform(platform)?;
     let _helper_lifecycle_lock = state::HelperLifecycleLock::acquire(&paths)?;
-    let installed_helper = installed_helper_state(
-        environment.privileged_helper_status(),
-        #[cfg(target_os = "linux")]
-        environment,
-    )?;
+    let installed_helper = installed_helper_state(environment.privileged_helper_status())?;
     let plan = app_update_plan(
         &current_version,
         manifest.version(),
@@ -1029,15 +1025,10 @@ struct HelperRollbackPlan {
 
 fn installed_helper_state(
     result: Result<platform::PrivilegedHelperStatus, platform::PlatformError>,
-    #[cfg(target_os = "linux")] environment: &impl Environment,
 ) -> Result<InstalledHelperState, platform::PlatformError> {
     match result {
         Ok(status) => Ok(InstalledHelperState::Ready(status)),
         Err(platform::PlatformError::PrivilegedHelperUnavailable) => {
-            #[cfg(target_os = "linux")]
-            if environment.installed_helper_artifacts_present()? {
-                return Err(platform::PlatformError::PrivilegedHelperUnavailable);
-            }
             Ok(InstalledHelperState::Missing)
         }
         Err(platform::PlatformError::PrivilegedHelperProtocolMismatch { .. }) => {
@@ -1721,12 +1712,8 @@ fn app_update_status(environment: &impl Environment) -> Result<AppUpdateStatus, 
         .as_ref()
         .ok()
         .map(|status| status.protocol_version);
-    let installed_helper_state = installed_helper_state(
-        installed_helper,
-        #[cfg(target_os = "linux")]
-        environment,
-    )
-    .map_err(|error| error.to_string());
+    let installed_helper_state =
+        installed_helper_state(installed_helper).map_err(|error| error.to_string());
     let (helper_status, helper_reason) = match installed_helper_state {
         Ok(installed_helper_state) => match app_update_plan(
             &current_version,
@@ -1980,6 +1967,3 @@ mod tests {
         Ok(())
     }
 }
-
-#[cfg(all(test, target_os = "linux"))]
-mod linux_tests;

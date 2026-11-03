@@ -3081,7 +3081,6 @@ dependencies = [
  "camino",
  "camino-tempfile",
  "data-encoding",
- "futures-lite",
  "futures-util",
  "getrandom 0.4.2",
  "insta",

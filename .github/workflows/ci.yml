@@ -295,25 +295,14 @@ jobs:
 
       - name: Run native Linux helper lifecycle test
         id: linux_helper_tests
-        shell: bash
+        env:
+          PV_LINUX_SYSTEM_TESTS: "1"
+          PV_LINUX_SYSTEM_HELPER: ${{ github.workspace }}/target/debug/pv-helper
+          INSTA_UPDATE: "no"
         run: |
-          set -euo pipefail
-          sudo -n systemd-run --wait --pipe --collect --unit=pv-helper-system-test \
-            --uid="$(id -u)" --property=KillMode=control-group \
-            --property=RuntimeMaxSec=120s --property=TimeoutStopSec=5s \
-            --working-directory="$PWD" --setenv="HOME=$HOME" --setenv="PATH=$PATH" \
-            --setenv="CARGO_HOME=${CARGO_HOME:-$HOME/.cargo}" \
-            --setenv="RUSTUP_HOME=${RUSTUP_HOME:-$HOME/.rustup}" \
-            --setenv="CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS" \
-            --setenv="CARGO_PROFILE_DEV_DEBUG=$CARGO_PROFILE_DEV_DEBUG" \
-            --setenv="CARGO_INCREMENTAL=$CARGO_INCREMENTAL" \
-            --setenv="NEXTEST_STATE_DIR=$NEXTEST_STATE_DIR" --setenv=INSTA_UPDATE=no \
-            --setenv=PV_LINUX_SYSTEM_TESTS=1 \
-            --setenv="PV_LINUX_SYSTEM_HELPER=$PWD/target/debug/pv-helper" \
-            "$(command -v cargo)" nextest run --profile ci \
-            --user-config-file "$RUNNER_TEMP/nextest-user.toml" \
+          cargo nextest run --profile ci --user-config-file "$RUNNER_TEMP/nextest-user.toml" \
             --run-ignored only -p cli --all-features --locked \
-            -E 'binary(=linux_helper_system) and test(=systemd_helper_lifecycle_authenticates_replaces_rolls_back_and_removes)'
+            -E 'test(/^linux_helper_system::/)'
 
       - name: Export Linux helper test recording
         id: export_linux_helper_recording

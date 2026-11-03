@@ -1,13 +1,11 @@
 use std::future::Future;
-use std::pin::pin;
-use std::time::Duration;
 
-use async_io::Timer;
-use futures_util::future::{Either, select};
 use futures_util::StreamExt;
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedObjectPath;
-use zbus::{Connection, Proxy, proxy};
+use zbus::{Connection, Proxy, connection, proxy};
+
+use crate::clock::{self, Limit};
 
 pub(crate) async fn native_proxy(
     connection: &Connection,
@@ -66,9 +64,13 @@ pub(crate) fn is_method_error(error: &zbus::Error, expected: &str) -> bool {
     matches!(error, zbus::Error::MethodError(name, _, _) if name.as_str() == expected)
 }
 
-pub(crate) async fn within<T>(timeout: Duration, future: impl Future<Output = T>) -> Option<T> {
-    match select(pin!(future), Timer::after(timeout)).await {
-        Either::Left((result, _)) => Some(result),
-        Either::Right(_) => None,
-    }
+pub(crate) async fn within<T>(limit: &Limit, future: impl Future<Output = T>) -> Option<T> {
+    clock::timeout(limit, future).await.ok()
+}
+
+pub(crate) async fn system_manager() -> zbus::Result<Proxy<'static>> {
+    let connection = connection::Builder::address("unix:path=/run/dbus/system_bus_socket")?
+        .build()
+        .await?;
+    system_manager_proxy(&connection).await
 }

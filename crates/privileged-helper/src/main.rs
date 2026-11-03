@@ -48,14 +48,14 @@ fn main() -> anyhow::Result<()> {
             helper_version,
             protocol_version,
         }) => {
-            let warning = run_privileged_helper_lifecycle(
+            let outcome = run_privileged_helper_lifecycle(
                 action,
                 owner_uid,
                 &sha256,
                 &helper_version,
                 protocol_version,
             )?;
-            serde_json::to_writer(io::stdout().lock(), &warning)?;
+            serde_json::to_writer(io::stdout().lock(), &outcome)?;
         }
         None => serve_privileged_helper()?,
     }
