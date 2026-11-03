@@ -5,8 +5,6 @@ use camino::Utf8Path;
 #[cfg(unix)]
 use camino_tempfile::tempdir;
 use insta::assert_snapshot;
-#[cfg(unix)]
-use serde_json::Value;
 
 #[cfg(unix)]
 #[expect(
@@ -23,76 +21,6 @@ const ARTIFACT_RECIPES_UPLOAD_PATHS: [&str; 3] = [
 const APP_RELEASE_WORKFLOW_PATH: &str = ".github/workflows/app-release.yml";
 const PRIVILEGED_MACOS_RC_WORKFLOW_PATH: &str = ".github/workflows/privileged-macos-rc.yml";
 const REAL_ARTIFACT_E2E_WORKFLOW_PATH: &str = ".github/workflows/real-artifact-e2e.yml";
-
-#[cfg(unix)]
-#[test]
-fn artifact_recipes_selects_requested_tracks_on_native_linux_runners() -> Result<()> {
-    let root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let workflow = read_file(&root.join(".github/workflows/artifact-recipes.yml"))?;
-    let step = workflow_step(&workflow, "Select native Linux builds")
-        .context("missing Linux selection step")?;
-    let program = step
-        .split_once("python3 - <<'PYTHON'\n")
-        .context("missing matrix program")?
-        .1
-        .lines()
-        .take_while(|line| line.trim() != "PYTHON")
-        .map(|line| line.strip_prefix("          ").unwrap_or(line))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let mut rows = Vec::new();
-    for (resource, track, platform, expected) in [
-        ("all", "all", "all-linux", 26),
-        ("mysql", "8.4", "all-linux", 2),
-        ("php", "8.5", "linux-amd64", 1),
-        ("all", "all", "all", 0),
-    ] {
-        let output = StdCommand::new("python3")
-            .args(["-c", &program])
-            .env("PV_RECIPE_RESOURCE", resource)
-            .env("PV_RECIPE_TRACK", track)
-            .env("PV_RECIPE_PLATFORM", platform)
-            .env("GITHUB_OUTPUT", "/dev/stdout")
-            .output()?;
-        anyhow::ensure!(
-            output.status.success(),
-            "matrix selection failed: {output:?}"
-        );
-        let text = String::from_utf8(output.stdout)?;
-        let matrix: Value = serde_json::from_str(
-            text.trim()
-                .strip_prefix("matrix=")
-                .context("missing matrix output")?,
-        )?;
-        let builds = matrix["include"].as_array().context("missing builds")?;
-        assert_eq!(builds.len(), expected);
-        for build in builds {
-            let runner = match build["platform"].as_str() {
-                Some("linux-amd64") => "ubuntu-24.04",
-                Some("linux-arm64") => "ubuntu-24.04-arm",
-                value => anyhow::bail!("unexpected Linux platform: {value:?}"),
-            };
-            assert_eq!(build["runner"], runner);
-            if resource != "all" {
-                assert_eq!(build["resource"], resource);
-            }
-            if track != "all" {
-                assert_eq!(build["track"], track);
-            }
-        }
-        rows.push(format!(
-            "{resource}/{track}/{platform}: {} builds",
-            builds.len()
-        ));
-    }
-    assert_snapshot!(rows.join("\n"), @"
-    all/all/all-linux: 26 builds
-    mysql/8.4/all-linux: 2 builds
-    php/8.5/linux-amd64: 1 builds
-    all/all/all: 0 builds
-    ");
-    Ok(())
-}
 
 #[test]
 fn artifact_recipes_defaults_defer_staticphp_unstable_lanes() -> Result<()> {

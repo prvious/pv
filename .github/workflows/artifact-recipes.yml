@@ -32,6 +32,7 @@ on:
           - all
           - darwin-arm64
           - darwin-amd64
+          - any
           - all-linux
           - linux-amd64
           - linux-arm64
@@ -42,7 +43,7 @@ permissions:
 jobs:
   validate:
     name: validate
-    runs-on: macos-15
+    runs-on: ${{ (inputs.platform == 'all-linux' || startsWith(inputs.platform, 'linux-')) && 'ubuntu-24.04' || 'macos-14' }}
     outputs:
       linux_matrix: ${{ steps.linux-matrix.outputs.matrix }}
 
@@ -62,7 +63,7 @@ jobs:
           set -eu
 
           case "$PV_RECIPE_PLATFORM" in
-            all | darwin-arm64 | darwin-amd64 | all-linux | linux-amd64 | linux-arm64) ;;
+            all | any | darwin-arm64 | darwin-amd64 | all-linux | linux-amd64 | linux-arm64) ;;
             *) printf '%s\n' "unsupported platform: $PV_RECIPE_PLATFORM" >&2; exit 1 ;;
           esac
 
@@ -91,7 +92,7 @@ jobs:
         run: |
           python3 - <<'PYTHON'
           import json, os
-          tracks = {"php": ["8.3", "8.4", "8.5"], "composer": ["2"], "redis": ["8.8"],
+          tracks = {"php": ["8.3", "8.4", "8.5"], "redis": ["8.8"],
                     "mysql": ["8.0", "8.4", "9.7"], "postgres": ["17", "18"],
                     "mailpit": ["1"], "rustfs": ["1"], "caddy": ["2"]}
           platform = os.environ["PV_RECIPE_PLATFORM"]
