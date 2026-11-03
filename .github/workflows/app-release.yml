@@ -56,6 +56,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           MINIMUM_PV_VERSION: ${{ inputs.minimum_pv_version }}
           APP_PLATFORMS: ${{ inputs.app_platforms }}
+          PUBLISH: ${{ inputs.publish }}
           HELPER_ONLY: ${{ inputs.helper_only }}
           R2_PUBLIC_BASE_URL: ${{ vars.R2_PUBLIC_BASE_URL }}
         run: |
@@ -103,6 +104,10 @@ jobs:
             esac
           done
           app_platforms="$normalized_platforms"
+          if [ "$PUBLISH" = true ] && [[ ",$app_platforms," == *,linux-* ]] && [[ ",$app_platforms," != *,darwin-arm64,* ]]; then
+            printf '%s\n' "publishing Linux requires darwin-arm64 in app_platforms" >&2
+            exit 1
+          fi
 
           if [ -z "$R2_PUBLIC_BASE_URL" ]; then
             printf '%s\n' "R2_PUBLIC_BASE_URL repository variable is required" >&2
