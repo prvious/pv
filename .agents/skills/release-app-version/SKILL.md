@@ -44,9 +44,9 @@ equal-app-version publication rejects a platform-set change.
 Focused checks:
 
 ```sh
-cargo nextest run -p pv-release --test app_release_records
-cargo nextest run -p pv-release --test app_publication
-cargo nextest run -p pv-release --test workflow_defaults
+cargo nextest run -p pv-release -E 'test(/^app_release_records::/)'
+cargo nextest run -p pv-release -E 'test(/^app_publication::/)'
+cargo nextest run -p pv-release -E 'test(/^workflow_defaults::/)'
 cargo nextest run -p self-update --test app_update_manifest
 cargo nextest run -p cli -E 'test(/^update::/)'
 ```
