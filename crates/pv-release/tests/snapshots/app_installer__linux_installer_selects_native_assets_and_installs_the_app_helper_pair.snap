@@ -1,0 +1,60 @@
+---
+source: crates/pv-release/tests/app_installer.rs
+expression: "summaries.join(\"\\n\\n\")"
+---
+machine=x86_64 libc=glibc 2.35
+checksum_tools=["tool=sha256sum", "tool=sha256sum"]
+stderr:
+pv installer: Linux distribution: Fixture Linux (untested)
+pv installer: PV 0.9.0 installed at <tmp>/home/.pv/bin/pv
+
+curl:
+url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-linux-amd64
+output=<download>
+url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-helper-1.0.0-linux-amd64
+output=<download>
+
+checksum:
+tool=<checksum-tool> target=<download> sha=<arm64-sha256>
+tool=<checksum-tool> target=<download> sha=<helper-sha256>
+
+pv:
+setup --yes
+
+machine=aarch64 libc=glibc 2.100
+checksum_tools=["tool=sha256sum", "tool=sha256sum"]
+stderr:
+pv installer: Linux distribution: Fixture Linux (untested)
+pv installer: PV 0.9.0 installed at <tmp>/home/.pv/bin/pv
+
+curl:
+url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-linux-arm64
+output=<download>
+url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-helper-1.0.0-linux-arm64
+output=<download>
+
+checksum:
+tool=<checksum-tool> target=<download> sha=<arm64-sha256>
+tool=<checksum-tool> target=<download> sha=<helper-sha256>
+
+pv:
+setup --yes
+
+machine=arm64 libc=glibc 3.0
+checksum_tools=["tool=sha256sum", "tool=sha256sum"]
+stderr:
+pv installer: Linux distribution: Fixture Linux (untested)
+pv installer: PV 0.9.0 installed at <tmp>/home/.pv/bin/pv
+
+curl:
+url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-linux-arm64
+output=<download>
+url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-helper-1.0.0-linux-arm64
+output=<download>
+
+checksum:
+tool=<checksum-tool> target=<download> sha=<arm64-sha256>
+tool=<checksum-tool> target=<download> sha=<helper-sha256>
+
+pv:
+setup --yes
