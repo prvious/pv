@@ -163,12 +163,12 @@ fn process_identity_resolves_a_symlinked_home() -> Result<()> {
     let directory = tempdir()?;
     let home = directory.path().join("actual-home");
     let linked_home = directory.path().join("linked-home");
-    let executable = home.join(".pv/bin/pv");
+    let executable = home.join(".pv/bin/sleep");
     fs::copy_file_atomically(Utf8Path::new("/bin/sleep"), &executable)?;
     set_executable(&executable)?;
     fs::symlink_file(&home, &linked_home)?;
     let mut child = ChildGuard(
-        TestCommand::new(linked_home.join(".pv/bin/pv"))
+        TestCommand::new(linked_home.join(".pv/bin/sleep"))
             .arg("30")
             .spawn()?,
     );
@@ -183,7 +183,7 @@ fn process_identity_resolves_a_symlinked_home() -> Result<()> {
 #[test]
 fn process_identity_preserves_the_path_of_a_deleted_executable() -> Result<()> {
     let directory = tempdir()?;
-    let executable = directory.path().join("owned-runtime");
+    let executable = directory.path().join("sleep");
     fs::copy_file_atomically(Utf8Path::new("/bin/sleep"), &executable)?;
     set_executable(&executable)?;
     let mut child = ChildGuard(TestCommand::new(&executable).arg("30").spawn()?);
