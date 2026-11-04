@@ -1,0 +1,36 @@
+---
+source: crates/pv-release/tests/it/app_publication.rs
+expression: failures
+---
+[
+    (
+        "managed resource object key",
+        CommandFailure {
+            status_code: Some(
+                1,
+            ),
+            stdout: "",
+            stderr: "Error: failed to stage app publication\n\nCaused by:\n    invalid app release record `<tempdir>/candidate-records/pv-darwin-amd64.json`: object_key must be `pv/0.2.0/pv-darwin-amd64`\n",
+        },
+    ),
+    (
+        "duplicate object key",
+        CommandFailure {
+            status_code: Some(
+                1,
+            ),
+            stdout: "",
+            stderr: "Error: failed to stage app publication\n\nCaused by:\n    invalid app release record `<tempdir>/candidate-records/pv-darwin-arm64.json`: object_key must be `pv/0.2.0/pv-darwin-amd64`\n",
+        },
+    ),
+    (
+        "non-canonical object key",
+        CommandFailure {
+            status_code: Some(
+                1,
+            ),
+            stdout: "",
+            stderr: "Error: failed to stage app publication\n\nCaused by:\n    invalid app release record `<tempdir>/candidate-records/not-the-darwin-arm64-binary.json`: object_key must be `pv/0.2.0/pv-darwin-arm64`\n",
+        },
+    ),
+]

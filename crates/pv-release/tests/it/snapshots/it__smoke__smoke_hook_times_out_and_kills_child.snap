@@ -6,6 +6,6 @@ Err(
     ErrorSummary {
         kind: "SmokeHookTimedOut",
         path: "timeout.sh",
-        reason: "100ms",
+        reason: "120s",
     },
 )

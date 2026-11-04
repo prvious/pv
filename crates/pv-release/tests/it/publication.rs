@@ -242,110 +242,64 @@ default_track = "8.2"
 }
 
 #[test]
-fn publication_stage_rejects_reserved_stable_manifest_key_before_write() -> Result<()> {
-    let fixture = PublicationFixture::new()?;
-    fixture.write_valid_candidate()?;
-
-    let reserved_stable_key = "records/manifest.json";
-    let error = publication_error(prepare_publication(&fixture.request_with_keys(
-        "manifests/runs/123456789/manifest.json",
-        reserved_stable_key,
-    )))?;
-
-    assert_debug_snapshot!(publication_error_summary(error, fixture.root()));
-    assert!(!path_exists(fixture.stage()));
-    assert!(!path_exists(&fixture.stage().join(reserved_stable_key)));
-
-    Ok(())
-}
-
-#[test]
-fn publication_stage_rejects_manifest_key_collision_with_candidate_record_before_write()
--> Result<()> {
-    let fixture = PublicationFixture::new()?;
-    fixture.write_valid_candidate()?;
-
-    let colliding_key =
+fn publication_stage_rejects_colliding_manifest_keys_before_write() -> Result<()> {
+    let archive_key =
+        "resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz";
+    let record_key =
         "records/resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.json";
-    let error = publication_error(prepare_publication(
-        &fixture.request_with_keys(colliding_key, "manifest.json"),
-    ))?;
+    let run_manifest_key = "manifests/runs/123456789/manifest.json";
+    let cases = [
+        (
+            "reserved stable key",
+            run_manifest_key,
+            "records/manifest.json",
+        ),
+        (
+            "versioned key is a candidate record",
+            record_key,
+            "manifest.json",
+        ),
+        (
+            "versioned key is the publication plan",
+            "publication-plan.json",
+            "manifest.json",
+        ),
+        (
+            "stable and versioned keys match",
+            "manifest.json",
+            "manifest.json",
+        ),
+        (
+            "versioned key is a candidate archive",
+            archive_key,
+            "manifest.json",
+        ),
+        (
+            "stable key outside the manifest entrypoint",
+            run_manifest_key,
+            archive_key,
+        ),
+    ];
+    let mut outcomes = Vec::new();
 
-    assert_debug_snapshot!(publication_error_summary(error, fixture.root()));
-    assert!(!path_exists(fixture.stage()));
-    assert!(!path_exists(&fixture.stage().join(colliding_key)));
+    for (case, versioned_key, stable_key) in cases {
+        let fixture = PublicationFixture::new()?;
+        fixture.write_valid_candidate()?;
 
-    Ok(())
-}
+        let error = publication_error(prepare_publication(
+            &fixture.request_with_keys(versioned_key, stable_key),
+        ))?;
 
-#[test]
-fn publication_stage_rejects_manifest_key_collision_with_publication_plan_before_write()
--> Result<()> {
-    let fixture = PublicationFixture::new()?;
-    fixture.write_valid_candidate()?;
+        for key in [versioned_key, stable_key, "publication-plan.json"] {
+            assert!(
+                !path_exists(&fixture.stage().join(key)),
+                "{case}: `{key}` was written before the keys were rejected"
+            );
+        }
+        outcomes.push((case, publication_error_summary(error, fixture.root())));
+    }
 
-    let error = publication_error(prepare_publication(
-        &fixture.request_with_keys("publication-plan.json", "manifest.json"),
-    ))?;
-
-    assert_debug_snapshot!(publication_error_summary(error, fixture.root()));
-    assert!(!path_exists(fixture.stage()));
-    assert!(!path_exists(&fixture.stage().join("publication-plan.json")));
-
-    Ok(())
-}
-
-#[test]
-fn publication_stage_rejects_stable_and_versioned_manifest_key_collision_before_write() -> Result<()>
-{
-    let fixture = PublicationFixture::new()?;
-    fixture.write_valid_candidate()?;
-
-    let colliding_key = "manifest.json";
-    let error = publication_error(prepare_publication(
-        &fixture.request_with_keys(colliding_key, colliding_key),
-    ))?;
-
-    assert_debug_snapshot!(publication_error_summary(error, fixture.root()));
-    assert!(!path_exists(fixture.stage()));
-    assert!(!path_exists(&fixture.stage().join(colliding_key)));
-
-    Ok(())
-}
-
-#[test]
-fn publication_stage_rejects_versioned_manifest_object_key_collision_with_candidate_archive()
--> Result<()> {
-    let fixture = PublicationFixture::new()?;
-    fixture.write_valid_candidate()?;
-
-    let archive_key =
-        "resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz";
-    let error = publication_error(prepare_publication(
-        &fixture.request_with_keys(archive_key, "manifest.json"),
-    ))?;
-
-    assert_debug_snapshot!(publication_error_summary(error, fixture.root()));
-    assert!(!path_exists(&fixture.stage().join(archive_key)));
-    assert!(!path_exists(&fixture.stage().join("publication-plan.json")));
-
-    Ok(())
-}
-
-#[test]
-fn publication_stage_rejects_stable_manifest_key_outside_manifest_entrypoint() -> Result<()> {
-    let fixture = PublicationFixture::new()?;
-    fixture.write_valid_candidate()?;
-
-    let archive_key =
-        "resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz";
-    let error = publication_error(prepare_publication(
-        &fixture.request_with_keys("manifests/runs/123456789/manifest.json", archive_key),
-    ))?;
-
-    assert_debug_snapshot!(publication_error_summary(error, fixture.root()));
-    assert!(!path_exists(&fixture.stage().join(archive_key)));
-    assert!(!path_exists(&fixture.stage().join("publication-plan.json")));
+    assert_debug_snapshot!(outcomes);
 
     Ok(())
 }

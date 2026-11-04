@@ -1,0 +1,54 @@
+---
+source: crates/pv-release/tests/it/publication.rs
+expression: outcomes
+---
+[
+    (
+        "reserved stable key",
+        (
+            "InvalidPublicationInput",
+            "records/manifest.json",
+            "stable manifest key must be `manifest.json`",
+        ),
+    ),
+    (
+        "versioned key is a candidate record",
+        (
+            "InvalidPublicationInput",
+            "records/resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.json",
+            "publication object key collides between `versioned manifest` and `candidate release record`",
+        ),
+    ),
+    (
+        "versioned key is the publication plan",
+        (
+            "InvalidPublicationInput",
+            "publication-plan.json",
+            "publication local path collides between `versioned manifest` and `publication plan`",
+        ),
+    ),
+    (
+        "stable and versioned keys match",
+        (
+            "InvalidPublicationInput",
+            "manifest.json",
+            "publication object key collides between `versioned manifest` and `stable manifest`",
+        ),
+    ),
+    (
+        "versioned key is a candidate archive",
+        (
+            "InvalidPublicationInput",
+            "resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz",
+            "publication object key collides between `versioned manifest` and `candidate archive`",
+        ),
+    ),
+    (
+        "stable key outside the manifest entrypoint",
+        (
+            "InvalidPublicationInput",
+            "resources/redis/8.2/8.2.1-pv1/darwin-arm64/redis-8.2.1-pv1-darwin-arm64.tar.gz",
+            "stable manifest key must be `manifest.json`",
+        ),
+    ),
+]

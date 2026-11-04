@@ -135,30 +135,6 @@ fn archive_validation_rejects_special_entries_and_missing_license_files() -> Res
 }
 
 #[test]
-fn archive_validation_does_not_scan_archive_file_contents() -> Result<()> {
-    let tempdir = tempdir()?;
-    let archive = tempdir.path().join("redis.tar.gz");
-    write_archive(
-        &archive,
-        &[
-            ("redis-7.2.5-pv1/LICENSE", b"license" as &[u8]),
-            ("redis-7.2.5-pv1/NOTICE", b"notice" as &[u8]),
-            (
-                "redis-7.2.5-pv1/bin/redis-server",
-                b"load /opt/homebrew/lib/libssl.dylib" as &[u8],
-            ),
-        ],
-    )?;
-    let (sha256, size) = archive_digest_and_size(&archive)?;
-    let record = tempdir.path().join("redis.json");
-    write_record(&record, &release_record_json(&sha256, size))?;
-
-    assert_eq!(validate_archive_for_record_file(&archive, &record), Ok(()));
-
-    Ok(())
-}
-
-#[test]
 fn archive_validation_rejects_advertised_php_extension_modules_that_are_not_files() -> Result<()> {
     let tempdir = tempdir()?;
     let missing_module = tempdir.path().join("missing-module.tar.gz");

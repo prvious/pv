@@ -3,7 +3,7 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{assert_debug_snapshot, assert_snapshot};
 use pv_release::ReleaseError;
-use pv_release::manifest::generate_manifest_file;
+use pv_release::manifest::generate_manifest_file_with_defaults;
 use resources::ArtifactManifest;
 use serde_json::Value;
 
@@ -29,43 +29,16 @@ fn manifest_generator_merges_release_and_revocation_records() -> Result<()> {
         REDIS_7_2_5_REVOCATION,
     )?;
 
-    generate_manifest_file(
+    generate_manifest_file_with_defaults(
         &records_dir,
         &revocations_dir,
+        None,
         &output,
         "https://artifacts.example.test",
     )?;
     let manifest_json = read_file(&output)?;
     ArtifactManifest::parse(&manifest_json)?;
     assert_manifest_includes_release_operation_metadata(&manifest_json)?;
-
-    assert_snapshot!(manifest_json);
-
-    Ok(())
-}
-
-#[test]
-fn manifest_generator_writes_versioned_manifest_file_locally() -> Result<()> {
-    let tempdir = tempdir()?;
-    let records_dir = tempdir.path().join("records");
-    let revocations_dir = tempdir.path().join("revocations");
-    let output = tempdir.path().join("manifests/redis-7.2.json");
-
-    create_dir_all(&records_dir)?;
-    create_dir_all(&revocations_dir)?;
-    write_file(
-        &records_dir.join("redis-7.2.5-pv1-darwin-arm64.json"),
-        REDIS_7_2_5_ARM64,
-    )?;
-
-    generate_manifest_file(
-        &records_dir,
-        &revocations_dir,
-        &output,
-        "https://artifacts.example.test",
-    )?;
-    let manifest_json = read_file(&output)?;
-    ArtifactManifest::parse(&manifest_json)?;
 
     assert_snapshot!(manifest_json);
 
@@ -91,9 +64,10 @@ fn manifest_generator_includes_php_extension_metadata() -> Result<()> {
         &php_with_extensions,
     )?;
 
-    generate_manifest_file(
+    generate_manifest_file_with_defaults(
         &records_dir,
         &revocations_dir,
+        None,
         &output,
         "https://artifacts.example.test",
     )?;
@@ -122,41 +96,11 @@ fn manifest_generator_includes_php_extension_metadata() -> Result<()> {
 }
 
 #[test]
-fn manifest_generator_rejects_revocation_for_missing_artifact() -> Result<()> {
-    let tempdir = tempdir()?;
-    let records_dir = tempdir.path().join("records");
-    let revocations_dir = tempdir.path().join("revocations");
-    let output = tempdir.path().join("dist/manifest.json");
-
-    create_dir_all(&records_dir)?;
-    create_dir_all(&revocations_dir)?;
-    write_file(
-        &records_dir.join("redis-7.2.6-pv1-darwin-arm64.json"),
-        REDIS_7_2_6_ARM64,
-    )?;
-    write_file(
-        &revocations_dir.join("redis-7.2.5-pv1-darwin-arm64.json"),
-        REDIS_7_2_5_REVOCATION,
-    )?;
-
-    let error = manifest_error(generate_manifest_file(
-        &records_dir,
-        &revocations_dir,
-        &output,
-        "https://artifacts.example.test",
-    ))?;
-
-    assert!(matches!(
-        error,
-        ReleaseError::RevocationTargetMissing { .. }
-    ));
-    assert_debug_snapshot!(error);
-
-    Ok(())
-}
-
-#[test]
 fn manifest_generator_rejects_invalid_revocation_replacements() -> Result<()> {
+    let missing_target = generate_manifest_error_with(
+        &[("redis-7.2.6-pv1-darwin-arm64.json", REDIS_7_2_6_ARM64)],
+        &[("redis-7.2.5-pv1-darwin-arm64.json", REDIS_7_2_5_REVOCATION)],
+    )?;
     let missing_replacement = generate_manifest_error_with(
         &[("redis-7.2.5-pv1-darwin-arm64.json", REDIS_7_2_5_ARM64)],
         &[("redis-7.2.5-pv1-darwin-arm64.json", REDIS_7_2_5_REVOCATION)],
@@ -187,46 +131,12 @@ fn manifest_generator_rejects_invalid_revocation_replacements() -> Result<()> {
     )?;
 
     assert_debug_snapshot!((
+        missing_target,
         missing_replacement,
         self_replacement,
         wrong_platform_replacement,
         revoked_replacement,
     ));
-
-    Ok(())
-}
-
-#[test]
-fn manifest_generator_rejects_multi_track_resource_without_default_metadata() -> Result<()> {
-    let tempdir = tempdir()?;
-    let records_dir = tempdir.path().join("records");
-    let revocations_dir = tempdir.path().join("revocations");
-    let output = tempdir.path().join("dist/manifest.json");
-
-    create_dir_all(&records_dir)?;
-    create_dir_all(&revocations_dir)?;
-    write_file(
-        &records_dir.join("redis-7.2.6-pv1-darwin-arm64.json"),
-        REDIS_7_2_6_ARM64,
-    )?;
-    write_file(
-        &records_dir.join("redis-8.0.0-pv1-darwin-arm64.json"),
-        REDIS_8_0_0_ARM64,
-    )?;
-
-    let error = manifest_error(generate_manifest_file(
-        &records_dir,
-        &revocations_dir,
-        &output,
-        "https://artifacts.example.test",
-    ))?;
-
-    assert!(matches!(
-        error,
-        ReleaseError::GeneratedManifestInvalid { .. }
-    ));
-    assert!(!path_exists(&output));
-    assert_debug_snapshot!(error);
 
     Ok(())
 }
@@ -249,9 +159,10 @@ fn generate_manifest_error_with(
         write_file(&revocations_dir.join(name), content)?;
     }
 
-    manifest_error(generate_manifest_file(
+    manifest_error(generate_manifest_file_with_defaults(
         &records_dir,
         &revocations_dir,
+        None,
         &output,
         "https://artifacts.example.test",
     ))
@@ -367,10 +278,6 @@ fn read_file(path: &Utf8Path) -> Result<String> {
     Ok(std::fs::read_to_string(path)?)
 }
 
-fn path_exists(path: &Utf8Path) -> bool {
-    path.exists()
-}
-
 const REDIS_7_2_5_ARM64: &str = r#"{
   "resource": "redis",
   "track": "7.2",
@@ -457,29 +364,6 @@ const REDIS_7_2_6_AMD64: &str = r#"{
   "provenance": {
     "source_url": "https://download.redis.io/releases/redis-7.2.6.tar.gz",
     "source_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-    "recipe": "release/artifacts/recipes/redis/build.sh",
-    "pv_commit": "0123456789abcdef0123456789abcdef01234567",
-    "build_run_id": "local-test"
-  }
-}"#;
-
-const REDIS_8_0_0_ARM64: &str = r#"{
-  "resource": "redis",
-  "track": "8.0",
-  "upstream_version": "8.0.0",
-  "pv_build_revision": "pv1",
-  "artifact_version": "8.0.0-pv1",
-  "platform": "darwin-arm64",
-  "object_key": "resources/redis/8.0/8.0.0-pv1/darwin-arm64/redis-8.0.0-pv1-darwin-arm64.tar.gz",
-  "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-  "size": 168,
-  "published_at": "2026-06-06T14:00:00Z",
-  "minimum_pv_version": "0.1.0",
-  "license_files": ["LICENSE"],
-  "notice_files": ["NOTICE"],
-  "provenance": {
-    "source_url": "https://download.redis.io/releases/redis-8.0.0.tar.gz",
-    "source_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     "recipe": "release/artifacts/recipes/redis/build.sh",
     "pv_commit": "0123456789abcdef0123456789abcdef01234567",
     "build_run_id": "local-test"

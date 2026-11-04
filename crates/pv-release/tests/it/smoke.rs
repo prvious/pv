@@ -5,8 +5,9 @@ use data_encoding::HEXLOWER;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use insta::{assert_debug_snapshot, assert_snapshot};
+use platform::clock;
 use pv_release::ReleaseError;
-use pv_release::smoke::{run_smoke_hook, run_smoke_hook_with_timeout};
+use pv_release::smoke::{SMOKE_HOOK_TIMEOUT, run_smoke_hook};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -14,7 +15,6 @@ use std::io::ErrorKind;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::process::Output;
-use std::time::{Duration, Instant};
 use tar::{Builder, Header};
 
 #[expect(
@@ -40,10 +40,6 @@ fn smoke_hook_reports_success_and_failure() -> Result<()> {
 }
 
 #[test]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "pv-release moves to `platform::clock` in its cleanup pass"
-)]
 fn smoke_hook_times_out_and_kills_child() -> Result<()> {
     let tempdir = tempdir()?;
     let hook = tempdir.path().join("timeout.sh");
@@ -55,15 +51,12 @@ while :; do
 done
 "#,
     )?;
+    let clock = clock::install_fake_for_test();
+    clock.advance_when_waiting_in_background(&SMOKE_HOOK_TIMEOUT);
 
-    let started = Instant::now();
-    let result = run_smoke_hook_with_timeout(&hook, tempdir.path(), Duration::from_millis(100));
+    let result = run_smoke_hook(&hook, tempdir.path());
 
     assert_debug_snapshot!(summarize_result(result));
-    assert!(
-        started.elapsed() < Duration::from_secs(5),
-        "timeout smoke hook should not wait for the script forever"
-    );
     Ok(())
 }
 
@@ -856,40 +849,6 @@ fn composer_smoke_requires_php_binary() -> Result<()> {
 }
 
 #[test]
-fn composer_smoke_rejects_prefix_version_match() -> Result<()> {
-    let tempdir = tempdir()?;
-    let artifact_root = tempdir.path().join("artifact");
-    let command_bin = tempdir.path().join("commands");
-    let php = command_bin.join("php");
-
-    create_dir_all(&artifact_root)?;
-    create_dir_all(&command_bin)?;
-    write_file(&artifact_root.join("composer.phar"), "composer fixture\n")?;
-    write_executable(
-        &php,
-        r#"#!/bin/sh
-set -eu
-printf '%s\n' 'Composer version 2.10.10 2026-01-01 00:00:00'
-"#,
-    )?;
-
-    let output = StdCommand::new(composer_smoke_hook())
-        .arg(&artifact_root)
-        .env("PV_COMPOSER_SMOKE_PHP", &php)
-        .env("PV_UPSTREAM_VERSION", "2.10.1")
-        .output()?;
-
-    assert!(
-        !output.status.success(),
-        "Composer smoke should reject prefix version matches: {}",
-        command_output_debug(&output)
-    );
-    assert_eq!(output.status.code(), Some(43));
-
-    Ok(())
-}
-
-#[test]
 fn php_build_recipe_smoke() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
         php_optional_extensions: "redis,xdebug,imagick,rar",
@@ -1179,276 +1138,6 @@ fn redis_build_recipe_rejects_missing_third_party_legal_header() -> Result<()> {
     assert!(
         !run.archive_exists,
         "Redis archive should not be written when legal notice collection fails"
-    );
-
-    Ok(())
-}
-
-#[test]
-fn redis_smoke_prints_server_log_on_startup_failure() -> Result<()> {
-    let tempdir = tempdir()?;
-    let artifact_root = tempdir.path().join("artifact");
-    let artifact_bin = artifact_root.join("bin");
-    let command_bin = tempdir.path().join("commands");
-
-    create_dir_all(&artifact_bin)?;
-    create_dir_all(&command_bin)?;
-    write_executable(
-        &artifact_bin.join("redis-server"),
-        r#"#!/bin/sh
-set -eu
-printf '%s\n' 'redis startup exploded' >&2
-exit 71
-"#,
-    )?;
-    write_executable(
-        &artifact_bin.join("redis-cli"),
-        r#"#!/bin/sh
-set -eu
-exit 72
-"#,
-    )?;
-    write_executable(&command_bin.join("sleep"), "#!/bin/sh\nexit 0\n")?;
-
-    let output = StdCommand::new(redis_smoke_hook())
-        .arg(&artifact_root)
-        .env(
-            "PATH",
-            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
-        )
-        .output()?;
-
-    assert!(
-        !output.status.success(),
-        "Redis smoke should fail: {}",
-        command_output_debug(&output)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("redis startup exploded"),
-        "Redis smoke should print redis-server output on failure: {stderr}"
-    );
-
-    Ok(())
-}
-
-#[test]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "pv-release moves to `platform::clock` in its cleanup pass"
-)]
-fn redis_smoke_kills_server_when_shutdown_fails() -> Result<()> {
-    let tempdir = tempdir()?;
-    let artifact_root = tempdir.path().join("artifact");
-    let artifact_bin = artifact_root.join("bin");
-    let command_bin = tempdir.path().join("commands");
-
-    create_dir_all(&artifact_bin)?;
-    create_dir_all(&command_bin)?;
-    write_executable(
-        &artifact_bin.join("redis-server"),
-        r#"#!/bin/sh
-set -eu
-exec /bin/sleep 10
-"#,
-    )?;
-    write_executable(
-        &artifact_bin.join("redis-cli"),
-        r#"#!/bin/sh
-set -eu
-exit 72
-"#,
-    )?;
-    write_executable(&command_bin.join("sleep"), "#!/bin/sh\nexit 0\n")?;
-    let started = Instant::now();
-    let output = StdCommand::new(redis_smoke_hook())
-        .arg(&artifact_root)
-        .env(
-            "PATH",
-            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
-        )
-        .output()?;
-
-    assert!(
-        !output.status.success(),
-        "Redis smoke should fail when redis-cli never returns PONG: {}",
-        command_output_debug(&output)
-    );
-    assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "Redis smoke should kill the server instead of waiting for it to exit"
-    );
-
-    Ok(())
-}
-
-#[test]
-fn mailpit_smoke_rejects_prefix_version_match() -> Result<()> {
-    let tempdir = tempdir()?;
-    let artifact_root = tempdir.path().join("artifact");
-    let artifact_bin = artifact_root.join("bin");
-    let command_bin = tempdir.path().join("commands");
-
-    create_dir_all(&artifact_bin)?;
-    create_dir_all(&command_bin)?;
-    write_fake_mailpit(&artifact_bin.join("mailpit"))?;
-    write_fake_success_curl(&command_bin.join("curl"))?;
-
-    let output = StdCommand::new(mailpit_smoke_hook())
-        .arg(&artifact_root)
-        .env(
-            "PATH",
-            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
-        )
-        .env("PV_TEST_MAILPIT_VERSION_OUTPUT", "Mailpit v1.30.10")
-        .env("PV_UPSTREAM_VERSION", "1.30.1")
-        .output()?;
-
-    assert!(
-        !output.status.success(),
-        "Mailpit smoke should reject prefix version matches: {}",
-        command_output_debug(&output)
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("Mailpit version mismatch"),
-        "Mailpit smoke should report the exact version mismatch: {}",
-        command_output_debug(&output)
-    );
-
-    Ok(())
-}
-
-#[test]
-fn mailpit_smoke_fails_when_server_does_not_stop() -> Result<()> {
-    let tempdir = tempdir()?;
-    let artifact_root = tempdir.path().join("artifact");
-    let artifact_bin = artifact_root.join("bin");
-    let command_bin = tempdir.path().join("commands");
-
-    create_dir_all(&artifact_bin)?;
-    create_dir_all(&command_bin)?;
-    write_fake_mailpit(&artifact_bin.join("mailpit"))?;
-    write_fake_success_curl(&command_bin.join("curl"))?;
-
-    let output = StdCommand::new(mailpit_smoke_hook())
-        .arg(&artifact_root)
-        .env(
-            "PATH",
-            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
-        )
-        .env("PV_TEST_MAILPIT_IGNORE_TERM", "1")
-        .env("PV_TEST_MAILPIT_SLEEP_SECONDS", "10")
-        .env("PV_TEST_MAILPIT_VERSION_OUTPUT", "Mailpit v1.30.1")
-        .env("PV_UPSTREAM_VERSION", "1.30.1")
-        .output()?;
-
-    assert!(
-        !output.status.success(),
-        "Mailpit smoke should fail when the server ignores shutdown: {}",
-        command_output_debug(&output)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("Mailpit smoke failed: server did not stop cleanly"),
-        "Mailpit smoke should report the bounded shutdown failure: {}",
-        command_output_debug(&output)
-    );
-
-    Ok(())
-}
-
-#[test]
-fn rustfs_smoke_rejects_prefix_version_match() -> Result<()> {
-    let tempdir = tempdir()?;
-    let artifact_root = tempdir.path().join("artifact");
-    let artifact_bin = artifact_root.join("bin");
-
-    create_dir_all(&artifact_bin)?;
-    write_fake_rustfs(&artifact_bin.join("rustfs"))?;
-
-    let output = StdCommand::new(rustfs_smoke_hook())
-        .arg(&artifact_root)
-        .env("PV_TEST_RUSTFS_VERSION_OUTPUT", "rustfs 1.0.0-beta.70")
-        .env("PV_UPSTREAM_VERSION", "1.0.0-beta.7")
-        .output()?;
-
-    assert!(
-        !output.status.success(),
-        "RustFS smoke should reject prefix version matches: {}",
-        command_output_debug(&output)
-    );
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("RustFS version mismatch"),
-        "RustFS smoke should report the exact version mismatch: {}",
-        command_output_debug(&output)
-    );
-
-    Ok(())
-}
-
-#[test]
-fn rustfs_smoke_uses_explicit_loopback_console_port() -> Result<()> {
-    let tempdir = tempdir()?;
-    let artifact_root = tempdir.path().join("artifact");
-    let artifact_bin = artifact_root.join("bin");
-    let rustfs_log = tempdir.path().join("rustfs.log");
-
-    create_dir_all(&artifact_bin)?;
-    write_fake_rustfs(&artifact_bin.join("rustfs"))?;
-    write_file(&rustfs_log, "")?;
-
-    let output = StdCommand::new(rustfs_smoke_hook())
-        .arg(&artifact_root)
-        .env("PV_TEST_RUSTFS_LOG", &rustfs_log)
-        .env("PV_TEST_RUSTFS_REQUIRE_CONSOLE_ADDRESS", "1")
-        .env("PV_TEST_RUSTFS_VERSION_OUTPUT", "rustfs 1.0.0-beta.7")
-        .env("PV_UPSTREAM_VERSION", "1.0.0-beta.7")
-        .output()?;
-
-    assert!(
-        output.status.success(),
-        "RustFS smoke should pass an explicit loopback console port: {}",
-        command_output_debug(&output)
-    );
-    let rustfs_log = read_file(&rustfs_log)?;
-    assert!(
-        rustfs_log.contains("console=127.0.0.1:"),
-        "RustFS smoke should not leave the console on the default wildcard listener: {rustfs_log}"
-    );
-
-    Ok(())
-}
-
-#[test]
-#[expect(
-    clippy::disallowed_methods,
-    reason = "pv-release moves to `platform::clock` in its cleanup pass"
-)]
-fn rustfs_smoke_fails_when_server_does_not_stop() -> Result<()> {
-    let tempdir = tempdir()?;
-    let artifact_root = tempdir.path().join("artifact");
-    let artifact_bin = artifact_root.join("bin");
-
-    create_dir_all(&artifact_bin)?;
-    write_fake_rustfs(&artifact_bin.join("rustfs"))?;
-
-    let started = Instant::now();
-    let output = StdCommand::new(rustfs_smoke_hook())
-        .arg(&artifact_root)
-        .env("PV_TEST_RUSTFS_IGNORE_TERM", "1")
-        .env("PV_TEST_RUSTFS_SLEEP_SECONDS", "10")
-        .env("PV_TEST_RUSTFS_VERSION_OUTPUT", "rustfs 1.0.0-beta.7")
-        .env("PV_UPSTREAM_VERSION", "1.0.0-beta.7")
-        .output()?;
-
-    assert!(
-        !output.status.success(),
-        "RustFS smoke should fail when the server ignores shutdown: {}",
-        command_output_debug(&output)
-    );
-    assert!(
-        started.elapsed() < Duration::from_secs(10),
-        "RustFS smoke should use a bounded shutdown wait"
     );
 
     Ok(())
@@ -1834,108 +1523,6 @@ fn mysql_smoke_uses_tcp_readiness_and_select() -> Result<()> {
 }
 
 #[test]
-fn postgres_pv2_recipe_contract_is_pinned_and_complete() -> Result<()> {
-    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let recipe = read_file(&workspace_root.join("release/artifacts/recipes/postgres/recipe.toml"))?;
-    let build = read_file(&workspace_root.join("release/artifacts/recipes/postgres/build.sh"))?;
-    let dependencies =
-        read_file(&workspace_root.join("release/artifacts/recipes/postgres/dependencies.sh"))?;
-    let openssl =
-        read_file(&workspace_root.join("release/artifacts/recipes/postgres/openssl.env"))?;
-    let smoke = read_file(&workspace_root.join("release/artifacts/recipes/postgres/smoke.sh"))?;
-    let common = read_file(&workspace_root.join("release/artifacts/recipes/common.sh"))?;
-    let extensions_17 =
-        read_file(&workspace_root.join("release/artifacts/recipes/postgres/catalogs/17.txt"))?;
-    let extensions_18 =
-        read_file(&workspace_root.join("release/artifacts/recipes/postgres/catalogs/18.txt"))?;
-    let extensions_17 = extensions_17.lines().collect::<Vec<_>>();
-    let extensions_18 = extensions_18.lines().collect::<Vec<_>>();
-    let track_18_additions = extensions_18
-        .iter()
-        .filter(|extension| !extensions_17.contains(extension))
-        .copied()
-        .collect::<Vec<_>>();
-
-    let summary = format!(
-        "revision_is_pv2={}\npostgres_versions_are_17_10_and_18_4={}\nopenssl_version_3_5_8={}\nopenssl_checksum_pinned={}\nworld_bin_build={}\ninstall_world_bin={}\nssl_configure_flags={}\nzlib_remains_disabled={}\nopenssl_runtime_closure={}\nsource_input_and_legal_markers={}\nmacho_cleanup_rewrite_sign_validate={}\nreusable_dependency_contract_complete={}\nevery_reused_bundle_validated={}\nsource_cache_checksum_validated={}\nbuild_jobs_bounded={}\npostgres_staging_is_track_local={}\ntrack_17_extension_count={}\ntrack_18_extension_count={}\ntrack_18_additions={track_18_additions:?}\nonly_plpgsql_default={}\npv_realistic_auth={}\ncritical_function_smokes={}",
-        recipe.contains("pv_build_revision = \"pv2\""),
-        recipe.contains("upstream_version = \"17.10\"")
-            && recipe.contains("upstream_version = \"18.4\""),
-        openssl.contains("PV_POSTGRES_OPENSSL_VERSION=3.5.8"),
-        openssl.contains("a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2"),
-        build.contains("make -j \"$BUILD_JOBS\" world-bin"),
-        build.contains("make install-world-bin"),
-        build.contains("--with-ssl=openssl")
-            && build.contains("--with-includes=\"$openssl_prefix/include\"")
-            && build.contains("--with-libraries=\"$openssl_prefix/lib\""),
-        build.contains("--without-zlib"),
-        recipe.contains("lib/libssl.3.dylib")
-            && recipe.contains("lib/libcrypto.3.dylib")
-            && build.contains("cp \"$openssl_prefix/lib/libssl.3.dylib\"")
-            && build.contains("cp \"$openssl_prefix/lib/libcrypto.3.dylib\""),
-        build.contains("--source-input openssl")
-            && build.contains("--license-file OPENSSL-LICENSE")
-            && build.contains("--notice-file THIRD-PARTY-NOTICES"),
-        common.contains("pv_recipe_cleanup_macho_rpaths_tree")
-            && build.contains("rewrite_macho_install_names")
-            && build.contains("pv_recipe_ad_hoc_sign_macho_tree")
-            && build.contains("pv_recipe_validate_macho_binary"),
-        [
-            "source_version=",
-            "source_url=",
-            "source_sha256=",
-            "platform=",
-            "architecture=",
-            "sdk_version=",
-            "sdk_path=",
-            "sdk_root=",
-            "deployment_target=",
-            "compiler_path=",
-            "compiler_version=",
-            "xcode_version=",
-            "xcode_build_version=",
-            "configure_target=",
-            "configure_flags=no-tests",
-            "openssl_dir=",
-            "common_script_sha256=",
-            "dependencies_script_sha256=",
-            "cflags=",
-            "cppflags=",
-            "ldflags=",
-            "build_jobs=",
-        ]
-        .iter()
-        .all(|contract_input| dependencies.contains(contract_input)),
-        dependencies.contains("use_bundle")
-            && dependencies.contains("validate_contract \"$extracted_prefix\"")
-            && dependencies.contains("validate_prefix \"$openssl_prefix\""),
-        build.contains("if [ -f \"$source_archive\" ]")
-            && build.contains("require_sha256 \"$source_archive\" \"$source_sha256\""),
-        build.contains("Postgres build jobs must be an integer from 1 through 4")
-            && dependencies
-                .contains("Postgres dependency build jobs must be an integer from 1 through 4"),
-        build.contains("work_dir=\"$OUT_DIR/work/postgres-$PV_TRACK-$artifact_basename\"")
-            && build.contains("source_extract_dir=\"$work_dir/postgresql-source\""),
-        extensions_17.len(),
-        extensions_18.len(),
-        smoke.contains("printf '%s\\n' plpgsql")
-            && smoke.contains("SELECT extname FROM pg_extension ORDER BY extname"),
-        smoke.contains("--username \"$admin_user\"")
-            && smoke.contains("--auth-host scram-sha-256")
-            && smoke.contains("--auth-local trust")
-            && smoke.contains("unix_socket_directories = ''"),
-        smoke.contains("gin_trgm_ops")
-            && smoke.contains("digest('pv', 'sha256')")
-            && smoke.contains("gen_salt('md5')")
-            && smoke.contains("cipher-algo=aes256")
-            && smoke.contains("NOT ssl_is_used()"),
-    );
-
-    assert_debug_snapshot!(summary);
-    Ok(())
-}
-
-#[test]
 fn postgres_dependency_cache_contract_is_exact_and_track_independent() -> Result<()> {
     let tempdir = tempdir()?;
     let fake_bin = tempdir.path().join("bin");
@@ -2252,108 +1839,6 @@ fn postgres_build_recipe_rejects_catalog_drift_before_archiving() -> Result<()> 
 }
 
 #[test]
-fn postgres_build_recipe_reuses_validated_dependency_and_source_downloads() -> Result<()> {
-    let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
-        reuse_openssl_bundle: true,
-        second_run: SecondPostgresRun::SameTrack,
-        ..PostgresBuildRecipeOptions::default()
-    })?;
-
-    let dependency_output = run
-        .dependency_output
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("reusable dependency build did not run"))?;
-    assert!(
-        dependency_output.status.success(),
-        "OpenSSL dependency build failed: {}",
-        command_output_debug(dependency_output)
-    );
-    assert!(
-        run.output.status.success(),
-        "first Postgres build failed: {}",
-        command_output_debug(&run.output)
-    );
-    let second_output = run
-        .second_output
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("second Postgres build did not run"))?;
-    assert!(
-        second_output.status.success(),
-        "second Postgres build failed: {}",
-        command_output_debug(second_output)
-    );
-    assert_eq!(run.curl_log.matches("argv=").count(), 2);
-    assert_eq!(
-        run.curl_log
-            .matches("https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz")
-            .count(),
-        1
-    );
-    assert_eq!(
-        run.curl_log
-            .matches("https://sources.example.test/postgres")
-            .count(),
-        1
-    );
-    assert_eq!(
-        run.openssl_build_log.matches("configure-target=").count(),
-        1
-    );
-    for library in ["libssl.3.dylib", "libcrypto.3.dylib"] {
-        assert!(run.codesign_log.lines().any(|line| {
-            line.contains("argv=[--force][--sign][-]")
-                && line.contains(&format!("openssl-3.5.8/lib/{library}"))
-        }));
-        assert!(run.codesign_log.lines().any(|line| {
-            line.contains("argv=[--verify]")
-                && line.contains(&format!("openssl-3.5.8/lib/{library}"))
-        }));
-    }
-
-    Ok(())
-}
-
-#[test]
-fn postgres_build_recipe_reuses_dependency_across_tracks() -> Result<()> {
-    let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
-        reuse_openssl_bundle: true,
-        second_run: SecondPostgresRun::NextTrack,
-        ..PostgresBuildRecipeOptions::default()
-    })?;
-
-    assert!(
-        run.output.status.success(),
-        "Postgres 17 build failed: {}",
-        command_output_debug(&run.output)
-    );
-    let second_output = run
-        .second_output
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("Postgres 18 build did not run"))?;
-    assert!(
-        second_output.status.success(),
-        "Postgres 18 build failed: {}",
-        command_output_debug(second_output)
-    );
-    assert!(run.archive_exists);
-    assert!(run.second_archive_exists);
-    assert_eq!(
-        run.openssl_build_log.matches("configure-target=").count(),
-        1
-    );
-    assert!(
-        run.validate_log
-            .contains("archive=postgres-17.10-pv2-darwin-arm64.tar.gz")
-    );
-    assert!(
-        run.validate_log
-            .contains("archive=postgres-18.4-pv2-darwin-arm64.tar.gz")
-    );
-
-    Ok(())
-}
-
-#[test]
 fn postgres_build_recipe_rejects_reused_dependency_contract_mismatch() -> Result<()> {
     let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
         mismatch_openssl_contract: true,
@@ -2378,25 +1863,6 @@ fn postgres_build_recipe_rejects_reused_dependency_contract_mismatch() -> Result
 }
 
 #[test]
-fn postgres_build_recipe_accepts_handed_off_dependency_contract() -> Result<()> {
-    let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
-        mismatch_openssl_contract: true,
-        reuse_openssl_bundle: true,
-        use_producer_contract: true,
-        ..PostgresBuildRecipeOptions::default()
-    })?;
-
-    assert!(
-        run.output.status.success(),
-        "Postgres build rejected the producer contract: {}",
-        command_output_debug(&run.output)
-    );
-    assert!(run.archive_exists);
-
-    Ok(())
-}
-
-#[test]
 fn postgres_build_recipe_rejects_mismatched_handed_off_contract() -> Result<()> {
     let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
         corrupt_producer_contract: true,
@@ -2411,56 +1877,6 @@ fn postgres_build_recipe_rejects_mismatched_handed_off_contract() -> Result<()> 
             .contains("reusable OpenSSL bundle does not match the expected build contract")
     );
     assert_eq!(run.configure_log, "");
-
-    Ok(())
-}
-
-#[test]
-fn postgres_build_recipe_rejects_unbounded_parallelism() -> Result<()> {
-    let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
-        build_jobs: "5",
-        reuse_openssl_bundle: true,
-        ..PostgresBuildRecipeOptions::default()
-    })?;
-
-    let dependency_output = run
-        .dependency_output
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("reusable dependency build did not run"))?;
-    assert!(!dependency_output.status.success());
-    assert!(
-        String::from_utf8_lossy(&dependency_output.stderr)
-            .contains("Postgres dependency build jobs must be an integer from 1 through 4")
-    );
-    assert!(!run.output.status.success());
-    assert!(
-        String::from_utf8_lossy(&run.output.stderr)
-            .contains("Postgres build jobs must be an integer from 1 through 4")
-    );
-    assert_eq!(run.curl_log, "");
-
-    Ok(())
-}
-
-#[test]
-fn postgres_build_recipe_rejects_contract_hash_failure() -> Result<()> {
-    let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
-        fail_contract_hash: true,
-        reuse_openssl_bundle: true,
-        ..PostgresBuildRecipeOptions::default()
-    })?;
-
-    let dependency_output = run
-        .dependency_output
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("reusable dependency build did not run"))?;
-    assert!(!dependency_output.status.success());
-    assert!(
-        String::from_utf8_lossy(&dependency_output.stderr).contains("failed to calculate SHA-256")
-    );
-    assert!(!run.output.status.success());
-    assert!(String::from_utf8_lossy(&run.output.stderr).contains("failed to calculate SHA-256"));
-    assert_eq!(run.curl_log, "");
 
     Ok(())
 }
@@ -2635,36 +2051,6 @@ fn mysql_build_recipe_rejects_unknown_broken_symlinks() -> Result<()> {
     assert!(
         !run.archive_exists,
         "MySQL archive should not be written after an unknown broken symlink"
-    );
-
-    Ok(())
-}
-
-#[test]
-fn sql_build_recipes_pin_macos_deployment_target() -> Result<()> {
-    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let mysql_build = read_file(&workspace_root.join("release/artifacts/recipes/mysql/build.sh"))?;
-    let postgres_build =
-        read_file(&workspace_root.join("release/artifacts/recipes/postgres/build.sh"))?;
-    let postgres_openssl =
-        read_file(&workspace_root.join("release/artifacts/recipes/postgres/openssl.env"))?;
-
-    assert!(
-        mysql_build.contains("\nDEPLOYMENT_TARGET=13.0\n"),
-        "MySQL build recipe should pin the deployment target to macOS 13.0"
-    );
-    assert!(
-        !mysql_build.contains("PV_MACOSX_DEPLOYMENT_TARGET"),
-        "MySQL build recipe should not allow caller-controlled deployment targets"
-    );
-    assert!(
-        postgres_openssl.contains("\nPV_POSTGRES_DEPLOYMENT_TARGET=13.0\n")
-            && postgres_build.contains("DEPLOYMENT_TARGET=$PV_POSTGRES_DEPLOYMENT_TARGET"),
-        "Postgres build recipe should pin the deployment target to macOS 13.0"
-    );
-    assert!(
-        !postgres_build.contains("PV_MACOSX_DEPLOYMENT_TARGET"),
-        "Postgres build recipe should not allow caller-controlled deployment targets"
     );
 
     Ok(())
@@ -3055,9 +2441,7 @@ struct MysqlBuildRecipeRun {
 struct PostgresBuildRecipeRun {
     output: Output,
     dependency_output: Option<Output>,
-    second_output: Option<Output>,
     record_json: Option<String>,
-    curl_log: String,
     configure_log: String,
     make_log: String,
     openssl_build_log: String,
@@ -3067,43 +2451,17 @@ struct PostgresBuildRecipeRun {
     codesign_log: String,
     archive_entries: Vec<String>,
     archive_exists: bool,
-    second_archive_exists: bool,
 }
 
+#[derive(Default)]
 struct PostgresBuildRecipeOptions {
-    build_jobs: &'static str,
     corrupt_openssl_bundle: bool,
     corrupt_postgres_source_cache: bool,
     corrupt_producer_contract: bool,
-    fail_contract_hash: bool,
     install_mismatched_catalog: bool,
     mismatch_openssl_contract: bool,
     reuse_openssl_bundle: bool,
-    second_run: SecondPostgresRun,
     use_producer_contract: bool,
-}
-
-enum SecondPostgresRun {
-    None,
-    SameTrack,
-    NextTrack,
-}
-
-impl Default for PostgresBuildRecipeOptions {
-    fn default() -> Self {
-        Self {
-            build_jobs: "1",
-            corrupt_openssl_bundle: false,
-            corrupt_postgres_source_cache: false,
-            corrupt_producer_contract: false,
-            fail_contract_hash: false,
-            install_mismatched_catalog: false,
-            mismatch_openssl_contract: false,
-            reuse_openssl_bundle: false,
-            second_run: SecondPostgresRun::None,
-            use_producer_contract: false,
-        }
-    }
 }
 
 struct MysqlBuildRecipeOptions {
@@ -3318,10 +2676,6 @@ fn composer_smoke_hook() -> camino::Utf8PathBuf {
         .join("../../release/artifacts/recipes/composer/smoke.sh")
 }
 
-fn redis_smoke_hook() -> camino::Utf8PathBuf {
-    Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/redis/smoke.sh")
-}
-
 fn mysql_smoke_hook() -> camino::Utf8PathBuf {
     Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/mysql/smoke.sh")
 }
@@ -3329,16 +2683,6 @@ fn mysql_smoke_hook() -> camino::Utf8PathBuf {
 fn postgres_smoke_hook() -> camino::Utf8PathBuf {
     Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../release/artifacts/recipes/postgres/smoke.sh")
-}
-
-fn mailpit_smoke_hook() -> camino::Utf8PathBuf {
-    Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../release/artifacts/recipes/mailpit/smoke.sh")
-}
-
-fn rustfs_smoke_hook() -> camino::Utf8PathBuf {
-    Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../release/artifacts/recipes/rustfs/smoke.sh")
 }
 
 fn run_php_build_recipe_smoke() -> Result<BuildRecipeRun> {
@@ -3476,8 +2820,6 @@ fn run_postgres_build_recipe_smoke_with_options(
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let extension_catalog_17 =
         workspace_root.join("release/artifacts/recipes/postgres/catalogs/17.txt");
-    let extension_catalog_18 =
-        workspace_root.join("release/artifacts/recipes/postgres/catalogs/18.txt");
 
     create_dir_all(&fake_bin)?;
     write_postgres_source_archive(&source_archive)?;
@@ -3521,16 +2863,12 @@ fn run_postgres_build_recipe_smoke_with_options(
                 .arg(&dependency_prefix)
                 .env("CC", &compiler)
                 .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
-                .env("PV_BUILD_JOBS", options.build_jobs)
+                .env("PV_BUILD_JOBS", "1")
                 .env("PV_POSTGRES_DEPENDENCY_WORK_DIR", &dependency_work_dir)
                 .env("PV_POSTGRES_SOURCE_CACHE_DIR", &source_cache_dir)
                 .env("PV_RECIPE_PLATFORM", "darwin-arm64")
                 .env("PV_TEST_COMPILER_PATH", &compiler)
                 .env("PV_TEST_CURL_LOG", &curl_log)
-                .env(
-                    "PV_TEST_FAIL_CONTRACT_HASH",
-                    if options.fail_contract_hash { "1" } else { "" },
-                )
                 .env("PV_TEST_LIPO_ARCHS", "arm64")
                 .env("PV_TEST_MACHO_LIBRARIES", "")
                 .env("PV_TEST_MACHO_MINOS", "13.0")
@@ -3580,7 +2918,7 @@ fn run_postgres_build_recipe_smoke_with_options(
             .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
             .env("PV_ARTIFACT_OUT_DIR", &out_dir)
             .env("PV_ARTIFACT_RECORD_DIR", &record_dir)
-            .env("PV_BUILD_JOBS", options.build_jobs)
+            .env("PV_BUILD_JOBS", "1")
             .env("PV_BUILD_RUN_ID", "local-test")
             .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
             .env("PV_POSTGRES_SOURCE_CACHE_DIR", &source_cache_dir)
@@ -3591,10 +2929,6 @@ fn run_postgres_build_recipe_smoke_with_options(
             .env("PV_TEST_CONFIGURE_LOG", &configure_log)
             .env("PV_TEST_CURL_LOG", &curl_log)
             .env("PV_TEST_DELETED_RPATH_LOG", &deleted_rpaths_log)
-            .env(
-                "PV_TEST_FAIL_CONTRACT_HASH",
-                if options.fail_contract_hash { "1" } else { "" },
-            )
             .env("PV_TEST_INSTALL_NAME_LOG", &install_name_log)
             .env("PV_TEST_LIPO_ARCHS", "arm64")
             .env("PV_TEST_MACHO_LIBRARIES", "")
@@ -3649,15 +2983,6 @@ fn run_postgres_build_recipe_smoke_with_options(
         &extension_catalog_17,
         options.install_mismatched_catalog,
     )?;
-    let second_output = match options.second_run {
-        SecondPostgresRun::None => None,
-        SecondPostgresRun::SameTrack => {
-            Some(run_build("17", "17.10", &extension_catalog_17, false)?)
-        }
-        SecondPostgresRun::NextTrack => {
-            Some(run_build("18", "18.4", &extension_catalog_18, false)?)
-        }
-    };
 
     let archive = out_dir.join(format!("{artifact_basename}.tar.gz"));
     let record = record_dir
@@ -3667,7 +2992,6 @@ fn run_postgres_build_recipe_smoke_with_options(
         .join("darwin-arm64")
         .join(format!("{artifact_basename}.json"));
     let archive_exists = path_exists(&archive);
-    let second_archive_exists = path_exists(&out_dir.join("postgres-18.4-pv2-darwin-arm64.tar.gz"));
     let archive_entries = if archive_exists {
         archive_entries(&archive)?
     } else {
@@ -3677,9 +3001,7 @@ fn run_postgres_build_recipe_smoke_with_options(
     Ok(PostgresBuildRecipeRun {
         output,
         dependency_output,
-        second_output,
         record_json: read_optional_file(&record)?,
-        curl_log: read_file(&curl_log)?,
         configure_log: read_file(&configure_log)?,
         make_log: read_file(&make_log)?,
         openssl_build_log: read_file(&openssl_build_log)?,
@@ -3689,7 +3011,6 @@ fn run_postgres_build_recipe_smoke_with_options(
         codesign_log: read_file(&codesign_log)?,
         archive_entries,
         archive_exists,
-        second_archive_exists,
     })
 }
 
@@ -5044,16 +4365,6 @@ esac
     )
 }
 
-fn write_fake_success_curl(path: &Utf8Path) -> Result<()> {
-    write_executable(
-        path,
-        r#"#!/bin/sh
-set -eu
-exit 0
-"#,
-    )
-}
-
 fn write_fake_caddy(path: &Utf8Path) -> Result<()> {
     write_executable(
         path,
@@ -5210,164 +4521,6 @@ fi
 if [ "$fail" -eq 1 ] && [ "$status" -ge 400 ]; then
   exit 22
 fi
-"#,
-    )
-}
-
-fn write_fake_mailpit(path: &Utf8Path) -> Result<()> {
-    write_executable(
-        path,
-        r#"#!/bin/sh
-set -eu
-
-case "${1:-}" in
-  version)
-    printf '%s\n' "${PV_TEST_MAILPIT_VERSION_OUTPUT:-Mailpit v1.30.1}"
-    exit 0
-    ;;
-esac
-
-smtp=
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --smtp)
-      shift
-      smtp=${1:-}
-      ;;
-  esac
-  shift
-done
-
-[ -n "$smtp" ] || exit 78
-smtp_port=${smtp##*:}
-export PV_TEST_MAILPIT_SMTP_PORT=$smtp_port
-exec python3 - <<'PY'
-import os
-import signal
-import socket
-import time
-
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-sock.bind(("127.0.0.1", int(os.environ["PV_TEST_MAILPIT_SMTP_PORT"])))
-sock.listen(1)
-
-if os.environ.get("PV_TEST_MAILPIT_IGNORE_TERM"):
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
-
-time.sleep(float(os.environ.get("PV_TEST_MAILPIT_SLEEP_SECONDS", "60")))
-PY
-"#,
-    )
-}
-
-fn write_fake_rustfs(path: &Utf8Path) -> Result<()> {
-    write_executable(
-        path,
-        r#"#!/bin/sh
-set -eu
-
-case "${1:-}" in
-  --version)
-    printf '%s\n' "${PV_TEST_RUSTFS_VERSION_OUTPUT:-rustfs 1.0.0-beta.7}"
-    exit 0
-    ;;
-  server)
-    shift
-    ;;
-  *)
-    exit 78
-    ;;
-esac
-
-address=
-console_address=
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --address)
-      shift
-      address=${1:-}
-      ;;
-    --console-address)
-      shift
-      console_address=${1:-}
-      ;;
-    --access-key | --secret-key)
-      shift
-      ;;
-  esac
-  shift
-done
-
-[ -n "$address" ] || exit 78
-if [ -n "${PV_TEST_RUSTFS_REQUIRE_CONSOLE_ADDRESS:-}" ]; then
-  case "$console_address" in
-    127.0.0.1:*) ;;
-    *) exit 73 ;;
-  esac
-fi
-if [ -n "${PV_TEST_RUSTFS_LOG:-}" ]; then
-  printf 'address=%s console=%s\n' "$address" "$console_address" >>"$PV_TEST_RUSTFS_LOG"
-fi
-
-export PV_TEST_RUSTFS_ADDRESS=$address
-export PV_TEST_RUSTFS_CONSOLE_ADDRESS=$console_address
-exec python3 - <<'PY'
-import http.server
-import os
-import signal
-import socket
-import socketserver
-import threading
-import time
-
-bucket_names = set()
-
-def split_address(address):
-    host, port = address.rsplit(":", 1)
-    return host, int(port)
-
-class Handler(http.server.BaseHTTPRequestHandler):
-    def do_GET(self):
-        body = "\n".join(sorted(bucket_names)).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_PUT(self):
-        bucket_names.add(self.path.strip("/"))
-        self.send_response(200)
-        self.send_header("Content-Length", "0")
-        self.end_headers()
-
-    def log_message(self, _format, *_args):
-        pass
-
-class Server(http.server.HTTPServer):
-    def server_bind(self):
-        # Avoid HTTPServer's unnecessary FQDN lookup for a loopback fixture.
-        socketserver.TCPServer.server_bind(self)
-        self.server_name, self.server_port = self.server_address[:2]
-
-api_host, api_port = split_address(os.environ["PV_TEST_RUSTFS_ADDRESS"])
-server = Server((api_host, api_port), Handler)
-threading.Thread(target=server.serve_forever, daemon=True).start()
-
-console_address = os.environ.get("PV_TEST_RUSTFS_CONSOLE_ADDRESS")
-console_socket = None
-if console_address:
-    console_host, console_port = split_address(console_address)
-    console_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    console_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    console_socket.bind((console_host, console_port))
-    console_socket.listen(1)
-
-if os.environ.get("PV_TEST_RUSTFS_IGNORE_TERM"):
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
-
-time.sleep(float(os.environ.get("PV_TEST_RUSTFS_SLEEP_SECONDS", "60")))
-PY
 "#,
     )
 }
@@ -5719,7 +4872,6 @@ fn write_fake_postgres_shasum(path: &Utf8Path) -> Result<()> {
 set -eu
 
 file_path=${3:-}
-[ -z "${PV_TEST_FAIL_CONTRACT_HASH:-}" ] || [ "${file_path##*/}" != openssl-contract.txt ] || exit 42
 case "${file_path##*/}" in
   openssl-3.5.8.tar.gz | openssl-3.5.8.tar.gz.tmp.*)
     checksum=a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2

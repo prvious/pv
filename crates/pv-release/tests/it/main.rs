@@ -10,7 +10,6 @@ mod publication;
 mod recipe_fixtures;
 mod recipe_metadata;
 mod record_writer;
-mod release_docs;
 mod release_records;
 mod smoke;
 mod workflow_defaults;

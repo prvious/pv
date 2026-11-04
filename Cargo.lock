@@ -3148,6 +3148,7 @@ dependencies = [
  "data-encoding",
  "flate2",
  "insta",
+ "platform",
  "resources",
  "self-update",
  "serde",

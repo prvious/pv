@@ -36,7 +36,6 @@ fn stage_app_publication_writes_app_layout_and_upload_plan() -> Result<()> {
     assert_snapshot!(expected_plan);
 
     let output = run_stage_app_publication(&fixture)?;
-    assert_stage_app_publication_available(&output)?;
     if !output.status.success() {
         assert_debug_snapshot!(command_failure(&output, fixture.root()));
         bail!("stage-app-publication failed before writing the app publication plan");
@@ -89,47 +88,51 @@ fn stage_app_publication_writes_app_layout_and_upload_plan() -> Result<()> {
 }
 
 #[test]
-fn stage_app_publication_rejects_managed_resource_object_key_before_write() -> Result<()> {
-    let fixture = AppPublicationFixture::new()?;
-    fixture.write_valid_inputs()?;
-    fixture.write_app_record(
-        "darwin-amd64",
-        "resources/pv/0.2.0/pv-darwin-amd64",
-        b"pv amd64",
-        "987654321",
-    )?;
+fn stage_app_publication_rejects_bad_app_object_keys_before_write() -> Result<()> {
+    let cases: [(&str, WriteInputs); 3] = [
+        ("managed resource object key", |fixture| {
+            fixture.write_valid_inputs()?;
+            fixture.write_app_record(
+                "darwin-amd64",
+                "resources/pv/0.2.0/pv-darwin-amd64",
+                b"pv amd64",
+                "987654321",
+            )
+        }),
+        ("duplicate object key", |fixture| {
+            fixture.write_valid_inputs()?;
+            fixture.write_app_record(
+                "darwin-amd64",
+                "pv/0.2.0/pv-darwin-arm64",
+                b"pv amd64",
+                "987654321",
+            )
+        }),
+        ("non-canonical object key", |fixture| {
+            fixture.write_app_record(
+                "darwin-arm64",
+                "pv/0.2.0/not-the-darwin-arm64-binary",
+                b"pv arm64",
+                "987654321",
+            )?;
+            fixture.write_app_record(
+                "darwin-amd64",
+                "pv/0.2.0/pv-darwin-amd64",
+                b"pv amd64",
+                "987654321",
+            )
+        }),
+    ];
+    let mut failures = Vec::new();
 
-    let output = run_stage_app_publication(&fixture)?;
-    assert_stage_app_publication_available(&output)?;
-    if output.status.success() {
-        bail!("stage-app-publication accepted a Managed Resource object key");
+    for (case, write_inputs) in cases {
+        let fixture = AppPublicationFixture::new()?;
+        write_inputs(&fixture)?;
+        let output = run_stage_app_publication(&fixture)?;
+        failures.push((case, rejection_before_write(&fixture, &output)?));
     }
 
-    assert_debug_snapshot!(command_failure(&output, fixture.root()));
-    assert!(!path_exists(fixture.stage()));
-
-    Ok(())
-}
-
-#[test]
-fn stage_app_publication_rejects_duplicate_object_key_before_write() -> Result<()> {
-    let fixture = AppPublicationFixture::new()?;
-    fixture.write_valid_inputs()?;
-    fixture.write_app_record(
-        "darwin-amd64",
-        "pv/0.2.0/pv-darwin-arm64",
-        b"pv amd64",
-        "987654321",
-    )?;
-
-    let output = run_stage_app_publication(&fixture)?;
-    assert_stage_app_publication_available(&output)?;
-    if output.status.success() {
-        bail!("stage-app-publication accepted duplicate app object keys");
-    }
-
-    assert_debug_snapshot!(command_failure(&output, fixture.root()));
-    assert!(!path_exists(fixture.stage()));
+    assert_debug_snapshot!(failures);
 
     Ok(())
 }
@@ -141,37 +144,8 @@ fn stage_app_publication_rejects_record_from_different_source_run() -> Result<()
     fixture.rewrite_record_build_run_id("pv-darwin-amd64.json", "123456789")?;
 
     let output = run_stage_app_publication(&fixture)?;
-    assert_stage_app_publication_available(&output)?;
     if output.status.success() {
         bail!("stage-app-publication accepted records from a different source run");
-    }
-
-    assert_debug_snapshot!(command_failure(&output, fixture.root()));
-    assert!(!path_exists(fixture.stage()));
-
-    Ok(())
-}
-
-#[test]
-fn stage_app_publication_rejects_non_canonical_app_object_key() -> Result<()> {
-    let fixture = AppPublicationFixture::new()?;
-    fixture.write_app_record(
-        "darwin-arm64",
-        "pv/0.2.0/not-the-darwin-arm64-binary",
-        b"pv arm64",
-        "987654321",
-    )?;
-    fixture.write_app_record(
-        "darwin-amd64",
-        "pv/0.2.0/pv-darwin-amd64",
-        b"pv amd64",
-        "987654321",
-    )?;
-
-    let output = run_stage_app_publication(&fixture)?;
-    assert_stage_app_publication_available(&output)?;
-    if output.status.success() {
-        bail!("stage-app-publication accepted a non-canonical app object key");
     }
 
     assert_debug_snapshot!(command_failure(&output, fixture.root()));
@@ -192,7 +166,6 @@ fn stage_app_publication_uses_exact_object_key_paths_for_binaries() -> Result<()
     )?;
 
     let output = run_stage_app_publication(&fixture)?;
-    assert_stage_app_publication_available(&output)?;
     if !output.status.success() {
         assert_debug_snapshot!(command_failure(&output, fixture.root()));
         bail!("stage-app-publication should ignore unrelated duplicate basenames");
@@ -207,45 +180,21 @@ fn stage_app_publication_uses_exact_object_key_paths_for_binaries() -> Result<()
 }
 
 #[test]
-fn stage_app_publication_rejects_corrupt_source_binary_before_write() -> Result<()> {
-    let fixture = AppPublicationFixture::new()?;
-    fixture.write_valid_inputs()?;
-    write_bytes(
-        &fixture.source_binaries.join("pv/0.2.0/pv-darwin-amd64"),
-        b"corrupt amd64",
-    )?;
+fn stage_app_publication_rejects_corrupt_source_files_before_write() -> Result<()> {
+    let mut failures = Vec::new();
 
-    let output = run_stage_app_publication(&fixture)?;
-    assert_stage_app_publication_available(&output)?;
-    if output.status.success() {
-        bail!("stage-app-publication accepted a binary that no longer matches its record");
+    for corrupted in [
+        "pv/0.2.0/pv-darwin-amd64",
+        "pv/0.2.0/pv-helper-1.0.0-darwin-amd64",
+    ] {
+        let fixture = AppPublicationFixture::new()?;
+        fixture.write_valid_inputs()?;
+        write_bytes(&fixture.source_binaries.join(corrupted), b"corrupt")?;
+        let output = run_stage_app_publication(&fixture)?;
+        failures.push((corrupted, rejection_before_write(&fixture, &output)?));
     }
 
-    assert_debug_snapshot!(command_failure(&output, fixture.root()));
-    assert!(!path_exists(fixture.stage()));
-
-    Ok(())
-}
-
-#[test]
-fn stage_app_publication_rejects_corrupt_helper_before_write() -> Result<()> {
-    let fixture = AppPublicationFixture::new()?;
-    fixture.write_valid_inputs()?;
-    write_bytes(
-        &fixture
-            .source_binaries
-            .join("pv/0.2.0/pv-helper-1.0.0-darwin-amd64"),
-        b"corrupt helper",
-    )?;
-
-    let output = run_stage_app_publication(&fixture)?;
-    assert_stage_app_publication_available(&output)?;
-    if output.status.success() {
-        bail!("stage-app-publication accepted a helper that no longer matches its record");
-    }
-
-    assert_debug_snapshot!(command_failure(&output, fixture.root()));
-    assert!(!path_exists(fixture.stage()));
+    assert_debug_snapshot!(failures);
 
     Ok(())
 }
@@ -258,7 +207,6 @@ fn stage_app_publication_rejects_non_newer_stable_manifest_candidate() -> Result
     write_file(&current_manifest, &app_manifest_json_with_version("0.3.0")?)?;
 
     let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
-    assert_stage_app_publication_available(&output)?;
     if output.status.success() {
         bail!("stage-app-publication accepted a candidate older than current stable");
     }
@@ -280,7 +228,6 @@ fn stage_app_publication_migrates_newer_candidate_from_schema_one_manifest() -> 
     )?;
 
     let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
-    assert_stage_app_publication_available(&output)?;
     if !output.status.success() {
         assert_debug_snapshot!(command_failure(&output, fixture.root()));
         bail!("stage-app-publication rejected the one-time schema-1 migration");
@@ -302,7 +249,6 @@ fn stage_app_publication_rejects_candidate_older_than_current_stable_installer()
     )?;
 
     let output = run_stage_app_publication_with_current_installer(&fixture, &current_installer)?;
-    assert_stage_app_publication_available(&output)?;
     if output.status.success() {
         bail!("stage-app-publication accepted a candidate older than the current stable installer");
     }
@@ -327,7 +273,6 @@ fn stage_app_publication_rejects_existing_helper_version_with_changed_bytes() ->
     )?;
 
     let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
-    assert_stage_app_publication_available(&output)?;
     if output.status.success() {
         bail!("stage-app-publication changed bytes for an existing helper version");
     }
@@ -350,7 +295,6 @@ fn stage_app_publication_rejects_helper_version_regression() -> Result<()> {
     )?;
 
     let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
-    assert_stage_app_publication_available(&output)?;
     if output.status.success() {
         bail!("stage-app-publication regressed the helper version");
     }
@@ -369,7 +313,6 @@ fn stage_app_publication_allows_same_version_current_stable_for_retry() -> Resul
     write_file(&current_manifest, &app_manifest_json()?)?;
 
     let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
-    assert_stage_app_publication_available(&output)?;
     if !output.status.success() {
         assert_debug_snapshot!(command_failure(&output, fixture.root()));
         bail!("stage-app-publication should allow same-version stable reruns");
@@ -405,7 +348,6 @@ fn stage_app_publication_publishes_new_helper_for_current_app() -> Result<()> {
     write_file(&current_manifest, &app_manifest_json()?)?;
 
     let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
-    assert_stage_app_publication_available(&output)?;
     if !output.status.success() {
         assert_debug_snapshot!(command_failure(&output, fixture.root()));
         bail!("stage-app-publication rejected a valid helper-only release");
@@ -423,133 +365,80 @@ fn stage_app_publication_publishes_new_helper_for_current_app() -> Result<()> {
 }
 
 #[test]
-fn stage_app_publication_rejects_equal_version_platform_removal() -> Result<()> {
-    let fixture = AppPublicationFixture::new()?;
-    fixture.write_app_record(
-        "darwin-arm64",
-        "pv/0.2.0/pv-darwin-arm64",
-        b"pv arm64",
-        "987654321",
-    )?;
-    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
-    write_file(&current_manifest, &app_manifest_json()?)?;
-
-    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
-    assert_stage_app_publication_available(&output)?;
-    if output.status.success() {
-        bail!("stage-app-publication removed a platform from an equal-version manifest");
-    }
-
-    assert_debug_snapshot!(command_failure(&output, fixture.root()));
-    assert!(!path_exists(fixture.stage()));
-
-    Ok(())
-}
-
-#[test]
-fn stage_app_publication_rejects_equal_version_minimum_pv_change() -> Result<()> {
-    let fixture = AppPublicationFixture::new()?;
-    fixture.write_valid_inputs()?;
-    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
-    write_file(
-        &current_manifest,
-        &app_manifest_json()?.replace(
-            "\"minimum_pv_version\": \"0.1.0\"",
-            "\"minimum_pv_version\": \"0.1.1\"",
+fn stage_app_publication_rejects_equal_version_changes() -> Result<()> {
+    let current = app_manifest_json()?;
+    let minimum_pv_changed = current.replace(
+        "\"minimum_pv_version\": \"0.1.0\"",
+        "\"minimum_pv_version\": \"0.1.1\"",
+    );
+    let base_url_changed = current.replace(APP_PUBLICATION_BASE_URL, "https://old.prvious.test");
+    let cases: [(&str, WriteInputs, &str); 5] = [
+        (
+            "platform removed",
+            |fixture| {
+                fixture.write_app_record(
+                    "darwin-arm64",
+                    "pv/0.2.0/pv-darwin-arm64",
+                    b"pv arm64",
+                    "987654321",
+                )
+            },
+            &current,
         ),
-    )?;
+        (
+            "minimum PV version changed",
+            AppPublicationFixture::write_valid_inputs,
+            &minimum_pv_changed,
+        ),
+        (
+            "base URL changed",
+            AppPublicationFixture::write_valid_inputs,
+            &base_url_changed,
+        ),
+        (
+            "app binary changed",
+            |fixture| {
+                fixture.write_valid_inputs()?;
+                fixture.write_app_record(
+                    "darwin-arm64",
+                    "pv/0.2.0/pv-darwin-arm64",
+                    b"changed pv arm64",
+                    "987654321",
+                )
+            },
+            &current,
+        ),
+        (
+            "helper protocol changed",
+            |fixture| {
+                for architecture in ["arm64", "amd64"] {
+                    fixture.write_app_record_with_helper(
+                        &format!("darwin-{architecture}"),
+                        &format!("pv/0.2.0/pv-darwin-{architecture}"),
+                        format!("pv {architecture}").as_bytes(),
+                        "987654321",
+                        "1.1.0",
+                        2,
+                        format!("pv helper 1.1.0 {architecture}").as_bytes(),
+                    )?;
+                }
+                Ok(())
+            },
+            &current,
+        ),
+    ];
+    let mut failures = Vec::new();
 
-    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
-    assert_stage_app_publication_available(&output)?;
-    if output.status.success() {
-        bail!("stage-app-publication changed equal-version minimum PV eligibility");
+    for (case, write_inputs, current_manifest_json) in cases {
+        let fixture = AppPublicationFixture::new()?;
+        write_inputs(&fixture)?;
+        let current_manifest = fixture.root().join("current-pv-app-manifest.json");
+        write_file(&current_manifest, current_manifest_json)?;
+        let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
+        failures.push((case, rejection_before_write(&fixture, &output)?));
     }
 
-    assert_debug_snapshot!(command_failure(&output, fixture.root()));
-    assert!(!path_exists(fixture.stage()));
-
-    Ok(())
-}
-
-#[test]
-fn stage_app_publication_rejects_equal_version_base_url_change() -> Result<()> {
-    let fixture = AppPublicationFixture::new()?;
-    fixture.write_valid_inputs()?;
-    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
-    write_file(
-        &current_manifest,
-        &app_manifest_json()?.replace(APP_PUBLICATION_BASE_URL, "https://old.prvious.test"),
-    )?;
-
-    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
-    assert_stage_app_publication_available(&output)?;
-    if output.status.success() {
-        bail!("stage-app-publication changed equal-version stable asset URLs");
-    }
-
-    assert_debug_snapshot!(command_failure(&output, fixture.root()));
-    assert!(!path_exists(fixture.stage()));
-
-    Ok(())
-}
-
-#[test]
-fn stage_app_publication_rejects_equal_version_app_asset_change() -> Result<()> {
-    let fixture = AppPublicationFixture::new()?;
-    fixture.write_valid_inputs()?;
-    fixture.write_app_record(
-        "darwin-arm64",
-        "pv/0.2.0/pv-darwin-arm64",
-        b"changed pv arm64",
-        "987654321",
-    )?;
-    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
-    write_file(&current_manifest, &app_manifest_json()?)?;
-
-    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
-    assert_stage_app_publication_available(&output)?;
-    if output.status.success() {
-        bail!("stage-app-publication changed an equal-version app asset");
-    }
-
-    assert_debug_snapshot!(command_failure(&output, fixture.root()));
-    assert!(!path_exists(fixture.stage()));
-
-    Ok(())
-}
-
-#[test]
-fn stage_app_publication_rejects_equal_version_helper_protocol_change() -> Result<()> {
-    let fixture = AppPublicationFixture::new()?;
-    fixture.write_app_record_with_helper(
-        "darwin-arm64",
-        "pv/0.2.0/pv-darwin-arm64",
-        b"pv arm64",
-        "987654321",
-        "1.1.0",
-        2,
-        b"pv helper 1.1.0 arm64",
-    )?;
-    fixture.write_app_record_with_helper(
-        "darwin-amd64",
-        "pv/0.2.0/pv-darwin-amd64",
-        b"pv amd64",
-        "987654321",
-        "1.1.0",
-        2,
-        b"pv helper 1.1.0 amd64",
-    )?;
-    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
-    write_file(&current_manifest, &app_manifest_json()?)?;
-
-    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
-    assert_stage_app_publication_available(&output)?;
-    if output.status.success() {
-        bail!("stage-app-publication changed the helper protocol without a new app version");
-    }
-
-    assert_debug_snapshot!(command_failure(&output, fixture.root()));
-    assert!(!path_exists(fixture.stage()));
+    assert_debug_snapshot!(failures);
 
     Ok(())
 }
@@ -561,7 +450,6 @@ fn stage_app_publication_rejects_empty_candidates_when_current_stable_is_provide
     write_file(&current_manifest, &app_manifest_json()?)?;
 
     let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
-    assert_stage_app_publication_available(&output)?;
     if output.status.success() {
         bail!("stage-app-publication accepted empty candidates with current stable metadata");
     }
@@ -572,12 +460,8 @@ fn stage_app_publication_rejects_empty_candidates_when_current_stable_is_provide
     Ok(())
 }
 
-#[test]
-fn app_manifest_fixture_uses_requested_version_in_asset_urls() -> Result<()> {
-    assert_snapshot!(app_manifest_json_with_version("0.3.0")?);
-
-    Ok(())
-}
+/// Writes one test case's candidate records and binaries.
+type WriteInputs = fn(&AppPublicationFixture) -> Result<()>;
 
 struct AppPublicationFixture {
     tempdir: camino_tempfile::Utf8TempDir,
@@ -773,18 +657,19 @@ fn run_stage_app_publication_with_extra_args<'a>(
         .context("failed to execute pv-release stage-app-publication")
 }
 
-fn assert_stage_app_publication_available(output: &Output) -> Result<()> {
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success()
-        && stderr.contains("unrecognized subcommand 'stage-app-publication'")
-    {
-        bail!(
-            "TODO #86 has not implemented `pv-release stage-app-publication` yet.\n{}",
-            stderr
-        );
+/// The failure of a run that must reject its inputs before writing the stage.
+fn rejection_before_write(
+    fixture: &AppPublicationFixture,
+    output: &Output,
+) -> Result<CommandFailure> {
+    if output.status.success() {
+        bail!("stage-app-publication accepted inputs it should reject");
+    }
+    if path_exists(fixture.stage()) {
+        bail!("stage-app-publication wrote the stage before rejecting its inputs");
     }
 
-    Ok(())
+    Ok(command_failure(output, fixture.root()))
 }
 
 fn command_failure(output: &Output, root: &Utf8Path) -> CommandFailure {

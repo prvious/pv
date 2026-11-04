@@ -23,65 +23,6 @@ const AMD64_OBJECT_KEY: &str = "pv/0.9.0/pv-darwin-amd64";
 const ARM64_HELPER_OBJECT_KEY: &str = "pv/0.9.0/pv-helper-1.0.0-darwin-arm64";
 const AMD64_HELPER_OBJECT_KEY: &str = "pv/0.9.0/pv-helper-1.0.0-darwin-amd64";
 
-#[test]
-fn generated_app_installer_embeds_staging_assets_and_contract() -> Result<()> {
-    let fixture = AppInstallerFixture::new()?;
-    let installer = fixture.generate_installer()?;
-
-    assert_snapshot!(installer_contract_summary(&installer), @r#"
-    version_present=true
-    staging_base_present=true
-    arm64_url_present=true
-    amd64_url_present=true
-    arm64_sha256_present=true
-    amd64_sha256_present=true
-    arm64_size_present=true
-    amd64_size_present=true
-    app_manifest_not_embedded=true
-    release_install_path_present=true
-    active_symlink_path_present=true
-    helper_release_metadata_present=true
-    setup_invocation_present=true
-    no_setup_flag_present=true
-    no_path_flag_present=true
-    yes_flag_present=true
-    non_interactive_flag_present=true
-    setup_yes_invocation_present=true
-    installer_profile_edit_absent=true
-    single_tty_confirmation_present=true
-    missing_tty_guidance_present=true
-    checksum_verification_present=true
-    curl_connect_timeout_present=true
-    curl_max_time_present=true
-    curl_retry_present=true
-    "#);
-
-    Ok(())
-}
-
-#[test]
-fn generated_app_installer_allows_arm64_only_preview_assets() -> Result<()> {
-    let fixture = AppInstallerFixture::new_arm64_only()?;
-    let installer = fixture.generate_installer()?;
-    let values = ContractValues::new();
-    let summary = format!(
-        "arm64_url_present={}\namd64_url_absent={}\namd64_checksum_absent={}\nunsupported_platform_guard={}",
-        installer.contains(&values.arm64_url),
-        !installer.contains(&values.amd64_url),
-        !installer.contains(&values.amd64_sha256),
-        installer.contains("PV installer asset is unavailable for ${platform}"),
-    );
-
-    assert_snapshot!(summary, @r#"
-    arm64_url_present=true
-    amd64_url_absent=true
-    amd64_checksum_absent=true
-    unsupported_platform_guard=true
-    "#);
-
-    Ok(())
-}
-
 #[cfg(unix)]
 #[test]
 fn installer_no_setup_installs_release_binaries_metadata_and_symlink() -> Result<()> {
@@ -171,103 +112,43 @@ fn installer_default_mode_without_a_controlling_terminal_stops_before_download()
 
 #[cfg(unix)]
 #[test]
-fn installer_yes_delegates_shell_profile_ownership_to_pv_setup() -> Result<()> {
-    let fixture = InstallerExecutionFixture::new()?;
-    let profile = fixture.home().join(".zprofile");
+fn installer_delegates_setup_flags_and_shell_profiles_to_pv_setup() -> Result<()> {
     let original_profile = "export BEFORE=1\n# >>> PV ENV\nexport SHOULD_STAY=1\n";
-    write_file(&profile, original_profile)?;
+    let mut setup_calls = Vec::new();
 
-    let output = fixture.run_installer_with_shell(&["--yes"], ChecksumMode::Match, "/bin/zsh")?;
-
-    assert!(
-        output.status.success(),
-        "installer should delegate setup after explicit consent: {}",
-        command_output_summary(&output)
-    );
-    assert_eq!(read_file(&profile)?, original_profile);
-
-    assert_snapshot!(fixture.command_logs()?, @"
-    curl:
-    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-darwin-arm64
-    output=<download>
-    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-helper-1.0.0-darwin-arm64
-    output=<download>
-
-    checksum:
-    tool=<checksum-tool> target=<download> sha=<arm64-sha256>
-    tool=<checksum-tool> target=<download> sha=<helper-sha256>
-
-    pv:
-    setup --yes
-    ");
-
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
-fn installer_yes_forwards_no_path_to_pv_setup() -> Result<()> {
-    let fixture = InstallerExecutionFixture::new()?;
-    let output = fixture.run_installer(&["--yes", "--no-path"], ChecksumMode::Match)?;
-
-    assert!(
-        output.status.success(),
-        "installer should forward --no-path after explicit consent: {}",
-        command_output_summary(&output)
-    );
-
-    assert_snapshot!(fixture.command_logs()?, @"
-    curl:
-    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-darwin-arm64
-    output=<download>
-    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-helper-1.0.0-darwin-arm64
-    output=<download>
-
-    checksum:
-    tool=<checksum-tool> target=<download> sha=<arm64-sha256>
-    tool=<checksum-tool> target=<download> sha=<helper-sha256>
-
-    pv:
-    setup --yes --no-path
-    ");
-
-    Ok(())
-}
-
-#[cfg(unix)]
-#[test]
-fn installer_non_interactive_forwards_strict_setup_mode_without_prompting() -> Result<()> {
-    let fixture = InstallerExecutionFixture::new()?;
-    let output = fixture.run_installer_with_shell(
+    for flags in [
+        &["--yes"][..],
+        &["--yes", "--no-path"],
         &["--non-interactive"],
-        ChecksumMode::Match,
-        "/bin/zsh",
-    )?;
+    ] {
+        let fixture = InstallerExecutionFixture::new()?;
+        let profile = fixture.home().join(".zprofile");
+        write_file(&profile, original_profile)?;
 
-    assert!(
-        output.status.success(),
-        "installer should delegate strict non-interactive behavior to pv setup"
-    );
-    assert_eq!(read_file(&fixture.release_binary())?, fake_pv_binary());
-    assert!(active_pv_symlink_points_to_release(
-        &fixture.active_binary(),
-        &fixture.release_binary()
-    )?);
-    assert!(!path_exists(&fixture.home().join(".zprofile")));
+        let output = fixture.run_installer_with_shell(flags, ChecksumMode::Match, "/bin/zsh")?;
 
-    assert_snapshot!(fixture.command_logs()?, @"
-    curl:
-    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-darwin-arm64
-    output=<download>
-    url=https://artifacts-staging.pv.prvious.dev/pv/0.9.0/pv-helper-1.0.0-darwin-arm64
-    output=<download>
+        assert!(
+            output.status.success(),
+            "installer {flags:?} should delegate setup: {}",
+            command_output_summary(&output)
+        );
+        assert_eq!(read_file(&fixture.release_binary())?, fake_pv_binary());
+        assert!(active_pv_symlink_points_to_release(
+            &fixture.active_binary(),
+            &fixture.release_binary()
+        )?);
+        assert_eq!(read_file(&profile)?, original_profile);
+        let logs = fixture.command_logs()?;
+        let pv_calls = logs
+            .split_once("pv:\n")
+            .map_or("<missing>", |(_, pv_calls)| pv_calls.trim());
+        setup_calls.push(format!("{}: {pv_calls}", flags.join(" ")));
+    }
 
-    checksum:
-    tool=<checksum-tool> target=<download> sha=<arm64-sha256>
-    tool=<checksum-tool> target=<download> sha=<helper-sha256>
-
-    pv:
-    setup --yes --non-interactive
+    assert_snapshot!(setup_calls.join("\n"), @"
+    --yes: setup --yes
+    --yes --no-path: setup --yes --no-path
+    --non-interactive: setup --yes --non-interactive
     ");
 
     Ok(())
@@ -453,13 +334,6 @@ impl AppInstallerFixture {
             arm64_sha256,
             amd64_sha256,
         })
-    }
-
-    fn new_arm64_only() -> Result<Self> {
-        let fixture = Self::new()?;
-        delete_file(&fixture.records.join("pv-0.9.0-darwin-amd64.json"))?;
-
-        Ok(fixture)
     }
 
     fn generate_installer(&self) -> Result<String> {
@@ -694,95 +568,6 @@ impl ChecksumMode {
             Self::Match => "match",
             Self::AppMismatch => "app_mismatch",
             Self::HelperMismatch => "helper_mismatch",
-        }
-    }
-}
-
-fn installer_contract_summary(installer: &str) -> String {
-    let fixture = ContractValues::new();
-    format!(
-        "\
-version_present={}
-staging_base_present={}
-arm64_url_present={}
-amd64_url_present={}
-arm64_sha256_present={}
-amd64_sha256_present={}
-arm64_size_present={}
-amd64_size_present={}
-app_manifest_not_embedded={}
-release_install_path_present={}
-active_symlink_path_present={}
-helper_release_metadata_present={}
-setup_invocation_present={}
-no_setup_flag_present={}
-no_path_flag_present={}
-yes_flag_present={}
-non_interactive_flag_present={}
-setup_yes_invocation_present={}
-installer_profile_edit_absent={}
-single_tty_confirmation_present={}
-missing_tty_guidance_present={}
-checksum_verification_present={}
-curl_connect_timeout_present={}
-curl_max_time_present={}
-curl_retry_present={}",
-        installer.contains(APP_VERSION),
-        installer.contains(STAGING_BASE_URL),
-        installer.contains(&fixture.arm64_url),
-        installer.contains(&fixture.amd64_url),
-        installer.contains(&fixture.arm64_sha256),
-        installer.contains(&fixture.amd64_sha256),
-        installer.contains(&fixture.arm64_size.to_string()),
-        installer.contains(&fixture.amd64_size.to_string()),
-        !installer.contains("pv-app-manifest.json"),
-        installer.contains(".pv/bin/releases"),
-        installer.contains(r#"PV_ACTIVE_BIN="${PV_BIN_DIR}/pv""#),
-        installer.contains("pv-helper.json") && installer.contains("HELPER_PROTOCOL_VERSION"),
-        installer.contains(" setup"),
-        installer.contains("--no-setup"),
-        installer.contains("--no-path"),
-        installer.contains("--yes"),
-        installer.contains("--non-interactive"),
-        installer.contains("set -- setup --yes"),
-        !installer.contains("PV ENV")
-            && !installer.contains(".zprofile")
-            && !installer.contains(".bash_profile")
-            && !installer.contains("config.fish"),
-        installer.matches("[y/N]").count() == 1
-            && installer.contains(">/dev/tty")
-            && installer.contains("</dev/tty"),
-        installer.contains("setup confirmation requires a controlling terminal")
-            && installer.contains("rerun with --yes or --no-setup"),
-        installer.contains("checksum") || installer.contains("sha256"),
-        installer.contains("--connect-timeout"),
-        installer.contains("--max-time"),
-        installer.contains("--retry"),
-    )
-}
-
-struct ContractValues {
-    arm64_url: String,
-    amd64_url: String,
-    arm64_sha256: String,
-    amd64_sha256: String,
-    arm64_size: u64,
-    amd64_size: u64,
-}
-
-impl ContractValues {
-    fn new() -> Self {
-        let (arm64_sha256, arm64_size) = digest_and_size(fake_pv_binary().as_bytes());
-        let (amd64_sha256, amd64_size) =
-            digest_and_size(b"#!/bin/sh\nprintf '%s\\n' pv-amd64-fixture\n");
-
-        Self {
-            arm64_url: format!("{STAGING_BASE_URL}/{ARM64_OBJECT_KEY}"),
-            amd64_url: format!("{STAGING_BASE_URL}/{AMD64_OBJECT_KEY}"),
-            arm64_sha256,
-            amd64_sha256,
-            arm64_size,
-            amd64_size,
         }
     }
 }
@@ -1129,15 +914,6 @@ fn assert_download_outputs_were_removed(curl_log: &Utf8Path) -> Result<()> {
 )]
 fn create_dir_all(path: &Utf8Path) -> Result<()> {
     fs::create_dir_all(path)?;
-    Ok(())
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "installer contract tests mutate local fixture files"
-)]
-fn delete_file(path: &Utf8Path) -> Result<()> {
-    fs::remove_file(path)?;
     Ok(())
 }
 

@@ -1,9 +1,0 @@
----
-source: crates/pv-release/tests/it/publication.rs
-expression: "publication_error_summary(error, fixture.root())"
----
-(
-    "InvalidPublicationInput",
-    "manifest.json",
-    "publication object key collides between `versioned manifest` and `stable manifest`",
-)

@@ -9,15 +9,6 @@ use crate::record::{
     load_release_records, load_revocation_records,
 };
 
-pub fn generate_manifest_file(
-    records: &Utf8Path,
-    revocations: &Utf8Path,
-    output: &Utf8Path,
-    base_url: &str,
-) -> crate::Result<()> {
-    generate_manifest_file_with_defaults(records, revocations, None, output, base_url)
-}
-
 pub fn generate_manifest_file_with_defaults(
     records: &Utf8Path,
     revocations: &Utf8Path,
@@ -38,15 +29,6 @@ pub fn generate_manifest_file_with_defaults(
         create_dir_all(parent)?;
     }
     write(output, &manifest)
-}
-
-pub fn generate_manifest_json(
-    records: &[ReleaseRecord],
-    revocations: &[RevocationRecord],
-    base_url: &str,
-) -> crate::Result<String> {
-    let defaults = ManifestDefaults::empty();
-    generate_manifest_json_inner(records, revocations, &defaults, base_url)
 }
 
 pub fn generate_manifest_json_with_defaults(

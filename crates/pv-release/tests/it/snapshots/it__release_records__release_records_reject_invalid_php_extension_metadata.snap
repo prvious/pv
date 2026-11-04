@@ -1,6 +1,5 @@
 ---
 source: crates/pv-release/tests/it/release_records.rs
-assertion_line: 183
 expression: cases
 ---
 [
@@ -44,6 +43,13 @@ expression: cases
         InvalidReleaseRecord {
             path: "invalid-php-extension.json",
             reason: "php_extensions contains duplicate extension `redis`",
+        },
+    ),
+    (
+        "non_php_resource",
+        InvalidReleaseRecord {
+            path: "invalid-php-extension.json",
+            reason: "php_extensions are only supported on php or frankenphp artifacts",
         },
     ),
 ]

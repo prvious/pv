@@ -33,10 +33,17 @@ expression: json
     }
   ],
   "provenance": {
-    "source_url": "https://www.php.net/distributions/php-8.4.20.tar.gz",
+    "source_url": "https://www.php.net/distributions/php-8.4.20.tar.gz?mirror=primary&fallback=1",
     "source_sha256": "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d",
+    "source_inputs": [
+      {
+        "name": "php",
+        "source_url": "https://www.php.net/distributions/php-8.4.20.tar.gz?mirror=primary&fallback=1",
+        "source_sha256": "a2def5d534d57c6a0236f2265de7537608af871900a4f7955eff463e9e38247d"
+      }
+    ],
     "recipe": "release/artifacts/recipes/php/build.sh",
     "pv_commit": "0123456789abcdef0123456789abcdef01234567",
-    "build_run_id": "local-test"
+    "build_run_id": "run\"with\\escaping"
   }
 }

@@ -59,4 +59,39 @@ expression: errors
             reason: "build_run_id must not be empty",
         },
     ),
+    (
+        "mismatched_artifact_version",
+        InvalidReleaseRecord {
+            path: "invalid.json",
+            reason: "artifact_version `7.2.5-pv2` must equal `7.2.5-pv1`",
+        },
+    ),
+    (
+        "missing_license",
+        InvalidReleaseRecord {
+            path: "invalid.json",
+            reason: "license_files must not be empty",
+        },
+    ),
+    (
+        "invalid_source_input_name",
+        InvalidReleaseRecord {
+            path: "invalid.json",
+            reason: "source_inputs.name contains invalid value `PHP source`",
+        },
+    ),
+    (
+        "invalid_source_input_url",
+        InvalidReleaseRecord {
+            path: "invalid.json",
+            reason: "source_inputs.source_url must be an https URL with a host",
+        },
+    ),
+    (
+        "invalid_source_input_sha256",
+        InvalidReleaseRecord {
+            path: "invalid.json",
+            reason: "invalid source_inputs.source_sha256: invalid sha256 `bad`",
+        },
+    ),
 ]

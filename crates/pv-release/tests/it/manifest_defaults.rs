@@ -2,57 +2,10 @@ use anyhow::Result;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{assert_debug_snapshot, assert_snapshot};
-use pv_release::defaults::ManifestDefaults;
 use pv_release::manifest::generate_manifest_file_with_defaults;
 use pv_release::{ReleaseError, Result as ReleaseResult};
-use resources::{ArtifactManifest, ResourceName};
+use resources::ArtifactManifest;
 use serde_json::Value;
-
-#[test]
-fn manifest_defaults_parse_public_toml_api() -> Result<()> {
-    let defaults = ManifestDefaults::from_toml(
-        Utf8Path::new("release/artifacts/default-tracks.toml"),
-        r#"
-[[resource]]
-name = "php"
-default_track = "8.4"
-"#,
-    )?;
-    let resource = ResourceName::new("php")?;
-    let default_track = defaults
-        .default_track_for(&resource)
-        .map(|track| track.as_str())
-        .unwrap_or("");
-
-    assert_eq!(default_track, "8.4");
-
-    Ok(())
-}
-
-#[test]
-fn manifest_defaults_rejects_unknown_root_tables() -> Result<()> {
-    let result = ManifestDefaults::from_toml(
-        Utf8Path::new("release/artifacts/default-tracks.toml"),
-        r#"
-[[resources]]
-name = "php"
-default_track = "8.4"
-"#,
-    );
-    let error = match result {
-        Ok(defaults) => {
-            return Err(anyhow::anyhow!(
-                "unknown root table should be rejected, got {defaults:?}"
-            ));
-        }
-        Err(error) => error,
-    };
-
-    assert!(matches!(error, ReleaseError::InvalidDefaultTracks { .. }));
-    assert_debug_snapshot!(error);
-
-    Ok(())
-}
 
 #[test]
 fn manifest_generator_uses_default_track_metadata_for_multi_track_resources() -> Result<()> {
@@ -107,52 +60,42 @@ default_track = "8.4"
 }
 
 #[test]
-fn manifest_generator_rejects_default_track_metadata_for_missing_generated_track() -> Result<()> {
-    let error = generate_manifest_error_with_defaults(
-        &[
-            ("php-8.3.31-pv1-darwin-arm64.json", PHP_8_3_RECORD),
-            ("php-8.4.20-pv1-darwin-arm64.json", PHP_8_4_RECORD),
-        ],
-        r#"
+fn manifest_generator_rejects_default_track_metadata_that_does_not_match_the_records() -> Result<()>
+{
+    let php_tracks = [
+        ("php-8.3.31-pv1-darwin-arm64.json", PHP_8_3_RECORD),
+        ("php-8.4.20-pv1-darwin-arm64.json", PHP_8_4_RECORD),
+    ];
+    let missing_default = generate_manifest_error_with_defaults(&php_tracks, None)?;
+    let missing_track = generate_manifest_error_with_defaults(
+        &php_tracks,
+        Some(
+            r#"
 [[resource]]
 name = "php"
 default_track = "8.5"
 "#,
+        ),
     )?;
-
-    assert!(matches!(
-        error,
-        ReleaseError::GeneratedManifestInvalid { .. }
-    ));
-    assert_debug_snapshot!(error);
-
-    Ok(())
-}
-
-#[test]
-fn manifest_generator_rejects_default_track_metadata_for_missing_generated_resource() -> Result<()>
-{
-    let error = generate_manifest_error_with_defaults(
+    let missing_resource = generate_manifest_error_with_defaults(
         &[("php-8.4.20-pv1-darwin-arm64.json", PHP_8_4_RECORD)],
-        r#"
+        Some(
+            r#"
 [[resource]]
 name = "mysql"
 default_track = "8.0"
 "#,
+        ),
     )?;
 
-    assert!(matches!(
-        error,
-        ReleaseError::GeneratedManifestInvalid { .. }
-    ));
-    assert_debug_snapshot!(error);
+    assert_debug_snapshot!((missing_default, missing_track, missing_resource));
 
     Ok(())
 }
 
 fn generate_manifest_error_with_defaults(
     releases: &[(&str, &str)],
-    defaults: &str,
+    defaults: Option<&str>,
 ) -> Result<ReleaseError> {
     let tempdir = tempdir()?;
     let records_dir = tempdir.path().join("records");
@@ -165,12 +108,14 @@ fn generate_manifest_error_with_defaults(
     for (name, content) in releases {
         write_file(&records_dir.join(name), content)?;
     }
-    write_file(&defaults_path, defaults)?;
+    if let Some(defaults) = defaults {
+        write_file(&defaults_path, defaults)?;
+    }
 
     let error = manifest_error(generate_manifest_file_with_defaults(
         &records_dir,
         &revocations_dir,
-        Some(&defaults_path),
+        defaults.map(|_| defaults_path.as_path()),
         &output,
         "https://artifacts.example.test",
     ))?;

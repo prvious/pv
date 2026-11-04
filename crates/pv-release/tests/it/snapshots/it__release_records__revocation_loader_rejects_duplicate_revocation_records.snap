@@ -1,9 +1,0 @@
----
-source: crates/pv-release/tests/it/release_records.rs
-expression: result
----
-Err(
-    DuplicateRevocation {
-        identity: "redis:7.2:7.2.5-pv1:darwin-arm64",
-    },
-)

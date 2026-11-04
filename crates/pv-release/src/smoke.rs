@@ -1,5 +1,6 @@
 use camino::Utf8Path;
-use std::time::{Duration, Instant};
+use platform::clock::{self, Deadline, Limit};
+use std::time::Duration;
 
 #[expect(
     clippy::disallowed_types,
@@ -7,22 +8,11 @@ use std::time::{Duration, Instant};
 )]
 type StdCommand = std::process::Command;
 
-const DEFAULT_SMOKE_HOOK_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long a smoke hook may run before it is killed.
+pub const SMOKE_HOOK_TIMEOUT: Limit = Limit::new("smoke hook", Duration::from_secs(120));
 const SMOKE_HOOK_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 pub fn run_smoke_hook(hook: &Utf8Path, artifact_root: &Utf8Path) -> crate::Result<()> {
-    run_smoke_hook_with_timeout(hook, artifact_root, DEFAULT_SMOKE_HOOK_TIMEOUT)
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "pv-release moves to `platform::clock` in its cleanup pass"
-)]
-pub fn run_smoke_hook_with_timeout(
-    hook: &Utf8Path,
-    artifact_root: &Utf8Path,
-    timeout: Duration,
-) -> crate::Result<()> {
     let mut child = StdCommand::new(hook)
         .arg(artifact_root)
         .spawn()
@@ -30,7 +20,7 @@ pub fn run_smoke_hook_with_timeout(
             path: hook.to_string(),
             reason: error.to_string(),
         })?;
-    let started = Instant::now();
+    let deadline = Deadline::after(&SMOKE_HOOK_TIMEOUT);
 
     loop {
         if let Some(status) = child
@@ -50,7 +40,7 @@ pub fn run_smoke_hook_with_timeout(
             };
         }
 
-        if started.elapsed() >= timeout {
+        if deadline.is_expired() {
             child
                 .kill()
                 .map_err(|error| crate::ReleaseError::Filesystem {
@@ -65,19 +55,10 @@ pub fn run_smoke_hook_with_timeout(
                 })?;
             return Err(crate::ReleaseError::SmokeHookTimedOut {
                 hook: hook.to_string(),
-                timeout: format_duration(timeout),
+                timeout: format!("{}s", SMOKE_HOOK_TIMEOUT.duration().as_secs()),
             });
         }
 
-        let remaining = timeout.saturating_sub(started.elapsed());
-        std::thread::sleep(remaining.min(SMOKE_HOOK_POLL_INTERVAL));
-    }
-}
-
-fn format_duration(duration: Duration) -> String {
-    if duration.subsec_millis() == 0 {
-        format!("{}s", duration.as_secs())
-    } else {
-        format!("{}ms", duration.as_millis())
+        clock::poll_blocking(SMOKE_HOOK_POLL_INTERVAL);
     }
 }
