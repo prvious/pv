@@ -8,6 +8,7 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
 use insta::assert_debug_snapshot;
+use platform::{PlatformError, PlatformTarget};
 use state::{Database, ManagedResourceTrackInstallInput, PvPaths};
 
 #[derive(Debug)]
@@ -15,6 +16,7 @@ struct TestEnvironment {
     home: PathBuf,
     current_dir: PathBuf,
     decorated: bool,
+    target: PlatformTarget,
 }
 
 impl TestEnvironment {
@@ -23,6 +25,7 @@ impl TestEnvironment {
             home: home.as_std_path().to_path_buf(),
             current_dir: home.as_std_path().to_path_buf(),
             decorated: false,
+            target: PlatformTarget::Macos,
         }
     }
 
@@ -33,6 +36,10 @@ impl TestEnvironment {
 }
 
 impl Environment for TestEnvironment {
+    fn platform_target(&self) -> Result<PlatformTarget, PlatformError> {
+        Ok(self.target)
+    }
+
     fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError> {
         Err(platform::PlatformError::PrivilegedHelperUnavailable)
     }
@@ -88,33 +95,36 @@ fn logs_defaults_to_daemon_sources() -> anyhow::Result<()> {
     let paths = PvPaths::for_home(home.clone());
     let environment = TestEnvironment::new(&home);
     write_log(&paths.logs().join("daemon.log"), "daemon one\ndaemon two\n")?;
-    let (stdout_file, stderr_file) = if cfg!(target_os = "linux") {
-        ("systemd.out.log", "systemd.err.log")
-    } else {
-        ("launchd.out.log", "launchd.err.log")
-    };
-    write_log(&paths.logs().join(stdout_file), "stdout one\n")?;
-    write_log(&paths.logs().join(stderr_file), "stderr one\n")?;
+    write_log(&paths.daemon_registration_stdout_log(), "stdout one\n")?;
+    write_log(&paths.daemon_registration_stderr_log(), "stderr one\n")?;
 
     let output = run_pv(&["logs", "-n", "1"], &environment)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
-    #[cfg(target_os = "linux")]
-    assert_debug_snapshot!(output, @r#"
-    RunOutput {
-        exit_code: ExitCode(
-            unix_exit_status(
-                0,
-            ),
-        ),
-        stdout: "daemon | daemon two\nsystemd:stdout | stdout one\nsystemd:stderr | stderr one\n",
-        stderr: "",
-    }
-    "#);
-    #[cfg(not(target_os = "linux"))]
     assert_debug_snapshot!(output);
 
+    Ok(())
+}
+
+#[test]
+fn logs_uses_linux_labels_for_default_and_all_sources() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let paths = PvPaths::for_home(&home);
+    let mut environment = TestEnvironment::new(&home);
+    environment.target = PlatformTarget::Linux;
+    write_log(&paths.daemon_log(), "daemon one\ndaemon two\n")?;
+    write_log(&paths.daemon_registration_stdout_log(), "stdout one\n")?;
+    write_log(&paths.daemon_registration_stderr_log(), "stderr one\n")?;
+    let mut outputs = Vec::new();
+    for args in [&["logs", "-n", "1"][..], &["logs", "--all", "-n", "1"][..]] {
+        let output = run_pv(args, &environment)?;
+        assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert!(output.stderr.is_empty());
+        outputs.push(output);
+    }
+    assert_debug_snapshot!(outputs);
     Ok(())
 }
 

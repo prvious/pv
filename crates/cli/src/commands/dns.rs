@@ -2,20 +2,20 @@ use std::io;
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use platform::{ResolverConfig, ResolverFileState};
+use platform::{PlatformTarget, ResolverConfig, ResolverFileState};
 use state::{Database, PortOwner, PortRequest, PvPaths, StateError};
 
 use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Line, Mark, Output, Streams};
 
-#[cfg(target_os = "linux")]
 pub(super) const RESOLVER_CONFLICT_GUIDANCE: &str = "Ask an administrator to inspect pv-dns.service, pv0 ownership, and competing test search or routing domains, including subdomains. Repair conflicts before retrying `pv dns:install`; `pv dns:uninstall` removes only PV-owned configuration.";
 
 pub(crate) fn status(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
+    let target = environment.platform_target()?;
     let paths = pv_paths(environment)?;
     let prepared_path = paths.resolver_config();
     let system_path = resolver_test_path(environment)?;
@@ -25,9 +25,17 @@ pub(crate) fn status(
     let output = &mut streams.out;
 
     output.heading("dns:status", Some("DNS resolver status"))?;
-    write_resolver_state(output, "Prepared resolver config", &prepared_state)?;
-    write_resolver_state(output, "System resolver config", &system_state)?;
+    write_resolver_state(output, "Prepared resolver config", &prepared_state, target)?;
+    write_resolver_state(output, "System resolver config", &system_state, target)?;
 
+    if target == PlatformTarget::Linux
+        && let Err(error) = environment.check_linux_resolved_stub()
+    {
+        output.failure(error.to_string())?;
+        output
+            .detail("Repair systemd-resolved and /etc/resolv.conf, then retry `pv dns:install`.")?;
+        return Ok(ExitCode::FAILURE);
+    }
     Ok(ExitCode::SUCCESS)
 }
 
@@ -50,6 +58,7 @@ fn install_inner(
     streams: &mut Streams<'_>,
     ensure_daemon: bool,
 ) -> Result<ExitCode, ExecuteError> {
+    let target = environment.platform_target()?;
     let paths = pv_paths(environment)?;
     let system_path = resolver_test_path(environment)?;
     let mut database = Database::open(&paths)?;
@@ -80,7 +89,7 @@ fn install_inner(
         | ResolverFileState::Stale { .. } => {}
         ResolverFileState::Conflict { path } => {
             release_new_dns_port(&mut database, had_dns_assignment)?;
-            write_resolver_conflict(output, path)?;
+            write_resolver_conflict(output, path, target)?;
 
             return Ok(ExitCode::FAILURE);
         }
@@ -176,6 +185,7 @@ pub(crate) fn uninstall(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
+    let target = environment.platform_target()?;
     let paths = pv_paths(environment)?;
     let prepared_path = paths.resolver_config();
     let system_path = resolver_test_path(environment)?;
@@ -215,7 +225,7 @@ pub(crate) fn uninstall(
             Ok(ExitCode::FAILURE)
         }
         ResolverFileState::Conflict { path } if !cfg!(target_os = "linux") => {
-            write_resolver_conflict(output, &path)?;
+            write_resolver_conflict(output, &path, target)?;
 
             Ok(ExitCode::FAILURE)
         }
@@ -239,15 +249,19 @@ pub(crate) fn uninstall(
     }
 }
 
-fn write_resolver_conflict(output: &mut Output<'_>, path: &Utf8Path) -> io::Result<()> {
-    let summary = if cfg!(target_os = "linux") {
-        "System DNS routing conflicts with existing configuration: "
-    } else {
-        "System resolver config is not PV-owned: "
+fn write_resolver_conflict(
+    output: &mut Output<'_>,
+    path: &Utf8Path,
+    target: PlatformTarget,
+) -> io::Result<()> {
+    let summary = match target {
+        PlatformTarget::Linux => "System DNS routing conflicts with existing configuration: ",
+        _ => "System resolver config is not PV-owned: ",
     };
     super::write_left_in_place(output, summary, path, None)?;
-    #[cfg(target_os = "linux")]
-    output.detail(RESOLVER_CONFLICT_GUIDANCE)?;
+    if target == PlatformTarget::Linux {
+        output.detail(RESOLVER_CONFLICT_GUIDANCE)?;
+    }
     Ok(())
 }
 
@@ -255,6 +269,7 @@ fn write_resolver_state(
     output: &mut Output<'_>,
     label: &str,
     state: &ResolverFileState,
+    target: PlatformTarget,
 ) -> io::Result<()> {
     let (mark, status, path) = match state {
         ResolverFileState::Missing { path } => (Mark::Idle, "missing", path),
@@ -262,7 +277,7 @@ fn write_resolver_state(
         ResolverFileState::Stale { path, .. } => (Mark::Warning, "stale", path),
         ResolverFileState::Conflict { path } => (
             Mark::Failure,
-            if cfg!(target_os = "linux") {
+            if target == PlatformTarget::Linux {
                 "conflict"
             } else {
                 "not PV-owned"

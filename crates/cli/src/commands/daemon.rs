@@ -2,7 +2,10 @@ use std::process::ExitCode;
 
 use ::daemon::MonitorHooks;
 use camino::Utf8PathBuf;
-use platform::{DAEMON_REGISTRATION_NAME, DaemonRegistrationConfig, DaemonRegistrationFileState};
+use daemon::DaemonError;
+use platform::{
+    DaemonRegistrationConfig, DaemonRegistrationFileState, PlatformTarget, daemon_registration_name,
+};
 use state::{PvPaths, StateError};
 
 use crate::environment::Environment;
@@ -30,6 +33,8 @@ fn enable_inner(
     streams: &mut Streams<'_>,
     request_reconciliation: bool,
 ) -> Result<ExitCode, ExecuteError> {
+    let target = environment.platform_target()?;
+    let registration_name = daemon_registration_name(target);
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
 
@@ -48,7 +53,7 @@ fn enable_inner(
             #[cfg(target_os = "linux")]
             environment.enable_daemon_registration(&path)?;
             environment.restart_daemon_registration()?;
-            output.note(format!("{DAEMON_REGISTRATION_NAME} already installed"))?;
+            output.note(format!("{registration_name} already installed"))?;
             output.success(started_message)?;
             wait_for_daemon(paths.clone(), output)?;
             if request_reconciliation {
@@ -80,7 +85,7 @@ fn enable_inner(
         }
         DaemonRegistrationFileState::Conflict { .. }
         | DaemonRegistrationFileState::Unreadable { .. } => {
-            refuse_daemon_registration(&mut streams.err, &state)
+            refuse_daemon_registration(&mut streams.err, &state, target)
         }
     }
 }
@@ -89,6 +94,8 @@ pub(crate) fn disable(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
+    let target = environment.platform_target()?;
+    let registration_name = daemon_registration_name(target);
     let path = daemon_registration_path(environment)?;
     let state = platform::inspect_daemon_registration_file(&path, None);
     let output = &mut streams.out;
@@ -99,7 +106,7 @@ pub(crate) fn disable(
             output.note(if output.surface().decorated() {
                 "PV is already disabled".to_string()
             } else {
-                format!("{DAEMON_REGISTRATION_NAME} already absent")
+                format!("{registration_name} already absent")
             })?;
 
             Ok(ExitCode::SUCCESS)
@@ -113,7 +120,7 @@ pub(crate) fn disable(
                 "Daemon disabled"
             })?;
             output.success(Line::field(
-                &format!("{DAEMON_REGISTRATION_NAME} removed: "),
+                &format!("{registration_name} removed: "),
                 &path,
             ))?;
 
@@ -121,7 +128,7 @@ pub(crate) fn disable(
         }
         DaemonRegistrationFileState::Conflict { .. }
         | DaemonRegistrationFileState::Unreadable { .. } => {
-            refuse_daemon_registration(&mut streams.err, &state)
+            refuse_daemon_registration(&mut streams.err, &state, target)
         }
     }
 }
@@ -137,6 +144,7 @@ pub(crate) fn unload_and_wait_for_daemon(
     environment: &impl Environment,
     paths: &PvPaths,
 ) -> Result<(), ExecuteError> {
+    let target = environment.platform_target()?;
     let daemon = environment.daemon_process_for_stop(paths)?;
     stop_daemon_registration_if_loaded(environment)?;
     // Startup can publish the daemon identity while the registration is stopping.
@@ -145,7 +153,24 @@ pub(crate) fn unload_and_wait_for_daemon(
         None => environment.daemon_process_for_stop(paths)?,
     };
     if let Some(daemon) = daemon {
-        daemon.wait_for_exit()?;
+        daemon.wait_for_exit().map_err(|error| match error {
+            DaemonError::RuntimeCleanupUnproven { pid, .. } => {
+                DaemonError::RuntimeCleanupUnproven {
+                    pid,
+                    reason: match target {
+                        PlatformTarget::Macos => "daemon is still running after LaunchAgent unload",
+                        PlatformTarget::Linux => {
+                            "daemon is still running after stopping the systemd user service"
+                        }
+                        PlatformTarget::Windows => {
+                            "daemon is still running after stopping daemon registration"
+                        }
+                    }
+                    .to_owned(),
+                }
+            }
+            error => error,
+        })?;
     }
     Ok(())
 }
@@ -154,6 +179,7 @@ pub(crate) fn restart(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
+    let target = environment.platform_target()?;
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
 
@@ -200,7 +226,7 @@ pub(crate) fn restart(
         }
         DaemonRegistrationFileState::Conflict { .. }
         | DaemonRegistrationFileState::Unreadable { .. } => {
-            refuse_daemon_registration(&mut streams.err, &state)
+            refuse_daemon_registration(&mut streams.err, &state, target)
         }
     }
 }
@@ -234,17 +260,15 @@ pub(crate) fn run_monitor_gate() -> Result<ExitCode, ExecuteError> {
 fn refuse_daemon_registration(
     stderr: &mut Output<'_>,
     state: &DaemonRegistrationFileState,
+    target: PlatformTarget,
 ) -> Result<ExitCode, ExecuteError> {
+    let registration_name = daemon_registration_name(target);
     let message = match state {
         DaemonRegistrationFileState::Conflict { path } => {
-            format!(
-                "{DAEMON_REGISTRATION_NAME} file is not PV-owned; leaving it unchanged\npath: {path}"
-            )
+            format!("{registration_name} file is not PV-owned; leaving it unchanged\npath: {path}")
         }
         DaemonRegistrationFileState::Unreadable { message, .. } => {
-            format!(
-                "{DAEMON_REGISTRATION_NAME} file is unreadable; leaving it unchanged\n{message}"
-            )
+            format!("{registration_name} file is unreadable; leaving it unchanged\n{message}")
         }
         DaemonRegistrationFileState::Missing { .. }
         | DaemonRegistrationFileState::Current { .. }
@@ -289,11 +313,12 @@ fn install_and_start_daemon_registration(
     started_message: &str,
     request_reconciliation: bool,
 ) -> Result<ExitCode, ExecuteError> {
+    let registration_name = daemon_registration_name(environment.platform_target()?);
     platform::write_daemon_registration_file(path, config)?;
     environment.enable_daemon_registration(path)?;
     environment.restart_daemon_registration()?;
     output.success(Line::field(
-        &format!("{DAEMON_REGISTRATION_NAME} installed: "),
+        &format!("{registration_name} installed: "),
         path,
     ))?;
     output.success(started_message)?;

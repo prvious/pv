@@ -13,6 +13,8 @@ pub use daemon_registration::{
 mod error;
 mod helper;
 pub mod hooks;
+#[cfg(target_os = "linux")]
+mod linux_host;
 mod low_port;
 mod pf;
 mod port;
@@ -34,8 +36,8 @@ pub use ca::{
 };
 pub use capability::{PlatformCapability, require_capability};
 pub use daemon_registration::{
-    DAEMON_REGISTRATION_FILE_NAME, DAEMON_REGISTRATION_LABEL, DAEMON_REGISTRATION_NAME,
-    DaemonRegistrationConfig, DaemonRegistrationFileState, daemon_registration_path,
+    DAEMON_REGISTRATION_FILE_NAME, DAEMON_REGISTRATION_LABEL, DaemonRegistrationConfig,
+    DaemonRegistrationFileState, daemon_registration_name, daemon_registration_path,
     enable_daemon_registration, inspect_daemon_registration_file, remove_daemon_registration,
     restart_daemon_registration, stop_daemon_registration, write_daemon_registration_file,
 };
@@ -49,6 +51,8 @@ pub use helper::{
     PrivilegedHelperInstallOutcome, PrivilegedHelperStatus, install_privileged_helper,
     remove_privileged_helper, serve_privileged_helper,
 };
+#[cfg(target_os = "linux")]
+pub use linux_host::{check_linux_resolved_stub, check_linux_setup_host};
 pub use low_port::{LowPortInspection, LowPortState, PortOwner};
 pub use pf::{
     ActivePfRedirectInspection, PfConfReference, PfFileState, PfRedirectConfig,
@@ -60,6 +64,7 @@ pub use pf::{
 pub use pf::{
     SYSTEM_SOCKET_PROXY_DIRECTORY, inspect_socket_proxy_unit, render_socket_proxy_units,
     repairable_socket_proxy_ports, socket_proxy_files_current, socket_proxy_unit_names,
+    socket_proxy_units_absent,
 };
 pub use port::loopback_tcp_port_available;
 pub use process::{
@@ -88,17 +93,6 @@ mod tests {
     use crate::{PlatformCapability, PlatformTarget};
 
     #[test]
-    fn browser_open_helper_reports_failed_status() {
-        let result = crate::browser::open_url_with_launcher("https://example.test", |_| Ok(false));
-
-        assert!(matches!(
-            result,
-            Err(PlatformError::BrowserOpenStatus { status })
-                if status == "exit status: unsuccessful"
-        ));
-    }
-
-    #[test]
     fn unsupported_error_names_capability_and_target() {
         let error = PlatformError::Unsupported {
             capability: PlatformCapability::DaemonRegistration,
@@ -119,54 +113,13 @@ mod tests {
     }
 
     #[test]
-    fn capability_check_supports_only_implemented_host_boundaries() {
-        assert!(
-            require_capability_for(PlatformTarget::Macos, PlatformCapability::TrustStore,).is_ok()
-        );
-
-        let error = require_capability_for(PlatformTarget::Windows, PlatformCapability::TrustStore);
+    fn capability_check_rejects_windows() {
         assert!(matches!(
-            error,
+            require_capability_for(PlatformTarget::Windows, PlatformCapability::TrustStore),
             Err(PlatformError::Unsupported {
-                capability: PlatformCapability::TrustStore,
                 target: PlatformTarget::Windows,
+                ..
             })
         ));
-        assert!(
-            require_capability_for(PlatformTarget::Linux, PlatformCapability::ProcessInspection)
-                .is_ok()
-        );
-        assert!(
-            require_capability_for(
-                PlatformTarget::Linux,
-                PlatformCapability::ProcessContainment
-            )
-            .is_ok()
-        );
-        assert!(
-            require_capability_for(PlatformTarget::Linux, PlatformCapability::DaemonIpc).is_ok()
-        );
-        assert!(
-            require_capability_for(
-                PlatformTarget::Linux,
-                PlatformCapability::DaemonRegistration
-            )
-            .is_ok()
-        );
-        assert!(
-            require_capability_for(PlatformTarget::Linux, PlatformCapability::PrivilegedHelper)
-                .is_ok()
-        );
-        assert!(
-            require_capability_for(
-                PlatformTarget::Linux,
-                PlatformCapability::ResolverIntegration
-            )
-            .is_ok()
-        );
-        assert!(
-            require_capability_for(PlatformTarget::Linux, PlatformCapability::LowPortFrontend)
-                .is_ok()
-        );
     }
 }

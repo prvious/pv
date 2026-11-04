@@ -687,7 +687,7 @@ _pv_commands() {
 'ports:install:Install or repair PV pf redirects' \
 'ports:uninstall:Remove PV pf redirects' \
 'ca:status:Show PV local CA trust status' \
-'ca:trust:Trust PV local CA in the System keychain' \
+'ca:trust:Trust PV local CA in the system trust store' \
 'ca:untrust:Remove PV local CA trust' \
 'link:Link a Project' \
 'hooks:trust:Approve Project hook commands without running them' \
