@@ -57,6 +57,7 @@ pub(crate) fn require_capability_for(
                     | PlatformCapability::PrivilegedHelper
                     | PlatformCapability::ResolverIntegration
                     | PlatformCapability::LowPortFrontend
+                    | PlatformCapability::TrustStore
             ) =>
         {
             Ok(())
@@ -67,7 +68,7 @@ pub(crate) fn require_capability_for(
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn unsupported(capability: PlatformCapability) -> Result<PlatformError, PlatformError> {
     Ok(PlatformError::Unsupported {
         capability,
