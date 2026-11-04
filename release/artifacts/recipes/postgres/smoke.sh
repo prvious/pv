@@ -144,15 +144,21 @@ cleanup() {
 }
 
 need diff
-need codesign
 need file
 need find
-need lipo
 need mktemp
-need otool
 need python3
-[ -n "$platform" ] || die "missing PV_POSTGRES_PLATFORM for packaged Mach-O validation"
-[ -n "$deployment_target" ] || die "missing PV_POSTGRES_DEPLOYMENT_TARGET for packaged Mach-O validation"
+[ -n "$platform" ] || die "missing PV_POSTGRES_PLATFORM for packaged artifact validation"
+case "$platform" in
+  darwin-arm64 | darwin-amd64)
+    need codesign
+    need lipo
+    need otool
+    [ -n "$deployment_target" ] || die "missing PV_POSTGRES_DEPLOYMENT_TARGET for packaged Mach-O validation"
+    ;;
+  linux-amd64 | linux-arm64) need readelf ;;
+  *) die "unsupported Postgres smoke platform: $platform" ;;
+esac
 [ -f "$extension_catalog" ] || {
   printf '%s\n' "missing Postgres extension catalog: $extension_catalog" >&2
   exit 42
@@ -169,7 +175,19 @@ started=false
 
 trap cleanup 0 1 2 3 15
 
-validate_packaged_macho_tree
+case "$platform" in
+  darwin-arm64 | darwin-amd64) validate_packaged_macho_tree ;;
+  linux-amd64 | linux-arm64)
+    libraries=$(pv_recipe_openssl_library_names_for_platform "$platform")
+    for library in $libraries; do
+      [ -f "$artifact_root/lib/$library" ] || die "Postgres archive missing lib/$library"
+    done
+    for module in pg_trgm pgcrypto sslinfo; do
+      [ -f "$artifact_root/lib/postgresql/$module.so" ] || die "Postgres archive missing lib/postgresql/$module.so"
+    done
+    pv_recipe_validate_elf_tree "$artifact_root" "$platform"
+    ;;
+esac
 
 printf '%s\n' "$admin_password" >"$password_file"
 "$initdb" \

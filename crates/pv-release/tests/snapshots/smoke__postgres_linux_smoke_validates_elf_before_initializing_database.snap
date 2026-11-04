@@ -1,0 +1,20 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: results
+---
+[
+    (
+        false,
+        2,
+        2,
+        42,
+        "",
+    ),
+    (
+        true,
+        0,
+        0,
+        0,
+        "error: <artifact>/lib/postgresql/pg_trgm.so ELF library search path is not ORIGIN-relative: /tmp/pv/build/lib\nPostgres smoke files retained at <retained-smoke-files>\n",
+    ),
+]

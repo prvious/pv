@@ -1,0 +1,21 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: results
+---
+[
+    (
+        "valid",
+        true,
+        "",
+    ),
+    (
+        "missing-library",
+        false,
+        "error: OpenSSL shared library libssl.so.3 not found under <tmp>/missing-library\n",
+    ),
+    (
+        "invalid-rpath",
+        false,
+        "error: <tmp>/invalid-rpath/lib/libssl.so.3 ELF library search path is not ORIGIN-relative: /tmp/build/lib\n",
+    ),
+]

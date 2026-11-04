@@ -33,6 +33,13 @@ need tar
 
 case "$PLATFORM" in
   darwin-arm64 | darwin-amd64) ;;
+  linux-amd64 | linux-arm64)
+    need cmp
+    need file
+    need patchelf
+    need readelf
+    export LC_ALL=C
+    ;;
   *) die "unsupported Postgres artifact platform: $PLATFORM" ;;
 esac
 
@@ -121,8 +128,10 @@ copy_install_tree() {
     done
   ' sh {} +
   mkdir -p "$root_dir/lib"
-  cp "$openssl_prefix/lib/libssl.3.dylib" "$root_dir/lib/libssl.3.dylib"
-  cp "$openssl_prefix/lib/libcrypto.3.dylib" "$root_dir/lib/libcrypto.3.dylib"
+  libraries=$(pv_recipe_openssl_library_names_for_platform "$PLATFORM")
+  for library_name in $libraries; do
+    cp "$openssl_prefix/lib/$library_name" "$root_dir/lib/$library_name"
+  done
 
   extension_controls=$(find "$root_dir/share/extension" -type f -name '*.control') || die "failed to inspect installed Postgres extension controls"
   unsorted_extension_catalog="$actual_extension_catalog.unsorted"
@@ -142,28 +151,65 @@ copy_install_tree() {
     die "Postgres supplied extension catalog does not match track $PV_TRACK"
   fi
 
-  pv_recipe_cleanup_macho_rpaths_tree "$root_dir"
-  rewrite_macho_install_names "$root_dir" "$install_dir" "$openssl_prefix"
-  pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
-  for binary in postgres initdb pg_ctl psql; do
-    [ -x "$root_dir/bin/$binary" ] || die "Postgres artifact missing bin/$binary"
-    pv_recipe_validate_macho_binary "$root_dir/bin/$binary" "$PLATFORM" "$DEPLOYMENT_TARGET"
-  done
-  for library in \
-    lib/libcrypto.3.dylib \
-    lib/libssl.3.dylib \
-    lib/postgresql/pg_trgm.dylib \
-    lib/postgresql/pgcrypto.dylib \
-    lib/postgresql/sslinfo.dylib; do
-    [ -f "$root_dir/$library" ] || die "Postgres artifact missing $library"
-    pv_recipe_validate_macho_binary "$root_dir/$library" "$PLATFORM" "$DEPLOYMENT_TARGET"
-  done
-  for macho_dir in "$root_dir/bin" "$root_dir/lib"; do
-    find "$macho_dir" -type f | while IFS= read -r macho; do
-      pv_recipe_is_macho "$macho" || continue
-      pv_recipe_validate_macho_binary "$macho" "$PLATFORM" "$DEPLOYMENT_TARGET"
-    done
-  done
+  case "$PLATFORM" in
+    darwin-arm64 | darwin-amd64)
+      pv_recipe_cleanup_macho_rpaths_tree "$root_dir"
+      rewrite_macho_install_names "$root_dir" "$install_dir" "$openssl_prefix"
+      pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
+      for binary in postgres initdb pg_ctl psql; do
+        [ -x "$root_dir/bin/$binary" ] || die "Postgres artifact missing bin/$binary"
+        pv_recipe_validate_macho_binary "$root_dir/bin/$binary" "$PLATFORM" "$DEPLOYMENT_TARGET"
+      done
+      for library in \
+        lib/libcrypto.3.dylib \
+        lib/libssl.3.dylib \
+        lib/postgresql/pg_trgm.dylib \
+        lib/postgresql/pgcrypto.dylib \
+        lib/postgresql/sslinfo.dylib; do
+        [ -f "$root_dir/$library" ] || die "Postgres artifact missing $library"
+        pv_recipe_validate_macho_binary "$root_dir/$library" "$PLATFORM" "$DEPLOYMENT_TARGET"
+      done
+      for macho_dir in "$root_dir/bin" "$root_dir/lib"; do
+        find "$macho_dir" -type f | while IFS= read -r macho; do
+          pv_recipe_is_macho "$macho" || continue
+          pv_recipe_validate_macho_binary "$macho" "$PLATFORM" "$DEPLOYMENT_TARGET"
+        done
+      done
+      ;;
+    linux-amd64 | linux-arm64)
+      for binary in postgres initdb pg_ctl psql; do
+        [ -x "$root_dir/bin/$binary" ] || die "Postgres artifact missing bin/$binary"
+      done
+      for library in pg_trgm pgcrypto sslinfo; do
+        [ -f "$root_dir/lib/postgresql/$library.so" ] || die "Postgres artifact missing lib/postgresql/$library.so"
+      done
+      artifact_files=$(find "$root_dir" -type f) || die "failed to list Postgres artifact files"
+      while IFS= read -r binary; do
+        description=$(file -E -b -- "$binary") || die "failed to inspect Postgres file $binary"
+        case "$description" in ELF\ *) ;; *) continue ;; esac
+        dynamic=$(readelf --wide --dynamic -- "$binary") || die "failed to inspect Postgres ELF $binary"
+        soname=$(printf '%s\n' "$dynamic" | awk '$2 == "(SONAME)" { sub(/^.*\[/, ""); sub(/\].*$/, ""); print }') || die "failed to parse Postgres ELF SONAME for $binary"
+        [ -n "$soname" ] || continue
+        case "$soname" in */* | . | ..) die "invalid Postgres ELF SONAME for $binary: $soname" ;; esac
+        [ "${binary##*/}" != "$soname" ] || continue
+        soname_file="${binary%/*}/$soname"
+        cmp -s "$binary" "$soname_file" || die "Postgres ELF alias does not match its SONAME file: $binary -> $soname_file"
+        rm "$binary"
+      done <<EOF
+$artifact_files
+EOF
+      artifact_files=$(find "$root_dir" -type f) || die "failed to list normalized Postgres artifact files"
+      while IFS= read -r binary; do
+        description=$(file -E -b -- "$binary") || die "failed to inspect Postgres file $binary"
+        case "$description" in ELF\ *) ;; *) continue ;; esac
+        runpath=$(pv_recipe_library_loader_prefix "$root_dir" "$binary" "\$ORIGIN")
+        patchelf --set-rpath "$runpath" "$binary"
+      done <<EOF
+$artifact_files
+EOF
+      pv_recipe_validate_elf_tree "$root_dir" "$PLATFORM"
+      ;;
+  esac
   cp "$recipe_dir/LICENSE" "$root_dir/LICENSE"
   cp "$recipe_dir/NOTICE" "$root_dir/NOTICE"
   cp "$openssl_prefix/LICENSE.txt" "$root_dir/OPENSSL-LICENSE"
@@ -212,8 +258,14 @@ PV_RECIPE_PLATFORM="$PLATFORM" \
 download_source "$source_archive" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256"
 source_dir=$(extract_source Postgres "$source_archive" "$source_extract_dir")
 
-export CFLAGS="${CFLAGS:-} -mmacosx-version-min=$DEPLOYMENT_TARGET"
-export LDFLAGS="${LDFLAGS:-} -mmacosx-version-min=$DEPLOYMENT_TARGET"
+set --
+case "$PLATFORM" in
+  darwin-arm64 | darwin-amd64)
+    export CFLAGS="${CFLAGS:-} -mmacosx-version-min=$DEPLOYMENT_TARGET"
+    export LDFLAGS="${LDFLAGS:-} -mmacosx-version-min=$DEPLOYMENT_TARGET"
+    ;;
+  linux-amd64 | linux-arm64) set -- --disable-rpath ;;
+esac
 (
   cd "$source_dir"
   ./configure \
@@ -226,7 +278,7 @@ export LDFLAGS="${LDFLAGS:-} -mmacosx-version-min=$DEPLOYMENT_TARGET"
     --without-lz4 \
     --without-readline \
     --without-zlib \
-    --without-zstd
+    --without-zstd "$@"
   make -j "$BUILD_JOBS" world-bin pkglibdir="$install_dir/lib/postgresql"
   make install-world-bin pkglibdir="$install_dir/lib/postgresql"
 )
