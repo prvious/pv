@@ -10,7 +10,7 @@ use super::{
 };
 use crate::PlatformError;
 use crate::clock::Limit;
-use crate::systemd::{native_proxy, read_unit, within};
+use crate::systemd::{is_vendor_service_drop_in, native_proxy, read_unit, within};
 use tokio::runtime::Builder;
 
 pub(super) mod root;
@@ -131,7 +131,10 @@ impl Unit {
             .is_some_and(|content| content.lines().any(|line| line.trim() == PV_MARKER))
             && self.status.as_ref().is_none_or(|status| {
                 status.fragment_path == Utf8Path::new(SYSTEM_DIRECTORY).join(name)
-                    && status.drop_in_paths.is_empty()
+                    && status
+                        .drop_in_paths
+                        .iter()
+                        .all(|path| is_vendor_service_drop_in(path, name, "system"))
             })
     }
 
@@ -518,7 +521,11 @@ mod tests {
                 needs_reload: false,
                 active_state: "active".to_owned(),
                 fragment_path: format!("{SYSTEM_DIRECTORY}/{name}").into(),
-                drop_in_paths: Vec::new(),
+                drop_in_paths: if name.ends_with(".service") {
+                    vec!["/usr/lib/systemd/system/service.d/10-timeout-abort.conf".to_owned()]
+                } else {
+                    Vec::new()
+                },
             }),
         };
         Forwarder {

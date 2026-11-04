@@ -13,6 +13,8 @@ mod loopback_port_probe;
 mod monitor;
 mod project_env_reconciliation;
 mod project_hooks;
+#[path = "support/real_artifact_client.rs"]
+mod real_artifact_client;
 mod real_artifact_gateway_e2e;
 mod real_artifact_resource_matrix;
 mod sql_foundation;
