@@ -285,6 +285,21 @@ PV_LINUX_SYSTEM_TESTS=1 PV_LINUX_SYSTEM_HELPER="$PWD/target/debug/pv-helper" \
   cargo nextest run --profile ci --locked -p cli --run-ignored only -E 'test(/^linux_helper_system::/)'
 ```
 
+The socket-proxy system test uses the same bounded service and requires free
+loopback ports 80 and 443. Build the daemon examples with
+`cargo build --locked -p daemon --examples`, then select:
+
+```shell
+-E 'test(=ports_system::systemd_socket_proxies_route_gateway_identity_repair_and_refuse_foreign_units)'
+```
+
+It runs a monitored native fake Caddy with a real test CA, verifies HTTP and HTTPS
+Gateway identity through the proxies, and checks repair, foreign ownership,
+repeated removal, and the limits of loaded socket and command metadata after
+reload. Its independent 140-second timer stops accepted helper work before
+removing only preflight-absent fixture units and files. Nextest serializes all
+tests in this helper-system binary; separate invocations must also remain serial.
+
 ## Crate structure
 
 Rust does not allow circular dependencies between crates. To visualize the crate hierarchy, install

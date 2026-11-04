@@ -443,6 +443,10 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::UserManagerUnavailable(_)
         | PlatformError::DaemonRegistrationBus(_)
         | PlatformError::PrivilegedHelperBus(_)
+        | PlatformError::LowPortProcfs(_)
+        | PlatformError::PortProxyBus(_)
+        | PlatformError::PortProxyIo(_)
+        | PlatformError::PortProxyMutation { .. }
         | PlatformError::DaemonRegistrationState { .. } => CaRepairReason::InvalidCaShape,
     }
 }

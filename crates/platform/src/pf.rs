@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 use std::io;
+#[cfg(any(target_os = "macos", test))]
 use std::net::IpAddr;
+#[cfg(target_os = "macos")]
 use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -11,12 +13,74 @@ use serde::{Deserialize, Serialize};
 use crate::PlatformError;
 #[cfg(target_os = "macos")]
 use crate::command::run_system_command;
+#[cfg(target_os = "macos")]
 use crate::command::run_system_command_output;
+#[cfg(target_os = "macos")]
 use crate::command::run_system_command_output_with_timeout;
+
+#[cfg(target_os = "linux")]
+use crate::systemd::read_owned_unit;
+
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub(crate) use linux::{
+    INSPECTION_TIMEOUT as PORT_PROXY_INSPECTION_TIMEOUT,
+    MUTATION_TIMEOUT as PORT_PROXY_MUTATION_TIMEOUT,
+};
 
 pub const SYSTEM_PF_ANCHOR_PATH: &str = "/etc/pf.anchors/com.prvious.pv";
 pub const SYSTEM_PF_CONF_PATH: &str = "/etc/pf.conf";
 const PV_MARKER: &str = "# Managed by PV";
+
+#[cfg(target_os = "linux")]
+pub const SYSTEM_SOCKET_PROXY_DIRECTORY: &str = linux::SYSTEM_DIRECTORY;
+
+#[cfg(target_os = "linux")]
+pub fn render_socket_proxy_units(config: &PfRedirectConfig) -> [(String, String); 4] {
+    linux::render_units(config)
+}
+
+#[cfg(target_os = "linux")]
+pub fn socket_proxy_unit_names() -> [String; 4] {
+    linux::unit_names()
+}
+
+/// Public ports whose fixed PV units permit a repair attempt.
+///
+/// This does not prove bind availability or ownership of every current listener.
+/// The privileged helper must revalidate ownership and repeat its bind probe.
+#[cfg(target_os = "linux")]
+pub fn repairable_socket_proxy_ports() -> Result<BTreeSet<u16>, PlatformError> {
+    linux::repairable_ports()
+}
+
+#[cfg(target_os = "linux")]
+pub fn inspect_socket_proxy_unit(path: &Utf8Path, expected: Option<&str>) -> PfFileState<String> {
+    linux::inspect_unit(path, expected)
+}
+
+/// Checks the four exact unit definitions in both directories.
+///
+/// Installed units must be root:root regular files with one link and mode 0644.
+/// Current files alone do not prove that the loaded proxies route traffic.
+#[cfg(target_os = "linux")]
+pub fn socket_proxy_files_current(
+    config: &PfRedirectConfig,
+    prepared_directory: &Utf8Path,
+    installed_directory: &Utf8Path,
+) -> bool {
+    render_socket_proxy_units(config)
+        .into_iter()
+        .all(|(name, expected)| {
+            matches!(
+                inspect_socket_proxy_unit(&prepared_directory.join(&name), Some(&expected)),
+                PfFileState::Current { .. }
+            ) && read_owned_unit(&installed_directory.join(name))
+                .is_ok_and(|content| content.as_deref() == Some(expected.as_bytes()))
+        })
+}
+
 const PF_ANCHOR_SOURCE_MARKER: &str =
     "# Source: PV prepared pf anchor for /etc/pf.anchors/com.prvious.pv";
 const PF_CONF_SOURCE_MARKER: &str = "# Source: PV prepared pf.conf reference for /etc/pf.conf";
@@ -25,6 +89,7 @@ const PF_RDR_ANCHOR_DIRECTIVE: &str = "rdr-anchor \"com.prvious.pv\"";
 const LEGACY_PF_ANCHOR_DIRECTIVE: &str = "anchor \"com.prvious.pv\"";
 const PF_LOAD_ANCHOR_DIRECTIVE: &str =
     "load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"";
+#[cfg(target_os = "macos")]
 const PFCTL_INSPECTION_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -240,6 +305,28 @@ pub fn inspect_pf_conf_reference(
     classify_pv_file_state(path, expected, actual)
 }
 
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn active_pf_redirect_config() -> Result<Option<PfRedirectConfig>, PlatformError> {
+    Err(crate::capability::unsupported(
+        crate::PlatformCapability::LowPortFrontend,
+    )?)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn inspect_active_pf_redirects_unprivileged()
+-> Result<ActivePfRedirectInspection, PlatformError> {
+    Err(crate::capability::unsupported(
+        crate::PlatformCapability::LowPortFrontend,
+    )?)
+}
+
+#[cfg(target_os = "linux")]
+pub fn active_pf_redirect_config() -> Result<Option<PfRedirectConfig>, PlatformError> {
+    let inspection = linux::inspect()?;
+    Ok(inspection.pv_config.filter(|_| inspection.pf_enabled))
+}
+
+#[cfg(target_os = "macos")]
 pub fn active_pf_redirect_config() -> Result<Option<PfRedirectConfig>, PlatformError> {
     active_pf_redirect_config_with_runners(&mut run_system_command_output, &mut || {
         crate::PrivilegedHelperClient
@@ -248,6 +335,7 @@ pub fn active_pf_redirect_config() -> Result<Option<PfRedirectConfig>, PlatformE
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn active_pf_redirect_config_with_runners(
     run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
     inspect_with_helper: &mut impl FnMut() -> Result<Option<PfRedirectConfig>, PlatformError>,
@@ -265,6 +353,7 @@ fn active_pf_redirect_config_with_runners(
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn pfctl_permission_denied(error: &PlatformError) -> bool {
     let PlatformError::SystemIntegrationCommandStatus { command, status } = error else {
         return false;
@@ -279,6 +368,13 @@ fn pfctl_permission_denied(error: &PlatformError) -> bool {
         .any(|diagnostic| status.ends_with(diagnostic))
 }
 
+#[cfg(target_os = "linux")]
+pub fn inspect_active_pf_redirects_unprivileged()
+-> Result<ActivePfRedirectInspection, PlatformError> {
+    linux::inspect()
+}
+
+#[cfg(target_os = "macos")]
 pub fn inspect_active_pf_redirects_unprivileged()
 -> Result<ActivePfRedirectInspection, PlatformError> {
     inspect_active_pf_redirects_unprivileged_with_runner(&mut |program, args| {
@@ -286,6 +382,7 @@ pub fn inspect_active_pf_redirects_unprivileged()
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn active_pf_redirect_config_unprivileged_with_runner(
     run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
 ) -> Result<Option<PfRedirectConfig>, PlatformError> {
@@ -301,6 +398,7 @@ fn active_pf_redirect_config_unprivileged_with_runner(
     Ok(PfRedirectConfig::parse_active_rules(&anchor_nat_rules))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn inspect_active_pf_redirects_unprivileged_with_runner(
     run_system_output: &mut impl FnMut(&str, &[&str]) -> Result<String, PlatformError>,
 ) -> Result<ActivePfRedirectInspection, PlatformError> {
@@ -335,6 +433,7 @@ fn inspect_active_pf_redirects_unprivileged_with_runner(
     })
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn parse_pf_enabled(info: &str) -> Result<bool, PlatformError> {
     for line in info.lines().filter_map(active_pf_line) {
         let Some(status) = line.strip_prefix("Status:") else {
@@ -352,6 +451,7 @@ fn parse_pf_enabled(info: &str) -> Result<bool, PlatformError> {
     ))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn inspect_redirect_targets(rules: &str) -> (BTreeSet<u16>, bool) {
     let mut resolved_target_ports = BTreeSet::new();
     let mut has_unresolved_redirect_targets = false;
@@ -372,12 +472,14 @@ fn inspect_redirect_targets(rules: &str) -> (BTreeSet<u16>, bool) {
     (resolved_target_ports, has_unresolved_redirect_targets)
 }
 
+#[cfg(any(target_os = "macos", test))]
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 enum RedirectTarget {
     ResolvedPort(u16),
     Unresolved,
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn redirect_target(rule: &str) -> RedirectTarget {
     let Some((_source, target)) = rule.rsplit_once(" -> ") else {
         return RedirectTarget::Unresolved;
@@ -672,10 +774,29 @@ fn require_fixed_pf_paths(
     )))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn inspect_active_pf_redirects_privileged()
 -> Result<ActivePfRedirectInspection, PlatformError> {
-    inspect_active_pf_redirects_unprivileged_with_runner(&mut run_system_command_output)
+    #[cfg(target_os = "macos")]
+    {
+        inspect_active_pf_redirects_unprivileged_with_runner(&mut run_system_command_output)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux::inspect()
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn apply_pf_redirects_privileged(
+    config: &PfRedirectConfig,
+) -> Result<(), PlatformError> {
+    linux::root::apply(config)
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn remove_pf_redirects_privileged() -> Result<(), PlatformError> {
+    linux::root::remove()
 }
 
 #[cfg(target_os = "macos")]
@@ -876,6 +997,7 @@ fn parse_active_redirect_port(line: &str, public_port: u16) -> Option<u16> {
     redirect_port.parse::<u16>().ok()
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn main_nat_rules_load_pv_rdr_anchor(content: &str) -> bool {
     content
         .lines()
@@ -883,6 +1005,7 @@ fn main_nat_rules_load_pv_rdr_anchor(content: &str) -> bool {
         .any(is_loaded_pv_rdr_anchor_rule)
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn is_loaded_pv_rdr_anchor_rule(line: &str) -> bool {
     let Some(tail) = line.strip_prefix("rdr-anchor \"com.prvious.pv\"") else {
         return false;

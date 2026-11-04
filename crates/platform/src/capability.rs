@@ -56,6 +56,7 @@ pub(crate) fn require_capability_for(
                     | PlatformCapability::DaemonRegistration
                     | PlatformCapability::PrivilegedHelper
                     | PlatformCapability::ResolverIntegration
+                    | PlatformCapability::LowPortFrontend
             ) =>
         {
             Ok(())
